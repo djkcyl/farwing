@@ -678,16 +678,15 @@ impl WindowMouse {
         let mode = self.input.mode();
         let relative = self.input.relative_mode();
         let frame_size = *video_size.lock().unwrap_or_else(|p| p.into_inner());
-        if !window.has_focus()
-            || window.is_minimized().unwrap_or(false)
-            || mode == MouseMode::View
-            || control.drag_drop().interactive()
-            || menu_open
-            || context.any_popup_open()
-            || context.memory(|m| m.top_modal_layer().is_some())
-            || context.text_edit_focused()
-            || frame_size.is_none()
-        {
+        let gate = super::input_gate::InputGate {
+            focused: window.has_focus(),
+            minimized: window.is_minimized().unwrap_or(false),
+            controlling: mode != MouseMode::View,
+            dragging: control.drag_drop().interactive(),
+            menu_open,
+            has_video: frame_size.is_some(),
+        };
+        if !gate.holds(context) {
             self.release(window);
             return;
         }

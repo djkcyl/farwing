@@ -303,6 +303,10 @@ fn recover(path: &std::path::Path) -> Result<()> {
         render_adapter: None,
         dirty: true,
         restoring: true,
+        // 恢复是另一个进程在做 X11 拓扑的回滚，和本进程的虚拟屏租约无关；
+        // Linux 上也不会写这份日志，所以这里没有东西要还。
+        #[cfg(not(windows))]
+        virtual_display: None,
     };
     state.cleanup()
 }

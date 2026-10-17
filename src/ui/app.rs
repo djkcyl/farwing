@@ -27,6 +27,9 @@ pub(crate) struct WindowConfig {
     pub viewport: egui::ViewportBuilder,
     pub centered: bool,
     pub notification: bool,
+    /// No caption and no placement of its own: the app positions and shows
+    /// the window itself (a drop zone that appears during a drag).
+    pub floating: bool,
 }
 
 pub(crate) type AppFactory = Box<dyn FnOnce(&egui::Context, Option<String>) -> Box<dyn App> + Send>;

@@ -1,13 +1,11 @@
-//! Persistent defaults for this Windows user's controller; no account secrets.
+//! Persistent defaults for this user's controller; no account secrets.
 use super::ConnectionMediaOptions;
 use anyhow::{Context, Result};
 use std::io::Write;
 fn path() -> Result<std::path::PathBuf> {
-    Ok(std::path::PathBuf::from(
-        std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA unavailable")?,
-    )
-    .join("OpenUUYC")
-    .join("media-preferences.json"))
+    Ok(crate::platform::paths::require_local_app_data()?
+        .join("OpenUUYC")
+        .join("media-preferences.json"))
 }
 pub fn load() -> Result<ConnectionMediaOptions> {
     load_from(&path()?)

@@ -1,0 +1,119 @@
+name: Linux deb
+
+on:
+  push:
+    branches: [main, linux-port]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deb:
+    # The oldest supported Ubuntu, so the package's glibc and library
+    # requirements hold on 22.04 and everything newer. Each architecture
+    # builds natively on its own runner, so the package's dependencies are
+    # resolved against that architecture's libraries.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake clang nasm pkg-config dpkg-dev libva-dev \
+            libasound2-dev libdbus-1-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-dev libxcb1-dev libxrandr-dev libxi-dev \
+            libxcursor-dev libgl1-mesa-dev libvulkan-dev libudev-dev libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+
+      - name: Build
+        run: |
+          cargo build --release --locked --bin OpenUUYC
+          # 虚拟显示器辅助程序是独立的 crate（自己的 workspace 与 Cargo.lock），
+          # 产物落到同一个 target/ 里，打包时只认一处。
+          (cd crates/vkms && CARGO_TARGET_DIR=../../target cargo build --release --locked)
+
+      - name: Test the virtual display helper
+        # 它有自己的 workspace，根目录的 cargo fmt 与 cargo test 都管不到它。
+        run: |
+          cd crates/vkms
+          cargo fmt --check
+          CARGO_TARGET_DIR=../../target cargo test --locked
+
+      - name: Check the developer probes still build
+        # They include the production VA-API encoder and GPU converter sources
+        # but are not part of the app, so only this step notices a break.
+        run: |
+          cargo check --locked --bins \
+            --manifest-path devtools/probes/gpu-conversion/Cargo.toml \
+            --target-dir target/probes
+          gcc -fsyntax-only -Wall devtools/probes/vaapi_export_probe.c
+          gcc -fsyntax-only -Wall devtools/probes/vulkan_dmabuf_probe.c
+
+      - name: Package
+        run: cargo deb --no-build
+
+      - name: Check the package installs
+        run: |
+          sudo apt-get install -y ./target/debian/*.deb
+          OpenUUYC --version
+          dpkg-deb --info target/debian/*.deb
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: openuuyc-deb-${{ matrix.arch }}
+          path: target/debian/*.deb
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: deb
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # linux-release.yml also publishes to this tag; the shared group serializes
+    # them so the second run updates the existing release instead of racing it.
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: openuuyc-deb-*
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: "*.deb"
+          # v<version>-linux.<n>: the Cargo version names the release, and an
+          # alpha, beta or rc version is published as a pre-release like upstream.
+          name: OpenUUYC ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+      - uses: actions/checkout@v7
+        with:
+          path: source
+          sparse-checkout: .github/scripts
+      - name: List the downloads in the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: source/.github/scripts/release-downloads.sh "${{ github.ref_name }}"

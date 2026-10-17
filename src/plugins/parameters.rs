@@ -266,7 +266,11 @@ impl Fields {
                             _=>None,
                         };
                         if let Some((key,modifiers))=recorded {
+                            #[cfg(windows)]
                             let win=unsafe{windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(91)<0 || windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(92)<0};
+                            // egui does not carry the Super modifier on Linux.
+                            #[cfg(not(windows))]
+                            let win=false;
                             let binding=super::hotkeys::Binding{key,modifiers:u8::from(modifiers.ctrl)|(u8::from(modifiers.shift)<<1)|(u8::from(modifiers.alt)<<2)|(u8::from(win)<<3)};
                             if !super::hotkeys::valid(&binding){continue;}
                             shortcut.binding=Some(binding);shortcut.disabled=false;

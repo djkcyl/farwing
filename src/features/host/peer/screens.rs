@@ -67,7 +67,7 @@ pub(super) struct Reports {
     pub current: AtomicI32,
     pub sequence: Arc<std::sync::atomic::AtomicI64>,
     pub publications: Vec<Mutex<Option<watch::Receiver<Published>>>>,
-    pub pointers: Vec<Arc<Mutex<Option<crate::platform::windows::cursor_shape::Snapshot>>>>,
+    pub pointers: Vec<Arc<Mutex<Option<crate::platform::cursor_shape::Snapshot>>>>,
     pub changed: watch::Sender<u64>,
 }
 impl Reports {
@@ -115,6 +115,10 @@ pub(crate) struct Screens {
     deferred: Option<Deferred>,
     before_super: Option<actions::Running>,
     headless: headless::State,
+    /// Shells opened by the controller, shared with the frame handler on the
+    /// BINARY channel. One table serves every connection so a reconnect keeps
+    /// the running shells.
+    terminal: Arc<Mutex<crate::features::host::terminal::Sessions>>,
 }
 pub(crate) struct Deferred {
     pub options: crate::features::stream_control::publisher::ConnectOptions,
@@ -238,6 +242,10 @@ impl Screens {
     pub(crate) fn authorization(&self) -> Lease {
         self.lease.clone()
     }
+    /// The controller's shells, for the terminal RPCs and frame handler.
+    pub(crate) fn terminal(&self) -> Arc<Mutex<crate::features::host::terminal::Sessions>> {
+        Arc::clone(&self.terminal)
+    }
     pub(super) async fn new(
         connection: Arc<RTCPeerConnection>,
         lease: Lease,
@@ -313,6 +321,7 @@ impl Screens {
             deferred,
             before_super: None,
             headless: Default::default(),
+            terminal: crate::features::host::terminal::shared(),
         };
         state.refresh()?;
         if let Some(selected) = selected {

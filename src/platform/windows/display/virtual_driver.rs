@@ -345,3 +345,21 @@ impl Driver {
         Ok(())
     }
 }
+
+/// Whether a failed removal was refused because another handle still pins
+/// the display (ERROR_BUSY from the driver).
+pub(crate) fn busy(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<windows::core::Error>()
+        .is_some_and(|e| {
+            e.code() == windows::core::HRESULT::from_win32(windows::Win32::Foundation::ERROR_BUSY.0)
+        })
+}
+
+/// Whether a failed removal means the display was already gone
+/// (ERROR_NOT_FOUND from the driver).
+pub(crate) fn already_removed(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<windows::core::Error>()
+        .is_some_and(|e| e.code() == windows::core::HRESULT::from_win32(1168))
+}

@@ -11,16 +11,12 @@ pub const MAX_TOTAL_MIB: u64 = 256;
 pub const RETENTION_DAYS: u64 = 14;
 
 pub(super) fn directories() -> Result<(PathBuf, PathBuf)> {
-    if crate::platform::windows::host_service::vault::applies()? {
-        let base = crate::platform::windows::host_service::vault::root()?;
+    if crate::platform::host_service::vault::applies()? {
+        let base = crate::platform::host_service::vault::root()?;
         return Ok((base.clone(), base.join("logs")));
     }
     {
-        let base = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .context("LOCALAPPDATA must be an absolute directory")?
-            .join("OpenUUYC");
+        let base = crate::platform::paths::require_local_app_data()?.join("OpenUUYC");
         Ok((base.clone(), base.join("logs")))
     }
 }
@@ -50,6 +46,7 @@ fn state_directory(directory: &Path) -> io::Result<PathBuf> {
     let state = directory.join(".state");
     fs::create_dir_all(&state)?;
 
+    #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
         use windows::{
@@ -60,6 +57,7 @@ fn state_directory(directory: &Path) -> io::Result<PathBuf> {
         unsafe { SetFileAttributesW(PCWSTR(path.as_ptr()), FILE_ATTRIBUTE_HIDDEN) }
             .map_err(io::Error::other)?;
     }
+    // The leading dot already hides the directory on Linux desktops.
     Ok(state)
 }
 
@@ -77,6 +75,7 @@ pub(super) fn save_config(path: &Path, bytes: &[u8]) -> Result<()> {
         file.sync_all()?;
         drop(file);
 
+        #[cfg(windows)]
         {
             use std::os::windows::ffi::OsStrExt;
             use windows::{
@@ -95,6 +94,11 @@ pub(super) fn save_config(path: &Path, bytes: &[u8]) -> Result<()> {
                 )
             }?;
         }
+        #[cfg(not(windows))]
+        {
+            // rename(2) replaces the target atomically within one filesystem.
+            fs::rename(&temporary, path)?;
+        }
 
         Ok(())
     })();
@@ -105,6 +109,7 @@ pub(super) fn save_config(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 pub(super) fn open_directory(directory: &Path) -> Result<()> {
+    #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
         use windows::{
@@ -125,6 +130,16 @@ pub(super) fn open_directory(directory: &Path) -> Result<()> {
         };
         if result.0 as isize <= 32 {
             bail!("打开日志文件夹失败（{}）", result.0 as isize);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let status = std::process::Command::new("xdg-open")
+            .arg(directory)
+            .status()
+            .context("启动 xdg-open")?;
+        if !status.success() {
+            bail!("打开日志文件夹失败（{status}）");
         }
     }
 

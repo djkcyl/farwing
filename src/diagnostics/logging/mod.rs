@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 use tracing_appender::non_blocking::{ErrorCounter, WorkerGuard};
-use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 mod files;
 pub use files::{MAX_FILE_MIB, MAX_TOTAL_MIB, RETENTION_DAYS};
 
@@ -71,20 +71,20 @@ modules! {
     ("auth", "登录与凭据", false, ["openuuyc::account::auth", "openuuyc::account::login", "openuuyc::account::session_restore"]),
     ("api", "账号接口", false, ["openuuyc::account::api", "openuuyc::account::client", "openuuyc::account::nrd_http", "openuuyc::account::assist"]),
     ("presence", "在线状态", false, ["openuuyc::session::presence", "openuuyc::session::device_session"]),
-    ("host", "本机被控", false, ["openuuyc::features::host", "openuuyc_codec::encoder", "openuuyc::platform::windows::software_encoder", "openuuyc::media::encoding", "openuuyc::platform::windows::capture", "openuuyc::platform::windows::encoder", "openuuyc::platform::windows::nvenc", "openuuyc::platform::windows::amf", "openuuyc::platform::windows::qsv", "openuuyc::platform::windows::gdi", "openuuyc::platform::windows::preprocess", "openuuyc::platform::windows::transfer", "openuuyc::platform::windows::gpu_conversion", "openuuyc::platform::windows::cursor", "openuuyc::platform::windows::wol"]),
+    ("host", "本机被控", false, ["openuuyc::features::host", "openuuyc_codec::encoder", "openuuyc::media::encoding", "openuuyc::platform::windows::software_encoder", "openuuyc::platform::windows::capture", "openuuyc::platform::windows::encoder", "openuuyc::platform::windows::nvenc", "openuuyc::platform::windows::amf", "openuuyc::platform::windows::qsv", "openuuyc::platform::windows::gdi", "openuuyc::platform::windows::preprocess", "openuuyc::platform::windows::transfer", "openuuyc::platform::windows::gpu_conversion", "openuuyc::platform::windows::cursor", "openuuyc::platform::windows::wol", "openuuyc::platform::linux::capture", "openuuyc::platform::linux::encoder", "openuuyc::platform::linux::software_encoder", "openuuyc::platform::linux::vaapi_encoder", "openuuyc::platform::linux::host_service", "openuuyc::platform::linux::nvenc", "openuuyc::platform::linux::cuda", "openuuyc::platform::linux::cursor_shape", "openuuyc::platform::linux::wol"]),
     ("signal", "信令与协商", false, ["openuuyc::transport::signal"]),
     ("rtc", "实时传输", false, ["openuuyc::transport::rtc", "openuuyc::transport::uu_kcp"]),
     ("recovery", "丢包恢复", false, ["openuuyc::transport::official_receiver", "openuuyc::nack_audit", "openuuyc::transport::rsfec", "openuuyc::transport::ulpfec", "openuuyc::transport::flexfec", "openuuyc::transport::xor_fec"]),
-    ("decoder", "视频解码", false, ["openuuyc::media::decoder", "openuuyc::media::decoder_pool", "openuuyc::media::decoder_result", "openuuyc::media::codec_parameters", "openuuyc_codec::decoder", "openuuyc_h264", "openuuyc_av1::bitstream", "openuuyc_av1::decoder", "openuuyc::platform::windows::decoder", "openuuyc::platform::windows::surface"]),
-    ("viewer", "播放窗口", false, ["openuuyc::application::viewer", "openuuyc::session::controller::windows", "openuuyc::media::video_color", "openuuyc::media::video_format", "openuuyc::platform::windows::video_shader", "openuuyc::platform::windows::swapchain"]),
+    ("decoder", "视频解码", false, ["openuuyc::media::decoder", "openuuyc::media::decoder_pool", "openuuyc::media::decoder_result", "openuuyc::media::codec_parameters", "openuuyc_codec::decoder", "openuuyc_h264", "openuuyc_av1::bitstream", "openuuyc_av1::decoder", "openuuyc::platform::windows::decoder", "openuuyc::platform::windows::surface", "openuuyc::platform::linux::decoder"]),
+    ("viewer", "播放窗口", false, ["openuuyc::application::viewer", "openuuyc::session::controller::windows", "openuuyc::media::video_color", "openuuyc::media::video_format", "openuuyc::platform::windows::video_shader", "openuuyc::platform::windows::swapchain", "openuuyc::platform::linux::video_layer"]),
     ("audio", "音频", false, ["openuuyc::media::audio", "openuuyc::media::microphone"]),
     ("control", "串流设置", false, ["openuuyc::features::stream_control", "openuuyc::features::viewing_settings"]),
-    ("keyboard", "键盘输入", false, ["openuuyc::application::viewer::windows_keyboard"]),
-    ("mouse", "鼠标与光标", false, ["openuuyc::application::viewer::windows_mouse", "openuuyc::application::viewer::windows_cursor", "openuuyc::features::remote_cursor"]),
+    ("keyboard", "键盘输入", false, ["openuuyc::application::viewer::windows_keyboard", "openuuyc::application::viewer::linux_keyboard"]),
+    ("mouse", "鼠标与光标", false, ["openuuyc::application::viewer::windows_mouse", "openuuyc::application::viewer::windows_cursor", "openuuyc::features::remote_cursor", "openuuyc::viewer::input"]),
     ("input", "控制发送", false, ["openuuyc::features::remote_input", "openuuyc::transport::rtc::input"]),
     ("performance", "性能与网络统计", false, ["openuuyc::diagnostics::performance", "openuuyc::features::network_control", "openuuyc::transport::timing", "openuuyc::transport::rtcp_timing", "openuuyc::transport::rtc::clock"]),
     ("plugins", "插件宿主", false, ["openuuyc::plugins"]),
-    ("ui", "界面渲染", false, ["openuuyc::ui", "openuuyc::ui_timing", "openuuyc::platform::windows::graphics"]),
+    ("ui", "界面渲染", false, ["openuuyc::ui", "openuuyc::ui_timing", "openuuyc::platform::windows::graphics", "openuuyc::platform::linux::graphics"]),
     ("webrtc", "WebRTC", true, ["webrtc", "webrtc_data", "webrtc_util", "interceptor"]),
     ("kcp", "KCP", true, ["kcp"]),
     ("ice", "ICE 直连与中转", true, ["webrtc_ice", "stun", "turn", "webrtc_mdns"]),
@@ -209,9 +209,36 @@ pub fn apply(mut settings: Settings) -> Result<()> {
     state.error = None;
     Ok(())
 }
+/// systemd 给服务的标准错误接上 journal 时会设 `JOURNAL_STREAM=设备号:inode`，两个
+/// 数都是十进制。这个变量会被子进程继承，桌面自己拉起的程序也可能带着它（niri 的
+/// 会话里就有），所以光看它在不在会给没接 journal 的进程也挂一层 stderr，要比一比
+/// 自己标准错误的 `dev:ino`。
+#[cfg(target_os = "linux")]
+fn in_journal() -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Some(value) = std::env::var_os("JOURNAL_STREAM") else {
+        return false;
+    };
+    let Ok(stderr) = std::fs::metadata("/proc/self/fd/2") else {
+        return false;
+    };
+    value
+        .to_str()
+        .is_some_and(|value| value == format!("{}:{}", stderr.dev(), stderr.ino()))
+}
+
+/// journal 是 Linux 的 systemd 才有的东西。
+#[cfg(not(target_os = "linux"))]
+fn in_journal() -> bool {
+    false
+}
+
 /// All viewer children belong to this application launch.
 pub fn configure_child(command: &mut std::process::Command) {
     if let Some(r) = RUNTIME.get() {
+        // 继承下去的 `JOURNAL_STREAM` 是父进程的流，子进程的标准错误接到哪儿由父进程
+        // 决定，留着这个变量只会让子进程以为自己也在 journal 里。
+        command.env_remove("JOURNAL_STREAM");
         command.env("OPENUUYC_LOG_SESSION", &r.session);
         command.env("OPENUUYC_LOG_STEM", &r.stem);
         let state = r.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -314,8 +341,21 @@ pub fn init(level: Option<&str>, path: Option<&Path>) -> Result<LoggingGuard> {
         .thread_name("log-writer")
         .finish(sink);
     let dropped = writer.error_counter();
+    // 被 systemd 起来时标准错误接在 journal 上，日志平时只落文件，这时再挂一层
+    // stderr，`journalctl --user -u openuuyc` 才有内容。
+    let journal = in_journal().then(|| {
+        tracing_subscriber::fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .event_format(JournalEventFormat(
+                tracing_subscriber::fmt::format().without_time(),
+            ))
+    });
+    // 过滤器挂在订阅者上而不是某一层上：两层（文件与 stderr）用同一份，改设置后
+    // 两层一起跟随。
     let (filter_layer, filter) = tracing_subscriber::reload::Layer::new(filter);
     tracing_subscriber::registry()
+        .with(filter_layer)
         .with(
             tracing_subscriber::fmt::layer()
                 .with_writer(writer)
@@ -325,9 +365,9 @@ pub fn init(level: Option<&str>, path: Option<&Path>) -> Result<LoggingGuard> {
                         .with_target(true)
                         .with_thread_ids(true),
                     session.clone(),
-                ))
-                .with_filter(filter_layer),
+                )),
         )
+        .with(journal)
         .try_init()
         .context("初始化日志系统")?;
     let runtime = Arc::new(Runtime {
@@ -405,6 +445,48 @@ where
     }
 }
 
+/// journal 那一层的行格式：journald 自己记时间，不再写一遍；行首加 sd-daemon 的
+/// `<N>` 级别前缀，journald 读标准输出、标准错误时默认（`SyslogLevelPrefix=yes`）
+/// 据此记优先级，`journalctl -p warning` 才筛得出来。多行事件每行都加，否则后面
+/// 几行会按默认的 info 记。
+struct JournalEventFormat<F>(F);
+
+impl<S, N, F> tracing_subscriber::fmt::format::FormatEvent<S, N> for JournalEventFormat<F>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    N: for<'a> tracing_subscriber::fmt::format::FormatFields<'a> + 'static,
+    F: tracing_subscriber::fmt::format::FormatEvent<S, N>,
+{
+    fn format_event(
+        &self,
+        context: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: tracing_subscriber::fmt::format::Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        let mut text = String::new();
+        self.0.format_event(
+            context,
+            tracing_subscriber::fmt::format::Writer::new(&mut text),
+            event,
+        )?;
+        let priority = syslog_priority(event.metadata().level());
+        for line in text.strip_suffix('\n').unwrap_or(&text).split('\n') {
+            writeln!(writer, "<{priority}>{line}")?;
+        }
+        Ok(())
+    }
+}
+
+/// syslog 优先级：err、warning、info、debug。
+fn syslog_priority(level: &tracing::Level) -> u8 {
+    match *level {
+        tracing::Level::ERROR => 3,
+        tracing::Level::WARN => 4,
+        tracing::Level::INFO => 6,
+        _ => 7,
+    }
+}
+
 pub(crate) fn open_folder(path: &Path) -> Result<()> {
     files::open_directory(path)
 }
@@ -413,5 +495,72 @@ pub(crate) fn open_folder(path: &Path) -> Result<()> {
 pub(crate) fn sync_written() {
     if let Some(runtime) = RUNTIME.get() {
         files::sync_pending(&runtime.files);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self {
+            self.clone()
+        }
+    }
+
+    /// 每一行（多行事件的每一行）都带 journald 认的 `<N>` 前缀，且没有时间戳。
+    #[test]
+    fn journal_lines_carry_the_syslog_priority() {
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(captured.clone())
+                .with_ansi(false)
+                .event_format(JournalEventFormat(
+                    tracing_subscriber::fmt::format().without_time(),
+                )),
+        );
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::error!("broken");
+            tracing::warn!("careful");
+            tracing::info!("hello");
+            tracing::debug!("detail");
+            tracing::trace!("noise");
+            tracing::warn!("first\nsecond");
+        });
+        let text = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let expected = [
+            ("<3>", "ERROR", "broken"),
+            ("<4>", "WARN", "careful"),
+            ("<6>", "INFO", "hello"),
+            ("<7>", "DEBUG", "detail"),
+            ("<7>", "TRACE", "noise"),
+            ("<4>", "WARN", "first"),
+        ];
+        assert_eq!(lines.len(), expected.len() + 1, "{text}");
+        for (line, (prefix, level, message)) in lines.iter().zip(expected) {
+            let rest = line
+                .strip_prefix(prefix)
+                .unwrap_or_else(|| panic!("{line}"));
+            assert!(rest.trim_start().starts_with(level), "{line}");
+            assert!(line.ends_with(message), "{line}");
+        }
+        assert_eq!(lines[6], "<4>second");
     }
 }

@@ -1,0 +1,77 @@
+# Maintainer: risent <shengqi542@gmail.com>
+#
+# Binary package built from a GitHub release of the Linux port
+# (DoyoDia/openuuyc-linux), which linux-release.yml publishes for every v* tag.
+# Prefer this over openuuyc-git unless you want to track the branch.
+#
+# AUR submission: copy this directory to an AUR git checkout and run
+#   makepkg --printsrcinfo > .SRCINFO
+# then commit. See packaging/aur/README.md.
+
+pkgname=openuuyc-bin
+pkgver=1.0.2_beta.5.3
+pkgrel=1
+# Releases are tagged v<Cargo version>-linux.<n>. pkgver may not contain a
+# hyphen: it is the Cargo version with `-` as `_`, then `.<n>`, so that
+# pacman sorts a pre-release before its release (an alpha segment loses to a
+# number): 1.0.1.2 -> v1.0.1-linux.2, 1.0.2_beta.5.1 -> v1.0.2-beta.5-linux.1
+_tag=v${pkgver%.*}-linux.${pkgver##*.}
+_tag=${_tag//_/-}
+pkgdesc="Third-party UU Remote client (Linux port, X11 and Wayland)"
+arch=('x86_64')
+url="https://github.com/DoyoDia/openuuyc-linux"
+license=('custom')
+depends=('gcc-libs' 'fuse3' 'libx11' 'libxcb' 'libxrandr' 'libxi' 'libxcursor'
+         'libxfixes' 'libxkbcommon' 'libxkbcommon-x11' 'wayland'
+         'vulkan-icd-loader' 'noto-fonts-cjk' 'gnome-keyring')
+optdepends=(
+    'libva: H.264 hardware decoding'
+    'libva-nvidia-driver: NVIDIA VA-API decoding'
+    'intel-media-driver: Intel VA-API decoding'
+    'libpulse: desktop audio capture and playback'
+    'pipewire: XDG ScreenCast capture on Wayland'
+    'xdg-desktop-portal-hyprland: ScreenCast portal on Hyprland'
+    'xdg-desktop-portal-gnome: ScreenCast portal on GNOME'
+    'xdg-desktop-portal-kde: ScreenCast portal on KDE'
+    'vulkan-swrast: software Vulkan for old GPUs and VMs'
+    'ethtool: remote power-on NIC check'
+    'librsvg: SVG file-type icons in host drag preview images'
+)
+provides=('openuuyc')
+conflicts=('openuuyc' 'openuuyc-git')
+# The binary is built with debuginfo stripped and there is nothing to split.
+options=('!debug')
+install=openuuyc-bin.install
+# The release archive mirrors the repository layout (see linux-release.yml),
+# so one versioned download carries both binaries, the desktop files, the
+# systemd units and every license text, and makepkg's source cache never
+# mixes versions.
+_dir=OpenUUYC-${_tag#v}-x86_64-linux
+source=("${url}/releases/download/${_tag}/${_dir}.tar.zst")
+sha256sums=('SKIP')
+
+package() {
+    cd "$srcdir/$_dir"
+    install -Dm755 OpenUUYC "$pkgdir/usr/bin/OpenUUYC"
+    install -Dm644 packaging/linux/openuuyc.desktop \
+        "$pkgdir/usr/share/applications/openuuyc.desktop"
+    install -Dm644 assets/icon-256.png \
+        "$pkgdir/usr/share/icons/hicolor/256x256/apps/openuuyc.png"
+    install -Dm644 packaging/linux/60-openuuyc-uinput.rules \
+        "$pkgdir/usr/lib/udev/rules.d/60-openuuyc-uinput.rules"
+    # 登录自启的被控服务。它跟着 graphical-session.target 走，所以用户要自己
+    # `systemctl --user enable openuuyc.service`；装包时不能替用户 enable。
+    install -Dm644 packaging/linux/openuuyc.service \
+        "$pkgdir/usr/lib/systemd/user/openuuyc.service"
+    # 被控端加虚拟屏要写内核 VKMS 的 configfs，只有 root 能写，所以这是另一个按需
+    # 启动的系统服务：平时不跑，第一次用到时由套接字拉起（见 openuuyc-bin.install）。
+    install -Dm755 openuuyc-vkms "$pkgdir/usr/bin/openuuyc-vkms"
+    install -Dm644 packaging/linux/openuuyc-vkms.socket \
+        "$pkgdir/usr/lib/systemd/system/openuuyc-vkms.socket"
+    install -Dm644 packaging/linux/openuuyc-vkms.service \
+        "$pkgdir/usr/lib/systemd/system/openuuyc-vkms.service"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 THIRD_PARTY_NOTICES \
+        "$pkgdir/usr/share/licenses/$pkgname/THIRD_PARTY_NOTICES"
+    cp -r assets/licenses "$pkgdir/usr/share/licenses/$pkgname/licenses"
+}

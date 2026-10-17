@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     account::{auth::SecretEntry, reporting},
-    platform::windows::{device_profile, host_service::resident},
+    platform::{device_profile, host_service::resident},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

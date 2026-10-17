@@ -60,7 +60,7 @@ impl Worker {
         negotiated: Arc<crate::features::host::format::Negotiated>,
         transport: crate::features::host::transport::Transport,
         publication: tokio::sync::watch::Sender<Published>,
-        pointer: Arc<Mutex<Option<crate::platform::windows::cursor_shape::Snapshot>>>,
+        pointer: Arc<Mutex<Option<crate::platform::cursor_shape::Snapshot>>>,
     ) -> Result<Self> {
         let worker_started = Instant::now();
         let keyframe = Arc::new(AtomicBool::new(true));

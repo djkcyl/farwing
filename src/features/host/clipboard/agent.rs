@@ -2,9 +2,12 @@
 use super::wake::Wake;
 use super::{Clipboard, Settings, Status};
 use crate::features::drag_drop::{Endpoint, HostPolicy, Role};
+#[cfg(windows)]
 use crate::platform::windows::host_service::{pipe::Pipe, process, vault};
 use crate::protocol::peer_platform::PeerPlatform;
-use anyhow::{Result, ensure};
+use anyhow::Result;
+#[cfg(windows)]
+use anyhow::ensure;
 use serde::{Deserialize, Serialize};
 use std::{
     sync::{Arc, Mutex, mpsc},
@@ -12,6 +15,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[cfg(windows)]
 const PREFIX: &str = r"\\.\pipe\OpenUUYC.Clipboard.";
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Policy {
@@ -94,7 +98,7 @@ impl Backend {
         let wake = Arc::new(Wake::new()?);
         let worker_wake = wake.clone();
         let reported = status.clone();
-        let activity = crate::platform::windows::host_service::activity::Work::new();
+        let activity = crate::platform::host_service::activity::Work::new();
         let worker = tokio::task::spawn_blocking(move || {
             let _activity = activity;
             let result = worker(
@@ -107,6 +111,8 @@ impl Backend {
                 worker_wake,
             );
             if let Err(error) = result {
+                // The binding only sees its queue close; the cause is here.
+                tracing::warn!(error = %format!("{error:#}"), "host clipboard worker stopped");
                 *super::super::lock(&reported) = Status {
                     error: Some(error.to_string()),
                     ..Default::default()
@@ -372,7 +378,12 @@ fn worker(
     stop: CancellationToken,
     wake: Arc<Wake>,
 ) -> Result<()> {
+    // Linux has no system service yet: the clipboard always belongs to the
+    // desktop user's own process.
+    #[cfg(windows)]
     let system = vault::sid(std::process::id())? == "S-1-5-18";
+    #[cfg(not(windows))]
+    let system = false;
     let local = if system {
         None
     } else {
@@ -463,11 +474,12 @@ fn worker(
                 }
             }
             if !had_input && !had_output {
-                wake.wait(remote.as_ref().and_then(|r| r.wake.as_ref()))?;
+                wake.wait(remote.as_ref().and_then(Remote::wake))?;
             }
         }
         Ok(())
     })();
+    #[cfg(windows)]
     if let Some(remote) = remote {
         if result.is_ok() {
             let _ = super::frame::send(
@@ -491,12 +503,32 @@ fn worker(
     if stop.is_cancelled() { Ok(()) } else { result }
 }
 
+#[cfg(windows)]
 struct Remote {
     pipe: Pipe,
     wake: Option<Wake>,
     agent: crate::platform::windows::host_service::user_backend::Lease,
 }
+/// The SYSTEM service process, which must hand the clipboard to a user child.
+#[cfg(not(windows))]
+enum Remote {}
+#[cfg(not(windows))]
 impl Remote {
+    fn new(_stop: &CancellationToken) -> Result<Self> {
+        anyhow::bail!("Linux 没有系统服务进程")
+    }
+    fn exchange(&self, _request: Request, _stop: &CancellationToken) -> Result<Reply> {
+        match *self {}
+    }
+    fn wake(&self) -> Option<&Wake> {
+        match *self {}
+    }
+}
+#[cfg(windows)]
+impl Remote {
+    fn wake(&self) -> Option<&Wake> {
+        self.wake.as_ref()
+    }
     fn new(stop: &CancellationToken) -> Result<Self> {
         let name = format!("{PREFIX}{}", uuid::Uuid::new_v4().simple());
         let pipe = Pipe::server(&name, true)?;
@@ -540,6 +572,7 @@ impl Remote {
     }
 }
 
+#[cfg(windows)]
 pub(crate) fn run(name: &str, parent: u32) -> Result<()> {
     ensure!(
         name.starts_with(PREFIX) && name.len() < 150,
@@ -603,6 +636,13 @@ pub(crate) fn run(name: &str, parent: u32) -> Result<()> {
     result
 }
 
+/// An unlocked desktop. X11 cannot tell a screen locker from any other
+/// client, so only a session that reports itself locked is refused.
+#[cfg(not(windows))]
+pub(crate) fn desktop_available() -> bool {
+    crate::platform::capture::session_locked() != Some(true)
+}
+#[cfg(windows)]
 pub(crate) fn desktop_available() -> bool {
     use windows::Win32::{Foundation::HANDLE, System::StationsAndDesktops::*};
     if process::session(std::process::id()).ok() != Some(process::active_session()) {

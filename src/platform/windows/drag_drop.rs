@@ -39,6 +39,9 @@ pub(crate) struct Position {
     pub x: i32,
     pub y: i32,
 }
+/// The OLE loop of a drag handed off to the peer can be resumed when the
+/// drag re-enters the viewer (`NATIVE_RETURN`).
+pub(crate) const RETURN_CAPABLE: bool = true;
 pub(crate) fn left_held() -> bool {
     unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 }
 }
@@ -97,6 +100,26 @@ impl Shared {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.notify)(event)));
     }
 }
+/// Windows 上没有这条路。那边的拖放全是 OLE：由正在拖的那一方把数据交出去
+/// （见 `portal`），不存在「在指针底下摆个窗口去接住别人的拖放」这件事，也就
+/// 没有对应能力。它是个无值类型：共享代码两侧形状一致、调用处不必分平台，
+/// 却造不出一个假装能用的接取者。
+pub(crate) enum Catcher {}
+impl Catcher {
+    pub fn start(
+        _device: &str,
+        _size: (u32, u32),
+        _point: Position,
+        _allowed: Arc<dyn Fn() -> bool + Send + Sync>,
+        _notify: Arc<dyn Fn(portal::Event) + Send + Sync>,
+    ) -> Result<Self> {
+        anyhow::bail!("Windows 不在指针底下接取拖放")
+    }
+    pub fn cancel(&self) {
+        match *self {}
+    }
+}
+
 pub(crate) struct Session {
     shared: Arc<Shared>,
 }

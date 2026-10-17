@@ -8,6 +8,8 @@ use egui::{Align, Color32, FontId, RichText, Sense, Stroke, vec2};
 mod about;
 mod assist;
 mod assist_components;
+// Installing the service and drivers is part of the Windows setup.
+#[cfg(windows)]
 mod components;
 mod device_details;
 mod device_visuals;
@@ -21,6 +23,7 @@ mod port_mapping;
 mod power;
 mod remote_diagnostics;
 mod startup;
+mod terminal_sessions;
 mod update_dialog;
 mod wol_setup;
 
@@ -41,6 +44,7 @@ enum Page {
     Shortcuts,
     Logs,
     Plugins,
+    TerminalSessions,
     About,
 }
 impl Page {
@@ -56,6 +60,7 @@ impl Page {
             Self::Shortcuts => "快捷键设置",
             Self::Logs => "日志设置",
             Self::Plugins => "插件管理",
+            Self::TerminalSessions => "终端会话",
             Self::About => "关于",
         }
     }
@@ -63,6 +68,7 @@ impl Page {
 
 #[derive(Default)]
 pub(super) struct CenterUi {
+    #[cfg(windows)]
     pub(super) components: components::Manager,
     page: Page,
     device_lists: [devices::ListUi; 2],
@@ -140,6 +146,7 @@ enum Icon {
     Plugins,
     Keyboard,
     Diagnostics,
+    Terminal,
 }
 
 pub(super) fn configure_visuals(ctx: &egui::Context) {
@@ -165,6 +172,19 @@ fn paint_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: Color32) {
             ));
         }
         Icon::Keyboard => crate::ui::controls::paint_keyboard(p, rect, color),
+        Icon::Terminal => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, vec2(18.0, 14.0)),
+                2.0,
+                s,
+                egui::StrokeKind::Inside,
+            );
+            p.add(egui::Shape::line(
+                vec![q(-5.0, -3.0), q(-1.0, 0.0), q(-5.0, 3.0)],
+                s,
+            ));
+            p.line_segment([q(1.0, 3.0), q(5.0, 3.0)], s);
+        }
         Icon::Plugins => {
             crate::plugins::paint_plugin_icon(p, rect, color);
         }
@@ -653,6 +673,8 @@ impl DeviceCenterApp {
                     self.about_page(ui);
                 } else if self.center_ui.page == Page::Management {
                     self.management_page(ui);
+                } else if self.center_ui.page == Page::TerminalSessions {
+                    self.terminal_sessions_page(ui);
                 } else if matches!(self.center_ui.page, Page::Assist | Page::Favorites) {
                     self.assist_page(ui, self.center_ui.page == Page::Favorites);
                 } else {
@@ -738,6 +760,18 @@ impl DeviceCenterApp {
                 ) {
                     self.center_ui.page = Page::Management;
                 }
+                let terminals = crate::features::host::terminal::running();
+                ui.add_space(14.0);
+                ui.label(RichText::new("本机被控").small().color(MUTED));
+                if nav_item(
+                    ui,
+                    Icon::Terminal,
+                    "终端会话",
+                    (terminals > 0).then_some(terminals),
+                    self.center_ui.page == Page::TerminalSessions,
+                ) {
+                    self.center_ui.page = Page::TerminalSessions;
+                }
                 ui.add_space(14.0);
                 ui.label(RichText::new("远程协助").small().color(MUTED));
                 if nav_item(
@@ -821,11 +855,14 @@ impl DeviceCenterApp {
                 ui.with_layout(egui::Layout::bottom_up(Align::Min), |ui| {
                     self.draw_account_footer(ui);
                     ui.add_space(8.0);
-                    let active = self
-                        .host
-                        .as_ref()
-                        .is_some_and(|h| h.status().session_active);
-                    self.center_ui.components.button(ui, active);
+                    #[cfg(windows)]
+                    {
+                        let active = self
+                            .host
+                            .as_ref()
+                            .is_some_and(|h| h.status().session_active);
+                        self.center_ui.components.button(ui, active);
+                    }
                 });
             });
     }
@@ -1343,11 +1380,14 @@ impl DeviceCenterApp {
                         });
                 },
             );
-            let active = self
-                .host
-                .as_ref()
-                .is_some_and(|h| h.status().session_active);
-            self.center_ui.components.management(ui, active);
+            #[cfg(windows)]
+            {
+                let active = self
+                    .host
+                    .as_ref()
+                    .is_some_and(|h| h.status().session_active);
+                self.center_ui.components.management(ui, active);
+            }
         });
         if self.media != original_media {
             if let Err(error) = crate::media::preferences::save(self.media) {

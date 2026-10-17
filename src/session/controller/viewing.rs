@@ -20,8 +20,9 @@ pub async fn run_saved_viewer_window(
     alias: String,
     options: ConnectionMediaOptions,
     target_id: Option<String>,
+    force_takeover: bool,
 ) -> Result<()> {
-    run_viewer_window(alias, options, target_id, None, None).await
+    run_viewer_window(alias, options, target_id, None, None, force_takeover).await
 }
 
 pub(super) async fn run_viewer_window(
@@ -30,6 +31,7 @@ pub(super) async fn run_viewer_window(
     target_id: Option<String>,
     assist: Option<crate::account::assist::AssistRequest>,
     mut hosted: Option<windows::WindowContext>,
+    force_takeover: bool,
 ) -> Result<()> {
     let owns_presence = hosted.is_none();
     let background = hosted.as_ref().and_then(|h| h.background.clone());
@@ -61,6 +63,10 @@ pub(super) async fn run_viewer_window(
         .as_ref()
         .map(|h| (h.target.clone(), h.target.subscribe()))
         .unwrap_or_else(|| tokio::sync::watch::channel(None));
+    // Only a standalone `connect` process ends with its viewer. Once tokio
+    // listens for SIGTERM the default action is gone for the whole process,
+    // so a viewer hosted in the GUI must not, or the GUI would outlive it.
+    let terminate = owns_presence;
     let owner_task = tokio::spawn(async move {
         tokio::select! {
             biased;
@@ -68,6 +74,35 @@ pub(super) async fn run_viewer_window(
             _ = async {
                 if let Err(error) = tokio::signal::ctrl_c().await {
                     tracing::warn!(%error, "Ctrl+C listener unavailable");
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                owner_cancel.cancel();
+                let _ = close_sender.send(ViewerWindowEvent::Close);
+            },
+            // SIGTERM (例如 timeout、服务管理结束进程) 也走干净关闭：
+            // 数据通道正常关闭后主机立即释放会话，避免 ~40s 的
+            // keepalive 超时锁导致重连被"设备正在被其他设备使用"拒绝。
+            _ = async {
+                if !terminate {
+                    std::future::pending::<()>().await;
+                }
+                #[cfg(unix)]
+                {
+                    match tokio::signal::unix::signal(
+                        tokio::signal::unix::SignalKind::terminate(),
+                    ) {
+                        Ok(mut terminate) => {
+                            terminate.recv().await;
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "SIGTERM listener unavailable");
+                            std::future::pending::<()>().await;
+                        }
+                    }
+                }
+                #[cfg(not(unix))]
+                {
                     std::future::pending::<()>().await;
                 }
             } => {
@@ -93,6 +128,7 @@ pub(super) async fn run_viewer_window(
                 assist,
                 client: hosted.map(|h| h.client),
                 takeover,
+                force_takeover,
             },
             &task_cancel,
             &mut reporter,
@@ -115,7 +151,7 @@ pub(super) async fn run_viewer_window(
     let window_result = if let Some(key) = window_key {
         crate::ui::window_manager::viewer(
             key,
-            crate::application::viewer::windows_presenter::ConnectingWindowsRunConfig {
+            crate::application::viewer::presenter::ConnectingWindowsRunConfig {
                 alias,
                 progress: progress_receiver,
                 session: viewer_receiver,
@@ -152,6 +188,7 @@ pub(super) struct ViewerConnectionWindow {
     pub(super) target_id: Option<String>,
     pub(super) assist: Option<crate::account::assist::AssistRequest>,
     pub(super) takeover: Option<takeover::Approval>,
+    pub(super) force_takeover: bool,
 }
 
 pub(super) async fn run_viewer_connection_owner(
@@ -171,6 +208,7 @@ pub(super) async fn run_viewer_connection_owner(
         assist,
         client: hosted_client,
         takeover,
+        force_takeover,
     } = window;
     let presence_stop = CancellationToken::new();
     let mut presence_task = None;
@@ -181,7 +219,7 @@ pub(super) async fn run_viewer_connection_owner(
         let mut resolved = if let Some(request) = assist {
             cancellable(cancel, assist::resolve(client, &alias, options, request, Some(reporter))).await?
         } else {
-            cancellable(cancel, resolve_connection_with_client(client, &alias, options, Some(reporter), target_id.as_deref(), takeover)).await?
+            cancellable(cancel, resolve_connection_with_client(client, &alias, options, Some(reporter), target_id.as_deref(), takeover, force_takeover)).await?
         };
         // Standalone processes keep the host presence room (设备在线状态；
         // 被控权限开关已从界面移除，不开放被控). The account-ended token
@@ -279,7 +317,7 @@ pub(super) async fn run_viewer_connection_owner(
             // decoder replacement and shared file/port connections. Also keep it
             // across video/audio-only mode changes: display audio can disappear
             // when Windows idles the monitor. Each device owns its own request.
-            let power_request = match crate::platform::windows::power_request::Request::viewing() {
+            let power_request = match crate::platform::power_request::Request::viewing() {
                 Ok(request) => Some(request),
                 Err(error) => {
                     tracing::warn!(error = %format!("{error:#}"),
@@ -366,7 +404,7 @@ pub(super) async fn run_viewer_connection_owner(
                         // Revalidate the real ID while the old room continues playing.
                         let next = cancellable(cancel, resolve_connection_with_client(
                             Arc::clone(&resolved.client), &request.device.alias, options, None,
-                            Some(&request.device.device_id), request.takeover)).await;
+                            Some(&request.device.device_id), request.takeover, false)).await;
                         let next = match next {
                             Ok(next) => next,
                             Err(error) => {

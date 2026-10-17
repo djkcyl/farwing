@@ -94,13 +94,12 @@ impl AuthenticatedClient {
         api.set_bearer_token(Some(session.token()))?;
         let ended = CancellationToken::new();
 
-        let restore_trigger = if owned_device.is_some()
-            || crate::platform::windows::host_service::resident::is_owner()
-        {
-            RestoreTrigger::DeviceStartup
-        } else {
-            RestoreTrigger::ExplicitLogin
-        };
+        let restore_trigger =
+            if owned_device.is_some() || crate::platform::host_service::resident::is_owner() {
+                RestoreTrigger::DeviceStartup
+            } else {
+                RestoreTrigger::ExplicitLogin
+            };
         let account_name = Mutex::new(session.nickname().to_owned());
         Ok(Self {
             host,
@@ -286,9 +285,9 @@ impl AuthenticatedClient {
     }
 
     pub async fn logout(&self) -> LogoutOutcome {
-        if crate::platform::windows::host_service::resident::managed() {
-            let _ = crate::platform::windows::host_service::resident::request(
-                crate::platform::windows::host_service::resident::Request::Retire {
+        if crate::platform::host_service::resident::managed() {
+            let _ = crate::platform::host_service::resident::request(
+                crate::platform::host_service::resident::Request::Retire {
                     account: self.account_generation(),
                 },
             )

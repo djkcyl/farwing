@@ -101,7 +101,7 @@ impl Task {
         } else {
             None
         };
-        let activity = crate::platform::windows::host_service::activity::Work::new();
+        let activity = crate::platform::host_service::activity::Work::new();
         let progress = Arc::new(Mutex::new(Progress::default()));
         let worker_progress = progress.clone();
         let snapshot = super::logging::snapshot().context("日志系统尚未初始化")?;
@@ -137,9 +137,21 @@ fn cancelled(cancel: &AtomicBool) -> Result<()> {
     ensure!(!cancel.load(Ordering::Acquire), "已取消导出");
     Ok(())
 }
+/// Not a link: a reparse point on Windows; `symlink_metadata` already
+/// reports a symbolic link as such elsewhere.
+fn plain(m: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        m.file_attributes() & 0x400 == 0
+    }
+    #[cfg(not(windows))]
+    {
+        !m.file_type().is_symlink()
+    }
+}
 fn regular(path: &Path) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.file_attributes() & 0x400 == 0)
+    fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && plain(&m))
 }
 fn compressed_entry(name: &str, data: &[u8]) -> Result<Vec<u8>> {
     let mut zip = ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -187,14 +199,14 @@ fn export(
     cancelled(cancel)?;
     super::logging::sync_written();
     let mut roots = vec![snapshot.directory.clone()];
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        let path = PathBuf::from(local).join("OpenUUYC/logs");
+    if let Some(local) = crate::platform::paths::local_app_data() {
+        let path = local.join("OpenUUYC/logs");
         if path != snapshot.directory {
             roots.push(path);
         }
     }
-    if crate::platform::windows::host_service::vault::applies().unwrap_or(false) {
-        if let Ok(root) = crate::platform::windows::host_service::vault::root() {
+    if crate::platform::host_service::vault::applies().unwrap_or(false) {
+        if let Ok(root) = crate::platform::host_service::vault::root() {
             roots.push(root.join("logs"));
         }
     }
@@ -204,10 +216,7 @@ fn export(
     let mut candidates = Vec::new();
     for root in roots {
         cancelled(cancel)?;
-        use std::os::windows::fs::MetadataExt;
-        if !fs::symlink_metadata(&root)
-            .is_ok_and(|m| m.is_dir() && m.file_attributes() & 0x400 == 0)
-        {
+        if !fs::symlink_metadata(&root).is_ok_and(|m| m.is_dir() && plain(&m)) {
             continue;
         }
         let entries = match fs::read_dir(root) {
@@ -230,15 +239,18 @@ fn export(
             // Directory enumeration can retain a stale (even zero) length while
             // the logger keeps its write handle open. Capture length and identity
             // from a shared read handle, and keep it through rotation/deletion.
-            use std::os::windows::fs::OpenOptionsExt;
-            match OpenOptions::new()
-                .read(true)
-                .share_mode(1 | 2 | 4)
-                .custom_flags(0x00200000)
-                .open(&path)
+            let mut options = OpenOptions::new();
+            options.read(true);
+            #[cfg(windows)]
             {
+                use std::os::windows::fs::OpenOptionsExt;
+                options.share_mode(1 | 2 | 4).custom_flags(0x00200000);
+            }
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW);
+            match options.open(&path) {
                 Ok(file) => match file.metadata() {
-                    Ok(m) if m.is_file() && m.file_attributes() & 0x400 == 0 => {
+                    Ok(m) if m.is_file() && plain(&m) => {
                         let stamp = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                         candidates.push((stamp, path, m.len(), file));
                     }
@@ -252,7 +264,7 @@ fn export(
     candidates.dedup_by(|a, b| a.1 == b.1);
     progress.lock().unwrap_or_else(|e| e.into_inner()).stage = "正在读取硬件摘要".into();
     // Hardware collection is read-only and does not enumerate windows or capture content.
-    if let Ok(h) = crate::platform::windows::device_profile::Hardware::read() {
+    if let Ok(h) = crate::platform::device_profile::Hardware::read() {
         input.private_values.push(h.name);
         input.summary["hardware"] =
             json!({"os":h.os,"cpu":h.cpu,"base_board":h.base_board,"memory_mib":h.memory});
@@ -260,31 +272,34 @@ fn export(
         warnings.push("硬件摘要读取失败".into());
     }
     cancelled(cancel)?;
-    use crate::platform::windows::components::{self, Kind};
-    let mut components = serde_json::Map::new();
-    for (label, kind) in [
-        ("service", Kind::HostService),
-        ("input", Kind::InputDriver),
-        ("display", Kind::DisplayDriver),
-        ("audio", Kind::AudioDriver),
-    ] {
-        cancelled(cancel)?;
-        *progress.lock().unwrap_or_else(|e| e.into_inner()) = Progress {
-            stage: "正在检查组件状态".into(),
-            completed: components.len() as u64,
-            total: 4,
-        };
-        components.insert(
-            label.into(),
-            match components::status(kind) {
-                Ok(s) => json!({"installed":s.installed,"ready":s.ready,"status":s.label}),
-                Err(_) => json!({"status":"unavailable"}),
-            },
-        );
+    #[cfg(windows)]
+    {
+        use crate::platform::windows::components::{self, Kind};
+        let mut components = serde_json::Map::new();
+        for (label, kind) in [
+            ("service", Kind::HostService),
+            ("input", Kind::InputDriver),
+            ("display", Kind::DisplayDriver),
+            ("audio", Kind::AudioDriver),
+        ] {
+            cancelled(cancel)?;
+            *progress.lock().unwrap_or_else(|e| e.into_inner()) = Progress {
+                stage: "正在检查组件状态".into(),
+                completed: components.len() as u64,
+                total: 4,
+            };
+            components.insert(
+                label.into(),
+                match components::status(kind) {
+                    Ok(s) => json!({"installed":s.installed,"ready":s.ready,"status":s.label}),
+                    Err(_) => json!({"status":"unavailable"}),
+                },
+            );
+        }
+        input.summary["components"] = components.into();
     }
-    input.summary["components"] = components.into();
     input.summary["application"] = json!({"version":env!("CARGO_PKG_VERSION"),"architecture":std::env::consts::ARCH,"logging":snapshot.settings,"dropped_logs":snapshot.dropped});
-    for key in ["USERNAME", "USERPROFILE"] {
+    for key in ["USERNAME", "USERPROFILE", "USER", "HOME"] {
         if let Ok(value) = std::env::var(key) {
             input.private_values.push(value);
         }

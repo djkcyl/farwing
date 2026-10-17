@@ -1,8 +1,5 @@
 //! On-demand local setup. Cloud permission and relay permission are independent.
-use crate::{
-    platform::windows::{components, wol as network},
-    session::host_client::HostClient,
-};
+use crate::{platform::wol as network, session::host_client::HostClient};
 use anyhow::{Context, Result, ensure};
 pub(crate) use network::setup::{Adapter, AdapterKey};
 use serde::{Deserialize, Serialize};
@@ -174,8 +171,12 @@ async fn perform(
                     .find(|r| r.default_metric.is_some())
                     .map(|r| r.index)
             });
-            status.unattended =
-                components::status(components::Kind::HostService).is_ok_and(|s| s.ready);
+            #[cfg(windows)]
+            {
+                use crate::platform::windows::components;
+                status.unattended =
+                    components::status(components::Kind::HostService).is_ok_and(|s| s.ready);
+            }
             status.checked = true;
             status.enabled = None;
             status.enabled = Some(cloud?);
@@ -257,12 +258,9 @@ async fn perform(
             active(client, stop)?;
             // Only the validated portable account owner installs login startup,
             // after cloud confirmation. A rejected/stale GUI request has no side effects.
-            if !crate::platform::windows::host_service::resident::is_owner() {
-                crate::platform::windows::host_service::startup::set_image(
-                    true,
-                    &std::env::current_exe()?,
-                )
-                .context("云端开机许可已开启，但登录自启动设置失败")?;
+            if !crate::platform::host_service::resident::is_owner() {
+                crate::platform::host_service::startup::set_image(true, &std::env::current_exe()?)
+                    .context("云端开机许可已开启，但登录自启动设置失败")?;
             }
             client.host.wol.refresh();
             status.message = "已开启本设备远程开机；硬件实际唤醒仍取决于网卡和 BIOS".into();

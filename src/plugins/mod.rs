@@ -13,11 +13,18 @@ mod ui;
 pub mod video;
 mod watch;
 
+// The node-graph video pipeline is driven by the Windows player only; the
+// Linux player has no effect chain yet.
+#[cfg(windows)]
 pub(crate) use chain::Controller;
 pub(crate) use manager::Manager;
+#[cfg(windows)]
 pub(crate) use parameters::capturing as capturing_shortcut;
-pub(crate) use process::{Sample, Shared};
+#[cfg(windows)]
+pub(crate) use process::Sample;
+pub(crate) use process::Shared;
 pub(crate) use ui::paint_plugin_icon;
+#[cfg(windows)]
 pub(crate) use video::{ChainShared, Graph, Tap};
 
 use anyhow::{Context, Result, ensure};
@@ -88,10 +95,7 @@ pub(crate) fn root() -> Result<PathBuf> {
     if adjacent.is_dir() {
         return Ok(adjacent);
     }
-    Ok(
-        PathBuf::from(std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA unavailable")?)
-            .join("OpenUUYC/plugins"),
-    )
+    Ok(crate::platform::paths::require_local_app_data()?.join("OpenUUYC/plugins"))
 }
 pub(crate) fn open_folder(path: &Path) -> Result<()> {
     std::fs::create_dir_all(path)?;
@@ -100,27 +104,62 @@ pub(crate) fn open_folder(path: &Path) -> Result<()> {
     // Launch the resolved directory through ShellExecute instead of passing it
     // to explorer.exe as a child-process argument. Explorer may otherwise fall
     // back to its inherited working directory (typically C:\\Users\\<user>).
-    use std::os::windows::ffi::OsStrExt;
-    use windows::{
-        Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
-        core::{PCWSTR, w},
-    };
-    let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let result = unsafe {
-        ShellExecuteW(
-            None,
-            w!("open"),
-            PCWSTR(path.as_ptr()),
-            None,
-            None,
-            SW_SHOWNORMAL,
-        )
-    };
-    if result.0 as isize <= 32 {
-        anyhow::bail!("打开文件夹失败（{}）", result.0 as isize);
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::{
+            Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
+            core::{PCWSTR, w},
+        };
+        let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let result = unsafe {
+            ShellExecuteW(
+                None,
+                w!("open"),
+                PCWSTR(path.as_ptr()),
+                None,
+                None,
+                SW_SHOWNORMAL,
+            )
+        };
+        if result.0 as isize <= 32 {
+            anyhow::bail!("打开文件夹失败（{}）", result.0 as isize);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let status = std::process::Command::new("xdg-open")
+            .arg(&path)
+            .status()
+            .context("启动 xdg-open")?;
+        anyhow::ensure!(status.success(), "打开文件夹失败（{status}）");
     }
     Ok(())
 }
+
+/// Load a plugin library without letting it pull dependencies from elsewhere:
+/// Windows restricts the search path, Linux resolves eagerly into a local scope.
+pub(super) unsafe fn load_plugin_library(path: &Path) -> Result<libloading::Library> {
+    #[cfg(windows)]
+    {
+        // LOAD_WITH_ALTERED_SEARCH_PATH | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+        Ok(unsafe {
+            libloading::os::windows::Library::load_with_flags(path, 0x00000100 | 0x00000800)
+        }?
+        .into())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(unsafe {
+            libloading::os::unix::Library::open(
+                Some(path),
+                libloading::os::unix::RTLD_NOW | libloading::os::unix::RTLD_LOCAL,
+            )
+        }?
+        .into())
+    }
+}
+
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 80
@@ -327,11 +366,7 @@ fn load_module(group: &mut Group, m: Manifest) -> Result<usize> {
         library_path.starts_with(directory),
         "插件动态库超出自身目录"
     );
-    let library = unsafe {
-        libloading::os::windows::Library::load_with_flags(&library_path, 0x00000100 | 0x00000800)
-    }?
-    .into();
-    let library: libloading::Library = library;
+    let library: libloading::Library = unsafe { load_plugin_library(&library_path) }?;
     let api = if let Some(node) = &m.selected_node {
         let query: libloading::Symbol<sdk::NodeQuery> =
             unsafe { library.get(b"openuuyc_node_query_v1\0") }?;

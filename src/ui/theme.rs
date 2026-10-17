@@ -30,9 +30,14 @@ pub const CONNECTION_WALLPAPER_DIM: u8 = 166;
 pub const CONNECTION_WALLPAPER_DETAIL_DIM: u8 = 212;
 
 pub const BODY: f32 = 14.0;
+// The file send target window exists on Windows only.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const FILE_SEND_WIDTH: f32 = 380.0;
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const FILE_SEND_HEIGHT: f32 = 78.0;
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const FILE_SEND_ROW_HEIGHT: f32 = 26.0;
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const FILE_SEND_VISIBLE_ROWS: usize = 5;
 pub const COMPACT_TEXT: f32 = 13.0;
 pub const DIAGNOSTIC_POPUP_WIDTH: f32 = 320.0;

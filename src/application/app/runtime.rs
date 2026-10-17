@@ -111,9 +111,9 @@ pub(super) async fn gui_worker_loop(
     events: Sender<GuiEvent>,
     mut foreground: watch::Receiver<bool>,
 ) {
-    if crate::platform::windows::host_service::resident::managed() {
-        if let Err(error) = crate::platform::windows::host_service::resident::request(
-            crate::platform::windows::host_service::resident::Request::Resume,
+    if crate::platform::host_service::resident::managed() {
+        if let Err(error) = crate::platform::host_service::resident::request(
+            crate::platform::host_service::resident::Request::Resume,
         )
         .await
         {
@@ -159,7 +159,7 @@ pub(super) async fn gui_worker_loop(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut host_signal: Option<ActivePresence> = None;
     let mut presence_stopped = false;
-    let mut resident_mode = crate::platform::windows::host_service::resident::managed();
+    let mut resident_mode = crate::platform::host_service::resident::managed();
     let mut guest = guest::Guest::default();
     let mut guest_allowed = false;
 
@@ -184,7 +184,7 @@ pub(super) async fn gui_worker_loop(
         {
             host.assistance.touch_ui();
         }
-        let mode = crate::platform::windows::host_service::resident::managed();
+        let mode = crate::platform::host_service::resident::managed();
         if mode != resident_mode {
             stop_active_signal(&mut host_signal).await;
             guest.close().await;
@@ -201,15 +201,18 @@ pub(super) async fn gui_worker_loop(
                             .map(|c| crate::session::host_client::HostClient::from(c.clone()))
                             .or_else(|| guest.client.clone())
                     {
-                        let result =
-                            if crate::platform::windows::host_service::resident::managed() {
-                                crate::platform::windows::host_service::resident::request(
-                                crate::platform::windows::host_service::resident::Request::Assist {
-                                    account: current.generation(), action,
-                                }).await.map(|_| ())
-                            } else {
-                                current.host.assistance.act(action)
-                            };
+                        let result = if crate::platform::host_service::resident::managed() {
+                            crate::platform::host_service::resident::request(
+                                crate::platform::host_service::resident::Request::Assist {
+                                    account: current.generation(),
+                                    action,
+                                },
+                            )
+                            .await
+                            .map(|_| ())
+                        } else {
+                            current.host.assistance.act(action)
+                        };
                         if let Err(error) = result {
                             let _ = events.send(GuiEvent::HostAssistFailed {
                                 generation,
@@ -529,8 +532,8 @@ pub(super) async fn gui_worker_loop(
                 }
                 GuiCommand::PrepareExit => {
                     let update_exit = super::instance::take_update_exit();
-                    let result = if crate::platform::windows::host_service::resident::managed() {
-                        crate::platform::windows::host_service::resident::pause_for_exit()
+                    let result = if crate::platform::host_service::resident::managed() {
+                        crate::platform::host_service::resident::pause_for_exit()
                             .await
                             .map_err(|e| format!("{e:#}"))
                     } else if update_exit && let Some(current) = &client {

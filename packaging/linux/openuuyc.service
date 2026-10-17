@@ -1,0 +1,36 @@
+# 登录自启的被控服务，跟着图形会话走。
+#
+# 被控的画面、剪贴板与声音都来自合成器会话，所以这个单元不挂在 default.target
+# 上：没人登录时它没有被控可言，会话结束它也该停。这与 Sunshine 的 Linux 服务是
+# 同一个形态；「登录前被控」需要 KMS 抓屏或虚拟显示器，那是另一件事。
+#
+# 代价是桌面得自己接进 graphical-session.target（GNOME、KDE、uwsm 会；XFCE、MATE、
+# Cinnamon 与普通 X 会话不会），程序里的开关在那些桌面上改写 XDG 自启动条目
+# ~/.config/autostart/openuuyc.desktop，不用这个单元。
+#
+# 便携运行（没装包）时这份单元不存在，程序会按当前可执行文件在
+# ~/.config/systemd/user/ 里自己写一份同名单元，内容与这里一致。
+[Unit]
+Description=OpenUUYC 远程被控
+PartOf=graphical-session.target
+After=graphical-session.target xdg-desktop-portal.service
+# 程序不在时（例如已卸载，只剩这份写在 ~/.config 里的单元）跳过这次启动：
+# 条件不满足是 skipped 而不是 failed，Restart= 不会再试。
+ConditionFileIsExecutable=/usr/bin/OpenUUYC
+# 与 Sunshine 的用户单元相同：偶尔崩溃照样拉起，一启动就崩的约 25 秒后停下，
+# 不会无休止地重启、刷日志。
+StartLimitIntervalSec=500
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/OpenUUYC gui --background
+# 崩了自动回来；从托盘退出是正常退出，不会又被拉起来。
+Restart=on-failure
+RestartSec=5
+# 默认的 control-group 会把子进程一起杀掉：显示恢复守护（`process_group(0)`）
+# 本该跨崩溃活着，`xdg-open` 打开的浏览器也不该跟着退。
+KillMode=process
+
+[Install]
+WantedBy=graphical-session.target

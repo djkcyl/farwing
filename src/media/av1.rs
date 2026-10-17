@@ -42,6 +42,7 @@ pub(crate) fn format(data: &[u8]) -> Option<super::video_format::VideoFormatSign
     let w = s.max_width;
     let h = s.max_height;
     Some(super::video_format::VideoFormatSignature {
+        profile_idc: s.profile,
         coded_width: w,
         coded_height: h,
         visible_width: w,

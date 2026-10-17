@@ -109,6 +109,13 @@ pub(crate) fn window_icon() -> winit::window::Icon {
 }
 
 pub(crate) fn set_taskbar_icon(window: &winit::window::Window) {
-    use winit::platform::windows::WindowExtWindows;
-    window.set_taskbar_icon(Some(window_icon()));
+    #[cfg(windows)]
+    {
+        use winit::platform::windows::WindowExtWindows;
+        window.set_taskbar_icon(Some(window_icon()));
+    }
+    // X11 takes the icon from the window itself; Wayland matches the .desktop
+    // file by app id, which the event loop sets when the window is created.
+    #[cfg(not(windows))]
+    window.set_window_icon(Some(window_icon()));
 }

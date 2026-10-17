@@ -1,0 +1,150 @@
+name: Linux release
+
+# Builds the x86_64 binary on Arch (the distribution the AUR packages target)
+# and attaches it to the GitHub Release for the pushed tag, next to the .deb
+# that linux-deb.yml attaches to the same release. Tags are
+# v<Cargo version>-linux.<n>.
+#
+# `openuuyc-bin` downloads OpenUUYC-<version>-x86_64-linux.tar.zst, so the
+# archive name, its layout and the tag scheme (v<version>) are part of the
+# interface: keep them in sync with packaging/aur/openuuyc-bin/PKGBUILD.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  arch:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install build dependencies
+        run: |
+          # The rolling container image can be behind the keyring it needs to
+          # verify its own packages; refresh the keyring first.
+          pacman -Sy --noconfirm --needed archlinux-keyring
+          pacman -Su --noconfirm --needed
+          pacman -S --noconfirm --needed \
+            base-devel git pkg-config cmake clang nasm rust \
+            libva libx11 libxcb libxrandr libxi libxcursor libxfixes \
+            libxkbcommon libxkbcommon-x11 wayland libglvnd vulkan-icd-loader \
+            dbus alsa-lib openssl fuse3
+
+      - uses: actions/checkout@v7
+
+      # Rust and the Arch packages are baked into the container, but the
+      # crates.io index and compiled dependencies are worth caching between
+      # runs; a cold build of the media stack takes 20-40 minutes.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: arch-release-${{ hashFiles('Cargo.lock') }}
+          restore-keys: arch-release-
+
+      - name: Build
+        run: |
+          cargo build --release --locked --bin OpenUUYC
+          # 虚拟显示器辅助程序是独立的 crate（自己的 workspace 与 Cargo.lock），
+          # 产物落到同一个 target/，打包时只认一处。
+          (cd crates/vkms && CARGO_TARGET_DIR=../../target cargo build --release --locked)
+
+      - name: Verify the binary runs
+        run: ./target/release/OpenUUYC --version
+
+      - name: Assemble the release archive
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          stage="OpenUUYC-${version}-x86_64-linux"
+          mkdir -p "$stage"
+          # Same layout as the repository: install-omarchy.sh and the AUR
+          # binary package both read these paths from the unpacked archive.
+          install -Dm755 target/release/OpenUUYC "$stage/OpenUUYC"
+          install -Dm755 target/release/openuuyc-vkms "$stage/openuuyc-vkms"
+          install -Dm755 install-omarchy.sh "$stage/install-omarchy.sh"
+          for file in packaging/linux/openuuyc.desktop \
+            packaging/linux/60-openuuyc-uinput.rules \
+            packaging/linux/openuuyc.service \
+            packaging/linux/openuuyc-vkms.socket \
+            packaging/linux/openuuyc-vkms.service \
+            packaging/omarchy/omarchy-menu.jsonc assets/icon-256.png \
+            LICENSE THIRD_PARTY_NOTICES; do
+            install -Dm644 "$file" "$stage/$file"
+          done
+          cp -r assets/licenses "$stage/assets/licenses"
+          tar --zstd -cf "$stage.tar.zst" "$stage"
+          sha256sum "$stage.tar.zst" > "$stage.tar.zst.sha256"
+          install -Dm755 target/release/OpenUUYC OpenUUYC
+          ls -lh "$stage.tar.zst" OpenUUYC
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: openuuyc-arch
+          path: |
+            OpenUUYC-*-x86_64-linux.tar.zst
+            OpenUUYC-*-x86_64-linux.tar.zst.sha256
+            OpenUUYC
+          if-no-files-found: error
+
+  release:
+    needs: arch
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # linux-deb.yml also publishes to this tag; the shared group serializes
+    # them so the second run updates the existing release instead of racing it.
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: openuuyc-arch
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            OpenUUYC-*-x86_64-linux.tar.zst
+            OpenUUYC-*-x86_64-linux.tar.zst.sha256
+            OpenUUYC
+          # v<version>-linux.<n>: the Cargo version names the release, and an
+          # alpha, beta or rc version is published as a pre-release like upstream.
+          name: OpenUUYC ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          # Lists the fork PRs merged since the previous tag after the body.
+          generate_release_notes: true
+          # The LICENSE reserves all rights on original material and requires
+          # attribution and third-party notices; say so before anyone downloads.
+          body: |
+            Linux builds of the Linux port (x86_64, and arm64 as a .deb).
+
+            - `openuuyc_<version>_amd64.deb`, `openuuyc_<version>_arm64.deb` —
+              Debian/Ubuntu packages (22.04 and newer).
+            - `OpenUUYC` — the binary, built on Arch.
+            - `OpenUUYC-<version>-x86_64-linux.tar.zst` — the two binaries
+              (the client and the root virtual-display helper), with the
+              desktop entry, icon, uinput udev rule, systemd units, licenses
+              and `install-omarchy.sh` (x86_64). The AUR recipe
+              `packaging/aur/openuuyc-bin` installs this archive.
+
+            Host (被控) input on Wayland needs `/dev/uinput` access and an XDG
+            ScreenCast portal; see the README's Linux section.
+
+            Non-official, third-party client. Not affiliated with or endorsed by
+            NetEase. Read `LICENSE` and `THIRD_PARTY_NOTICES` before
+            redistributing.
+      - uses: actions/checkout@v7
+        with:
+          path: source
+          sparse-checkout: .github/scripts
+      - name: List the downloads in the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: source/.github/scripts/release-downloads.sh "${{ github.ref_name }}"

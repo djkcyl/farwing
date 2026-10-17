@@ -33,17 +33,15 @@ impl Pane {
         let places = if remote {
             Vec::new()
         } else {
-            use windows::Win32::UI::Shell::{
-                FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads,
-            };
+            use crate::features::file_transfer::storage::KnownFolder;
             [
-                ("桌面", FOLDERID_Desktop),
-                ("下载", FOLDERID_Downloads),
-                ("文档", FOLDERID_Documents),
+                ("桌面", KnownFolder::Desktop),
+                ("下载", KnownFolder::Downloads),
+                ("文档", KnownFolder::Documents),
             ]
             .into_iter()
             .filter_map(|(name, id)| {
-                crate::features::file_transfer::storage::known_folder(&id)
+                crate::features::file_transfer::storage::known_folder(id)
                     .map(|p| (name.into(), p.to_string_lossy().into_owned()))
             })
             .collect()
@@ -667,12 +665,14 @@ pub(super) fn show(
 }
 
 fn parent(path: &str) -> String {
-    if path == ":/" || path == "/" {
+    // A Unix host's root is `\` in wire shape (a Linux host, see
+    // `storage::wire_path`) or `/` (a macOS host, an older Linux one).
+    if path == ":/" || path == "/" || path == "\\" {
         return ":/".into();
     }
     let path = path.trim_end_matches(['\\', '/']);
     match path.rfind(['\\', '/']) {
-        Some(0) if path.starts_with('/') => "/".into(),
+        Some(0) if path.starts_with(['/', '\\']) => path[..1].into(),
         Some(i) if i == 2 && path.as_bytes().get(1) == Some(&b':') => path[..=i].into(),
         Some(i) if i > 1 => path[..i].into(),
         _ => ":/".into(),
@@ -687,13 +687,14 @@ fn breadcrumbs(path: &str, root: &str) -> Vec<(String, String)> {
     let sep = if path.contains('\\') { '\\' } else { '/' };
     let mut current = if path.starts_with("\\\\") {
         "\\\\".to_string()
-    } else if path.starts_with('/') {
-        "/".to_string()
+    } else if path.starts_with(['/', '\\']) {
+        // A single leading separator is a Unix host's root, in either shape.
+        path[..1].to_string()
     } else {
         String::new()
     };
-    if path == "/" {
-        result.push(("/".into(), "/".into()));
+    if path == "/" || path == "\\" {
+        result.push((path.into(), path.into()));
     }
     for segment in path.split(['\\', '/']).filter(|s| !s.is_empty()) {
         if !current.is_empty() && !current.ends_with(['\\', '/']) {
@@ -706,4 +707,65 @@ fn breadcrumbs(path: &str, root: &str) -> Vec<(String, String)> {
         result.push((segment.into(), current.clone()));
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn crumbs(path: &str) -> Vec<(String, String)> {
+        breadcrumbs(path, "R")
+    }
+    fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+        v.iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn unix_host_in_wire_shape() {
+        assert_eq!(parent("\\home\\u"), "\\home");
+        assert_eq!(parent("\\home\\u\\"), "\\home");
+        assert_eq!(parent("\\home"), "\\");
+        assert_eq!(parent("\\"), ":/");
+        assert_eq!(
+            crumbs("\\home\\u"),
+            pairs(&[("R", ":/"), ("home", "\\home"), ("u", "\\home\\u")])
+        );
+        assert_eq!(crumbs("\\"), pairs(&[("R", ":/"), ("\\", "\\")]));
+    }
+
+    #[test]
+    fn posix_paths_unchanged() {
+        assert_eq!(parent("/home/u"), "/home");
+        assert_eq!(parent("/home"), "/");
+        assert_eq!(parent("/"), ":/");
+        assert_eq!(
+            crumbs("/home/u"),
+            pairs(&[("R", ":/"), ("home", "/home"), ("u", "/home/u")])
+        );
+        assert_eq!(crumbs("/"), pairs(&[("R", ":/"), ("/", "/")]));
+    }
+
+    #[test]
+    fn windows_paths_unchanged() {
+        assert_eq!(parent("C:\\Users\\u"), "C:\\Users");
+        assert_eq!(parent("C:\\Users"), "C:\\");
+        assert_eq!(parent("C:\\"), ":/");
+        assert_eq!(parent("\\\\srv\\share\\d"), "\\\\srv\\share");
+        assert_eq!(
+            crumbs("C:\\Users\\u"),
+            pairs(&[
+                ("R", ":/"),
+                ("C:", "C:\\"),
+                ("Users", "C:\\Users"),
+                ("u", "C:\\Users\\u")
+            ])
+        );
+        assert_eq!(
+            crumbs("\\\\srv\\share"),
+            pairs(&[("R", ":/"), ("srv", "\\\\srv"), ("share", "\\\\srv\\share")])
+        );
+        assert_eq!(crumbs(":/"), pairs(&[("R", ":/")]));
+    }
 }

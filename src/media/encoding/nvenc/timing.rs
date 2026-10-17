@@ -1,8 +1,10 @@
 //! Bounded diagnostics for the driver's synchronous encode path. CPU call
 //! durations include any driver waits; conversion submission is not GPU time.
+//! The platform wrapper times its own input stages (0: conversion, 1: CUDA
+//! input); the shared session times mapping, encoding and the bitstream lock.
 use std::time::{Duration, Instant};
 
-pub(super) struct Frame {
+pub(crate) struct Frame {
     started: Instant,
     checkpoint: Instant,
     stages: [Duration; 5],
@@ -24,7 +26,7 @@ impl Frame {
 }
 
 #[derive(Default)]
-pub(super) struct Diagnostics {
+pub(crate) struct Diagnostics {
     last_report: Option<Instant>,
     slow_frames: u64,
     worst: Option<(Duration, [Duration; 5], Duration, bool)>,

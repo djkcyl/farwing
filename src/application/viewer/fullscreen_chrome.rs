@@ -1,5 +1,5 @@
 //! Fullscreen chrome floats over video; it never changes the video/input geometry.
-use super::chrome::{PlayerChromeAction, PlayerTitleBar, player_title_bar};
+//! Each player draws its own caption inside the floating bar.
 use crate::application::viewer_shortcuts::{self, Action};
 use crate::ui::{controls, theme};
 use std::time::{Duration, Instant};
@@ -8,7 +8,7 @@ const AUTO_COLLAPSE: Duration = Duration::from_millis(1500);
 const ENTRY_HINT: Duration = Duration::from_secs(7);
 
 #[derive(Default)]
-pub(super) struct FullscreenChrome {
+pub(in crate::application::viewer) struct FullscreenChrome {
     active: bool,
     expanded: bool,
     last_used: Option<Instant>,
@@ -17,7 +17,7 @@ pub(super) struct FullscreenChrome {
 }
 
 impl FullscreenChrome {
-    pub(super) fn menu_inset(&self, ctx: &egui::Context) -> f32 {
+    pub(in crate::application::viewer) fn menu_inset(&self, ctx: &egui::Context) -> f32 {
         if self.active {
             (ctx.content_rect().width() - floating_width(ctx)) / 2.0
         } else {
@@ -25,7 +25,7 @@ impl FullscreenChrome {
         }
     }
 
-    pub(super) fn sync(&mut self, active: bool) {
+    pub(in crate::application::viewer) fn sync(&mut self, active: bool) {
         if self.active == active {
             return;
         }
@@ -40,7 +40,11 @@ impl FullscreenChrome {
         }
     }
 
-    pub(super) fn owns_pointer(&self, ctx: &egui::Context, relative: bool) -> bool {
+    pub(in crate::application::viewer) fn owns_pointer(
+        &self,
+        ctx: &egui::Context,
+        relative: bool,
+    ) -> bool {
         // Game input keeps its locked cursor. The existing release-control
         // shortcut makes this UI reachable without changing fullscreen state.
         self.active
@@ -50,16 +54,20 @@ impl FullscreenChrome {
             })
     }
 
-    pub(super) fn show(
+    /// `menu_open` covers the player's own menus and `pending` any work the
+    /// caption shows in progress; both keep the bar expanded.
+    pub(in crate::application::viewer) fn show<R: Default>(
         &mut self,
         ctx: &egui::Context,
-        bar: PlayerTitleBar<'_>,
-    ) -> PlayerChromeAction {
+        relative: bool,
+        menu_open: bool,
+        pending: bool,
+        caption: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> R {
         let now = Instant::now();
-        let relative = bar.stream_control.mouse().relative_mode();
         let hovering = self.owns_pointer(ctx, relative);
-        let menu_open = bar.stream_control_ui.open || *bar.plugin_menu_open || ctx.any_popup_open();
-        let busy = menu_open || bar.screens.is_pending() || ctx.input(|i| i.pointer.any_down());
+        let menu_open = menu_open || ctx.any_popup_open();
+        let busy = menu_open || pending || ctx.input(|i| i.pointer.any_down());
         if hovering || busy {
             self.last_used = Some(now);
         }
@@ -71,7 +79,8 @@ impl FullscreenChrome {
                 ctx.request_repaint_after(AUTO_COLLAPSE - elapsed);
             }
         }
-        let mut action = PlayerChromeAction::default();
+        let mut action = R::default();
+        let mut caption = Some(caption);
         let width = floating_width(ctx);
         let surface_width = if self.expanded {
             width + 2.0 // popup frame stroke
@@ -95,7 +104,9 @@ impl FullscreenChrome {
                         .inner_margin(egui::Margin::symmetric(8, 4))
                         .show(ui, |ui| {
                             ui.set_width(width - 16.0);
-                            action = player_title_bar(ui, bar);
+                            if let Some(caption) = caption.take() {
+                                action = caption(ui);
+                            }
                         });
                 } else {
                     let (expand, hit_rect) = controls::viewer_fullscreen_handle(ui);

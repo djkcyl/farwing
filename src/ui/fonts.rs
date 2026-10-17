@@ -54,18 +54,44 @@ pub(crate) fn definitions() -> FontDefinitions {
     FONTS.clone()
 }
 
+/// Where the system keeps a font that covers Chinese, best first.
+fn system_cjk_candidates() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        let directory = std::env::var_os("WINDIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+            .join("Fonts");
+        ["msyh.ttc", "msyhbd.ttc", "simhei.ttf", "simsun.ttc"]
+            .into_iter()
+            .map(|name| directory.join(name))
+            .collect()
+    }
+    // Distributions place CJK fonts under a few well-known names; fontconfig
+    // is not linked in, so the list is walked directly.
+    #[cfg(not(windows))]
+    {
+        [
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/source-han-sans/SourceHanSans-Regular.otf",
+            "/usr/share/fonts/truetype/arphic/uming.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc",
+        ]
+        .into_iter()
+        .map(PathBuf::from)
+        .collect()
+    }
+}
+
 pub(crate) fn install(ctx: &egui::Context) {
     let mut fonts = definitions();
-    let directory = std::env::var_os("WINDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-        .join("Fonts");
-    let system = ["msyh.ttc", "msyhbd.ttc", "simhei.ttf", "simsun.ttc"]
+    let system = system_cjk_candidates()
         .into_iter()
-        .find_map(|name| {
-            let path = directory.join(name);
-            std::fs::read(&path).ok().map(|bytes| (path, bytes))
-        });
+        .find_map(|path| std::fs::read(&path).ok().map(|bytes| (path, bytes)));
     if let Some((path, bytes)) = system {
         let name = "system-cjk".to_owned();
         fonts

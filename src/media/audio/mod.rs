@@ -768,17 +768,21 @@ fn output_worker(shared: Arc<Shared>) {
         *lock(&shared.output_thread) = None;
         shared.started.store(false, Ordering::Release);
     });
-    if let Err(error) = crate::platform::windows::audio_thread::initialize() {
+    if let Err(error) = crate::platform::audio_thread::initialize() {
         let message = format!("初始化音频输出线程（COM MTA）失败：{error}");
         tracing::warn!(error = %message,
-            com_apartment = %crate::platform::windows::audio_thread::description(),
+            com_apartment = %crate::platform::audio_thread::description(),
             "audio output COM initialization failed");
         lock(&shared.status).failed(message, true);
         return;
     }
-    tracing::info!(com_apartment = %crate::platform::windows::audio_thread::description(),
+    tracing::info!(com_apartment = %crate::platform::audio_thread::description(),
         "audio output COM apartment initialized");
-    let host = cpal::default_host();
+    let mut host = cpal::default_host();
+    // The Linux PulseAudio host is one server connection for its lifetime;
+    // after a stream or enumeration failure the server may have restarted, so
+    // the next check connects again. Creating a WASAPI host is free.
+    let mut reconnect = false;
     let mut failed = Arc::new(OutputFailure::default());
     let mut stream = None;
     let mut current_id = None;
@@ -837,6 +841,10 @@ fn output_worker(shared: Arc<Shared>) {
             || generation != current_generation
             || (stream.is_none() && failures == 0 && shared.receiving.load(Ordering::Acquire))
         {
+            if reconnect || failed.error.get().is_some() {
+                host = cpal::default_host();
+                reconnect = false;
+            }
             let available = host.output_devices().map(|devices| {
                 devices
                     .filter_map(|device| {
@@ -853,11 +861,14 @@ fn output_worker(shared: Arc<Shared>) {
                     error: None,
                     loaded: true,
                 },
-                Err(error) => OutputDevices {
-                    error: Some(format!("读取输出设备失败：{error}")),
-                    loaded: true,
-                    ..Default::default()
-                },
+                Err(error) => {
+                    reconnect = true;
+                    OutputDevices {
+                        error: Some(format!("读取输出设备失败：{error}")),
+                        loaded: true,
+                        ..Default::default()
+                    }
+                }
             };
             {
                 let mut previous = lock(&shared.output_devices);
@@ -941,19 +952,20 @@ fn output_worker(shared: Arc<Shared>) {
                         stream = Some(output);
                         confirmed = false;
                         lock(&shared.status).device = name.clone();
-                        tracing::info!(device = %name, "native Opus audio output started");
+                        tracing::info!(device = %name, host = ?host.id(), "native Opus audio output started");
                     }
                     Err(error) => {
                         failures = failures.saturating_add(1);
                         let message = format!("{error:#}");
                         tracing::warn!(device = %name, endpoint = ?current_id,
                             attempt = failures, exhausted = failures >= 3, activation = "endpoint", error = %message,
-                            com_apartment = %crate::platform::windows::audio_thread::description(),
+                            com_apartment = %crate::platform::audio_thread::description(),
                             callback_error = ?failed.error.get(),
                             "audio output initialization failed");
                         // Failed initialization may have delivered a callback;
                         // its stream is already gone and must not fail the next one.
                         failed = Arc::new(OutputFailure::default());
+                        reconnect = true;
                         lock(&shared.status).failed(message, failures >= 3);
                         next_retry =
                             Instant::now() + Duration::from_secs(if failures >= 3 { 5 } else { 1 });

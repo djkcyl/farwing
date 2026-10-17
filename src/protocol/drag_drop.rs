@@ -6,6 +6,14 @@ const MAGIC: &[u8] = b"OUDD\x01";
 pub(crate) const MAX_PACKET: usize = 524288;
 pub(crate) const COPY: u32 = 1;
 pub(crate) const NATIVE_RETURN: u32 = 2;
+/// 收得下拖动预览图（`Payload::Image`）。它和 `NATIVE_RETURN` 是两回事：前者说
+/// 「认不认识、要不要这张图」，后者说「能不能把拖出去的东西再拖回来」。不认识的
+/// 对端会忽略这一位，所以加它不破坏线上兼容。
+///
+/// 它是本分支加的，上游还没登记，所以放在一个高位上：上游往后按顺序加的位（4、8……）
+/// 不会撞上它。撞上了，发送端就会把上游主控当成「收得下图」，又回到「未协商拖放
+/// 图像」整次失败的老路。
+pub(crate) const DRAG_IMAGE: u32 = 1 << 16;
 #[derive(Clone, PartialEq, Message)]
 pub(crate) struct Packet {
     #[prost(fixed64, tag = "1")]
@@ -174,4 +182,27 @@ fn validate(packet: &Packet) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 能力位各占一位，而且经得起一来一回的编解码。
+    #[test]
+    fn capability_bits_round_trip() {
+        assert_eq!(NATIVE_RETURN & DRAG_IMAGE, 0);
+        let bytes = encode(Packet {
+            token: 1,
+            drag: 0,
+            sequence: 0,
+            capabilities: DRAG_IMAGE | NATIVE_RETURN,
+            payload: Some(Payload::Hello(1)),
+        })
+        .unwrap();
+        let packet = decode(&bytes).unwrap().unwrap();
+        assert_eq!(packet.capabilities & DRAG_IMAGE, DRAG_IMAGE);
+        assert_eq!(packet.capabilities & NATIVE_RETURN, NATIVE_RETURN);
+        assert_eq!(packet.capabilities & !(DRAG_IMAGE | NATIVE_RETURN), 0);
+    }
 }

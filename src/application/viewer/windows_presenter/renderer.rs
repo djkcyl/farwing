@@ -7,7 +7,8 @@ use super::swapchain::{
 use crate::application::viewer::{DecodedVideoFrame, mutex_lock};
 use crate::media::decoder::RenderSurface;
 use crate::media::video_color::RenderColor;
-use crate::platform::graphics::{create_backbuffer, nonzero_size};
+use crate::platform::graphics::create_backbuffer;
+use crate::ui::gfx::nonzero_size;
 use anyhow::{Context, Result, bail};
 use std::collections::VecDeque;
 use std::sync::atomic::Ordering;

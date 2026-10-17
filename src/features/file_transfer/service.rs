@@ -917,6 +917,7 @@ fn pause_queued(repo: &Repository) -> Result<()> {
 
 pub(super) fn local_list(path: &str) -> Result<Vec<FileEntry>> {
     if path == ":/" {
+        #[cfg(windows)]
         let mut entries: Vec<_> = ('A'..='Z')
             .filter_map(|c| {
                 let path = format!("{c}:\\");
@@ -929,8 +930,17 @@ pub(super) fn local_list(path: &str) -> Result<Vec<FileEntry>> {
                 })
             })
             .collect();
+        // Unix has one tree; its root takes the place of the drive list.
+        #[cfg(not(windows))]
+        let mut entries = vec![FileEntry {
+            entry_type: 3,
+            name: "文件系统 (/)".into(),
+            full_path: "/".into(),
+            icon_type: "disk".into(),
+            ..Default::default()
+        }];
         entries.extend(
-            crate::platform::windows::file_locations::known_folders()
+            crate::platform::file_locations::known_folders()
                 .into_iter()
                 .map(|(path, name, icon)| FileEntry {
                     entry_type: 0,
@@ -947,15 +957,11 @@ pub(super) fn local_list(path: &str) -> Result<Vec<FileEntry>> {
     for e in std::fs::read_dir(root)? {
         let e = e?;
         let m = std::fs::symlink_metadata(e.path())?;
-        use std::os::windows::fs::MetadataExt;
+        let link = storage::is_link(&m);
         entries.push(FileEntry {
             entry_type: if m.is_dir() {
-                if m.file_attributes() & 0x400 != 0 {
-                    2
-                } else {
-                    0
-                }
-            } else if m.file_attributes() & 0x400 != 0 {
+                if link { 2 } else { 0 }
+            } else if link {
                 5
             } else {
                 4

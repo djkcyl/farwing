@@ -26,6 +26,7 @@ pub(crate) fn open(
             viewport,
             centered: true,
             notification: false,
+            floating: false,
         },
         factory: Box::new(move |ctx, _| {
             theme::configure(ctx);

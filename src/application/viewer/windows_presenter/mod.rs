@@ -33,7 +33,6 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 mod chrome;
 mod connection;
-mod fullscreen;
 mod player;
 mod renderer;
 mod worker;

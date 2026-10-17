@@ -1,0 +1,19 @@
+[package]
+name = "openuuyc-vkms"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license-file = "../../LICENSE"
+description = "OpenUUYC 的虚拟显示器辅助程序：以 root 建 VKMS 输出，客户端部分给主程序用"
+
+# 自成一体：主仓库没有 workspace 表，这里也不参与任何 workspace。
+[workspace]
+
+[dependencies]
+anyhow = "1.0"
+libc = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# 判定「这个 pid 属于一个活动会话吗」要问 systemd-logind，只有辅助程序用得到。
+# 特性必须和主程序保持一致：zbus 的 feature 是全局的，这里多开一个会改掉主程序的构建。
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }

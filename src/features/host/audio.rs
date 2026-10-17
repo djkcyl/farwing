@@ -233,14 +233,14 @@ impl Audio {
     }
     fn open(
         &self,
-        endpoint: &crate::platform::windows::loopback::Endpoint,
+        endpoint: &crate::platform::loopback::Endpoint,
         generation: u64,
         origin: Instant,
-    ) -> anyhow::Result<crate::platform::windows::loopback::Capture> {
+    ) -> anyhow::Result<crate::platform::loopback::Capture> {
         let source = self.clone();
         let clock = Mutex::new(None::<(Instant, u32)>);
         self.0.active.store(true, Ordering::Release);
-        let capture = crate::platform::windows::loopback::open(
+        let capture = crate::platform::loopback::open(
             endpoint,
             Arc::new(move |samples, at| {
                 if !source.current(generation) {
@@ -278,7 +278,7 @@ impl Audio {
         Ok(capture)
     }
     pub fn run(&self) {
-        use crate::platform::windows::loopback::{Capture, Devices, Endpoint};
+        use crate::platform::loopback::{Capture, Devices, Endpoint};
         let origin = Instant::now();
         let mut choice = self.0.lease.audio_device_changes();
         let mut selected_device = choice.borrow_and_update().clone();

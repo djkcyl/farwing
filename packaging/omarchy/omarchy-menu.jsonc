@@ -1,0 +1,18 @@
+{
+  // Add OpenUUYC to the Omarchy menu (Super + Space → Install → Service).
+  //
+  // Copy this file to ~/.config/omarchy/extensions/omarchy-menu.jsonc, or merge
+  // the single entry below into an existing extension. The shell watches the
+  // file, so no restart is needed.
+  //
+  // The entry follows the Omarchy convention for install rows: `disabled` (not
+  // `when`) so an installed OpenUUYC reads as installed rather than vanishing
+  // from the catalog. `omarchy-pkg-aur-add` installs from the AUR if missing.
+  "install.service.openuuyc": {
+    "icon": "",
+    "label": "UU Remote (OpenUUYC)",
+    "description": "Third-party UU Remote client with Wayland host support",
+    "disabled": "omarchy-pkg-present openuuyc-bin",
+    "action": "omarchy-launch-floating-terminal-with-presentation omarchy-pkg-aur-add openuuyc-bin",
+  },
+}

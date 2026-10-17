@@ -2,10 +2,9 @@
 use super::{pipe::Pipe, process, vault};
 use crate::{
     account::{
-        auth::{KeyringSessionStore, NativeIdentity, SessionStore},
+        auth::{KeyringSessionStore, SessionStore},
         client::AuthenticatedClient,
     },
-    features::host,
     session::{
         device_session::DeviceRuntime,
         host_client::HostClient,
@@ -13,7 +12,6 @@ use crate::{
     },
 };
 use anyhow::{Context, Result, ensure};
-use serde::{Deserialize, Serialize};
 use std::{
     sync::{
         Arc,
@@ -32,123 +30,8 @@ pub(crate) fn managed() -> bool {
     !is_owner() && vault::applies().unwrap_or(false)
 }
 
-#[derive(Serialize, Deserialize)]
-pub(crate) enum Request {
-    Resume,
-    Pause,
-    Quiescent,
-    DeploymentReady,
-    FinishMigration {
-        target: String,
-    },
-    PrepareUpdate,
-    CancelUpdate,
-    Snapshot {
-        ui: bool,
-        #[serde(default)]
-        device_cursor: Option<crate::account::device_change::relay::Cursor>,
-    },
-    Assist {
-        account: String,
-        action: host::assist::Action,
-    },
-    RefreshPublication,
-    RefreshWol,
-    WolSetup {
-        account: String,
-        action: host::wol::setup::Action,
-    },
-    Initialize {
-        force: bool,
-    },
-    Controllable(bool),
-    Name {
-        device: String,
-        value: String,
-    },
-    Settings {
-        account: String,
-        allowed: bool,
-        encoding: host::EncodingSettings,
-        audio_device: Option<host::audio::Device>,
-        audio_defaults: host::audio::DefaultDevices,
-        audio_quality: crate::media::audio::encoder::Quality,
-        assistance: host::assist::Settings,
-        clipboard: host::clipboard::Settings,
-        file_transfer: bool,
-        port_mapping: bool,
-        remote_power: bool,
-        wol: bool,
-    },
-    Disconnect {
-        account: String,
-        session: String,
-    },
-    Retry {
-        account: String,
-    },
-    Retire {
-        account: String,
-    },
-}
-#[derive(Serialize, Deserialize)]
-pub(crate) struct Snapshot {
-    #[serde(default)]
-    pub device_changes: Option<crate::account::device_change::relay::Batch>,
-    pub assistance: host::assist::Snapshot,
-    pub publication: crate::account::reporting::Snapshot,
-    pub account: String,
-    pub online: PresenceState,
-    pub allowed: bool,
-    pub encoding: host::EncodingSettings,
-    #[serde(default)]
-    pub audio_device: Option<host::audio::Device>,
-    #[serde(default)]
-    pub audio_defaults: host::audio::DefaultDevices,
-    #[serde(default)]
-    pub audio_quality: crate::media::audio::encoder::Quality,
-    #[serde(default)]
-    pub clipboard: host::clipboard::Settings,
-    #[serde(default)]
-    pub file_transfer: bool,
-    #[serde(default)]
-    pub port_mapping: bool,
-    #[serde(default)]
-    pub remote_power: bool,
-    #[serde(default)]
-    pub wol: bool,
-    pub status: host::Status,
-    pub capabilities: Option<host::desktop::Capabilities>,
-}
-#[derive(Serialize, Deserialize)]
-pub(crate) enum Reply {
-    Done,
-    Migration(crate::platform::windows::components::migration::Report),
-    Snapshot(Box<Snapshot>),
-    Identity(Box<NativeIdentity>),
-    Error(String),
-    ApiError { code: i32, message: String },
-}
-impl Reply {
-    fn from_error(error: anyhow::Error) -> Self {
-        match error.downcast::<crate::account::api::ApiFailure>() {
-            Ok(error) => Self::ApiError {
-                code: error.code,
-                message: error.message,
-            },
-            Err(error) => Self::Error(format!("{error:#}")),
-        }
-    }
-    pub fn checked(self) -> Result<Self> {
-        match self {
-            Self::Error(e) => anyhow::bail!(e),
-            Self::ApiError { code, message } => {
-                Err(crate::account::api::ApiFailure { code, message }.into())
-            }
-            other => Ok(other),
-        }
-    }
-}
+pub(crate) use crate::session::resident::{Reply, Request, Snapshot};
+
 pub(crate) fn call(request: Request) -> Result<Reply> {
     static CONTROL_CONNECTION: std::sync::Mutex<Option<Pipe>> = std::sync::Mutex::new(None);
     static INITIALIZER_CONNECTION: std::sync::Mutex<Option<Pipe>> = std::sync::Mutex::new(None);
@@ -808,6 +691,8 @@ async fn run_authorized_account(
                                     clipboard: current.host.clipboard_settings(),
                                     file_transfer: current.host.file_transfer_allowed(),
                                     port_mapping: current.host.port_mapping_allowed(),
+                                    terminal: current.host.terminal_allowed(),
+                                    terminal_local: current.host.terminal_local_allowed(),
                                     remote_power: current.host.power_allowed(),
                                     wol: current.host.wol_allowed(),
                                     status: current.host.status(),
@@ -836,6 +721,8 @@ async fn run_authorized_account(
                                     clipboard,
                                     file_transfer,
                                     port_mapping,
+                                    terminal,
+                                    terminal_local,
                                     remote_power,
                                     wol,
                                 } => {
@@ -850,6 +737,8 @@ async fn run_authorized_account(
                                     current.host.set_clipboard_settings(clipboard)?;
                                     current.host.set_file_transfer_allowed(file_transfer)?;
                                     current.host.set_port_mapping_allowed(port_mapping)?;
+                                    current.host.set_terminal_allowed(terminal)?;
+                                    current.host.set_terminal_local_allowed(terminal_local)?;
                                     current.host.set_power_allowed(remote_power)?;
                                     current.host.set_wol_allowed(wol)?;
                                     current.host.set_allowed(allowed);

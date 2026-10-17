@@ -212,7 +212,7 @@ impl Capture {
             Ok(Frame {
                 width: desc.Width,
                 height: desc.Height,
-                texture,
+                image: texture,
                 captured,
                 is_new: true,
                 _storage: None,

@@ -1,0 +1,13 @@
+[Unit]
+Description=OpenUUYC 虚拟显示器辅助程序套接字
+
+[Socket]
+# 路径是写死的：主程序也按这个路径找（见 crates/vkms/src/client.rs 的 SOCKET）。
+ListenStream=/run/openuuyc-vkms/control.sock
+# 谁能连不由文件权限决定，而是连上之后由辅助程序按「对端属于一个有活动图形会话的
+# 用户吗」来判（SO_PEERCRED + logind，见 crates/vkms/src/bin/openuuyc-vkms/peer.rs）。
+# 因此这里放开权限，包里既不用建组，也不用装 polkit 策略。
+SocketMode=0666
+
+[Install]
+WantedBy=sockets.target

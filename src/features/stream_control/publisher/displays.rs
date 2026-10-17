@@ -178,6 +178,94 @@ pub(crate) async fn receive_session(
                 request_id: h.request_id,
             });
             match request.payload {
+                Some(PbRpcRequestPayload::TerminalCheck(bytes)) => {
+                    // `terminal_check_env_req` asks whether this machine can
+                    // serve a terminal at all. The client retries on timeout
+                    // and shows `componentUnavailable` when it never hears
+                    // back, so this must answer even when the grant is off.
+                    #[derive(Clone, PartialEq, prost::Message)]
+                    struct CheckEnvReq {
+                        #[prost(uint64, tag = "1")]
+                        retry: u64,
+                    }
+                    let _ = CheckEnvReq::decode(bytes.as_slice())?;
+                    // A host that cannot serve a terminal says so; otherwise
+                    // the answer is the host's permission.
+                    let refusal = crate::features::host::terminal::unavailable().or_else(|| {
+                        (!session.authorization().terminal_allowed()).then_some("本机未允许终端")
+                    });
+                    let allowed = refusal.is_none();
+                    let resp = CheckEnvResp::result(refusal);
+                    // The controller only gets a reason code, so the readable
+                    // reason stays in the host's log.
+                    tracing::info!(
+                        allowed,
+                        reason = refusal.unwrap_or_default(),
+                        code = resp.code,
+                        "host terminal environment check answered"
+                    );
+                    return Ok(response(
+                        &message,
+                        header,
+                        PbRpcResponsePayload::TerminalCheckEnvRsp(resp.encode_to_vec()),
+                    ));
+                }
+                Some(PbRpcRequestPayload::TerminalRename(bytes)) => {
+                    #[derive(Clone, PartialEq, prost::Message)]
+                    struct RenameReq {
+                        // The controller sends the handle as a number; the
+                        // capture showed a varint where a string was expected.
+                        #[prost(uint32, tag = "1")]
+                        session_id: u32,
+                        #[prost(string, tag = "2")]
+                        new_name: String,
+                    }
+                    let request = RenameReq::decode(bytes.as_slice())?;
+                    // Renaming reaches the same sessions the frame handler
+                    // guards, so it checks the grant and the owner too, and a
+                    // refusal is answered so the controller is not left
+                    // waiting.
+                    let lease = session.authorization();
+                    let account = lease.account().to_owned();
+                    tracing::info!(
+                        session = request.session_id,
+                        "host terminal rename requested"
+                    );
+                    let result = if lease.terminal_allowed() {
+                        let sessions = session.terminal();
+                        let mut sessions = sessions.lock().unwrap_or_else(|e| e.into_inner());
+                        // The shells opened on this machine are renamed only
+                        // by a controller allowed to reach them.
+                        let owner = crate::features::host::terminal::Owner::new(
+                            &account,
+                            lease.terminal_local_allowed(),
+                        );
+                        sessions
+                            .rename(owner, request.session_id, &request.new_name)
+                            .map_err(|error| error.to_string())
+                    } else {
+                        Err("本机未允许终端".to_owned())
+                    };
+                    let (code, detail) = match &result {
+                        Ok(()) => (0, String::new()),
+                        Err(error) => (1, error.clone()),
+                    };
+                    if let Err(error) = &result {
+                        tracing::warn!(%error, "host terminal rename rejected");
+                    }
+                    return Ok(response(
+                        &message,
+                        header,
+                        PbRpcResponsePayload::TerminalRenameSessionRsp(
+                            RenameSessionResp {
+                                session_id: request.session_id,
+                                code,
+                                message: detail,
+                            }
+                            .encode_to_vec(),
+                        ),
+                    ));
+                }
                 Some(PbRpcRequestPayload::MouseSwitch(bytes)) => {
                     #[derive(Clone, PartialEq, prost::Message)]
                     struct Switch {
@@ -621,6 +709,60 @@ async fn apply_setting(
     Ok(errors)
 }
 
+/// The terminal environment check reply.
+///
+/// The controller requires `code == 0` **and** `message` to be exactly `"ok"`
+/// (a length-2 byte comparison); replying with only `code = 0` always takes
+/// its failure branch. The string is part of the wire contract, not a note
+/// for humans.
+#[derive(Clone, PartialEq, prost::Message)]
+struct CheckEnvResp {
+    #[prost(int32, tag = "1")]
+    code: i32,
+    #[prost(string, tag = "2")]
+    message: String,
+}
+
+impl CheckEnvResp {
+    /// The three answers the reference host gives: terminal available, no
+    /// terminal component on this machine, or the environment check failed.
+    fn result(refusal: Option<&'static str>) -> Self {
+        match refusal {
+            None => Self {
+                code: 0,
+                message: "ok".to_owned(),
+            },
+            Some(_) if crate::features::host::terminal::unavailable().is_some() => Self {
+                code: 5,
+                message: "terminal_component_unavailable".to_owned(),
+            },
+            Some(_) => Self {
+                code: 6,
+                message: "environment_check_failed".to_owned(),
+            },
+        }
+    }
+}
+
+/// The terminal rename reply, in the reference server's own descriptor:
+///
+/// ```text
+/// message RenameSessionResp {
+///   uint32 session_id = 1;
+///   int32  code       = 2;
+///   string message    = 3;
+/// }
+/// ```
+#[derive(Clone, PartialEq, prost::Message)]
+struct RenameSessionResp {
+    #[prost(uint32, tag = "1")]
+    session_id: u32,
+    #[prost(int32, tag = "2")]
+    code: i32,
+    #[prost(string, tag = "3")]
+    message: String,
+}
+
 fn report_display_result(result: &Result<()>) {
     if let Err(error) = result {
         tracing::warn!(%error,"host display operation rejected or failed");
@@ -668,4 +810,47 @@ fn configure_media(
         }
     }
     Ok(errors)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The handle goes first, then the code and the message, as the reference
+    /// descriptor numbers them.
+    #[test]
+    fn the_rename_reply_follows_the_reference_descriptor() {
+        let encoded = RenameSessionResp {
+            session_id: 7,
+            code: 1,
+            message: "x".to_owned(),
+        }
+        .encode_to_vec();
+        assert_eq!(encoded, [0x08, 7, 0x10, 1, 0x1a, 1, b'x']);
+    }
+
+    /// proto3 drops the default `code = 0`, so the success reply is only the
+    /// `message` field: `12 02 6f 6b`. The controller compares those two bytes
+    /// literally and treats anything else as a failed environment check.
+    #[test]
+    fn the_environment_check_success_reply_is_the_literal_ok() {
+        assert_eq!(
+            CheckEnvResp::result(None).encode_to_vec(),
+            [0x12, 0x02, b'o', b'k']
+        );
+    }
+
+    /// A refusal carries a machine-readable reason. `code = 5` means this
+    /// machine has no terminal backend; every other refusal is `code = 6`.
+    #[test]
+    fn a_refusal_names_the_reason() {
+        let encoded = CheckEnvResp::result(Some("本机未允许终端")).encode_to_vec();
+        if crate::features::host::terminal::unavailable().is_some() {
+            assert_eq!(encoded[..2], [0x08, 5]);
+            assert!(encoded.ends_with(b"terminal_component_unavailable"));
+        } else {
+            assert_eq!(encoded[..2], [0x08, 6]);
+            assert!(encoded.ends_with(b"environment_check_failed"));
+        }
+    }
 }

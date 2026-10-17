@@ -1,8 +1,15 @@
 //! Authenticated controlled-session input ownership.
 mod backend;
+// The installed Windows service's input agent, reached over a named pipe.
+#[cfg(windows)]
 pub(crate) mod broker;
 pub(crate) mod config;
+#[cfg(windows)]
 mod engine;
+#[cfg(target_os = "linux")]
+#[path = "engine_linux.rs"]
+mod engine;
+mod geometry;
 pub(crate) mod wire;
 
 use super::{Lease, lock};
@@ -19,7 +26,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-pub(crate) use engine::{Geometry, Screen};
+pub(crate) use geometry::{Geometry, Rect, Screen};
 
 // Drain only already queued movement. No batching timer, no summed relative
 // deltas, and no reordering across a key/button/contact boundary.
@@ -71,6 +78,8 @@ struct Gate {
     binding: u64,
     generation: u64,
     faulted: bool,
+    /// Why the last input was dropped, logged when it changes.
+    refused: Option<&'static str>,
     pending: VecDeque<Envelope>,
     executing: Option<(std::time::Instant, usize)>,
     last_execution: Duration,
@@ -144,7 +153,12 @@ impl Session {
         let state = shared.clone();
         let thread = std::thread::Builder::new()
             .name("host-input".into())
-            .spawn(move || run(state, rx))
+            .spawn(move || {
+                #[cfg(target_os = "linux")]
+                run(state, rx, crate::platform::linux::input::realign_channel());
+                #[cfg(not(target_os = "linux"))]
+                run(state, rx);
+            })
             .context("无法启动被控输入线程")?;
         Ok(Self {
             receiver: Receiver { shared, tx },
@@ -255,11 +269,27 @@ impl Receiver {
         if gate.drag_pointer && motion(&event) {
             return;
         }
-        if gate.stream.is_none()
-            || stream.is_some_and(|id| gate.stream != Some(id))
-            || gate.faulted
-            || !self.shared.permitted()
-        {
+        let refused = if gate.stream.is_none() {
+            Some("no input channel bound")
+        } else if stream.is_some_and(|id| gate.stream != Some(id)) {
+            Some("input on an unbound channel")
+        } else if gate.faulted {
+            Some("input generation faulted")
+        } else if !self.shared.permitted() {
+            Some("input not permitted")
+        } else {
+            None
+        };
+        if gate.refused != refused {
+            gate.refused = refused;
+            match refused {
+                Some(reason) => {
+                    tracing::warn!(reason, ?stream, bound = ?gate.stream, "host input dropped")
+                }
+                None => tracing::debug!(?stream, "host input accepted"),
+            }
+        }
+        if refused.is_some() {
             return;
         }
         let item = Envelope {
@@ -309,7 +339,11 @@ impl Shared {
             && self.connected.load(Ordering::Acquire)
     }
 }
-fn run(shared: Arc<Shared>, rx: mpsc::Receiver<()>) {
+fn run(
+    shared: Arc<Shared>,
+    rx: mpsc::Receiver<()>,
+    #[cfg(target_os = "linux")] realign: std::sync::mpsc::Receiver<()>,
+) {
     let mut engine: Option<Backend> = None;
     let mut generation = None;
     let mut require_service = false;
@@ -317,6 +351,7 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<()>) {
     let mut attempts = 0u8;
     let mut prepare_at = std::time::Instant::now();
     let mut configuration = shared.configuration.subscribe();
+    let mut skipped = None;
     while !shared.cancel.is_cancelled() && shared.lease.requested() {
         let (current, current_binding) = {
             let gate = lock(&shared.gate);
@@ -391,6 +426,24 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<()>) {
                 }
             }
         }
+        // 有人（Wayland 上摆好接取面的那条路）请指针在原地动一下：合成器只在指针
+        // 动过之后才重新判定指针底下是谁。见
+        // `platform::linux::input::realign_pointer`。这也是一次注入，所以和别的
+        // 输入一样要在许可之内（`generation` 只在许可之内才有值）；请求照样取走，
+        // 许可收回时不会攒到之后再报。
+        #[cfg(target_os = "linux")]
+        if realign.try_recv().is_ok()
+            && generation.is_some()
+            && let Some(engine) = engine.as_mut()
+        {
+            match engine.realign_pointer() {
+                Ok(true) => tracing::debug!("指针在原地重报了一次"),
+                Ok(false) => {
+                    tracing::debug!("指针不是经绝对指针摆的位置，接取面只能等合成器自己重判")
+                }
+                Err(error) => tracing::debug!(%error, "指针原地重报失败"),
+            }
+        }
         let mut item = lock(&shared.gate).pending.pop_front();
         if item.is_none() {
             if matches!(
@@ -423,10 +476,24 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<()>) {
         }
         if let Some(item) = item {
             let (item_generation, geometry, events) = lock(&shared.gate).batch(item);
-            if generation != Some(item_generation)
-                || !shared.permitted()
-                || geometry != (shared.geometry)()
-            {
+            let stale = if generation != Some(item_generation) {
+                Some("stale input generation")
+            } else if !shared.permitted() {
+                Some("input not permitted")
+            } else if geometry != (shared.geometry)() {
+                Some("screen layout changed")
+            } else if engine.is_none() {
+                Some("no input backend")
+            } else {
+                None
+            };
+            if stale != skipped {
+                skipped = stale;
+                if let Some(reason) = stale {
+                    tracing::warn!(reason, "host input skipped");
+                }
+            }
+            if stale.is_some() {
                 continue;
             }
             let Some(engine) = engine.as_mut() else {

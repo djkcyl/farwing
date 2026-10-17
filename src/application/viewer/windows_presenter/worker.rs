@@ -298,8 +298,7 @@ impl RenderWorker {
         if self.thread.is_none() {
             return;
         }
-        self.frame_wake.visible.store(false, Ordering::Release);
-        *mutex_lock(&self.frame_wake.render_thread) = None;
+        self.frame_wake.remove_render_thread(&self.wake);
         let _ = self.commands.send(RenderCommand::Stop);
         self.wake.unpark();
         if let Some(thread) = self.thread.take() {

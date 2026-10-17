@@ -128,7 +128,7 @@ const MAX_PENDING_KEYS: usize = 512;
 
 struct Router {
     installed: bool,
-    shortcut: Option<(u64, super::windows_presenter::ViewerShortcut)>,
+    shortcut: Option<(u64, super::presenter::ViewerShortcut)>,
     target: Option<Target>,
     // Ordered consumer state, seeded on acquisition; not physical-device truth.
     dispatch_down: [bool; 256],
@@ -211,7 +211,12 @@ fn keyboard_key(key: u16) -> bool {
         0xe6 | 0xe9..=0xfb | 0xfd..=0xfe)
 }
 
-fn intercept_key(key: u16, held: &[bool; 256], intercept_shortcuts: bool) -> bool {
+fn intercept_key(
+    key: u16,
+    held: &[bool; 256],
+    input: &RemoteInput,
+    intercept_shortcuts: bool,
+) -> bool {
     // Capture ordinary keys before local RegisterHotKey/IME handling can take
     // them away from the viewer. A list of known system chords misses arbitrary
     // application hotkeys (including single-key bindings such as PrintScreen).
@@ -220,11 +225,14 @@ fn intercept_key(key: u16, held: &[bool; 256], intercept_shortcuts: bool) -> boo
     if crate::application::viewer_shortcuts::suspended() || windows_state_key(key) {
         return false;
     }
+    if super::input_gate::intercepts_shortcuts(input, intercept_shortcuts) {
+        return true;
+    }
     let modifiers = u8::from(held[162] || held[163])
         | (u8::from(held[160] || held[161]) << 1)
         | (u8::from(held[164] || held[165]) << 2)
         | (u8::from(held[91] || held[92]) << 3);
-    intercept_shortcuts || crate::application::viewer_shortcuts::match_key(key, modifiers).is_some()
+    crate::application::viewer_shortcuts::match_key(key, modifiers).is_some()
 }
 
 pub(super) struct SessionNotifications {
@@ -690,7 +698,7 @@ impl Router {
             let route = if let Some(owner) = owner {
                 if self.target.as_ref().is_some_and(|t| {
                     t.input.keyboard_supported()
-                        && intercept_key(edge.key, &held, t.intercept_shortcuts)
+                        && intercept_key(edge.key, &held, &t.input, t.intercept_shortcuts)
                 }) {
                     Route::Hook(owner)
                 } else {
@@ -1147,7 +1155,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, message: WPARAM, data: LPARAM
     unsafe { CallNextHookEx(None, code, message, data) }
 }
 
-pub(super) fn take_shortcut(owner: u64) -> Option<super::windows_presenter::ViewerShortcut> {
+pub(super) fn take_shortcut(owner: u64) -> Option<super::presenter::ViewerShortcut> {
     with_router(|r| {
         if r.shortcut.is_some_and(|(id, _)| id == owner) {
             r.shortcut.take().map(|(_, command)| command)

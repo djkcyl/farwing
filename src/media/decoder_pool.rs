@@ -303,6 +303,7 @@ impl DecoderPool {
 
             if let Some(format) = format {
                 let supported = match entry.kind {
+                    #[cfg(windows)]
                     DecoderCandidate::WindowsD3d11 { .. } => {
                         (format.chroma_format_idc == 1
                             || matches!(self.codec, VideoCodec::H265 | VideoCodec::Av1)
@@ -311,6 +312,13 @@ impl DecoderPool {
                             && (format.bit_depth_luma == 8
                                 || matches!(self.codec, VideoCodec::H265 | VideoCodec::Av1)
                                     && format.bit_depth_luma == 10)
+                    }
+                    // The VA-API backend reads surfaces back as 8-bit NV12.
+                    #[cfg(not(windows))]
+                    DecoderCandidate::LinuxVaapi => {
+                        format.chroma_format_idc == 1
+                            && format.bit_depth_luma == 8
+                            && format.bit_depth_chroma == 8
                     }
                     DecoderCandidate::Software => {
                         openuuyc_codec::Format {

@@ -2,7 +2,6 @@ use super::super::service::PartialFile;
 use super::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::os::windows::fs::MetadataExt;
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Write},
@@ -29,7 +28,8 @@ pub(super) struct Store {
 impl Store {
     pub fn new(scope: &str) -> Result<Self> {
         ensure!(!scope.is_empty() && scope.len() <= 1024, "文件会话身份无效");
-        let directory = PathBuf::from(std::env::var_os("LOCALAPPDATA").context("用户目录不可用")?)
+        let directory = crate::platform::paths::local_app_data()
+            .context("用户目录不可用")?
             .join("OpenUUYC/file-receive")
             .join(format!("{:x}", Sha256::digest(scope)));
         let store = Self {
@@ -165,12 +165,41 @@ pub(super) fn local_path(value: &str) -> Result<PathBuf> {
 pub(super) fn directory(value: &str) -> Result<PathBuf> {
     storage::canonical_dir(&local_path(value)?)
 }
+/// The identity of a location in the busy set: Windows paths compare
+/// case-insensitively with `\\` separators, Unix paths exactly.
+fn busy_key(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        path.to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        let key = path.to_string_lossy();
+        let trimmed = key.trim_end_matches('/');
+        if trimmed.is_empty() { "/" } else { trimmed }.to_owned()
+    }
+}
+/// Whether `key` is `parent` or lies underneath it.
+fn within(key: &str, parent: &str) -> bool {
+    let separator = std::path::MAIN_SEPARATOR;
+    key == parent
+        || key.starts_with(&format!(
+            "{}{separator}",
+            parent.trim_end_matches(separator)
+        ))
+}
 fn parent_locks(path: &Path) -> Result<Vec<File>> {
     let parent = path.parent().context("不能修改磁盘根目录")?;
+    #[cfg(windows)]
     let root = PathBuf::from(format!(
         "{}:\\",
         path.to_string_lossy().as_bytes()[0] as char
     ));
+    #[cfg(not(windows))]
+    let root = PathBuf::from("/");
     let rel = path.strip_prefix(&root)?;
     ensure!(
         parent != path && rel.components().count() > 0,
@@ -210,16 +239,10 @@ pub(super) struct Reservation {
 }
 impl Reservation {
     pub fn acquire(store: Arc<Store>, root: &Path) -> Result<Self> {
-        let key = root
-            .to_string_lossy()
-            .replace('/', "\\")
-            .trim_end_matches('\\')
-            .to_lowercase();
+        let key = busy_key(root);
         let mut active = super::super::lock(&store.busy);
         ensure!(
-            !active.iter().any(|p| p == &key
-                || key.starts_with(&format!("{p}\\"))
-                || p.starts_with(&format!("{key}\\"))),
+            !active.iter().any(|p| within(&key, p) || within(p, &key)),
             "另一个文件操作正在使用该位置"
         );
         active.insert(key.clone());
@@ -258,6 +281,10 @@ pub(super) fn operation(
                     .collect();
                 let mut entries = super::super::service::local_list(&path)?;
                 Store::hide_temporary(&mut entries, &temporary);
+                // 对端（官方主控）要求拿到手的路径带反斜杠，见 `storage::wire_path`。
+                for entry in &mut entries {
+                    entry.full_path = storage::wire_path(&entry.full_path);
+                }
                 let (entries, dir_data) = if capabilities.compressed {
                     (Vec::new(), storage::compress(&DirectoryData { entries })?)
                 } else {
@@ -265,13 +292,7 @@ pub(super) fn operation(
                 };
                 Res::FileDirectory(FileDirectory {
                     id: v.id.clone(),
-                    // The official directory producer echoes the requested directory;
-                    // only its virtual default-directory alias resolves to a real path.
-                    path: if v.path == ":/Default" {
-                        path
-                    } else {
-                        v.path.clone()
-                    },
+                    path: reply_directory(&v.path, &path),
                     entries,
                     dir_data,
                     file_error: 1,
@@ -286,10 +307,10 @@ pub(super) fn operation(
                     let rel = storage::safe_relative(name)?;
                     ensure!(rel.components().count() == 1, "同名检查名称无效");
                     let p = root.join(rel);
-                    let key = p.to_string_lossy().to_lowercase();
+                    let key = busy_key(&p);
                     let busy = super::super::lock(&store.busy)
                         .iter()
-                        .any(|s| s == &key || key.starts_with(&format!("{s}\\")));
+                        .any(|s| within(&key, s));
                     results.push(FileExistResult {
                         name: name.clone(),
                         has_same: p.try_exists()?,
@@ -326,10 +347,9 @@ pub(super) fn operation(
                 }
                 Res::OperationResult(FileOperationResult {
                     file_error: 1,
-                    path: made
-                        .context("无法分配文件夹名称")?
-                        .to_string_lossy()
-                        .into_owned(),
+                    path: storage::wire_path(
+                        &made.context("无法分配文件夹名称")?.to_string_lossy(),
+                    ),
                     err_msg: String::new(),
                 })
             }
@@ -347,7 +367,7 @@ pub(super) fn operation(
                 std::fs::rename(&from, &to)?;
                 Res::OperationResult(FileOperationResult {
                     file_error: 1,
-                    path: to.to_string_lossy().into_owned(),
+                    path: storage::wire_path(&to.to_string_lossy()),
                     err_msg: String::new(),
                 })
             }
@@ -409,21 +429,30 @@ pub(super) fn operation(
         }
     }
 }
+/// The directory a `FileDirectory` reply names. The official directory producer
+/// echoes the requested directory; only its virtual default-directory alias
+/// resolves to a real path, which leaves in wire shape like every other path we
+/// hand out (see `storage::wire_path`), or the official controller would browse,
+/// go up and upload from a POSIX path it cannot split.
+fn reply_directory(requested: &str, resolved: &str) -> String {
+    if requested == ":/Default" {
+        storage::wire_path(resolved)
+    } else {
+        requested.to_owned()
+    }
+}
 fn remove_tree(path: &Path, stop: &CancellationToken, depth: usize) -> Result<()> {
     ensure!(
         !stop.is_cancelled() && depth < 128,
         "目录删除已取消或层级过深"
     );
     let m = std::fs::symlink_metadata(path)?;
-    ensure!(
-        m.is_dir() && m.file_attributes() & 0x400 == 0,
-        "删除目标不是普通目录"
-    );
+    ensure!(m.is_dir() && !storage::is_link(&m), "删除目标不是普通目录");
     let held = storage::parents(path, Path::new(".openuuyc-directory-lock"), false)?;
     for child in std::fs::read_dir(path)? {
         let p = child?.path();
         let m = std::fs::symlink_metadata(&p)?;
-        ensure!(m.file_attributes() & 0x400 == 0, "不能递归删除重解析点");
+        ensure!(!storage::is_link(&m), "不能递归删除重解析点或符号链接");
         if m.is_dir() {
             remove_tree(&p, stop, depth + 1)?
         } else {
@@ -435,4 +464,84 @@ fn remove_tree(path: &Path, stop: &CancellationToken, depth: usize) -> Result<()
     ensure!(!stop.is_cancelled(), "目录删除已取消");
     std::fs::remove_dir(path)?;
     Ok(())
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn busy_locations_nest_by_component() {
+        assert_eq!(busy_key(Path::new("/home/a/")), "/home/a");
+        assert_eq!(busy_key(Path::new("/")), "/");
+        assert!(within("/home/a/b", "/home/a"));
+        assert!(within("/home/a", "/home/a"));
+        assert!(!within("/home/ab", "/home/a"));
+        assert!(within("/home", "/"));
+        // Linux names are case-sensitive.
+        assert!(!within("/home/A", "/home/a"));
+    }
+
+    #[test]
+    fn default_directory_replies_in_wire_shape() {
+        assert_eq!(
+            reply_directory(":/Default", "/home/u/Downloads"),
+            "\\home\\u\\Downloads"
+        );
+        // Any other request is echoed as the peer sent it.
+        assert_eq!(reply_directory("\\home\\u", "/home/u"), "\\home\\u");
+        assert_eq!(reply_directory("/home/u", "/home/u"), "/home/u");
+        // A Windows host's resolved download folder is already in wire shape.
+        assert_eq!(
+            reply_directory(":/Default", "C:\\Users\\u\\Downloads"),
+            "C:\\Users\\u\\Downloads"
+        );
+    }
+}
+
+/// `storage::wire_path` is applied to every path a host hands out. On a Windows
+/// host those paths come from `dunce::canonicalize`, `read_dir`, the shell's known
+/// folders, drive roots and `local_path`, which joins component by component, so
+/// they hold no `/` and the replies are exactly what they were before.
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    fn unchanged(path: &str) {
+        assert_eq!(storage::wire_path(path), path, "{path}");
+    }
+
+    #[test]
+    fn host_replies_keep_their_shape() {
+        for entry in super::super::super::service::local_list(":/").unwrap() {
+            unchanged(&entry.full_path);
+        }
+        if let Ok(downloads) = directory(":/Default") {
+            let downloads = downloads.to_string_lossy();
+            assert_eq!(reply_directory(":/Default", &downloads), downloads);
+        }
+
+        let root = storage::canonical_dir(&std::env::temp_dir()).unwrap();
+        let dir = root.join(format!("openuuyc-wire-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a b.txt"), b"x").unwrap();
+        // A peer may send either separator; what we resolve and list is backslashed.
+        let sent = dir.to_str().unwrap().replace('\\', "/");
+        let resolved = directory(&sent).unwrap();
+        unchanged(&resolved.to_string_lossy());
+        let entries =
+            super::super::super::service::local_list(&resolved.to_string_lossy()).unwrap();
+        assert_eq!(entries.len(), 2);
+        for entry in entries {
+            unchanged(&entry.full_path);
+        }
+        // DirCreate and Rename reply with a path built from `directory`/`local_path`.
+        unchanged(&resolved.join("新建文件夹").to_string_lossy());
+        unchanged(
+            &local_path(&format!("{sent}/sub/renamed"))
+                .unwrap()
+                .to_string_lossy(),
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

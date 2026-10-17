@@ -33,6 +33,11 @@ fn registered() -> Result<bool> {
     Ok(true)
 }
 
+/// Windows 的登录自启是当前用户的 Run 项，不依赖桌面环境，永远可用。
+pub(crate) fn unavailable() -> Option<String> {
+    None
+}
+
 pub(crate) fn state() -> Result<State> {
     if !registered()? {
         return Ok(State::Disabled);

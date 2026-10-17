@@ -11,7 +11,7 @@ impl Store {
     pub(crate) fn new(account: &str, device: &str) -> Result<Self> {
         crate::account::api::validate_device_id(device)?;
         ensure!(!account.is_empty(), "无法确定规则所属账号");
-        let base = PathBuf::from(std::env::var_os("LOCALAPPDATA").context("本地设置目录不可用")?);
+        let base = crate::platform::paths::local_app_data().context("本地设置目录不可用")?;
         Ok(Self(
             base.join("OpenUUYC")
                 .join("port-mapping")

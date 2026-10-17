@@ -1,6 +1,6 @@
 //! Serial notification I/O, coalesced outside the UI and media threads.
 use super::{Action, Card, Mode};
-use crate::platform::windows::notifications::{Native, Toast, ToastAction};
+use crate::platform::notifications::{Native, Toast, ToastAction};
 use anyhow::{Context, Result};
 use std::sync::{Arc, Mutex, mpsc};
 
@@ -22,9 +22,7 @@ pub(super) struct Worker {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 fn path() -> Result<std::path::PathBuf> {
-    let base =
-        std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").context("无法确定通知设置目录")?);
-    anyhow::ensure!(base.is_absolute(), "通知设置目录无效");
+    let base = crate::platform::paths::local_app_data().context("无法确定通知设置目录")?;
     Ok(base.join("OpenUUYC").join("notifications.json"))
 }
 fn load() -> Result<Mode> {
@@ -147,7 +145,11 @@ impl Worker {
                             Toast {
                                 progress: c.transfer.as_ref().and_then(|t| t.progress),
                                 key: c.ticket.clone(),
-                                title: if c.connected {
+                                title: if c.connected && c.local_terminal {
+                                    "对方接入了你本机的终端会话".into()
+                                } else if c.connected && c.terminal {
+                                    "终端连接已建立".into()
+                                } else if c.connected {
                                     "远程连接已建立".into()
                                 } else {
                                     c.title.clone()
@@ -155,7 +157,11 @@ impl Worker {
                                 body: format!(
                                     "{}\n{}",
                                     c.body,
-                                    if c.expires_at == 0 && c.transfer.is_none() {
+                                    if c.local_terminal && c.connected {
+                                        "对方能看到并操作你在本机打开的终端，打开控制中心可断开。"
+                                    } else if c.terminal && c.connected {
+                                        "对方可在本机执行命令，打开控制中心可断开。"
+                                    } else if c.expires_at == 0 && c.transfer.is_none() {
                                         "打开控制中心查看当前连接状态。"
                                     } else {
                                         &c.detail

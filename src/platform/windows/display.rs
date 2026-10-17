@@ -130,23 +130,7 @@ pub(crate) mod recovery;
 pub(crate) mod topology;
 pub(crate) mod virtual_driver;
 
-/// A protocol source ID stays tied to the monitor interface for this process.
-/// Enumeration order and Windows DISPLAYn names can change after a hotplug.
-pub(crate) fn source_id(identity: &str) -> Result<i32> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    static IDS: OnceLock<Mutex<HashMap<String, i32>>> = OnceLock::new();
-    let mut ids = IDS
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if let Some(id) = ids.get(identity) {
-        return Ok(*id);
-    }
-    let id = i32::try_from(ids.len()).context("显示器标识已耗尽")?;
-    ids.insert(identity.to_owned(), id);
-    Ok(id)
-}
+pub(crate) use crate::media::capture::source_id;
 
 pub fn detect_local_display() -> Result<LocalDisplayInfo> {
     let displays = active_displays().context("failed to enumerate local displays")?;
@@ -177,6 +161,13 @@ pub fn detect_local_display() -> Result<LocalDisplayInfo> {
         height: display.height,
         refresh_hz,
     })
+}
+
+/// Windows has no separate compositor layout: the desktop a pointer moves in
+/// is what `EnumDisplayMonitors` already describes, so there is nothing to add
+/// to the rectangles the host aims with.
+pub(crate) fn compositor_layout() -> Option<std::sync::Arc<crate::platform::CompositorLayout>> {
+    None
 }
 
 /// Current active display dimensions offered by the UU controller. This is

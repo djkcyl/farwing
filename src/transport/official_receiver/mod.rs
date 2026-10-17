@@ -387,8 +387,25 @@ impl OfficialVideoReceiver {
         let now = Instant::now();
         // Decode release precedes a timeout at the same instant, as its deadline
         // is normally clamped to one millisecond before the timeout.
-        let frames = self.take_ready_frames(true);
+        let mut frames = self.take_ready_frames(true);
         let mut request_keyframe = false;
+        // 会话起点被扣住的帧（帧前缀等待 pre-window NACK 补传）每次 poll
+        // 重扫：补全后先于后续帧释放；宽限期过后放弃。
+        if self.packet_buffer.pending_rescan.is_some() {
+            let insert = PacketInsertResult {
+                frames: self.packet_buffer.rescan_pending(),
+                duplicate: false,
+                cleared: false,
+                parameter_rejected: false,
+            };
+            if !insert.frames.is_empty() {
+                let mut rescan = self.accept_insert(insert);
+                let scheduled = std::mem::take(&mut frames);
+                rescan.frames.extend(scheduled);
+                request_keyframe |= rescan.request_keyframe;
+                frames = rescan.frames;
+            }
+        }
         if now >= self.decode_timeout.deadline {
             self.decode_timeout.advance(now);
             request_keyframe = active && !receiving_keyframe;

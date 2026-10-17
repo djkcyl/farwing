@@ -14,6 +14,23 @@ use windows::{
     core::w,
 };
 
+/// Whether opening the bridge failed because the driver device is not there,
+/// as opposed to a driver that is present but failed to start.
+pub(crate) fn unavailable(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<windows::core::Error>()
+        .is_some_and(|e| {
+            [
+                ERROR_FILE_NOT_FOUND,
+                ERROR_PATH_NOT_FOUND,
+                ERROR_DEV_NOT_EXIST,
+                ERROR_DEVICE_NOT_CONNECTED,
+            ]
+            .iter()
+            .any(|code| e.code() == code.to_hresult())
+        })
+}
+
 pub(crate) const FRAMES: usize = 480;
 pub(crate) struct AudioPriority(HANDLE);
 impl AudioPriority {

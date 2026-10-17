@@ -12,6 +12,50 @@ autobins = false
 name = "OpenUUYC"
 path = "src/main.rs"
 
+# `cargo deb` (Linux only): the .deb the Linux workflow builds.
+[package.metadata.deb]
+name = "openuuyc"
+maintainer = "DoyoDia <79502694+DoyoDia@users.noreply.github.com>"
+copyright = "OpenUUYC contributors"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+Third-party client for UU Remote: sign in with an existing UU account, then \
+view and control remote devices or accept remote control of this desktop \
+(Xorg session)."""
+section = "net"
+priority = "optional"
+# `$auto` covers what the binary links; the windowing, graphics and audio
+# libraries below are loaded at run time and so are named by hand. FUSE
+# serves pasted and dropped remote files; the UI needs a CJK font.
+depends = """$auto, fuse3, libx11-6, libx11-xcb1, libxcursor1, libxrandr2, libxi6, \
+libxfixes3, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, \
+libvulkan1 | libegl1, \
+fonts-noto-cjk | fonts-wqy-microhei | fonts-arphic-uming"""
+# gio (libglib2.0-bin) and rsvg-convert (librsvg2-bin) draw the host's drag
+# preview images; without them a drag goes out with no image.
+recommends = "libpulse0, libpipewire-0.3-0, gnome-keyring | kwalletmanager, libglib2.0-bin, librsvg2-bin"
+suggests = "ethtool"
+assets = [
+    ["target/release/OpenUUYC", "usr/bin/", "755"],
+    # 被控端加虚拟屏要写 configfs，只有 root 能写，所以另有一个按需启动的系统服务。
+    # 它的两个单元由下面的 systemd-units 装进 /usr/lib/systemd/system。
+    ["target/release/openuuyc-vkms", "usr/bin/", "755"],
+    ["packaging/linux/openuuyc.desktop", "usr/share/applications/", "644"],
+    ["assets/icon-256.png", "usr/share/icons/hicolor/256x256/apps/openuuyc.png", "644"],
+    ["packaging/linux/60-openuuyc-uinput.rules", "usr/lib/udev/rules.d/", "644"],
+    ["packaging/linux/openuuyc.service", "usr/lib/systemd/user/", "644"],
+    ["README.md", "usr/share/doc/openuuyc/", "644"],
+    ["THIRD_PARTY_NOTICES", "usr/share/doc/openuuyc/", "644"],
+    ["assets/licenses/*", "usr/share/doc/openuuyc/licenses/", "644"],
+]
+# 只为 openuuyc-vkms 的两个单元生成维护者脚本（packaging/linux 里没有自己写的脚本）：
+# 卸载时停掉套接字与服务、daemon-reload，清除时清掉 enable 留下的链接；升级时只
+# try-restart 已经在跑的。enable/start 都关着——装包不会替用户把一个 root 服务开起来，
+# 要用虚拟屏的人自己 `systemctl enable --now openuuyc-vkms.socket`；以前 enable 过的，
+# 升级后保持 enable。
+maintainer-scripts = "packaging/linux"
+systemd-units = { unit-name = "openuuyc-vkms", enable = false, start = false }
+
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
@@ -27,8 +71,8 @@ egui = { version = "0.36.1", default-features = false, features = ["bytemuck"] }
 flate2 = "1.1.10"
 futures-util = "0.3.34"
 goog_cc = { path = "vendor/goog_cc" }
-openuuyc-amf-sys = { path = "vendor/amf-sys" }
-openuuyc-vpl-sys = { path = "vendor/vpl-sys" }
+# NVENC hardware encoding for the host role (driver library loaded at run time).
+openuuyc-nvenc-sys = { path = "vendor/nvenc-sys" }
 hmac = "0.12.1"
 hyper = { version = "1.11.1", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "tiff"] }
@@ -55,13 +99,24 @@ tracing = "0.1.44"
 tracing-appender = "0.2.4"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 url = "2.5.8"
-uuid = { version = "1.25.0", features = ["v4"] }
+uuid = { version = "1.25.0", features = ["v4", "v5"] }
 webrtc = { path = "vendor/webrtc" }
 webrtc-srtp = "0.17.2"
 yuv = "0.8.17"
 object = { version = "0.37.3", default-features = false, features = ["read_core", "std", "pe"] }
+openuuyc-plugin-api = { path = "plugins/sdk" }
+libloading = "0.8.9"
+openuuyc-codec = { path = "crates/codec" }
+egui-winit = { version = "0.36.1", default-features = false, features = ["clipboard", "links"] }
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 zip = { version = "8.6.0", default-features = false, features = ["zstd"] }
 regex = "1.13.1"
+
+# The host terminal keeps each session's screen as a terminal model rather
+# than a byte log, so a reattach replays what was on screen instead of
+# re-feeding raw output that may be cut mid-sequence. This is the upstream
+# crate the reference server's `vt100-psmux` fork is based on.
+vt100 = "0.16"
 
 [build-dependencies]
 cc = "1.2"
@@ -73,13 +128,10 @@ flate2 = "1.1.10"
 openuuyc-bootstrap = { path = "crates/bootstrap" }
 # Required by the generated code of #[windows::core::implement].
 windows-core = "0.62.2"
-openuuyc-plugin-api = { path = "plugins/sdk" }
-openuuyc-codec = { path = "crates/codec" }
-libloading = "0.8.9"
-openuuyc-nvenc-sys = { path = "vendor/nvenc-sys" }
+# The host role's Intel VPL and AMD AMF encoders beside NVENC.
+openuuyc-amf-sys = { path = "vendor/amf-sys" }
+openuuyc-vpl-sys = { path = "vendor/vpl-sys" }
 egui-directx11 = { path = "vendor/egui-directx11" }
-egui-winit = { version = "0.36.1", default-features = false, features = ["clipboard", "links"] }
-winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 windows = { version = "0.62.2", default-features = false, features = [
     "Foundation",
     "Data_Xml_Dom",
@@ -139,6 +191,65 @@ windows = { version = "0.62.2", default-features = false, features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Accessibility",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+glow = "0.17.0"
+# Local display geometry for the viewer, on X11 and Wayland alike.
+display-info = "0.5.9"
+# 被控端加虚拟屏要写 configfs，只有 root 能写，中间隔一个专用的辅助程序
+# （crates/vkms）。这里用的是它的客户端部分。
+openuuyc-vkms = { path = "crates/vkms" }
+cros-libva = { path = "vendor/cros-libva" }
+# The H.264 syntax and its error kinds for the VA-API slice parameters; the
+# software session itself goes through openuuyc-codec like on Windows.
+openuuyc-h264 = { path = "crates/codec/kernels/h264" }
+egui-wgpu = { version = "0.36.1", default-features = false }
+wgpu = { version = "30.0", default-features = false, features = ["vulkan", "gles", "wgsl"] }
+egui-winit = { version = "0.36.1", default-features = false, features = ["clipboard", "links", "x11", "wayland"] }
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
+arboard = { version = "3.6.1", default-features = false, features = ["image-data", "wayland-data-control"] }
+# Reading the clipboard's MIME types costs one Wayland round trip, where
+# `arboard`'s getters each open a connection and pull the whole payload. The
+# poll below checks the types first and only reads contents when they change.
+wl-clipboard-rs = { version = "0.9", default-features = false }
+# Wayland 文本输入：zwp_virtual_keyboard 允许自带 keymap，能输入键位表里没有的字符
+# （中文等）。XTest 只能影响 XWayland 客户端，uinput 又无法携带 keymap。
+wayland-client = { version = "0.31", default-features = false }
+wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client"] }
+# 被控绝对定位读 xdg_output 的逻辑布局；主控「拦截本机快捷键」用
+# zwp_keyboard_shortcuts_inhibit_v1 让合成器在播放窗口有键盘焦点时让出自己的
+# 快捷键（两者在 unstable 后面）；再次启动时用 xdg_activation_v1 凭启动令牌把
+# 已在运行的控制中心提到前台（staging）。
+wayland-protocols = { version = "0.32", default-features = false, features = ["client", "staging", "unstable"] }
+# wlr-screencopy, the compositor's own copy protocol: niri, wlroots and
+# everything built on them serve it, and unlike the portal it never asks the
+# local user for consent. The same crate also gives the layer shell, which the
+# Wayland drag-out catcher puts its transparent surface on.
+wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client"] }
+libc = "0.2"
+fuser = { version = "0.15", default-features = false }
+x11rb = { version = "0.13", features = ["dpms", "randr", "shm", "xfixes", "xtest"] }
+# Notification-area icon (StatusNotifierItem), the counterpart of the Windows tray.
+# zbus must stay on async-io: its tokio feature is global, and makes the
+# blocking Secret Service calls of the keyring panic inside our runtime.
+ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
+# Desktop notifications (org.freedesktop.Notifications), the counterpart of
+# Windows toasts; the same async-io zbus as above.
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
+# Host capture through the XDG ScreenCast portal (Wayland, and X11 on request).
+ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "screencast"] }
+pollster = "0.4"
+# Playback and microphone through the sound server's own protocol (PulseAudio,
+# or PipeWire's pulse service) on one connection, as Sunshine does; ALSA's
+# pulse plugin opens a new server connection for every device probe.
+# cpal::default_host() picks it when the server is there, ALSA otherwise.
+cpal = { version = "0.18.2", features = ["pulseaudio"] }
+
+# Only the host terminal exists on macOS so far. It needs no driver, no
+# display server and no encoder — a pty is the whole requirement — so libc
+# is the entire dependency set until the rest of the platform lands.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
 
 [patch.crates-io]
 dtls = { path = "vendor/dtls" }

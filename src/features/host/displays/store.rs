@@ -60,23 +60,22 @@ pub(super) struct Journal {
 }
 
 pub(super) fn root() -> Result<PathBuf> {
-    if crate::platform::windows::host_service::resident::is_owner()
-        || crate::platform::windows::host_service::vault::applies()?
+    // The installed service keeps display state in its protected vault.
+    if crate::platform::host_service::resident::is_owner()
+        || crate::platform::host_service::vault::applies()?
     {
-        return Ok(crate::platform::windows::host_service::vault::root()?.join("displays"));
+        return Ok(crate::platform::host_service::vault::root()?.join("displays"));
     }
     portable_root()
 }
 fn portable_root() -> Result<PathBuf> {
-    Ok(
-        PathBuf::from(std::env::var_os("LOCALAPPDATA").context("本地显示配置目录不可用")?)
-            .join("OpenUUYC/displays"),
-    )
+    Ok(crate::platform::paths::local_app_data()
+        .context("本地显示配置目录不可用")?
+        .join("OpenUUYC/displays"))
 }
 pub(super) fn transfer_preferences(to_service: bool) -> Result<()> {
     let portable = portable_root()?.join("preferences");
-    let service =
-        crate::platform::windows::host_service::vault::root()?.join("displays/preferences");
+    let service = crate::platform::host_service::vault::root()?.join("displays/preferences");
     let (from, to) = if to_service {
         (portable, service)
     } else {
@@ -85,7 +84,7 @@ pub(super) fn transfer_preferences(to_service: bool) -> Result<()> {
     if !from.exists() {
         return Ok(());
     }
-    use crate::platform::windows::components::files::reject_reparse;
+    use crate::platform::host_service::reject_reparse;
     reject_reparse(&from)?;
     for scope in fs::read_dir(from)? {
         let scope = scope?;
@@ -146,32 +145,46 @@ pub(super) fn write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         file.write_all(&serde_json::to_vec(value)?)?;
         file.sync_all()?;
         drop(file);
-        use windows::{
-            Win32::Storage::FileSystem::{
-                MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-            },
-            core::PCWSTR,
-        };
-        let wide = |p: &Path| {
-            p.as_os_str()
-                .to_string_lossy()
-                .encode_utf16()
-                .chain(Some(0))
-                .collect::<Vec<_>>()
-        };
-        let from = wide(&temp);
-        let to = wide(path);
-        unsafe {
-            MoveFileExW(
-                PCWSTR(from.as_ptr()),
-                PCWSTR(to.as_ptr()),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        }?;
-        Ok(())
+        replace(&temp, path)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     }
     result
+}
+
+/// Move `temp` over `path` atomically and durably.
+#[cfg(windows)]
+fn replace(temp: &Path, path: &Path) -> Result<()> {
+    use windows::{
+        Win32::Storage::FileSystem::{
+            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+        },
+        core::PCWSTR,
+    };
+    let wide = |p: &Path| {
+        p.as_os_str()
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(Some(0))
+            .collect::<Vec<_>>()
+    };
+    let from = wide(temp);
+    let to = wide(path);
+    unsafe {
+        MoveFileExW(
+            PCWSTR(from.as_ptr()),
+            PCWSTR(to.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    }?;
+    Ok(())
+}
+/// Move `temp` over `path` atomically and durably: rename(2) replaces in one
+/// step, and syncing the directory makes the new entry itself durable.
+#[cfg(not(windows))]
+fn replace(temp: &Path, path: &Path) -> Result<()> {
+    fs::rename(temp, path)?;
+    fs::File::open(path.parent().context("显示配置路径无效")?)?.sync_all()?;
+    Ok(())
 }

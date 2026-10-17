@@ -16,8 +16,7 @@ pub(crate) struct Report {
 pub(crate) fn destination(path: &str) -> Result<PathBuf> {
     ensure!(path.len() <= 32768 && !path.contains('\0'), "接收目录无效");
     if path.is_empty() {
-        storage::known_folder(&windows::Win32::UI::Shell::FOLDERID_Downloads)
-            .context("用户下载目录不可用")
+        storage::known_folder(storage::KnownFolder::Downloads).context("用户下载目录不可用")
     } else {
         storage::canonical_dir(&storage::local_path(path)?)
     }

@@ -1,0 +1,8 @@
+# Allow the active local session to inject input through /dev/uinput.
+#
+# The host (被控) role injects keyboard, mouse and touch through uinput so that
+# native Wayland clients and Hyprland itself receive them; XTest alone only
+# reaches XWayland clients. `uaccess` grants the seat's active user access
+# without adding anyone to the `input` group or requiring a re-login, which is
+# what systemd-logind already does for real input devices.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"

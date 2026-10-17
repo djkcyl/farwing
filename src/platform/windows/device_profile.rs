@@ -471,59 +471,16 @@ fn transcoded_source(bytes: &[u8]) -> Option<PathBuf> {
 
 pub(crate) fn wallpaper_image(source: &WallpaperSource) -> Result<Vec<u8>> {
     let user = WallpaperUser::enter()?;
+    let maximum = crate::platform::wallpaper::MAXIMUM_FILE;
     let mut bytes = Vec::new();
     std::fs::File::open(&source.path)?
-        .take(64 * 1024 * 1024 + 1)
+        .take(maximum + 1)
         .read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= 64 * 1024 * 1024, "壁纸文件过大");
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(16384);
-    limits.max_image_height = Some(16384);
-    limits.max_alloc = Some(256 * 1024 * 1024);
-    reader.limits(limits);
-    use image::ImageDecoder;
-    let mut decoder = reader.into_decoder()?;
-    let orientation = decoder.orientation()?;
-    let mut decoded = image::DynamicImage::from_decoder(decoder)?;
-    decoded.apply_orientation(orientation);
-    let jpeg = compose_wallpaper(decoded)?;
+    ensure!(bytes.len() as u64 <= maximum, "壁纸文件过大");
+    let jpeg = crate::platform::wallpaper::card(bytes)?;
     ensure!(
         wallpaper_source_inner(&user)? == *source,
         "壁纸在读取期间已改变"
     );
-    Ok(jpeg)
-}
-fn compose_wallpaper(decoded: image::DynamicImage) -> Result<Vec<u8>> {
-    // Device cards use 16:9: crop centrally without stretching the source.
-    // Use integer 16x9 units so both the crop and output have the exact ratio.
-    let units = (decoded.width() / 16).min(decoded.height() / 9);
-    ensure!(units > 0, "壁纸尺寸不足 16×9");
-    let (width, height) = (units * 16, units * 9);
-    let crop = decoded.crop_imm(
-        (decoded.width() - width) / 2,
-        (decoded.height() - height) / 2,
-        width,
-        height,
-    );
-    let mut wallpaper = if width > 3200 {
-        crop.resize_exact(3200, 1800, image::imageops::FilterType::Lanczos3)
-            .to_rgba8()
-    } else {
-        crop.to_rgba8()
-    };
-    let logo = image::load_from_memory(include_bytes!("../../../assets/icon-256.png"))?;
-    let size = (wallpaper.width() * 15 / 100).max(1);
-    let logo = logo
-        .resize_exact(size, size, image::imageops::FilterType::Lanczos3)
-        .to_rgba8();
-    let position = (
-        i64::from(wallpaper.width() - size - wallpaper.width() / 10),
-        i64::from(wallpaper.height() / 8),
-    );
-    image::imageops::overlay(&mut wallpaper, &logo, position.0, position.1);
-    let mut jpeg = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 88)
-        .encode_image(&image::DynamicImage::ImageRgba8(wallpaper).to_rgb8())?;
     Ok(jpeg)
 }

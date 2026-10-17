@@ -43,3 +43,22 @@ impl Screen {
             .unwrap_or_else(|| format!("显示器 {}", i64::from(self.id) + 1))
     }
 }
+
+/// A protocol source ID stays tied to the monitor interface for this process.
+/// Enumeration order and OS display names can change after a hotplug.
+pub(crate) fn source_id(identity: &str) -> anyhow::Result<i32> {
+    use anyhow::Context as _;
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static IDS: OnceLock<Mutex<HashMap<String, i32>>> = OnceLock::new();
+    let mut ids = IDS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(id) = ids.get(identity) {
+        return Ok(*id);
+    }
+    let id = i32::try_from(ids.len()).context("显示器标识已耗尽")?;
+    ids.insert(identity.to_owned(), id);
+    Ok(id)
+}

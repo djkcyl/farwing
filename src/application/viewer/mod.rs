@@ -26,27 +26,60 @@ mod stream_menu;
 
 mod annotation;
 mod display_transition;
+mod fullscreen_chrome;
+mod input_gate;
 mod polling_warning;
 
+#[cfg(windows)]
 mod windows_cursor;
 
+#[cfg(not(windows))]
+mod linux_drag;
+#[cfg(not(windows))]
+pub(crate) mod linux_keyboard;
+#[cfg(not(windows))]
+mod linux_keyboard_grab;
+#[cfg(not(windows))]
+mod linux_shortcuts;
+#[cfg(windows)]
 mod windows_keyboard;
 
+#[cfg(windows)]
 mod windows_drag;
+#[cfg(windows)]
 mod windows_mouse;
 
+#[cfg(windows)]
 pub(crate) mod windows_presenter;
+#[cfg(windows)]
+pub(crate) use windows_presenter as presenter;
+#[cfg(not(windows))]
+pub(crate) mod linux_presenter;
+#[cfg(not(windows))]
+pub(crate) use linux_presenter as presenter;
+
+/// Windows installs a low-level keyboard hook so system keys reach the remote
+/// desktop. On Linux each player window holds the desktop's shortcuts back
+/// itself (`linux_shortcuts`), so there is nothing process-wide to install.
 pub(crate) struct DesktopInputHook {
+    #[cfg(windows)]
     _hook: windows_keyboard::KeyboardHook,
 }
+#[cfg(windows)]
 pub(crate) fn desktop_input_message(message: *const std::ffi::c_void) -> bool {
     windows_keyboard::message(message) || windows_mouse::router().message(message)
 }
 pub(crate) fn desktop_input_hook() -> Result<DesktopInputHook> {
-    windows_keyboard::remove_unused_raw_keyboard()?;
-    windows_keyboard::KeyboardHook::install().map(|hook| DesktopInputHook { _hook: hook })
+    #[cfg(windows)]
+    {
+        windows_keyboard::remove_unused_raw_keyboard()?;
+        windows_keyboard::KeyboardHook::install().map(|hook| DesktopInputHook { _hook: hook })
+    }
+    #[cfg(not(windows))]
+    Ok(DesktopInputHook {})
 }
 
+#[cfg(windows)]
 mod windows_ui;
 
 const CONNECTION_PROGRESS_STEPS: u8 = 13;
@@ -132,7 +165,7 @@ pub(crate) fn run_connecting_viewer_window(
     display_sender: oneshot::Sender<ViewerDisplayHandle>,
 ) -> Result<()> {
     {
-        windows_presenter::run_connecting(windows_presenter::ConnectingWindowsRunConfig {
+        presenter::run_connecting(presenter::ConnectingWindowsRunConfig {
             alias,
             progress,
             session,
@@ -246,17 +279,33 @@ fn take_next_frame(
 struct FrameWake {
     visible: Arc<AtomicBool>,
 
-    render_thread: Arc<Mutex<Option<std::thread::Thread>>>,
+    /// 同一路解码器可能同时被多个窗口持有：屏被拖出成独立窗口之后，原窗口
+    /// 还没接上新屏的那一小段时间里，两边都看着同一个会话。
+    render_threads: Arc<Mutex<Vec<std::thread::Thread>>>,
 }
 
 impl FrameWake {
     fn install_render_thread(&self, thread: std::thread::Thread) {
-        *mutex_lock(&self.render_thread) = Some(thread);
+        let mut threads = mutex_lock(&self.render_threads);
+        if !threads.iter().any(|known| known.id() == thread.id()) {
+            threads.push(thread);
+        }
+        drop(threads);
         self.visible.store(true, Ordering::Release);
     }
 
+    /// 撤销这一个窗口的登记。最后一个窗口走了才把 `visible` 置回去，
+    /// 否则别的窗口就再也收不到解码帧了。
+    fn remove_render_thread(&self, thread: &std::thread::Thread) {
+        let mut threads = mutex_lock(&self.render_threads);
+        threads.retain(|known| known.id() != thread.id());
+        if threads.is_empty() {
+            self.visible.store(false, Ordering::Release);
+        }
+    }
+
     fn notify(&self) {
-        if let Some(thread) = mutex_lock(&self.render_thread).as_ref() {
+        for thread in mutex_lock(&self.render_threads).iter() {
             thread.unpark();
         }
     }
@@ -533,7 +582,7 @@ impl NativeViewerSession {
     }
 
     pub fn run(self) -> Result<()> {
-        windows_presenter::run(self)
+        presenter::run(self)
     }
 }
 

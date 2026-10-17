@@ -2,6 +2,9 @@ use crate::media::VideoCodec;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct VideoFormatSignature {
+    /// H.264 `profile_idc`, HEVC `general_profile_idc` or AV1 `seq_profile`. Decides which
+    /// hardware profile a backend has to ask the driver for.
+    pub profile_idc: u8,
     pub coded_width: u32,
     pub coded_height: u32,
     pub visible_width: u32,
@@ -229,6 +232,7 @@ pub(crate) fn parse_h264_sps(unit: &[u8]) -> Option<VideoFormatSignature> {
     };
     let frame_factor = if frame_mbs_only { 1 } else { 2 };
     make_signature(
+        profile_idc,
         coded_width,
         coded_height,
         crop_left_offset.checked_mul(sub_width)?,
@@ -268,7 +272,7 @@ pub(crate) fn parse_h265_sps(unit: &[u8]) -> Option<VideoFormatSignature> {
     let _sps_video_parameter_set_id = reader.read_bits(4)?;
     let max_sub_layers_minus1 = reader.read_bits(3)? as usize;
     let _sps_temporal_id_nesting_flag = reader.read_bit()?;
-    skip_h265_profile_tier_level(&mut reader, max_sub_layers_minus1)?;
+    let profile_idc = read_h265_profile_tier_level(&mut reader, max_sub_layers_minus1)?;
     let _sps_seq_parameter_set_id = reader.read_ue()?;
     let chroma_format_idc = reader.read_ue()?;
     let separate_colour_plane = chroma_format_idc == 3 && reader.read_bit()? != 0;
@@ -299,6 +303,7 @@ pub(crate) fn parse_h265_sps(unit: &[u8]) -> Option<VideoFormatSignature> {
         _ => return None,
     };
     make_signature(
+        profile_idc,
         coded_width,
         coded_height,
         left_offset.checked_mul(sub_width)?,
@@ -315,7 +320,18 @@ pub(crate) fn skip_h265_profile_tier_level(
     reader: &mut BitReader<'_>,
     max_sub_layers_minus1: usize,
 ) -> Option<()> {
-    reader.skip_bits(2 + 1 + 5 + 32 + 4 + 44 + 8)?;
+    read_h265_profile_tier_level(reader, max_sub_layers_minus1).map(|_| ())
+}
+
+/// Same walk as [`skip_h265_profile_tier_level`], returning `general_profile_idc`.
+pub(crate) fn read_h265_profile_tier_level(
+    reader: &mut BitReader<'_>,
+    max_sub_layers_minus1: usize,
+) -> Option<u8> {
+    // general_profile_space(2) + general_tier_flag(1)
+    reader.skip_bits(2 + 1)?;
+    let general_profile_idc = u8::try_from(reader.read_bits(5)?).ok()?;
+    reader.skip_bits(32 + 4 + 44 + 8)?;
     let mut profile_present = [false; 7];
     let mut level_present = [false; 7];
     for index in 0..max_sub_layers_minus1 {
@@ -333,11 +349,12 @@ pub(crate) fn skip_h265_profile_tier_level(
             reader.skip_bits(8)?;
         }
     }
-    Some(())
+    Some(general_profile_idc)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn make_signature(
+    profile_idc: u8,
     coded_width: u32,
     coded_height: u32,
     crop_left: u32,
@@ -354,6 +371,7 @@ fn make_signature(
         return None;
     }
     Some(VideoFormatSignature {
+        profile_idc,
         coded_width,
         coded_height,
         visible_width,

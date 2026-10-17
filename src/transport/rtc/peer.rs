@@ -1,7 +1,7 @@
 use super::channels::{DATA_CHANNEL_LABELS, DataChannels, official_data_channel_init};
 use super::clock::{RemoteNtpEstimator, observe_remote_ntp};
 use super::core::ConnectionCore;
-use super::feedback::{RTP_DEFAULT_RTT, send_picture_loss_indication};
+use super::feedback::{RTP_DEFAULT_RTT, send_full_intra_request, send_picture_loss_indication};
 use super::negotiation::{
     UU_LOCAL_SEND_START_BPS, candidate_is_relay, negotiated_mixed_kcp_version, register_uu_codecs,
     register_uu_header_extensions, remove_relay_candidates_from_sdp,
@@ -570,7 +570,10 @@ impl NativePeer {
     }
 
     pub async fn request_keyframe(&self, media_ssrc: u32) -> Result<()> {
-        send_picture_loss_indication(&self.core.connection, media_ssrc).await
+        // 同时发 PLI 与 FIR：部分 host（macOS）只对 FIR 生成关键帧。
+        let pli = send_picture_loss_indication(&self.core.connection, media_ssrc).await;
+        let fir = send_full_intra_request(&self.core.connection, media_ssrc).await;
+        pli.and(fir)
     }
 
     pub async fn next_connection_state(&self) -> Option<RTCPeerConnectionState> {

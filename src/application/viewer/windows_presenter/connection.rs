@@ -578,7 +578,7 @@ impl WindowsConnectionApp {
         );
         let surface_writer = crate::platform::surface::D3D11SurfaceWriter::new()?;
         let (renderer_device, renderer_context) = surface_writer.create_renderer_device()?;
-        let presenter = UiPresenter::new(window, renderer_device, renderer_context)?;
+        let presenter = UiPresenter::from_device(window, renderer_device, renderer_context)?;
         Ok((
             Self {
                 audio: None,

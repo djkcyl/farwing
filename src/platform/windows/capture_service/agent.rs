@@ -136,7 +136,7 @@ pub(crate) fn run(name: &str, parent: u32) -> Result<()> {
             let Some(frame) = frame else { return Ok(()) };
             let mut desc = D3D11_TEXTURE2D_DESC::default();
             unsafe {
-                frame.texture.GetDesc(&mut desc);
+                frame.image.GetDesc(&mut desc);
             }
             let layout = Layout {
                 width: desc.Width,
@@ -164,7 +164,7 @@ pub(crate) fn run(name: &str, parent: u32) -> Result<()> {
             };
             let gpu = unsafe { capture.device.GetImmediateContext()? };
             unsafe {
-                gpu.CopyResource(&surface.texture, &frame.texture);
+                gpu.CopyResource(&surface.texture, &frame.image);
                 gpu.Flush();
             }
             guard.release(1)?;

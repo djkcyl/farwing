@@ -180,7 +180,8 @@ pub(crate) fn start(
     };
     tokio::spawn(async move {
         let _done = done.clone().drop_guard();
-        let outcome = super::run_viewer_window(alias, options, id, assist, Some(context)).await;
+        let outcome =
+            super::run_viewer_window(alias, options, id, assist, Some(context), false).await;
         *lock(&job_result) = Some(ViewerEnd::from_result(outcome, options.audio_only));
         done.cancel();
         let _ = information.await;

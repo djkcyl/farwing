@@ -424,6 +424,9 @@ struct PendingCapturePreferences {
 struct StreamControlState {
     peer_clipboard: i32,
     clipboard_files_allowed: bool,
+    /// Last reported value of the clipboard gate, so the diagnostic only fires
+    /// when it changes.
+    clipboard_ready_reported: bool,
     remote_upgrade: Option<crate::features::remote_upgrade::RemoteUpgrade>,
     annotation: annotation::Annotation,
     annotation_extension: Option<u64>,
@@ -436,6 +439,10 @@ struct StreamControlState {
         tokio::sync::watch::Sender<Option<crate::features::viewing_settings::DevicePreferences>>,
     device_persistence_error: Option<String>,
     restore_input_pending: bool,
+    #[allow(
+        dead_code,
+        reason = "Smart mouse waits for special_game_mouse instead of inferring from a hidden cursor."
+    )]
     remote_cursor: crate::features::remote_cursor::RemoteCursorState,
     peer_mouse_relative: Option<bool>,
     cursor_sync_needed: bool,
@@ -505,6 +512,7 @@ impl StreamControlHandle {
         let state = StreamControlState {
             peer_clipboard: 0,
             clipboard_files_allowed: true,
+            clipboard_ready_reported: false,
             remote_upgrade: None,
             annotation: Default::default(),
             annotation_extension: None,
@@ -638,12 +646,15 @@ impl StreamControlHandle {
     pub(crate) fn clipboard(&self) -> &crate::features::clipboard::Clipboard {
         &self.clipboard
     }
+    // Dropping files onto the remote screen is offered by the Windows viewer only.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn official_file_drop_available(&self) -> bool {
         feature_supported(
             &lock(&self.shared),
             crate::account::feature_ability::Feature::FileDrop,
         ) && self.clipboard.drop_available()
     }
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn drop_files(
         &self,
         paths: Vec<std::path::PathBuf>,

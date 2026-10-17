@@ -352,6 +352,9 @@ pub(super) struct PbRpcResponse {
     pub(super) response_header: Option<PbResponseHeader>,
     #[prost(
         oneof = "PbRpcResponsePayload",
+        // The list has to name every tag the oneof can carry. 25 is skipped
+        // in the reference schema, so 26 has to be spelled out here too or
+        // prost rejects the variant.
         tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26"
     )]
     pub(super) payload: Option<PbRpcResponsePayload>,
@@ -403,10 +406,12 @@ pub(super) enum PbRpcResponsePayload {
     EnterSuperScreenRep(Vec<u8>),
     #[prost(message, tag = "23")]
     DrawResp(annotation::PbDrawResponse),
-    // UU 4.41.2.2602 rpc_main.proto uses 24 and 26 (25 is absent).
-    // Keep opaque responses in the oneof; terminal execution is not enabled.
+    // UU 4.41.2.2602 rpc_main.proto uses 24 and 26 (25 is absent), as does
+    // the reference server's own `RpcResponse` descriptor. The terminal
+    // handlers encode the bodies themselves, so the oneof keeps them opaque.
     #[prost(bytes, tag = "24")]
     TerminalCheckEnvRsp(Vec<u8>),
+    // 26, not 25: a reply on a field the client does not know is dropped.
     #[prost(bytes, tag = "26")]
     TerminalRenameSessionRsp(Vec<u8>),
 }
@@ -543,4 +548,49 @@ pub(super) struct PbDpiScale {
     pub(super) recommended_dpi: i32,
     #[prost(int32, repeated, tag = "3")]
     pub(super) dpis: Vec<i32>,
+}
+
+#[cfg(test)]
+mod terminal_rpc_tests {
+    use super::*;
+    use prost::Message;
+
+    /// The response oneof numbers the client reads, from the reference
+    /// server's own `RpcResponse` descriptor. 25 is skipped there, and a
+    /// reply on a field the client does not know is dropped, leaving the
+    /// phone waiting for an answer that never comes.
+    #[test]
+    fn terminal_responses_use_the_reference_field_numbers() {
+        let tag_of = |payload: PbRpcResponsePayload| {
+            let bytes = PbRpcResponse {
+                response_header: None,
+                payload: Some(payload),
+            }
+            .encode_to_vec();
+            // A oneof member is a length-delimited field, so byte 1 holds
+            // `field << 3 | 2` in its varint form.
+            let (mut value, mut shift) = (0u32, 0);
+            for byte in &bytes {
+                value |= u32::from(byte & 0x7f) << shift;
+                if byte & 0x80 == 0 {
+                    break;
+                }
+                shift += 7;
+            }
+            (value >> 3, value & 7)
+        };
+
+        assert_eq!(
+            tag_of(PbRpcResponsePayload::TerminalCheckEnvRsp(vec![0x08, 0x00])),
+            (24, 2)
+        );
+        assert_eq!(
+            tag_of(PbRpcResponsePayload::TerminalRenameSessionRsp(vec![])),
+            (26, 2)
+        );
+        assert_eq!(
+            tag_of(PbRpcResponsePayload::DrawResp(Default::default())),
+            (23, 2)
+        );
+    }
 }

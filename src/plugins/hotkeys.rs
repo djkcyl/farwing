@@ -213,10 +213,15 @@ pub fn register(owner: u64, gates: Vec<Arc<Gate>>, controls: Vec<Arc<ControlGate
             .chain([91, 92, 160, 161, 162, 163, 164, 165])
             .collect::<Vec<_>>();
         for key in keys {
-            if unsafe {
+            // Linux has no portable async key-state query, so a key already held
+            // when the graph is allowed stays unheld until its next edge.
+            #[cfg(windows)]
+            let down = unsafe {
                 windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(i32::from(key))
-            } < 0
-            {
+            } < 0;
+            #[cfg(not(windows))]
+            let down = false;
+            if down {
                 r.held.insert(key);
             } else {
                 r.held.remove(&key);

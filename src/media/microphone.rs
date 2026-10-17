@@ -397,7 +397,9 @@ impl CaptureAttempt {
 
 fn capture_owner(shared: Arc<Shared>) {
     let _ = shared.owner.set(std::thread::current());
-    let host = cpal::default_host();
+    let mut host = cpal::default_host();
+    // As for playback: reconnect the PulseAudio host after a failure.
+    let mut reconnect = false;
     let origin = Instant::now();
     let mut attempt = Arc::new(CaptureAttempt::default());
     let mut stream = None;
@@ -405,6 +407,9 @@ fn capture_owner(shared: Arc<Shared>) {
     let mut generation = u64::MAX;
     let mut failures = 0;
     while !shared.stopped.load(Ordering::Acquire) {
+        if std::mem::take(&mut reconnect) {
+            host = cpal::default_host();
+        }
         if shared.refresh_devices.swap(false, Ordering::AcqRel) {
             let available = host.input_devices().map(|devices| {
                 devices
@@ -422,11 +427,14 @@ fn capture_owner(shared: Arc<Shared>) {
                     error: None,
                     updated: Some(Instant::now()),
                 },
-                Err(error) => InputDevices {
-                    devices: Vec::new(),
-                    error: Some(format!("读取麦克风设备失败：{error}")),
-                    updated: Some(Instant::now()),
-                },
+                Err(error) => {
+                    reconnect = true;
+                    InputDevices {
+                        devices: Vec::new(),
+                        error: Some(format!("读取麦克风设备失败：{error}")),
+                        updated: Some(Instant::now()),
+                    }
+                }
             };
         }
         let (mut next, selection) = {
@@ -473,6 +481,7 @@ fn capture_owner(shared: Arc<Shared>) {
         let stream_failed = attempt.failed.swap(false, Ordering::AcqRel);
         if stream_failed {
             stream = None;
+            reconnect = true;
         }
         // Join the failed stream before taking its final progress marker.
         attempt.update_failures(&mut failures, stream_failed);

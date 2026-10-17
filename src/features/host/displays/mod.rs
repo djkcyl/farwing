@@ -13,6 +13,10 @@ use crate::platform::display::{
     topology::{SavedTarget, SavedTopology, Target, Topology},
     virtual_driver::Driver,
 };
+// 合成器那条路和 `topology::identity` / `output_name` 一样只在 Linux 上有：
+// Windows 的输出是驱动管的，不需要（也没有）这层。
+#[cfg(not(windows))]
+use crate::platform::display::{compositor, topology};
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use std::{
@@ -74,6 +78,12 @@ impl Drop for Heartbeat {
     }
 }
 
+/// 虚拟屏在 Linux 上不是「驱动里的一块显示器」，而是「一路 VKMS 连接器 + 合成器
+/// 认下它」，所以刷新率由我们自己定；和 Windows 那条路（写死 144）保持一致，好让
+/// 主控协商出来的码率在两边含义相同。
+#[cfg(not(windows))]
+const VIRTUAL_HZ: u32 = 144;
+
 struct State {
     journal: Journal,
     path: PathBuf,
@@ -85,6 +95,9 @@ struct State {
     render_adapter: Option<u64>,
     dirty: bool,
     restoring: bool,
+    /// Linux 上的虚拟屏：一条到 root 辅助程序的连接，连接在，租约就在。
+    #[cfg(not(windows))]
+    virtual_display: Option<crate::platform::virtual_display::Session>,
 }
 pub(crate) struct Session {
     lease: Lease,
@@ -143,6 +156,8 @@ impl Session {
                 render_adapter: None,
                 dirty: false,
                 restoring: false,
+                #[cfg(not(windows))]
+                virtual_display: None,
             })),
         }))
     }
@@ -157,7 +172,7 @@ impl Session {
         let state = self.state.clone();
         let lease = self.lease.clone();
         let closed = self.closed.clone();
-        let activity = crate::platform::windows::host_service::activity::Work::new();
+        let activity = crate::platform::host_service::activity::Work::new();
         tokio::task::spawn_blocking(move || {
             let _activity = activity;
             let _serial = display::recovery::Serial::acquire()?;
@@ -248,6 +263,47 @@ impl Session {
         }
         Ok(())
     }
+    /// Linux：虚拟屏由 root 辅助程序接一路 VKMS 连接器出来，分辨率交给合成器定。
+    /// Windows 那套 RandR/驱动模型在这里没有对应的东西，所以整条路分开写，而不是
+    /// 在中间塞条件分支。
+    #[cfg(not(windows))]
+    pub(crate) async fn create(&self, resolutions: Vec<(u32, u32)>) -> Result<capture::Screen> {
+        ensure!(
+            self.lease.display_expansion_allowed(),
+            "本次会话不允许添加虚拟屏"
+        );
+        self.run(move |state, lease| {
+            let screens = capture::screens()?;
+            // 主控报的是它自己那块屏的尺寸；它没报就退回本机第一块屏的尺寸。
+            let (width, height) = resolutions
+                .first()
+                .copied()
+                .or_else(|| screens.first().map(|s| (s.width, s.height)))
+                .context("没有可用的显示器")?;
+            let mut modes = resolutions;
+            if modes.is_empty() {
+                modes.push((width, height));
+            }
+            state.create_compositor(
+                Virtual {
+                    guid: uuid::Uuid::new_v4().to_string(),
+                    identity: None,
+                    width,
+                    height,
+                    hz: VIRTUAL_HZ,
+                    dpi: 0,
+                    kind: 1,
+                    resolution_type: 1,
+                    modes,
+                    layout: None,
+                },
+                lease,
+            )
+        })
+        .await
+    }
+
+    #[cfg(windows)]
     pub(crate) async fn create(&self, resolutions: Vec<(u32, u32)>) -> Result<capture::Screen> {
         ensure!(
             self.lease.display_expansion_allowed(),
@@ -294,6 +350,34 @@ impl Session {
         })
         .await
     }
+    /// Linux：撤一块虚拟屏就是让辅助程序断开那一路连接器，合成器会把它当成拔线。
+    #[cfg(not(windows))]
+    pub(crate) async fn remove(&self, identity: String) -> Result<()> {
+        self.run(move |state, lease| {
+            let index = state.owned_index(&identity)?;
+            ensure!(
+                matches!(state.journal.owned[index].kind, 1 | 3),
+                "不能用删除扩展屏操作退出超级屏"
+            );
+            ensure!(lease.requested(), "显示操作已取消");
+            // 辅助程序认的是连接器名，identity 只是我们这边的说法。
+            state
+                .virtual_display
+                .as_mut()
+                .context("虚拟显示器辅助程序不可用")?
+                .remove(topology::output_name(&identity))?;
+            // 和 Windows 一样：删掉自动建的那块屏就等于关掉「连接时自动建屏」，
+            // 否则用户删完下次连接它又回来了。
+            if state.journal.owned[index].kind == 3 {
+                state.preferences.default_virtual = false;
+            }
+            state.journal.owned.remove(index);
+            state.update_preferences()
+        })
+        .await
+    }
+
+    #[cfg(windows)]
     pub(crate) async fn remove(&self, identity: String) -> Result<()> {
         self.run(move |state, lease| {
             let index = state.owned_index(&identity)?;
@@ -396,6 +480,27 @@ impl Session {
         })
         .await
     }
+    /// Linux 还没有超级屏：它要先把本机的物理显示器让出来、再把一块虚拟屏铺满整个
+    /// 桌面，而 Wayland 下「让出来」和「铺满」都要靠合成器，这两步都还没做。主控那
+    /// 边因为 `capture_setting` 是一个整档、没法只开虚拟屏，所以会把这个按钮画出来，
+    /// 点了就在这里带着原因失败。
+    #[cfg(not(windows))]
+    pub(crate) async fn enter_super(
+        &self,
+        _width: u32,
+        _height: u32,
+        _dpi: u32,
+        _use_saved: bool,
+    ) -> Result<capture::Screen> {
+        anyhow::bail!("Linux 被控端暂不支持超级屏，请用扩展模式添加虚拟屏")
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) async fn quit_super(&self) -> Result<()> {
+        anyhow::bail!("Linux 被控端暂不支持超级屏，请用扩展模式添加虚拟屏")
+    }
+
+    #[cfg(windows)]
     pub(crate) async fn enter_super(
         &self,
         width: u32,
@@ -406,6 +511,8 @@ impl Session {
         self.run(move |state, lease| state.enter_super(width, height, dpi, use_saved, lease))
             .await
     }
+
+    #[cfg(windows)]
     pub(crate) async fn quit_super(&self) -> Result<()> {
         self.run(|state, _| state.quit_super(true)).await
     }
@@ -427,6 +534,56 @@ impl Session {
         })
         .await
     }
+    /// Linux：改分辨率分两种屏。
+    ///
+    /// 我们自己造的虚拟屏要让合成器现造一个模式（VKMS 的模式表里没有这个分辨率）；
+    /// 物理显示器走共享的 RandR + journal 那条路，和 X11、Windows 一样——旧模式记进
+    /// journal，会话结束时恢复。
+    #[cfg(not(windows))]
+    pub(crate) async fn set_resolution(
+        &self,
+        target: Target,
+        width: u32,
+        height: u32,
+    ) -> Result<capture::Screen> {
+        self.run(move |state, lease| {
+            if let Ok(current) = find_screen(&target.identity)
+                && (current.width, current.height) == (width, height)
+            {
+                return Ok(current);
+            }
+            ensure!(lease.requested(), "显示操作已取消");
+            validate_modes(&[(width, height)])?;
+            if state
+                .journal
+                .owned
+                .iter()
+                .any(|o| o.identity.as_deref() == Some(target.identity.as_str()))
+            {
+                return state.resize_virtual_compositor(&target.identity, width, height, lease);
+            }
+            state.begin()?;
+            let previous = state.journal.mode_changes.clone();
+            state.intend_mode(&target.identity, width, height)?;
+            if let Err(error) = target.set_resolution(width, height, || lease.requested()) {
+                if error
+                    .downcast_ref::<display::topology::ModeTestRejected>()
+                    .is_some()
+                {
+                    state.journal.mode_changes = previous;
+                    state.journal.desired = None;
+                    state.save()?;
+                }
+                return Err(error);
+            }
+            state.applied()?;
+            state.remember_physical(&target.identity, None)?;
+            find_screen(&target.identity)
+        })
+        .await
+    }
+
+    #[cfg(windows)]
     pub(crate) async fn set_resolution(
         &self,
         target: Target,
@@ -467,6 +624,13 @@ impl Session {
         })
         .await
     }
+    /// Linux 上不报 DPI，主控也就不会给出这个选项；真收到了就直说做不到。
+    #[cfg(not(windows))]
+    pub(crate) async fn set_dpi(&self, _target: Target, _dpi: u32) -> Result<()> {
+        anyhow::bail!("Linux 被控端不能改显示器的 DPI")
+    }
+
+    #[cfg(windows)]
     pub(crate) async fn set_dpi(&self, target: Target, dpi: u32) -> Result<()> {
         self.run(move |state, lease| {
             state.begin()?;
@@ -491,7 +655,7 @@ impl Session {
             return Ok(());
         }
         let state = self.state.clone();
-        let activity = crate::platform::windows::host_service::activity::Work::new();
+        let activity = crate::platform::host_service::activity::Work::new();
         tokio::task::spawn_blocking(move || {
             let _activity = activity;
             let _serial = display::recovery::Serial::acquire()?;
@@ -534,6 +698,54 @@ impl Drop for Session {
     }
 }
 
+/// 在屏幕清单里找刚接上的那块虚拟输出。
+///
+/// 先按 identity 找；有的合成器会给 X11 的输出另起名字（GNOME 那边是 XWAYLAND*），
+/// 那时按「创建之前没有、现在多了」认——这一刻清单里只可能多出刚接的这块。
+#[cfg(not(windows))]
+fn virtual_screen<'a>(
+    screens: &'a [capture::Screen],
+    identity: &str,
+    before: &[String],
+) -> Option<&'a capture::Screen> {
+    screens
+        .iter()
+        .find(|s| s.identity.as_deref() == Some(identity))
+        .or_else(|| {
+            screens
+                .iter()
+                .find(|s| s.identity.as_ref().is_some_and(|id| !before.contains(id)))
+        })
+}
+
+/// 等采集那边看见这块新屏。
+///
+/// 采集枚举的是合成器报出来的输出，而合成器要处理完热插拔才有它；中间这一小段空档里
+/// 创建还不算成功，所以宁可在这里等，也不要先把一块还看不见的屏报给主控。
+///
+/// 辅助程序给的是连接器名，而屏幕清单里是平台自己的 identity（X11 下是
+/// `x11/<输出名>`），两者不是一回事：拿连接器名去比 identity 会一直等不到，于是
+/// 明明建出来了也报「没有出现在桌面里」。
+#[cfg(not(windows))]
+fn wait_for_screen(connector: &str, before: &[String], lease: &Lease) -> Result<capture::Screen> {
+    let identity = topology::identity(connector);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        ensure!(lease.requested(), "显示操作已取消");
+        // 合成器刚接上新输出时枚举本身也可能短暂失败，所以失败不算数，只看期限。
+        if let Ok(screens) = capture::screens()
+            && let Some(screen) = virtual_screen(&screens, &identity, before)
+        {
+            return Ok(screen.clone());
+        }
+        ensure!(
+            std::time::Instant::now() < deadline,
+            "虚拟显示器创建后没有出现在桌面里"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn validate_modes(modes: &[(u32, u32)]) -> Result<()> {
     ensure!(
         !modes.is_empty()
@@ -548,13 +760,7 @@ fn validate_modes(modes: &[(u32, u32)]) -> Result<()> {
 fn remove_owned(driver: &Driver, guid: &str) -> Result<()> {
     match driver.remove(uuid::Uuid::parse_str(guid)?) {
         Ok(()) => Ok(()),
-        Err(error)
-            if error
-                .downcast_ref::<windows::core::Error>()
-                .is_some_and(|e| e.code() == windows::core::HRESULT::from_win32(1168)) =>
-        {
-            Ok(())
-        }
+        Err(error) if display::virtual_driver::already_removed(&error) => Ok(()),
         Err(error) => Err(error),
     }
 }
@@ -673,7 +879,7 @@ impl State {
             self.journal.applied = Some(self.journal.baseline.clone());
             self.journal.applied_dpi = self.journal.dpi.clone();
             self.save()?;
-            if let Err(error) = if crate::platform::windows::host_service::resident::is_owner() {
+            if let Err(error) = if crate::platform::host_service::resident::is_owner() {
                 // The service supervises this persistent owner and its next
                 // incarnation replays the durable recovery journal.
                 Ok(())
@@ -871,12 +1077,211 @@ impl State {
             .position(|o| o.identity.as_deref() == Some(identity))
             .context("不是本次会话创建的虚拟显示器")
     }
+    /// 到辅助程序的连接按需建立：没人加虚拟屏就不该去惊动一个 root 服务。
+    #[cfg(not(windows))]
+    fn virtual_display(&mut self) -> Result<&mut crate::platform::virtual_display::Session> {
+        if self.virtual_display.is_none() {
+            self.virtual_display = Some(crate::platform::virtual_display::Session::open()?);
+        }
+        Ok(self
+            .virtual_display
+            .as_mut()
+            .context("虚拟显示器辅助程序不可用")?)
+    }
+
+    /// 重建上次连接时保存下来的虚拟屏。
+    ///
+    /// Linux 上重建失败只是少一块屏。这块屏可能依赖辅助程序、内核模块或者当时那个
+    /// 合成器，任何一个变了都会建不出来——在 niri 里加过屏、下次从 GNOME 登录，或者
+    /// 辅助程序的服务被停了，都会走到这里。为它把整次连接废掉的话，这台机器就再也
+    /// 连不上了，直到用户自己去删偏好文件。所以记一条警告、跳过，退回物理屏继续连。
+    #[cfg(not(windows))]
+    fn restore_virtual(&mut self, spec: Virtual, lease: &Lease) -> Result<()> {
+        let guid = spec.guid.clone();
+        let result = validate_modes(&[(spec.width, spec.height)])
+            .and_then(|()| self.create(spec, lease, false))
+            .map(|_| ());
+        if let Err(error) = result {
+            tracing::warn!(
+                error = %format!("{error:#}"),
+                guid,
+                "重建保存的虚拟屏失败，跳过它继续连接"
+            );
+        }
+        Ok(())
+    }
+
+    /// Windows 上虚拟屏驱动是装好的，建不出来说明环境真的坏了，照旧报错。
+    #[cfg(windows)]
+    fn restore_virtual(&mut self, spec: Virtual, lease: &Lease) -> Result<()> {
+        validate_modes(&[(spec.width, spec.height)])?;
+        self.create(spec, lease, false)?;
+        Ok(())
+    }
+
+    /// 走合成器的那条虚拟屏创建路径。
+    ///
+    /// 和 [`Self::create`] 的区别不只是实现：这里没有基线拓扑要记、没有布局要算，
+    /// 因为合成器会自己把新输出摆在空位上，而 Wayland 下那些 RandR 写入本来就是
+    /// 空动作。真正要做的只有三件——租一路连接器、等采集那边看见它、把它记进
+    /// `journal.owned`（`annotate` 靠它把这块屏报成虚拟屏并挂上 `openuuyc-virtual`
+    /// 这个身份）。
+    #[cfg(not(windows))]
+    fn create_compositor(&mut self, spec: Virtual, lease: &Lease) -> Result<capture::Screen> {
+        ensure!(
+            self.journal.super_baseline.is_none(),
+            "超级屏内不能添加扩展屏"
+        );
+        // 合成器接不住就别去惊动内核：接上连接器会让它收到一次热插拔、本机屏幕布局
+        // 跳一下，发现接管不了再拔掉又跳一下。
+        compositor::ensure_available()?;
+        // 辅助程序重启过的话，旧连接上的屏已经没了；先把它们从记账里去掉，不然它们
+        // 占着下面「最多 3 块」的名额。
+        self.forget_lost_virtual()?;
+        let (width, height) = (spec.width, spec.height);
+        validate_modes(&[(width, height)])?;
+        let screens = capture::screens()?;
+        let before: Vec<String> = screens.iter().filter_map(|s| s.identity.clone()).collect();
+        ensure!(
+            screens.len() < 5
+                && self
+                    .journal
+                    .owned
+                    .iter()
+                    .filter(|o| matches!(o.kind, 1 | 3))
+                    .count()
+                    < 3,
+            "显示器数量已达上限"
+        );
+        ensure!(lease.requested(), "显示操作已取消");
+
+        // 先接连接器、再记账、最后等采集看见它：记账放中间，是因为连接器一接上合成器
+        // 那边就多了一块屏，采集随时可能把它报上去，那时候它得已经是「我们造的」。
+        let connector = self.virtual_display()?.create(width, height, spec.hz)?;
+        let guid = spec.guid.clone();
+        // 日志里记的是平台的 identity 而不是连接器名：owns、恢复、首屏选择比的都是
+        // identity，只有跟辅助程序打交道时才换回连接器名（`topology::output_name`）。
+        let identity = topology::identity(&connector);
+        self.journal.owned.push(Virtual {
+            guid: guid.clone(),
+            identity: Some(identity.clone()),
+            width,
+            height,
+            hz: spec.hz,
+            dpi: spec.dpi,
+            kind: spec.kind,
+            // 主控给的那几项都原样留着：重建保存下来的屏时，报回去的得和上次一样，
+            // 尤其是 guid——屏幕 id 是从它算出来的，每次换一个主控那边就对不上了。
+            resolution_type: spec.resolution_type,
+            modes: if spec.modes.is_empty() {
+                vec![(width, height)]
+            } else {
+                spec.modes.clone()
+            },
+            layout: None,
+        });
+        let mut screen = match wait_for_screen(&connector, &before, lease) {
+            Ok(screen) => screen,
+            Err(error) => {
+                self.journal
+                    .owned
+                    .retain(|o| o.identity.as_deref() != Some(identity.as_str()));
+                if let Err(rollback) = self.virtual_display().and_then(|s| s.remove(&connector)) {
+                    tracing::error!(%rollback, connector, "虚拟屏回滚失败");
+                }
+                return Err(error);
+            }
+        };
+        self.update_preferences()?;
+        tracing::info!(connector, width, height, "虚拟屏已加入");
+        screen.id = display::source_id(&format!("openuuyc-virtual/{guid}"))?;
+        screen.render_adapter = self.render_adapter;
+        Ok(screen)
+    }
+
+    /// 辅助程序已经收回的虚拟屏（它重启过，旧连接上的租约就都没了），不再记在本次
+    /// 会话名下。
+    #[cfg(not(windows))]
+    fn forget_lost_virtual(&mut self) -> Result<()> {
+        let Some(session) = self.virtual_display.as_mut() else {
+            return Ok(());
+        };
+        let lost: Vec<String> = session
+            .sync()?
+            .iter()
+            .map(|connector| topology::identity(connector))
+            .collect();
+        if lost.is_empty() {
+            return Ok(());
+        }
+        tracing::warn!(?lost, "这些虚拟屏已被辅助程序收回，不再记在本次会话名下");
+        self.journal
+            .owned
+            .retain(|o| !o.identity.as_ref().is_some_and(|id| lost.contains(id)));
+        Ok(())
+    }
+
+    /// 把一块我们自己造的虚拟屏切到另一个分辨率。
+    ///
+    /// 不能走物理屏那条 RandR 路：VKMS 的模式表里没有这个分辨率，只能让合成器现造。
+    #[cfg(not(windows))]
+    fn resize_virtual_compositor(
+        &mut self,
+        identity: &str,
+        width: u32,
+        height: u32,
+        lease: &Lease,
+    ) -> Result<capture::Screen> {
+        let index = self.owned_index(identity)?;
+        let hz = self.journal.owned[index].hz;
+        // 合成器认的是输出名（连接器名），不是屏幕清单里的 identity。
+        compositor::set_mode(topology::output_name(identity), width, height, Some(hz))?;
+        // 合成器说成功不等于显示器真的换了模式，所以只认观察到的尺寸。等不到就是
+        // 失败——这比让主控以为切成功了要好。
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            ensure!(lease.requested(), "显示操作已取消");
+            if let Ok(screen) = find_screen(identity)
+                && (screen.width, screen.height) == (width, height)
+            {
+                let record = &mut self.journal.owned[index];
+                record.width = width;
+                record.height = height;
+                if !record.modes.contains(&(width, height)) {
+                    record.modes.push((width, height));
+                }
+                // 和 Windows 一样把新尺寸留下来：下次连接重建这块屏时用的就是它。
+                self.update_preferences()?;
+                return Ok(screen);
+            }
+            ensure!(
+                std::time::Instant::now() < deadline,
+                "显示器没有切到请求的分辨率"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     fn create(
         &mut self,
         spec: Virtual,
         lease: &Lease,
         super_screen: bool,
     ) -> Result<capture::Screen> {
+        // 虚拟屏在 Linux 上走的不是驱动模型（见 create_compositor）。这里也要管住，
+        // 因为「连接时就带一块虚拟屏」是从 initial.rs 直接调到这里来的，那一路的
+        // kind 是 3（1 是会话里手动加的，3 是连接时自动加的）。
+        #[cfg(not(windows))]
+        if matches!(spec.kind, 1 | 3) {
+            // 「只用虚拟屏启动」在 Linux 上还没有可写的路径：它要求合成器把物理输出
+            // 全部关掉，那是每个合成器一套接口。主控这次明确要的话，`prepare` 已经带着
+            // 原因失败了；走到这里的只剩本机存下来的偏好，那就如实说一声、把原来的
+            // 显示器留着——至少别让人以为桌面被换掉了。
+            if super_screen {
+                tracing::warn!("Linux 被控端不支持「只用虚拟屏启动」，物理显示器会保留");
+            }
+            return self.create_compositor(spec, lease);
+        }
         let before = Topology::query(true)?.snapshot()?;
         let dpi = current_dpi()?;
         let preferences = self.preferences.clone();
@@ -1119,6 +1524,8 @@ impl State {
         layout.apply()?;
         Ok(())
     }
+    /// 只有 Windows 走得到：Linux 的 `Session::quit_super` 在更外层就带着原因拒绝了。
+    #[cfg(windows)]
     fn quit_super(&mut self, explicit: bool) -> Result<()> {
         if let Some(layout) = self.journal.super_baseline.clone() {
             if !layout.targets.is_empty() {
@@ -1160,6 +1567,12 @@ impl State {
         Ok(())
     }
     fn cleanup(&mut self) -> Result<()> {
+        // 虚拟屏和 X11 的布局恢复没关系，所以放在最前面：`dirty` 为假时下面会直接
+        // 返回，而那些连接器还是得还回去。
+        #[cfg(not(windows))]
+        if let Some(mut session) = self.virtual_display.take() {
+            session.release_all();
+        }
         if !self.dirty {
             self.driver.take();
             return Ok(());
@@ -1195,5 +1608,48 @@ impl State {
             Err(e) => return Err(e.into()),
         }
         Ok(())
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    fn screen(identity: &str) -> capture::Screen {
+        capture::Screen {
+            id: 0,
+            device_name: identity.rsplit('/').next().unwrap_or(identity).to_owned(),
+            display_name: identity.to_owned(),
+            width: 1920,
+            height: 1080,
+            left: 0,
+            top: 0,
+            primary: false,
+            fps: 60,
+            dpi_scale: None,
+            hdr: false,
+            adapter: 0,
+            render_adapter: None,
+            identity: Some(identity.to_owned()),
+        }
+    }
+
+    /// 虚拟屏在日志里记的是平台的 identity（`x11/Virtual-1`），而辅助程序给的是连接器名
+    /// （`Virtual-1`）。拿连接器名直接去比 identity 的那版代码永远等不到，于是建出来了
+    /// 也报「没有出现在桌面里」，主控收到 -1。
+    #[test]
+    fn the_new_virtual_output_is_found_by_identity_not_by_connector_name() {
+        let disks = [screen("x11/DP-3"), screen("x11/Virtual-1")];
+        let before = ["x11/DP-3".to_owned()];
+        let found = virtual_screen(&disks, &topology::identity("Virtual-1"), &before).unwrap();
+        assert_eq!(found.identity.as_deref(), Some("x11/Virtual-1"));
+        // 名字对不上时（GNOME 给 X11 的输出起 XWAYLAND*）退回「比创建之前多出来的那块」。
+        let disks = [screen("x11/DP-3"), screen("x11/XWAYLAND0")];
+        let found = virtual_screen(&disks, &topology::identity("Virtual-1"), &before).unwrap();
+        assert_eq!(found.identity.as_deref(), Some("x11/XWAYLAND0"));
+        // 没有多出任何屏就是没找到，别把别的屏认成自己刚建的那块。
+        let disks = [screen("x11/DP-3"), screen("x11/DP-1")];
+        let before = ["x11/DP-3".to_owned(), "x11/DP-1".to_owned()];
+        assert!(virtual_screen(&disks, &topology::identity("Virtual-1"), &before).is_none());
     }
 }

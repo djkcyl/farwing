@@ -43,7 +43,7 @@ pub(in crate::application::viewer) fn viewer_shortcut(
 }
 
 pub(in crate::application::viewer) struct ThreadedWindowsApp {
-    fullscreen_chrome: super::fullscreen::FullscreenChrome,
+    fullscreen_chrome: crate::application::viewer::fullscreen_chrome::FullscreenChrome,
     drag: Option<crate::application::viewer::windows_drag::WindowDrag>,
     _shortcuts: crate::application::viewer_shortcuts::Watcher,
     pub(in crate::application::viewer) annotation:
@@ -152,7 +152,8 @@ impl ThreadedWindowsApp {
             Arc::clone(&cpu_device),
         )?;
         Ok(Self {
-            fullscreen_chrome: super::fullscreen::FullscreenChrome::default(),
+            fullscreen_chrome:
+                crate::application::viewer::fullscreen_chrome::FullscreenChrome::default(),
             drag: Some(crate::application::viewer::windows_drag::WindowDrag::new(
                 window,
                 &stream_control,
@@ -492,19 +493,26 @@ impl ThreadedWindowsApp {
         let output = self.egui_context.run_ui(input, |ui| {
             let ctx = ui.ctx().clone();
             if fullscreen {
-                chrome_action = self.fullscreen_chrome.show(
-                    &ctx,
-                    PlayerTitleBar {
-                        screens: &mut self.screen_tabs,
-                        window,
-                        title: &self.title,
-                        performance: &self.performance,
-                        stream_control: &self.stream_control,
-                        stream_control_ui: &mut self.stream_control_ui,
-                        plugin_menu_open: &mut self.plugin_menu_open,
-                        move_state: None,
-                    },
-                );
+                let relative = self.stream_control.mouse().relative_mode();
+                let menu_open = self.stream_control_ui.open || self.plugin_menu_open;
+                let pending = self.screen_tabs.is_pending();
+                chrome_action =
+                    self.fullscreen_chrome
+                        .show(&ctx, relative, menu_open, pending, |ui| {
+                            player_title_bar(
+                                ui,
+                                PlayerTitleBar {
+                                    screens: &mut self.screen_tabs,
+                                    window,
+                                    title: &self.title,
+                                    performance: &self.performance,
+                                    stream_control: &self.stream_control,
+                                    stream_control_ui: &mut self.stream_control_ui,
+                                    plugin_menu_open: &mut self.plugin_menu_open,
+                                    move_state: None,
+                                },
+                            )
+                        });
             } else {
                 resize =
                     borderless_resize(ui, window, Some((&mut self.window_resize, resize_aspect)));

@@ -13,7 +13,7 @@ mod secret;
 pub(crate) use secret::SecretEntry;
 
 pub(crate) fn enroll_resident() -> Result<()> {
-    use crate::platform::windows::host_service::vault;
+    use crate::platform::host_service::vault;
     if vault::applies()? {
         return Ok(());
     }
@@ -38,7 +38,7 @@ pub(crate) fn enroll_resident() -> Result<()> {
     Ok(())
 }
 fn ensure_resident_owner() -> Result<()> {
-    use crate::platform::windows::host_service::vault;
+    use crate::platform::host_service::vault;
     anyhow::ensure!(
         vault::owner()? == Some(vault::sid(std::process::id())?),
         "服务未登记到当前 Windows 用户"
@@ -46,7 +46,7 @@ fn ensure_resident_owner() -> Result<()> {
     Ok(())
 }
 pub(crate) fn restore_portable() -> Result<()> {
-    use crate::platform::windows::host_service::vault;
+    use crate::platform::host_service::vault;
     if !vault::applies()? {
         return Ok(());
     }
@@ -173,7 +173,7 @@ pub struct NativeIdentity {
 
 impl NativeIdentity {
     pub fn generate() -> Result<Self> {
-        let hardware = crate::platform::windows::device_profile::Hardware::read()?;
+        let hardware = crate::platform::device_profile::Hardware::read()?;
         Ok(Self {
             schema: IDENTITY_SCHEMA,
             client_id: Uuid::new_v4().to_string(),
@@ -207,7 +207,7 @@ impl NativeIdentity {
 
     pub(crate) fn device_init_request(
         &self,
-        hardware: &crate::platform::windows::device_profile::Hardware,
+        hardware: &crate::platform::device_profile::Hardware,
     ) -> Result<WindowsDeviceInitRequest> {
         self.validate_schema()?;
         anyhow::ensure!(
@@ -455,12 +455,11 @@ fn session_store_lock() -> Result<std::fs::File> {
 }
 
 fn credential_store_lock(filename: &str) -> Result<std::fs::File> {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .context("LOCALAPPDATA is required for session-store coordination")?;
+    let base = crate::platform::paths::local_app_data()
+        .context("用户数据目录不可用，无法协调登录态存储")?;
 
-    let directory = if crate::platform::windows::host_service::vault::applies()? {
-        crate::platform::windows::host_service::vault::root()?
+    let directory = if crate::platform::host_service::vault::applies()? {
+        crate::platform::host_service::vault::root()?
     } else {
         base.join("openuuyc")
     };

@@ -65,12 +65,25 @@ impl Lease {
                             let lease_gate = gate.clone();
                             let epoch = state.1;
                             let valid = Arc::new(move || {
-                                lease_gate.snapshot() == (true, epoch) && unsafe {
-                                    windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+                                if lease_gate.snapshot() != (true, epoch) {
+                                    return false;
                                 }
-                                .0
-                                    as u64
-                                    == owner
+                                // The owning window must still be in the foreground.
+                                #[cfg(windows)]
+                                {
+                                    unsafe {
+                                        windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+                                    }
+                                    .0 as u64
+                                        == owner
+                                }
+                                // Neither X11 nor Wayland exposes the focused window
+                                // to an unfocused process; the gate is the only check.
+                                #[cfg(not(windows))]
+                                {
+                                    let _ = owner;
+                                    true
+                                }
                             });
                             if input.begin_assist(owner, t, valid).is_ok() {
                                 token = Some(t);

@@ -1,5 +1,5 @@
 //! A diagnostic view of this process's device publisher, mirrored by the resident.
-use crate::platform::windows::device_profile::Hardware;
+use crate::platform::device_profile::Hardware;
 use serde::{Deserialize, Serialize};
 use std::sync::{LazyLock, Mutex};
 

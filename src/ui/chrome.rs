@@ -1,40 +1,28 @@
 //! Shared borderless window chrome and native fallback background.
 use super::controls::{ViewerCaptionIcon as TitleIcon, viewer_caption_button as title_icon_button};
-use super::d3d11::window_hwnd;
-use anyhow::Result;
-use std::time::{Duration, Instant};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Dwm::{
-    DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_USE_IMMERSIVE_DARK_MODE,
-    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUNDSMALL, DwmSetWindowAttribute,
-};
-use windows::Win32::Graphics::Gdi::{
-    DC_BRUSH, FillRect, GetDC, GetMonitorInfoW, GetStockObject, HBRUSH, HDC,
-    MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ReleaseDC, SetDCBrushColor,
-};
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
-use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
-use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, WM_ERASEBKGND, WM_MOVING, WM_NCCALCSIZE, WM_NCDESTROY,
-};
-use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::window::{Fullscreen, ResizeDirection, Window};
+#[cfg(windows)]
+use super::gfx::window_hwnd;
+use winit::window::{ResizeDirection, Window};
 
-const BACKDROP_SUBCLASS: usize = 0x4f555542;
+#[cfg(windows)]
+#[path = "chrome_native_windows.rs"]
+mod native;
+#[cfg(not(windows))]
+#[path = "chrome_native_linux.rs"]
+mod native;
+
+pub(crate) use native::{
+    WindowMoveState, WindowResizeState, cancel_pointer_operation, configure_dwm_window,
+    set_fullscreen, update_nonmodal_window_move, update_nonmodal_window_resize,
+};
+// Windows positions borderless windows itself and keeps them below the work
+// area's top; X11 and Wayland window managers do that on their own.
+#[cfg(windows)]
+pub(crate) use native::constrain_drag_position;
 
 pub(crate) struct TitleBarAlert {
     pub source: String,
     pub duration: String,
-}
-
-pub(crate) fn cancel_pointer_operation(
-    moving: &mut WindowMoveState,
-    resizing: &mut WindowResizeState,
-) {
-    if moving.start.take().is_some() | resizing.start.take().is_some() {
-        let _ = unsafe { ReleaseCapture() };
-    }
 }
 
 fn title_bar_frame() -> egui::Frame {
@@ -102,6 +90,33 @@ pub(crate) fn window_title_bar(
     window_title_bar_alert(ui, window, alias, move_state, tooltips, None)
 }
 
+/// 同 [`window_title_bar`]，只是标题那一格让调用方自己画。
+///
+/// 播放器窗口要在这儿放设备切换菜单（Windows 的 caption 也是这么做的），而设备列表
+/// 只有它自己知道。除了这一格，拖动、品牌图标、窗口按钮都照旧。
+///
+/// 目前只有 Linux 的播放器用它：Windows 播放器整条 caption 都是自己画的
+/// （`windows_presenter/chrome.rs`），不经过 [`window_title_bar`]。
+#[cfg_attr(windows, allow(dead_code, reason = "Windows 播放器自己画 caption"))]
+pub(crate) fn window_title_bar_with_identity(
+    ui: &mut egui::Ui,
+    window: &Window,
+    alias: &str,
+    move_state: Option<&mut WindowMoveState>,
+    tooltips: bool,
+    identity: &mut dyn FnMut(&mut egui::Ui),
+) -> bool {
+    window_title_bar_impl(
+        ui,
+        window,
+        alias,
+        move_state,
+        tooltips,
+        None,
+        Some(identity),
+    )
+}
+
 pub(crate) fn window_title_bar_alert(
     ui: &mut egui::Ui,
     window: &Window,
@@ -109,6 +124,18 @@ pub(crate) fn window_title_bar_alert(
     move_state: Option<&mut WindowMoveState>,
     tooltips: bool,
     alert: Option<&TitleBarAlert>,
+) -> bool {
+    window_title_bar_impl(ui, window, alias, move_state, tooltips, alert, None)
+}
+
+fn window_title_bar_impl(
+    ui: &mut egui::Ui,
+    window: &Window,
+    alias: &str,
+    move_state: Option<&mut WindowMoveState>,
+    tooltips: bool,
+    alert: Option<&TitleBarAlert>,
+    identity: Option<&mut dyn FnMut(&mut egui::Ui)>,
 ) -> bool {
     ui.set_min_height(crate::ui::theme::WINDOW_TITLE_CONTENT_HEIGHT);
     let rect = egui::Rect::from_min_size(
@@ -124,15 +151,13 @@ pub(crate) fn window_title_bar_alert(
             .enabled_buttons()
             .contains(winit::window::WindowButtons::MAXIMIZE),
     );
-    let drag = ui.interact(
-        caption_rect,
-        ui.id().with("window-title-drag"),
-        egui::Sense::click_and_drag(),
-    );
-    if let Some(state) = move_state {
-        update_nonmodal_window_move(ui.ctx(), window, &drag, state);
-    } else if handle_title_drag(window, &drag) {
-        let _ = window.drag_window();
+    // 调用方自己画标题那一格时（播放器的设备切换按钮），拖动区和 Windows 的
+    // `player-title-drag` 一样从那一格右边开始，免得按住设备按钮一拖就拖动了窗口；
+    // 那一格要先画出来才知道有多宽，所以拖动区放到后面登记（两者不重叠，先后无所谓）。
+    let mut move_state = move_state;
+    let has_identity = identity.is_some();
+    if !has_identity {
+        title_drag(ui, window, caption_rect, move_state.take());
     }
     let brand_rect = if alert.is_some() {
         egui::Rect::from_min_max(
@@ -147,6 +172,21 @@ pub(crate) fn window_title_bar_alert(
     } else {
         caption_rect
     };
+    // 让调用方画标题时（设备切换按钮），这一格也要像 Windows 的 caption 那样封顶，
+    // 否则长别名会一直画到屏标签那一行上。
+    let brand_rect = if identity.is_some() {
+        egui::Rect::from_min_max(
+            brand_rect.min,
+            egui::pos2(
+                (brand_rect.left()
+                    + crate::ui::theme::VIEWER_IDENTITY_MAX_WIDTH.min(brand_rect.width()))
+                .min(brand_rect.right()),
+                brand_rect.max.y,
+            ),
+        )
+    } else {
+        brand_rect
+    };
     let mut caption = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(brand_rect)
@@ -154,14 +194,31 @@ pub(crate) fn window_title_bar_alert(
     );
     caption.set_clip_rect(brand_rect);
     paint_brand_logo(&mut caption);
-    caption.add(
-        egui::Label::new(
-            egui::RichText::new(alias)
-                .size(crate::ui::theme::SMALL)
-                .color(crate::ui::theme::TEXT),
-        )
-        .truncate(),
-    );
+    match identity {
+        Some(draw) => {
+            draw(&mut caption);
+            let start = caption
+                .min_rect()
+                .right()
+                .clamp(caption_rect.left(), caption_rect.right());
+            title_drag(
+                ui,
+                window,
+                egui::Rect::from_min_max(egui::pos2(start, caption_rect.top()), caption_rect.max),
+                move_state.take(),
+            );
+        }
+        None => {
+            caption.add(
+                egui::Label::new(
+                    egui::RichText::new(alias)
+                        .size(crate::ui::theme::SMALL)
+                        .color(crate::ui::theme::TEXT),
+                )
+                .truncate(),
+            );
+        }
+    }
     if let Some(alert) = alert {
         let margin = crate::ui::theme::WINDOW_TITLE_MARGIN;
         let centered = rect.translate(egui::vec2(
@@ -182,6 +239,25 @@ pub(crate) fn window_title_bar_alert(
     let close = window_buttons_impl(&mut controls, window, tooltips);
     ui.allocate_rect(rect, egui::Sense::hover());
     close
+}
+
+/// 标题栏上能拖动窗口的那一片。
+fn title_drag(
+    ui: &mut egui::Ui,
+    window: &Window,
+    area: egui::Rect,
+    move_state: Option<&mut WindowMoveState>,
+) {
+    let drag = ui.interact(
+        area,
+        ui.id().with("window-title-drag"),
+        egui::Sense::click_and_drag(),
+    );
+    if let Some(state) = move_state {
+        update_nonmodal_window_move(ui.ctx(), window, &drag, state);
+    } else if handle_title_drag(window, &drag) {
+        let _ = window.drag_window();
+    }
 }
 
 pub(crate) fn paint_title_alert(ui: &egui::Ui, alert: &TitleBarAlert, rect: egui::Rect) {
@@ -291,6 +367,8 @@ fn window_buttons_impl(ui: &mut egui::Ui, window: &Window, tooltips: bool) -> bo
             false,
             if !tooltips {
                 ""
+            } else if window.fullscreen().is_some() {
+                "退出全屏"
             } else if expanded {
                 "还原"
             } else {
@@ -315,144 +393,16 @@ fn window_buttons_impl(ui: &mut egui::Ui, window: &Window, tooltips: bool) -> bo
         ui,
         TitleIcon::Close,
         false,
-        if tooltips { "关闭" } else { "" },
+        if !tooltips {
+            ""
+        } else if window.fullscreen().is_some() {
+            // Only a player window goes fullscreen.
+            "关闭当前串流窗口"
+        } else {
+            "关闭"
+        },
     )
     .clicked()
-}
-
-pub(crate) fn set_fullscreen(window: &Window, fullscreen: Option<Fullscreen>) {
-    // Publish the target before winit synchronously changes styles/bounds.
-    // Its undecorated WM_NCCALCSIZE path otherwise clamps an IsZoomed HWND
-    // to rcWork even when the requested bounds cover the complete monitor.
-    if let Err(error) = prepare_window_background(window, fullscreen.is_some()) {
-        tracing::warn!(%error, "prepare fullscreen client area");
-    }
-    window.set_fullscreen(fullscreen);
-    configure_dwm_window(window);
-}
-
-pub(crate) fn configure_dwm_window(window: &Window) {
-    if let Err(error) = prepare_window_background(window, window.fullscreen().is_some()) {
-        tracing::warn!(%error, "prepare window background");
-    }
-    let Ok(hwnd) = window_hwnd(window) else {
-        return;
-    };
-    let dark_mode = 1_i32;
-    let fullscreen = window.fullscreen().is_some();
-    let color = crate::ui::theme::WINDOW_BORDER;
-    let border_color = if fullscreen {
-        DWMWA_COLOR_NONE
-    } else {
-        u32::from(color.r()) | (u32::from(color.g()) << 8) | (u32::from(color.b()) << 16)
-    };
-    let corner = if fullscreen {
-        DWMWCP_DONOTROUND
-    } else {
-        DWMWCP_ROUNDSMALL
-    };
-    unsafe {
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
-            (&raw const dark_mode).cast(),
-            std::mem::size_of_val(&dark_mode) as u32,
-        );
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_BORDER_COLOR,
-            (&raw const border_color).cast(),
-            std::mem::size_of_val(&border_color) as u32,
-        );
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            (&raw const corner).cast(),
-            std::mem::size_of_val(&corner) as u32,
-        );
-    }
-}
-
-fn prepare_window_background(window: &Window, fullscreen: bool) -> Result<()> {
-    anyhow::ensure!(
-        unsafe {
-            SetWindowSubclass(
-                window_hwnd(window)?,
-                Some(backdrop_proc),
-                BACKDROP_SUBCLASS,
-                usize::from(fullscreen),
-            )
-            .as_bool()
-        },
-        "install window background"
-    );
-    unsafe {
-        let hwnd = window_hwnd(window)?;
-        let dc = GetDC(Some(hwnd));
-        paint_backdrop(hwnd, dc);
-        ReleaseDC(Some(hwnd), dc);
-    }
-    Ok(())
-}
-
-unsafe extern "system" fn backdrop_proc(
-    hwnd: HWND,
-    message: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-    id: usize,
-    data: usize,
-) -> LRESULT {
-    unsafe {
-        match message {
-            WM_MOVING if data == 0 && lparam.0 != 0 => {
-                let mut cursor = POINT::default();
-                if GetCursorPos(&raw mut cursor).is_ok() {
-                    let rect = &mut *(lparam.0 as *mut RECT);
-                    let position =
-                        constrain_drag_position(PhysicalPosition::new(rect.left, rect.top), cursor);
-                    rect.bottom = rect
-                        .bottom
-                        .saturating_add(position.y.saturating_sub(rect.top));
-                    rect.top = position.y;
-                    return LRESULT(1);
-                }
-            }
-            WM_NCCALCSIZE if data != 0 && wparam.0 != 0 => {
-                // Keep the proposed full window rectangle as the client area.
-                // Normal maximization still delegates to winit's rcWork logic.
-                return LRESULT(0);
-            }
-            WM_ERASEBKGND => {
-                paint_backdrop(hwnd, HDC(wparam.0 as _));
-                return LRESULT(1);
-            }
-            WM_NCDESTROY => {
-                let _ = RemoveWindowSubclass(hwnd, Some(backdrop_proc), id);
-            }
-            _ => {}
-        }
-        DefSubclassProc(hwnd, message, wparam, lparam)
-    }
-}
-
-unsafe fn paint_backdrop(hwnd: HWND, dc: HDC) {
-    unsafe {
-        let mut rect = RECT::default();
-        if GetClientRect(hwnd, &mut rect).is_ok() {
-            let color = crate::ui::theme::BG;
-            let old = SetDCBrushColor(
-                dc,
-                COLORREF(
-                    u32::from(color.r())
-                        | (u32::from(color.g()) << 8)
-                        | (u32::from(color.b()) << 16),
-                ),
-            );
-            FillRect(dc, &rect, HBRUSH(GetStockObject(DC_BRUSH).0));
-            SetDCBrushColor(dc, old);
-        }
-    }
 }
 
 pub(crate) fn resize_regions(
@@ -545,98 +495,6 @@ pub(crate) fn resize_regions(
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct WindowMoveState {
-    start: Option<(POINT, PhysicalPosition<i32>)>,
-}
-
-pub(crate) fn constrain_drag_position(
-    position: PhysicalPosition<i32>,
-    cursor: POINT,
-) -> PhysicalPosition<i32> {
-    // Follow the pointer's destination monitor, including monitors above the
-    // primary display. Work-area coordinates also account for a top taskbar.
-    let monitor = unsafe { MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST) };
-    let mut info = MONITORINFO {
-        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    if unsafe { GetMonitorInfoW(monitor, &raw mut info) }.as_bool() {
-        PhysicalPosition::new(position.x, position.y.max(info.rcWork.top))
-    } else {
-        position
-    }
-}
-
-pub(crate) fn update_nonmodal_window_move(
-    ctx: &egui::Context,
-    window: &Window,
-    response: &egui::Response,
-    state: &mut WindowMoveState,
-) {
-    if window.fullscreen().is_some() {
-        state.start = None;
-        return;
-    }
-    if response.double_clicked() {
-        if state.start.take().is_some() {
-            let _ = unsafe { ReleaseCapture() };
-        }
-        if window.is_resizable()
-            && window
-                .enabled_buttons()
-                .contains(winit::window::WindowButtons::MAXIMIZE)
-        {
-            window.set_maximized(!window.is_maximized());
-        }
-        return;
-    }
-    if response.drag_started() {
-        let mut cursor = POINT::default();
-        if unsafe { GetCursorPos(&raw mut cursor) }.is_ok()
-            && let Ok(origin) = window.outer_position()
-        {
-            if window.is_maximized() {
-                window.set_maximized(false);
-            }
-            state.start = Some((cursor, origin));
-            tracing::debug!(x = origin.x, y = origin.y, "local title drag started");
-            if let Ok(hwnd) = window_hwnd(window) {
-                unsafe { SetCapture(hwnd) };
-            }
-        }
-    }
-    let primary_down = ctx.input(|input| input.pointer.primary_down());
-    if primary_down && let Some((start_cursor, origin)) = state.start {
-        let mut cursor = POINT::default();
-        if unsafe { GetCursorPos(&raw mut cursor) }.is_ok() {
-            let started = Instant::now();
-            window.set_outer_position(constrain_drag_position(
-                PhysicalPosition::new(
-                    origin.x.saturating_add(cursor.x - start_cursor.x),
-                    origin.y.saturating_add(cursor.y - start_cursor.y),
-                ),
-                cursor,
-            ));
-            let elapsed = started.elapsed();
-            if elapsed >= Duration::from_millis(50) {
-                tracing::warn!(
-                    elapsed_ms = elapsed.as_secs_f64() * 1000.0,
-                    "moving local viewer HWND blocked"
-                );
-            }
-        }
-    }
-    if response.drag_stopped() || !primary_down {
-        if state.start.is_some() {
-            tracing::debug!("local title drag ended");
-        }
-        if state.start.take().is_some() {
-            let _ = unsafe { ReleaseCapture() };
-        }
-    }
-}
-
 pub(crate) fn title_bar_height_pixels(window: &Window) -> u32 {
     if window.fullscreen().is_some() {
         0
@@ -649,147 +507,4 @@ pub(crate) fn title_bar_height_pixels(window: &Window) -> u32 {
 
 fn title_bar_height_at_scale(scale: f64) -> u32 {
     (f64::from(title_bar_height()) * scale).ceil().max(1.0) as u32
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct WindowResizeState {
-    start: Option<WindowResizeStart>,
-    pub(crate) min_size: Option<PhysicalSize<u32>>,
-    pub(crate) requested_render_size: Option<PhysicalSize<u32>>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct WindowResizeStart {
-    cursor: POINT,
-    origin: PhysicalPosition<i32>,
-    size: PhysicalSize<u32>,
-    direction: ResizeDirection,
-}
-
-pub(crate) fn update_nonmodal_window_resize(
-    ctx: &egui::Context,
-    window: &Window,
-    response: &egui::Response,
-    direction: ResizeDirection,
-    state: &mut WindowResizeState,
-    aspect: Option<(u32, u32)>,
-) {
-    if response.drag_started() {
-        let mut cursor = POINT::default();
-        if unsafe { GetCursorPos(&raw mut cursor) }.is_ok()
-            && let Ok(origin) = window.outer_position()
-        {
-            state.start = Some(WindowResizeStart {
-                cursor,
-                origin,
-                size: window.inner_size(),
-                direction,
-            });
-            if let Ok(hwnd) = window_hwnd(window) {
-                unsafe { SetCapture(hwnd) };
-            }
-        }
-    }
-    let primary_down = ctx.input(|input| input.pointer.primary_down());
-    if primary_down && let Some(start) = state.start {
-        let mut cursor = POINT::default();
-        if unsafe { GetCursorPos(&raw mut cursor) }.is_ok() {
-            state.requested_render_size = Some(apply_absolute_resize(
-                window,
-                start,
-                cursor.x - start.cursor.x,
-                cursor.y - start.cursor.y,
-                aspect,
-                state.min_size.unwrap_or(PhysicalSize::new(640, 400)),
-            ));
-        }
-    }
-    if response.drag_stopped() || !primary_down {
-        if state.start.take().is_some() {
-            let _ = unsafe { ReleaseCapture() };
-        }
-    }
-}
-
-fn apply_absolute_resize(
-    window: &Window,
-    start: WindowResizeStart,
-    dx: i32,
-    dy: i32,
-    aspect: Option<(u32, u32)>,
-    min_size: PhysicalSize<u32>,
-) -> PhysicalSize<u32> {
-    let west = matches!(
-        start.direction,
-        ResizeDirection::West | ResizeDirection::NorthWest | ResizeDirection::SouthWest
-    );
-    let east = matches!(
-        start.direction,
-        ResizeDirection::East | ResizeDirection::NorthEast | ResizeDirection::SouthEast
-    );
-    let north = matches!(
-        start.direction,
-        ResizeDirection::North | ResizeDirection::NorthEast | ResizeDirection::NorthWest
-    );
-    let south = matches!(
-        start.direction,
-        ResizeDirection::South | ResizeDirection::SouthEast | ResizeDirection::SouthWest
-    );
-    let mut width = start.size.width as i32
-        + if east {
-            dx
-        } else if west {
-            -dx
-        } else {
-            0
-        };
-    let mut height = start.size.height as i32
-        + if south {
-            dy
-        } else if north {
-            -dy
-        } else {
-            0
-        };
-    let min_width = min_size.width as i32;
-    let min_height = min_size.height as i32;
-    width = width.max(min_width);
-    height = height.max(min_height);
-
-    if let Some((video_width, video_height)) = aspect {
-        let title_height = title_bar_height_pixels(window) as i32;
-        let horizontal_only = (west || east) && !north && !south;
-        let vertical_only = (north || south) && !west && !east;
-        let width_drives = horizontal_only
-            || (!vertical_only
-                && i64::from(dx.abs()) * i64::from(video_height)
-                    >= i64::from(dy.abs()) * i64::from(video_width));
-        if width_drives {
-            height = ((i64::from(width) * i64::from(video_height) + i64::from(video_width) / 2)
-                / i64::from(video_width)) as i32
-                + title_height;
-            height = height.max(min_height);
-        } else {
-            let content_height = (height - title_height).max(1);
-            width = ((i64::from(content_height) * i64::from(video_width)
-                + i64::from(video_height) / 2)
-                / i64::from(video_height)) as i32;
-            width = width.max(min_width);
-        }
-    }
-
-    let left = if west {
-        start.origin.x + start.size.width as i32 - width
-    } else {
-        start.origin.x
-    };
-    let top = if north {
-        start.origin.y + start.size.height as i32 - height
-    } else {
-        start.origin.y
-    };
-    window.set_outer_position(PhysicalPosition::new(left, top));
-    let target = PhysicalSize::new(width as u32, height as u32);
-    let _ = window.request_inner_size(target);
-    target
 }

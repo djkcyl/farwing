@@ -1,5 +1,5 @@
 //! DXGI swap-chain creation and output geometry.
-use crate::platform::graphics::nonzero_size;
+use crate::ui::gfx::nonzero_size;
 use anyhow::{Context, Result, bail};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct3D11::*;

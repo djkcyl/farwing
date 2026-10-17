@@ -1,0 +1,56 @@
+post_install() {
+    cat <<'EOF'
+OpenUUYC 已安装。
+
+Wayland 会话下被控（让别人控制本机）需要两件事；Xorg 会话经 XTest 注入键鼠，
+无需额外设置：
+
+1. uinput 输入权限。udev 规则已安装，执行下面三行后当前会话即可使用：
+       sudo udevadm control --reload-rules
+       sudo modprobe uinput
+       echo uinput | sudo tee /etc/modules-load.d/uinput.conf
+   规则使用 TAG+="uaccess"，由 systemd-logind 给活动会话授权，
+   无需加入 input 组，也无需重新登录。
+
+2. XDG 屏幕共享门户（Wayland 必需）：
+       Hyprland: xdg-desktop-portal-hyprland
+       GNOME:    xdg-desktop-portal-gnome
+       KDE:      xdg-desktop-portal-kde
+   首次被控时在本机屏幕上点一次「共享」，之后不再询问。
+
+启动：应用菜单里的「OpenUUYC」，或运行 OpenUUYC。登录后自动启动请在
+「连接设置 → 启动 → 开机自启」中打开。接入 graphical-session.target 的桌面
+（GNOME、KDE、uwsm、niri 等）上它就是一个用户级单元，等价于：
+
+    systemctl --user enable openuuyc.service
+
+XFCE、MATE、Cinnamon 等桌面上它改写 ~/.config/autostart/openuuyc.desktop。
+
+登录态保存在系统密钥环（Secret Service），需要 gnome-keyring 或 KWallet。
+
+被控端给主控添加虚拟显示器，需要一个小程序以 root 身份去建内核的 VKMS 输出。
+它由套接字按需启动，不会常驻。装完不开启也一切照旧，只是诊断页里那一行会显示「服务未启用」。
+用它开启：
+
+    sudo systemctl enable --now openuuyc-vkms.socket
+
+还需要 Linux 6.19 或更新的内核带 CONFIG_DRM_VKMS，而且当前合成器能把新输出接进
+桌面布局（目前只有 niri）；条件不满足时诊断页里会写明是哪一条不满足。
+EOF
+}
+
+post_upgrade() {
+    post_install
+}
+
+pre_remove() {
+    cat <<'EOF'
+OpenUUYC 已移除。以下用户数据被保留：
+
+    ~/.local/share/OpenUUYC/          日志与屏幕共享授权令牌
+    ~/.config/systemd/user/           登录自启（openuuyc.service 及其 enable 符号链接）
+    ~/.config/autostart/openuuyc.desktop  （不接 graphical-session.target 的桌面上的登录自启）
+
+需要时手动删除；先 `systemctl --user disable openuuyc.service` 再删更干净。
+EOF
+}

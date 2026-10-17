@@ -206,6 +206,10 @@ impl Controller {
     pub fn interactive(&self) -> bool {
         self.1.load(Ordering::Acquire) != 0
     }
+    #[cfg_attr(
+        not(windows),
+        allow(dead_code, reason = "Only the Windows viewer offers the drag return.")
+    )]
     pub fn returning(
         &self,
         identity: native::appearance::Identity,

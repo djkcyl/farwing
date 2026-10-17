@@ -1,0 +1,66 @@
+[Unit]
+Description=OpenUUYC 虚拟显示器辅助程序
+Requires=openuuyc-vkms.socket
+After=openuuyc-vkms.socket
+# configfs 的挂载点必须先在，下面那条 ReadWritePaths 才有东西可指。
+Requires=sys-kernel-config.mount
+After=sys-kernel-config.mount
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/openuuyc-vkms
+# 它是套接字激活的：不正常退出后，下一次连接会把它拉起来。空闲超时那种正常退出
+# 不会重启，套接字单元还听着，下次连接照样能把它拉起来。
+Restart=on-failure
+
+# 这个程序以 root 运行，但只做一件事——按主程序的请求接上/断开内核 VKMS 的一路
+# 连接器。下面把它能碰的东西收到 configfs 那一处。
+# 注意不能设 ProtectKernelModules：加载 vkms 模块正是它的活。
+#
+# ProtectSystem=strict 管不到 /dev、/proc、/sys 这几棵 API 文件系统，那两棵要靠
+# ProtectKernelTunables 和 PrivateDevices 来管。不设的话 /proc/sys/kernel/core_pattern
+# 还是可写的——一旦这个进程被人拿到代码执行，就能把它改成 `|/path/to/prog`，在沙箱
+# 之外以完整 root 身份跑任意程序，CapabilityBoundingSet 挡不住（写这些文件只看
+# uid 0 的文件权限）。
+#
+# 拿到 /sys/kernel/config 而不是它下面的 vkms：那个目录是加载 vkms 模块时才出现的，
+# 而 systemd 是在起进程**之前**按 ReadWritePaths 建命名空间的，指一个还不存在的路径
+# 会让单元直接失败（status=226/NAMESPACE）。开机后第一次用到虚拟屏时正是这个状态。
+ProtectSystem=strict
+ReadWritePaths=/sys/kernel/config
+ProtectKernelTunables=yes
+PrivateDevices=yes
+ProtectHome=yes
+PrivateTmp=yes
+# 它不联网：监听套接字由 systemd 传进来，系统总线是文件套接字，都不受影响。
+PrivateNetwork=yes
+IPAddressDeny=any
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+# CAP_SYS_MODULE 只在启动时加载 vkms 的那一下用；CAP_SETPCAP 是为了用完之后能把
+# bounding 集合也清空。设备一打开（成没成都一样），进程就放掉全部能力再开始接受
+# 连接（crates/vkms/src/bin/openuuyc-vkms/privilege.rs），之后只剩 uid 0 对 configfs
+# 的属主写权限。
+CapabilityBoundingSet=CAP_SYS_MODULE CAP_SETPCAP
+SystemCallArchitectures=native
+# @module 是给 finit_module 用的：加载 vkms 走的正是它。
+SystemCallFilter=@system-service @module
+SystemCallErrorNumber=EPERM
+UMask=0077
+# 兜底。套接字是 0666 的，就算前面那些都被人绕过去，这个进程也不该长起来。
+TasksMax=64
+MemoryMax=64M
+LimitNOFILE=256
+
+# 故意没有 [Install]：这是套接字激活的服务，由 openuuyc-vkms.socket 按需拉起。
+# 写了 WantedBy=multi-user.target 的话，谁对 service（而不是 socket）执行一次 enable，
+# 它就开机常驻了，和「按需启动」正好相反。

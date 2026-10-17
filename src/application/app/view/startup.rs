@@ -5,20 +5,25 @@ use crate::platform::host_service;
 use host_service::startup::State;
 use std::time::{Duration, Instant};
 
-/// Reading the entry and the install mode touches the registry/filesystem,
-/// so the page rereads them at most this often.
-const REFRESH: Duration = Duration::from_secs(2);
+/// Reading the entry and the install mode touches the registry/filesystem, and
+/// on Linux spawns `systemctl`, so the page rereads them at most this often.
+const REFRESH: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 pub(super) struct ViewState {
     checked: Option<Instant>,
     startup: Option<Result<State, String>>,
+    /// Why login startup cannot work here at all, if it cannot. Windows never
+    /// says so; Linux only when it has neither a systemd user unit nor an XDG
+    /// autostart entry to write.
+    unavailable: Option<String>,
     /// The resident service keeps the device online before login on its own.
     managed: bool,
 }
 impl ViewState {
     fn refresh(&mut self) {
         self.startup = Some(host_service::startup::state().map_err(|error| format!("{error:#}")));
+        self.unavailable = host_service::startup::unavailable();
         self.managed = host_service::resident::managed();
         self.checked = Some(Instant::now());
     }
@@ -34,9 +39,12 @@ impl DeviceCenterApp {
         let readable = matches!(state.startup, Some(Ok(_)));
         let system_disabled = matches!(state.startup, Some(Ok(State::DisabledByWindows)));
         let mut enabled = matches!(state.startup, Some(Ok(State::Enabled)));
+        let unavailable = state.unavailable.clone();
+        // 自启用不了时打开只会失败；但已经开着的还要能关掉。
+        let toggleable = unavailable.is_none() || enabled;
         let managed = state.managed;
         // Installing or removing components rewrites this entry.
-        let busy = self.center_ui.components.busy();
+        let busy = self.maintenance_busy();
         section(ui, "启动");
         let mut changed = false;
         form_row(
@@ -49,7 +57,7 @@ impl DeviceCenterApp {
             },
             |ui| {
                 changed = ui
-                    .add_enabled_ui(readable && !busy && !system_disabled, |ui| {
+                    .add_enabled_ui(readable && !busy && !system_disabled && toggleable, |ui| {
                         crate::ui::controls::switch(ui, &mut enabled)
                     })
                     .inner
@@ -91,6 +99,9 @@ impl DeviceCenterApp {
                 );
             }
             _ => {}
+        }
+        if readable && let Some(reason) = &unavailable {
+            ui.colored_label(AMBER, format!("开机自启不可用：{reason}"));
         }
     }
 }

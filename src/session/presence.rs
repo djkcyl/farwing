@@ -52,7 +52,7 @@ impl ActivePresence {
         let task = tokio::spawn(async move {
             let ended = client.ended();
             let run = async {
-                if crate::platform::windows::host_service::resident::managed() {
+                if crate::platform::host_service::resident::managed() {
                     run_remote(client.clone(), events.clone(), task_cancel.clone()).await
                 } else {
                     run_presence(client.clone(), events.clone(), task_cancel.clone()).await
@@ -88,12 +88,6 @@ impl ActivePresence {
     }
 }
 
-// This mutex is never acquired: its HANDLE only reserves the object name.
-struct Reservation {
-    _handle: crate::platform::windows::host_service::pipe::Handle,
-}
-unsafe impl Send for Reservation {}
-
 async fn run_presence(
     client: HostClient,
     events: Sender<PresenceEvent>,
@@ -103,26 +97,11 @@ async fn run_presence(
     // During installation the new background waits for the portable room's
     // normal close; two account owners must never kick each other off the server.
     let _owner = loop {
-        use windows::{
-            Win32::{
-                Foundation::{ERROR_ALREADY_EXISTS, GetLastError},
-                System::Threading::CreateMutexW,
-            },
-            core::PCWSTR,
-        };
-        let name: Vec<u16> = format!("Global\\OpenUUYC.Presence.{}", client.presence_key())
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
-        let handle = Reservation {
-            _handle: crate::platform::windows::host_service::pipe::Handle(unsafe {
-                CreateMutexW(None, false, PCWSTR(name.as_ptr()))?
-            }),
-        };
-        if unsafe { GetLastError() } != ERROR_ALREADY_EXISTS {
-            break handle;
+        if let Some(reservation) =
+            crate::platform::host_service::reserve_presence(&client.presence_key())?
+        {
+            break reservation;
         }
-        drop(handle);
         tokio::select! { _ = task_cancel.cancelled() => return Ok(()), _ = tokio::time::sleep(Duration::from_millis(100)) => () }
     };
     let _assistance = crate::features::host::assist::Running::start(client.clone());
@@ -334,7 +313,7 @@ async fn run_remote(
     cancel: CancellationToken,
 ) -> Result<()> {
     use crate::account::auth::{KeyringSessionStore, SessionStore};
-    use crate::platform::windows::host_service::resident::{self, Reply, Request};
+    use crate::platform::host_service::resident::{self, Reply, Request};
     // Reuse the credential handle, not its contents: each poll must still see
     // logout/account changes and portable/resident storage transitions.
     let sessions = KeyringSessionStore::new()?;
@@ -343,7 +322,7 @@ async fn run_remote(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     while !cancel.is_cancelled() {
         tokio::select! { _ = cancel.cancelled() => break, _ = tick.tick() => () }
-        if crate::platform::windows::components::maintaining() {
+        if crate::platform::host_service::maintaining() {
             continue;
         }
         let saved = sessions.load()?.map(|s| s.generation());
@@ -394,7 +373,7 @@ async fn run_remote(
                 // Installation intentionally replaces the endpoint; uninstall
                 // hands ownership back to portable presence. Do not publish a
                 // stale RPC failure after that handoff.
-                if crate::platform::windows::components::maintaining() || !resident::managed() {
+                if crate::platform::host_service::maintaining() || !resident::managed() {
                     continue;
                 }
                 client.host.remote_failed(format!("{e:#}"));

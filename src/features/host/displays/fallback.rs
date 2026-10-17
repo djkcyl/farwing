@@ -18,12 +18,11 @@ struct Record {
 fn path() -> Result<PathBuf> {
     // Display recovery is independent from account login/authorization. SYSTEM
     // keeps using the machine directory even after the account vault is disabled.
-    let root =
-        if crate::platform::windows::host_service::vault::sid(std::process::id())? == "S-1-5-18" {
-            crate::platform::windows::host_service::vault::root()?.join("displays")
-        } else {
-            store::root()?
-        };
+    let root = if crate::platform::host_service::vault::sid(std::process::id())? == "S-1-5-18" {
+        crate::platform::host_service::vault::root()?.join("displays")
+    } else {
+        store::root()?
+    };
     Ok(root.join("fallback.json"))
 }
 fn clear_record() -> Result<()> {
@@ -200,13 +199,7 @@ pub(super) fn retire(driver: &Driver, replacement_identity: Option<&str>) -> Res
     // The driver checks live per-handle pins atomically with removal. A second
     // connection appearing after this snapshot cannot lose its fallback.
     if let Err(error) = driver.remove(FALLBACK_ID) {
-        if error
-            .downcast_ref::<windows::core::Error>()
-            .is_some_and(|e| {
-                e.code()
-                    == windows::core::HRESULT::from_win32(windows::Win32::Foundation::ERROR_BUSY.0)
-            })
-        {
+        if crate::platform::display::virtual_driver::busy(&error) {
             return Ok(false);
         }
         return Err(error);
@@ -283,7 +276,7 @@ impl Maintainer {
 pub(crate) fn start_background() {
     // Installed mode has one account-independent service agent. A portable GUI
     // needs a local maintainer only while that service is unavailable.
-    if crate::platform::windows::host_service::install::running().unwrap_or(false) {
+    if crate::platform::host_service::install::running().unwrap_or(false) {
         return;
     }
     static STARTED: std::sync::Once = std::sync::Once::new();
@@ -294,7 +287,7 @@ pub(crate) fn start_background() {
                 let mut owner = Maintainer::default();
                 let mut last_error = String::new();
                 loop {
-                    if crate::platform::windows::host_service::install::running().unwrap_or(false) {
+                    if crate::platform::host_service::install::running().unwrap_or(false) {
                         owner.returning = None;
                         std::thread::sleep(Duration::from_secs(2));
                         continue;

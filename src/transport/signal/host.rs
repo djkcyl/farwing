@@ -346,7 +346,10 @@ impl Session {
                 )?;
                 let file_only = options.kind == 5;
                 let ports_only = options.kind == 9;
-                let data_only = file_only || ports_only;
+                // UU's `CT_TERMINAL`: a shell on this machine, with no video or
+                // audio of its own. The Android client opens it as kind 8.
+                let terminal_only = options.kind == 8;
+                let data_only = file_only || ports_only || terminal_only;
                 let default_streamer = serde_json::json!({});
                 let streamer = value
                     .get("streamer_data")
@@ -387,7 +390,7 @@ impl Session {
                     decoders=?options.decoders,formats=?remote.video_codec_capability,
                     "host incoming media capabilities");
                 anyhow::ensure!(
-                    matches!(options.kind, 1 | 5 | 9)
+                    matches!(options.kind, 1 | 5 | 8 | 9)
                         && matches!(options.connect_type, 1 | 2)
                         && (!data_only || options.connect_type == 1),
                     "不支持的被控连接类型"
@@ -430,12 +433,24 @@ impl Session {
                     !ports_only || authorization.port_policy().0,
                     "本机未允许端口转发"
                 );
+                // A host that cannot serve a terminal refuses with its own
+                // reason before the permission is considered.
+                if let Some(reason) = terminal_only
+                    .then(crate::features::host::terminal::unavailable)
+                    .flatten()
+                {
+                    anyhow::bail!(reason);
+                }
+                anyhow::ensure!(
+                    !terminal_only || authorization.terminal_allowed(),
+                    "本机未允许终端"
+                );
                 self.cancel_preparation().await;
                 if let Some(peer) = self.peer.take() {
                     peer.close().await;
                 }
                 let owner = authorization.peer_lease()?;
-                owner.controller(&options.device_id, &client_id);
+                owner.controller(&options.device_id, &client_id, terminal_only);
                 let cancel = tokio_util::sync::CancellationToken::new();
                 let lease = owner.with_cancellation(cancel.clone());
                 let update_resume = (!audio_only && !data_only)
@@ -549,6 +564,7 @@ impl Session {
                             options.clipboard_level(),
                             options.file_capabilities(),
                             data_only,
+                            terminal_only,
                             update_resume,
                         )
                         .await?;

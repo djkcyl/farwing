@@ -8,7 +8,19 @@ use crate::media::video_color::VideoColorSpace;
 use crate::media::video_format::VideoFormatSignature;
 use crate::transport::rtc::PlayoutDelay;
 use std::collections::HashSet;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// 首包锚定时向后登记的「预窗口」大小；必须与
+/// `crate::transport::rtc::feedback::RTP_STARTUP_NACK_WINDOW` 保持一致。
+/// macOS host 的会话初始 STAP-A(SPS/PPS) + IDR 早于我们 attach，该窗口内
+/// 的包由 feedback 侧的 pre-window NACK 补回。1080p 关键帧约 25-120 个
+/// FU-A 片，窗口必须覆盖整帧（含 STAP-A 与 S=1 首片），24 太窄；
+/// 128 条目 NACK ~600B 仍在单个 RTCP 包内。
+const PRE_WINDOW_NACK: u16 = 128;
+/// 会话起点（首包锚定）后允许「扣住前缀未到齐的帧」等待补传的宽限期。
+/// 过期后不再组装缺了开头的帧，按常规缺口请求关键帧，避免 host 不重传
+/// 时永久等待。
+const PRE_WINDOW_GRACE: Duration = Duration::from_millis(2000);
 
 pub(super) struct BufferedPacket {
     pub(super) packet: ParsedVideoPacket,
@@ -50,6 +62,10 @@ pub(super) struct PacketBuffer {
     pub(super) last_keyframe_first_sequence: Option<u16>,
     pub(super) parameters: ParameterTracker,
     malformed_av1: bool,
+    /// 首包锚定时刻，用于 PRE_WINDOW_GRACE 宽限期判定。
+    anchored_at: Option<Instant>,
+    /// 被扣住（前缀等待 NACK 补传）的帧的 marker 序号；由 poll 重扫。
+    pub(super) pending_rescan: Option<u16>,
 }
 
 pub(super) struct SequenceUnwrapper {
@@ -78,6 +94,8 @@ impl PacketBuffer {
             last_keyframe_first_sequence: None,
             parameters: ParameterTracker::default(),
             malformed_av1: false,
+            anchored_at: None,
+            pending_rescan: None,
         }
     }
 
@@ -108,6 +126,12 @@ impl PacketBuffer {
                 return false;
             }
         }
+        // 包级 prepend 可能给首片补上了 SPS/PPS NAL：重算标志位，
+        // 帧组装时才不会重复前拼接。
+        if packet.codec == VideoCodecKind::H264 {
+            packet.sps = packet.nalus.iter().any(|n| n.kind == 7 && n.sps >= 0);
+            packet.pps = packet.nalus.iter().any(|n| n.kind == 8);
+        }
         true
     }
 
@@ -116,6 +140,18 @@ impl PacketBuffer {
         if !self.first_packet_received {
             self.first_sequence_number = sequence_number;
             self.first_packet_received = true;
+            self.anchored_at = Some(Instant::now());
+            // 登记预窗口缺失：加入会话时早于首包的包（macOS host 的初始
+            // STAP-A(SPS/PPS) + IDR 首片）由 feedback 侧 pre-window NACK
+            // 补回；登记后 find_frames 才能识别「帧前缀未到齐」，避免把
+            // 残缺帧当作完整关键帧发出（那会永久卡住首次解码）。首包本身
+            // 就是关键帧开头时没有缺口，feedback 侧也不会去要。
+            if !packet.starts_keyframe() {
+                for offset in 1u16..=PRE_WINDOW_NACK {
+                    self.missing_packets
+                        .insert(sequence_number.wrapping_sub(offset));
+                }
+            }
         } else if ahead_of(self.first_sequence_number, sequence_number) {
             if self.cleared_to_first_sequence {
                 return PacketInsertResult::empty();
@@ -236,6 +272,8 @@ impl PacketBuffer {
         self.missing_packets.clear();
         self.received_padding.clear();
         self.last_keyframe_first_sequence = None;
+        self.anchored_at = None;
+        self.pending_rescan = None;
     }
 
     pub(super) fn clear_to(&mut self, sequence_number: u16) {
@@ -264,6 +302,37 @@ impl PacketBuffer {
             .retain(|missing| sequence_at_or_ahead(*missing, target));
         self.received_padding
             .retain(|padding| sequence_at_or_ahead(*padding, target));
+        // 被扣住的帧若整体落在清理前沿之前，其包槽已不可用，无需再重扫。
+        if self
+            .pending_rescan
+            .is_some_and(|pending| ahead_of(target, pending))
+        {
+            self.pending_rescan = None;
+        }
+    }
+
+    /// 重扫被扣住的帧（前缀等待 pre-window NACK 补传）。接收 worker 在每次
+    /// poll 时调用：补全后释放，宽限期过后放弃（按常规缺口处理）。
+    pub(super) fn rescan_pending(&mut self) -> Vec<EncodedFrame> {
+        let Some(sequence_number) = self.pending_rescan else {
+            return Vec::new();
+        };
+        if !self.in_startup_window() {
+            // 宽限期已过：不再从帧尾回溯，残缺帧不会被组装，按常规缺口
+            // 处理（请求关键帧）。
+            self.pending_rescan = None;
+            return Vec::new();
+        }
+        self.find_frames(sequence_number)
+    }
+
+    /// 会话起点的宽限期内、尚未组装出任何关键帧时，才允许为补传扣住帧
+    /// 或从帧尾 marker 回溯。之后缺了首片的帧按常规缺口处理。
+    fn in_startup_window(&self) -> bool {
+        self.last_keyframe_first_sequence.is_none()
+            && self
+                .anchored_at
+                .is_some_and(|anchored| anchored.elapsed() < PRE_WINDOW_GRACE)
     }
 
     pub(super) fn potential_new_frame(&self, sequence_number: u16) -> bool {
@@ -280,6 +349,13 @@ impl PacketBuffer {
             return false;
         }
         if entry.packet.is_first_packet_in_frame {
+            return true;
+        }
+        // 加入会话时可能错过关键帧的 S=1 首片（macOS host 的初始 IDR 常早于
+        // 接收窗口），此时从帧尾 marker 包回溯也能拼出该帧，避免永久卡在
+        // 「等关键帧」。只限会话起点：之后缺了开头的帧是普通丢包，组装
+        // 出来只会把花屏带到下一个关键帧。
+        if entry.packet.marker && self.in_startup_window() {
             return true;
         }
         let Some(previous) = self.buffer[previous_index].as_ref() else {
@@ -331,6 +407,65 @@ impl PacketBuffer {
                     }
                     start = previous;
                 }
+                // 会话起点 STAP-A(SPS/PPS) + IDR 首片可能早于接收窗口
+                // （macOS host）：若帧前缀未到齐（首包是 FU-A 续片，或关键帧
+                // 缺参数集）且其前序包仍在缺失集合中（pre-window NACK 补传
+                // 中），扣住本帧等待补全，由接收 worker 的 poll 重扫；宽限期
+                // 过后放弃，按常规缺口请求关键帧，避免 host 不重传时永久卡住。
+                let grace_live = self.in_startup_window();
+                // 槽位缺席 = 该 seq 从未到达（已登记 missing，或落在 pre-window
+                // 之外而从未被 NACK）。比 missing 集合判定更健壮：超出 NACK
+                // 窗口的缺口同样能扣住帧；只有真正“帧头”（前槽是别的包的
+                // 槽位）才放行。
+                let boundary_seq = start.wrapping_sub(1);
+                let boundary_absent = self
+                    .buffer
+                    .get(boundary_seq as usize % self.buffer.len())
+                    .map(|slot| {
+                        slot.as_ref()
+                            .is_none_or(|entry| entry.packet.sequence_number != boundary_seq)
+                    })
+                    .unwrap_or(true);
+                if grace_live && boundary_absent {
+                    let truncated = !self.buffer[start as usize % self.buffer.len()]
+                        .as_ref()
+                        .expect("frame start slot")
+                        .packet
+                        .is_first_packet_in_frame;
+                    let mut has_sps = false;
+                    let mut has_pps = false;
+                    let mut has_idr = false;
+                    let mut probe = start;
+                    let mut guard = 0;
+                    let frame_end = sequence_number.wrapping_add(1);
+                    while probe != frame_end && guard < self.buffer.len() {
+                        guard += 1;
+                        if let Some(entry) =
+                            self.buffer[probe as usize % self.buffer.len()].as_ref()
+                        {
+                            has_sps |= entry.packet.sps;
+                            has_pps |= entry.packet.pps;
+                            has_idr |= entry.packet.idr;
+                        }
+                        probe = probe.wrapping_add(1);
+                    }
+                    let parameter_gap = match self.buffer[index]
+                        .as_ref()
+                        .expect("last frame packet")
+                        .packet
+                        .codec
+                    {
+                        VideoCodecKind::H264 => has_idr && (!has_sps || !has_pps),
+                        VideoCodecKind::H265 => {
+                            (has_sps || has_pps || has_idr) && (!has_sps || !has_pps)
+                        }
+                        VideoCodecKind::Av1 => false,
+                    };
+                    if truncated || parameter_gap {
+                        self.pending_rescan = Some(sequence_number);
+                        break;
+                    }
+                }
                 let end = sequence_number.wrapping_add(1);
                 let mut validate = start;
                 while validate != end {
@@ -357,6 +492,7 @@ impl PacketBuffer {
                 let mut frame_sending_delay_ms = None;
                 let mut playout_delay = None;
                 let mut nack_count = 0;
+                let mut frame_pps_id = None;
                 let mut received_at: Option<Instant> = None;
                 let mut last_received_at: Option<Instant> = None;
                 let timestamp = self.buffer[index]
@@ -385,6 +521,14 @@ impl PacketBuffer {
                     sps |= packet.packet.sps;
                     pps |= packet.packet.pps;
                     idr |= packet.packet.idr;
+                    frame_pps_id = frame_pps_id.or_else(|| {
+                        packet
+                            .packet
+                            .nalus
+                            .iter()
+                            .find(|n| matches!(n.kind, 1 | 5) && n.pps >= 0)
+                            .map(|n| n.pps)
+                    });
                     parameter_format = packet.packet.parameter_format.or(parameter_format);
                     if packet.packet.marker {
                         color_space = packet.packet.color_space;
@@ -428,6 +572,28 @@ impl PacketBuffer {
                     VideoCodecKind::H265 => sps && pps && idr,
                     VideoCodecKind::Av1 => idr && parameter_format.is_some(),
                 };
+                // 帧级参数集补齐：关键帧首片丢失（NACK 恢复出的是截断帧，
+                // 没有 S=1 片供包级 prepend 挂靠），但跟踪表已有 SPS/PPS
+                // （重传的 STAP-A 或 sprop）时，把成对字节拼到帧首，
+                // 让解码器仍能初始化。任一残留切片都可解析 pps_id。
+                if keyframe
+                    && codec == VideoCodecKind::H264
+                    && (!sps || !pps)
+                    && let Some(pps_id) = frame_pps_id
+                    && let Some((sps_id, pps_id)) = self.parameters.h264_pair_for(pps_id)
+                    && let Some(pair) = self.parameters.h264_pair_annexb(sps_id, pps_id)
+                {
+                    tracing::debug!(
+                        ?start,
+                        sps_id,
+                        pps_id,
+                        "keyframe missing parameter sets; prepending tracked pair"
+                    );
+                    let mut complete = Vec::with_capacity(pair.len() + data.len());
+                    complete.extend_from_slice(&pair);
+                    complete.append(&mut data);
+                    data = complete;
+                }
                 if keyframe {
                     self.last_keyframe_first_sequence = Some(start);
                 }
@@ -457,6 +623,9 @@ impl PacketBuffer {
                 });
                 self.missing_packets
                     .retain(|missing| *missing > sequence_number);
+                if self.pending_rescan == Some(sequence_number) {
+                    self.pending_rescan = None;
+                }
             }
             sequence_number = sequence_number.wrapping_add(1);
         }
@@ -513,5 +682,75 @@ impl SequenceUnwrapper {
             .expect("sequence candidates");
         self.last = Some(unwrapped);
         unwrapped
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use webrtc::rtp::{header::Header, packet::Packet};
+
+    fn packet(
+        sequence_number: u16,
+        timestamp: u32,
+        marker: bool,
+        payload: &[u8],
+    ) -> ParsedVideoPacket {
+        let rtp = Packet {
+            header: Header {
+                sequence_number,
+                timestamp,
+                marker,
+                ..Default::default()
+            },
+            payload: bytes::Bytes::copy_from_slice(payload),
+        };
+        super::super::depacketize::depacketize_h264(&rtp, Instant::now()).unwrap()
+    }
+
+    /// A P frame sent as three FU-A fragments (type 1), without its first.
+    fn p_frame_tail(buffer: &mut PacketBuffer, start: u16, timestamp: u32) -> Vec<EncodedFrame> {
+        let mut frames = buffer
+            .insert(packet(
+                start + 1,
+                timestamp,
+                false,
+                &[0x7c, 0x01, 0xaa, 0xbb],
+            ))
+            .frames;
+        frames.extend(
+            buffer
+                .insert(packet(
+                    start + 2,
+                    timestamp,
+                    true,
+                    &[0x7c, 0x41, 0xcc, 0xdd],
+                ))
+                .frames,
+        );
+        frames
+    }
+
+    #[test]
+    fn mid_session_frame_missing_its_start_is_not_assembled() {
+        let mut buffer = PacketBuffer::new();
+        // A whole IDR slice in one packet starts the session.
+        buffer.insert(packet(100, 1_000, true, &[0x65, 0x88, 0x84, 0x00, 0x10]));
+        buffer.anchored_at = Some(Instant::now() - PRE_WINDOW_GRACE * 2);
+        buffer.rescan_pending();
+        assert!(p_frame_tail(&mut buffer, 101, 4_000).is_empty());
+    }
+
+    #[test]
+    fn startup_frame_missing_its_start_waits_then_gives_up() {
+        let mut buffer = PacketBuffer::new();
+        assert!(p_frame_tail(&mut buffer, 101, 4_000).is_empty());
+        assert!(
+            buffer.pending_rescan.is_some(),
+            "held for the pre-window NACK"
+        );
+        buffer.anchored_at = Some(Instant::now() - PRE_WINDOW_GRACE * 2);
+        assert!(buffer.rescan_pending().is_empty());
+        assert!(buffer.pending_rescan.is_none());
     }
 }

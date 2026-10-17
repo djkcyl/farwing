@@ -204,7 +204,7 @@ impl Client {
             return Ok(Some(Frame {
                 width: source.layout.width,
                 height: source.layout.height,
-                texture: texture.clone(),
+                image: texture.clone(),
                 captured: Instant::now().checked_sub(age).unwrap_or_else(Instant::now),
                 is_new: reply.is_new,
                 hdr_metadata: reply.metadata,
