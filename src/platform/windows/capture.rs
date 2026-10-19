@@ -24,7 +24,7 @@ mod power;
 mod recovery;
 mod session;
 mod warmup;
-pub(crate) use warmup::warm_up;
+pub(crate) use warmup::{keep_for_reconnect, warm_up};
 
 /// Read the state of this process's interactive session. Unknown/failure is
 /// not an unlocked session; callers retain their last confirmed report.

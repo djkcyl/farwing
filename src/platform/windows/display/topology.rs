@@ -84,7 +84,11 @@ pub(crate) struct Topology {
 /// mode), and the host reads its display inventory every second. While the
 /// display configuration (`QueryDisplayConfig`, cheap) is unchanged, those
 /// results are reused for at most this long.
-const INVENTORY_REUSE: std::time::Duration = std::time::Duration::from_secs(10);
+pub(crate) const INVENTORY_REUSE: std::time::Duration = std::time::Duration::from_secs(10);
+/// Results are kept this long for a session that starts while the
+/// configuration is unchanged: it starts from them and its first periodic
+/// read (within a second) replaces anything older than `INVENTORY_REUSE`.
+pub(crate) const INVENTORY_KEEP: std::time::Duration = std::time::Duration::from_secs(600);
 
 struct Reused<T> {
     signature: u64,
@@ -97,21 +101,23 @@ static MODES_REUSE: std::sync::Mutex<Vec<Reused<(String, Vec<Mode>)>>> =
     std::sync::Mutex::new(Vec::new());
 
 /// The cached value for `signature` that `matches`, if read within
-/// `INVENTORY_REUSE`; otherwise `read` it and keep it.
+/// `max_age`; otherwise `read` it and keep it.
 fn reuse<T: Clone>(
     cache: &std::sync::Mutex<Vec<Reused<T>>>,
     signature: u64,
     now: std::time::Instant,
+    max_age: std::time::Duration,
     matches: impl Fn(&T) -> bool,
     read: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
     {
         let mut entries = cache.lock().unwrap_or_else(|e| e.into_inner());
-        entries.retain(|entry| now.saturating_duration_since(entry.at) < INVENTORY_REUSE);
-        if let Some(entry) = entries
-            .iter()
-            .find(|entry| entry.signature == signature && matches(&entry.value))
-        {
+        entries.retain(|entry| now.saturating_duration_since(entry.at) < INVENTORY_KEEP);
+        if let Some(entry) = entries.iter().find(|entry| {
+            entry.signature == signature
+                && now.saturating_duration_since(entry.at) < max_age
+                && matches(&entry.value)
+        }) {
             return Ok(entry.value.clone());
         }
     }
@@ -306,9 +312,14 @@ impl Topology {
     }
 
     pub(crate) fn targets(&self) -> Result<Vec<Target>> {
+        self.targets_within(INVENTORY_REUSE)
+    }
+
+    /// [`Self::targets`] from results read within `max_age`.
+    pub(crate) fn targets_within(&self, max_age: std::time::Duration) -> Result<Vec<Target>> {
         let signature = self.signature();
         let now = std::time::Instant::now();
-        let mut targets = self.metadata()?;
+        let mut targets = self.metadata_within(max_age)?;
         for target in &mut targets {
             if !target.source.is_empty() {
                 let source = target.source.clone();
@@ -316,6 +327,7 @@ impl Topology {
                     &MODES_REUSE,
                     signature,
                     now,
+                    max_age,
                     |(cached, _)| *cached == source,
                     || Ok((source.clone(), modes(&source)?)),
                 )?
@@ -326,10 +338,15 @@ impl Topology {
     }
 
     pub(crate) fn metadata(&self) -> Result<Vec<Target>> {
+        self.metadata_within(INVENTORY_REUSE)
+    }
+
+    fn metadata_within(&self, max_age: std::time::Duration) -> Result<Vec<Target>> {
         let mut targets = reuse(
             &METADATA_REUSE,
             self.signature(),
             std::time::Instant::now(),
+            max_age,
             |_| true,
             || self.read_metadata(),
         )?;
@@ -826,25 +843,39 @@ mod tests {
             reads += 1;
             Ok(value)
         };
+        let fresh = super::INVENTORY_REUSE;
+        let kept = super::INVENTORY_KEEP;
         assert_eq!(
-            super::reuse(&cache, 1, start, |_| true, || read(10)).unwrap(),
+            super::reuse(&cache, 1, start, fresh, |_| true, || read(10)).unwrap(),
             10
         );
         let later = start + std::time::Duration::from_secs(5);
         assert_eq!(
-            super::reuse(&cache, 1, later, |_| true, || read(11)).unwrap(),
+            super::reuse(&cache, 1, later, fresh, |_| true, || read(11)).unwrap(),
             10
         );
-        // A changed configuration, or old results, are read again.
+        // A changed configuration is read again.
         assert_eq!(
-            super::reuse(&cache, 2, later, |_| true, || read(12)).unwrap(),
+            super::reuse(&cache, 2, later, fresh, |_| true, || read(12)).unwrap(),
             12
         );
-        let expired = start + super::INVENTORY_REUSE;
+        // Older results: a starting session may use them, the periodic read
+        // reads again.
+        let old = start + fresh;
         assert_eq!(
-            super::reuse(&cache, 1, expired, |_| true, || read(13)).unwrap(),
-            13
+            super::reuse(&cache, 1, old, kept, |_| true, || read(13)).unwrap(),
+            10
         );
-        assert_eq!(reads, 3);
+        assert_eq!(
+            super::reuse(&cache, 1, old, fresh, |_| true, || read(14)).unwrap(),
+            14
+        );
+        // Nothing is kept longer than `INVENTORY_KEEP`.
+        let gone = old + kept;
+        assert_eq!(
+            super::reuse(&cache, 1, gone, kept, |_| true, || read(15)).unwrap(),
+            15
+        );
+        assert_eq!(reads, 4);
     }
 }

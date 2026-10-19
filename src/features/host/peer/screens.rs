@@ -30,9 +30,18 @@ pub(super) struct Inventory {
 }
 impl Inventory {
     pub fn read() -> Result<Self> {
+        Self::read_within(crate::platform::display::topology::INVENTORY_REUSE)
+    }
+    /// For a starting session: an unchanged configuration's monitor names and
+    /// modes from the last minutes do (reading every mode takes 40-80 ms on
+    /// the session's path); its first periodic read refreshes them.
+    fn read_initial() -> Result<Self> {
+        Self::read_within(crate::platform::display::topology::INVENTORY_KEEP)
+    }
+    fn read_within(max_age: std::time::Duration) -> Result<Self> {
         let topology = Topology::query(false)?;
         Ok(Self {
-            targets: topology.targets()?,
+            targets: topology.targets_within(max_age)?,
             screens: capture::screens()?,
             layout: Topology::query(true)?.snapshot()?,
         })
@@ -351,7 +360,7 @@ impl Screens {
             receiver: Default::default(),
             stats_logged: None,
         };
-        state.refresh()?;
+        state.apply_inventory(Inventory::read_initial()?)?;
         if let Some(selected) = selected {
             state.start_at(0, selected, initial).await?;
         }

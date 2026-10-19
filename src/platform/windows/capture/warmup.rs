@@ -1,12 +1,18 @@
-//! GPU driver loading while a session connects.
+//! GPU driver loading while a session connects, and kept for a reconnect.
 //!
 //! The user-mode graphics driver unloads with the last D3D device of the
 //! process, so each session would load it again (100-200 ms) when its
-//! capture opens, and only then create the encoder device (and, between two
-//! GPUs, the D3D12 runtime of the handoff), one after the other. A session
-//! starts this as soon as its screen is known: the capture opens on a loaded
-//! driver, the encoder takes the device made here, and the D3D12 device of a
-//! handoff already exists. What is not taken is released after [`LIFETIME`].
+//! capture opens, and only then create the encoder device, initialize NVENC
+//! on it (its first time on a device costs 25-30 ms) and, between two GPUs,
+//! the D3D12 runtime of the handoff, one after the other. A session starts
+//! this as soon as its screen is known: the capture opens on a loaded driver,
+//! the encoder takes the device made here with NVENC already initialized
+//! once, and the D3D12 device of a handoff already exists. What is not taken
+//! is released after [`LIFETIME`]. When a session ends, a fresh device
+//! prepared the same way replaces its encoder's device and is kept for
+//! [`RECONNECT`], so a reconnect finds the driver loaded and a device ready.
+//! (The used device is not kept: the driver holds on to the memory of its
+//! released textures until the device goes, over 100 MB.)
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -22,6 +28,7 @@ use windows::{
 };
 
 const LIFETIME: Duration = Duration::from_secs(10);
+const RECONNECT: Duration = Duration::from_secs(60);
 /// A taker waits this long at most for a device still being created.
 const WAIT: Duration = Duration::from_secs(2);
 
@@ -76,7 +83,7 @@ pub(crate) fn warm_up(adapters: &[u64]) {
         let handoff = adapters.iter().any(|&other| other != adapter);
         let spawned = std::thread::Builder::new()
             .name("GPU warm-up".to_owned())
-            .spawn(move || prepare(id, adapter, handoff));
+            .spawn(move || prepare(id, adapter, handoff, LIFETIME, None));
         if let Err(error) = spawned {
             tracing::debug!(%error, "GPU warm-up thread unavailable");
             super::super::lock(&SPARES).retain(|s| s.id != id);
@@ -85,9 +92,19 @@ pub(crate) fn warm_up(adapters: &[u64]) {
     }
 }
 
-fn prepare(id: u64, adapter: u64, handoff: bool) {
+/// Create the spare `id`: a device, NVENC initialized on it once, D3D12 for
+/// a handoff. `previous` keeps the driver loaded until the device exists.
+fn prepare(
+    id: u64,
+    adapter: u64,
+    handoff: bool,
+    lifetime: Duration,
+    previous: Option<ID3D11Device>,
+) {
     let begun = Instant::now();
-    let device = match super::new_device(adapter) {
+    let created = super::new_device(adapter);
+    drop(previous);
+    let device = match created {
         Ok((device, _)) => device,
         Err(error) => {
             tracing::debug!(%error, adapter, "GPU warm-up failed");
@@ -97,6 +114,12 @@ fn prepare(id: u64, adapter: u64, handoff: bool) {
         }
     };
     let device_ms = begun.elapsed().as_millis() as u64;
+    // Before the encoder can take the device: its context is used here.
+    let nvenc = (vendor(&device) == Some(0x10de))
+        .then(|| super::super::nvenc::warm_up(&device))
+        .transpose()
+        .inspect_err(|error| tracing::debug!(%error, "NVENC warm-up unavailable"))
+        .is_ok_and(|warmed| warmed.is_some());
     update(id, |spare| {
         spare.device = Some(device.clone());
         spare.creating = false;
@@ -112,12 +135,18 @@ fn prepare(id: u64, adapter: u64, handoff: bool) {
     tracing::debug!(
         adapter,
         device_ms,
+        nvenc,
         d3d12 = d3d12.is_some(),
+        lifetime_s = lifetime.as_secs(),
         elapsed_ms = begun.elapsed().as_millis() as u64,
-        "GPU driver warmed up for a connecting session"
+        "GPU device prepared for a session"
     );
     update(id, |spare| spare._d3d12 = d3d12);
-    std::thread::sleep(LIFETIME);
+    expire(id, lifetime);
+}
+
+fn expire(id: u64, after: Duration) {
+    std::thread::sleep(after);
     let expired = {
         let mut spares = super::super::lock(&SPARES);
         spares
@@ -126,6 +155,43 @@ fn prepare(id: u64, adapter: u64, handoff: bool) {
             .map(|index| spares.swap_remove(index))
     };
     drop(expired);
+}
+
+/// After a session's encoder (and everything else on `device`) is gone:
+/// prepare a fresh device for a reconnect while `device` still keeps the
+/// driver loaded, then let `device` go.
+pub(crate) fn keep_for_reconnect(adapter: u64, device: ID3D11Device) {
+    let id = {
+        let mut spares = super::super::lock(&SPARES);
+        if spares
+            .iter()
+            .any(|s| s.adapter == adapter && (s.creating || s.device.is_some()))
+        {
+            return;
+        }
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        spares.push(Spare {
+            adapter,
+            id,
+            creating: true,
+            device: None,
+            _d3d12: None,
+        });
+        id
+    };
+    let spawned = std::thread::Builder::new()
+        .name("GPU reconnect".to_owned())
+        .spawn(move || prepare(id, adapter, false, RECONNECT, Some(device)));
+    if let Err(error) = spawned {
+        tracing::debug!(%error, "GPU reconnect thread unavailable");
+        super::super::lock(&SPARES).retain(|s| s.id != id);
+        READY.notify_all();
+    }
+}
+
+fn vendor(device: &ID3D11Device) -> Option<u32> {
+    unsafe { device.cast::<IDXGIDevice>().ok()?.GetAdapter().ok()?.GetDesc().ok() }
+        .map(|desc| desc.VendorId)
 }
 
 /// A prepared device of this adapter, created like [`super::create_device`].

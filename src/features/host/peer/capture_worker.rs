@@ -32,6 +32,19 @@ const KEYFRAME_RETRY: Duration = Duration::from_secs(1);
 /// session start parameters count as its settings.
 const SETTINGS_WAIT: Duration = Duration::from_secs(2);
 
+/// The device the last encoder used: when the worker ends it keeps the
+/// driver loaded until a fresh device is ready for a reconnect
+/// (`capture::keep_for_reconnect`).
+struct Reconnect(Option<(u64, windows::Win32::Graphics::Direct3D11::ID3D11Device)>);
+
+impl Drop for Reconnect {
+    fn drop(&mut self) {
+        if let Some((adapter, device)) = self.0.take() {
+            capture::keep_for_reconnect(adapter, device);
+        }
+    }
+}
+
 pub(super) fn capture_loop(
     mut screen: capture::Screen,
     handle: Lease,
@@ -49,6 +62,9 @@ pub(super) fn capture_loop(
     pointer: Arc<Mutex<Option<crate::platform::windows::cursor_shape::Snapshot>>>,
     feedback: Arc<crate::features::host::recovery::TrackFeedback>,
 ) -> Result<()> {
+    // Declared first, dropped last: after the encoder and transfer that use
+    // the device.
+    let mut reconnect = Reconnect(None);
     let _activity = crate::platform::windows::host_service::activity::Work::new();
     let mut runtime = encoder::Runtime::new()?;
     let mut desktop = None;
@@ -867,6 +883,7 @@ pub(super) fn capture_loop(
                     encoder_info = Some((created.implementation(), created.maximum_size()));
                     frame_ids.restart();
                     decider.reset(created.ltr_slots());
+                    reconnect.0 = Some((candidate.capability.adapter, device.clone()));
                     Some(created)
                 }
                 Err(error) => {

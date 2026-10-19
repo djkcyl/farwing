@@ -106,6 +106,33 @@ impl Api {
     }
 }
 
+/// Build and drop a small encoder on this device. NVENC's first
+/// initialization on a device costs about 25-30 ms, later ones a few: a
+/// connecting session pays it here, before the device is handed to its
+/// encoder.
+pub(crate) fn warm_up(device: &ID3D11Device) -> Result<()> {
+    let rate = Rate {
+        target: 1_000_000,
+        peak: 1_000_000,
+        fps: 60,
+        quality: 1,
+        quality_target: super::format::QualityTarget {
+            bitrate: 1_000_000,
+            fps: 60,
+        },
+        smooth: false,
+    };
+    drop(Encoder::build(
+        device,
+        640,
+        360,
+        rate,
+        Format::AVC,
+        super::format::Color::Sdr,
+    )?);
+    Ok(())
+}
+
 pub(crate) struct Encoder {
     diagnostics: timing::Diagnostics,
     frame_rate: super::encoder_rate::Controller,
@@ -179,6 +206,26 @@ struct InputRejected(String);
 
 impl Encoder {
     pub(crate) fn new_format(
+        device: &ID3D11Device,
+        width: u32,
+        height: u32,
+        rate: Rate,
+        format: Format,
+        color: super::format::Color,
+    ) -> Result<Self> {
+        let encoder = Self::build(device, width, height, rate, format, color)?;
+        tracing::info!(
+            width,
+            height,
+            fps = rate.fps,
+            bitrate = rate.target,
+            backend = "NVENC",
+            ?format,
+            "host hardware encoder initialized"
+        );
+        Ok(encoder)
+    }
+    fn build(
         device: &ID3D11Device,
         width: u32,
         height: u32,
@@ -513,15 +560,6 @@ impl Encoder {
                 return Err(InputRejected("驱动未返回注册资源".into()).into());
             }
         }
-        tracing::info!(
-            width,
-            height,
-            fps,
-            bitrate,
-            backend = "NVENC",
-            ?format,
-            "host hardware encoder initialized"
-        );
         Ok(encoder)
     }
     pub(crate) fn maximum_size(&self) -> (u32, u32) {
