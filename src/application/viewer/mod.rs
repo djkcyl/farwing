@@ -87,7 +87,19 @@ impl RetryNow {
 #[derive(Clone, Default)]
 pub(crate) struct ViewerDisplayHandle {
     pub surface_writer: Option<crate::platform::surface::D3D11SurfaceWriter>,
+    /// The video presenter's device on the writer's adapter, created while
+    /// the connection is made (taken once).
+    pub renderer_device: PreparedRenderer,
 }
+
+pub(crate) type PreparedRenderer = Arc<
+    Mutex<
+        Option<(
+            windows::Win32::Graphics::Direct3D11::ID3D11Device,
+            windows::Win32::Graphics::Direct3D11::ID3D11DeviceContext,
+        )>,
+    >,
+>;
 
 impl ConnectionProgress {
     pub(crate) fn updating(started: Instant) -> Self {
@@ -359,6 +371,7 @@ pub struct NativeViewerSession {
     /// The hardware decoder's surface writer: the video presenter can be
     /// built on its adapter while the first picture decodes.
     presentation_writer: Option<crate::platform::surface::D3D11SurfaceWriter>,
+    presentation_device: PreparedRenderer,
 }
 
 #[derive(Clone)]
@@ -422,6 +435,7 @@ impl NativeViewerSession {
             .surface_writer
             .clone()
             .filter(|_| decoder.mode.hardware());
+        let presentation_device = display.renderer_device.clone();
         let pause_epoch = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let manager_pause_epoch = Arc::clone(&pause_epoch);
         let manager_software = Arc::clone(&software_decode);
@@ -482,6 +496,7 @@ impl NativeViewerSession {
                 idle: decode_idle,
             }),
             presentation_writer,
+            presentation_device,
         };
         Ok(session)
     }

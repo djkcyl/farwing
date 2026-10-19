@@ -591,6 +591,31 @@ impl WindowsConnectionApp {
             None,
         );
         let surface_writer = crate::platform::surface::D3D11SurfaceWriter::new()?;
+        // While the connection is made: the hardware decoder's first picture
+        // on this device would carry its driver setup, and the video
+        // presenter needs a device of its own on the same adapter.
+        let decoder_writer = surface_writer.clone();
+        let video_device = crate::application::viewer::PreparedRenderer::default();
+        let prepared_renderer = video_device.clone();
+        let warm = std::thread::Builder::new()
+            .name("decoder warm-up".to_owned())
+            .spawn(move || {
+                let started = Instant::now();
+                match decoder_writer.create_renderer_device() {
+                    Ok(device) => *crate::application::viewer::mutex_lock(&prepared_renderer) = Some(device),
+                    Err(error) => tracing::debug!(%error, "video presenter device not prepared"),
+                }
+                match crate::platform::decoder::warm_up(decoder_writer.device_handle()) {
+                    Ok(()) => tracing::debug!(
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "hardware decoder warmed up"
+                    ),
+                    Err(error) => tracing::debug!(%error, "hardware decoder warm-up unavailable"),
+                }
+            });
+        if let Err(error) = warm {
+            tracing::debug!(%error, "decoder warm-up thread unavailable");
+        }
         let (renderer_device, renderer_context) = surface_writer.create_renderer_device()?;
         let presenter = UiPresenter::new(window, renderer_device, renderer_context)?;
         Ok((
@@ -605,6 +630,7 @@ impl WindowsConnectionApp {
             },
             ViewerDisplayHandle {
                 surface_writer: Some(surface_writer),
+                renderer_device: video_device,
             },
         ))
     }

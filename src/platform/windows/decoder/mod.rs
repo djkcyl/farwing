@@ -225,6 +225,51 @@ impl WindowsVideoDecoder {
         }
     }
 }
+/// Decode one tiny H.264 picture on `device`. The first hardware decode on
+/// a device costs about 30 ms of driver setup (later ones a few
+/// milliseconds); a viewer pays it while it connects, not on its first
+/// picture.
+pub(crate) fn warm_up(device: ID3D11Device) -> anyhow::Result<()> {
+    use anyhow::Context;
+    const SIZE: u32 = 64;
+    let mut encoder = farwing_codec::encoder::Encoder::new(farwing_codec::encoder::Config {
+        width: SIZE,
+        height: SIZE,
+        format: farwing_codec::Format {
+            codec: VideoCodec::H264,
+            chroma: 1,
+            depth: 8,
+        },
+        fps: 30,
+        bitrate: 500_000,
+    })?;
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    encoder.prepare(
+        &[128; (SIZE * SIZE * 4) as usize],
+        (SIZE * 4) as usize,
+        &running,
+    )?;
+    let picture = encoder
+        .encode(0, true, &running)?
+        .context("warm-up picture not encoded")?;
+    let mut decoder = WindowsVideoDecoder::open(&VideoDecoderConfig {
+        codec: VideoCodec::H264,
+        width: SIZE,
+        height: SIZE,
+        mode: DecoderMode::Hardware,
+        gpu_device: Some(device),
+        extra_data: Bytes::new(),
+    })
+    .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    decoder
+        .push_packet(&picture.data, 0)
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    decoder
+        .poll_owned_frame()
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    Ok(())
+}
+
 impl Drop for WindowsVideoDecoder {
     fn drop(&mut self) {
         self.pending.clear();

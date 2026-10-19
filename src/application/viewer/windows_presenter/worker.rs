@@ -60,6 +60,7 @@ impl RenderWorker {
         let worker_first_presented = Arc::clone(&first_presented);
         let first_frame_repaint = context.clone();
         let presentation_writer = session.presentation_writer.clone();
+        let presentation_device = session.presentation_device.clone();
         let thread = std::thread::Builder::new()
             .name("Video Render".to_owned())
             .spawn(move || {
@@ -75,10 +76,16 @@ impl RenderWorker {
                 let mut prepared = presentation_writer
                     .filter(|_| size.width != 0 && size.height != 0)
                     .and_then(|writer| {
-                        let (device, context) = writer
-                            .create_renderer_device()
-                            .inspect_err(|error| tracing::debug!(%error, "video presenter not prepared"))
-                            .ok()?;
+                        let prepared_device = mutex_lock(&presentation_device)
+                            .take()
+                            .filter(|(device, _)| unsafe { device.GetDeviceRemovedReason() }.is_ok());
+                        let (device, context) = match prepared_device {
+                            Some(device) => device,
+                            None => writer
+                                .create_renderer_device()
+                                .inspect_err(|error| tracing::debug!(%error, "video presenter not prepared"))
+                                .ok()?,
+                        };
                         D3D11Presenter::from_device_for_window(
                             windows::Win32::Foundation::HWND(hwnd as *mut std::ffi::c_void),
                             size,
