@@ -122,14 +122,17 @@ impl Pipe {
             Err(e) => Err(e.into()),
         }
     }
+    /// Wait for `op`; `permitted` and `deadline` are looked at every `poll`
+    /// milliseconds (completion itself wakes the wait at once).
     fn pending(
         &self,
         op: &mut OVERLAPPED,
         deadline: Instant,
         permitted: &impl Fn() -> bool,
+        poll: u32,
     ) -> Result<u32> {
         loop {
-            let wait = unsafe { WaitForSingleObject(op.hEvent, 5) };
+            let wait = unsafe { WaitForSingleObject(op.hEvent, poll) };
             if wait == WAIT_OBJECT_0 {
                 let mut count = 0;
                 unsafe {
@@ -157,11 +160,14 @@ impl Pipe {
         match unsafe { ConnectNamedPipe(self.handle.0, Some(&mut op)) } {
             Ok(()) => Ok(()),
             Err(e) if e.code() == ERROR_PIPE_CONNECTED.to_hresult() => Ok(()),
+            // A listener waits for its next client most of the time: look at
+            // `permitted` (shutdown, deadlines) less often than during I/O.
             Err(e) if e.code() == ERROR_IO_PENDING.to_hresult() => self
                 .pending(
                     &mut op,
                     Instant::now() + Duration::from_secs(86400),
                     &permitted,
+                    100,
                 )
                 .map(|_| ()),
             Err(e) => Err(e.into()),
@@ -197,6 +203,12 @@ impl Pipe {
         Ok(count)
     }
     pub fn available(&self) -> Result<bool> {
+        self.available_within(5)
+    }
+    /// Whether a message has started to arrive, waiting up to `wait`
+    /// milliseconds (an arriving message ends the wait at once). Loops that
+    /// only serve requests wait longer, and so wake less often while idle.
+    pub fn available_within(&self, wait: u32) -> Result<bool> {
         let mut reader = self.reader.borrow_mut();
         if reader.is_none() {
             let event = Handle(unsafe { CreateEventW(None, true, false, None)? });
@@ -240,7 +252,7 @@ impl Pipe {
             }
         }
         if prefix.pending {
-            let wait = unsafe { WaitForSingleObject(prefix.event.0, 5) };
+            let wait = unsafe { WaitForSingleObject(prefix.event.0, wait) };
             if wait == WAIT_TIMEOUT {
                 return Ok(false);
             }
@@ -299,7 +311,7 @@ impl Pipe {
             match result {
                 Ok(()) => {}
                 Err(e) if e.code() == ERROR_IO_PENDING.to_hresult() => {
-                    count = self.pending(&mut op, deadline, permitted)?
+                    count = self.pending(&mut op, deadline, permitted, 5)?
                 }
                 Err(e) => return Err(e.into()),
             }

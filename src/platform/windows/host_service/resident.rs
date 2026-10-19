@@ -178,6 +178,10 @@ impl Reply {
         }
     }
 }
+/// How long a request-serving connection waits for its next message before
+/// it looks at shutdown again: such connections stay open while idle.
+pub(super) const IDLE_WAIT: u32 = 100;
+
 pub(crate) fn call(request: Request) -> Result<Reply> {
     static CONTROL_CONNECTION: std::sync::Mutex<Option<Pipe>> = std::sync::Mutex::new(None);
     static INITIALIZER_CONNECTION: std::sync::Mutex<Option<Pipe>> = std::sync::Mutex::new(None);
@@ -379,7 +383,7 @@ fn control_connection(
         {
             forward.take();
         }
-        if !pipe.available()? {
+        if !pipe.available_within(IDLE_WAIT)? {
             continue;
         }
         let result = (|| -> Result<Reply> {
@@ -652,7 +656,7 @@ pub(crate) fn run(parent: u32) -> Result<()> {
                         let result = (|| -> Result<()> {
                             ensure!(pipe.peer_pid(true)? == parent, "后台命令不属于服务进程");
                             while alive() {
-                                if !pipe.available()? {
+                                if !pipe.available_within(IDLE_WAIT)? {
                                     continue;
                                 }
                                 let request: Request =

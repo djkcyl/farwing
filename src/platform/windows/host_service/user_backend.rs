@@ -191,7 +191,7 @@ impl Server {
                                     if !permitted() {
                                         return Ok(());
                                     }
-                                    if !pipe.available()? {
+                                    if !pipe.available_within(super::resident::IDLE_WAIT)? {
                                         continue;
                                     }
                                     let request: Request = pipe.receive(permitted)?;
