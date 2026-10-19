@@ -99,3 +99,6 @@ secrets.json
 !/assets/drivers/display/FarwingDisplay.cat
 !/assets/drivers/audio/FarwingAudio.sys
 !/assets/drivers/audio/FarwingAudio.cat
+
+# Local Claude Code settings and worktrees.
+/.claude/
