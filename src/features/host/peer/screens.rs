@@ -67,8 +67,42 @@ pub(crate) struct ScreenInfo {
     pub kind: i32,
     pub resolution_type: i32,
 }
+/// Whether the controller's session takes media: its HELLO was answered and
+/// the screens were published. The capture thread waits on it while the
+/// connection is made.
+#[derive(Default)]
+pub(super) struct Ready {
+    ready: AtomicBool,
+    changes: Mutex<u64>,
+    changed: std::sync::Condvar,
+}
+impl Ready {
+    pub fn get(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
+    /// Returns the previous value.
+    pub fn set(&self, ready: bool) -> bool {
+        let previous = self.ready.swap(ready, Ordering::AcqRel);
+        if previous != ready {
+            *lock(&self.changes) += 1;
+            self.changed.notify_all();
+        }
+        previous
+    }
+    pub fn changes(&self) -> u64 {
+        *lock(&self.changes)
+    }
+    /// Waits for a change after `seen` changes, at most `timeout`.
+    pub fn wait(&self, seen: u64, timeout: std::time::Duration) {
+        let changes = lock(&self.changes);
+        let _ = self
+            .changed
+            .wait_timeout_while(changes, timeout, |changes| *changes == seen);
+    }
+}
+
 pub(super) struct Reports {
-    pub media_ready: Arc<AtomicBool>,
+    pub media_ready: Arc<Ready>,
     pub capabilities: Mutex<Option<Vec<crate::features::host::format::Capability>>>,
     pub catalog: Mutex<Vec<ScreenInfo>>,
     pub current: AtomicI32,
@@ -296,7 +330,7 @@ impl Screens {
         deferred: Option<Deferred>,
     ) -> Result<Self> {
         let reports = Arc::new(Reports {
-            media_ready: Arc::new(AtomicBool::new(false)),
+            media_ready: Arc::new(Ready::default()),
             capabilities: Mutex::new(None),
             catalog: Mutex::default(),
             current: AtomicI32::new(selected.as_ref().map_or(-1, |s| s.id)),
@@ -515,9 +549,8 @@ impl Screens {
             .negotiated
             .source_gpu(screen.render_adapter.unwrap_or(screen.adapter));
         let requested_hdr = config.color.is_hdr();
-        self.slots[index].negotiated.apply(
+        self.slots[index].negotiated.apply_requested(
             &mut config,
-            None,
             requested_format.chroma,
             requested_hdr,
             (screen.width, screen.height),

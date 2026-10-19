@@ -96,6 +96,12 @@ export class Spake2 {
   }
 }
 
+/// Build the base point's multiplication table (~20 ms the first time) ahead
+/// of the first `pakeStart`, e.g. while the visitor types the code.
+export function warmUpPake() {
+  Point.BASE.multiply(1n);
+}
+
 /// `pake_start`: a state and the base64url message for the host.
 export function pakeStart(code: string): { state: Spake2; message: string } {
   const state = new Spake2(utf8(code), ASSIST_PAKE_IDENTITY);

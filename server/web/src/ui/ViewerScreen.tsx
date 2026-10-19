@@ -241,7 +241,6 @@ function sendCapture(v: Viewer, quality: number, fps: number, codec: number, cur
     // Off while controlling with an absolute mouse: the cursor is local.
     cursorCapture: cursor,
     maxCustomBitrate: 0,
-    autoFrameQuality: 2,
     // 0 lets the host choose among the codecs both sides support.
     codecType: codec,
     maxScaleWidth: 0,
@@ -324,7 +323,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
     let current: Viewer | undefined;
     const timer = window.setTimeout(() => {
       const v = new Viewer(
-        { admit },
+        { admit, codec: () => capture.current.codec },
         {
           state: (s, d) => {
             setState(s);

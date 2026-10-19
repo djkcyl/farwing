@@ -123,6 +123,10 @@ export interface MicrophoneStatus {
 /// Bulk sends wait while more than this is queued.
 const BULK_HIGH = 4 * 1024 * 1024;
 
+/// The automatic-quality tier the host last reported, per host: the next
+/// session starts there (as the native viewer does).
+const AUTO_TIER_KEY = 'farwing.viewer.auto.';
+
 const HELLO_VIDEO: Record<VideoCodecId, string> = {
   [VideoCodec.H264]: 'video.h264',
   [VideoCodec.H265]: 'video.hevc',
@@ -184,6 +188,9 @@ interface HostCapability {
 export interface ViewerOptions {
   /// Obtain the session to join.
   admit(): Promise<Admission>;
+  /// The video codec chosen in the menu (0: the host chooses), asked for
+  /// from the start of each session.
+  codec?(): number;
   /// Physical screen size for a host without displays (virtual display).
   screen?: { width: number; height: number };
 }
@@ -213,6 +220,8 @@ export class Viewer {
   private pointerSeq = 0;
   private sessionRequest = 1;
   private decoders: DecodeSupport[] = [];
+  /// The picture quality asked for (5: automatic).
+  private frameQuality = 5;
   /// The host's capability, reported once its session channel works (the
   /// first screen list), since capture settings sent earlier are lost.
   private hostCapability?: HostCapability;
@@ -323,10 +332,11 @@ export class Viewer {
             chroma: 1,
             bitrate: 0,
             hdr: false,
-            auto_quality: 2,
+            auto_quality: this.autoTier(),
             fps_count: 60,
             weak_network: 0,
             cinema: false,
+            codec: this.options.codec?.() ?? 0,
           },
           decoders: this.decoders.map((d) => ({ fps: 60, codec: d.codec, width: 3840, height: 2160, chroma: 1 })),
           force_virtual: false,
@@ -766,8 +776,10 @@ export class Viewer {
             this.screensSeen = true;
             this.reportCodecs();
           }
-        } else if (message.kind === 'quality') this.events.quality?.(message.value);
-        else if (message.kind === 'capture_setting_result') this.events.captureResult?.(message.errors);
+        } else if (message.kind === 'quality') {
+          this.rememberTier(message.value.videoQuality);
+          this.events.quality?.(message.value);
+        } else if (message.kind === 'capture_setting_result') this.events.captureResult?.(message.errors);
         else if (message.kind === 'microphone_state') this.onMicrophoneState(message.state);
         return;
       }
@@ -834,9 +846,24 @@ export class Viewer {
     window.setTimeout(() => this.switchScreen(screenId), 100);
   }
 
-  setCapture(setting: fpp.CaptureSetting) {
+  /// The automatic tier is this viewer's (the host's last report).
+  setCapture(setting: Omit<fpp.CaptureSetting, 'autoFrameQuality'>) {
+    this.frameQuality = setting.frameQuality;
     const rid = this.nextRequest();
-    this.sendFrame('farwing.session.v2', fpp.encode(fpp.Type.SESSION, fpp.captureSetting(setting), 0, rid));
+    const automatic = { ...setting, autoFrameQuality: this.autoTier() };
+    this.sendFrame('farwing.session.v2', fpp.encode(fpp.Type.SESSION, fpp.captureSetting(automatic), 0, rid));
+  }
+
+  private autoTier(): number {
+    const tier = Number(localStorage.getItem(AUTO_TIER_KEY + this.admission?.hostId));
+    return tier >= 2 && tier <= 4 ? tier : 2;
+  }
+
+  private rememberTier(tier: number) {
+    const host = this.admission?.hostId;
+    if (host && this.frameQuality === 5 && tier >= 1 && tier <= 4) {
+      localStorage.setItem(AUTO_TIER_KEY + host, String(tier));
+    }
   }
 
   setAudioKbps(kbps: number) {

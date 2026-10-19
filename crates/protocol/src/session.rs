@@ -57,6 +57,9 @@ pub struct CaptureParams {
     pub weak_network: i32,
     /// Quality-first encoding for watching video (cinema mode).
     pub cinema: bool,
+    /// The video codec the controller chose (1 = H.264, 2 = H.265,
+    /// 5 = AV1); 0 lets the host choose.
+    pub codec: i32,
 }
 
 /// One decoder profile the controller can receive.

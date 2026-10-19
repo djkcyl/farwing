@@ -514,7 +514,7 @@ pub(super) async fn publish_state(
         // State is published once the peer answered our HELLO, not merely when
         // the channel opens: the controller must have initialized its session.
         if !routes.handshake_complete || !routes.handshake_answered {
-            reports.media_ready.store(false, Ordering::Release);
+            reports.media_ready.set(false);
             continue;
         }
         if revision != Some(routes.revision) {
@@ -634,7 +634,7 @@ pub(super) async fn publish_state(
         // The controller's HELLO exchange must precede its screen list and
         // first video frame.
         if last_screen.is_some() && last_capture.is_some() {
-            reports.media_ready.store(true, Ordering::Release);
+            reports.media_ready.set(true);
         }
         if let Some((index, state)) = selected
             && let Some(encoder) = state.encoder

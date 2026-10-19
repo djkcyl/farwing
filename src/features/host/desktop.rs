@@ -255,13 +255,7 @@ impl Prepared {
             .as_ref()
             .map_or(1, |p| if p.chroma == 3 { 3 } else { 1 });
         let hdr = options.params.as_ref().is_some_and(|p| p.hdr);
-        negotiated.apply(
-            &mut config,
-            None,
-            chroma,
-            hdr,
-            (screen.width, screen.height),
-        )?;
+        negotiated.apply_requested(&mut config, chroma, hdr, (screen.width, screen.height))?;
         tracing::info!(
             parameters = ?options.params,
             requested_fps = config.requested_fps,

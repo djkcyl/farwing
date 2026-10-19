@@ -123,6 +123,7 @@ fn connect_options(
         // Per-device choices follow in the first CaptureSetting.
         weak_network: 0,
         cinema: false,
+        codec: 0,
     };
     let mut decoders = Vec::new();
     let mut profiles = Vec::new();

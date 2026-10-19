@@ -143,6 +143,7 @@ impl ConnectOptions {
                 fps_count: c.fps_count,
                 weak_network: c.weak_network,
                 cinema: c.cinema,
+                codec: c.codec,
             }),
             decoders: wire
                 .decoders
@@ -264,6 +265,8 @@ pub(crate) struct CaptureParams {
     pub weak_network: i32,
     #[prost(bool, tag = "13")]
     pub cinema: bool,
+    #[prost(int32, tag = "14")]
+    pub codec: i32,
 }
 
 /// `HELLO` sent by the host when its control channel opens.
@@ -335,6 +338,9 @@ pub(crate) fn config(params: Option<&CaptureParams>) -> VideoConfig {
         cursor_capture: p.cursor_capture,
         weak_network: crate::features::host::parameters::WeakNetwork::from_wire(p.weak_network),
         cinema: p.cinema,
+        // The session starts with the controller's codec rather than
+        // replacing the host's choice right after.
+        requested_codec: crate::features::host::format::Codec::from_wire(p.codec),
         ..Default::default()
     }
 }
@@ -461,6 +467,9 @@ pub(crate) fn apply_capture_setting(
     next.revision = next.revision.wrapping_add(1);
     next.configured = true;
     let codec = crate::features::host::format::Codec::from_wire(setting.codec_type);
+    if codec.is_none() || next.requested_codec.is_some() {
+        next.requested_codec = codec;
+    }
     let selected = if setting.codec_type == 0 || codec.is_some() {
         negotiated.apply(
             &mut next,

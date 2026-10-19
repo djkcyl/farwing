@@ -66,7 +66,7 @@ impl Worker {
         handle: Lease,
         cancel: CancellationToken,
         connected: Arc<AtomicBool>,
-        business_ready: Arc<AtomicBool>,
+        business_ready: Arc<super::screens::Ready>,
         config: Arc<Mutex<VideoConfig>>,
         negotiated: Arc<crate::features::host::format::Negotiated>,
         transport: crate::features::host::transport::Transport,

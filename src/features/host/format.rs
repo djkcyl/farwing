@@ -390,6 +390,23 @@ impl Negotiated {
         }
         Ok(())
     }
+    /// [`Self::apply`] with the codec the controller asked for, or the
+    /// host's choice where that codec is not available (on this screen's
+    /// GPU, or among the codecs the connection negotiated).
+    pub fn apply_requested(
+        &self,
+        config: &mut super::VideoConfig,
+        chroma: u8,
+        hdr: bool,
+        source: (u32, u32),
+    ) -> anyhow::Result<()> {
+        if let Some(codec) = config.requested_codec
+            && self.apply(config, Some(codec), chroma, hdr, source).is_ok()
+        {
+            return Ok(());
+        }
+        self.apply(config, None, chroma, hdr, source)
+    }
     /// The encoder for `wanted`; with `exact`, only one producing exactly
     /// `wanted.format` (the shared viewer stream).
     pub fn candidate(

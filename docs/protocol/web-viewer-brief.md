@@ -139,7 +139,7 @@ WS 消息上限为 `max_frame_bytes × 2`（`server/src/ws.rs:98-107`）。
     "capture":{"fps":2,"quality":5,"cursor_capture":true,"resolution_type":3,
                "local_resolution":{"width":2560,"height":1440},"chosen_resolution":null,
                "chroma":1,"bitrate":0,"hdr":false,"auto_quality":2,"fps_count":60,
-               "weak_network":0,"cinema":false},
+               "weak_network":0,"cinema":false,"codec":0},
     "decoders":[{"fps":60,"codec":1,"width":3840,"height":2160,"chroma":1}],
     "force_virtual":false,"virtual_modes":[],"virtual_initial":null,"version":"web-0.1.0"
   },
@@ -204,7 +204,8 @@ ICE 服务器的构造见 `server/src/ice.rs:88-106`。
 | `options.screen_id` | 首位参与者：-1 = 主屏，其他值必须是存在的屏幕 ID，否则准备失败（`src/features/host/displays/initial.rs:240-246`）。后续参与者：≥0 时按 ID，否则沿用首位参与者的屏幕，再否则主屏（`initial.rs:57-75`）。缺省为 **0**，不是 -1 | **必须显式写 -1** |
 | `capture.fps` | 档位 1=30 2=60 3=90 4=144，其他值 = 30（`src/features/stream_control/publisher.rs:341-354`） | 2 |
 | `capture.fps_count` | 帧率上限，>0 时 `fps = min(档位, fps_count)`（`publisher.rs:317-323`） | 60（或屏幕刷新率） |
-| `capture.quality` / `auto_quality` / `bitrate` | 1..=6，5 = 自动（自动档 2..4，缺省 2）；6 = 自定义码率（bit/s）（`publisher.rs:324-331`、`:355-377`） | 5 / 2 / 0 |
+| `capture.quality` / `auto_quality` / `bitrate` | 1..=6，5 = 自动（自动档 2..4，缺省 2）；6 = 自定义码率（bit/s）（`publisher.rs:324-331`、`:355-377`） | 5 / 这台被控上次报告的自动档（缺省 2）/ 0 |
+| `capture.codec` | 0 = 被控选择；1 / 2 / 5 = 双方都支持时会话从这种编码开始，换屏幕时也保留（`VideoConfig.requested_codec`） | 菜单里选过的编码，没选过为 0 |
 | `capture.cursor_capture` | 画面是否合成光标（`publisher.rs:335`） | **true**（只看不控时被控光标的位置只能从画面里看到，见 §4.8） |
 | `capture.resolution_type` | 0..=4。**2 会把被控物理分辨率改成 `local_resolution`**（或进入独占屏），且初始准备阶段不检查 `display` 能力；4 要求 `chosen_resolution`（`initial.rs:31-37`、`:247-293`） | **3**（跟随被控分辨率） |
 | `capture.local_resolution` | 只在被控没有可用显示器、需要自动创建虚拟屏，或开启了独占屏时决定尺寸，缺省 1920×1080（`initial.rs:150-185`） | 浏览器屏幕物理像素，取整 |

@@ -109,7 +109,7 @@
 
 被控侧的配套修改：没有 `display` 能力的会话在初始准备时不能改分辨率（`resolution_type` 2 / 4 改为 3）。
 
-**视频编码**：浏览器按 `RTCRtpReceiver.getCapabilities` 与 `mediaCapabilities.decodingInfo({type: 'webrtc'})` 判断能接收的编码，只声明与被控注册格式一致的那一种：AV1 profile 0、H.265 Main（`profile-id=1`）、H.264 42e01f `packetization-mode=1`，都是 8 bit 4:2:0。`session.start` 的 `decoders` 与 `capability.video_codec_capability` 列出这些编码（硬件解码 `codec_impl = 32`，软件解码 37，被控据此优先选硬解的编码），HELLO 声明对应的 `video.av1` / `video.hevc` / `video.h264`。各视频轨的编码偏好依次为 AV1、H.265、H.264、RTX。被控的 AV1 注册带 `level-idx=17`，浏览器是 5，被控要求双方都有的 fmtp 键相等，所以发出的 offer 删掉 AV1 的 `level-idx`（只改发出的副本，本地描述不变）。被控的 `session.setting`（能力）给出它能编码的格式，与浏览器能解码的交集出现在“画质”菜单的“编码格式”中：自动（由被控选择，显示当前编码）或指定 AV1 / H.265 / H.264，用画面设置的 `codec_type` 切换，不需要重新协商；选择保存在浏览器里，下次连接收到第一份显示器列表后自动应用。被控设定了首选编码时菜单只显示该提示（被控的首选优先于主控的选择）。
+**视频编码**：浏览器按 `RTCRtpReceiver.getCapabilities` 与 `mediaCapabilities.decodingInfo({type: 'webrtc'})` 判断能接收的编码，只声明与被控注册格式一致的那一种：AV1 profile 0、H.265 Main（`profile-id=1`）、H.264 42e01f `packetization-mode=1`，都是 8 bit 4:2:0。`session.start` 的 `decoders` 与 `capability.video_codec_capability` 列出这些编码（硬件解码 `codec_impl = 32`，软件解码 37，被控据此优先选硬解的编码），HELLO 声明对应的 `video.av1` / `video.hevc` / `video.h264`。各视频轨的编码偏好依次为 AV1、H.265、H.264、RTX。被控的 AV1 注册带 `level-idx=17`，浏览器是 5，被控要求双方都有的 fmtp 键相等，所以发出的 offer 删掉 AV1 的 `level-idx`（只改发出的副本，本地描述不变）。被控的 `session.setting`（能力）给出它能编码的格式，与浏览器能解码的交集出现在“画质”菜单的“编码格式”中：自动（由被控选择，显示当前编码）或指定 AV1 / H.265 / H.264，用画面设置的 `codec_type` 切换，不需要重新协商；选择保存在浏览器里，下次连接时放在 `session.start` 画面参数的 `codec` 中，被控双方都支持时从一开始就用它（收到第一份显示器列表后仍会再发一次画面设置，与当前一致时不重建编码器）。自动画质下被控报告的档位按被控设备记在浏览器里，下次从这一档开始（`auto_quality`），与原生客户端一样；访客页面打开时就预先建好访问码 SPAKE2 计算用的基点倍数表。被控设定了首选编码时菜单只显示该提示（被控的首选优先于主控的选择）。
 
 ### 7.3 访客观看（无需账号）
 

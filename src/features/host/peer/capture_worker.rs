@@ -51,7 +51,7 @@ pub(super) fn capture_loop(
     cancel: CancellationToken,
     encode_cancel: Arc<AtomicBool>,
     connected: Arc<AtomicBool>,
-    business_ready: Arc<AtomicBool>,
+    business_ready: Arc<super::screens::Ready>,
     config: Arc<Mutex<VideoConfig>>,
     keyframe: Arc<AtomicBool>,
     sender: mpsc::Sender<encoder::Encoded>,
@@ -106,6 +106,9 @@ pub(super) fn capture_loop(
     // A new duplication can first report only the pointer; until its first
     // image, wait for the next present rather than the next frame time.
     let mut quick_retries = 0u8;
+    // The cached image was captured before media could flow and is still
+    // unsent: the first frame, not a repeat.
+    let mut unsent_cache = false;
     // Shared encoding: this participant's group, if capturing.
     let mut membership = None::<encode_group::Membership>;
     let mut leading = true;
@@ -134,13 +137,7 @@ pub(super) fn capture_loop(
             let previous = wanted.revision;
             let chroma = wanted.format.chroma;
             let hdr = wanted.color.is_hdr();
-            negotiated.apply(
-                &mut wanted,
-                None,
-                chroma,
-                hdr,
-                (screen.width, screen.height),
-            )?;
+            negotiated.apply_requested(&mut wanted, chroma, hdr, (screen.width, screen.height))?;
             let mut active = lock(&config);
             if active.revision != previous {
                 continue;
@@ -419,8 +416,9 @@ pub(super) fn capture_loop(
         wanted.fps = effective_fps;
         // This participant's allowance; the group encodes for the weakest
         // active member.
+        let ready_seen = business_ready.changes();
         let own_active = connected.load(Ordering::Acquire)
-            && business_ready.load(Ordering::Acquire)
+            && business_ready.get()
             && transport.media_ready()
             && wanted.sending
             && wanted.capturing;
@@ -585,9 +583,18 @@ pub(super) fn capture_loop(
         // Leader: encode while this participant or another member takes
         // frames.
         let others = membership.as_ref().is_some_and(|m| m.others_active());
+        // While the connection is made, open the encoder from the first
+        // image of the prepared capture: once media may flow, the first
+        // frame only has to be encoded.
+        let preroll = !own_active
+            && !others
+            && wanted.sending
+            && wanted.capturing
+            && desktop.is_some()
+            && encoder.is_none();
         if !own_active && wanted.capturing && others {
             own_needs_keyframe = true;
-        } else if !own_active {
+        } else if !own_active && !preroll {
             if !wanted.capturing {
                 if last_diagnostics.take().is_some() {
                     handle.video(None);
@@ -608,14 +615,16 @@ pub(super) fn capture_loop(
                     }
                 });
             }
-            cached = None;
+            if !wanted.capturing || !unsent_cache {
+                cached = None;
+            }
             if !wanted.capturing {
                 runtime.end_gpu_work();
             }
             last_frame = None;
             keyframe.store(true, Ordering::Release);
             next = Instant::now();
-            std::thread::sleep(Duration::from_millis(20));
+            business_ready.wait(ready_seen, Duration::from_millis(20));
             continue;
         } else if std::mem::take(&mut own_needs_keyframe) {
             keyframe.store(true, Ordering::Release);
@@ -641,7 +650,7 @@ pub(super) fn capture_loop(
             // same policy and reread settings after either native open path.
             continue;
         }
-        if group_peak < codec_minimum {
+        if group_peak < codec_minimum && !preroll {
             // Keep source/cursor/recovery observations alive during a transport
             // pause, without preprocessing the desktop at the full video rate.
             // Do not advance WindowAdmission: it counts actual candidate frames.
@@ -725,6 +734,7 @@ pub(super) fn capture_loop(
             Some(frame) => {
                 metrics.new_frames += u64::from(frame.is_new);
                 cached = Some(frame.clone());
+                unsent_cache = false;
                 frame
             }
             None => {
@@ -742,17 +752,21 @@ pub(super) fn capture_loop(
                     continue;
                 }
                 frame.captured = Instant::now();
-                frame.is_new = false;
+                frame.is_new = std::mem::take(&mut unsent_cache);
                 frame
             }
         };
         let peak = group_peak;
         // A zero/tiny allocation is a transport pause, not an encoder failure.
         // Do not fabricate bandwidth by clamping it back to a quality floor.
-        if peak < codec_minimum {
+        if peak < codec_minimum && !preroll {
             continue;
         }
-        let (media_rate, discard_frame) = admission.next(peak, codec_minimum, group_ratio);
+        let (media_rate, discard_frame) = if preroll {
+            (peak, false)
+        } else {
+            admission.next(peak, codec_minimum, group_ratio)
+        };
         if discard_frame {
             metrics.admission_drops += 1;
             continue;
@@ -903,6 +917,11 @@ pub(super) fn capture_loop(
             frame_metadata.clear();
             encode_errors = 0;
             keyframe.store(true, Ordering::Release);
+        }
+        if preroll {
+            unsent_cache = true;
+            tracing::debug!(?size, "host encoder prepared while connecting");
+            continue;
         }
         let active_encoder = encoder.as_mut().context("缺少编码器")?;
         let needs_transfer = device != *source_device;

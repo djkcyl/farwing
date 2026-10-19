@@ -89,6 +89,9 @@ pub(crate) struct VideoConfig {
     /// A `CaptureSetting` from this participant was applied (until then the
     /// session's start parameters stand in).
     pub configured: bool,
+    /// The codec the controller asked for from the session's start (its
+    /// later settings keep it current); None lets the host choose.
+    pub requested_codec: Option<format::Codec>,
 }
 impl Default for VideoConfig {
     fn default() -> Self {
@@ -114,6 +117,7 @@ impl Default for VideoConfig {
             cinema: false,
             receiver_fps: 0,
             configured: false,
+            requested_codec: None,
         }
     }
 }

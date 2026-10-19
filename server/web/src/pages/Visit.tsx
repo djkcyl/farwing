@@ -1,10 +1,11 @@
 // Visitor viewing (`docs/web-console.md` §7.3): a host's short number or
 // device ID, with its access code or the host user's confirmation. Works
 // without an account (as a guest) and signed in (as the account).
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useAuth } from '../lib/auth';
 import { connectIdText } from '../lib/format';
 import { Link, navigate, useLocation } from '../lib/router';
+import { warmUpPake } from '../lib/spake2';
 import { parseTarget, VisitError, visitAdmission, type VisitStep } from '../lib/visit';
 import type { Admission } from '../lib/viewer';
 import { Alert, Button, Field, Input, Spinner } from '../ui/kit';
@@ -33,6 +34,12 @@ export default function Visit() {
   const first = useRef<Admission | undefined>(undefined);
   const [confirmed, setConfirmed] = useState(false);
   const secret = useRef('');
+
+  // The access-code exchange starts sooner on submit.
+  useEffect(() => {
+    const timer = window.setTimeout(warmUpPake, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
