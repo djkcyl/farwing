@@ -1,0 +1,26 @@
+[package]
+name = "kcp"
+version = "0.6.0"
+authors = ["Matrix <113445886@qq.com>", "Y. T. Chung <zonyitoo@gmail.com>"]
+description = "Reliable-UDP Library for Rust"
+license = "MIT"
+readme = "README.md"
+keywords = ["kcp", "udp", "reliable", "net"]
+documentation = "https://docs.rs/kcp"
+repository = "https://github.com/Matrix-Zhang/kcp"
+edition = "2021"
+
+[features]
+fastack-conserve = []
+tokio = ["dep:tokio"]
+
+[dependencies]
+bytes = "1.0"
+log = "0.4"
+thiserror = "2.0"
+tokio = { version = "1", optional = true, features = ["io-util"] }
+
+[dev-dependencies]
+time = "0.3"
+rand = "0.9"
+env_logger = "0.11"

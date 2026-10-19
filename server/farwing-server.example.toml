@@ -1,0 +1,143 @@
+# Farwing Server configuration.
+# Relative paths are resolved against the directory of this file.
+
+# Address of the HTTPS + WSS listener.
+listen = "0.0.0.0:8443"
+
+# Public https:// URL clients use to reach this server. The realtime endpoint
+# is derived from it: wss://<host>[:port]/api/v2/ws. It must be https even when
+# a reverse proxy terminates TLS (tls.mode = "proxy").
+public_url = "https://farwing.example.com:8443"
+
+# Data directory: SQLite database (farwing.db), wallpapers/ and tls/.
+data_dir = "./data"
+
+# Name shown to clients in GET /api/v2/server.
+instance_name = "farwing"
+
+# Reverse proxies (CIDRs) whose X-Forwarded-For header is trusted for the
+# client IP (rate limits, Wake-on-LAN network matching).
+trusted_proxies = []
+
+# Optional session bitrate cap (Mbit/s) handed to clients.
+# bitrate_limit_mbps = 50
+
+# Log filter (RUST_LOG overrides it). Secrets, SDP and ICE candidates are never logged.
+log = "info"
+
+[tls]
+# mode = "tls"   : terminate TLS here (default)
+# mode = "proxy" : plain HTTP on `listen`, behind a TLS-terminating reverse proxy
+# mode = "acme"  : terminate TLS here with a certificate obtained and renewed
+#                  automatically (Let's Encrypt or another ACME CA, see [tls.acme])
+mode = "tls"
+# Either a certificate chain and private key in PEM format ...
+# cert = "/etc/farwing/fullchain.pem"
+# key = "/etc/farwing/privkey.pem"
+# ... or a self-signed certificate generated on first start into data_dir/tls.
+# Its SHA-256 fingerprint is logged at startup so clients can pin it.
+self_signed = true
+hostnames = ["farwing.example.com"]
+
+# [tls.acme]  (mode = "acme"; browsers and clients then trust the certificate
+# without pinning). The CA must reach this server under the domain name:
+# tls-alpn-01 needs port 443 (public_url on 443), http-01 needs port 80.
+# Names on the certificate (default: the host of public_url):
+# domains = ["farwing.example.com"]
+# contact = "admin@example.com" # optional, for expiry notices
+# directory = "letsencrypt"     # or "letsencrypt-staging", or a directory URL
+# challenge = "auto"            # "tls-alpn-01", "http-01" or "auto"
+# http_listen = "0.0.0.0:80"    # http-01 and redirect from http:// to public_url
+# agree_tos = true              # required: accept the CA's terms of service
+
+[guest]
+# Allow devices without an account (guest hosts and visitors). Can also be
+# changed in the web console (Settings).
+enabled = true
+
+[web]
+# Serve the web console at / (user center, administration, browser viewing).
+enabled = true
+# Networks allowed to use the administration pages, e.g. ["192.168.0.0/16"];
+# empty = any network (administrators can enable TOTP).
+admin_allow = []
+# Browser logins expire after this many idle minutes, and after this many hours.
+session_idle_minutes = 30
+session_max_hours = 12
+# Days the audit log is kept.
+audit_days = 180
+
+[turn]
+# mode = "external": coturn (or compatible) with use-auth-secret / static-auth-secret
+# mode = "builtin" : embedded STUN/TURN server (listen_udp, public_ip, ...)
+# mode = "none"    : STUN only, no relay
+mode = "external"
+urls = [
+  "stun:farwing.example.com:3478",
+  "turn:farwing.example.com:3478?transport=udp",
+  "turn:farwing.example.com:3478?transport=tcp",
+]
+# Shared secret for TURN REST credentials (coturn static-auth-secret).
+shared_secret = "CHANGE-ME-run-farwing-server-init-to-generate-a-secret"
+# Lifetime of issued TURN credentials ("12h", "30m", or seconds).
+credential_ttl = "12h"
+# Ask clients to use relayed candidates only.
+force_relay = false
+# ---- builtin only:
+# listen_udp = "0.0.0.0:3478"
+# listen_tcp = "0.0.0.0:3478"
+# public_ip = "203.0.113.10"
+# realm = "farwing"
+# relay_bind = "0.0.0.0"
+# relay_port_min = 49160
+# relay_port_max = 49200
+# With builtin mode and empty `urls`, stun:/turn: URLs are derived from
+# public_ip and the listen ports.
+# Extra STUN endpoints for NAT behaviour discovery (RFC 5780, builtin only).
+# Each answers Binding requests with RESPONSE-ORIGIN and honors CHANGE-REQUEST;
+# clients get them as additional stun: URLs. Two ports on one IP allow the
+# "change port" tests; the same two ports on a second public IP enable
+# OTHER-ADDRESS and all tests. Keep these entries at the end of [turn].
+# public defaults to public_ip and the listen port.
+# [[turn.stun]]
+# listen = "203.0.113.10:3479"
+# [[turn.stun]]
+# listen = "203.0.113.10:3480"
+# [[turn.stun]]
+# listen = "198.51.100.20:3479"
+# public = "198.51.100.20:3479"
+# [[turn.stun]]
+# listen = "198.51.100.20:3480"
+# public = "198.51.100.20:3480"
+
+[network]
+# Thresholds for automatic switching to relay (loss %, latency ms). Hosts only
+# honor them when force_loss >= 10, force_latency >= 200,
+# possible_min_latency >= 200, 5 <= possible_loss <= force_loss and
+# possible_min_latency <= possible_latency <= force_latency.
+auto_switch = true
+possible_loss = 5
+possible_latency = 300
+possible_min_latency = 200
+force_loss = 15
+force_latency = 500
+
+[limits]
+# Optional overrides (defaults shown).
+# heartbeat_ms = 20000
+# idle_timeout_ms = 60000
+# resume_ttl_s = 300
+# ticket_ttl_s = 60
+# max_frame_bytes = 1048576
+# max_sdp_bytes = 1048576
+# max_candidates = 256
+# max_candidate_bytes = 2048
+# ws_rate_per_s = 200
+# ws_rate_burst = 400
+# device_init_per_ip_hour = 30
+# login_failures_per_ip = 20
+# login_failures_per_user = 10
+# assist_failures_per_minute = 10
+# assist_host_reply_ms = 10000
+# assist_decision_wait_ms = 65000
+# guest_token_ttl_s = 86400

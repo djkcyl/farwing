@@ -1,0 +1,6 @@
+[package]
+name = "farwing-amf-sys"
+version = "1.5.2"
+edition = "2021"
+license = "MIT"
+publish = false

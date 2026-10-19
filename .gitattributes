@@ -1,0 +1,8 @@
+## Keep checkout, editor and formatter line endings consistent on every platform.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Catalog signatures cover exact file bytes, including INF line endings.
+/assets/drivers/** binary !eol
+/drivers/**/*.inf -text !eol whitespace=cr-at-eol

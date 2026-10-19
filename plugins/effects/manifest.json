@@ -1,0 +1,138 @@
+{
+  "id": "farwing.effects",
+  "name": "画面滤镜",
+  "version": "0.1.0",
+  "abi": 1,
+  "capability": "nodes",
+  "dependencies": [],
+  "config": {},
+  "nodes": [
+    {
+      "type_id": "farwing.effects.color",
+      "schema_version": 1,
+      "name": "色彩调整",
+      "category": "画面滤镜",
+      "description": "调整亮度、对比度和饱和度；饱和度设为零可得到灰度画面。",
+      "implementation": "video_shader",
+      "inputs": [
+        {
+          "id": "frames",
+          "name": "画面",
+          "data_type": "frame"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "frames",
+          "name": "画面",
+          "data_type": "frame"
+        }
+      ],
+      "dependencies": [],
+      "config": {
+        "brightness": 0.0,
+        "contrast": 1.0,
+        "saturation": 1.0
+      },
+      "config_labels": {
+        "brightness": "亮度",
+        "contrast": "对比度",
+        "saturation": "饱和度"
+      },
+      "config_schema": {
+        "brightness": {
+          "order": 0,
+          "min": -1,
+          "max": 1,
+          "step": 0.01
+        },
+        "contrast": {
+          "order": 1,
+          "min": 0,
+          "max": 3,
+          "step": 0.01
+        },
+        "saturation": {
+          "order": 2,
+          "min": 0,
+          "max": 3,
+          "step": 0.01
+        }
+      }
+    },
+    {
+      "type_id": "farwing.effects.sharpen",
+      "schema_version": 1,
+      "name": "锐化",
+      "category": "画面滤镜",
+      "description": "增强画面边缘细节，强度设为零保持原画面。",
+      "implementation": "video_shader",
+      "inputs": [
+        {
+          "id": "frames",
+          "name": "画面",
+          "data_type": "frame"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "frames",
+          "name": "画面",
+          "data_type": "frame"
+        }
+      ],
+      "dependencies": [],
+      "config": {
+        "amount": 0.3
+      },
+      "config_labels": {
+        "amount": "锐化强度"
+      },
+      "config_schema": {
+        "amount": {
+          "order": 0,
+          "min": 0,
+          "max": 2,
+          "step": 0.01
+        }
+      }
+    },
+    {
+      "type_id": "farwing.effects.pixelate",
+      "schema_version": 1,
+      "name": "像素化",
+      "category": "画面滤镜",
+      "description": "按源画面像素大小生成方块像素效果。",
+      "implementation": "video_shader",
+      "inputs": [
+        {
+          "id": "frames",
+          "name": "画面",
+          "data_type": "frame"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "frames",
+          "name": "画面",
+          "data_type": "frame"
+        }
+      ],
+      "dependencies": [],
+      "config": {
+        "block_size": 8
+      },
+      "config_labels": {
+        "block_size": "像素块大小"
+      },
+      "config_schema": {
+        "block_size": {
+          "order": 0,
+          "min": 1,
+          "max": 64,
+          "step": 1
+        }
+      }
+    }
+  ]
+}

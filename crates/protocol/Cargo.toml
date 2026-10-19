@@ -1,0 +1,38 @@
+[package]
+name = "farwing-protocol"
+version = "2.0.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-only"
+description = "Farwing Protocol v2: shared wire types for Farwing Client and Farwing Server"
+
+[features]
+default = []
+# Peer (client-to-client) frame codec and handshake messages. The server never
+# parses peer traffic and builds without this feature.
+peer = ["dep:prost", "dep:bytes"]
+# Device identity keys, request signatures, DTLS identity binding and the
+# assistance PAKE. Both the client and the server enable it, so they sign and
+# verify exactly the same bytes.
+crypto = [
+    "dep:ed25519-dalek",
+    "dep:sha2",
+    "dep:hmac",
+    "dep:spake2",
+    "dep:base64",
+    "dep:rand_core",
+    "dep:subtle",
+]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+prost = { version = "0.14", optional = true }
+bytes = { version = "1.11", optional = true }
+ed25519-dalek = { version = "2.1", optional = true, features = ["rand_core"] }
+sha2 = { version = "0.10", optional = true }
+hmac = { version = "0.12", optional = true }
+spake2 = { version = "0.4", optional = true }
+base64 = { version = "0.22", optional = true }
+rand_core = { version = "0.6", optional = true, features = ["getrandom"] }
+subtle = { version = "2.6", optional = true }

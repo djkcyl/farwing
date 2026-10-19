@@ -1,0 +1,14 @@
+[package]
+name = "farwing-effects"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-only"
+[lib]
+crate-type = ["cdylib"]
+[dependencies]
+farwing-plugin-api = { path = "../sdk" }
+serde_json = "1"
+[profile.release]
+opt-level = 3
+strip = "debuginfo"

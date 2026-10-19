@@ -1,0 +1,14 @@
+root = true
+
+[*]
+end_of_line = lf
+
+[*.{bat,cmd}]
+end_of_line = crlf
+
+# Preserve bytes covered by driver catalog signatures.
+[assets/drivers/**]
+end_of_line = unset
+
+[drivers/**/*.inf]
+end_of_line = unset

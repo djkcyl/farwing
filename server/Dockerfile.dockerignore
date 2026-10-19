@@ -1,0 +1,13 @@
+# Build context for server/Dockerfile (context = repository root).
+*
+!crates/protocol/
+!server/
+crates/protocol/target/
+server/target/
+server/target-*/
+server/data/
+server/web/node_modules/
+server/web/dist/
+server/*.toml
+!server/Cargo.toml
+!server/farwing-server.example.toml

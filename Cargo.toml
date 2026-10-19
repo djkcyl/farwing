@@ -1,0 +1,206 @@
+[package]
+name = "farwing"
+version = "0.1.0"
+edition = "2024"
+description = "Farwing Client — self-hosted remote desktop and streaming"
+license = "AGPL-3.0-only"
+publish = false
+default-run = "Farwing"
+autobins = false
+
+[[bin]]
+name = "Farwing"
+path = "src/main.rs"
+
+[dependencies]
+farwing-protocol = { path = "crates/protocol", features = ["peer", "crypto"] }
+anyhow = "1.0"
+async-trait = "0.1"
+bytemuck = { version = "1.25.2", features = ["derive", "min_const_generics"] }
+base64 = "0.22.1"
+bytes = "1.11.1"
+crossbeam-queue = "0.3.14"
+cpal = "0.18.2"
+clap = { version = "4.6.7", features = ["derive"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+dunce = "1.0"
+egui = { version = "0.36.1", default-features = false, features = ["bytemuck"] }
+flate2 = "1.1.10"
+futures-util = "0.3.34"
+goog_cc = { path = "vendor/goog_cc" }
+farwing-amf-sys = { path = "vendor/amf-sys" }
+farwing-vpl-sys = { path = "vendor/vpl-sys" }
+hmac = "0.12.1"
+hyper = { version = "1.11.1", default-features = false }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "tiff"] }
+keyring = "4.1.6"
+keyring-core = "=1.0.0"
+kcp = { path = "vendor/kcp" }
+opusic-c = "1.6.1"
+qrcode = { version = "0.14.1", default-features = false }
+rand = "0.9"
+# Self-signed certificate of the direct endpoint (`docs/protocol/v2-design.md` §12).
+rcgen = "0.13"
+prost = "0.14"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-no-provider", "system-proxy", "gzip"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+semver = "1.0"
+sha2 = "0.10.9"
+tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+thiserror = "2.0.21"
+tracing = "0.1.44"
+tracing-appender = "0.2.4"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
+url = "2.5.8"
+uuid = { version = "1.25.0", features = ["v4"] }
+webrtc = { path = "vendor/webrtc" }
+webrtc-srtp = "0.17.2"
+yuv = "0.8.17"
+object = { version = "0.37.3", default-features = false, features = ["read_core", "std", "pe"] }
+zip = { version = "8.6.0", default-features = false, features = ["zstd"] }
+regex = "1.13.1"
+# LAN discovery needs SO_REUSEADDR before bind.
+socket2 = "0.6"
+
+[build-dependencies]
+cc = "1.2"
+embed-resource = "3.0.11"
+epaint_default_fonts = "=0.36.1"
+flate2 = "1.1.10"
+sha1 = "0.10.7"
+
+[target.'cfg(windows)'.dependencies]
+farwing-bootstrap = { path = "crates/bootstrap" }
+# Required by the generated code of #[windows::core::implement].
+windows-core = "0.62.2"
+farwing-plugin-api = { path = "plugins/sdk" }
+farwing-codec = { path = "crates/codec" }
+libloading = "0.8.9"
+farwing-nvenc-sys = { path = "vendor/nvenc-sys" }
+egui-directx11 = { path = "vendor/egui-directx11" }
+egui-winit = { version = "0.36.1", default-features = false, features = ["clipboard", "links"] }
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
+windows = { version = "0.62.2", default-features = false, features = [
+    "Foundation",
+    "Data_Xml_Dom",
+    "UI_Notifications",
+    "Win32_System_WinRT",
+    "Win32_System_Variant",
+    "Win32_Devices_Display",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_System_IO",
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_DirectComposition",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_GdiPlus",
+    "Win32_System_Console",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Ole",
+    "Win32_System_SystemServices",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Performance",
+    "Win32_System_Power",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_SystemInformation",
+    "Win32_System_Registry",
+    "Win32_System_JobObjects",
+    "Win32_System_Environment",
+    "Win32_System_RemoteDesktop",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+    "Win32_Security",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Input_Pointer",
+    "Win32_UI_Input_Touch",
+    "Win32_UI_HiDpi",
+    "Win32_System_StationsAndDesktops",
+    "Win32_System_Services",
+    "Win32_System_Pipes",
+    "Win32_System_Shutdown",
+    "Win32_Security_Authorization",
+    "Win32_Security_WinTrust",
+    "Win32_Security_Cryptography",
+    "Win32_UI_Input_Ime",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Accessibility",
+] }
+
+[patch.crates-io]
+dtls = { path = "vendor/dtls" }
+interceptor = { path = "vendor/interceptor" }
+rtcp = { path = "vendor/rtcp" }
+turn = { path = "vendor/turn" }
+webrtc-ice = { path = "vendor/webrtc-ice" }
+webrtc-sctp = { path = "vendor/webrtc-sctp" }
+webrtc-srtp = { path = "vendor/webrtc-srtp" }
+webrtc-util = { path = "vendor/webrtc-util" }
+
+[profile.release]
+# Keep playback dependencies, including decoder and SIMD kernels, at their original
+# speed settings. Cross-crate LTO changed hot-code layout in decoder comparisons.
+opt-level = 3
+lto = false
+# One unit avoids repeated async state machines and their unwind metadata.
+codegen-units = 1
+strip = "debuginfo"
+# Decoder workers rely on unwinding to contain failures and release resources.
+panic = "unwind"
+
+[profile.release.package.farwing]
+# Optimize application glue for size without changing decoder/DSP dependencies.
+opt-level = "s"
+
+# Preserve the validated code generation of the video/SIMD kernels.
+[profile.release.package.farwing-h264]
+codegen-units = 16
+
+[profile.release.package.yuv]
+codegen-units = 16
+
+# Startup, HTTP management and certificate parsing are outside the media path.
+# Keep the real-time transport, crypto, rendering and codecs at level 3.
+[profile.release.package.reqwest]
+opt-level = "s"
+
+[profile.release.package.clap_builder]
+opt-level = "s"
+
+[profile.release.package.x509-parser]
+opt-level = "s"
+
+[profile.dev.package.yuv]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+[profile.dev.package.farwing-h264]
+opt-level = 3
+
+
+
+[profile.dev.package.farwing-h265-syntax]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false

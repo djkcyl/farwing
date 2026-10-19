@@ -1,0 +1,2 @@
+[alias]
+dist = ["run", "--quiet", "--locked", "--manifest-path", "xtask/Cargo.toml", "--"]

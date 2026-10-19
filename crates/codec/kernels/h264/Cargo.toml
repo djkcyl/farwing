@@ -1,0 +1,20 @@
+[package]
+name = "farwing-h264"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "LGPL-2.1-or-later"
+description = "Farwing platform-independent H.264 software core"
+
+[dependencies]
+thiserror = "2.0.21"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# Whole-pipeline diagnostics, absent from production/timing builds.
+profile = []
+# Offline whole-decoder attribution only; never enabled by the application.
+scalar-dsp = []
+portable-cabac = []

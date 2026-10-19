@@ -1,0 +1,39 @@
+[package]
+name = "farwing-codec"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-only"
+description = "Farwing low-delay video codecs and shared bitstream syntax"
+
+[dependencies]
+anyhow = "1.0"
+bytes = "1.11.1"
+yuv = "0.8.17"
+farwing-h264 = { path = "kernels/h264" }
+farwing-av1 = { path = "kernels/av1" }
+farwing-h265-syntax = { path = "kernels/hevc" }
+
+[workspace]
+members = ["kernels/h264", "kernels/av1", "kernels/hevc"]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = false
+codegen-units = 1
+panic = "unwind"
+
+[profile.release.package.farwing-h264]
+codegen-units = 16
+
+[profile.release.package.yuv]
+codegen-units = 16
+
+[profile.dev.package.farwing-h264]
+opt-level = 3
+
+[profile.dev.package.yuv]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false

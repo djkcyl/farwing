@@ -1,0 +1,319 @@
+Farwing Third-Party Provenance, Attribution and Licensing Notices
+
+Farwing is licensed under the GNU Affero General Public License, version 3
+only (AGPL-3.0-only; see LICENSE). This file identifies principal known
+sources and their licensing boundaries. It does not relicense third-party
+material. Copyright and license notices accompanying individual files and
+components remain effective. This inventory neither replaces the full
+original licenses nor guarantees that all provenance and
+distribution-compliance reviews have been completed.
+
+1. Origin: OpenUUYC
+
+Farwing is derived from OpenUUYC by djkcyl and contributors
+(https://github.com/djkcyl/openuuyc, v1.0.0-rc.3, commit 506df56). The
+original OpenUUYC copyright, provenance and license notice is preserved
+verbatim in licenses/OpenUUYC-NOTICE.txt. Mentions of "OpenUUYC" below
+describe that history.
+
+OpenUUYC implemented interoperability with the NetEase UU Remote service.
+Farwing removes that service binding: it uses its own Farwing Protocol
+(docs/protocol/farwing-protocol.md) and the self-hosted Farwing Server, and
+does not contact, load or require any UU Remote service, client, SDK,
+credential or component. The names UU Remote and NetEase, and their code,
+documentation, marks, assets and services, belong to their respective
+rightsholders; Farwing claims no affiliation.
+
+Parameter provenance: OpenUUYC's notice stated that its RS-FEC repair-count
+tables (formerly src/features/host/fec-high-rtt.bin and fec-low-rtt.bin)
+were obtained from the UU V4.7.3 SDK. Farwing deleted those tables; repair
+counts are now computed from a binomial loss model in
+src/transport/fec_policy.rs. The same notice listed the bitrate budget
+table in src/features/host/parameters.rs; it is retained unchanged in this
+release to preserve streaming behavior and is scheduled for review.
+
+2. Video decoding and platform adaptation
+
+AV1 global-motion validation:
+crates/codec/kernels/av1/src/bitstream/syntax/warp.rs adapts dav1d warpmv.c shear validation
+and reciprocal constants at 9a275d0c9296f2c0ded9d0dd28f99cf22dea2572.
+BSD-2-Clause; see crates/codec/kernels/av1/licenses/COPYING.dav1d.
+
+AV1 decoder SIMD attribution:
+The retained dav1d decoder assembly includes contributions from rav1e authors
+in src/decoder/x86/cdef16_sse.asm and itx16_sse.asm. Original BSD notices
+remain in those files; see crates/codec/kernels/av1/licenses/COPYING.rav1e
+and PATENTS.rav1e for the retained upstream notices and patent grant.
+
+Windows NVENC hardware encoder ABI bindings:
+vendor/nvenc-sys/ retains the NVENC-only Windows bindings, GUIDs, version
+constants and original layout tests from nvidia-video-codec-sdk 0.4.0 (MIT).
+Bindings and local adaptations are included in that directory;
+wrapper and NVIDIA header notices are retained alongside them. No NVDEC or
+CUDA implementation is included in this component.
+Source: https://github.com/ViliamVadocz/nvidia-video-codec-sdk
+
+Sender-side Google Congestion Control algorithm core:
+vendor/goog_cc/ is based on goog_cc 0.1.4, a Rust port of WebRTC algorithms.
+The original BSD-style LICENSE, PATENTS, AUTHORS and library tests are retained.
+Transport feedback, pacing and protection policies are integrated by
+OpenUUYC/Farwing; the upstream default configuration is retained in the vendor tree.
+Source: https://github.com/kixelated/goog_cc
+
+FFmpeg-derived Rust decoding and DXVA parameter implementations:
+LGPL-2.1-or-later.
+Principal locations: crates/codec/kernels/h264/ and
+src/platform/windows/decoder/rust_dxva/.
+Retained original author attributions include Michael Niedermayer, Loren
+Merritt, Daniel Kang, Laurent Aimar, and Hendrik Leppkes. File-specific
+sources and attributions must also be preserved. Rust ports, SIMD
+optimizations, parameter mapping, and other covered modifications do not
+become subject to the project's reserved-rights terms instead.
+Reference: FFmpeg 8.0.3, https://ffmpeg.org/releases/ffmpeg-8.0.3.tar.xz
+License texts: src/media/decoder/COPYING.FFmpeg and
+crates/codec/kernels/h264/COPYING.LGPLv2.1.
+
+Platform adaptation derived from mediaway-decoder 0.1.8:
+MIT OR Apache-2.0.
+Original notice: Copyright (c) 2026 NyxWays.
+License texts: src/media/decoder/LICENSE-MIT and src/media/decoder/LICENSE-APACHE.
+The original crate was removed, but licenses and attributions for existing
+derivative code remain applicable. mediaway-common has also been removed;
+active media types and decoder ownership now belong to OpenUUYC.
+
+Selected AVC/HEVC syntax, reference metadata and transform primitives are
+adapted from oxideav-h264 0.1.8 and oxideav-h265 0.0.10 (MIT),
+Copyright (c) 2026 Karpelès Lab Inc. The retained portions are in
+crates/codec/kernels/h264/src/syntax and crates/codec/kernels/hevc/src. These packages are
+no longer runtime Cargo dependencies; unused codec/extension implementations
+were not imported. Original MIT texts are retained as COPYING.OxideAV in
+both crates. Their license does not replace the LGPL applicable to
+FFmpeg-derived decoding implementations.
+
+3. Audio
+
+vendor/webrtc_neteq is a reduced WebRTC NetEq version based on
+branch-heads/5481. Its copyright notices include:
+Copyright (c) 2011, The WebRTC project authors.
+Source: https://webrtc.googlesource.com/src/+/refs/branch-heads/5481/
+Its LICENSE (BSD terms), PATENTS, and AUTHORS are retained. Actual
+modifications are reflected in the source. The included Abseil reference
+version is 20230125.3, with absl/LICENSE (Apache-2.0) retained. Included
+Opus public headers retain third_party/opus/src/COPYING.
+
+src/media/audio/dsp.rs is a Rust adaptation of the floating-point, quality-5
+resampler in SpeexDSP 1.2.1 (Jean-Marc Valin, 2007). Filter coefficients,
+algorithm provenance and BSD terms are preserved in src/media/audio/COPYING.SpeexDSP.
+The implementation owns a stereo history and fractional phase, with no native
+Speex library or FFI. Original C source is kept only for offline comparison.
+Source: https://downloads.xiph.org/releases/speex/speexdsp-1.2.1.tar.gz
+The Cargo licenses of opusic-c 1.6.1 and opusic-sys 0.7.5 are BSD-3-Clause.
+Notices for the underlying Opus implementation and its authors must also
+be retained as required by the source used. These version numbers identify
+the Rust packages, not the underlying Opus version.
+
+4. Networking, user interface, and other dependencies
+
+The WebRTC-rs crates in vendor/ retain their respective
+MIT OR Apache-2.0 licenses and attributions. KCP retains
+vendor/kcp/LICENSE. egui-directx11 retains LICENSE-MIT, LICENSE-APACHE,
+and source-level provenance notices in its directory. Project adaptations
+to protocol behavior, lifecycle, and presentation do not remove original
+license obligations.
+
+The package licenses of egui and image are MIT OR Apache-2.0; winit is
+Apache-2.0. The object crate (0.37.3, Apache-2.0 OR MIT) is used to read
+embedded plugin descriptors from native library files without executing them.
+Source: https://github.com/gimli-rs/object
+The complete Hack, Ubuntu-Light, NotoEmoji-Regular and emoji-icon-font
+fonts from epaint_default_fonts 0.36.1 are embedded with lossless compression.
+Their original font licenses and attributions are in assets/fonts/LICENSE.
+Diagnostic archives use zip-rs/zip (MIT), with Zstandard compression through
+the zstd Rust bindings (MIT) and linked zstd-sys/Zstandard library
+(BSD-3-Clause). Full notices are preserved in assets/licenses/zip-MIT.txt,
+assets/licenses/zstd-rs-MIT.txt and assets/licenses/zstd-BSD-3-Clause.txt.
+Sources: https://github.com/zip-rs/zip2 and https://github.com/facebook/zstd
+
+Other Rust dependencies, system API bindings, and tools remain
+subject to their own package licenses and copyright notices. Cargo.lock
+pins dependency versions but does not replace licenses, attribution, or
+provenance materials. The project does not grant rights in system
+frameworks or graphics drivers.
+
+5. External plugins
+
+This repository distributes the plugin SDK and the video-filter example.
+The client does not bundle third-party inference runtimes or model weights.
+Separately installed plugins, runtimes, and assets remain subject to their
+own copyright and license terms; the project's original-code restrictions
+do not replace those terms.
+
+6. Distribution and corresponding source
+
+LGPL components and their modifications must retain the applicable rights
+to use, modify, and redistribute them. Restrictions on original project
+material must not become additional restrictions on LGPL components.
+The single-file Windows EXE statically links relevant components. Using
+Rust or UPX compression, or omitting separate DLLs, does not remove
+obligations concerning corresponding source and relinkable materials.
+
+For the actual binary being distributed, distributors should provide the
+matching component modifications, application linking materials, and
+necessary build scripts, resources, and license texts, with access provided
+as required by the applicable licenses. The required materials depend on
+the actual build. Repository visibility or the existence of this inventory
+alone does not establish compliance.
+Project source: https://github.com/djkcyl/openuuyc
+Use the tag or commit matching the release, rather than assuming that the
+main branch always corresponds to a particular binary.
+
+Upstream license texts retained in the project have independent effect.
+This file and the root LICENSE must not rewrite their grants, conditions,
+or disclaimers. Missing provenance or attribution should be corrected
+with supporting evidence and notices; unlisted material must not be
+presumed original to this project.
+
+Protocol interoperability parameter provenance:
+vendor/amf-sys contains Rust bindings and retained AMD AMF 1.5.2 public
+headers under their original MIT notices in vendor/amf-sys/include/.
+vendor/vpl-sys contains public Intel oneVPL bindings and the static driver
+dispatcher, pinned to 674d015bcb294bc39fa276e99a652ea045423e82, under MIT.
+Its original LICENSE is retained in vendor/vpl-sys/dispatcher/LICENSE.
+No AMD/Intel encoder runtime binaries or official UU shader binaries are
+distributed by these additions; the actual encoder is the installed driver.
+
+The streaming parameters previously described here are covered in section 1.
+
+
+Rust H.264 desktop encoder
+
+The realtime encoder in crates/codec/kernels/h264 shares the existing LGPL-2.1-or-later
+FFmpeg-derived interpolation, prediction, deblocking and CAVLC tables with the
+decoder. Selected forward/inverse transform primitives retain the MIT attribution
+from oxideav-h264 0.1.8 in the local syntax module. Frame decisions, motion search, rate control and
+bitstream writing are implemented in the project. OpenH264 is not linked.
+
+The specialized Rust encoder's GOM rate-control formulas, screen-change thresholds,
+scroll detection, mode costs, quantization tables, residual decimation, prediction and motion-search
+organization are adapted from Cisco OpenH264 source and verified
+against UU's active producer/consumer paths. The original BSD-2-Clause notice is
+retained in licenses/openh264-algorithms.txt. This attribution does not add the
+OpenH264 C/C++ library or bindings to the application.
+
+
+Optional Farwing Display driver
+
+Built from the project's derivative in drivers/display, based on
+https://github.com/SudoMaker/SudoVDA at a4b09fa2aa731a964d0cb5d139cb1e6240e4da12.
+The upstream author offers their changes under
+MIT / CC0 / Public Domain; see drivers/display/UPSTREAM.md.
+Microsoft Windows driver sample contributions retain their MS-PL license,
+Copyright (c) 2015 Microsoft; see drivers/display/LICENSE.
+The package is embedded for explicit optional installation only; it is not
+an official UU driver, and installing it requires separate administrator
+consent and trust of the Farwing Drivers publisher certificate.
+
+
+Optional Farwing Audio driver
+
+The optional Farwing Audio driver references Microsoft's ACX sample circuit
+and stream implementation (Microsoft Public License). See drivers/audio/LICENSE
+and drivers/audio/UPSTREAM.md. No sample tone generation, file recording, or APO
+effects are included.
+
+AV1 syntax parsing
+
+The local syntax module in crates/codec/kernels/av1/src/bitstream adapts the AV1 parser from
+cros-codecs 0.0.6 (commit 7a4211c57ac2e791412f40df2c22fd2cf81104f6).
+Container probing, owned OBU copies, unused operating-point selection and
+Linux/VAAPI/V4L2 backends are not part of this implementation. Its bit reader
+uses local bounded primitives, with local tile-boundary and syntax fixes.
+There is no cros-codecs runtime dependency.
+Copyright The ChromiumOS Authors. BSD-3-Clause;
+see crates/codec/kernels/av1/licenses/COPYING.ChromiumOS.
+Source: https://github.com/chromeos/cros-codecs
+The D3D11 AV1 parameter mapping references FFmpeg's dxva2_av1.c and remains
+covered by the existing LGPL-2.1-or-later notice and COPYING.FFmpeg.
+
+AV1 mature decoder source baseline:
+crates/codec/kernels/av1/src/decoder contains the Rust and assembly decoder sources from rav1d
+revision d3d1cd67059f47803919be8276650e5870c9fd02, including the dav1d-derived
+SIMD kernels and original notices. BSD-2-Clause; see crates/codec/kernels/av1/licenses/COPYING.rav1d.
+Source: https://github.com/memorysafety/rav1d
+The Rust convenience API in src/rust_api.rs derives from dav1d-rs at
+94b1deaa1e25bf29c77bb5cc8a08ddaf7663eede, Copyright (c) 2018 Luca Barbato,
+MIT; its complete license text is retained at the top of that source file.
+The local Rust source and SIMD assembly are used by the AV1 software playback
+backend. No C decoder implementation is compiled into it.
+
+Diagnostic archive dependency license texts
+==========================================
+
+zip-MIT.txt
+The MIT License (MIT)
+
+Copyright (c) 2014 Mathijs van de Nes
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+zstd-rs-MIT.txt
+The MIT License (MIT)
+Copyright (c) 2016 Alexandre Bury
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+zstd-BSD-3-Clause.txt
+The auto-generated bindings are under the 3-clause BSD license:
+
+BSD License
+
+For Zstandard software
+
+Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Facebook, nor Meta, nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

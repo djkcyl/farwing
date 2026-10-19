@@ -1,0 +1,63 @@
+# systemd unit for Farwing Server.
+#
+#   sudo useradd --system --home-dir /var/lib/farwing-server --shell /usr/sbin/nologin farwing
+#   sudo install -m 0755 target/release/farwing-server /usr/local/bin/
+#   sudo install -d -m 0750 -o root -g farwing /etc/farwing-server
+#   sudo farwing-server init --config /etc/farwing-server/farwing-server.toml \
+#        --public-url https://farwing.example.com:8443 --data-dir /var/lib/farwing-server
+#   sudo chgrp farwing /etc/farwing-server/farwing-server.toml && sudo chmod 0640 /etc/farwing-server/farwing-server.toml
+#   sudo cp deploy/farwing-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now farwing-server
+#
+# Admin commands must run as the service user (database ownership):
+#   sudo -u farwing farwing-server --config /etc/farwing-server/farwing-server.toml user create alice
+
+[Unit]
+Description=Farwing Server (self-hosted remote desktop backend)
+Documentation=file:///usr/local/share/doc/farwing-server/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=farwing
+Group=farwing
+Environment=FARWING_CONFIG=/etc/farwing-server/farwing-server.toml
+ExecStart=/usr/local/bin/farwing-server serve
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=20
+LimitNOFILE=65536
+
+# State: /var/lib/farwing-server (database, wallpapers, generated certificates).
+StateDirectory=farwing-server
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/farwing-server
+
+# Uncomment to listen on ports below 1024 (e.g. 443) without root.
+#AmbientCapabilities=CAP_NET_BIND_SERVICE
+#CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

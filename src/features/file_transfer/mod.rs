@@ -1,0 +1,374 @@
+//! File management and transfer, FILE v2 (`docs/protocol/v2-design.md` §8.1):
+//! typed requests on the session channel, file data as `TRANSFER`/`FLOW` on
+//! the bulk channel.
+pub(crate) mod host;
+pub(crate) mod model;
+mod storage;
+pub(crate) use storage::Store;
+pub(crate) mod service;
+mod tasks;
+pub(crate) mod ui;
+pub(crate) mod wire;
+
+use anyhow::{Context, Result, ensure};
+use bytes::Bytes;
+use model::FileEntry;
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
+    },
+    time::Duration,
+};
+use tokio::sync::{Notify, mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
+use webrtc::data_channel::{RTCDataChannel, data_channel_state::RTCDataChannelState};
+
+use crate::transport::transfer::{Chunk, Credit, INITIAL_WINDOW, Window};
+use wire::{Body, Frame};
+
+pub(crate) fn lock<T>(v: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    v.lock().unwrap_or_else(|e| e.into_inner())
+}
+/// How long a request waits for its response.
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(60);
+/// Queue limit of the session channel for (possibly fragmented) requests.
+const SESSION_QUEUE: usize = 4 * 1024 * 1024;
+
+/// What arrives for a running transfer.
+pub(crate) enum Inbound {
+    Chunk(Chunk),
+    ItemDone(wire::ItemDone),
+}
+
+/// One transfer stream of this connection.
+struct Stream {
+    inbound: mpsc::UnboundedSender<Inbound>,
+    /// Upload: what the host allows us to send.
+    credit: Mutex<Credit>,
+    /// Download: what we allowed the host to send.
+    window: Mutex<Window>,
+    changed: Notify,
+    stop: CancellationToken,
+    fault: Mutex<Option<String>>,
+}
+
+impl Stream {
+    fn fail(&self, message: impl Into<String>) {
+        lock(&self.fault).get_or_insert_with(|| message.into());
+        self.stop.cancel();
+        self.changed.notify_waiters();
+    }
+}
+
+/// A registered transfer; unregisters on drop.
+pub(crate) struct Registration {
+    pub id: u32,
+    stream: Arc<Stream>,
+    transport: Arc<Transport>,
+    pub inbound: mpsc::UnboundedReceiver<Inbound>,
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        lock(&self.transport.streams).remove(&self.id);
+    }
+}
+
+impl Registration {
+    /// Why the transfer stopped: a connection or protocol fault, else a pause.
+    pub(crate) fn failure(&self) -> String {
+        lock(&self.stream.fault)
+            .clone()
+            .unwrap_or_else(|| "任务已暂停".into())
+    }
+    pub(crate) fn stopped(&self) -> bool {
+        self.stream.stop.is_cancelled()
+    }
+    pub(crate) async fn cancelled(&self) {
+        self.stream.stop.cancelled().await
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Transport {
+    session: Mutex<Weak<RTCDataChannel>>,
+    bulk: Mutex<Weak<RTCDataChannel>>,
+    pending: Mutex<HashMap<u32, oneshot::Sender<Body>>>,
+    streams: Mutex<HashMap<u32, Arc<Stream>>>,
+    fragments: Mutex<wire::Reassembly>,
+    /// The host declared the `files` feature.
+    supported: AtomicBool,
+    /// 0 unknown, 1 revoked, 2 granted (`PERMISSIONS`).
+    permission: AtomicI32,
+    changed: Notify,
+    requests: AtomicU32,
+    transfers: AtomicU32,
+    session_lock: tokio::sync::Mutex<()>,
+}
+
+/// Removes an unanswered request when its waiter goes away.
+struct Waiting<'a>(&'a Transport, u32);
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        lock(&self.0.pending).remove(&self.1);
+    }
+}
+
+impl Transport {
+    pub(crate) fn allowed(&self) -> bool {
+        self.permission.load(Ordering::Acquire) != 1
+    }
+    /// Whether this participant holds the `files` capability (`PERMISSIONS`).
+    /// Losing it aborts every running transfer.
+    pub(crate) fn permit(&self, allowed: bool) {
+        self.permission
+            .store(if allowed { 2 } else { 1 }, Ordering::Release);
+        if !allowed {
+            for stream in lock(&self.streams).values() {
+                stream.fail("被控端已撤销文件传输权限");
+            }
+        }
+        self.wake();
+    }
+    pub(crate) fn bind(&self, c: &Arc<RTCDataChannel>) {
+        match c.label() {
+            crate::protocol::peer::channel::SESSION => *lock(&self.session) = Arc::downgrade(c),
+            crate::protocol::peer::channel::BULK => *lock(&self.bulk) = Arc::downgrade(c),
+            _ => {}
+        }
+    }
+    pub(crate) fn capabilities(&self, files: bool) {
+        self.supported.store(files, Ordering::Release);
+        self.changed.notify_waiters();
+    }
+    pub(crate) fn supported(&self) -> bool {
+        self.supported.load(Ordering::Acquire)
+    }
+    /// Something a sender may wait for changed (queue drained, credit).
+    pub(crate) fn wake(&self) {
+        self.changed.notify_waiters();
+        for stream in lock(&self.streams).values() {
+            stream.changed.notify_waiters();
+        }
+    }
+    pub(crate) fn close(&self) {
+        self.permission.store(0, Ordering::Release);
+        self.supported.store(false, Ordering::Release);
+        // Dropping the senders fails every waiting request.
+        lock(&self.pending).clear();
+        *lock(&self.fragments) = Default::default();
+        for (_, stream) in lock(&self.streams).drain() {
+            stream.fail("设备连接已断开，任务已暂停");
+        }
+        self.wake();
+    }
+    fn ready(&self) -> Result<()> {
+        ensure!(self.supported(), "被控端尚未就绪或不支持当前文件传输协议");
+        ensure!(self.allowed(), "被控端已关闭文件传输权限");
+        Ok(())
+    }
+
+    /// Send `body` and wait for its response; a `Failed` answer is an error
+    /// ([`wire::Failure`]).
+    pub(crate) async fn request(&self, body: Body, stop: &CancellationToken) -> Result<Body> {
+        self.ready()?;
+        let name = body.name();
+        let id = loop {
+            let id = self.requests.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+            if id != 0 && !lock(&self.pending).contains_key(&id) {
+                break id;
+            }
+        };
+        let (tx, rx) = oneshot::channel();
+        lock(&self.pending).insert(id, tx);
+        let _waiting = Waiting(self, id);
+        tokio::select! {
+            biased;
+            _ = stop.cancelled() => anyhow::bail!("任务已暂停"),
+            sent = self.send_session(wire::request(id, body)) => sent?,
+        }
+        let reply = tokio::select! {
+            biased;
+            _ = stop.cancelled() => anyhow::bail!("任务已暂停"),
+            reply = tokio::time::timeout(TIMEOUT, rx) => reply
+                .with_context(|| format!("远端未响应文件请求 {name}"))?
+                .context("文件连接已结束")?,
+        };
+        match reply {
+            Body::Failed(failed) => Err(wire::Failure::from(failed).into()),
+            body => Ok(body),
+        }
+    }
+
+    async fn send_session(&self, frames: Vec<Vec<u8>>) -> Result<()> {
+        let channel = lock(&self.session).upgrade().context("文件通道未连接")?;
+        // Fragments of one message go out back to back.
+        let _gate = tokio::time::timeout(Duration::from_secs(30), self.session_lock.lock())
+            .await
+            .context("文件发送队列等待超时")?;
+        for frame in frames {
+            let frame = Bytes::from(frame);
+            tokio::time::timeout(Duration::from_secs(30), async {
+                // The session writer owns this channel's low-water callback; poll.
+                while channel.buffered_amount().await + frame.len() > SESSION_QUEUE {
+                    ensure!(
+                        channel.ready_state() == RTCDataChannelState::Open,
+                        "文件通道已断开"
+                    );
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                ensure!(
+                    channel.ready_state() == RTCDataChannelState::Open,
+                    "文件通道已断开"
+                );
+                channel.send(&frame).await?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .await
+            .context("文件发送超时")??;
+        }
+        Ok(())
+    }
+
+    /// Send one frame on the bulk channel through its shared writer gate
+    /// (at most [`crate::transport::bulk::QUEUE`] bytes queued in SCTP).
+    async fn send_bulk(&self, frame: Vec<u8>) -> Result<()> {
+        let channel = lock(&self.bulk).upgrade().context("文件数据通道未连接")?;
+        crate::transport::bulk::send(&channel, Bytes::from(frame), || self.supported())
+            .await
+            .context("文件数据发送失败")
+    }
+
+    /// Register a new transfer stream of this connection.
+    pub(crate) fn register(self: &Arc<Self>, stop: CancellationToken) -> Result<Registration> {
+        self.ready()?;
+        let (inbound, receiver) = mpsc::unbounded_channel();
+        let stream = Arc::new(Stream {
+            inbound,
+            credit: Mutex::new(Credit::new(INITIAL_WINDOW)),
+            window: Mutex::new(Window::new()),
+            changed: Notify::new(),
+            stop,
+            fault: Mutex::new(None),
+        });
+        let mut streams = lock(&self.streams);
+        ensure!(streams.len() < 64, "文件任务过多，请等待当前任务完成");
+        let id = loop {
+            let id = self.transfers.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+            if id != 0 && !streams.contains_key(&id) {
+                break id;
+            }
+        };
+        streams.insert(id, stream.clone());
+        Ok(Registration {
+            id,
+            stream,
+            transport: Arc::clone(self),
+            inbound: receiver,
+        })
+    }
+
+    /// Wait until the upload may send at least one byte; returns the credit.
+    pub(crate) async fn credit(&self, transfer: &Registration) -> Result<u64> {
+        let stream = &transfer.stream;
+        loop {
+            let changed = stream.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            ensure!(!stream.stop.is_cancelled(), "{}", transfer.failure());
+            let available = lock(&stream.credit).available();
+            if available > 0 {
+                return Ok(available);
+            }
+            tokio::select! {
+                _ = stream.stop.cancelled() => {},
+                _ = changed => {},
+                // A FLOW never got lost on a reliable channel; this only
+                // bounds a host that stopped granting.
+                _ = tokio::time::sleep(TIMEOUT) => anyhow::bail!("被控端长时间未接收文件数据"),
+            }
+        }
+    }
+
+    /// Send one chunk of an upload within its credit.
+    pub(crate) async fn send_chunk(&self, transfer: &Registration, chunk: Chunk) -> Result<()> {
+        ensure!(!transfer.stopped(), "{}", transfer.failure());
+        lock(&transfer.stream.credit).spend(chunk.data.len())?;
+        tokio::select! {
+            biased;
+            _ = transfer.cancelled() => anyhow::bail!(transfer.failure()),
+            sent = self.send_bulk(wire::chunk(&chunk)) => sent,
+        }
+    }
+
+    /// `len` downloaded bytes were written; grant the host more credit.
+    pub(crate) async fn delivered(&self, transfer: &Registration, len: usize) -> Result<()> {
+        let credit = lock(&transfer.stream.window).deliver(len);
+        if let Some(credit) = credit {
+            self.send_bulk(wire::flow(transfer.id, credit)).await?;
+        }
+        Ok(())
+    }
+
+    /// Handle a `FILE`, `TRANSFER` or `FLOW` frame; `false` for other frames.
+    /// Never waits for the transfer that owns the frame.
+    pub(crate) async fn receive(&self, bytes: &Bytes) -> Result<bool> {
+        let Some(frame) = wire::classify(bytes)? else {
+            return Ok(false);
+        };
+        match frame {
+            Frame::Chunk(chunk) => {
+                let stream = lock(&self.streams).get(&chunk.stream).cloned();
+                let Some(stream) = stream else {
+                    // Chunks still in flight after a pause or cancel.
+                    return Ok(true);
+                };
+                let accounted = {
+                    let mut window = lock(&stream.window);
+                    let received = window.received();
+                    window.receive(received, chunk.data.len())
+                };
+                match accounted {
+                    Ok(()) => {
+                        let _ = stream.inbound.send(Inbound::Chunk(chunk));
+                    }
+                    Err(error) => stream.fail(format!("被控端发送的数据不符合流控：{error}")),
+                }
+            }
+            Frame::Flow(flow) => {
+                if let Some(stream) = lock(&self.streams).get(&flow.stream)
+                    && lock(&stream.credit).grant(flow.credit)
+                {
+                    stream.changed.notify_waiters();
+                }
+            }
+            Frame::File(header, body) => {
+                let received = lock(&self.fragments).push(&header, body)?;
+                let Some(received) = received else {
+                    return Ok(true);
+                };
+                if received.response {
+                    match lock(&self.pending).remove(&received.request_id) {
+                        Some(waiter) => {
+                            let _ = waiter.send(received.body);
+                        }
+                        None => tracing::debug!(
+                            request_id = received.request_id,
+                            body = received.body.name(),
+                            "file response has no waiting request"
+                        ),
+                    }
+                } else if let Body::ItemDone(done) = received.body {
+                    if let Some(stream) = lock(&self.streams).get(&done.transfer) {
+                        let _ = stream.inbound.send(Inbound::ItemDone(done));
+                    }
+                } else {
+                    tracing::debug!(body = received.body.name(), "unexpected file request ignored");
+                }
+            }
+        }
+        Ok(true)
+    }
+}

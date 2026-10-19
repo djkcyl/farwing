@@ -1,0 +1,99 @@
+# Farwing
+
+Farwing 是可自建、可独立部署的远程控制与桌面串流软件，定位类似 Moonlight 与 RustDesk。它基于 [OpenUUYC](https://github.com/djkcyl/openuuyc)（djkcyl 及贡献者）的完整 Windows 客户端改造：保留其界面、业务逻辑、状态机和媒体实现，把所有 UU 远程业务协议与官方服务依赖替换为 **Farwing Protocol** 和自建的 **Farwing Server**。
+
+| 组件 | 位置 | 说明 |
+| --- | --- | --- |
+| Farwing Client | 仓库根目录（`Farwing.exe`） | Windows 客户端，可作主控、被控、远程协助 |
+| Farwing Server | [`server/`](server/README.md) | Rust 服务端：HTTPS 管理面、WSS 在线与会话协调、SQLite、TURN 凭据与可选内置 STUN/TURN；自带网页端（用户中心、管理后台、浏览器里的远程桌面） |
+| Farwing Protocol | [`docs/protocol/`](docs/protocol/farwing-protocol.md)、[`crates/protocol`](crates/protocol) | 客户端与服务端共享的协议规范与线上类型 |
+
+Farwing 不连接、不依赖 UU 官方服务、官方客户端或官方凭据，也不与 UU 远程或 OpenUUYC 互通。媒体通过 WebRTC 端到端传输（DTLS-SRTP），中继使用标准 TURN，服务端不接触、不重编码音视频。
+
+**当前阶段：第二轮（Farwing Protocol v2）已实现，部分项目待双机验证。** 第一轮（v1，协议与自建服务迁移）的迁移情况和验证结果见 [docs/migration-status.md](docs/migration-status.md)；第二轮的设计、实现状态与待验证项见 [docs/protocol/v2-design.md](docs/protocol/v2-design.md)。Farwing 尚未发布，不提供与旧版本（包括 v1）的兼容：客户端与服务端须使用同一版本，服务端也不迁移旧数据库。
+
+## 快速开始
+
+1. 部署服务端并创建账号（详见 [server/README.md](server/README.md)）：
+
+   ```sh
+   farwing-server init --config farwing-server.toml --public-url https://farwing.example.com:8443
+   farwing-server --config farwing-server.toml user create admin --admin
+   farwing-server --config farwing-server.toml user create alice
+   farwing-server serve --config farwing-server.toml
+   ```
+
+   浏览器打开 `https://farwing.example.com:8443/` 即为网页端：管理员可以在“管理”中创建账号、生成邀请码、查看设备与会话、发布客户端更新；所有账号可以管理设备与好友，并在浏览器中连接自己或好友共享的设备（按授权观看与控制）。
+
+2. 在 Windows 上运行 `Farwing.exe`，填写服务器地址（自签名证书需核对并信任指纹），用管理员创建的账号登录。命令行方式：
+
+   ```powershell
+   Farwing.exe server set farwing.example.com:8443 --pin <证书 SHA-256 指纹>
+   Farwing.exe login --username alice
+   Farwing.exe devices
+   Farwing.exe connect --device-id <设备ID>
+   ```
+
+完整用法（被控、远程协助、多实例 profile、与 OpenUUYC 共存）见 [docs/client-usage.md](docs/client-usage.md)。
+
+## 能力
+
+功能范围与 OpenUUYC v1.0.0 一致（已跟进 rc.4、rc.5 与 1.0.0 的改动，见 [docs/upstream-sync.md](docs/upstream-sync.md)），全部改用 Farwing Protocol：
+
+- 账号与设备管理、在线状态、设备改名/移除、壁纸、同账号设备互访、好友与按设备授权、多人同时连接
+- 远程协助：9 位设备号 + 验证码 / 本机确认 / 验证码加确认，游客协助，最近与收藏
+- 局域网发现、地址直连与配对（不经服务器）
+- 音视频串流：H.264 / H.265 / AV1、硬件与软件编解码、HDR、多显示器、显示设置、虚拟屏、本地比例拉伸（不修改远端分辨率）；全屏时悬停顶部展开操作栏；桌面声音与仅音频连接
+- 远程输入（键鼠）、麦克风与虚拟声卡、剪贴板、文件传输、拖放、批注
+- 端口转发（TCP/UDP）、远程电源操作与网络唤醒、无人值守、后台服务、安装与更新
+- 服务端网页端：用户中心、管理后台（账号、邀请码、设备、会话、更新公告、在线设置、审计日志、管理员二次验证），以及浏览器远程桌面（账号设备、好友共享设备、短号 + 访问码的访客；观看，按授权的键鼠、剪贴板、文件与麦克风），见 [docs/web-console.md](docs/web-console.md)
+
+虚拟显示、输入和音频驱动是可选组件，仓库不附带预编译驱动包，见下文“驱动”。
+
+## 构建客户端
+
+需要 Windows 10/11 x64、Rust stable（MSVC，开发使用 1.95）、Visual Studio C++ 构建工具、Windows SDK、CMake 和 NASM，命令行工具需加入 PATH。
+
+```powershell
+cargo build --release          # 产物 target\release\Farwing.exe
+cargo dist                     # 打包单文件 EXE，产物在 target\dist\
+cargo dist --native            # 仅构建原生 EXE
+```
+
+服务端是独立的 Cargo 工作区，构建方法见 [server/README.md](server/README.md)。
+
+## 驱动
+
+虚拟显示、输入与虚拟声卡驱动的源码在 [`drivers/`](drivers/README.md)，其硬件 ID、设备名、接口 GUID 与 OpenUUYC 区分（见 [docs/dev/identity.md](docs/dev/identity.md)）。驱动需要 WDK 构建，并使用你自己的代码签名证书签名；把签名后的驱动包放入 `assets/drivers/` 后重新构建客户端即可嵌入。未嵌入驱动包的构建中，相关安装入口会提示该构建未包含驱动，其余功能不受影响。
+
+## 文档
+
+- [客户端使用说明](docs/client-usage.md)
+- [服务端部署与管理](server/README.md)；[网页端](docs/web-console.md)
+- [Farwing Protocol 规范](docs/protocol/farwing-protocol.md) 与 [对端消息定义](docs/protocol/peer-messages.md)；[v2 设计与决策记录](docs/protocol/v2-design.md)
+- [迁移状态与验证结果](docs/migration-status.md)
+- [系统组件身份](docs/dev/identity.md)、[参考实现协议清单](docs/dev/reference-inventory.md)
+
+## 许可与来源
+
+Farwing 新增和改写的部分以 [AGPL-3.0-only](LICENSE) 发布。
+
+Farwing 派生自 OpenUUYC。OpenUUYC 原作者声明保留在 [licenses/OpenUUYC-NOTICE.txt](licenses/OpenUUYC-NOTICE.txt)。按该声明，OpenUUYC 原创部分未采用开源许可，保留所有权利。因此，以 AGPL-3.0-only 分发包含这些部分的整体程序，需要其权利人的授权。分发前请确认已取得该授权。
+
+第三方代码及其派生部分保留各自的许可（FFmpeg 派生部分为 LGPL-2.1-or-later，rav1d/dav1d 为 BSD-2-Clause 等），详见 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) 与各目录下的许可文件。
+
+Farwing 与网易及 UU 远程无关，不代表也不提供任何官方服务。
+
+## 鸣谢
+
+- [OpenUUYC](https://github.com/djkcyl/openuuyc)（djkcyl 及其贡献者）：Farwing 的客户端、界面、业务与媒体实现基础。
+- [SudoVDA](https://github.com/SudoMaker/SudoVDA) 与 [Microsoft Windows Driver Samples](https://github.com/microsoft/Windows-driver-samples)：虚拟显示驱动的源码基础，以及虚拟音频驱动的示例参考。
+- [FFmpeg](https://ffmpeg.org/)：视频编解码基础算法及硬件解码适配。
+- [rav1d](https://github.com/memorysafety/rav1d) / dav1d：AV1 软件解码核心及 SIMD 实现。
+- [Cisco OpenH264](licenses/openh264-algorithms.txt)：软件编码器的码率控制、屏幕变化检测与运动搜索等算法参考。
+- [WebRTC](https://webrtc.googlesource.com/src/+/refs/branch-heads/5481/)、[WebRTC-rs](https://github.com/webrtc-rs/webrtc) 与 [goog_cc](https://github.com/kixelated/goog_cc)：实时传输、音频接收处理与拥塞控制基础。
+- Opus / [SpeexDSP](src/media/audio/COPYING.SpeexDSP)：音频编解码与重采样算法。
+- egui / [egui-directx11](https://github.com/NekomaruQwQ/egui-directx11)：图形界面与渲染基础。
+- [coturn](https://github.com/coturn/coturn) 与 [webrtc-rs turn](https://github.com/webrtc-rs/webrtc)：TURN 中继（外部部署或服务端内置）。
+
+完整的第三方来源与许可说明见 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES)。

@@ -1,0 +1,18 @@
+[package]
+name = "farwing-bootstrap"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-only"
+
+[features]
+extract = ["dep:zstd"]
+
+[dependencies]
+anyhow = "1.0"
+dunce = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10.9"
+zstd = { version = "0.13.3", optional = true, default-features = false }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_Security"] }

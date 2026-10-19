@@ -1,0 +1,73 @@
+[package]
+name = "farwing-server"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Farwing Server: self-hosted signaling, account and TURN credential service for Farwing"
+license = "AGPL-3.0-only"
+publish = false
+
+# Standalone workspace: the server has its own Cargo.lock and target directory
+# and does not participate in the client workspace at the repository root.
+[workspace]
+
+[lib]
+name = "farwing_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "farwing-server"
+path = "src/main.rs"
+
+[dependencies]
+farwing-protocol = { path = "../crates/protocol", features = ["crypto"] }
+
+anyhow = "1.0"
+argon2 = { version = "0.5.3", features = ["std"] }
+async-trait = "0.1"
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio", "ws", "matched-path", "original-uri", "tracing"] }
+axum-server = { version = "0.8.0", features = ["tls-rustls-no-provider"] }
+base64 = "0.22.1"
+bytes = "1"
+clap = { version = "4.6", features = ["derive", "env"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+getrandom = "0.3"
+hex = "0.4"
+http-body-util = "0.1"
+hmac = "0.12"
+instant-acme = { version = "0.8.5", default-features = false, features = ["ring", "hyper-rustls", "rcgen"] }
+ipnet = { version = "2.11", features = ["serde"] }
+parking_lot = "0.12"
+rand = "0.9"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+rpassword = "7.4"
+rusqlite = { version = "0.37", features = ["bundled"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha1 = "0.10"
+sha2 = "0.10"
+subtle = "2.6"
+thiserror = "2"
+tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "fs", "io-util"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+turn = "0.17.2"
+url = "2.5"
+uuid = { version = "1.18", features = ["v4"] }
+webrtc-util = { version = "0.17", default-features = false, features = ["conn", "vnet"] }
+
+[dev-dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-no-provider"] }
+# Independent STUN decoder for the NAT discovery tests (same version as `turn` uses).
+stun = "0.17.2"
+tempfile = "3"
+tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12", "logging"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = "debuginfo"

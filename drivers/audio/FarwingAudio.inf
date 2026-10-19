@@ -1,0 +1,103 @@
+[Version]
+Signature="$WINDOWS NT$"
+Class=MEDIA
+ClassGuid={4d36e96c-e325-11ce-bfc1-08002be10318}
+Provider=%Provider%
+DriverVer=10/14/2026,1.0.0.1
+CatalogFile=FarwingAudio.cat
+PnpLockDown=1
+
+[Manufacturer]
+%Provider%=Models,NTamd64.10.0...19041
+[Models.NTamd64.10.0...19041]
+%Device%=Install,ROOT\FARWING_AUDIO
+
+[DestinationDirs]
+DefaultDestDir=13
+[SourceDisksNames]
+1=%Device%,,,
+[SourceDisksFiles]
+FarwingAudio.sys=1
+[Install.NT]
+Include=ks.inf,kscaptur.inf
+Needs=KS.Registration,KSCAPTUR.Registration.NT
+CopyFiles=DriverFiles
+AddReg=EndpointNames
+[EndpointNames]
+; Device-local names; never replace the system-wide audio category names.
+HKR,MediaCategories\%SpeakerCategory%,Name,,%SpeakerEndpointName%
+HKR,MediaCategories\%MicrophoneCategory%,Name,,%MicrophoneEndpointName%
+[DriverFiles]
+FarwingAudio.sys
+[Install.NT.Services]
+AddService=FarwingAudio,0x2,Service
+[Service]
+DisplayName=%Device%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%13%\FarwingAudio.sys
+[Install.NT.Wdf]
+KmdfService=FarwingAudio,Wdf
+[Wdf]
+KmdfLibraryVersion=1.31
+
+[Install.NT.Interfaces]
+AddInterface=%Audio%,"FarwingSpeaker",SpeakerInterface
+AddInterface=%Render%,"FarwingSpeaker",SpeakerInterface
+AddInterface=%Realtime%,"FarwingSpeaker",SpeakerInterface
+AddInterface=%Audio%,"FarwingMicrophone",MicrophoneInterface
+AddInterface=%Capture%,"FarwingMicrophone",MicrophoneInterface
+AddInterface=%Realtime%,"FarwingMicrophone",MicrophoneInterface
+[SpeakerInterface]
+AddReg=SpeakerProperties
+[MicrophoneInterface]
+AddReg=MicrophoneProperties
+[SpeakerProperties]
+HKR,,CLSID,,%Proxy%
+HKR,,FriendlyName,,%SpeakerName%
+HKR,EP\0,%Association%,,%SpeakerCategory%
+HKR,EP\0,%EndpointIcon%,,"%%SystemRoot%%\system32\mmres.dll,-3010"
+HKR,EP\0,%EventDriven%,0x10001,1
+[MicrophoneProperties]
+HKR,,CLSID,,%Proxy%
+HKR,,FriendlyName,,%MicrophoneName%
+HKR,EP\0,%Association%,,%MicrophoneCategory%
+HKR,EP\0,%EndpointIcon%,,"%%SystemRoot%%\system32\mmres.dll,-3014"
+HKR,EP\0,%EventDriven%,0x10001,1
+
+[Strings]
+Provider="Farwing"
+Device="Farwing Virtual Audio"
+SpeakerName="Farwing Speaker"
+MicrophoneName="Farwing Microphone"
+SpeakerEndpointName="Virtual Speakers"
+MicrophoneEndpointName="Virtual Microphone"
+SpeakerCategory="{DFF21CE1-F70F-11D0-B917-00A0C9223196}"
+MicrophoneCategory="{DFF21BE1-F70F-11D0-B917-00A0C9223196}"
+EndpointIcon="{259ABFFC-50A7-47CE-AF08-68C9A7D73366},12"
+Proxy="{17CCA71B-ECD7-11D0-B908-00A0C9223196}"
+Audio="{6994AD04-93EF-11D0-A3CC-00A0C9223196}"
+Render="{65E8773E-8F56-11D0-A3B9-00A0C9223196}"
+Capture="{65E8773D-8F56-11D0-A3B9-00A0C9223196}"
+Realtime="{EB115FFC-10C8-4964-831D-6DCB02E6F23F}"
+Association="{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},2"
+EventDriven="{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},7"
+
+[Strings.0804]
+Provider="Farwing"
+Device="Farwing 虚拟声卡"
+SpeakerName="Farwing 虚拟扬声器"
+MicrophoneName="Farwing 虚拟麦克风"
+SpeakerEndpointName="虚拟扬声器"
+MicrophoneEndpointName="虚拟麦克风"
+SpeakerCategory="{DFF21CE1-F70F-11D0-B917-00A0C9223196}"
+MicrophoneCategory="{DFF21BE1-F70F-11D0-B917-00A0C9223196}"
+EndpointIcon="{259ABFFC-50A7-47CE-AF08-68C9A7D73366},12"
+Proxy="{17CCA71B-ECD7-11D0-B908-00A0C9223196}"
+Audio="{6994AD04-93EF-11D0-A3CC-00A0C9223196}"
+Render="{65E8773E-8F56-11D0-A3B9-00A0C9223196}"
+Capture="{65E8773D-8F56-11D0-A3B9-00A0C9223196}"
+Realtime="{EB115FFC-10C8-4964-831D-6DCB02E6F23F}"
+Association="{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},2"
+EventDriven="{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},7"

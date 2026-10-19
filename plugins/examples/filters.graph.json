@@ -1,0 +1,147 @@
+{
+  "graph_format_version": 1,
+  "graph_id": "6aef660d-c986-451d-8dc3-104b024d68ef",
+  "name": "画面滤镜示例",
+  "nodes": [
+    {
+      "id": "b1737947-0348-4cd3-9020-9fb3944f421f",
+      "type_id": "host.video_source.v1",
+      "type_version": 1,
+      "name": "原始画面",
+      "position": [
+        40,
+        80
+      ],
+      "parameters": {},
+      "enabled": true,
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "frames",
+          "name": "画面",
+          "data_type": "frame",
+          "many": false,
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": "4d141520-438c-489f-895f-a3e3e231f29b",
+      "type_id": "farwing.effects.color",
+      "type_version": 1,
+      "name": "色彩调整",
+      "position": [
+        420,
+        80
+      ],
+      "parameters": {
+        "brightness": 0.0,
+        "contrast": 1.0,
+        "saturation": 0.0
+      },
+      "enabled": true,
+      "inputs": [
+        {
+          "id": "frames",
+          "name": "画面",
+          "data_type": "frame"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "frames",
+          "name": "画面",
+          "data_type": "frame"
+        }
+      ]
+    },
+    {
+      "id": "a4d7a12e-be06-4f3a-9c45-0ff19b91336b",
+      "type_id": "farwing.effects.sharpen",
+      "type_version": 1,
+      "name": "锐化",
+      "position": [
+        800,
+        80
+      ],
+      "parameters": {
+        "amount": 0.3
+      },
+      "enabled": true,
+      "inputs": [
+        {
+          "id": "frames",
+          "name": "画面",
+          "data_type": "frame"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "frames",
+          "name": "画面",
+          "data_type": "frame"
+        }
+      ]
+    },
+    {
+      "id": "39a45486-64a3-4461-8210-b94308a2bd6c",
+      "type_id": "host.video_output.v1",
+      "type_version": 1,
+      "name": "视频输出",
+      "position": [
+        1180,
+        80
+      ],
+      "parameters": {},
+      "enabled": true,
+      "inputs": [
+        {
+          "id": "video",
+          "name": "画面",
+          "data_type": "frame",
+          "many": false,
+          "optional": false
+        }
+      ],
+      "outputs": []
+    }
+  ],
+  "edges": [
+    {
+      "id": "0f3f0b26-8b04-4c18-848f-f6ccc5a53ae8",
+      "from": {
+        "node": "b1737947-0348-4cd3-9020-9fb3944f421f",
+        "port": "frames"
+      },
+      "to": {
+        "node": "4d141520-438c-489f-895f-a3e3e231f29b",
+        "port": "frames"
+      },
+      "order": 0
+    },
+    {
+      "id": "58b92e97-3f68-418a-ab76-2f1f7796d36e",
+      "from": {
+        "node": "4d141520-438c-489f-895f-a3e3e231f29b",
+        "port": "frames"
+      },
+      "to": {
+        "node": "a4d7a12e-be06-4f3a-9c45-0ff19b91336b",
+        "port": "frames"
+      },
+      "order": 0
+    },
+    {
+      "id": "c72b8b97-6c35-4c7e-bacc-6b84dde7619c",
+      "from": {
+        "node": "a4d7a12e-be06-4f3a-9c45-0ff19b91336b",
+        "port": "frames"
+      },
+      "to": {
+        "node": "39a45486-64a3-4461-8210-b94308a2bd6c",
+        "port": "video"
+      },
+      "order": 0
+    }
+  ]
+}

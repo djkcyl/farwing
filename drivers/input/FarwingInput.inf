@@ -1,0 +1,51 @@
+[Version]
+Signature="$WINDOWS NT$"
+Class=System
+ClassGuid={4D36E97D-E325-11CE-BFC1-08002BE10318}
+Provider=%Provider%
+CatalogFile=FarwingInput.cat
+DriverVer=10/14/2026,1.0.0.1
+PnpLockdown=1
+
+[Manufacturer]
+%Provider%=Models,NTamd64.10.0...19041
+[Models.NTamd64.10.0...19041]
+%Device%=Install,ROOT\FARWING_INPUT
+[DestinationDirs]
+DriverCopy=13
+[SourceDisksNames]
+1=%Media%,,,
+[SourceDisksFiles]
+FarwingInput.dll=1
+[Install.NT]
+CopyFiles=DriverCopy
+[DriverCopy]
+FarwingInput.dll
+[Install.NT.HW]
+AddReg=VhfFilter
+[VhfFilter]
+HKR,,LowerFilters,0x00010000,"vhf"
+HKR,,VhfMode,0x00010001,1
+HKR,,Security,,"D:P(A;;GA;;;SY)"
+HKR,WUDF,DeviceGroupId,,"FarwingInput"
+[Install.NT.Services]
+AddService=WUDFRd,0x000001fa,Reflector
+[Reflector]
+DisplayName="Windows Driver Foundation - User-mode Driver Framework Reflector"
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\WUDFRd.sys
+[Install.NT.Wdf]
+UmdfService=FarwingInput,Wdf
+UmdfServiceOrder=FarwingInput
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+UmdfHostProcessSharing=ProcessSharingDisabled
+UmdfHostPriority=PriorityHigh
+[Wdf]
+UmdfLibraryVersion=2.15.0
+ServiceBinary=%13%\FarwingInput.dll
+[Strings]
+Provider="Farwing"
+Device="Farwing Input"
+Media="Farwing Input Driver"

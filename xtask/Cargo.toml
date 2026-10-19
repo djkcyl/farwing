@@ -1,0 +1,15 @@
+[package]
+name = "farwing-xtask"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-only"
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+dunce = "1"
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"

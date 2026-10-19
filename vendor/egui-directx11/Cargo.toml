@@ -1,0 +1,20 @@
+[package]
+name = "egui-directx11"
+version = "0.13.0-farwing1"
+edition = "2024"
+description = "D3D11 renderer for egui 0.36, vendored for Farwing"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/NekomaruQwQ/egui-directx11"
+
+[dependencies]
+egui = { version = "=0.36.1", default-features = false }
+log = "0.4.33"
+windows = { version = "0.62.2", features = [
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+] }
+
+[lib]
+name = "egui_directx11"
+path = "src/lib.rs"

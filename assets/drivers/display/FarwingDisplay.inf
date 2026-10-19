@@ -1,0 +1,76 @@
+;
+; FarwingDisplay.inf
+;
+
+[Version]
+PnpLockdown=1
+Signature="$Windows NT$"
+ClassGUID = {4D36E968-E325-11CE-BFC1-08002BE10318}
+Class = Display
+ClassVer = 2.0
+Provider=%ManufacturerName%
+CatalogFile=FarwingDisplay.cat
+DriverVer=10/14/2026,1.0.0.1
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64
+
+[Standard.NTamd64]
+%DeviceName%=FarwingDisplay_Install, ROOT\FARWING_DISPLAY
+
+[SourceDisksFiles]
+FarwingDisplay.dll=1
+
+[SourceDisksNames]
+1 = %DiskName%
+
+; =================== UMDF Device ==================================
+
+[FarwingDisplay_Install.NT]
+CopyFiles=UMDriverCopy
+
+[FarwingDisplay_Install.NT.hw]
+AddReg = MyDevice_HardwareDeviceSettings
+
+[MyDevice_HardwareDeviceSettings]
+HKR,, "UpperFilters",  %REG_MULTI_SZ%, "IndirectKmd"
+HKR, "WUDF", "DeviceGroupId", %REG_SZ%, "FarwingDisplayGroup"
+HKR,, "Security",, "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)"
+
+[FarwingDisplay_Install.NT.Services]
+AddService=WUDFRd,0x000001fa,WUDFRD_ServiceInstall
+
+[FarwingDisplay_Install.NT.Wdf]
+UmdfService=FarwingDisplay,FarwingDisplay_Install
+UmdfServiceOrder=FarwingDisplay
+UmdfKernelModeClientPolicy = AllowKernelModeClients
+UmdfHostProcessSharing=ProcessSharingDisabled
+
+[FarwingDisplay_Install]
+UmdfLibraryVersion=2.25.0
+ServiceBinary=%13%\FarwingDisplay.dll
+UmdfExtensions = IddCx0102
+
+[WUDFRD_ServiceInstall]
+DisplayName = %WudfRdDisplayName%
+ServiceType = 1
+StartType = 3
+ErrorControl = 1
+ServiceBinary = %12%\WUDFRd.sys
+
+[DestinationDirs]
+UMDriverCopy=13
+
+[UMDriverCopy]
+FarwingDisplay.dll
+
+; =================== Generic ==================================
+
+[Strings]
+ManufacturerName="Farwing"
+DiskName = "FarwingDisplay Installation Disk"
+DeviceName="Farwing Virtual Display Adapter"
+WudfRdDisplayName="Windows Driver Foundation - User-mode Driver Framework Reflector"
+
+REG_MULTI_SZ  = 0x00010000
+REG_SZ        = 0x00000000

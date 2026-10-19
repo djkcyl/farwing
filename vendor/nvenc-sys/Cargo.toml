@@ -1,0 +1,10 @@
+[package]
+name = "farwing-nvenc-sys"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Windows NVENC ABI (API 13.0, generated from nv-codec-headers n13.0.19.0; originally the nvidia-video-codec-sdk 0.4.0 subset)"
+
+[lib]
+path = "src/lib.rs"
