@@ -2,12 +2,11 @@
 //!
 //! The user-mode graphics driver unloads with the last D3D device of the
 //! process, so each session would load it again (100-200 ms) when its
-//! capture opens, and only then create the encoder device and the D3D12
-//! runtime of the texture handoff, one after the other. A session starts
-//! this as soon as its screen is known: the capture opens on a loaded
-//! driver, the encoder takes the device made here, and the D3D12 device of
-//! the handoff already exists. What is not taken is released after
-//! [`LIFETIME`].
+//! capture opens, and only then create the encoder device (and, between two
+//! GPUs, the D3D12 runtime of the handoff), one after the other. A session
+//! starts this as soon as its screen is known: the capture opens on a loaded
+//! driver, the encoder takes the device made here, and the D3D12 device of a
+//! handoff already exists. What is not taken is released after [`LIFETIME`].
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -98,15 +97,12 @@ fn prepare(id: u64, adapter: u64, handoff: bool) {
         }
     };
     let device_ms = begun.elapsed().as_millis() as u64;
-    // NVENC encodes on a device of its own, and frames reach it through
-    // D3D12; so do frames between two GPUs.
-    let nvidia = vendor(&device) == Some(0x10de);
     update(id, |spare| {
         spare.device = Some(device.clone());
         spare.creating = false;
     });
     // Only the adapter: the device's context belongs to its taker now.
-    let d3d12 = (handoff || nvidia)
+    let d3d12 = handoff
         .then(|| d3d12(&device))
         .transpose()
         .inspect_err(|error| tracing::debug!(%error, "D3D12 warm-up unavailable"))
@@ -156,11 +152,6 @@ pub(super) fn take(adapter: u64) -> Option<ID3D11Device> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .0;
     }
-}
-
-fn vendor(device: &ID3D11Device) -> Option<u32> {
-    unsafe { device.cast::<IDXGIDevice>().ok()?.GetAdapter().ok()?.GetDesc().ok() }
-        .map(|desc| desc.VendorId)
 }
 
 /// The adapter's D3D12 device: one per adapter and process.

@@ -1,6 +1,8 @@
 //! Same-adapter handoff without CPU readback or cross-adapter copy queues.
-//! D3D12 only allocates the shared surface; all submitted work belongs to the
-//! two D3D11 contexts, whose runtime retains submitted resource references.
+//! The source device allocates the shared surfaces and fences; all submitted
+//! work belongs to the two D3D11 contexts, whose runtime retains submitted
+//! resource references. (A D3D12 allocator would cost the process a device:
+//! about 20 MB and 7 driver threads, and 45-80 ms to create per session.)
 use super::*;
 
 pub(super) struct Transfer {
@@ -19,7 +21,6 @@ struct Slot {
     value: AtomicU64,
     leased: AtomicBool,
     failed: AtomicBool,
-    _allocation: ID3D12Resource,
 }
 
 pub(super) struct Lease {
@@ -57,50 +58,47 @@ impl Transfer {
             "同卡交付需要单层非多重采样纹理"
         );
         unsafe {
-            let adapter = source.cast::<IDXGIDevice>()?.GetAdapter()?;
-            let mut allocator = None;
-            D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut allocator)?;
-            let allocator: ID3D12Device = allocator.context("同卡共享纹理分配设备")?;
             let source_context: ID3D11DeviceContext4 = source.GetImmediateContext()?.cast()?;
             let destination_context: ID3D11DeviceContext4 =
                 destination.GetImmediateContext()?.cast()?;
+            let source5 = source.cast::<ID3D11Device5>()?;
+            let destination5 = destination.cast::<ID3D11Device5>()?;
             let mut slots = Vec::with_capacity(2);
             for _ in 0..2 {
-                let (allocation, write) = interop(
-                    &allocator,
-                    source,
-                    &D3D12_RESOURCE_DESC {
-                        Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-                        Width: input.Width.into(),
+                let mut write = None;
+                source.CreateTexture2D(
+                    &D3D11_TEXTURE2D_DESC {
+                        Width: input.Width,
                         Height: input.Height,
-                        DepthOrArraySize: 1,
                         MipLevels: 1,
+                        ArraySize: 1,
                         Format: input.Format,
                         SampleDesc: input.SampleDesc,
-                        Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-                        Flags: D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS
-                            | D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-                        ..Default::default()
+                        Usage: D3D11_USAGE_DEFAULT,
+                        BindFlags: (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0)
+                            as u32,
+                        CPUAccessFlags: 0,
+                        MiscFlags: (D3D11_RESOURCE_MISC_SHARED.0
+                            | D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0)
+                            as u32,
                     },
-                )?;
-                let shared = Handle(allocator.CreateSharedHandle(
-                    &allocation,
                     None,
-                    0x10000000,
+                    Some(&mut write),
+                )?;
+                let write: ID3D11Texture2D = write.context("同卡共享纹理")?;
+                let shared = Handle(write.cast::<IDXGIResource1>()?.CreateSharedHandle(
+                    None,
+                    DXGI_SHARED_RESOURCE_READ.0 | DXGI_SHARED_RESOURCE_WRITE.0,
                     PCWSTR::null(),
                 )?);
                 let read = destination
                     .cast::<ID3D11Device1>()?
                     .OpenSharedResource1(shared.0)?;
-                let (ready12, ready) = fence(&allocator, source)?;
-                let shared = Handle(allocator.CreateSharedHandle(
-                    &ready12,
-                    None,
-                    0x10000000,
-                    PCWSTR::null(),
-                )?);
+                let mut ready = None;
+                source5.CreateFence(0, D3D11_FENCE_FLAG_SHARED, &mut ready)?;
+                let ready: ID3D11Fence = ready.context("同卡交付写入fence")?;
+                let shared = Handle(ready.CreateSharedHandle(None, 0x10000000, PCWSTR::null())?);
                 let mut remote_ready = None;
-                let destination5 = destination.cast::<ID3D11Device5>()?;
                 destination5.OpenSharedFence(shared.0, &mut remote_ready)?;
                 let mut consumed = None;
                 destination5.CreateFence(0, D3D11_FENCE_FLAG_NONE, &mut consumed)?;
@@ -115,7 +113,6 @@ impl Transfer {
                     value: AtomicU64::new(0),
                     leased: AtomicBool::new(false),
                     failed: AtomicBool::new(false),
-                    _allocation: allocation,
                 }));
             }
             Ok(Self { slots, next: 0 })

@@ -17,7 +17,10 @@ use windows::{
             Direct3D::D3D_FEATURE_LEVEL_11_0,
             Direct3D11::*,
             Direct3D12::*,
-            Dxgi::{Common::*, IDXGIDevice},
+            Dxgi::{
+                Common::*, DXGI_SHARED_RESOURCE_READ, DXGI_SHARED_RESOURCE_WRITE, IDXGIDevice,
+                IDXGIResource1,
+            },
         },
     },
     core::{Interface, PCWSTR},
