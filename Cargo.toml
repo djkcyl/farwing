@@ -82,6 +82,7 @@ windows-core = "0.62.2"
 farwing-plugin-api = { path = "plugins/sdk" }
 farwing-codec = { path = "crates/codec" }
 libloading = "0.8.9"
+memmap2 = "0.9.11"
 farwing-nvenc-sys = { path = "vendor/nvenc-sys" }
 egui-directx11 = { path = "vendor/egui-directx11" }
 egui-winit = { version = "0.36.1", default-features = false, features = ["clipboard", "links"] }

@@ -1582,6 +1582,7 @@ dependencies = [
  "keyring",
  "keyring-core",
  "libloading",
+ "memmap2",
  "object",
  "opusic-c",
  "prost",

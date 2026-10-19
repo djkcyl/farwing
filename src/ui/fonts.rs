@@ -1,4 +1,8 @@
 //! The complete egui fonts, compressed at build time and shared by all windows.
+//!
+//! All font bytes are `'static`: egui copies owned font data every time a
+//! context builds its fonts, which for the system CJK font (about 20 MB)
+//! meant one private copy per window plus ours.
 use egui::{FontData, FontDefinitions, FontFamily, FontTweak};
 use std::{
     io::Read,
@@ -19,9 +23,11 @@ pub(crate) fn definitions() -> FontDefinitions {
                 )
                 .read_to_end(&mut bytes)
                 .expect("invalid bundled font");
+                // Decompressed once per process and kept for its lifetime.
+                let bytes: &'static [u8] = Vec::leak(bytes);
                 fonts.font_data.insert(
                     $name.into(),
-                    Arc::new(FontData::from_owned(bytes).tweak(FontTweak {
+                    Arc::new(FontData::from_static(bytes).tweak(FontTweak {
                         scale: $scale,
                         ..Default::default()
                     })),
@@ -54,23 +60,35 @@ pub(crate) fn definitions() -> FontDefinitions {
     FONTS.clone()
 }
 
+/// The system CJK font, mapped once per process: its pages belong to the
+/// file (shared, read on demand), not to the process's private memory.
+fn system_cjk() -> Option<&'static (PathBuf, memmap2::Mmap)> {
+    static FONT: LazyLock<Option<(PathBuf, memmap2::Mmap)>> = LazyLock::new(|| {
+        let directory = std::env::var_os("WINDIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+            .join("Fonts");
+        ["msyh.ttc", "msyhbd.ttc", "simhei.ttf", "simsun.ttc"]
+            .into_iter()
+            .find_map(|name| {
+                let path = directory.join(name);
+                let file = std::fs::File::open(&path).ok()?;
+                // SAFETY: Windows keeps an installed font file in use; the
+                // mapping is read-only and lives as long as the process.
+                let map = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+                Some((path, map))
+            })
+    });
+    FONT.as_ref()
+}
+
 pub(crate) fn install(ctx: &egui::Context) {
     let mut fonts = definitions();
-    let directory = std::env::var_os("WINDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-        .join("Fonts");
-    let system = ["msyh.ttc", "msyhbd.ttc", "simhei.ttf", "simsun.ttc"]
-        .into_iter()
-        .find_map(|name| {
-            let path = directory.join(name);
-            std::fs::read(&path).ok().map(|bytes| (path, bytes))
-        });
-    if let Some((path, bytes)) = system {
+    if let Some((path, bytes)) = system_cjk() {
         let name = "system-cjk".to_owned();
         fonts
             .font_data
-            .insert(name.clone(), Arc::new(FontData::from_owned(bytes)));
+            .insert(name.clone(), Arc::new(FontData::from_static(&bytes[..])));
         for family in [FontFamily::Proportional, FontFamily::Monospace] {
             fonts.families.entry(family).or_default().push(name.clone());
         }
