@@ -900,15 +900,29 @@ impl AgentInternal {
         if self.connection_credentials(local, remote).await.is_none() {
             return;
         }
+        let previous_ping = self.last_ping_sent_nanos.load(Ordering::Relaxed);
         if let Some(pair) = self.find_pair(local, remote).await {
             pair.note_check_sent();
             self.last_ping_sent_nanos
                 .store(CandidatePair::now_nanos(), Ordering::Relaxed);
         }
+        self.ping_send_failed.store(false, Ordering::Relaxed);
         if self.is_controlling.load(Ordering::SeqCst) {
             ControllingSelector::ping_candidate(self, local, remote).await;
         } else {
             ControlledSelector::ping_candidate(self, local, remote).await;
+        }
+        // A request that never left (no route from this interface) does not
+        // use the pacing slot: check the next connection now instead of one
+        // interval later. Bounded so unreachable networks cannot spin.
+        if self.ping_send_failed.load(Ordering::Relaxed) {
+            if self.ping_send_failures.fetch_add(1, Ordering::Relaxed) < 4 {
+                self.last_ping_sent_nanos
+                    .store(previous_ping, Ordering::Relaxed);
+                let _ = self.force_candidate_contact_tx.try_send(true);
+            }
+        } else {
+            self.ping_send_failures.store(0, Ordering::Relaxed);
         }
     }
 

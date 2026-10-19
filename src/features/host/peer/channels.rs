@@ -475,7 +475,13 @@ pub(super) async fn publish_state(
     let mut last_audio_quality = None;
     let mut last_grants = None;
     let mut revision = None;
-    let mut timer = tokio::time::interval(Duration::from_secs(1));
+    // The session's preparation has just read the display inventory: the
+    // first periodic read (tens of milliseconds) would only hold back the
+    // first screen list, and with it the first video frame.
+    let mut timer = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_secs(1),
+        Duration::from_secs(1),
+    );
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         let refresh = tokio::select! {

@@ -568,6 +568,16 @@ impl WindowsConnectionApp {
     ) -> Result<(Self, ViewerDisplayHandle)> {
         let egui_context = egui::Context::default();
         let window_id = window.id();
+        let wake_proxy = repaint_proxy.clone();
+        let wake: crate::application::viewer::WindowWake = std::sync::Arc::new(move || {
+            // Not a repaint request of this context: no pass matches.
+            let _ = wake_proxy.send_event(UiEvent::Repaint(UiRepaintEvent {
+                window: window_id,
+                generation,
+                pass: u64::MAX,
+                when: Instant::now(),
+            }));
+        });
         egui_context.set_request_repaint_callback(move |info| {
             if info.viewport_id == egui::ViewportId::ROOT
                 && let Some(when) = Instant::now().checked_add(info.delay)
@@ -631,6 +641,7 @@ impl WindowsConnectionApp {
             ViewerDisplayHandle {
                 surface_writer: Some(surface_writer),
                 renderer_device: video_device,
+                wake: Some(wake),
             },
         ))
     }

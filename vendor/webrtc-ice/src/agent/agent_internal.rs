@@ -209,6 +209,11 @@ pub struct AgentInternal {
     /// sort-and-switch pass observes one coherent state snapshot.
     pub(crate) controller_serial: Mutex<()>,
     pub(crate) last_ping_sent_nanos: AtomicU64,
+    /// The last binding request could not leave the socket (for example no
+    /// route from that interface): it did not use the pacing slot.
+    pub(crate) ping_send_failed: AtomicBool,
+    /// Consecutive pings that could not be sent; bounds the immediate retries.
+    pub(crate) ping_send_failures: AtomicU32,
     pub(crate) ever_had_pair: AtomicBool,
     pub(crate) ever_writable: AtomicBool,
 
@@ -305,6 +310,8 @@ impl AgentInternal {
             connection_state: AtomicU8::new(ConnectionState::New as u8),
             controller_serial: Mutex::new(()),
             last_ping_sent_nanos: AtomicU64::new(0),
+            ping_send_failed: AtomicBool::new(false),
+            ping_send_failures: AtomicU32::new(0),
             ever_had_pair: AtomicBool::new(false),
             ever_writable: AtomicBool::new(false),
             insecure_skip_verify: config.insecure_skip_verify,
@@ -507,8 +514,19 @@ impl AgentInternal {
 
                     match last_connection_state {
                         ConnectionState::New | ConnectionState::Checking => {
-                            // While connecting, check candidates more frequently
+                            // While connecting, check candidates more frequently,
+                            // and next exactly when the pacing interval since the
+                            // last ping ends rather than a whole tick later.
                             update_interval(check_interval);
+                            let last_ping = ai.last_ping_sent_nanos.load(Ordering::Relaxed);
+                            let since = CandidatePair::now_nanos().saturating_sub(last_ping);
+                            if last_ping != 0 && since < check_interval.as_nanos() as u64 {
+                                update_interval(
+                                    check_interval
+                                        .saturating_sub(Duration::from_nanos(since))
+                                        .max(Duration::from_millis(1)),
+                                );
+                            }
                         }
                         ConnectionState::Connected
                         | ConnectionState::Completed
@@ -1342,6 +1360,7 @@ impl AgentInternal {
         local: &Arc<dyn Candidate + Send + Sync>,
         remote: &Arc<dyn Candidate + Send + Sync>,
     ) {
+        self.ping_send_failed.store(false, Ordering::Relaxed);
         log::trace!(
             "[{}]: ping STUN from {} to {}",
             self.get_name(),
@@ -1370,7 +1389,9 @@ impl AgentInternal {
             });
         }
 
-        self.send_stun(m, local, remote).await;
+        if !self.send_stun(m, local, remote).await {
+            self.ping_send_failed.store(true, Ordering::Relaxed);
+        }
     }
 
     pub(crate) async fn send_binding_success(
@@ -2123,19 +2144,22 @@ impl AgentInternal {
             .map(|(generation, parameters)| (generation as u32, parameters.clone()))
     }
 
+    /// Whether the message left the socket.
     pub(crate) async fn send_stun(
         &self,
         msg: &Message,
         local: &Arc<dyn Candidate + Send + Sync>,
         remote: &Arc<dyn Candidate + Send + Sync>,
-    ) {
+    ) -> bool {
         if let Err(err) = local.write_to(&msg.raw, &**remote, false).await {
             log::trace!(
                 "[{}]: failed to send STUN message: {}",
                 self.get_name(),
                 err
             );
+            return false;
         }
+        true
     }
 
     /// Runs the candidate using the provided connection.

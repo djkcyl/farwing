@@ -100,6 +100,63 @@ pub type OnCandidateHdlrFn = Box<
         + Send
         + Sync,
 >;
+/// The agent's mDNS connection, opened in the background: joining the
+/// multicast group on every interface takes about 10 ms and the connection is
+/// only needed to resolve a peer's `.local` candidates (or answer for ours),
+/// so creating the agent and its offer/answer does not wait for it.
+#[derive(Clone)]
+pub(crate) struct MulticastDns {
+    conn: Arc<tokio::sync::OnceCell<Option<Arc<DnsConn>>>>,
+    mode: MulticastDnsMode,
+    name: String,
+    dest_addr: String,
+}
+
+impl MulticastDns {
+    fn open(mode: MulticastDnsMode, name: &str, dest_addr: &str) -> Self {
+        let mdns = Self {
+            conn: Arc::new(tokio::sync::OnceCell::new()),
+            mode,
+            name: name.to_owned(),
+            dest_addr: dest_addr.to_owned(),
+        };
+        if mode != MulticastDnsMode::Disabled {
+            let opening = mdns.clone();
+            tokio::spawn(async move {
+                opening.get().await;
+            });
+        }
+        mdns
+    }
+
+    pub(crate) async fn get(&self) -> Option<Arc<DnsConn>> {
+        self.conn
+            .get_or_init(|| async {
+                let (mode, name, dest_addr) =
+                    (self.mode, self.name.clone(), self.dest_addr.clone());
+                let opened = tokio::task::spawn_blocking(move || {
+                    create_multicast_dns(mode, &name, &dest_addr)
+                })
+                .await;
+                match opened {
+                    Ok(Ok(conn)) => conn,
+                    Ok(Err(err)) => {
+                        // Opportunistic mDNS: If we can't open the connection,
+                        // that's ok: we can continue without it.
+                        log::warn!("Failed to initialize mDNS {}: {err}", self.name);
+                        None
+                    }
+                    Err(err) => {
+                        log::warn!("Failed to initialize mDNS {}: {err}", self.name);
+                        None
+                    }
+                }
+            })
+            .await
+            .clone()
+    }
+}
+
 struct ChanReceivers {
     chan_state_rx: mpsc::UnboundedReceiver<ConnectionState>,
     chan_candidate_rx: mpsc::Receiver<Option<Arc<dyn Candidate + Send + Sync>>>,
@@ -116,7 +173,7 @@ pub struct Agent {
     pub(crate) ip_filter: Arc<Option<IpFilterFn>>,
     pub(crate) mdns_mode: MulticastDnsMode,
     pub(crate) mdns_name: String,
-    pub(crate) mdns_conn: Option<Arc<DnsConn>>,
+    pub(crate) mdns_conn: MulticastDns,
     pub(crate) net: Arc<Net>,
 
     // 1:1 D-NAT IP address mapping
@@ -154,15 +211,7 @@ impl Agent {
         let mdns_mode = config.multicast_dns_mode;
 
         let mdns_conn =
-            match create_multicast_dns(mdns_mode, &mdns_name, &config.multicast_dns_dest_addr) {
-                Ok(c) => c,
-                Err(err) => {
-                    // Opportunistic mDNS: If we can't open the connection, that's ok: we
-                    // can continue without it.
-                    log::warn!("Failed to initialize mDNS {mdns_name}: {err}");
-                    None
-                }
-            };
+            MulticastDns::open(mdns_mode, &mdns_name, &config.multicast_dns_dest_addr);
 
         let (mut ai, chan_receivers) = AgentInternal::new(&config);
         let (chan_state_rx, chan_candidate_rx, chan_candidate_pair_rx) = (
@@ -313,7 +362,7 @@ impl Agent {
             let host_candidate = Arc::clone(c);
             let mdns_conn = self.mdns_conn.clone();
             self.internal.spawn_io(async move {
-                if let Some(mdns_conn) = mdns_conn {
+                if let Some(mdns_conn) = mdns_conn.get().await {
                     if let Ok(candidate) =
                         Self::resolve_and_add_multicast_candidate(mdns_conn, host_candidate).await
                     {
@@ -648,8 +697,11 @@ impl Agent {
         Ok(c)
     }
 
-    async fn close_multicast_conn(mdns_conn: &Option<Arc<DnsConn>>) {
-        if let Some(conn) = mdns_conn {
+    async fn close_multicast_conn(mdns_conn: &MulticastDns) {
+        if mdns_conn.mode == MulticastDnsMode::Disabled {
+            return;
+        }
+        if let Some(conn) = mdns_conn.get().await {
             if let Err(err) = conn.close().await {
                 log::warn!("failed to close mDNS Conn: {err}");
             }

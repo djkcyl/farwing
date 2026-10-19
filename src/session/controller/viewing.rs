@@ -700,9 +700,15 @@ pub(super) async fn present_video(
         viewer.set_device_switch(switcher.clone());
     }
     let close = viewer.close_handle();
+    let wake = viewer.window_wake();
     sender
         .send(ViewerWindowEvent::Playing(Box::new(viewer)))
         .map_err(|_| anyhow!("画面窗口已关闭"))?;
+    // The window takes the session at once instead of at its next UI update
+    // (up to 33 ms while connecting).
+    if let Some(wake) = wake {
+        wake();
+    }
     Ok(close)
 }
 

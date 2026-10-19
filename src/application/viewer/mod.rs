@@ -90,7 +90,12 @@ pub(crate) struct ViewerDisplayHandle {
     /// The video presenter's device on the writer's adapter, created while
     /// the connection is made (taken once).
     pub renderer_device: PreparedRenderer,
+    /// Wakes the window's event loop to take a queued window event now
+    /// rather than at its next UI update.
+    pub wake: Option<WindowWake>,
 }
+
+pub(crate) type WindowWake = Arc<dyn Fn() + Send + Sync>;
 
 pub(crate) type PreparedRenderer = Arc<
     Mutex<
@@ -372,6 +377,7 @@ pub struct NativeViewerSession {
     /// built on its adapter while the first picture decodes.
     presentation_writer: Option<crate::platform::surface::D3D11SurfaceWriter>,
     presentation_device: PreparedRenderer,
+    window_wake: Option<WindowWake>,
 }
 
 #[derive(Clone)]
@@ -436,6 +442,7 @@ impl NativeViewerSession {
             .clone()
             .filter(|_| decoder.mode.hardware());
         let presentation_device = display.renderer_device.clone();
+        let window_wake = display.wake.clone();
         let pause_epoch = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let manager_pause_epoch = Arc::clone(&pause_epoch);
         let manager_software = Arc::clone(&software_decode);
@@ -497,6 +504,7 @@ impl NativeViewerSession {
             }),
             presentation_writer,
             presentation_device,
+            window_wake,
         };
         Ok(session)
     }
@@ -602,6 +610,11 @@ impl NativeViewerSession {
             self.manager_wake.unpark();
         }
         changed
+    }
+
+    /// Wakes this session's window to take a queued window event now.
+    pub(crate) fn window_wake(&self) -> Option<WindowWake> {
+        self.window_wake.clone()
     }
 
     pub fn close_handle(&self) -> ViewerCloseHandle {

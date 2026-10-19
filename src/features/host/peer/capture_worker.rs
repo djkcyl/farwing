@@ -336,9 +336,9 @@ pub(super) fn capture_loop(
             last_frame = None;
         }
 
-        if leading && desktop.is_none() && transport.media_ready() && wanted.sending && wanted.capturing {
-            // The authorized track is already negotiated. Prepare its native
-            // capture while ICE/DTLS is still connecting; the gate below still
+        if leading && desktop.is_none() && wanted.sending && wanted.capturing {
+            // Prepare the authorized track's native capture while the offer,
+            // ICE and DTLS are still on their way; the gate below still
             // forbids frame acquisition/encoding/sending until transport is up.
             // Nothing is kept warm outside this track's lease/cancellation scope.
             let opened_at = Instant::now();

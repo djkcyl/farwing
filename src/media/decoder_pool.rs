@@ -84,6 +84,24 @@ impl DecoderPool {
         }
     }
 
+    /// The decoder opened on the first frame already has this configuration
+    /// (its visible size, on a candidate that supports it): the first
+    /// keyframe keeps it instead of replacing it with an identical one.
+    pub(crate) fn adopt_format(&mut self, format: Option<VideoFormatSignature>) {
+        let Some(format) = format else {
+            return;
+        };
+        if self.width == format.visible_width
+            && self.height == format.visible_height
+            && self
+                .candidates
+                .get(self.active)
+                .is_some_and(|entry| supports(entry.kind, self.codec, format))
+        {
+            self.format = Some(format);
+        }
+    }
+
     pub(crate) fn label(&self) -> &str {
         self.decoder
             .as_ref()
@@ -301,30 +319,8 @@ impl DecoderPool {
             // particular H264 4:4:4 belongs to the software candidate, rather
             // than losing its first keyframe to a predictable hardware error.
 
-            if let Some(format) = format {
-                let supported = match entry.kind {
-                    DecoderCandidate::WindowsD3d11 { .. } => {
-                        (format.chroma_format_idc == 1
-                            || matches!(self.codec, VideoCodec::H265 | VideoCodec::Av1)
-                                && format.chroma_format_idc == 3)
-                            && format.bit_depth_luma == format.bit_depth_chroma
-                            && (format.bit_depth_luma == 8
-                                || matches!(self.codec, VideoCodec::H265 | VideoCodec::Av1)
-                                    && format.bit_depth_luma == 10)
-                    }
-                    DecoderCandidate::Software => {
-                        farwing_codec::Format {
-                            codec: self.codec,
-                            chroma: format.chroma_format_idc,
-                            depth: format.bit_depth_luma,
-                        }
-                        .can_decode()
-                            && format.bit_depth_luma == format.bit_depth_chroma
-                    }
-                };
-                if !supported {
-                    continue;
-                }
+            if format.is_some_and(|format| !supports(entry.kind, self.codec, format)) {
+                continue;
             }
 
             match NativeVideoDecoder::open_candidate(
@@ -368,6 +364,29 @@ impl DecoderPool {
             self.software_slot = None;
         }
         false
+    }
+}
+
+fn supports(kind: DecoderCandidate, codec: VideoCodec, format: VideoFormatSignature) -> bool {
+    match kind {
+        DecoderCandidate::WindowsD3d11 { .. } => {
+            (format.chroma_format_idc == 1
+                || matches!(codec, VideoCodec::H265 | VideoCodec::Av1)
+                    && format.chroma_format_idc == 3)
+                && format.bit_depth_luma == format.bit_depth_chroma
+                && (format.bit_depth_luma == 8
+                    || matches!(codec, VideoCodec::H265 | VideoCodec::Av1)
+                        && format.bit_depth_luma == 10)
+        }
+        DecoderCandidate::Software => {
+            farwing_codec::Format {
+                codec,
+                chroma: format.chroma_format_idc,
+                depth: format.bit_depth_luma,
+            }
+            .can_decode()
+                && format.bit_depth_luma == format.bit_depth_chroma
+        }
     }
 }
 

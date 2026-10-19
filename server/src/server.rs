@@ -249,13 +249,21 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
                 "TLS certificate loaded"
             );
             let rustls = axum_server::tls_rustls::RustlsConfig::from_config(material.config);
-            let server =
-                axum_server::tls_rustls::from_tcp_rustls(listener, rustls)?.handle(handle.clone());
+            // Without TCP_NODELAY the second small realtime message of a
+            // burst (an answer and its ICE candidates) waits for the peer's
+            // delayed ACK, tens of milliseconds.
+            let acceptor = axum_server::tls_rustls::RustlsAcceptor::new(rustls)
+                .acceptor(axum_server::accept::NoDelayAcceptor::new());
+            let server = axum_server::from_tcp(listener)?
+                .acceptor(acceptor)
+                .handle(handle.clone());
             tokio::spawn(server.serve(make))
         }
         None => {
             tracing::info!("TLS terminated by a reverse proxy (tls.mode = \"proxy\")");
-            let server = axum_server::from_tcp(listener)?.handle(handle.clone());
+            let server = axum_server::from_tcp(listener)?
+                .acceptor(axum_server::accept::NoDelayAcceptor::new())
+                .handle(handle.clone());
             tokio::spawn(server.serve(make))
         }
     };

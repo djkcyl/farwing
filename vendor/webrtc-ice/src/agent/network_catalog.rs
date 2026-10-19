@@ -8,7 +8,7 @@ use util::vnet::{interface::Interface, net::Net};
 
 use crate::agent::agent_config::{InterfaceFilterFn, IpFilterFn};
 use crate::network_type::NetworkType;
-use crate::util::{ice_ip_precedence, LocalInterface};
+use crate::util::{ice_ip_precedence, ice_network_cost, LocalInterface};
 
 #[derive(Clone, Debug)]
 struct Network {
@@ -166,11 +166,16 @@ impl NetworkCatalog {
             network.active = active.binary_search(key).is_ok();
         }
         if changed {
+            // By network cost rather than libwebrtc's adapter-type order,
+            // which ranks unknown adapters (Windows reports tunnels such as
+            // Teredo and TUN devices that way) above Ethernet and Wi-Fi, so
+            // peers spent their first checks on them.
             active.sort_by(|a, b| {
                 let a = &self.networks[a].local;
                 let b = &self.networks[b].local;
-                a.adapter_type
-                    .cmp(&b.adapter_type)
+                ice_network_cost(a.adapter_type)
+                    .cmp(&ice_network_cost(b.adapter_type))
+                    .then_with(|| a.adapter_type.cmp(&b.adapter_type))
                     .then_with(|| ice_ip_precedence(b.ip).cmp(&ice_ip_precedence(a.ip)))
                     .then_with(|| a.network_key.cmp(&b.network_key))
             });

@@ -333,7 +333,12 @@ pub(super) fn decoder_manager(
                     "first frame has no parameter sets yet; deferring decoder open");
                 continue 'decode;
             }
-            let (width, height) = stream_geometry(&config, format);
+            // The visible size, as the pool opens decoders: then the first
+            // keyframe does not replace this decoder with an identical one.
+            let (width, height) = format
+                .map(|format| (format.visible_width, format.visible_height))
+                .filter(|&(width, height)| width > 0 && height > 0)
+                .unwrap_or_else(|| stream_geometry(&config, format));
             let opened = open_decoder_with_metadata(
                 &config,
                 frame.codec,
@@ -359,7 +364,7 @@ pub(super) fn decoder_manager(
                     if let Some(sender) = startup_sender.take() {
                         let _ = sender.send(Ok(()));
                     }
-                    let opened_pool = DecoderPool::new(
+                    let mut opened_pool = DecoderPool::new(
                         decoder,
                         frame.codec,
                         width,
@@ -368,6 +373,7 @@ pub(super) fn decoder_manager(
                         config.decoder,
                         pool_extra.unwrap_or_default(),
                     );
+                    opened_pool.adopt_format(format);
                     pool = Some(opened_pool);
                 }
                 Err(error) => {
