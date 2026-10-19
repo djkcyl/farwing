@@ -24,3 +24,9 @@ pub use crate::platform::display::detect_local_display;
 pub(crate) use crate::platform::display::local_display_dimensions;
 
 pub(crate) mod decode_api;
+
+/// Probe the local decoders in the background, before a viewer connects
+/// with this decoding mode. `delay` lets a background start settle first.
+pub fn prepare_decoder_support(mode: selection::ProcessingMode, delay: std::time::Duration) {
+    decoder::prepare_native_decoder_support(mode, delay);
+}

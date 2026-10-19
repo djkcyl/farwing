@@ -356,6 +356,9 @@ pub struct NativeViewerSession {
     manager_wake: std::thread::Thread,
     fatal_error: Arc<Mutex<Option<String>>>,
     decode_activity: Box<DecodeActivity>,
+    /// The hardware decoder's surface writer: the video presenter can be
+    /// built on its adapter while the first picture decodes.
+    presentation_writer: Option<crate::platform::surface::D3D11SurfaceWriter>,
 }
 
 #[derive(Clone)]
@@ -415,6 +418,10 @@ impl NativeViewerSession {
         let software_decode = Arc::new(AtomicBool::new(!decoder.mode.hardware()));
         let decode_enabled = Arc::new(AtomicBool::new(true));
         let (decode_idle_sender, decode_idle) = tokio::sync::watch::channel(0);
+        let presentation_writer = display
+            .surface_writer
+            .clone()
+            .filter(|_| decoder.mode.hardware());
         let pause_epoch = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let manager_pause_epoch = Arc::clone(&pause_epoch);
         let manager_software = Arc::clone(&software_decode);
@@ -474,6 +481,7 @@ impl NativeViewerSession {
                 pause_epoch,
                 idle: decode_idle,
             }),
+            presentation_writer,
         };
         Ok(session)
     }

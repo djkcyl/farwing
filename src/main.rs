@@ -650,6 +650,11 @@ fn main() -> Result<()> {
             if let Some(transport) = transport {
                 options.transport = transport;
             }
+            // A start with the session (to the tray) leaves the probe for later.
+            media::prepare_decoder_support(
+                options.decoder.mode,
+                std::time::Duration::from_secs(if background { 30 } else { 0 }),
+            );
             app::run(app::GuiOptions {
                 background,
                 media: options,
@@ -927,6 +932,7 @@ fn main() -> Result<()> {
             if let Some(transport) = transport {
                 options.transport = transport;
             }
+            media::prepare_decoder_support(options.decoder.mode, std::time::Duration::ZERO);
             if let Some(address) = direct {
                 let request = controller::DirectRequest::parse(&address, code, ask)?;
                 tokio::runtime::Runtime::new()?

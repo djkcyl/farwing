@@ -873,6 +873,11 @@ impl Session {
                 } else {
                     let screen = displays.prepare(options.clone()).await?;
                     display_ms = preparation_started.elapsed().as_millis();
+                    // Load the GPU driver while the peer connection is prepared.
+                    crate::platform::capture::warm_up(&[
+                        screen.adapter,
+                        screen.render_adapter.unwrap_or(screen.adapter),
+                    ]);
                     let media_started = std::time::Instant::now();
                     let media = lease
                         .prepare_media(screen.clone(), encoding_settings.gpu_compatibility)

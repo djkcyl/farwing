@@ -59,6 +59,7 @@ impl RenderWorker {
         let first_presented = Arc::new(AtomicBool::new(false));
         let worker_first_presented = Arc::clone(&first_presented);
         let first_frame_repaint = context.clone();
+        let presentation_writer = session.presentation_writer.clone();
         let thread = std::thread::Builder::new()
             .name("Video Render".to_owned())
             .spawn(move || {
@@ -69,6 +70,24 @@ impl RenderWorker {
                 }
                 let mut first_present = true;
                 let mut presenter = None::<D3D11Presenter>;
+                // Built on the decoder's adapter while the first picture
+                // decodes; used if that picture is a surface it can show.
+                let mut prepared = presentation_writer
+                    .filter(|_| size.width != 0 && size.height != 0)
+                    .and_then(|writer| {
+                        let (device, context) = writer
+                            .create_renderer_device()
+                            .inspect_err(|error| tracing::debug!(%error, "video presenter not prepared"))
+                            .ok()?;
+                        D3D11Presenter::from_device_for_window(
+                            windows::Win32::Foundation::HWND(hwnd as *mut std::ffi::c_void),
+                            size,
+                            device,
+                            context,
+                        )
+                        .inspect_err(|error| tracing::debug!(%error, "video presenter not prepared"))
+                        .ok()
+                    });
                 let mut current_frame = None::<DecodedVideoFrame>;
                 let mut redraw = false;
                 let mut occluded = false;
@@ -201,7 +220,18 @@ impl RenderWorker {
                             presenter.take();
                         }
                         if presenter.is_none() {
-                            match D3D11Presenter::for_frame(hwnd, size, frame, &cpu_device) {
+                            // `filter` drops a prepared presenter that cannot
+                            // show this picture before another swap chain is
+                            // built: one per window.
+                            let ready = prepared.take().filter(|ready| {
+                                matches!(&frame.surface, RenderSurface::D3D11(surface)
+                                    if ready.can_render_surface(surface))
+                            });
+                            let created = match ready {
+                                Some(ready) => Ok(ready),
+                                None => D3D11Presenter::for_frame(hwnd, size, frame, &cpu_device),
+                            };
+                            match created {
                                 Ok(p) => {
                                     presenter = Some(p);
                                     if let Some(frame) = replacement {
@@ -259,6 +289,9 @@ impl RenderWorker {
                                         let now = Instant::now();
                                         let mut queue = mutex_lock(&frame_queue);
                                         queue.shown(frame.rtp_timestamp);
+                                        if last_shown.is_none() {
+                                            tracing::info!("first picture presented");
+                                        }
                                         if let Some((at, pushed)) = last_shown {
                                             let gap = now.saturating_duration_since(at);
                                             if gap >= Duration::from_millis(150) {

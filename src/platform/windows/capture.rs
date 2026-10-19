@@ -23,6 +23,8 @@ mod inventory;
 mod power;
 mod recovery;
 mod session;
+mod warmup;
+pub(crate) use warmup::warm_up;
 
 /// Read the state of this process's interactive session. Unknown/failure is
 /// not an unlocked session; callers retain their last confirmed report.
@@ -241,6 +243,14 @@ pub(crate) fn refresh(selected: &Screen) -> Result<Screen> {
     Ok(found)
 }
 pub(crate) fn create_device(luid: u64) -> Result<(ID3D11Device, ID3D11DeviceContext)> {
+    if let Some(device) = warmup::take(luid) {
+        let context = unsafe { device.GetImmediateContext() }?;
+        return Ok((device, context));
+    }
+    new_device(luid)
+}
+
+fn new_device(luid: u64) -> Result<(ID3D11Device, ID3D11DeviceContext)> {
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
         let mut selected = None;

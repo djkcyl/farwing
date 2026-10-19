@@ -471,85 +471,185 @@ fn poll_platform_decoder(
     batch
 }
 
+/// What this machine's GPUs decode, and which software formats their
+/// texture upload takes. Probing opens a device per adapter and asks the
+/// driver about every format (about 100 ms), so it is kept for the same set
+/// of adapters (a driver update restarts an adapter under a new LUID) and is
+/// started before a connection needs it.
+#[derive(Default)]
+struct DecoderInventory {
+    adapters: Vec<u64>,
+    /// Every codec, in advertising order.
+    hardware: Option<Vec<(VideoCodec, CodecCapability)>>,
+    software_av1: Option<Vec<CodecCapability>>,
+}
+
+static DECODER_INVENTORY: std::sync::Mutex<Option<DecoderInventory>> =
+    std::sync::Mutex::new(None);
+
+/// Probe in the background the hardware decoders a connection with this
+/// decoding mode will advertise. (Software AV1 support is only probed when a
+/// connection accepts AV1, as before.)
+pub(crate) fn prepare_native_decoder_support(
+    mode: crate::media::selection::ProcessingMode,
+    delay: std::time::Duration,
+) {
+    if !mode.hardware() {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("Decoder probe".to_owned())
+        .spawn(move || {
+            std::thread::sleep(delay);
+            let started = std::time::Instant::now();
+            decoder_inventory(true, false, |_| ());
+            tracing::debug!(
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "native decoder capabilities probed in advance"
+            );
+        });
+    if let Err(error) = spawned {
+        tracing::debug!(%error, "decoder probe thread unavailable");
+    }
+}
+
+fn decoder_inventory<T>(
+    hardware: bool,
+    software_av1: bool,
+    read: impl FnOnce(&DecoderInventory) -> T,
+) -> T {
+    let adapters = windows_surface::D3D11SurfaceWriter::adapter_ids().unwrap_or_default();
+    // A connection waits here for a probe already running.
+    let mut cached = DECODER_INVENTORY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cached.as_ref().is_none_or(|inventory| inventory.adapters != adapters) {
+        *cached = Some(DecoderInventory {
+            adapters,
+            ..Default::default()
+        });
+    }
+    let inventory = cached.as_mut().expect("decoder inventory");
+    if hardware && inventory.hardware.is_none() {
+        inventory.hardware = Some(probe_hardware_decoders());
+    }
+    if software_av1 && inventory.software_av1.is_none() {
+        inventory.software_av1 = Some(probe_software_av1());
+    }
+    let value = read(inventory);
+    // Nothing found may be a passing driver state: probe again next time.
+    if inventory.hardware.as_ref().is_some_and(Vec::is_empty) {
+        inventory.hardware = None;
+    }
+    if inventory.software_av1.as_ref().is_some_and(Vec::is_empty) {
+        inventory.software_av1 = None;
+    }
+    value
+}
+
+fn probe_hardware_decoders() -> Vec<(VideoCodec, CodecCapability)> {
+    let mut capabilities = Vec::new();
+    let Ok(writers) = windows_surface::D3D11SurfaceWriter::available() else {
+        return capabilities;
+    };
+    for (codec, id) in [
+        (VideoCodec::H264, 1),
+        (VideoCodec::H265, 2),
+        (VideoCodec::Av1, 5),
+    ] {
+        for chroma in [1, 3] {
+            for depth in [8, 10] {
+                for &(width, height) in QUALITY_DIMENSIONS[1..].iter().rev() {
+                    if writers.iter().any(|writer| {
+                        WindowsVideoDecoder::probe_format(
+                            writer.device_handle(),
+                            codec,
+                            width as u32,
+                            height as u32,
+                            depth,
+                            chroma,
+                        )
+                    }) {
+                        capabilities.push((
+                            codec,
+                            CodecCapability {
+                                video_codec: id,
+                                width,
+                                height,
+                                chroma_sampling: chroma,
+                                bit_depth: depth,
+                                codec_impl: 32,
+                            },
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    capabilities
+}
+
+fn probe_software_av1() -> Vec<CodecCapability> {
+    let mut capabilities = Vec::new();
+    if let Ok(writer) = windows_surface::D3D11SurfaceWriter::new() {
+        for chroma in [1, 3] {
+            for depth in [8, 10] {
+                // Advertise support independently of other codecs. Only
+                // the common capabilities can establish a usable hardware
+                // alternative; DualCapability selects that after negotiation.
+                if writer.supports_software_av1(depth, chroma) {
+                    capabilities.push(CodecCapability {
+                        video_codec: 5,
+                        width: 1920,
+                        height: 1080,
+                        chroma_sampling: chroma,
+                        bit_depth: depth,
+                        codec_impl: 37,
+                    });
+                }
+            }
+        }
+    }
+    capabilities
+}
+
 pub(crate) fn detect_native_decoder_support(
     profile: ConnectionMediaProfile,
 ) -> Result<DeviceCapability> {
     std::thread::spawn(move || {
+        let software_av1 =
+            profile.decoder.mode.software() && profile.codec.accepts(VideoCodec::Av1);
         let mut capabilities = Vec::new();
-        if profile.decoder.mode.hardware()
-            && let Ok(writers) = windows_surface::D3D11SurfaceWriter::available()
-        {
-            for (codec, id) in [
-                (VideoCodec::H264, 1),
-                (VideoCodec::H265, 2),
-                (VideoCodec::Av1, 5),
-            ] {
-                if !profile.codec.accepts(codec) {
-                    continue;
-                }
-                for chroma in [1, 3] {
-                    for depth in [8, 10] {
-                        for &(width, height) in QUALITY_DIMENSIONS[1..].iter().rev() {
-                            if writers.iter().any(|writer| {
-                                WindowsVideoDecoder::probe_format(
-                                    writer.device_handle(),
-                                    codec,
-                                    width as u32,
-                                    height as u32,
-                                    depth,
-                                    chroma,
-                                )
-                            }) {
-                                capabilities.push(CodecCapability {
-                                    video_codec: id,
-                                    width,
-                                    height,
-                                    chroma_sampling: chroma,
-                                    bit_depth: depth,
-                                    codec_impl: 32,
-                                });
-                                break;
-                            }
-                        }
-                    }
+        decoder_inventory(profile.decoder.mode.hardware(), software_av1, |inventory| {
+            if profile.decoder.mode.hardware() {
+                capabilities.extend(
+                    inventory
+                        .hardware
+                        .iter()
+                        .flatten()
+                        .filter(|(codec, _)| profile.codec.accepts(*codec))
+                        .map(|(_, capability)| capability.clone()),
+                );
+            }
+            if profile.decoder.mode.software() && profile.codec.accepts(VideoCodec::H264) {
+                // This is the advertised software ceiling, not
+                // an arbitrary decoder rejection of a larger hardware-fallback AU.
+                for chroma_sampling in [1, 3] {
+                    capabilities.push(CodecCapability {
+                        video_codec: 1,
+                        width: 1920,
+                        height: 1080,
+                        chroma_sampling,
+                        bit_depth: 8,
+                        codec_impl: 37,
+                    });
                 }
             }
-        }
-        if profile.decoder.mode.software() && profile.codec.accepts(VideoCodec::H264) {
-            // This is the advertised software ceiling, not
-            // an arbitrary decoder rejection of a larger hardware-fallback AU.
-            for chroma_sampling in [1, 3] {
-                capabilities.push(CodecCapability {
-                    video_codec: 1,
-                    width: 1920,
-                    height: 1080,
-                    chroma_sampling,
-                    bit_depth: 8,
-                    codec_impl: 37,
-                });
+            if software_av1 {
+                capabilities.extend(inventory.software_av1.iter().flatten().cloned());
             }
-        }
-        if profile.decoder.mode.software() && profile.codec.accepts(VideoCodec::Av1) {
-            if let Ok(writer) = windows_surface::D3D11SurfaceWriter::new() {
-                for chroma in [1, 3] {
-                    for depth in [8, 10] {
-                        // Advertise support independently of other codecs. Only
-                        // the common capabilities can establish a usable hardware
-                        // alternative; DualCapability selects that after negotiation.
-                        if writer.supports_software_av1(depth, chroma) {
-                            capabilities.push(CodecCapability {
-                                video_codec: 5,
-                                width: 1920,
-                                height: 1080,
-                                chroma_sampling: chroma,
-                                bit_depth: depth,
-                                codec_impl: 37,
-                            });
-                        }
-                    }
-                }
-            }
-        }
+        });
 
         if capabilities.is_empty() {
             bail!("no decoder supports the selected codec and decoding mode");

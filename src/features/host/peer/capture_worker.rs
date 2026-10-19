@@ -87,6 +87,9 @@ pub(super) fn capture_loop(
     let mut last_diagnostics = None;
     let mut metrics = metrics::Metrics::default();
     let mut paused_capture_at = None::<Instant>;
+    // A new duplication can first report only the pointer; until its first
+    // image, wait for the next present rather than the next frame time.
+    let mut quick_retries = 0u8;
     // Shared encoding: this participant's group, if capturing.
     let mut membership = None::<encode_group::Membership>;
     let mut leading = true;
@@ -330,6 +333,7 @@ pub(super) fn capture_loop(
             runtime.begin_gpu_work(negotiated.gpu_compatibility);
             desktop = Some(capture::Desktop::open_selected(&screen)?);
             generation = desktop.as_ref().unwrap().generation;
+            quick_retries = 3;
             tracing::info!(
                 elapsed_ms = opened_at.elapsed().as_millis(),
                 connecting,
@@ -616,6 +620,7 @@ pub(super) fn capture_loop(
             runtime.begin_gpu_work(negotiated.gpu_compatibility);
             desktop = Some(capture::Desktop::open_selected(&screen)?);
             generation = desktop.as_ref().unwrap().generation;
+            quick_retries = 3;
             // Readiness can change after the preparation gate above. Apply the
             // same policy and reread settings after either native open path.
             continue;
@@ -709,6 +714,10 @@ pub(super) fn capture_loop(
             None => {
                 metrics.empty_captures += 1;
                 let Some(mut frame) = cached.clone() else {
+                    if quick_retries > 0 {
+                        quick_retries -= 1;
+                        next = capture_started;
+                    }
                     continue;
                 };
                 if last_frame.is_some_and(|at| {
