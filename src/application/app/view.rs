@@ -529,9 +529,11 @@ impl DeviceCenterApp {
 
     fn draw_navigation(&mut self, ui: &mut egui::Ui, access: Access) {
         let locked = |page: Page| page.needs_account() && access != Access::Account;
+        // An exact size: a remembered one shrinks for good after any frame
+        // narrower than the sidebar (a minimised or restored window).
         egui::Panel::left("center-navigation")
             .resizable(false)
-            .default_size(theme::SIDEBAR_WIDTH)
+            .exact_size(theme::SIDEBAR_WIDTH)
             .frame(
                 egui::Frame::new()
                     .fill(SIDEBAR)
