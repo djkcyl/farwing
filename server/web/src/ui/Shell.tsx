@@ -41,11 +41,17 @@ function active(item: NavItem, path: string): boolean {
   return path === item.to || (!!item.prefix && path.startsWith(`${item.to}/`));
 }
 
-export function BrandMark({ size = 18 }: { size?: number }) {
+/** The application icon: the winged F on the brand blue tile. */
+export function BrandMark({ size = 32 }: { size?: number }) {
   return (
-    <span className="brand-mark">
-      <Icon name="logo" size={size} strokeWidth={2} />
-    </span>
+    <svg className="brand-mark" width={size} height={size} viewBox="0 0 1024 1024" aria-hidden="true">
+      <rect width="1024" height="1024" rx="160" fill="#4B88EB" />
+      <path
+        transform="translate(180 212) scale(1.7946)"
+        fill="#fff"
+        d="M 359 2 C 366 1 371 5 368 11 L 338 69 C 331 83 321 91 305 94 L 145 126 C 104 134 79 160 80 214 C 88 198 103 187 124 182 L 286 148 C 294 146 300 148 297 157 L 282 194 C 272 216 258 230 231 236 L 119 258 C 100 262 91 271 84 290 L 78 307 C 73 321 62 329 45 331 L 13 334 C 4 335 0 330 1 321 L 12 148 C 14 90 39 64 70 49 C 87 41 103 37 123 33 Z"
+      />
+    </svg>
   );
 }
 
@@ -108,7 +114,7 @@ export function Shell({ children }: { children: ReactNode }) {
       <div className="main">
         <div className="topbar">
           <IconButton icon="menu" label="菜单" onClick={() => setOpen(true)} />
-          <BrandMark size={16} />
+          <BrandMark size={24} />
           <span className="brand-name">Farwing</span>
         </div>
         <main className="content">{children}</main>

@@ -129,3 +129,46 @@ pub(super) fn shortcuts(enabled: bool) -> Result<()> {
     }
     Ok(())
 }
+/// Explorer keeps the program's icon cached across an update of the file,
+/// so the taskbar (which takes it from the Start-menu shortcut), the
+/// shortcuts and Start would keep showing the old artwork. Best effort.
+pub(super) fn refresh_icons() {
+    let Ok(image) = image() else {
+        return;
+    };
+    let mut paths = vec![image];
+    for id in [&FOLDERID_Desktop, &FOLDERID_Programs] {
+        if let Ok(root) = folder(id) {
+            paths.push(root.join(format!("{}.lnk", crate::product::PRODUCT_NAME)));
+        }
+    }
+    for path in paths.iter().filter(|path| path.exists()) {
+        let path = wide(&path.to_string_lossy());
+        let mut info = SHFILEINFOW::default();
+        unsafe {
+            if SHGetFileInfoW(
+                PCWSTR(path.as_ptr()),
+                Default::default(),
+                Some(&mut info),
+                size_of::<SHFILEINFOW>() as u32,
+                SHGFI_SYSICONINDEX,
+            ) != 0
+            {
+                // The cached image itself, wherever it is shown.
+                SHChangeNotify(
+                    SHCNE_UPDATEIMAGE,
+                    SHCNF_DWORD | SHCNF_FLUSH,
+                    Some((&raw const info.iIcon).cast()),
+                    None,
+                );
+            }
+            SHChangeNotify(
+                SHCNE_UPDATEITEM,
+                SHCNF_PATHW | SHCNF_FLUSH,
+                Some(path.as_ptr().cast()),
+                None,
+            );
+        }
+    }
+    unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSH, None, None) };
+}

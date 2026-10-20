@@ -147,7 +147,6 @@ impl StartupStage {
 }
 
 struct DeviceCenterApp {
-    brand_texture: egui::TextureHandle,
     updates: updates::UpdateCheck,
     center_ui: CenterUi,
     assist: AssistUi,
@@ -203,7 +202,6 @@ impl DeviceCenterApp {
         display_warning: Option<String>,
     ) -> Self {
         Self {
-            brand_texture: crate::ui::branding::load_texture(ctx),
             updates: updates::UpdateCheck::start(ctx),
             center_ui: CenterUi::default(),
             viewers: Default::default(),
@@ -1025,6 +1023,15 @@ impl crate::ui::App for DeviceCenterApp {
         self.exit_requested = true;
         self.prepare_exit();
         self.exit_ready
+    }
+
+    fn tray_state(&self) -> crate::ui::tray::TrayState {
+        use crate::ui::tray::TrayState;
+        match &self.host {
+            Some(host) if host.status().connected => TrayState::Controlled,
+            Some(host) if !host.allowed() => TrayState::Disabled,
+            _ => TrayState::Idle,
+        }
     }
 
     fn on_focus_changed(&mut self, focused: bool) {

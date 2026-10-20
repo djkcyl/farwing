@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/horizontal-dark.svg">
+    <img alt="Farwing" src="assets/brand/horizontal-light.svg" width="380">
+  </picture>
+</p>
+
 # Farwing
 
 Farwing 是可自建、可独立部署的远程控制与桌面串流软件，定位类似 Moonlight 与 RustDesk。它基于 [OpenUUYC](https://github.com/djkcyl/openuuyc)（djkcyl 及贡献者）的完整 Windows 客户端改造：保留其界面、业务逻辑、状态机和媒体实现，把所有 UU 远程业务协议与官方服务依赖替换为 **Farwing Protocol** 和自建的 **Farwing Server**。

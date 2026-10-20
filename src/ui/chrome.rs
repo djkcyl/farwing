@@ -228,21 +228,16 @@ fn title_regions(rect: egui::Rect, maximize: bool) -> (egui::Rect, egui::Rect) {
 }
 
 pub(crate) fn paint_brand_logo(ui: &mut egui::Ui) {
-    let key = egui::Id::new("window-brand-logo");
-    let texture = ui
-        .ctx()
-        .data(|data| data.get_temp::<egui::TextureHandle>(key))
-        .unwrap_or_else(|| {
-            let texture = crate::ui::branding::load_texture(ui.ctx());
-            ui.ctx()
-                .data_mut(|data| data.insert_temp(key, texture.clone()));
-            texture
-        });
     let (rect, _) = ui.allocate_exact_size(
         egui::Vec2::splat(crate::ui::theme::WINDOW_LOGO_SIZE),
         egui::Sense::hover(),
     );
-    crate::ui::branding::paint(ui.painter(), rect, &texture);
+    crate::ui::branding::paint(
+        ui.painter(),
+        rect,
+        crate::ui::branding::Art::App,
+        egui::Color32::WHITE,
+    );
 }
 
 pub(crate) fn handle_title_drag(window: &Window, response: &egui::Response) -> bool {

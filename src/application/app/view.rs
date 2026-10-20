@@ -1,7 +1,8 @@
 //! Device-center presentation. Network/account ownership remains in app.rs.
 use super::*;
 use crate::ui::theme::{
-    self, ACCENT as BLUE, AMBER, BG, GREEN, LINE, MUTED, RED, SIDEBAR, SURFACE, TEXT,
+    self, ACCENT as BLUE, AMBER, BG, GREEN, LINE, LOGO_LOADING, LOGO_LOGIN, LOGO_SIDEBAR, MUTED,
+    RED, SIDEBAR, SURFACE, TEXT,
 };
 use egui::{Align, Color32, FontId, RichText, Sense, Stroke, vec2};
 
@@ -418,7 +419,6 @@ fn section(ui: &mut egui::Ui, title: &str) {
 /// The sign-in card: the brand on top, the current step below.
 fn login_card(
     root: &mut egui::Ui,
-    brand_texture: &egui::TextureHandle,
     height: f32,
     content: impl FnOnce(&mut egui::Ui),
 ) {
@@ -446,20 +446,12 @@ fn login_card(
                 Stroke::new(1.0, LINE),
                 egui::StrokeKind::Inside,
             );
-            let title = painter.layout_no_wrap(
-                crate::APP_NAME.into(),
-                FontId::proportional(crate::ui::theme::TITLE),
-                TEXT,
-            );
-            let brand_width = 36.0 + 12.0 + title.size().x;
-            let brand = egui::Rect::from_min_size(
-                egui::pos2(card.center().x - brand_width * 0.5, card.top() + 32.0),
-                vec2(36.0, 36.0),
-            );
-            crate::ui::branding::paint(painter, brand, brand_texture);
-            painter.galley(
-                brand.right_center() + vec2(12.0, -title.size().y * 0.5),
-                title,
+            let logo = crate::ui::branding::logo_size(LOGO_LOGIN);
+            crate::ui::branding::paint_logo(
+                painter,
+                card.center().x - logo.x * 0.5,
+                card.top() + 50.0,
+                LOGO_LOGIN,
                 TEXT,
             );
             let column = egui::Rect::from_min_max(
@@ -564,20 +556,12 @@ impl DeviceCenterApp {
                     ui.ctx()
                         .open_url(egui::OpenUrl::new_tab("https://github.com/djkcyl/openuuyc"));
                 }
-                let title = ui.painter().layout_no_wrap(
-                    crate::APP_NAME.into(),
-                    FontId::proportional(crate::ui::theme::BRAND),
-                    title_color,
-                );
-                let width = 30.0 + 8.0 + title.size().x;
-                let icon = egui::Rect::from_min_size(
-                    egui::pos2(row.center().x - width * 0.5, row.center().y - 15.0),
-                    vec2(30.0, 30.0),
-                );
-                crate::ui::branding::paint(ui.painter(), icon, &self.brand_texture);
-                ui.painter().galley(
-                    icon.right_center() + vec2(8.0, -title.size().y * 0.5),
-                    title,
+                let logo = crate::ui::branding::logo_size(LOGO_SIDEBAR);
+                crate::ui::branding::paint_logo(
+                    ui.painter(),
+                    row.center().x - logo.x * 0.5,
+                    row.center().y,
+                    LOGO_SIDEBAR,
                     title_color,
                 );
                 ui.add_space(24.0);
@@ -1183,16 +1167,12 @@ impl DeviceCenterApp {
             .show(root, |ui| {
                 let bounds = ui.available_rect_before_wrap();
                 let center = bounds.center();
-                crate::ui::branding::paint(
+                let logo = crate::ui::branding::logo_size(LOGO_LOADING);
+                crate::ui::branding::paint_logo(
                     ui.painter(),
-                    egui::Rect::from_center_size(center - vec2(0.0, 192.0), vec2(88.0, 88.0)),
-                    &self.brand_texture,
-                );
-                ui.painter().text(
-                    center - vec2(0.0, 128.0),
-                    egui::Align2::CENTER_CENTER,
-                    crate::APP_NAME,
-                    FontId::proportional(crate::ui::theme::TITLE),
+                    center.x - logo.x * 0.5,
+                    center.y - 160.0,
+                    LOGO_LOADING,
                     TEXT,
                 );
                 let width = (bounds.width() - 48.0).min(440.0);
@@ -1320,7 +1300,7 @@ impl DeviceCenterApp {
             LoginStep::Server => 500.0,
             LoginStep::Account => 545.0,
         };
-        login_card(root, &self.brand_texture, height, |ui| match step {
+        login_card(root, height, |ui| match step {
             LoginStep::Server => server_step(ui, &mut self.login_form, busy, &mut action),
             LoginStep::Account => {
                 account_step(ui, &mut self.login_form, busy, can_cancel, &mut action)

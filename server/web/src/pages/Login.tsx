@@ -23,7 +23,7 @@ export function AuthFrame({
     <div className="auth-page">
       <div className="auth-card">
         <div className="auth-brand">
-          <BrandMark size={22} />
+          <BrandMark size={40} />
           <div>
             <div className="brand-name">Farwing</div>
             <div className="small muted">{info?.instance_name || 'Farwing Server'}</div>

@@ -1,2 +1,8 @@
 1 ICON "assets/icon.ico"
+2 ICON "assets/tray/light-idle.ico"
+3 ICON "assets/tray/light-controlled.ico"
+4 ICON "assets/tray/light-disabled.ico"
+5 ICON "assets/tray/dark-idle.ico"
+6 ICON "assets/tray/dark-controlled.ico"
+7 ICON "assets/tray/dark-disabled.ico"
 1 24 "assets/windows.manifest"

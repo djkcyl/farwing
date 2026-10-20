@@ -17,7 +17,12 @@ impl DeviceCenterApp {
         crate::ui::controls::page_scroll("about-page").show(ui, |ui| {
             ui.horizontal(|ui| {
                 let (icon, _) = ui.allocate_exact_size(vec2(88.0, 88.0), Sense::hover());
-                crate::ui::branding::paint(ui.painter(), icon, &self.brand_texture);
+                crate::ui::branding::paint(
+                    ui.painter(),
+                    icon,
+                    crate::ui::branding::Art::App,
+                    Color32::WHITE,
+                );
                 ui.add_space(16.0);
                 ui.vertical(|ui| {
                     ui.add_space(5.0);

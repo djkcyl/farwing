@@ -71,7 +71,10 @@ pub const DIALOG_ACTION_GAP: f32 = 20.0;
 pub const DIALOG_ACTION_WIDTH: f32 = 104.0;
 pub const RELEASE_NOTES_HEIGHT: f32 = 300.0;
 pub const TITLE: f32 = 25.0;
-pub const BRAND: f32 = 17.0;
+/// Height of the logo's mark in the sidebar, sign-in card and loading page.
+pub const LOGO_SIDEBAR: f32 = 22.0;
+pub const LOGO_LOGIN: f32 = 32.0;
+pub const LOGO_LOADING: f32 = 44.0;
 pub const CONTROL_HEIGHT: f32 = 34.0;
 pub const INPUT_MARGIN: egui::Margin = egui::Margin::symmetric(12, 6);
 pub const INPUT_COMPACT_MARGIN: egui::Margin = egui::Margin::symmetric(8, 4);

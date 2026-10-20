@@ -7,6 +7,7 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/windows.rc");
     println!("cargo:rerun-if-changed=assets/windows.manifest");
     println!("cargo:rerun-if-changed=assets/icon.ico");
+    println!("cargo:rerun-if-changed=assets/tray");
     embed_resource::compile_for("assets/windows.rc", ["Farwing"], embed_resource::NONE)
         .manifest_required()
         .expect("compile Windows application icon");

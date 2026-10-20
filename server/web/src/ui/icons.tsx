@@ -2,7 +2,6 @@
 import type { SVGProps } from 'react';
 
 const PATHS: Record<string, string> = {
-  logo: 'M3 13c4-1 7-4 9-9 2 5 5 8 9 9-4 1-6 3-9 7-3-4-5-6-9-7z',
   monitor: 'M3 5h18v11H3zM8 20h8M12 16v4',
   users: 'M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM2 21v-1a6 6 0 0 1 12 0v1M16 3.5a4 4 0 0 1 0 7.5M22 21v-1a6 6 0 0 0-4-5.6',
   user: 'M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM4 21v-1a7 7 0 0 1 14 0v1',

@@ -292,7 +292,9 @@ pub(crate) fn start_installed(
     Ok(())
 }
 pub(crate) fn integrate_user() -> Result<()> {
-    integration::shortcuts(true)
+    integration::shortcuts(true)?;
+    integration::refresh_icons();
+    Ok(())
 }
 pub(crate) fn register() -> Result<()> {
     integration::register(true)

@@ -311,6 +311,9 @@ impl DesktopWindow {
         });
         let (drawing, platform, mut viewports) = egui_directx11::split_output(output);
         self.input.handle_platform_output(&self.window, platform);
+        if let Some(tray) = &self.tray {
+            tray.set_state(self.app.0.tray_state());
+        }
         if let Some(root) = viewports.remove(&egui::ViewportId::ROOT) {
             for command in &root.commands {
                 match command {

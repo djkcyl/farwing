@@ -6,6 +6,9 @@ pub(crate) trait App {
     fn uses_tray(&self) -> bool {
         true
     }
+    fn tray_state(&self) -> super::tray::TrayState {
+        super::tray::TrayState::Idle
+    }
     fn ui(&mut self, ui: &mut egui::Ui);
     fn on_focus_changed(&mut self, _focused: bool) {}
     /// Return false to keep the window alive (for example, while confirming exit).
