@@ -35,7 +35,6 @@ pub(super) fn show_compact_performance(
     stats: &PerformanceSnapshot,
     audio: &crate::media::audio::AudioPlayback,
 ) {
-    ctx.request_repaint_after(Duration::from_millis(50));
     egui::Window::new("性能简报")
         .id(egui::Id::new("performance-compact"))
         // This HUD has no controls. In particular, it must not become the
@@ -127,6 +126,11 @@ pub(super) fn compact_audio_meter(
         data.insert_temp(peak_id, peaks);
         peaks
     });
+    // The meter moves only with sound or a falling peak; the figures beside
+    // it follow the overlay's slower refresh.
+    if fill.iter().chain(peaks.iter().map(|(level, _)| level)).any(|level| *level > 0.0) {
+        ui.ctx().request_repaint_after(Duration::from_millis(50));
+    }
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(COMPACT_METER_WIDTH, height),
         egui::Sense::hover(),

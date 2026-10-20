@@ -719,6 +719,12 @@ impl ThreadedWindowsApp {
         let presented = self
             .ui_presenter
             .render(&self.egui_context, renderer_output, true)?;
+        // `farwing::ui_timing=trace`: what keeps the interface redrawing.
+        if tracing::enabled!(target: "farwing::ui_timing", tracing::Level::TRACE) {
+            for cause in self.egui_context.repaint_causes() {
+                tracing::trace!(target: "farwing::ui_timing", %cause, immediate, "UI repaint cause");
+            }
+        }
         if let Some(audit) = UiTimingAudit::active(&mut self.timing_audit, started) {
             audit.record(
                 started,
