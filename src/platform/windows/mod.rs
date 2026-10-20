@@ -34,6 +34,7 @@ pub(crate) mod surface;
 pub(crate) mod system_power;
 pub(crate) mod transfer;
 pub(crate) mod virtual_audio;
+pub(crate) mod interface_mtu;
 pub(crate) mod wol;
 
 use crate::media::encoding as format;

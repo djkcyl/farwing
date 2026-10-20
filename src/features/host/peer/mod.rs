@@ -591,10 +591,23 @@ impl Peer {
             .transport()
             .ice_transport()
             .on_selected_candidate_pair_change(Box::new(move |pair| {
+                let route = crate::transport::rtc::connection_route(
+                    pair.local.typ,
+                    &pair.local.address,
+                    pair.remote.typ,
+                    &pair.remote.address,
+                );
+                let mtu = path_mtu(route, || {
+                    pair.local
+                        .address
+                        .parse()
+                        .ok()
+                        .and_then(crate::platform::windows::interface_mtu::interface_mtu)
+                });
                 tracing::info!(local_type=?pair.local.typ, remote_type=?pair.remote.typ,
                     local_relay_protocol=%pair.local.relay_protocol,
                     remote_relay_protocol=%pair.remote.relay_protocol,
-                    "host selected transport path");
+                    route, mtu, "host selected transport path");
                 route_transport.route_changed();
                 route_transport.selected_route(&pair);
                 let transport = route_transport.clone();
@@ -617,7 +630,7 @@ impl Peer {
                         } else {
                             8
                         };
-                    transport.route_overhead(network);
+                    transport.route(network, mtu);
                 })
             }));
         let kcp = core.control.clone();
@@ -1166,6 +1179,21 @@ impl Drop for Peer {
     }
 }
 
+/// Largest datagram a route takes whole: on a local network its
+/// interface's MTU (1500 at most); through the internet or a relay the IPv6
+/// minimum, which tunnels, VPNs (Tailscale, WireGuard) and PPPoE carry too.
+/// `FARWING_PATH_MTU` sets it for measurements.
+fn path_mtu(route: &str, interface: impl FnOnce() -> Option<u32>) -> u64 {
+    if let Some(mtu) = std::env::var("FARWING_PATH_MTU").ok().and_then(|v| v.parse().ok()) {
+        return mtu;
+    }
+    if route == "LAN" {
+        u64::from(interface().unwrap_or(1500)).clamp(576, 1500)
+    } else {
+        1280
+    }
+}
+
 fn maximum_header(
     extensions: &[webrtc::rtp_transceiver::rtp_codec::RTCRtpHeaderExtensionParameters],
     mid: usize,
@@ -1217,3 +1245,20 @@ mod media;
 pub(crate) mod screens;
 use channels::bind_channel;
 use channels::publish_state;
+
+#[cfg(test)]
+mod tests {
+    use super::path_mtu;
+
+    #[test]
+    fn routes_beyond_the_local_network_get_the_ipv6_minimum() {
+        assert_eq!(path_mtu("LAN", || Some(1500)), 1500);
+        // A VPN adapter on a private address (EasyTier, Tailscale) keeps its own.
+        assert_eq!(path_mtu("LAN", || Some(1380)), 1380);
+        // The loopback interface reports no limit.
+        assert_eq!(path_mtu("LAN", || Some(u32::MAX)), 1500);
+        assert_eq!(path_mtu("LAN", || None), 1500);
+        assert_eq!(path_mtu("P2P", || Some(1500)), 1280);
+        assert_eq!(path_mtu("relay", || Some(1500)), 1280);
+    }
+}

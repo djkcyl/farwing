@@ -16,6 +16,7 @@ mod workers;
 
 pub use channels::DATA_CHANNEL_LABELS;
 pub(crate) use core::ConnectionCore;
+pub(crate) use statistics::connection_route;
 pub(crate) use negotiation::negotiated_mixed_kcp_version;
 pub use peer::{IceServer, NativePeer};
 pub(crate) use tracks::{

@@ -154,6 +154,9 @@ struct Network {
     waiting: Mutex<BTreeMap<(u8, u64), (Instant, u64)>>,
     next_ticket: AtomicU64,
     network_overhead: AtomicU64,
+    /// The largest datagram the selected route takes whole (IP header
+    /// included).
+    path_mtu: AtomicU64,
     srtp_overhead: AtomicU64,
     automatic: Mutex<super::network::AutoSwitch>,
     counts: [AtomicU64; 4],
@@ -235,6 +238,7 @@ impl Transport {
             waiting: Mutex::new(BTreeMap::new()),
             next_ticket: AtomicU64::new(0),
             network_overhead: AtomicU64::new(28),
+            path_mtu: AtomicU64::new(1280),
             srtp_overhead: AtomicU64::new(16),
             automatic: Mutex::new(super::network::AutoSwitch::new(policy)),
             counts: std::array::from_fn(|_| AtomicU64::new(0)),
@@ -414,10 +418,13 @@ impl Transport {
     pub(crate) fn cwnd_ratio(&self) -> f64 {
         lock(&self.0.controller).cwnd_reduce_ratio
     }
-    pub(crate) fn route_overhead(&self, network: usize) {
+    /// The selected route: IP and UDP/TCP header bytes, and the largest
+    /// datagram it takes whole.
+    pub(crate) fn route(&self, network: usize, mtu: u64) {
         self.0
             .network_overhead
             .store(network as u64, Ordering::Relaxed);
+        self.0.path_mtu.store(mtu, Ordering::Relaxed);
     }
     pub(crate) fn srtp_overhead(&self, bytes: usize) {
         self.0.srtp_overhead.store(bytes as u64, Ordering::Relaxed);
@@ -491,7 +498,7 @@ impl Transport {
         self.0.network_overhead.load(Ordering::Relaxed) as usize
     }
     pub(crate) fn packet_limit(&self) -> usize {
-        1460.min(1500usize.saturating_sub(self.overhead()))
+        1460.min((self.0.path_mtu.load(Ordering::Relaxed) as usize).saturating_sub(self.overhead()))
     }
     pub(crate) fn wire_size(&self, rtp: usize) -> usize {
         rtp + self.overhead()

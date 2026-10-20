@@ -218,7 +218,7 @@ pub(super) async fn sample_network_performance(
     }
 }
 
-pub(super) fn connection_route(
+pub(crate) fn connection_route(
     local_type: RTCIceCandidateType,
     local_address: &str,
     remote_type: RTCIceCandidateType,
