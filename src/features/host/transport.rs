@@ -504,8 +504,9 @@ impl Transport {
         // Reserve its largest (109-source) mask, repair RTP header, MID and TCC
         // whenever the repair stream exists, not only while FEC is on: media
         // and their retransmissions (two bytes longer) then stay well below
-        // a 1500-byte MTU. Some paths drop the last few dozen bytes of it,
-        // and a lost full-size packet could then never be repaired.
+        // a 1500-byte MTU, for links with a smaller one (PPPoE, tunnels) and
+        // receivers with a smaller read buffer, where a lost full-size
+        // packet could never be repaired.
         let repair = if lock(&self.0.history).fec.is_some() {
             2 + 27 + repair_header
         } else {
