@@ -456,9 +456,9 @@ fn validate(rendered: &sdk::Rendered) -> Result<()> {
     }
     Ok(())
 }
-pub(super) struct Job(HANDLE);
+pub(crate) struct Job(HANDLE);
 impl Job {
-    pub(super) fn attach(child: &Child) -> Result<Self> {
+    pub(crate) fn attach(child: &Child) -> Result<Self> {
         let job = Self(unsafe { CreateJobObjectW(None, None) }?);
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;

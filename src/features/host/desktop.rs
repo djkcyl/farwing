@@ -251,9 +251,16 @@ async fn probe(
     tokio::task::spawn_blocking(move || {
         let started = std::time::Instant::now();
         ensure!(active(), "媒体准备已取消");
-        let _runtime = encoder::Runtime::with_gpu_compatibility(gpu_compatibility)?;
-        let mut desktop = capture::Desktop::open_selected(&screen)?;
-        let codecs = encoder::probe(&mut desktop, &active)?;
+        let codecs = match probe_in_child(&screen, gpu_compatibility, &active) {
+            Ok(codecs) => codecs,
+            Err(error) => {
+                ensure!(active(), "媒体准备已取消");
+                tracing::warn!(error = %format!("{error:#}"), "encoder probe process failed; probing here");
+                let _runtime = encoder::Runtime::with_gpu_compatibility(gpu_compatibility)?;
+                let mut desktop = capture::Desktop::open_selected(&screen)?;
+                encoder::probe(&mut desktop, &active)?
+            }
+        };
         ensure!(active(), "媒体准备已取消");
         tracing::info!(
             elapsed_ms = started.elapsed().as_millis(),
@@ -269,6 +276,83 @@ async fn probe(
     })
     .await
     .context("被控能力检查任务中断")?
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ProbeRequest {
+    screen: capture::Screen,
+    gpu_compatibility: bool,
+}
+
+/// How long the probe process may take (every encoder is opened once).
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// The probe in a process of its own: the graphics drivers keep what every
+/// encoder opened (hundreds of MB) for as long as the process has a device,
+/// and a device centre or host keeps one for its whole life.
+fn probe_in_child(
+    screen: &capture::Screen,
+    gpu_compatibility: bool,
+    active: &dyn Fn() -> bool,
+) -> Result<Vec<format::Capability>> {
+    use std::io::{Read, Write};
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .arg("encoder-probe")
+        .creation_flags(0x0800_0000)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    crate::diagnostics::logging::configure_child(&mut command);
+    let mut child = command.spawn().context("无法启动编码能力检查进程")?;
+    let _job = crate::plugins::process::Job::attach(&child);
+    let request = serde_json::to_vec(&ProbeRequest {
+        screen: screen.clone(),
+        gpu_compatibility,
+    })?;
+    let mut input = child.stdin.take().context("检查进程没有输入")?;
+    let mut output = child.stdout.take().context("检查进程没有输出")?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        output.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let written = input.write_all(&request);
+    drop(input);
+    let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if !active() || std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("编码能力检查进程已停止");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    written.context("无法把检查条件交给检查进程")?;
+    ensure!(status.success(), "编码能力检查进程失败：{status}");
+    let bytes = reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("检查结果读取中断"))??;
+    serde_json::from_slice(&bytes).context("检查进程的结果无效")
+}
+
+/// `encoder-probe`: the child side of [`probe_in_child`].
+pub(crate) fn probe_process() -> Result<()> {
+    use std::io::{Read, Write};
+    let mut input = Vec::new();
+    std::io::stdin().read_to_end(&mut input)?;
+    let request: ProbeRequest = serde_json::from_slice(&input).context("检查条件无效")?;
+    let _runtime = encoder::Runtime::with_gpu_compatibility(request.gpu_compatibility)?;
+    let mut desktop = capture::Desktop::open_selected(&request.screen)?;
+    let codecs = encoder::probe(&mut desktop, &|| true)?;
+    let mut output = std::io::stdout().lock();
+    serde_json::to_writer(&mut output, &codecs)?;
+    output.flush()?;
+    Ok(())
 }
 
 pub(crate) struct Prepared {

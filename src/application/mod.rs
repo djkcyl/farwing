@@ -81,6 +81,10 @@ pub fn purge_machine_data() -> anyhow::Result<()> {
 }
 
 /// Internal crash-recovery role of the same executable.
+/// The encoder probe of a host, in a process of its own.
+pub fn encoder_probe() -> anyhow::Result<()> {
+    crate::features::host::desktop::probe_process()
+}
 pub fn display_recovery(token: &str) -> anyhow::Result<()> {
     crate::features::host::displays::recovery::watch(token)
 }

@@ -7,7 +7,7 @@ mod input;
 mod manager;
 mod metadata;
 mod parameters;
-mod process;
+pub(crate) mod process;
 mod settings;
 mod ui;
 pub mod video;
