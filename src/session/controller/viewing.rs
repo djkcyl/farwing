@@ -701,6 +701,13 @@ pub(super) async fn present_video(
     }
     let close = viewer.close_handle();
     let wake = viewer.window_wake();
+    // Measurement aid (with FARWING_DEV_MIC_TONE): the microphone starts with
+    // the picture instead of from the window's menu.
+    if std::env::var_os("FARWING_DEV_MIC_ON").is_some()
+        && let Err(error) = controller.stream_control_handle().set_microphone_enabled(true)
+    {
+        tracing::warn!(%error, "development microphone start failed");
+    }
     sender
         .send(ViewerWindowEvent::Playing(Box::new(viewer)))
         .map_err(|_| anyhow!("画面窗口已关闭"))?;

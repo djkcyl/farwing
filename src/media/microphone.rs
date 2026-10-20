@@ -397,6 +397,84 @@ impl CaptureAttempt {
     }
 }
 
+/// Measurement aid: `FARWING_DEV_MIC_TONE=<Hz>` replaces the microphone
+/// with a sine of that frequency, so the host's virtual microphone can be
+/// checked end to end without a sound source.
+fn dev_tone() -> Option<f32> {
+    std::env::var("FARWING_DEV_MIC_TONE")
+        .ok()?
+        .parse::<f32>()
+        .ok()
+        .filter(|hz| *hz > 0.0 && *hz < (RATE / 2) as f32)
+}
+
+/// A running capture: the microphone, or the measurement tone (each held
+/// until dropped).
+#[allow(dead_code)]
+enum Capture {
+    Device(cpal::Stream),
+    Tone(Tone),
+}
+
+struct Tone {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl Drop for Tone {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn open_tone(
+    hz: f32,
+    shared: Arc<Shared>,
+    attempt: Arc<CaptureAttempt>,
+    generation: u64,
+    origin: Instant,
+) -> Result<Tone> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopped = Arc::clone(&stop);
+    let thread = std::thread::Builder::new()
+        .name("microphone tone".into())
+        .spawn(move || {
+            let step = std::f32::consts::TAU * hz / RATE as f32;
+            let mut phase = 0f32;
+            let mut timestamp = (origin.elapsed().as_secs_f64() * f64::from(RATE)) as u64 as u32;
+            let period = Duration::from_secs_f64(BLOCK as f64 / f64::from(RATE));
+            let mut next = Instant::now();
+            while !stopped.load(Ordering::Acquire) && shared.current(generation) {
+                let mut samples = [0f32; BLOCK * 2];
+                for pair in samples.chunks_exact_mut(2) {
+                    let value = 0.5 * phase.sin();
+                    pair[0] = value;
+                    pair[1] = value;
+                    phase = (phase + step) % std::f32::consts::TAU;
+                }
+                shared.peak.store(0.5f32.to_bits(), Ordering::Relaxed);
+                shared.frames.force_push(Frame {
+                    samples,
+                    timestamp,
+                    generation,
+                    created: Instant::now(),
+                });
+                attempt.progressed.store(true, Ordering::Release);
+                shared.wake.notify_one();
+                timestamp = timestamp.wrapping_add(BLOCK as u32);
+                next += period;
+                std::thread::sleep(next.saturating_duration_since(Instant::now()));
+            }
+        })
+        .context("无法启动测试音")?;
+    Ok(Tone {
+        stop,
+        thread: Some(thread),
+    })
+}
+
 fn capture_owner(shared: Arc<Shared>) {
     let _ = shared.owner.set(std::thread::current());
     let host = cpal::default_host();
@@ -502,14 +580,23 @@ fn capture_owner(shared: Arc<Shared>) {
                         anyhow!("没有可用的默认麦克风")
                     }
                 })
-                .and_then(|device| {
-                    open_input(
+                .and_then(|device| match dev_tone() {
+                    Some(hz) => open_tone(
+                        hz,
+                        Arc::clone(&shared),
+                        Arc::clone(&attempt),
+                        generation,
+                        origin,
+                    )
+                    .map(Capture::Tone),
+                    None => open_input(
                         &device,
                         Arc::clone(&shared),
                         Arc::clone(&attempt),
                         generation,
                         origin,
                     )
+                    .map(Capture::Device),
                 });
             if !shared.current(generation) {
                 drop(result);
