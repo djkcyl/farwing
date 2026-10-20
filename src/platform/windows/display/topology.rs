@@ -360,19 +360,33 @@ impl Topology {
     }
 
     fn read_metadata(&self) -> Result<Vec<Target>> {
+        let started = std::time::Instant::now();
         let mut targets: Vec<Target> = Vec::new();
         let virtual_sources = virtual_sources();
+        // All paths list every target once per source it could show: ask the
+        // driver once per target (hundreds of paths, a few targets).
+        let mut names = std::collections::HashMap::new();
         for path in &self.paths {
-            let mut target = DISPLAYCONFIG_TARGET_DEVICE_NAME {
-                header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
-                    r#type: DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
-                    size: size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32,
-                    adapterId: path.targetInfo.adapterId,
-                    id: path.targetInfo.id,
-                },
-                ..Default::default()
-            };
-            let status = unsafe { DisplayConfigGetDeviceInfo(&mut target.header) };
+            // No monitor: nothing to name, and a driver can take tens of
+            // milliseconds to say so (42 ms here for one empty iGPU port).
+            if path.flags & DISPLAYCONFIG_PATH_ACTIVE == 0 && !path.targetInfo.targetAvailable.as_bool() {
+                continue;
+            }
+            let (status, target) = *names
+                .entry((luid(path.targetInfo.adapterId), path.targetInfo.id))
+                .or_insert_with(|| {
+                    let mut target = DISPLAYCONFIG_TARGET_DEVICE_NAME {
+                        header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                            r#type: DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+                            size: size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32,
+                            adapterId: path.targetInfo.adapterId,
+                            id: path.targetInfo.id,
+                        },
+                        ..Default::default()
+                    };
+                    let status = unsafe { DisplayConfigGetDeviceInfo(&mut target.header) };
+                    (status, target)
+                });
             if status != 0 {
                 // Inactive QDC_ALL_PATHS candidates can have no monitor attached.
                 ensure!(
@@ -454,6 +468,12 @@ impl Topology {
                 virtual_provider,
             });
         }
+        tracing::debug!(
+            paths = self.paths.len(),
+            targets = names.len(),
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "display metadata read"
+        );
         Ok(targets)
     }
 }
