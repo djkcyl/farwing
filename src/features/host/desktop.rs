@@ -57,9 +57,13 @@ impl Cache {
         // only depends on the graphics stack and the source, so it is kept on
         // disk across restarts and recomputed when any of them changes.
         let key = ProbeKey::new(&screen, &adapters, gpu_compatibility);
+        let luids = disk::Luids {
+            listed: adapters.iter().map(|adapter| adapter.luid).collect(),
+            source: screen.adapter,
+        };
         let stored = {
-            let key = key.clone();
-            tokio::task::spawn_blocking(move || disk::load(&key))
+            let (key, luids) = (key.clone(), luids.clone());
+            tokio::task::spawn_blocking(move || disk::load(&key, &luids))
                 .await
                 .ok()
                 .flatten()
@@ -76,7 +80,7 @@ impl Cache {
         }
         let capabilities = Arc::new(probe(screen, adapters, gpu_compatibility, active).await?);
         let codecs = capabilities.codecs.clone();
-        tokio::task::spawn_blocking(move || disk::store(key, codecs));
+        tokio::task::spawn_blocking(move || disk::store(key, codecs, &luids));
         *cached = Some(capabilities.clone());
         Ok(capabilities)
     }
@@ -142,8 +146,23 @@ mod disk {
     #[derive(Serialize, Deserialize)]
     struct Entry {
         key: ProbeKey,
-        codecs: Vec<format::Capability>,
+        codecs: Vec<(Adapter, format::Capability)>,
         saved_at: i64,
+    }
+
+    /// A codec's adapter by its place in the key: the LUID in the codec is
+    /// only valid until the next reboot.
+    #[derive(Clone, Copy, Serialize, Deserialize)]
+    enum Adapter {
+        Listed(usize),
+        Source,
+    }
+
+    /// The current LUIDs of the key's adapters and source.
+    #[derive(Clone)]
+    pub(super) struct Luids {
+        pub listed: Vec<u64>,
+        pub source: u64,
     }
 
     fn path() -> Option<std::path::PathBuf> {
@@ -157,20 +176,43 @@ mod disk {
             .unwrap_or_default()
     }
 
-    pub(super) fn load(key: &ProbeKey) -> Option<Vec<format::Capability>> {
+    pub(super) fn load(key: &ProbeKey, luids: &Luids) -> Option<Vec<format::Capability>> {
         let now = chrono::Utc::now().timestamp();
         read()
             .entries
             .into_iter()
-            .find(|entry| entry.key == *key && now - entry.saved_at < MAX_AGE_SECONDS)
-            .map(|entry| entry.codecs)
+            .find(|entry| entry.key == *key && now - entry.saved_at < MAX_AGE_SECONDS)?
+            .codecs
+            .into_iter()
+            .map(|(adapter, mut codec)| {
+                codec.adapter = match adapter {
+                    Adapter::Listed(index) => *luids.listed.get(index)?,
+                    Adapter::Source => luids.source,
+                };
+                Some(codec)
+            })
+            .collect::<Option<Vec<_>>>()
             .filter(|codecs| !codecs.is_empty())
     }
 
-    pub(super) fn store(key: ProbeKey, codecs: Vec<format::Capability>) {
+    pub(super) fn store(key: ProbeKey, codecs: Vec<format::Capability>, luids: &Luids) {
         if codecs.is_empty() {
             return;
         }
+        let Some(codecs) = codecs
+            .into_iter()
+            .map(|codec| {
+                let adapter = match luids.listed.iter().position(|&luid| luid == codec.adapter) {
+                    Some(index) => Adapter::Listed(index),
+                    None if codec.adapter == luids.source => Adapter::Source,
+                    None => return None,
+                };
+                Some((adapter, codec))
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            return;
+        };
         let Some(path) = path() else {
             return;
         };

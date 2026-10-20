@@ -199,9 +199,24 @@ impl D3D11Presenter {
         device: ID3D11Device,
         context: ID3D11DeviceContext,
     ) -> Result<Self> {
+        Self::from_device_with_swap_chain(hwnd, size, device, context, None)
+    }
+
+    /// With the window's swap chain already made on `device` (at `made`
+    /// size), or a new one.
+    pub(super) fn from_device_with_swap_chain(
+        hwnd: HWND,
+        size: PhysicalSize<u32>,
+        device: ID3D11Device,
+        context: ID3D11DeviceContext,
+        prepared: Option<(crate::platform::swapchain::SwapChainCreation, PhysicalSize<u32>)>,
+    ) -> Result<Self> {
         let id = unsafe { device.cast::<IDXGIDevice>()?.GetAdapter()?.GetDesc()? }.AdapterLuid;
         let adapter = (u64::from(id.HighPart as u32) << 32) | u64::from(id.LowPart);
-        let swap_chain_creation = create_swap_chain(&device, hwnd, size)?;
+        let (swap_chain_creation, made) = match prepared {
+            Some((creation, made)) => (creation, made),
+            None => (create_swap_chain(&device, hwnd, size)?, size),
+        };
         let swap_chain = swap_chain_creation.swap_chain;
         let allow_tearing = swap_chain_creation.allow_tearing;
         let (backbuffer, render_target) = create_backbuffer(&device, &swap_chain)?;
@@ -221,7 +236,7 @@ impl D3D11Presenter {
             HANDLE::default()
         };
         let video_renderer = VideoShaderRenderer::new(&device)?;
-        Ok(Self {
+        let mut presenter = Self {
             hwnd,
             hdr_output: false,
             input_hdr: false,
@@ -244,7 +259,7 @@ impl D3D11Presenter {
             allow_tearing,
             swap_chain_flags: swap_chain_creation.flags,
             buffer_count: swap_chain_creation.buffer_count,
-            size,
+            size: made,
             content_top: 0,
             display_audit: DisplayAudit::from_environment(),
             captures: plugin_video::Captures::default(),
@@ -262,7 +277,11 @@ impl D3D11Presenter {
             analysis_new: false,
             snapshot_requested: false,
             snapshot: None,
-        })
+        };
+        if made != size {
+            presenter.resize(size)?;
+        }
+        Ok(presenter)
     }
 
     /// The drawn backbuffer as an sRGB image no wider than 1280 pixels.

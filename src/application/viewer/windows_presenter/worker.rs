@@ -73,24 +73,46 @@ impl RenderWorker {
                 let mut presenter = None::<D3D11Presenter>;
                 // Built on the decoder's adapter while the first picture
                 // decodes; used if that picture is a surface it can show.
+                let usable = presentation_writer.is_some() && size.width != 0 && size.height != 0;
+                // Taken in any case: a swap chain prepared for this window but
+                // not used must be gone before another one is made for it.
+                let prepared_video = mutex_lock(&presentation_device)
+                    .take()
+                    .filter(|video| unsafe { video.device.GetDeviceRemovedReason() }.is_ok())
+                    .map(|mut video| {
+                        if (!usable || video.swap_chain.as_ref().is_some_and(|chain| chain.hwnd != hwnd))
+                            && video.swap_chain.take().is_some()
+                        {
+                            unsafe { video.context.Flush() };
+                        }
+                        video
+                    });
                 let mut prepared = presentation_writer
                     .filter(|_| size.width != 0 && size.height != 0)
                     .and_then(|writer| {
-                        let prepared_device = mutex_lock(&presentation_device)
-                            .take()
-                            .filter(|(device, _)| unsafe { device.GetDeviceRemovedReason() }.is_ok());
-                        let (device, context) = match prepared_device {
-                            Some(device) => device,
-                            None => writer
-                                .create_renderer_device()
-                                .inspect_err(|error| tracing::debug!(%error, "video presenter not prepared"))
-                                .ok()?,
+                        let (device, context, swap_chain) = match prepared_video {
+                            Some(video) => (
+                                video.device,
+                                video.context,
+                                video
+                                    .swap_chain
+                                    .filter(|swap_chain| swap_chain.hwnd == hwnd)
+                                    .map(|swap_chain| (swap_chain.creation, swap_chain.size)),
+                            ),
+                            None => {
+                                let (device, context) = writer
+                                    .create_renderer_device()
+                                    .inspect_err(|error| tracing::debug!(%error, "video presenter not prepared"))
+                                    .ok()?;
+                                (device, context, None)
+                            }
                         };
-                        D3D11Presenter::from_device_for_window(
+                        D3D11Presenter::from_device_with_swap_chain(
                             windows::Win32::Foundation::HWND(hwnd as *mut std::ffi::c_void),
                             size,
                             device,
                             context,
+                            swap_chain,
                         )
                         .inspect_err(|error| tracing::debug!(%error, "video presenter not prepared"))
                         .ok()

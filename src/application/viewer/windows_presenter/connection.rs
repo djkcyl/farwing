@@ -2,7 +2,7 @@
 use super::chrome::borderless_resize;
 use super::player::ThreadedWindowsApp;
 use super::screen_windows::ScreenWindows;
-use crate::application::viewer::windows_ui::{UiPresenter, UiTimingAudit};
+use crate::application::viewer::windows_ui::{UiPresenter, UiTimingAudit, VideoWindow};
 use crate::application::viewer::{
     ConnectionProgress, ConnectionProgressApp, NativeViewerSession, ViewerDisplayHandle,
     ViewerWindowEvent, configure_viewer_visuals, mutex_lock,
@@ -556,6 +556,8 @@ pub(in crate::application::viewer) struct WindowsConnectionApp {
     pub(in crate::application::viewer) egui_winit: egui_winit::State,
     pub(in crate::application::viewer) close_requested: bool,
     pub(in crate::application::viewer) timing_audit: Option<UiTimingAudit>,
+    /// The playback's video window, hidden while connecting.
+    pub(in crate::application::viewer) video_window: Option<VideoWindow>,
 }
 
 impl WindowsConnectionApp {
@@ -603,7 +605,14 @@ impl WindowsConnectionApp {
         let surface_writer = crate::platform::surface::D3D11SurfaceWriter::new()?;
         // While the connection is made: the hardware decoder's first picture
         // on this device would carry its driver setup, and the video
-        // presenter needs a device of its own on the same adapter.
+        // presenter needs a device of its own on the same adapter, and the
+        // (still hidden) video window its swap chain.
+        let video_window = VideoWindow::hidden(window)
+            .inspect_err(|error| tracing::debug!(%error, "video window not prepared"))
+            .ok();
+        let video_target = video_window
+            .as_ref()
+            .and_then(|video| Some((video.handle(), video.resize(window, window.inner_size()).ok()?)));
         let decoder_writer = surface_writer.clone();
         let video_device = crate::application::viewer::PreparedRenderer::default();
         let prepared_renderer = video_device.clone();
@@ -612,7 +621,28 @@ impl WindowsConnectionApp {
             .spawn(move || {
                 let started = Instant::now();
                 match decoder_writer.create_renderer_device() {
-                    Ok(device) => *crate::application::viewer::mutex_lock(&prepared_renderer) = Some(device),
+                    Ok((device, context)) => {
+                        let swap_chain = video_target.and_then(|(hwnd, size)| {
+                            crate::platform::swapchain::create_swap_chain(
+                                &device,
+                                windows::Win32::Foundation::HWND(hwnd as *mut std::ffi::c_void),
+                                size,
+                            )
+                            .inspect_err(|error| tracing::debug!(%error, "video swap chain not prepared"))
+                            .ok()
+                            .map(|creation| crate::application::viewer::PreparedSwapChain {
+                                hwnd,
+                                size,
+                                creation,
+                            })
+                        });
+                        *crate::application::viewer::mutex_lock(&prepared_renderer) =
+                            Some(crate::application::viewer::PreparedVideo {
+                                device,
+                                context,
+                                swap_chain,
+                            });
+                    }
                     Err(error) => tracing::debug!(%error, "video presenter device not prepared"),
                 }
                 match crate::platform::decoder::warm_up(decoder_writer.device_handle()) {
@@ -633,6 +663,7 @@ impl WindowsConnectionApp {
                 audio: None,
                 progress: ConnectionProgressApp::new(alias, receiver),
                 presenter,
+                video_window,
                 egui_context,
                 egui_winit,
                 close_requested: false,

@@ -97,14 +97,24 @@ pub(crate) struct ViewerDisplayHandle {
 
 pub(crate) type WindowWake = Arc<dyn Fn() + Send + Sync>;
 
-pub(crate) type PreparedRenderer = Arc<
-    Mutex<
-        Option<(
-            windows::Win32::Graphics::Direct3D11::ID3D11Device,
-            windows::Win32::Graphics::Direct3D11::ID3D11DeviceContext,
-        )>,
-    >,
->;
+pub(crate) type PreparedRenderer = Arc<Mutex<Option<PreparedVideo>>>;
+
+/// The video presenter's device, and the swap chain of the hidden video
+/// window it will show in, made while the connection is established.
+pub(crate) struct PreparedVideo {
+    pub device: windows::Win32::Graphics::Direct3D11::ID3D11Device,
+    pub context: windows::Win32::Graphics::Direct3D11::ID3D11DeviceContext,
+    pub swap_chain: Option<PreparedSwapChain>,
+}
+
+pub(crate) struct PreparedSwapChain {
+    pub hwnd: isize,
+    pub size: winit::dpi::PhysicalSize<u32>,
+    pub creation: crate::platform::swapchain::SwapChainCreation,
+}
+// Made on the warm-up thread and handed over once to the render thread; DXGI
+// swap chains are free-threaded and this one is never used concurrently.
+unsafe impl Send for PreparedSwapChain {}
 
 impl ConnectionProgress {
     pub(crate) fn updating(started: Instant) -> Self {

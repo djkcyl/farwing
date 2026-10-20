@@ -64,6 +64,22 @@ pub(super) struct VideoWindow {
 
 impl VideoWindow {
     pub(super) fn new(parent: &Window) -> Result<Self> {
+        Self::create(parent, true)
+    }
+
+    /// Hidden until [`Self::show`]: its swap chain can be made while the
+    /// connection UI is still shown.
+    pub(super) fn hidden(parent: &Window) -> Result<Self> {
+        Self::create(parent, false)
+    }
+
+    pub(super) fn show(&self) {
+        unsafe {
+            let _ = ShowWindow(self.hwnd, SW_SHOWNA);
+        }
+    }
+
+    fn create(parent: &Window, visible: bool) -> Result<Self> {
         video_window_class()?;
         // A disabled child is skipped by hit testing, so the parent continues
         // to receive all local UI input, including menus drawn above the video.
@@ -72,7 +88,10 @@ impl VideoWindow {
                 WINDOW_EX_STYLE::default(),
                 w!("Farwing.VideoSurface"),
                 w!(""),
-                WS_CHILD | WS_VISIBLE | WS_DISABLED | WS_CLIPSIBLINGS,
+                WS_CHILD
+                    | if visible { WS_VISIBLE } else { WINDOW_STYLE(0) }
+                    | WS_DISABLED
+                    | WS_CLIPSIBLINGS,
                 0,
                 0,
                 1,

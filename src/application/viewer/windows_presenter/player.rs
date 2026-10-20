@@ -146,7 +146,14 @@ impl ThreadedWindowsApp {
         let preferences = stream_control.device_preferences();
         let shutdown = Arc::clone(&session.shutdown);
         let fatal_error = Arc::clone(&session.fatal_error);
-        let video_window = VideoWindow::new(window)?;
+        let mut connecting = connecting;
+        let video_window = match connecting.video_window.take() {
+            Some(video_window) => {
+                video_window.show();
+                video_window
+            }
+            None => VideoWindow::new(window)?,
+        };
         let size = video_window.resize(window, window.inner_size())?;
         let cpu_device = Arc::new(Mutex::new(None));
         let renderer = RenderWorker::spawn(
