@@ -257,7 +257,7 @@ impl DeviceCenterApp {
     /// One field for every way of addressing a device.
     fn connect_bar(&mut self, ui: &mut egui::Ui, access: Access) {
         let mut connect = false;
-        let parsed = parse_target(&self.direct.target).ok();
+        let parsed = parse_target(&self.direct.target);
         cards::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -303,13 +303,14 @@ impl DeviceCenterApp {
                 ui.checkbox(&mut self.direct.ask, "不用访问码，请对方确认");
             });
             let hint = match &parsed {
-                None => "对方信任本机、或是本账号与好友的设备时，不需要访问码；其他设备需要对方的访问码，或由对方确认。".to_owned(),
-                Some(Target::Address(_)) => "地址：局域网或公网直连，默认端口 28890。".into(),
-                Some(Target::ShortNumber(_)) if access == Access::NoServer => {
+                Err(_) if self.direct.target.trim().is_empty() => "对方信任本机、或是本账号与好友的设备时，不需要访问码；其他设备需要对方的访问码，或由对方确认。".to_owned(),
+                Err(error) => error.clone(),
+                Ok(Target::Address(_)) => "地址：局域网或公网直连，默认端口 28890。".into(),
+                Ok(Target::ShortNumber(_)) if access == Access::NoServer => {
                     "短号需要服务器；没有服务器时，请输入对方的地址或在“附近”中选择。".into()
                 }
-                Some(Target::ShortNumber(_)) => "短号：经服务器连接，按对方的设置验证。".into(),
-                Some(Target::DeviceId(id)) => self.route_hint(id, access),
+                Ok(Target::ShortNumber(_)) => "短号：经服务器连接，按对方的设置验证。".into(),
+                Ok(Target::DeviceId(id)) => self.route_hint(id, access),
             };
             detail(ui, &hint);
         });
