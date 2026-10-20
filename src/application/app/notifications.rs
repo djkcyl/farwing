@@ -50,6 +50,8 @@ pub(crate) struct Card {
     pub detail: String,
     pub expires_at: i64,
     pub confirmation: bool,
+    /// A pairing request: its answers are "拒绝" and "配对".
+    pub pairing: bool,
     pub busy: bool,
     pub connected: bool,
 }
@@ -78,6 +80,23 @@ pub(crate) struct CardAction {
 }
 impl Card {
     pub fn actions(&self) -> Vec<CardAction> {
+        if self.confirmation && self.pairing {
+            let enabled = !self.busy && self.expires_at > chrono::Utc::now().timestamp();
+            return vec![
+                CardAction {
+                    label: "拒绝",
+                    verb: Verb::Reject,
+                    kind: ButtonKind::Normal,
+                    enabled,
+                },
+                CardAction {
+                    label: if self.busy { "正在提交" } else { "配对" },
+                    verb: Verb::Trust,
+                    kind: ButtonKind::Primary,
+                    enabled,
+                },
+            ];
+        }
         if self.confirmation {
             let enabled = !self.busy && self.expires_at > chrono::Utc::now().timestamp();
             return vec![
@@ -443,12 +462,13 @@ impl Center {
                         .iter()
                         .any(|c| c == farwing_protocol::caps::CONTROL && limit.contains(c))
                 });
+                let pairing = p.pairing.clone();
                 items.push((
                     key,
                     Card {
                         disconnect: None,
                         ticket: String::new(),
-                        title: "连接请求".into(),
+                        title: if pairing.is_some() { "配对请求" } else { "连接请求" }.into(),
                         body: if p.device_id.is_empty() {
                             clean(&p.name)
                         } else {
@@ -460,6 +480,12 @@ impl Center {
                         },
                         detail: if p.responding {
                             "正在提交处理结果…".into()
+                        } else if let Some(code) = &pairing {
+                            format!(
+                                "配对码 {} {}。请确认对方屏幕上显示的配对码与此相同。配对后两台设备可以互相直接连接，无需访问码或确认，彼此有完全控制权限。",
+                                &code[..code.len().min(3)],
+                                &code[code.len().min(3)..]
+                            )
                         } else if browser_controls == Some(false) {
                             "网页端只能观看和收听。“允许本次”只对这次连接有效；“允许并信任”后，这个浏览器以后无需访问码和确认。".into()
                         } else if browser_controls == Some(true) {
@@ -469,6 +495,7 @@ impl Center {
                         },
                         expires_at: p.expires_at,
                         confirmation: true,
+                        pairing: pairing.is_some(),
                         busy: p.responding,
                         connected: false,
                         transfer: None,
@@ -490,6 +517,7 @@ impl Center {
                         },
                         expires_at: a.expires_at,
                         confirmation: false,
+                        pairing: false,
                         busy: false,
                         connected: false,
                         transfer: None,
@@ -521,6 +549,7 @@ impl Center {
                         detail: active.caption.duration,
                         expires_at: 0,
                         confirmation: false,
+                        pairing: false,
                         busy: false,
                         connected,
                         transfer: None,
@@ -556,6 +585,7 @@ impl Center {
                     detail: "请查看当前请求状态。".into(),
                     expires_at: *until,
                     confirmation: false,
+                    pairing: false,
                     busy: false,
                     connected: false,
                     transfer: None,
@@ -779,6 +809,7 @@ impl DeviceCenterApp {
                         ),
                         expires_at: end.ended_at.saturating_add(10),
                         confirmation: false,
+                        pairing: false,
                         busy: false,
                         connected: false,
                         transfer: None,

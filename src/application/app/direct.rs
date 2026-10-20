@@ -24,6 +24,29 @@ pub(super) struct LanState {
     pub found: Option<Vec<crate::transport::direct::lan::Found>>,
     pub error: Option<String>,
     pub scanned_at: Option<Instant>,
+    /// When each device last answered: one that misses a round stays listed
+    /// for a while, so the list does not flicker.
+    seen: std::collections::HashMap<String, Instant>,
+}
+
+/// While the "附近" tab is open, query again this long after each round.
+const SCAN_GAP: Duration = Duration::from_secs(2);
+/// After a failed query, wait longer.
+const SCAN_RETRY: Duration = Duration::from_secs(10);
+/// How long each query waits for answers.
+const SCAN_WINDOW: Duration = Duration::from_millis(1500);
+/// A device that stopped answering leaves the list after this long.
+const SCAN_KEEP: Duration = Duration::from_secs(8);
+
+/// Pairing with a nearby device: both screens show the same code until
+/// the other side's user agrees.
+pub(super) struct Pairing {
+    pub name: String,
+    /// Known once the connection is up.
+    pub code: Option<String>,
+    /// The other device, once paired; or why not.
+    pub outcome: Option<Result<farwing_protocol::direct::DirectHello, String>>,
+    pub cancel: tokio_util::sync::CancellationToken,
 }
 
 #[derive(Default)]
@@ -52,6 +75,8 @@ pub(super) struct DirectUi {
     addresses: Option<(Instant, Vec<std::net::Ipv4Addr>)>,
     /// A change sent to the background service is in progress.
     pub sending: bool,
+    /// Pairing in progress (or just finished, until picked up).
+    pub pairing: Arc<Mutex<Option<Pairing>>>,
     outcome: Arc<Mutex<Option<Result<String, String>>>>,
 }
 
@@ -80,16 +105,37 @@ impl DirectUi {
                     .build()
                     .map_err(anyhow::Error::from)
                     .and_then(|runtime| {
-                        runtime.block_on(crate::transport::direct::lan::discover(
-                            Duration::from_secs(2),
-                        ))
+                        runtime.block_on(crate::transport::direct::lan::discover(SCAN_WINDOW))
                     });
                 {
                     let mut lan = state.lock().unwrap_or_else(|e| e.into_inner());
                     lan.scanning = false;
-                    lan.scanned_at = Some(Instant::now());
+                    let now = Instant::now();
+                    lan.scanned_at = Some(now);
                     match result {
-                        Ok(found) => lan.found = Some(found),
+                        Ok(found) => {
+                            for host in &found {
+                                lan.seen.insert(host.announce.device_id.clone(), now);
+                            }
+                            let mut merged = found;
+                            for host in lan.found.take().unwrap_or_default() {
+                                let recent = lan
+                                    .seen
+                                    .get(&host.announce.device_id)
+                                    .is_some_and(|at| now.duration_since(*at) < SCAN_KEEP);
+                                if recent
+                                    && !merged
+                                        .iter()
+                                        .any(|h| h.announce.device_id == host.announce.device_id)
+                                {
+                                    merged.push(host);
+                                }
+                            }
+                            merged.sort_by(|a, b| a.announce.name.cmp(&b.announce.name));
+                            lan.seen.retain(|_, at| now.duration_since(*at) < SCAN_KEEP);
+                            lan.found = Some(merged);
+                            lan.error = None;
+                        }
                         Err(error) => lan.error = Some(format!("局域网发现失败：{error:#}")),
                     }
                 }
@@ -100,19 +146,83 @@ impl DirectUi {
         }
     }
 
-    /// Scan once when nothing was found yet, and again after a minute.
-    pub fn scan_if_stale(&self, ctx: &egui::Context) {
-        let stale = {
-            let lan = self.lan();
-            !lan.scanning
-                && lan.error.is_none()
-                && lan
-                    .scanned_at
-                    .is_none_or(|at| at.elapsed() >= Duration::from_secs(60))
-        };
-        if stale {
-            self.scan(ctx);
+    /// Pair with the device at `target`, in the background.
+    pub fn pair(&self, ctx: &egui::Context, target: crate::transport::direct::Target, name: String) {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        {
+            let mut slot = self.pairing.lock().unwrap_or_else(|e| e.into_inner());
+            if slot.as_ref().is_some_and(|p| p.outcome.is_none()) {
+                return;
+            }
+            *slot = Some(Pairing {
+                name,
+                code: None,
+                outcome: None,
+                cancel: cancel.clone(),
+            });
         }
+        let slot = Arc::clone(&self.pairing);
+        let ctx = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("direct-pairing".into())
+            .spawn(move || {
+                let shown = {
+                    let slot = Arc::clone(&slot);
+                    let ctx = ctx.clone();
+                    move |code: String| {
+                        if let Some(pairing) = slot.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                            pairing.code = Some(code);
+                        }
+                        ctx.request_repaint();
+                    }
+                };
+                let result = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(anyhow::Error::from)
+                    .and_then(|runtime| {
+                        runtime.block_on(async {
+                            let local = crate::transport::direct::local_device()?;
+                            crate::transport::direct::client::pair(&target, &local, shown, &cancel).await
+                        })
+                    })
+                    .map_err(|error| format!("{error:#}"));
+                if let Some(pairing) = slot.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                    pairing.outcome = Some(result);
+                }
+                ctx.request_repaint();
+            });
+        if spawned.is_err() {
+            *self.pairing.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+
+    /// While the "附近" tab is shown: query the LAN again shortly after
+    /// each round, quietly (the list changes only when the answers do).
+    pub fn scan_continuously(&self, ctx: &egui::Context) {
+        let wait = {
+            let lan = self.lan();
+            if lan.scanning {
+                return;
+            }
+            let gap = if lan.error.is_some() { SCAN_RETRY } else { SCAN_GAP };
+            lan.scanned_at
+                .map_or(Duration::ZERO, |at| gap.saturating_sub(at.elapsed()))
+        };
+        if wait.is_zero() {
+            self.scan(ctx);
+        } else {
+            ctx.request_repaint_after(wait);
+        }
+    }
+
+    /// A pairing waits for the other side.
+    pub fn pairing_active(&self) -> bool {
+        self.pairing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|p| p.outcome.is_none())
     }
 
     /// The devices found on the LAN, without this one.

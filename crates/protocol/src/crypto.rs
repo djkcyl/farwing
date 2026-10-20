@@ -214,6 +214,15 @@ pub fn direct_confirm_matches(key: &[u8; 32], label: &str, ekm: &[u8], received:
     unb64(received).is_ok_and(|bytes| bool::from(bytes.ct_eq(&expected)))
 }
 
+/// Six digits both sides of a direct connection show while pairing: from
+/// the TLS exporter, so a device in the middle (two TLS sessions) shows
+/// different digits on each side.
+pub fn pairing_code(ekm: &[u8]) -> String {
+    let digest = Sha256::digest([b"FWPAIRCODE1\n".as_slice(), ekm].concat());
+    let value = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) % 1_000_000;
+    format!("{value:06}")
+}
+
 /// Device ID of a device that has no server registration: the first 16
 /// characters of the lower-case base32 SHA-256 of its public key.
 pub fn local_device_id(public_key: &str) -> Option<String> {
@@ -275,6 +284,15 @@ pub fn pake_fingerprint_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pairing_codes_are_six_digits_bound_to_the_connection() {
+        let code = pairing_code(&[7; 32]);
+        assert_eq!(code.len(), 6);
+        assert!(code.bytes().all(|b| b.is_ascii_digit()));
+        assert_eq!(code, pairing_code(&[7; 32]));
+        assert_ne!(code, pairing_code(&[8; 32]));
+    }
 
     #[test]
     fn signatures_round_trip() {

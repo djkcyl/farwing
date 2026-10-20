@@ -53,6 +53,11 @@ pub mod types {
     pub const CONFIRM: &str = "direct.confirm";
     /// Host → controller: authorised, with relation and capabilities.
     pub const AUTHORIZED: &str = "direct.authorized";
+    /// Controller → host: pair (trust each other); the host's user checks
+    /// the pairing code ([`crate::crypto::pairing_code`]) and agrees.
+    pub const PAIR: &str = "direct.pair";
+    /// Host → controller: paired; the host now trusts the controller.
+    pub const PAIRED: &str = "direct.paired";
 }
 
 /// Authorisation methods a host accepts (`docs/access-model.md` §2.2).
@@ -89,6 +94,10 @@ pub struct DirectHello {
     pub methods: Vec<String>,
     /// Host only: the first UDP port of direct sessions.
     pub udp_port: u16,
+    /// Host only: it admits this controller by its device key right now
+    /// (one of its account's devices, a friend's or a trusted device), so
+    /// neither an access code nor a confirmation is needed.
+    pub admits: bool,
 }
 
 /// `direct.auth` (controller → host).
@@ -135,6 +144,14 @@ pub struct DirectConfirm {
 #[serde(default)]
 pub struct DirectAuthorized {
     pub relation: Relation,
+    pub grants: Vec<String>,
+}
+
+/// `direct.paired` (host → controller).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DirectPaired {
+    /// What the controller may do on the host from now on.
     pub grants: Vec<String>,
 }
 

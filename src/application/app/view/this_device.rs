@@ -225,19 +225,26 @@ impl DeviceCenterApp {
             empty_card(
                 ui,
                 "还没有受信任的设备",
-                "访客连接后，在下方“正在连接”中点“信任”，或在连接请求中选“允许并信任”。",
+                "在“设备 → 附近”中与对方配对；或在访客连接后，在下方“正在连接”中点“信任”，或在连接请求中选“允许并信任”。",
             );
             return;
         }
         for device in trusted {
             let summary = cards::caps_summary(&device.grants);
+            // It trusts this device too: the two are paired.
+            let paired = crate::transport::direct::store::known_host(&device.device_id)
+                .is_some_and(|h| h.trusted);
             let mut edit = false;
             let mut remove = false;
             device_card(
                 ui,
                 &device.device_id,
                 &device.name,
-                &[(summary.as_str(), BLUE)],
+                &if paired {
+                    vec![("已配对", GREEN), (summary.as_str(), BLUE)]
+                } else {
+                    vec![(summary.as_str(), BLUE)]
+                },
                 &[
                     format!("ID {}", crate::account::api::device_id_text(&device.device_id)),
                     format!(

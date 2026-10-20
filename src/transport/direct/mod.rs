@@ -310,6 +310,7 @@ pub(crate) fn hello(
             .sign(&farwing_protocol::crypto::direct_proof_message(role, ekm)),
         methods,
         udp_port,
+        admits: false,
     }
 }
 

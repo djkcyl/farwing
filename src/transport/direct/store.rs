@@ -311,6 +311,26 @@ pub(crate) fn remember_host(host: KnownHost) {
     }
 }
 
+/// What a known host said when this device reached it: whether it admits
+/// this device by its key. Unknown hosts are not added.
+pub(crate) fn note_host_trust(device_id: &str, trusted: bool) {
+    let _guard = guard();
+    let result = (|| -> Result<()> {
+        let (path, mut known) = load_known_in(&dir()?)?;
+        let Some(host) = known.hosts.iter_mut().find(|h| h.device_id == device_id) else {
+            return Ok(());
+        };
+        if host.trusted == trusted {
+            return Ok(());
+        }
+        host.trusted = trusted;
+        write(&path, &known)
+    })();
+    if let Err(error) = result {
+        tracing::warn!(error = %format!("{error:#}"), "known host not updated");
+    }
+}
+
 /// Forget a host. Returns whether it was known.
 pub(crate) fn forget_host(device_id: &str) -> Result<bool> {
     let _guard = guard();

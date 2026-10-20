@@ -11,8 +11,8 @@ use anyhow::{Context, Result, bail, ensure};
 use farwing_protocol::ErrorCode;
 use farwing_protocol::api::Relation;
 use farwing_protocol::direct::{
-    self as wire, DirectAuth, DirectAuthorized, DirectConfirm, DirectHello, DirectPake, method,
-    pake_kind, types as dtypes,
+    self as wire, DirectAuth, DirectAuthorized, DirectConfirm, DirectHello, DirectPake,
+    DirectPaired, method, pake_kind, types as dtypes,
 };
 use farwing_protocol::realtime::{Envelope, types};
 use std::net::SocketAddr;
@@ -112,7 +112,20 @@ pub(crate) async fn connect(
     }
 }
 
-async fn connect_inner(target: &Target, local: &LocalDevice, auth: Auth) -> Result<Connected> {
+type Reader = tokio::io::ReadHalf<tokio_rustls::client::TlsStream<TcpStream>>;
+type Writer = tokio::io::WriteHalf<tokio_rustls::client::TlsStream<TcpStream>>;
+
+/// A TLS connection to a host that has shown who it is.
+struct Opened {
+    reader: Reader,
+    writer: Writer,
+    host: DirectHello,
+    ekm: Vec<u8>,
+    address: SocketAddr,
+}
+
+/// Connect, and exchange and check identities.
+async fn open(target: &Target, local: &LocalDevice) -> Result<Opened> {
     let (stream, address) = dial(target).await?;
     let _ = stream.set_nodelay(true);
     let name = rustls::pki_types::ServerName::try_from("farwing.direct").expect("static name");
@@ -132,6 +145,29 @@ async fn connect_inner(target: &Target, local: &LocalDevice, auth: Auth) -> Resu
     let mut host: DirectHello = message.body().context("被控端身份格式无效")?;
     super::verify_hello(&host, ROLE_HOST, &ekm)?;
     host.name = super::sanitize_name(&host.name);
+    // Keep what the list shows about this host current, also when it no
+    // longer trusts this device.
+    store::note_host_trust(&host.device_id, host.admits);
+    Ok(Opened {
+        reader,
+        writer,
+        host,
+        ekm: ekm.to_vec(),
+        address,
+    })
+}
+
+async fn connect_inner(target: &Target, local: &LocalDevice, auth: Auth) -> Result<Connected> {
+    let Opened {
+        mut reader,
+        mut writer,
+        host,
+        ekm,
+        address,
+    } = open(target, local).await?;
+    // A host that admits this device by its key needs neither a code nor a
+    // confirmation, whichever was asked for.
+    let auth = if host.admits { Auth::Key } else { auth };
     tracing::info!(%address, device = %host.device_id, methods = ?host.methods, ?auth, "direct host identified");
     let mut pake_key = None;
     match &auth {
@@ -226,4 +262,51 @@ async fn connect_inner(target: &Target, local: &LocalDevice, auth: Auth) -> Resu
         grants: authorized.grants,
         pake_key,
     })
+}
+
+/// Pair with a host: both sides show the same pairing code, the host's user
+/// checks it and agrees, and the host trusts this device with full control
+/// (the caller trusts the host in turn). `shown` gets the code to display.
+pub(crate) async fn pair(
+    target: &Target,
+    local: &LocalDevice,
+    shown: impl FnOnce(String),
+    cancel: &CancellationToken,
+) -> Result<DirectHello> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => bail!("配对已取消"),
+        result = pair_inner(target, local, shown) => result,
+    }
+}
+
+async fn pair_inner(target: &Target, local: &LocalDevice, shown: impl FnOnce(String)) -> Result<DirectHello> {
+    let Opened {
+        mut reader,
+        mut writer,
+        host,
+        ekm,
+        address,
+    } = open(target, local).await?;
+    tracing::info!(%address, device = %host.device_id, "pairing with a host");
+    shown(farwing_protocol::crypto::pairing_code(&ekm));
+    write_frame(
+        &mut writer,
+        &Envelope::new(dtypes::PAIR, serde_json::Value::Object(Default::default())),
+    )
+    .await?;
+    let message = read(&mut reader, DECISION_TIMEOUT).await?;
+    ensure!(message.kind == dtypes::PAIRED, "被控端没有完成配对");
+    let _: DirectPaired = message.body().context("配对应答格式无效")?;
+    store::remember_host(KnownHost {
+        device_id: host.device_id.clone(),
+        public_key: host.public_key.clone(),
+        name: host.name.clone(),
+        address: target.to_string(),
+        connect_id: String::new(),
+        trusted: true,
+        last_seen: 0,
+    });
+    tracing::info!(device = %host.device_id, "paired with a host");
+    Ok(host)
 }

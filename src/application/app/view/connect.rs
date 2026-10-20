@@ -111,10 +111,7 @@ impl DeviceCenterApp {
             };
         }
         if self.direct.tab == DeviceTab::Nearby {
-            self.direct.scan_if_stale(ui.ctx());
-        }
-        if self.direct.lan().scanning {
-            ui.ctx().request_repaint_after(Duration::from_millis(200));
+            self.direct.scan_continuously(ui.ctx());
         }
         let tab = self.direct.tab;
         let mut refresh = false;
@@ -126,7 +123,11 @@ impl DeviceCenterApp {
                 self.active_view(ui);
                 let busy = match tab {
                     DeviceTab::Mine | DeviceTab::Friends => self.refresh_pending,
-                    DeviceTab::Nearby => self.direct.lan().scanning,
+                    // Searching goes on quietly; only the first round shows.
+                    DeviceTab::Nearby => {
+                        let lan = self.direct.lan();
+                        lan.scanning && lan.found.is_none()
+                    }
                     DeviceTab::Recent => self.assist.loading,
                 };
                 let enabled = match tab {
@@ -160,6 +161,7 @@ impl DeviceCenterApp {
             cards::banner(ui, &error, Tone::Warning);
         }
         self.assist_notices(ui);
+        self.pairing_card(ui);
         ui.add_space(12.0);
         let counts = self.tab_counts(access);
         let label = |name: &str, count: Option<usize>| match count {
@@ -425,7 +427,9 @@ impl DeviceCenterApp {
         self.direct.code.clear();
         self.direct.ask = false;
         self.direct.focus_code = true;
-        self.direct.note(format!("请输入 {name} 的访问码，再点“连接”"));
+        self.direct.note(format!(
+            "请输入 {name} 的访问码再点“连接”，或勾选“不用访问码，请对方确认”"
+        ));
     }
 
     fn friend_devices_tab(&mut self, ui: &mut egui::Ui) {
@@ -478,23 +482,17 @@ impl DeviceCenterApp {
     }
 
     fn nearby_tab(&mut self, ui: &mut egui::Ui) {
-        let (scanning, error, scanned_at) = {
+        let (first_scan, error) = {
             let lan = self.direct.lan();
-            (lan.scanning, lan.error.clone(), lan.scanned_at)
+            (lan.scanning && lan.found.is_none(), lan.error.clone())
         };
         let found = self.direct.nearby();
         ui.horizontal(|ui| {
-            if scanning {
+            if first_scan {
                 ui.spinner();
                 detail(ui, "正在查找局域网中的设备…");
-            } else if let Some(at) = scanned_at {
-                detail(
-                    ui,
-                    &format!(
-                        "{} 秒前查找 · 对方需要开启“允许连接”和“局域网发现”",
-                        at.elapsed().as_secs()
-                    ),
-                );
+            } else {
+                detail(ui, "自动查找局域网中的设备 · 对方需要开启“允许连接”和“局域网发现”");
             }
         });
         ui.add_space(6.0);
@@ -502,7 +500,7 @@ impl DeviceCenterApp {
             cards::banner(ui, &error, Tone::Warning);
         }
         if found.is_empty() {
-            if !scanning {
+            if !first_scan {
                 empty_card(
                     ui,
                     "附近没有发现设备",
@@ -519,11 +517,18 @@ impl DeviceCenterApp {
             .as_ref()
             .map(|list| list.shared.clone())
             .unwrap_or_default();
+        // Devices this one trusts (the host side, in this process or the
+        // background service).
+        let trusting: Vec<String> = self
+            .direct_host_state()
+            .map(|state| state.trusted.into_iter().map(|d| d.device_id).collect())
+            .unwrap_or_default();
+        let pairing = self.direct.pairing_active();
         enum Pick {
             Key(String),
             Server(String),
             Code(String, String),
-            Ask(String),
+            Pair(String, String),
         }
         let mut picked = None;
         for host in found {
@@ -533,9 +538,12 @@ impl DeviceCenterApp {
             let friend = shared.iter().find(|d| d.device_id == announce.device_id);
             let owner_chip;
             let mut chips: Vec<(&str, Color32)> = Vec::new();
-            let by_key = if own.iter().any(|d| d.device_id == announce.device_id) {
+            // It lets this device in by its key: no code, no confirmation.
+            let admits = store::known_host(&announce.device_id).is_some_and(|h| h.trusted);
+            let paired = admits && trusting.contains(&announce.device_id);
+            let own_device = own.iter().any(|d| d.device_id == announce.device_id);
+            if own_device {
                 chips.push(("本账号", GREEN));
-                true
             } else if let Some(device) = friend {
                 owner_chip = format!(
                     "{} 共享",
@@ -545,22 +553,20 @@ impl DeviceCenterApp {
                         .map_or("好友", |o| o.display_name())
                 );
                 chips.push((owner_chip.as_str(), AMBER));
-                methods(farwing_protocol::direct::method::FRIEND)
-            } else if store::known_host(&announce.device_id).is_some_and(|h| h.trusted) {
+            } else if paired {
+                chips.push(("已配对", GREEN));
+            } else if admits {
                 chips.push(("对方信任本机", BLUE));
-                true
             } else {
                 chips.push((
                     if methods(farwing_protocol::direct::method::ASSIST) {
-                        "需要访问码"
+                        "需要访问码或确认"
                     } else {
                         "未开启访问码"
                     },
                     MUTED,
                 ));
-                false
-            };
-            let visitor = !by_key && friend.is_none();
+            }
             let accepts_code = methods(farwing_protocol::direct::method::ASSIST);
             device_card(
                 ui,
@@ -572,7 +578,7 @@ impl DeviceCenterApp {
                     format!("ID {}", crate::account::api::device_id_text(&announce.device_id)),
                 ],
                 |ui| {
-                    if by_key {
+                    if own_device || admits {
                         if ui.add(primary("连接")).clicked() {
                             picked = Some(Pick::Key(target.clone()));
                         }
@@ -584,16 +590,23 @@ impl DeviceCenterApp {
                         {
                             picked = Some(Pick::Server(device.device_id.clone()));
                         }
-                    } else if visitor {
-                        if ui
-                            .add_enabled(accepts_code, crate::ui::controls::secondary("请对方确认"))
+                    } else if ui
+                        .add_enabled(accepts_code, primary("连接"))
+                        .on_hover_text("输入对方的访问码，或请对方确认")
+                        .on_disabled_hover_text("对方没有开启访问码：可以先配对")
+                        .clicked()
+                    {
+                        picked = Some(Pick::Code(target.clone(), announce.name.clone()));
+                    }
+                    if !own_device
+                        && friend.is_none()
+                        && !paired
+                        && ui
+                            .add_enabled(!pairing, crate::ui::controls::secondary("配对"))
+                            .on_hover_text("两台设备互相信任：以后互相连接都无需访问码或确认")
                             .clicked()
-                        {
-                            picked = Some(Pick::Ask(target.clone()));
-                        }
-                        if ui.add_enabled(accepts_code, primary("输入访问码")).clicked() {
-                            picked = Some(Pick::Code(target.clone(), announce.name.clone()));
-                        }
+                    {
+                        picked = Some(Pick::Pair(target.clone(), announce.name.clone()));
                     }
                 },
             );
@@ -605,8 +618,79 @@ impl DeviceCenterApp {
                 self.start_viewer();
             }
             Some(Pick::Code(target, name)) => self.ask_for_code(target, &name),
-            Some(Pick::Ask(target)) => self.connect_address(&target, "", true),
+            Some(Pick::Pair(target, name)) => match crate::transport::direct::Target::parse(&target) {
+                Ok(target) => {
+                    self.direct.error = None;
+                    self.direct.pair(ui.ctx(), target, name);
+                }
+                Err(error) => self.direct.error = Some(format!("{error:#}")),
+            },
             None => {}
+        }
+    }
+
+    /// Pairing in progress: the code to check on the other screen; then
+    /// trusting the other device here once it agreed.
+    fn pairing_card(&mut self, ui: &mut egui::Ui) {
+        let state = {
+            let slot = self.direct.pairing.lock().unwrap_or_else(|e| e.into_inner());
+            slot.as_ref()
+                .map(|p| (p.name.clone(), p.code.clone(), p.outcome.clone(), p.cancel.clone()))
+        };
+        let Some((name, code, outcome, cancel)) = state else {
+            return;
+        };
+        if let Some(outcome) = outcome {
+            *self.direct.pairing.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            match outcome {
+                Ok(host) => {
+                    // The other side trusts this device now; trust it back.
+                    let done = format!("已与 {} 配对：以后双方互相连接都无需访问码或确认", host.name);
+                    self.direct.perform(
+                        ui.ctx(),
+                        self.host.as_ref(),
+                        crate::transport::direct::managed::Action::Trust {
+                            device_id: host.device_id,
+                            public_key: host.public_key,
+                            name: host.name,
+                            grants: farwing_protocol::caps::all(),
+                        },
+                        done,
+                    );
+                }
+                Err(_) if cancel.is_cancelled() => self.direct.note("已取消配对"),
+                Err(error) => self.direct.error = Some(format!("与 {name} 配对失败：{error}")),
+            }
+            return;
+        }
+        let mut stop = false;
+        cards::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(format!("正在与 {name} 配对")).strong());
+                    match &code {
+                        Some(code) => {
+                            let split = code.len().min(3);
+                            ui.label(
+                                RichText::new(format!("{} {}", &code[..split], &code[split..]))
+                                    .size(theme::DIALOG_TITLE)
+                                    .strong()
+                                    .color(BLUE),
+                            );
+                            detail(ui, "请在对方电脑上核对配对码与此相同，再点“配对”。");
+                        }
+                        None => detail(ui, "正在连接对方…"),
+                    }
+                });
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    stop = ui.add(crate::ui::controls::secondary("取消")).clicked();
+                });
+            });
+        });
+        ui.add_space(8.0);
+        if stop {
+            cancel.cancel();
         }
     }
 
@@ -614,6 +698,11 @@ impl DeviceCenterApp {
     /// account's assistance history on the server) and favourites.
     fn recent_tab(&mut self, ui: &mut egui::Ui, access: Access) {
         let account = access == Access::Account;
+        // Devices this one trusts: with one that trusts this device too, paired.
+        let trusting: Vec<String> = self
+            .direct_host_state()
+            .map(|state| state.trusted.into_iter().map(|d| d.device_id).collect())
+            .unwrap_or_default();
         let available = !self.assist.busy && !self.logout_pending && !self.mutation_pending;
         let lists = self.assist.lists.clone().unwrap_or_default();
         if account {
@@ -758,7 +847,8 @@ impl DeviceCenterApp {
         for row in rows {
             let mut chips: Vec<(&str, Color32)> = Vec::new();
             if row.trusted {
-                chips.push(("对方信任本机", BLUE));
+                let paired = row.device_id.as_ref().is_some_and(|id| trusting.contains(id));
+                chips.push(if paired { ("已配对", GREEN) } else { ("对方信任本机", BLUE) });
             }
             if row.saved.as_ref().is_some_and(|s| s.is_favorite) {
                 chips.push(("收藏", AMBER));

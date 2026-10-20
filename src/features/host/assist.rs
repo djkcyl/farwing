@@ -201,6 +201,22 @@ pub(crate) struct Confirmation {
     /// more than this, whatever visitors may do.
     #[serde(default)]
     pub caps_limit: Option<Vec<String>>,
+    /// A pairing request: the six digits both screens show.
+    #[serde(default)]
+    pub pairing: Option<String>,
+}
+
+/// The local user's answer to a direct request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Decision {
+    Reject,
+    /// This connection only.
+    Allow,
+    /// Allowed, and the device is trusted from now on (always so for a
+    /// pairing request).
+    Trust,
+    /// Nobody can answer here: the reason.
+    Unavailable(&'static str),
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Attempt {
@@ -297,8 +313,9 @@ struct State {
     /// within [`FAILURE_WINDOW`], and the lockout they caused.
     failures: VecDeque<Instant>,
     locked_until: Option<Instant>,
-    /// Confirmations of direct assistance requests waiting for the user.
-    direct: HashMap<String, tokio::sync::oneshot::Sender<bool>>,
+    /// Confirmations of direct assistance and pairing requests waiting for
+    /// the user.
+    direct: HashMap<String, tokio::sync::oneshot::Sender<Decision>>,
     revision: u64,
     operations: CancellationToken,
     admission: CancellationToken,
@@ -373,21 +390,45 @@ impl Handle {
         let settings = self.settings();
         answer_slots(&settings, pake, |key| crypto::direct_confirm(key, "host", ekm))
     }
-    /// Ask the local user to allow a direct assistance request; `false` when
-    /// nobody can answer (no window, locked session, another request).
-    pub(crate) async fn confirm_direct(&self, name: String, device_id: String, public_key: String) -> bool {
+    /// Ask the local user to allow a direct assistance request.
+    pub(crate) async fn confirm_direct(&self, name: String, device_id: String, public_key: String) -> Decision {
+        self.ask_direct(name, device_id, public_key, None).await
+    }
+
+    /// Ask the local user to pair with a device that shows `code`: trust
+    /// each other with full control.
+    pub(crate) async fn confirm_pairing(
+        &self,
+        name: String,
+        device_id: String,
+        public_key: String,
+        code: String,
+    ) -> Decision {
+        self.ask_direct(name, device_id, public_key, Some(code)).await
+    }
+
+    async fn ask_direct(
+        &self,
+        name: String,
+        device_id: String,
+        public_key: String,
+        pairing: Option<String>,
+    ) -> Decision {
         let (sender, answer) = tokio::sync::oneshot::channel();
         let id = uuid::Uuid::new_v4().to_string();
         {
             let mut state = self.lock();
-            let ui_present = state
+            if state.snapshot.pending.is_some() {
+                return Decision::Unavailable("对方正在处理另一个连接请求，请稍后再试");
+            }
+            if crate::platform::capture::session_locked() != Some(false) {
+                return Decision::Unavailable("对方的电脑已锁定，没有人能确认");
+            }
+            if !state
                 .ui_seen
-                .is_some_and(|at| at.elapsed() < Duration::from_secs(3));
-            if state.snapshot.pending.is_some()
-                || !ui_present
-                || crate::platform::capture::session_locked() != Some(false)
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(3))
             {
-                return false;
+                return Decision::Unavailable("对方没有打开 Farwing 设备中心，无法在那里确认");
             }
             state.snapshot.pending = Some(Confirmation {
                 id: id.clone(),
@@ -398,20 +439,28 @@ impl Handle {
                 device_id,
                 public_key,
                 caps_limit: None,
+                pairing,
             });
             state.direct.insert(id.clone(), sender);
         }
-        let allowed = tokio::time::timeout(Duration::from_secs(60), answer)
+        // Ends the request when the asking side gives up (this future is
+        // dropped) as well as when it is answered or expires.
+        struct Ending<'a>(&'a Handle, String);
+        impl Drop for Ending<'_> {
+            fn drop(&mut self) {
+                let mut state = self.0.lock();
+                state.direct.remove(&self.1);
+                if state.snapshot.pending.as_ref().is_some_and(|p| p.id == self.1) {
+                    state.snapshot.pending = None;
+                }
+            }
+        }
+        let _ending = Ending(self, id);
+        tokio::time::timeout(Duration::from_secs(60), answer)
             .await
             .ok()
             .and_then(Result::ok)
-            .unwrap_or(false);
-        let mut state = self.lock();
-        state.direct.remove(&id);
-        if state.snapshot.pending.as_ref().is_some_and(|p| p.id == id) {
-            state.snapshot.pending = None;
-        }
-        allowed
+            .unwrap_or(Decision::Reject)
     }
     pub fn settings(&self) -> Settings {
         self.lock().snapshot.settings.clone()
@@ -493,13 +542,25 @@ impl Handle {
                 "连接请求已结束"
             );
             let pending = state.snapshot.pending.take();
+            let pairing = pending.as_ref().is_some_and(|p| p.pairing.is_some());
+            let trust = allow && (trust || pairing);
+            let decision = match (allow, trust) {
+                (false, _) => Decision::Reject,
+                (true, false) => Decision::Allow,
+                (true, true) => Decision::Trust,
+            };
             if let Some(sender) = state.direct.remove(&id)
-                && sender.send(allow).is_ok()
-                && allow
+                && sender.send(decision).is_ok()
                 && trust
                 && let Some(pending) = pending
             {
-                let grants = state.snapshot.settings.grants();
+                // A paired device gets full control, as the other side
+                // gives this one.
+                let grants = if pairing {
+                    farwing_protocol::caps::all()
+                } else {
+                    state.snapshot.settings.grants()
+                };
                 drop(state);
                 self::trust(&pending.name, &pending.device_id, &pending.public_key, grants, pending.caps_limit);
             }
@@ -1089,6 +1150,7 @@ async fn run(client: HostClient, mut rx: mpsc::Receiver<Push>, stop: Cancellatio
                                     device_id: request.device_id.clone(),
                                     public_key: request.public_key.clone(),
                                     caps_limit: request.caps_limit.clone(),
+                                    pairing: None,
                                 });
                                 state.pending_deadline =
                                     Some(Instant::now() + Duration::from_secs(60));

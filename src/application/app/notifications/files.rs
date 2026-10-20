@@ -52,6 +52,7 @@ pub(super) fn cards(notices: Vec<Notice>, now: i64) -> Vec<(String, Card)> {
                         n.updated.saturating_add(25)
                     },
                     confirmation: false,
+                    pairing: false,
                     busy: false,
                     connected: false,
                     transfer: Some(TransferCard { progress, folder }),

@@ -9,9 +9,10 @@ use crate::transport::signal::router::Router;
 use anyhow::{Context, Result, bail, ensure};
 use farwing_protocol::ErrorCode;
 use farwing_protocol::api::{Purpose, Relation};
+use crate::features::host::assist::Decision;
 use farwing_protocol::direct::{
-    self as wire, DirectAuthorized, DirectConfirm, DirectHello, DirectPake, method, pake_kind,
-    types as dtypes,
+    self as wire, DirectAuthorized, DirectConfirm, DirectHello, DirectPake, DirectPaired, method,
+    pake_kind, types as dtypes,
 };
 use farwing_protocol::realtime::{
     ControllerInfo, Envelope, PeerIdentity, SessionEnd, SessionIncoming, SessionStart,
@@ -292,7 +293,9 @@ impl Shared {
             .handshake(&mut reader, &mut writer, &ekm, peer)
             .await
         {
-            Ok(result) => result,
+            Ok(Some(result)) => result,
+            // Paired: no session follows.
+            Ok(None) => return Ok(()),
             Err(error) => {
                 if let Some(Refused(code, message)) = error.downcast_ref::<Refused>() {
                     let _ = write_frame(&mut writer, &Envelope::error(None, refusal(*code, message))).await;
@@ -320,7 +323,7 @@ impl Shared {
         writer: &mut W,
         ekm: &[u8],
         peer: SocketAddr,
-    ) -> Result<(DirectHello, Authorized, String, SessionStart)>
+    ) -> Result<Option<(DirectHello, Authorized, String, SessionStart)>>
     where
         R: AsyncRead + Unpin,
         W: AsyncWrite + Unpin,
@@ -335,7 +338,8 @@ impl Shared {
             hello.public_key != self.local.identity.public_key(),
             "不能直连本机自己"
         );
-        let mine = super::hello(&self.local, ROLE_HOST, ekm, self.methods(), self.port);
+        let mut mine = super::hello(&self.local, ROLE_HOST, ekm, self.methods(), self.port);
+        mine.admits = self.admits(&hello);
         write_frame(writer, &Envelope::new(dtypes::HELLO, &mine)).await?;
         tracing::info!(%peer, device = %hello.device_id, "direct controller identified");
         if !self.client.is_active() || !self.client.host.requested() {
@@ -345,6 +349,10 @@ impl Shared {
             let message = self.read(reader, step).await?;
             match message.kind.as_str() {
                 dtypes::AUTH => break self.by_key(&hello).await?,
+                dtypes::PAIR => {
+                    self.pair(reader, writer, ekm, &hello).await?;
+                    return Ok(None);
+                }
                 dtypes::PAKE => {
                     let pake: DirectPake = message.body().context("PAKE 消息格式无效")?;
                     break match pake.kind.as_str() {
@@ -390,7 +398,60 @@ impl Shared {
             farwing_protocol::ids::is_uuid(&start.attempt_id),
             "session.start 缺少尝试 ID"
         );
-        Ok((hello, authorized, id, start))
+        Ok(Some((hello, authorized, id, start)))
+    }
+
+    /// Whether [`Self::by_key`] would admit `hello` with what this host has
+    /// cached, without asking the server: told to the controller, so that a
+    /// device admitted by its key never needs a code or a confirmation.
+    fn admits(&self, hello: &DirectHello) -> bool {
+        if let Some(user) = self.client.account_user_id() {
+            let host_id = &self.local.identity.device_id;
+            if store::own_device(&user, &hello.public_key).is_some()
+                || store::friend_device(&user, host_id, &hello.public_key).is_some()
+            {
+                return true;
+            }
+        }
+        store::find_trusted(&hello.public_key).is_some()
+    }
+
+    /// `direct.pair`: once the user here has checked that both screens show
+    /// the same pairing code and agreed, trust the controller with full
+    /// control (it trusts this host in turn).
+    async fn pair<R, W>(&self, reader: &mut R, writer: &mut W, ekm: &[u8], hello: &DirectHello) -> Result<()>
+    where
+        R: AsyncRead + Unpin,
+        W: AsyncWrite + Unpin,
+    {
+        let code = farwing_protocol::crypto::pairing_code(ekm);
+        let asked = self.client.host.assistance.confirm_pairing(
+            hello.name.clone(),
+            hello.device_id.clone(),
+            hello.public_key.clone(),
+            code,
+        );
+        // The controller sends nothing while it waits: anything from it,
+        // or a closed connection, means it gave up.
+        let decision = tokio::select! {
+            _ = self.cancel.cancelled() => Decision::Reject,
+            decision = asked => decision,
+            _ = read_frame(reader) => Decision::Reject,
+        };
+        match decision {
+            Decision::Trust => {}
+            Decision::Unavailable(reason) => return Err(refuse(ErrorCode::AssistUnavailable, reason)),
+            Decision::Reject | Decision::Allow => {
+                return Err(refuse(ErrorCode::AssistRejected, "对方没有同意配对"));
+            }
+        }
+        write_frame(
+            writer,
+            &Envelope::new(dtypes::PAIRED, DirectPaired { grants: farwing_protocol::caps::all() }),
+        )
+        .await?;
+        tracing::info!(device = %hello.device_id, "paired with a controller");
+        Ok(())
     }
 
     /// `direct.auth` (`docs/access-model.md` §2.2): one of the account's
@@ -535,12 +596,27 @@ impl Shared {
                 CONFIRMATION_TIMEOUT,
                 assistance.confirm_direct(hello.name.clone(), hello.device_id.clone(), hello.public_key.clone()),
             );
-            let allowed = tokio::select! {
-                _ = self.cancel.cancelled() => false,
-                allowed = asked => allowed.unwrap_or(false),
+            // Anything from the controller while it waits, or a closed
+            // connection, means it gave up: the request ends here too.
+            let decision = tokio::select! {
+                _ = self.cancel.cancelled() => Decision::Reject,
+                decision = asked => decision.unwrap_or(Decision::Reject),
+                _ = read_frame(reader) => Decision::Reject,
             };
-            if !allowed {
-                return Err(refuse(ErrorCode::AssistRejected, "对方拒绝了本次连接"));
+            match decision {
+                Decision::Allow => {}
+                // Trusted from now on: so is this session, and the
+                // controller learns it needs no code next time.
+                Decision::Trust => {
+                    return Ok(Authorized {
+                        relation: Relation::Trusted,
+                        grants: store::find_trusted(&hello.public_key)
+                            .map_or_else(|| store::with_view(&settings.grants()), |d| store::with_view(&d.grants)),
+                        key,
+                    });
+                }
+                Decision::Unavailable(reason) => return Err(refuse(ErrorCode::AssistUnavailable, reason)),
+                Decision::Reject => return Err(refuse(ErrorCode::AssistRejected, "对方拒绝了本次连接")),
             }
         }
         Ok(Authorized {
