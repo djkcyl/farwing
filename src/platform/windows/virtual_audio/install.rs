@@ -87,6 +87,22 @@ fn idle() -> Result<()> {
     }
     Ok(())
 }
+/// Windows refused the test-signed audio driver in this boot (code 52) and
+/// the new installation was taken back.
+#[derive(Debug)]
+pub(crate) struct TestSigningRequired;
+impl std::fmt::Display for TestSigningRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "Windows 拒绝加载虚拟声卡驱动（代码 52），已撤回本次安装：它是用项目证书签名的测试驱动，\
+             只有本次启动允许测试驱动时才能加载。请以管理员身份执行 bcdedit /set testsigning on 后重启\
+             （启用了 BitLocker 时先暂停保护），或开机时在“启动设置”中按 7 选择“禁用驱动程序强制签名”；\
+             开着“内存完整性”时还需先将其关闭",
+        )
+    }
+}
+impl std::error::Error for TestSigningRequired {}
+
 pub(crate) fn preflight() -> Result<()> {
     idle()?;
     // Resolve ownership before other components are stopped or removed.
@@ -99,12 +115,35 @@ pub(crate) fn execute(operation: Operation) -> Result<bool> {
         Operation::Install => {
             let mut defaults =
                 super::defaults::Defaults::snapshot().context("无法保存安装前的默认音频设备")?;
+            let existed = status()?.installed;
             // Windows decides whether this boot permits the test-signed image.
             // TESTSIGNING is not the only supported development route (the
             // Startup Settings one-boot option leaves that BCD setting off).
             // Catalog verification, package ownership and PnP checks still run.
-            let installed = PACKAGE.install().context("虚拟声卡安装或加载失败；此测试签名包需要本次启动允许测试驱动，具体原因见系统错误和安装日志")
-                .and_then(|reboot| { if !reboot { defaults.wait_for_install()?; } Ok(reboot) });
+            let installed = match PACKAGE.install() {
+                Err(error)
+                    if !existed
+                        && error
+                            .downcast_ref::<crate::platform::windows::components::driver::NotStarted>()
+                            .is_some_and(|failure| failure.unsigned()) =>
+                {
+                    // A device Windows will not start in this boot is of no
+                    // use: take the installation back rather than leave it.
+                    match PACKAGE.removal().and_then(|removal| removal.execute()) {
+                        Ok(_) => Err(TestSigningRequired.into()),
+                        Err(removal) => Err(error.context(format!(
+                            "Windows 拒绝加载虚拟声卡驱动（代码 52），撤回安装也失败了（{removal:#}），请在设备管理器中卸载 Farwing 虚拟声卡"
+                        ))),
+                    }
+                }
+                result => result.context("虚拟声卡安装或加载失败；此测试签名包需要本次启动允许测试驱动，具体原因见系统错误和安装日志"),
+            }
+            .and_then(|reboot| {
+                if !reboot {
+                    defaults.wait_for_install()?;
+                }
+                Ok(reboot)
+            });
             let restored = defaults.restore().context("安装后恢复默认音频设备失败");
             match (installed, restored) {
                 (Err(error), _) => Err(error),

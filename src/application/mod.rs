@@ -51,6 +51,9 @@ pub fn component_error_code(error: &anyhow::Error) -> Option<i32> {
     } else if error.is::<crate::platform::windows::components::application::ImageInUse>() {
         // ERROR_SHARING_VIOLATION
         Some(32)
+    } else if error.is::<crate::platform::windows::virtual_audio::install::TestSigningRequired>() {
+        // ERROR_INVALID_IMAGE_HASH
+        Some(577)
     } else {
         None
     }

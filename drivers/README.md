@@ -48,7 +48,7 @@ cargo build --release
 - 临时测试：Shift + 重启 → 疑难解答 → 高级选项 → 启动设置 → 重启 → **7 / F7 禁用驱动程序强制签名**，仅本次启动有效；或
 - 持续测试：管理员执行 `bcdedit /set testsigning on` 后重启，恢复时执行 `bcdedit /set testsigning off`。Secure Boot、BitLocker 或组织策略可能限制该操作。
 
-程序不会自动修改启动安全策略；信任项目证书不能替代内核驱动加载许可。输入驱动（VHF/UMDF）和显示驱动（IddCx/UMDF）是用户态驱动，信任证书后即可安装。
+程序不会自动修改启动安全策略；信任项目证书不能替代内核驱动加载许可。本次启动不允许测试驱动时，Windows 以代码 52（无法验证数字签名）拒绝启动设备，安装程序会撤回这次新装的设备和驱动包，并提示上面两种做法。开着“内存完整性”（核心隔离）时，按 7 / F7 不一定生效，需要先关闭它；可以用启动后桌面右下角的“测试模式”字样，或注册表 `HKLM\SYSTEM\CurrentControlSet\Control\SystemStartOptions` 中的 `TESTSIGNING` / `DISABLE_INTEGRITY_CHECKS` 确认设置已经生效。输入驱动（VHF/UMDF）和显示驱动（IddCx/UMDF）是用户态驱动，信任证书后即可安装。
 
 ## 验证状态
 

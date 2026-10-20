@@ -24,6 +24,26 @@ pub(crate) struct Package {
     pub files: &'static [(&'static str, &'static [u8])],
     pub repair: bool,
 }
+/// The driver was installed but its device did not start.
+#[derive(Debug)]
+pub(crate) struct NotStarted {
+    /// The device's PnP problem code (0 when it simply has not started).
+    pub problem: u32,
+    reason: String,
+}
+impl NotStarted {
+    /// Windows refused the driver's signature (code 52).
+    pub fn unsigned(&self) -> bool {
+        self.problem == CM_PROB_UNSIGNED_DRIVER.0
+    }
+}
+impl std::fmt::Display for NotStarted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "驱动已安装但未启动：{}", self.reason)
+    }
+}
+impl std::error::Error for NotStarted {}
+
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
@@ -431,13 +451,16 @@ impl Package {
         }
         if !reboot.as_bool() {
             let (mut flags, mut problem) = (CM_DEVNODE_STATUS_FLAGS(0), CM_PROB(0));
-            ensure!(
-                unsafe { CM_Get_DevNode_Status(&mut flags, &mut problem, info.DevInst, 0) }
-                    == CR_SUCCESS
-                    && problem.0 == 0
-                    && flags.contains(DN_STARTED),
-                "驱动已安装但未启动，请重新检查设备状态"
-            );
+            let result =
+                unsafe { CM_Get_DevNode_Status(&mut flags, &mut problem, info.DevInst, 0) };
+            ensure!(result == CR_SUCCESS, "无法读取驱动启动状态：{result:?}");
+            if let Some(reason) = unavailable_reason(flags, problem) {
+                return Err(NotStarted {
+                    problem: problem.0,
+                    reason,
+                }
+                .into());
+            }
             ensure!(
                 self.current_package(&bound_package(&set, &info)?)?,
                 "Windows仍在使用旧驱动包；更新后的驱动必须使用新的DriverVer版本"

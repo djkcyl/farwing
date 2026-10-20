@@ -386,6 +386,9 @@ pub(super) fn elevate(args: &str, kind: Kind) -> Result<bool> {
     if code == 2404 {
         return Err(super::display::install::DriverInUse.into());
     }
+    if code == 577 {
+        return Err(super::virtual_audio::install::TestSigningRequired.into());
+    }
     if code == 32 {
         anyhow::bail!(
             "仍有 Farwing 程序在运行（可能是以 --profile 启动的其他实例或观看窗口），请全部关闭后重试"
