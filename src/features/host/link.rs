@@ -5,22 +5,27 @@
 //! loss, queueing and delay, its feedback reports them, and the host's
 //! congestion control reacts as on a real network. Packets lost here stay in
 //! the retransmission history: they are repairable, as on a real network.
+//! The host's RTCP (sender reports) waits in the same queue, so round trips
+//! measured from them include the queueing, as on a real link.
 //! Works for any viewer, including browsers.
 
 use crate::transport::rtc::impair::{Bottleneck, Config, NetworkLoss};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use webrtc::interceptor::{Attributes, RTPWriter};
+use webrtc::interceptor::{Attributes, RTCPWriter, RTPWriter};
 use webrtc::rtp::packet::Packet;
 use webrtc::util::marshal::MarshalSize;
 
 type Writer = Arc<dyn RTPWriter + Send + Sync>;
+type ControlWriter = Arc<dyn RTCPWriter + Send + Sync>;
+type Control = Vec<Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>>;
 
 pub(super) struct Link {
     bottleneck: Mutex<Option<Bottleneck>>,
     loss: Mutex<Option<NetworkLoss>>,
     delay: Duration,
     line: tokio::sync::mpsc::UnboundedSender<(Writer, Packet, Attributes, Instant)>,
+    control: tokio::sync::mpsc::UnboundedSender<(ControlWriter, Control, Attributes, Instant)>,
 }
 
 impl Link {
@@ -44,13 +49,49 @@ impl Link {
                 let _ = writer.write(&packet, &attributes).await;
             }
         });
+        let (control, mut reports) =
+            tokio::sync::mpsc::unbounded_channel::<(ControlWriter, Control, Attributes, Instant)>();
+        runtime.spawn(async move {
+            while let Some((writer, packets, attributes, due)) = reports.recv().await {
+                tokio::time::sleep_until(due.into()).await;
+                let _ = writer.write(&packets, &attributes).await;
+            }
+        });
         tracing::warn!(%spec, "host network link emulation is on");
         Some(Arc::new(Self {
             bottleneck: Mutex::new(config.link().map(Bottleneck::new)),
             loss: Mutex::new(config.network().map(NetworkLoss::new)),
             delay: config.delay(),
             line,
+            control,
         }))
+    }
+
+    /// Hand an RTCP batch to the link, behind the media already queued.
+    pub(super) fn send_control(
+        &self,
+        writer: &ControlWriter,
+        packets: &[Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>],
+        attributes: &Attributes,
+    ) -> usize {
+        let size = packets.iter().map(|packet| packet.marshal_size()).sum();
+        if super::lock(&self.loss).as_mut().is_some_and(|loss| loss.drops()) {
+            return size;
+        }
+        let left = match super::lock(&self.bottleneck).as_mut() {
+            Some(bottleneck) => match bottleneck.admit(Instant::now(), size) {
+                Some(departure) => departure,
+                None => return size,
+            },
+            None => Instant::now(),
+        };
+        let _ = self.control.send((
+            Arc::clone(writer),
+            packets.iter().map(|packet| packet.cloned()).collect(),
+            attributes.clone(),
+            left + self.delay,
+        ));
+        size
     }
 
     /// Hand `packet` to the link; it leaves later or is lost. Returns its

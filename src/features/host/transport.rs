@@ -1594,6 +1594,21 @@ struct FeedbackReader {
     parent: Arc<dyn RTCPReader + Send + Sync>,
     transport: Transport,
 }
+/// `FARWING_HOST_LINK`: the host's RTCP through the emulated link.
+struct LinkControlWriter {
+    parent: Arc<dyn RTCPWriter + Send + Sync>,
+    link: Arc<super::link::Link>,
+}
+#[async_trait]
+impl RTCPWriter for LinkControlWriter {
+    async fn write(
+        &self,
+        packets: &[Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>],
+        attributes: &Attributes,
+    ) -> Result<usize> {
+        Ok(self.link.send_control(&self.parent, packets, attributes))
+    }
+}
 #[async_trait]
 impl RTCPReader for FeedbackReader {
     async fn read(
@@ -1638,7 +1653,13 @@ impl Interceptor for Transport {
         &self,
         writer: Arc<dyn RTCPWriter + Send + Sync>,
     ) -> Arc<dyn RTCPWriter + Send + Sync> {
-        writer
+        match &self.0.link {
+            Some(link) => Arc::new(LinkControlWriter {
+                parent: writer,
+                link: link.clone(),
+            }),
+            None => writer,
+        }
     }
     async fn bind_local_stream(&self, info: &StreamInfo, writer: Writer) -> Writer {
         if info.mime_type.eq_ignore_ascii_case("audio/opus") {
