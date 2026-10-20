@@ -20,6 +20,10 @@ use webrtc::{
     },
 };
 
+/// Read buffer for each received datagram: any datagram of a 1500-byte MTU,
+/// with room for relay framing.
+const RECEIVE_MTU: usize = 2048;
+
 pub(crate) struct ConnectionCore {
     pub connection: Arc<RTCPeerConnection>,
     pub control: FctControl,
@@ -36,6 +40,16 @@ impl ConnectionCore {
             MAX_DATA_CHANNEL_MESSAGE_SIZE,
         ));
         settings.set_data_channel_receive_limit(MAX_DATA_CHANNEL_MESSAGE_SIZE as usize);
+        // webrtc-rs reads each datagram into a 1460-byte buffer by default
+        // and silently drops longer ones; video packets fill a 1500-byte MTU
+        // (up to 1472 bytes of UDP payload). `FARWING_RECEIVE_MTU` sets a
+        // smaller one for measurements.
+        settings.set_receive_mtu(
+            std::env::var("FARWING_RECEIVE_MTU")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(RECEIVE_MTU),
+        );
         settings.set_srtp_replay_protection_window(1024);
         settings.set_srtcp_replay_protection_window(128);
         settings.set_continual_gathering(true);

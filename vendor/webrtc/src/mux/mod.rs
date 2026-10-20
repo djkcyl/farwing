@@ -109,6 +109,7 @@ impl Mux {
         endpoints: Endpoints,
     ) {
         let mut buf = vec![0u8; buffer_size];
+        let mut oversized = 0u64;
         loop {
             let result = tokio::select! {
                 biased;
@@ -120,7 +121,16 @@ impl Mux {
                 // datagram is not a new packet to dispatch or stream EOF.
                 Ok((0, _)) => continue,
                 Ok(packet) => packet,
-                Err(Error::ErrBufferShort) => continue,
+                Err(Error::ErrBufferShort) => {
+                    // The datagram is gone; to the sender it looks like loss.
+                    oversized += 1;
+                    if oversized <= 20 || oversized % 100 == 0 {
+                        log::warn!(
+                            "mux: dropped a datagram longer than the {buffer_size}-byte receive buffer ({oversized} so far)"
+                        );
+                    }
+                    continue;
+                }
                 Err(err)
                     if err.downcast_ref::<dtls::Error>()
                         == Some(&dtls::Error::ErrBufferTooSmall) =>
