@@ -46,7 +46,8 @@
 | 4.5 | H 上播放视频制造动态画面，帧率分别设 30 / 60 / 120 / 144（屏幕刷新率允许时） | 观看窗口统计的实际帧率接近设定 | |
 | 4.8 | 断开后重连同一台 H | H 日志有 `host start bitrate from the previous session`，画质很快稳定 | |
 | 32.1 | 在 C 的设备中心连接 H，对比上一版本从点击到出画面的时间 | 明显更快；C 日志 `creating server session` 到 `first picture presented` 约 0.3–0.4 s | |
-| 32.5 | 连续 5 次断开再连接 H | 每次都正常出画面；最后一次断开 10 秒后 H 进程内存回到空闲水平 | |
+| 32.5 | 连续 5 次断开再连接 H | 每次都正常出画面；H 进程内存不随次数增长，最后一次断开 1 分钟后回到空闲水平 | |
+| 32.15 | 重启 H 的 Windows 后连接 | H 日志有 `host hardware encoder initialized`，没有 `encoder adapter failed` | |
 | 4.9 | 用只有核显的机器当主控，观看高分辨率 144 fps | H 日志每 10 s 有 `controller receive statistics`；主控解码跟不上时出现 `controller decoder frame-rate cap changed`，帧率被压下、画面不积压；换回高性能主控后上限取消 | |
 
 ### 键盘、鼠标与输入法（H 已装输入驱动，走 HID）
