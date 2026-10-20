@@ -249,8 +249,11 @@ impl Hevc {
         // Positions of RefPicListTemp0 (before, after, long-term) that this
         // P slice actually predicts from. A recovery frame after a loss keeps
         // the lost picture in its RPS but only selects a long-term reference
-        // (`docs/protocol/rfi-ltr-brief.md` §3.1): its missing entry stays
-        // in place as invalid, so the list indices do not move.
+        // (`docs/protocol/rfi-ltr-brief.md` §3.1). The decoder counts every
+        // entry of the current sets (the width of `list_entry_l0` in the
+        // slice header depends on the count), so a lost picture is stood in
+        // for by an undecoded surface rather than left out, as other decoders
+        // generate a missing reference.
         let total = lists.st_curr_before.len() + lists.st_curr_after.len() + lists.lt_curr.len();
         let selected: Option<Vec<usize>> = (sh.slice_type == Some(SliceType::P) && total > 0).then(|| {
             let active = usize::from(
@@ -272,6 +275,7 @@ impl Hevc {
             }
         });
         let mut keep = vec![];
+        let mut missing = vec![];
         let mut before = vec![];
         let mut after = vec![];
         let mut lt = vec![];
@@ -298,10 +302,14 @@ impl Hevc {
                 position += 1;
                 match found {
                     Some(r) => {
-                        target.push(Some(r.poc));
+                        target.push(r.poc);
                         keep.push((r.poc, is_long));
                     }
-                    None if unused => target.push(None),
+                    None if unused => {
+                        target.push(*value);
+                        keep.push((*value, is_long));
+                        missing.push((*value, is_long));
+                    }
                     None => anyhow::bail!("missing HEVC reference picture"),
                 }
             }
@@ -324,6 +332,13 @@ impl Hevc {
             }
         }
         self.refs.retain(|r| keep.iter().any(|p| p.0 == r.poc));
+        for (poc, long) in missing {
+            self.refs.push(Reference {
+                poc,
+                long,
+                frame: Arc::new(pool.lease(false)?),
+            });
+        }
         for r in &mut self.refs {
             r.long = keep.iter().any(|p| p.0 == r.poc && p.1);
         }
@@ -343,12 +358,10 @@ impl Hevc {
             v.RefPicList[i] = r.frame.index as u8 | if r.long { 128 } else { 0 };
             v.PicOrderCntValList[i] = r.poc;
         }
-        fn indices(pocs: &[Option<i32>], refs: &[Reference]) -> Result<[u8; 8]> {
+        fn indices(pocs: &[i32], refs: &[Reference]) -> Result<[u8; 8]> {
             ensure!(pocs.len() <= 8, "too many active HEVC references");
             let mut out = [255; 8];
             for (i, p) in pocs.iter().enumerate() {
-                // A missing, unselected picture stays an invalid entry.
-                let Some(p) = p else { continue };
                 out[i] = refs
                     .iter()
                     .position(|r| r.poc == *p)
@@ -593,4 +606,132 @@ fn matrix(s: &SeqParameterSet, p: &PicParameterSet) -> Vec<u8> {
         out.push(m.lists[3][i].dc_coef as u8);
     }
     out
+}
+
+#[cfg(test)]
+mod replay {
+    use super::Hevc;
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::AtomicBool;
+    use windows::Win32::Graphics::Direct3D11::*;
+
+    /// Replays a stream saved with `FARWING_DECODER_DUMP` and prints a hash
+    /// of every decoded luma plane, to compare with another decoder:
+    /// `FARWING_REPLAY=<file.h265> cargo test --release --lib hevc::replay -- --ignored --nocapture`
+    /// against `ffmpeg -flags2 +showall -i <file.h265> -vf extractplanes=y
+    /// -f framehash -hash sha256 -` (10-bit streams).
+    #[test]
+    #[ignore]
+    fn replay() {
+        let Some(path) = std::env::var_os("FARWING_REPLAY") else {
+            return;
+        };
+        let data = std::fs::read(path).unwrap();
+        // Access units: a new one starts at parameter sets or a first slice
+        // once the current one has a slice.
+        let mut units: Vec<Vec<u8>> = vec![];
+        let mut current = vec![];
+        let mut has_slice = false;
+        for nal in farwing_codec::syntax::h264::nal::AnnexBSplitter::new(&data) {
+            let kind = (nal[0] >> 1) & 63;
+            let first_slice = kind < 32 && nal.len() > 2 && nal[2] & 0x80 != 0;
+            if has_slice && ((32..=34).contains(&kind) || first_slice) {
+                units.push(std::mem::take(&mut current));
+                has_slice = false;
+            }
+            has_slice |= kind < 32;
+            current.extend_from_slice(&[0, 0, 0, 1]);
+            current.extend_from_slice(nal);
+        }
+        units.push(current);
+        let adapter = crate::platform::windows::capture::encoding_adapters()
+            .unwrap()
+            .into_iter()
+            .find(|adapter| adapter.vendor == 0x10de)
+            .unwrap();
+        let (device, context) =
+            crate::platform::windows::capture::create_device(adapter.luid).unwrap();
+        let mut decoder = Hevc::new(device.clone());
+        let cancel = AtomicBool::new(false);
+        let limit = std::env::var("FARWING_REPLAY_FRAMES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(usize::MAX);
+        let mut output = 0;
+        for (index, unit) in units.iter().enumerate() {
+            if output >= limit {
+                break;
+            }
+            let picture = match decoder.decode(unit, &cancel) {
+                Ok(Some(picture)) => picture,
+                Ok(None) => continue,
+                Err(error) => {
+                    println!("unit {index}: {error:#}");
+                    continue;
+                }
+            };
+            let texture = picture.surface.texture();
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            unsafe { texture.GetDesc(&mut desc) };
+            let mut staging = None;
+            unsafe {
+                device
+                    .CreateTexture2D(
+                        &D3D11_TEXTURE2D_DESC {
+                            ArraySize: 1,
+                            Usage: D3D11_USAGE_STAGING,
+                            BindFlags: 0,
+                            MiscFlags: 0,
+                            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                            ..desc
+                        },
+                        None,
+                        Some(&mut staging),
+                    )
+                    .unwrap();
+            }
+            let staging = staging.unwrap();
+            let mut hash = Sha256::new();
+            unsafe {
+                use windows::core::Interface;
+                // Shared decode surfaces are guarded by a keyed mutex.
+                let sync = texture
+                    .cast::<windows::Win32::Graphics::Dxgi::IDXGIKeyedMutex>()
+                    .ok();
+                if let Some(sync) = &sync {
+                    sync.AcquireSync(0, u32::MAX).unwrap();
+                }
+                context.CopySubresourceRegion(
+                    &staging,
+                    0,
+                    0,
+                    0,
+                    0,
+                    texture,
+                    picture.surface.subresource(),
+                    None,
+                );
+                if let Some(sync) = &sync {
+                    sync.ReleaseSync(0).unwrap();
+                }
+                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)).unwrap();
+                for row in picture.top..picture.top + picture.height {
+                    let line = std::slice::from_raw_parts(
+                        mapped.pData.cast::<u8>().add(row as usize * mapped.RowPitch as usize),
+                        desc.Width as usize * 2,
+                    );
+                    for x in picture.left..picture.left + picture.width {
+                        let x = x as usize;
+                        let value = u16::from_le_bytes([line[2 * x], line[2 * x + 1]]) >> 6;
+                        hash.update(value.to_le_bytes());
+                    }
+                }
+                context.Unmap(&staging, 0);
+            }
+            let digest: String = hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
+            println!("frame {output} poc {} {digest}", picture.poc);
+            output += 1;
+        }
+    }
 }

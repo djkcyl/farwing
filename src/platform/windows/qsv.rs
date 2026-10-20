@@ -227,6 +227,12 @@ impl Clone for Extensions {
 #[error("QSV编码阶段失败：{0:#}")]
 struct EncodeFailure(anyhow::Error);
 
+/// `MFXVideoENCODE_Reset` refused a changed frame rate, quality or buffer
+/// size (for example the one-second buffer of cinema mode).
+#[derive(Debug, thiserror::Error)]
+#[error("QSV Reset 失败（{0}）")]
+struct ResetRejected(v::mfxStatus);
+
 #[derive(Debug, PartialEq, Eq)]
 enum SubmitAction {
     Output,
@@ -271,10 +277,22 @@ impl Encoder {
         self.active.as_ref().map_or(self.size, Active::maximum_size)
     }
     pub fn configure(&mut self, rate: Rate) -> Result<bool> {
-        self.active
-            .as_mut()
-            .context("QSV编码器已释放")?
-            .configure(rate)
+        let active = self.active.as_mut().context("QSV编码器已释放")?;
+        let color = active.conversion.color;
+        match active.configure(rate) {
+            // Initialize again on the same session, as for a stream change,
+            // rather than give up the encoder; the next frame is a keyframe.
+            Err(error) if error.is::<ResetRejected>() => {
+                tracing::info!(%error, "QSV setting rejected by Reset; initializing again");
+                let device = self.device.clone();
+                if self.reconfigure_stream(&device, self.size, self.format, rate, color)? {
+                    Ok(true)
+                } else {
+                    Err(error)
+                }
+            }
+            result => result,
+        }
     }
     pub fn reconfigure_stream(
         &mut self,
@@ -809,7 +827,7 @@ impl Active {
             let status = v::MFXVideoENCODE_Reset(self.raw(), &mut params);
             if status != 0 && status != 5 {
                 if update.control_changed {
-                    anyhow::bail!("QSV Reset 失败（{status}）");
+                    return Err(ResetRejected(status).into());
                 }
                 tracing::warn!(
                     status,
@@ -1221,6 +1239,91 @@ impl Drop for Active {
             }
             // Close the session before freeing callback state and its surface handles.
             self.resources.take();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::format::{Codec, Color, Format, QualityTarget, Rate};
+    use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::*};
+
+    /// Needs an Intel GPU: `cargo test --release --lib qsv -- --ignored`.
+    /// Control changes the driver's Reset refuses (such as cinema mode's
+    /// buffer) keep the encoder and start again with a keyframe.
+    #[test]
+    #[ignore]
+    fn rejected_settings_keep_the_encoder() {
+        let _runtime = super::super::encoder::Runtime::new().unwrap();
+        let Some(adapter) = super::super::capture::encoding_adapters()
+            .unwrap()
+            .into_iter()
+            .find(|adapter| adapter.vendor == 0x8086)
+        else {
+            return;
+        };
+        let (device, _) = super::super::capture::create_device(adapter.luid).unwrap();
+        let mut texture = None;
+        unsafe {
+            device
+                .CreateTexture2D(
+                    &D3D11_TEXTURE2D_DESC {
+                        Width: 1280,
+                        Height: 720,
+                        MipLevels: 1,
+                        ArraySize: 1,
+                        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                        Usage: D3D11_USAGE_DEFAULT,
+                        BindFlags: (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0) as u32,
+                        ..Default::default()
+                    },
+                    None,
+                    Some(&mut texture),
+                )
+                .unwrap();
+        }
+        let texture = texture.unwrap();
+        let rate = |fps: u32, smooth: bool| Rate {
+            target: 4_000_000,
+            peak: 4_000_000,
+            fps,
+            quality: 3,
+            quality_target: QualityTarget {
+                bitrate: 4_000_000,
+                fps,
+            },
+            smooth,
+        };
+        let mut encoder = super::super::encoder::Encoder::hardware_format(
+            &device,
+            (1280, 720),
+            Format {
+                codec: Codec::H265,
+                chroma: 1,
+                depth: 8,
+            },
+            rate(60, false),
+            Color::Sdr,
+        )
+        .unwrap();
+        let mut timestamp = 0;
+        let mut encode = |encoder: &mut super::super::encoder::Encoder, keyframe: bool| {
+            let mut keyframes = 0;
+            for i in 0..8 {
+                timestamp += 166_666;
+                for frame in encoder.encode(&texture, timestamp, keyframe && i == 0).unwrap() {
+                    keyframes += usize::from(frame.keyframe);
+                }
+            }
+            keyframes
+        };
+        assert!(encode(&mut encoder, true) > 0);
+        for (fps, smooth) in [(60, true), (30, true), (60, false)] {
+            let keyframe = encoder.configure_rate(rate(fps, smooth)).unwrap();
+            let keyframes = encode(&mut encoder, keyframe);
+            println!("fps={fps} smooth={smooth}: initialized again={keyframe} keyframes={keyframes}");
+            assert!(!keyframe || keyframes > 0, "fps={fps} smooth={smooth}");
         }
     }
 }

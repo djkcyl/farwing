@@ -24,6 +24,25 @@ pub(super) struct Session {
     decoder: Decoder,
     output: output::Output,
     extra: Option<Bytes>,
+    dump: Option<std::fs::File>,
+}
+/// `FARWING_DECODER_DUMP=<directory>`: every access unit given to the
+/// decoder, appended to one file per session (for checking a stream with
+/// another decoder).
+fn dump_file(codec: VideoCodec) -> Option<std::fs::File> {
+    let directory = std::env::var_os("FARWING_DECODER_DUMP")?;
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let extension = match codec {
+        VideoCodec::H264 => "h264",
+        VideoCodec::H265 => "h265",
+        VideoCodec::Av1 => "obu",
+    };
+    let path = std::path::Path::new(&directory).join(format!(
+        "{}-{}.{extension}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::File::create(path).ok()
 }
 impl Session {
     pub(super) fn open(config: &VideoDecoderConfig) -> Result<Self, DecodeError> {
@@ -53,6 +72,7 @@ impl Session {
             decoder,
             output: output::Output::default(),
             extra: Some(config.extra_data.clone()),
+            dump: dump_file(config.codec),
         })
     }
     pub(super) fn probe(
@@ -98,6 +118,10 @@ impl Session {
         } else {
             payload
         };
+        if let Some(file) = self.dump.as_mut() {
+            use std::io::Write;
+            let _ = file.write_all(data);
+        }
         let decoded = match &mut self.decoder {
             Decoder::Avc(d) => d.decode(data, notification.cancellation()).map(Some),
             Decoder::Hevc(d) => d.decode(data, notification.cancellation()),

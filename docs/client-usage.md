@@ -195,6 +195,8 @@ Farwing.exe dev video --device-id <ID> [--seconds 60] [--codec h264|h265|av1] [-
 
 要让丢包、排队和延迟像真实网络一样作用在双方（被控的拥塞控制能看到，重传可以修复，浏览器观看者也受影响），在被控端设 `FARWING_HOST_LINK`，规则同 `--loss` 的 `net:`、`rate:`、`delay:`，例如 `FARWING_HOST_LINK="net:0.02,0.3;rate:12;delay:30"`。它作用在被控对每个包记下发送时间之后（视频、RTX、FEC、声音都经过同一条模拟链路），被控照常保留这些包用于重传。
 
+要用别的解码器核对一次观看，在主控端设 `FARWING_DECODER_DUMP=<目录>`：Windows 硬件解码器收到的每个访问单元会按会话写成一个文件（`<进程号>-<序号>.h264` / `.h265` / `.obu`）。H.265 文件可以用 `ffmpeg -flags2 +showall -i <文件> -vf extractplanes=y -f framehash -hash sha256 -` 得到每帧亮度的哈希，与 `FARWING_REPLAY=<文件> cargo test --release --lib hevc::replay -- --ignored --nocapture` 的输出逐帧对照（要有 NVIDIA 显卡）。
+
 弱网下被控在测得丢包后，用画面没用到的带宽发送 RS-FEC 修复包，让主控不等重传就补回丢失的包（[farwing-protocol.md](protocol/farwing-protocol.md) §6.4）；网络正常或带宽被画面用满时不发。对比时可在被控端设 `FARWING_FEC=0` 关闭（只在被控端有效，主控端没有这个开关）。播放窗口关闭时的日志中 `fec_packets_received` / `fec_packets_recovered` 是收到的修复包与用它们补回的包数。
 
 被控探测可用带宽时用高精度定时器按 2 ms 节拍发送探测包；对比原来的发送方式可在被控端设 `FARWING_PROBE_PACING=0`。`connect` 另有测量用的隐藏参数 `--dev-auto-quality <2–4>`：自动画质从指定档位开始，不使用也不保存观看端记住的档位，让每次测量从同一档位开始。
