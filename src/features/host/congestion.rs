@@ -28,6 +28,10 @@ pub(crate) struct Controller {
     available: bool,
     generation: u64,
     route_at: Timestamp,
+    /// Probes sent because the first ones measured nothing, and when the
+    /// next may go.
+    rescues: i32,
+    rescue_at: Timestamp,
     pub target: u32,
     pub pacing: u32,
     pub loss: f64,
@@ -107,6 +111,8 @@ impl Controller {
             available: false,
             generation: 0,
             route_at: at,
+            rescues: 0,
+            rescue_at: at,
             target: bounds.initial,
             pacing: bounds.initial.saturating_mul(16) / 10,
             loss: 0.0,
@@ -181,6 +187,7 @@ impl Controller {
     pub fn route_changed(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.route_at = self.now();
+        self.rescues = 0;
         let update = self.core.on_network_route_change(NetworkRouteChange {
             at_time: self.now(),
             constraints: constraints(self.now(), self.maximum, Some(self.bounds.initial)),
@@ -285,6 +292,41 @@ impl Controller {
             pacer_queue: Some(DataSize::from_bytes(queued_bytes as i64)),
         });
         self.apply(update);
+        self.rescue_probe();
+    }
+    /// The first probes of a path can measure nothing when a few of their
+    /// packets are lost: GoogCC then stops probing, and a sender that uses
+    /// its whole estimate never probes again (that needs spare capacity), so
+    /// the estimate creeps up additively from about the start rate for tens
+    /// of seconds. Shortly after such a start, probe again a few times at
+    /// twice the estimate, with longer clusters that survive a lost packet.
+    fn rescue_probe(&mut self) {
+        let now = self.now();
+        let age = now - self.route_at;
+        if !self.available
+            || self.rescues >= RESCUE_PROBES
+            || age < TimeDelta::from_millis(1500)
+            || age > TimeDelta::from_seconds(10)
+            || now < self.rescue_at
+            || !self.probes.is_empty()
+            || u64::from(self.target) >= 2 * u64::from(self.bounds.initial)
+            || u64::from(self.target) * 2 > u64::from(self.maximum)
+            || self.delay_overuse()
+        {
+            return;
+        }
+        self.rescues += 1;
+        self.rescue_at = now + TimeDelta::from_millis(1500);
+        let rate = (u64::from(self.target) * 2).min(u64::from(self.maximum)) as i64;
+        tracing::debug!(rate_bps = rate, attempt = self.rescues, "host probing again after a start without results");
+        self.probes.push_back(ProbeClusterConfig {
+            at_time: now,
+            target_data_rate: DataRate::from_bits_per_sec(rate),
+            target_duration: TimeDelta::from_millis(30),
+            min_probe_delta: TimeDelta::from_millis(2),
+            target_probe_count: 10,
+            id: RESCUE_PROBE_ID + self.rescues,
+        });
     }
     pub fn burst_bytes(&self) -> usize {
         self.burst.bytes
@@ -407,6 +449,11 @@ impl Controller {
         self.apply(update);
     }
 }
+/// At most this many probes after a start without probe results.
+const RESCUE_PROBES: i32 = 3;
+/// Cluster ids of those probes, apart from GoogCC's own (counted from 1).
+const RESCUE_PROBE_ID: i32 = 1 << 30;
+
 fn constraints(at_time: Timestamp, maximum: u32, start: Option<u32>) -> TargetRateConstraints {
     TargetRateConstraints {
         at_time,
