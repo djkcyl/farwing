@@ -102,3 +102,4 @@ secrets.json
 
 # Local Claude Code settings and worktrees.
 /.claude/
+/target-prof/
