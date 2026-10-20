@@ -107,6 +107,7 @@ impl Session {
 
         tokio::spawn(async move {
             let mut buf = vec![0u8; 8192];
+            let mut dropped = 0u64;
 
             loop {
                 let result = tokio::select! {
@@ -143,7 +144,15 @@ impl Session {
                     _ = close_session_rx.recv() => break,
                     result = incoming_stream => match result{
                         Ok(()) => {},
-                        Err(err) => log::info!("{err}"),
+                        Err(err) => {
+                            // A dropped packet looks like network loss to the
+                            // receiver: make the first ones, then every 100th,
+                            // visible at the default level.
+                            dropped += 1;
+                            if dropped <= 20 || dropped % 100 == 0 {
+                                log::warn!("SRTP packet dropped ({dropped} so far, {} bytes): {err}", n);
+                            }
+                        }
                     },
                 }
             }

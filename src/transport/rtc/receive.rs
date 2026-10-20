@@ -755,6 +755,11 @@ pub(super) async fn forward_video_track(
                         parsed.starts_keyframe(),
                         recovered,
                     );
+                    if nack.nack_count > 0 {
+                        tracing::debug!(target: "farwing::nack_audit", seq = parsed.sequence_number(),
+                            requests = nack.nack_count, rtx = media.flags.recovered_from_rtx,
+                            fec = media.flags.recovered_by_fec, "requested packet arrived");
+                    }
                     parsed.set_receive_timing(playout_delay, nack.nack_count);
                     let mut nack = nack;
                     recover_instead(&mut nack.batch, &mut loss_recovery, &receiver, nack_requester.rtt);

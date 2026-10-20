@@ -501,8 +501,12 @@ impl Transport {
             .repair_header
             .store(repair_header as u64, Ordering::Relaxed);
         // RSFEC protects the entire original RTP packet plus its length word.
-        // Reserve its largest (109-source) mask, repair RTP header, MID and TCC.
-        let repair = if self.fec_active() {
+        // Reserve its largest (109-source) mask, repair RTP header, MID and TCC
+        // whenever the repair stream exists, not only while FEC is on: media
+        // and their retransmissions (two bytes longer) then stay well below
+        // a 1500-byte MTU. Some paths drop the last few dozen bytes of it,
+        // and a lost full-size packet could then never be repaired.
+        let repair = if lock(&self.0.history).fec.is_some() {
             2 + 27 + repair_header
         } else {
             0
@@ -511,8 +515,8 @@ impl Transport {
     }
     /// Video FEC goes out now: its stream is set up, it is not switched off
     /// (`FARWING_FEC=0`), the media leaves bandwidth unused for it, and the
-    /// link shows loss (`fec_policy::MIN_LOSS`). Otherwise media packets keep
-    /// their full size and no repair packets are sent.
+    /// link shows loss (`fec_policy::MIN_LOSS`). Otherwise no repair packets
+    /// are sent.
     fn fec_active(&self) -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| std::env::var("FARWING_FEC").map_or(true, |v| v != "0"))
@@ -928,13 +932,17 @@ impl Transport {
             None
         };
         let size = match self.0.link.as_ref() {
-            Some(link) => link.send(parent, &packet, attributes),
+            Some(link) => link.send(parent, &packet, attributes, self.overhead()),
             None => tokio::select! {
                 _=self.0.cancel.cancelled()=>return Err(Error::ErrIoEOF),
                 result=parent.write(&packet, attributes)=>result?,
             },
         };
         if size > 0 {
+            if size + self.overhead() > 1500 {
+                tracing::debug!(target: "farwing::packet_size", ssrc = packet.header.ssrc,
+                    rtp = size, wire = size + self.overhead(), "host packet exceeds a 1500-byte MTU");
+            }
             let wire = size + self.network_overhead();
             lock(&self.0.send_rate).record(wire);
             if let Some(sequence) = sequence {
@@ -959,6 +967,12 @@ impl Transport {
             } else {
                 Kind::Rtx
             };
+            if kind == Kind::Rtx {
+                tracing::debug!(target: "farwing::nack_audit",
+                    seq = packet.payload.get(..2).map(|osn| u16::from_be_bytes([osn[0], osn[1]])),
+                    rtx_seq = packet.header.sequence_number, transport_seq = sequence, bytes = size,
+                    "host retransmitted a packet");
+            }
             self.0.counts[match kind {
                 Kind::Media => 0,
                 Kind::Rtx => 1,
@@ -1822,7 +1836,7 @@ impl RTPWriter for AudioWriter {
         // Audio shares the transport-wide sequence: it takes the same
         // emulated link, or it would overtake delayed video and look like loss.
         let size = match shared.link.as_ref() {
-            Some(link) => link.send(&self.parent, &packet, attributes),
+            Some(link) => link.send(&self.parent, &packet, attributes, self.transport.overhead()),
             None => {
                 tokio::select! { _=shared.cancel.cancelled()=>return Err(Error::ErrIoEOF), result=self.parent.write(&packet,attributes)=>result? }
             }

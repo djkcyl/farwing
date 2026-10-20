@@ -57,6 +57,7 @@ pub(crate) struct Config {
     delay: Duration,
     link: Option<Link>,
     network: Option<Network>,
+    mtu: Option<usize>,
 }
 
 impl Config {
@@ -111,6 +112,7 @@ impl Config {
                     }
                 }
                 "delay" => config.delay = Duration::from_millis(number(value)?),
+                "mtu" => config.mtu = Some(number(value)? as usize),
                 "rate" => {
                     let mut fields = value.split(',');
                     let text = fields.next().unwrap_or_default().trim();
@@ -132,6 +134,12 @@ impl Config {
             }
         }
         Ok(config)
+    }
+
+    /// `mtu:N`: datagrams longer than N bytes on the wire (IP, UDP and SRTP
+    /// included) are lost, as on a path with a smaller MTU.
+    pub(crate) fn mtu(&self) -> Option<usize> {
+        self.mtu
     }
 
     pub(crate) fn delay(&self) -> Duration {

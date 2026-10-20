@@ -39,6 +39,21 @@ pub(crate) struct EncodingSettings {
 impl EncodingSettings {
     pub fn accepts(self, capability: &Capability) -> bool {
         let software = capability.backend == Backend::Software;
+        // `FARWING_HOST_ENCODER=nvidia|amd|intel|software`: one encoder
+        // family only, for measurements.
+        static ONLY: std::sync::OnceLock<Option<Backend>> = std::sync::OnceLock::new();
+        let only = *ONLY.get_or_init(|| {
+            match std::env::var("FARWING_HOST_ENCODER").ok()?.to_ascii_lowercase().as_str() {
+                "nvidia" => Some(Backend::Nvidia),
+                "amd" => Some(Backend::Amd),
+                "intel" => Some(Backend::Intel),
+                "software" => Some(Backend::Software),
+                _ => None,
+            }
+        });
+        if only.is_some_and(|only| only != capability.backend) {
+            return false;
+        }
         (match self.mode {
             EncoderMode::Automatic => true,
             EncoderMode::Hardware => !software,

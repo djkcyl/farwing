@@ -23,6 +23,7 @@ type Control = Vec<Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>>;
 pub(super) struct Link {
     bottleneck: Mutex<Option<Bottleneck>>,
     loss: Mutex<Option<NetworkLoss>>,
+    mtu: Option<usize>,
     delay: Duration,
     line: tokio::sync::mpsc::UnboundedSender<(Writer, Packet, Attributes, Instant)>,
     control: tokio::sync::mpsc::UnboundedSender<(ControlWriter, Control, Attributes, Instant)>,
@@ -61,6 +62,7 @@ impl Link {
         Some(Arc::new(Self {
             bottleneck: Mutex::new(config.link().map(Bottleneck::new)),
             loss: Mutex::new(config.network().map(NetworkLoss::new)),
+            mtu: config.mtu(),
             delay: config.delay(),
             line,
             control,
@@ -95,11 +97,19 @@ impl Link {
     }
 
     /// Hand `packet` to the link; it leaves later or is lost. Returns its
-    /// size, as a write would.
-    pub(super) fn send(&self, writer: &Writer, packet: &Packet, attributes: &Attributes) -> usize {
+    /// size, as a write would. `overhead`: the bytes SRTP, UDP and IP add.
+    pub(super) fn send(
+        &self,
+        writer: &Writer,
+        packet: &Packet,
+        attributes: &Attributes,
+        overhead: usize,
+    ) -> usize {
         let size = packet.marshal_size();
         let now = Instant::now();
-        if super::lock(&self.loss).as_mut().is_some_and(|loss| loss.drops()) {
+        if self.mtu.is_some_and(|mtu| size + overhead > mtu)
+            || super::lock(&self.loss).as_mut().is_some_and(|loss| loss.drops())
+        {
             return size;
         }
         let left = match super::lock(&self.bottleneck).as_mut() {

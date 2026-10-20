@@ -411,6 +411,12 @@ impl Controller {
                 self.flight = self
                     .flight
                     .saturating_sub(stored.packet.size.bytes() as usize);
+                if !received {
+                    tracing::debug!(target: "farwing::nack_audit", transport_seq = base + index as i64,
+                        bytes = stored.packet.size.bytes(),
+                        probe = stored.packet.pacing_info.probe_cluster_id != PacedPacketInfo::NOT_APROBE,
+                        "viewer reports a packet not received");
+                }
             }
             stored.reported = Some(received);
             if let Some(group) = stored.burst {
