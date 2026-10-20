@@ -75,10 +75,12 @@ impl Responder {
             let destination = SocketAddr::V4(SocketAddrV4::new(group(), wire::DISCOVERY_PORT));
             let mut tick = tokio::time::interval(ANNOUNCE_INTERVAL);
             let mut buffer = vec![0u8; 2048];
+            let mut joined = Vec::new();
             loop {
                 tokio::select! {
                     _ = task_cancel.cancelled() => break,
                     _ = tick.tick() => {
+                        join_lan_adapters(&socket, &mut joined);
                         if let Some((local, port, methods)) = source.announcement() {
                             send(&socket, &announce(&local, port, methods, ""), destination).await;
                         }
@@ -109,6 +111,22 @@ async fn send(socket: &UdpSocket, message: &impl serde::Serialize, to: SocketAdd
     }
     if let Err(error) = socket.send_to(&bytes, to).await {
         tracing::debug!(%error, %to, "LAN discovery send failed");
+    }
+}
+
+/// The group joined only on the default interface is not received on the
+/// LAN when a VPN or proxy adapter holds the default route. Adapters that
+/// come up later are joined on the next announcement.
+fn join_lan_adapters(socket: &UdpSocket, joined: &mut Vec<Ipv4Addr>) {
+    let socket = socket2::SockRef::from(socket);
+    for address in crate::platform::windows::device_profile::lan_ipv4_addresses() {
+        if joined.contains(&address) {
+            continue;
+        }
+        match socket.join_multicast_v4(&group(), &address) {
+            Ok(()) => joined.push(address),
+            Err(error) => tracing::debug!(%error, %address, "LAN discovery group not joined"),
+        }
     }
 }
 
@@ -146,49 +164,86 @@ impl Found {
     }
 }
 
-/// Query the LAN and collect answers for `wait`.
-pub(crate) async fn discover(wait: Duration) -> Result<Vec<Found>> {
+fn query_socket(local: Ipv4Addr) -> Result<UdpSocket> {
     use socket2::{Domain, Protocol, SockAddr, Socket, Type};
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_broadcast(true)?;
     socket.set_multicast_ttl_v4(1)?;
     socket.set_multicast_loop_v4(true)?;
-    socket.bind(&SockAddr::from(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)))?;
+    if !local.is_unspecified() {
+        socket.set_multicast_if_v4(&local)?;
+    }
+    socket.bind(&SockAddr::from(SocketAddrV4::new(local, 0)))?;
     socket.set_nonblocking(true)?;
-    let socket = UdpSocket::from_std(socket.into())?;
+    Ok(UdpSocket::from_std(socket.into())?)
+}
+
+/// Query the LAN and collect answers for `wait`. Besides the default route,
+/// the query also leaves each LAN adapter from that adapter's address: when
+/// a VPN or proxy adapter holds the default route, the query and its answer
+/// would otherwise pass through it, and a host would be listed under the
+/// adapter's address instead of its LAN address.
+pub(crate) async fn discover(wait: Duration) -> Result<Vec<Found>> {
+    let mut sockets = vec![(Arc::new(query_socket(Ipv4Addr::UNSPECIFIED)?), false)];
+    for address in crate::platform::windows::device_profile::lan_ipv4_addresses() {
+        match query_socket(address) {
+            Ok(socket) => sockets.push((Arc::new(socket), true)),
+            Err(error) => tracing::debug!(%error, %address, "LAN discovery adapter unavailable"),
+        }
+    }
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let query = lan::Query {
         t: lan::QUERY.into(),
         v: farwing_protocol::PROTOCOL_VERSION,
         nonce: nonce.clone(),
     };
-    for destination in [group(), Ipv4Addr::BROADCAST] {
-        send(
-            &socket,
-            &query,
-            SocketAddr::V4(SocketAddrV4::new(destination, wire::DISCOVERY_PORT)),
-        )
-        .await;
+    let send_query = async |sockets: &[(Arc<UdpSocket>, bool)]| {
+        for (socket, _) in sockets {
+            for destination in [group(), Ipv4Addr::BROADCAST] {
+                send(
+                    socket,
+                    &query,
+                    SocketAddr::V4(SocketAddrV4::new(destination, wire::DISCOVERY_PORT)),
+                )
+                .await;
+            }
+        }
+    };
+    send_query(&sockets).await;
+    let (answers, mut received) = tokio::sync::mpsc::channel::<(Vec<u8>, SocketAddr, bool)>(64);
+    let mut readers = tokio::task::JoinSet::new();
+    for (socket, lan) in &sockets {
+        let (socket, lan, answers) = (socket.clone(), *lan, answers.clone());
+        readers.spawn(async move {
+            let mut buffer = vec![0u8; 2048];
+            loop {
+                let Ok((length, from)) = socket.recv_from(&mut buffer).await else { continue };
+                if answers.send((buffer[..length].to_vec(), from, lan)).await.is_err() {
+                    break;
+                }
+            }
+        });
     }
-    let mut found = HashMap::<String, Found>::new();
+    drop(answers);
+    // Per host: what it answered, and whether that came over a LAN adapter.
+    let mut found = HashMap::<String, (Found, bool)>::new();
     let deadline = tokio::time::Instant::now() + wait;
-    let mut buffer = vec![0u8; 2048];
     let mut resent = false;
     loop {
-        let received = tokio::select! {
+        let (bytes, from, lan) = tokio::select! {
             _ = tokio::time::sleep_until(deadline) => break,
             // A lost query is sent once more halfway.
             _ = tokio::time::sleep(wait / 2), if !resent => {
                 resent = true;
-                for destination in [group(), Ipv4Addr::BROADCAST] {
-                    send(&socket, &query, SocketAddr::V4(SocketAddrV4::new(destination, wire::DISCOVERY_PORT))).await;
-                }
+                send_query(&sockets).await;
                 continue;
             }
-            received = socket.recv_from(&mut buffer) => received,
+            answer = received.recv() => match answer {
+                Some(answer) => answer,
+                None => break,
+            },
         };
-        let Ok((length, from)) = received else { continue };
-        let Ok(announce) = serde_json::from_slice::<lan::Announce>(&buffer[..length]) else {
+        let Ok(announce) = serde_json::from_slice::<lan::Announce>(&bytes) else {
             continue;
         };
         if announce.t != lan::ANNOUNCE
@@ -206,11 +261,18 @@ pub(crate) async fn discover(wait: Duration) -> Result<Vec<Found>> {
         let mut announce = announce;
         announce.name = super::sanitize_name(&announce.name);
         let address = SocketAddr::new(from.ip(), announce.port);
-        found
-            .entry(announce.public_key.clone())
-            .or_insert(Found { announce, address });
+        let key = announce.public_key.clone();
+        let answer = (Found { announce, address }, lan);
+        match found.get(&key) {
+            Some((_, true)) => {}
+            Some(_) if !lan => {}
+            _ => {
+                found.insert(key, answer);
+            }
+        }
     }
-    let mut found: Vec<_> = found.into_values().collect();
+    readers.abort_all();
+    let mut found: Vec<_> = found.into_values().map(|(found, _)| found).collect();
     found.sort_by(|a, b| a.announce.name.cmp(&b.announce.name));
     Ok(found)
 }
