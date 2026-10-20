@@ -139,6 +139,26 @@ impl Manager {
                 .map_or("正在检查服务", |s| s.label.as_str())
         });
     }
+    /// What the background service means for reaching this device, and the
+    /// action it calls for (default profile only).
+    pub(super) fn reach(&self) -> Option<(&'static str, Option<&'static str>)> {
+        if !crate::product::is_default_profile() {
+            return None;
+        }
+        let status = self.status.as_ref()?;
+        Some(if status.ready {
+            ("已安装：锁屏、注销或重启后（无需登录 Windows）也能连接本机", None)
+        } else if status.installed {
+            ("需要完成安装或更新，完成前锁屏或重启后可能无法连接本机", Some("更新服务"))
+        } else {
+            ("未安装：只有本程序在运行且已登录 Windows 时，才能连接本机", Some("安装服务"))
+        })
+    }
+    pub(super) fn request_install(&mut self) {
+        if self.pending.is_none() && !self.reboot {
+            self.confirm = Some(Operation::Install);
+        }
+    }
     pub(super) fn management(&mut self, ui: &mut egui::Ui, active: bool) {
         if !crate::product::is_default_profile() {
             section(ui, "服务管理");
@@ -155,26 +175,43 @@ impl Manager {
             .as_ref()
             .map_or("正在检查…", |s| s.label.as_str());
         let removable = self.status.as_ref().is_some_and(|s| s.removable);
-        form_row(ui, "常驻服务", label, |ui| {
+        let installable = self.status.as_ref().is_some_and(|s| !s.installed);
+        let hint = format!("{label} · 锁屏、注销或重启后（无需登录 Windows）也能连接本机，不需要账号");
+        form_row(ui, "常驻服务", &hint, |ui| {
+            if installable
+                && ui
+                    .add_enabled(
+                        !active && !self.reboot && self.pending.is_none(),
+                        crate::ui::controls::primary("安装服务"),
+                    )
+                    .on_disabled_hover_text(if active {
+                        "请先结束本机被控会话"
+                    } else {
+                        "正在处理"
+                    })
+                    .clicked()
+            {
+                self.confirm = Some(Operation::Install);
+            }
+            if !removable {
+                return;
+            }
+            let idle = !active && !self.reboot && self.pending.is_none();
+            let busy = if active {
+                "请先结束本机被控会话"
+            } else {
+                "正在处理"
+            };
             if ui
-                .add_enabled(
-                    removable && !active && !self.reboot && self.pending.is_none(),
-                    egui::Button::new("修复安装"),
-                )
+                .add_enabled(idle, egui::Button::new("修复安装"))
+                .on_disabled_hover_text(busy)
                 .clicked()
             {
                 self.confirm = Some(Operation::Install);
             }
             if ui
-                .add_enabled(
-                    removable && !active && !self.reboot && self.pending.is_none(),
-                    egui::Button::new("卸载服务"),
-                )
-                .on_disabled_hover_text(if active {
-                    "请先结束本机被控会话"
-                } else {
-                    "服务未安装或正在处理"
-                })
+                .add_enabled(idle, egui::Button::new("卸载服务"))
+                .on_disabled_hover_text(busy)
                 .clicked()
             {
                 self.removal = Default::default();
@@ -315,7 +352,7 @@ impl Manager {
                     let drivers = crate::platform::windows::input::install::bundled() || crate::platform::windows::display::install::bundled();
                     if drivers { ui.label("安装被控服务、输入驱动及虚拟显示驱动，登录后自动启动托盘。允许被控时，重启后无需登录 Windows 即可连接。"); } else { ui.label("安装被控服务，登录后自动启动托盘。允许被控时，重启后无需登录 Windows 即可连接。此构建未包含驱动包，将使用系统输入注入和现有显示器。"); }
                     ui.label("程序安装到系统目录并创建桌面和开始菜单快捷方式，完成后重新打开控制中心。");
-                    ui.label("当前账号授权和本机身份将加密保存在本机，由当前 Windows 用户和系统服务使用。退出账号会撤销授权。");
+                    ui.label("本机身份、已登录账号的授权和被控设置将加密保存在本机，由当前 Windows 用户和系统服务使用；受信任设备与直连设置一并交给服务。不登录账号也可以使用：服务按访问码、受信任设备和局域网直连接受连接。");
                     ui.checkbox(&mut self.allow_sas,"允许服务发送 Ctrl+Alt+Del");
                     if drivers { ui.collapsing("驱动与证书", |ui| {
                         if let Some((subject, thumbprint, _)) = Kind::InputDriver.certificate() { ui.label(subject); ui.label(egui::RichText::new(thumbprint).monospace().small()); }
@@ -355,10 +392,8 @@ impl DeviceCenterApp {
         if self.exit_requested {
             return;
         }
-        // Component installation can finish while the login page is shown;
-        // the user submits the login form explicitly.
         let _ = std::mem::take(&mut self.center_ui.components.completed);
-        if self.needs_login() || self.logout_pending {
+        if self.logout_pending {
             self.center_ui.components.confirm = None;
             self.center_ui.components.audio_confirm = None;
             return;
@@ -367,10 +402,6 @@ impl DeviceCenterApp {
             .host
             .as_ref()
             .is_some_and(|h| h.status().session_active);
-        self.center_ui.components.dialogs(
-            ctx,
-            active,
-            !self.needs_login() && self.center_ui.page == Page::Devices,
-        );
+        self.center_ui.components.dialogs(ctx, active, self.center_ui.page == Page::Devices);
     }
 }

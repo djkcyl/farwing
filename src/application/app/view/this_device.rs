@@ -69,7 +69,7 @@ impl DeviceCenterApp {
             self.trusted_section(ui);
             self.account_access_section(ui, access);
             self.connected_section(ui, &host);
-            self.limits_card(ui, access);
+            self.limits_card(ui);
         });
         self.trusted_dialogs(ui.ctx());
     }
@@ -99,6 +99,7 @@ impl DeviceCenterApp {
         };
         let mut changed = false;
         let mut open_network = false;
+        let mut install_service = false;
         cards::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -186,12 +187,20 @@ impl DeviceCenterApp {
                 }
                 Some((None, settings)) if !settings.direct => {
                     detail(ui, "直连已关闭");
-                    open_network = ui.add(crate::ui::controls::secondary("网络设置")).clicked();
+                    open_network = ui.add(crate::ui::controls::secondary("直连设置")).clicked();
                 }
                 Some((None, _)) if !allowed => detail(ui, "开启“允许连接本机”后接受直连"),
                 Some((None, _)) => detail(ui, "正在开启直连…"),
                 None => detail(ui, "正在读取后台服务的状态…"),
             });
+            if let Some((hint, action)) = self.center_ui.components.reach() {
+                field(ui, "后台服务", |ui| {
+                    detail(ui, hint);
+                    if let Some(label) = action {
+                        install_service = ui.add(crate::ui::controls::secondary(label)).clicked();
+                    }
+                });
+            }
             if !allowed {
                 ui.add_space(4.0);
                 detail(
@@ -200,13 +209,16 @@ impl DeviceCenterApp {
                 );
             }
         });
+        if install_service {
+            self.center_ui.components.request_install();
+        }
         if changed {
             host.set_allowed(allowed);
             self.save_host_settings();
         }
         if open_network {
             self.center_ui.page = Page::Settings;
-            self.center_ui.settings_tab = super::settings::SettingsTab::Network;
+            self.center_ui.settings_tab = super::settings::SettingsTab::Host;
         }
     }
 
@@ -345,7 +357,7 @@ impl DeviceCenterApp {
         }
     }
 
-    fn limits_card(&mut self, ui: &mut egui::Ui, access: Access) {
+    fn limits_card(&mut self, ui: &mut egui::Ui) {
         cards::section_heading(ui, "上限", None, |_| {});
         let mut open = false;
         cards::card().show(ui, |ui| {
@@ -353,30 +365,16 @@ impl DeviceCenterApp {
             ui.horizontal(|ui| {
                 detail(
                     ui,
-                    if access == Access::Account {
-                        "文件、剪贴板、关机重启、端口转发与同时连接人数，对所有连接本机的人生效。"
-                    } else {
-                        "剪贴板与文件复制对访客生效，在访问码设置中修改。"
-                    },
+                    "文件、剪贴板、端口转发、同时连接人数，以及直连与局域网、画面与声音，对所有连接本机的人生效。",
                 );
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    open = ui
-                        .add(crate::ui::controls::secondary(if access == Access::Account {
-                            "被控设置"
-                        } else {
-                            "访问码设置"
-                        }))
-                        .clicked();
+                    open = ui.add(crate::ui::controls::secondary("被控设置")).clicked();
                 });
             });
         });
         if open {
-            if access == Access::Account {
-                self.center_ui.page = Page::Settings;
-                self.center_ui.settings_tab = super::settings::SettingsTab::Host;
-            } else {
-                self.center_ui.host_assist_settings_open = true;
-            }
+            self.center_ui.page = Page::Settings;
+            self.center_ui.settings_tab = super::settings::SettingsTab::Host;
         }
     }
 

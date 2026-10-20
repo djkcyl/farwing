@@ -938,13 +938,21 @@ async fn run_authorized_account(
                 }
             }
             if paused()? || !vault::applies()? { continue; }
+            if client.is_none()
+                && let Err(error) = crate::transport::direct::managed::take_over()
+            {
+                tracing::warn!(error = %format!("{error:#}"), "handed-over direct records not adopted");
+            }
             let saved = store.load()?.map(|s| s.generation()).unwrap_or_default();
             let desired_identity = if saved.is_empty() {
                 format!("guest:{}",device.handle().identity().client_identity()?.client_id)
             } else { saved.clone() };
+            // Signed out, the service hosts as the GUI would: without a
+            // server (or with direct connections only) on its own.
+            let serverless = saved.is_empty() && HostClient::serverless();
             if client
                 .as_ref()
-                .is_some_and(|c| !c.is_active() || !c.matches_saved(&saved))
+                .is_some_and(|c| !c.is_active() || !c.matches_saved(&saved) || c.is_local() != serverless)
             {
                 cancel_preparation(&mut preparation).await;
                 presence_due = None;
@@ -961,7 +969,7 @@ async fn run_authorized_account(
                 && desired_identity != blocked
                 && std::time::Instant::now() >= next_start
             {
-                match if saved.is_empty() { HostClient::guest(device.handle()) } else { AuthenticatedClient::from_saved_session_with_device(device.handle()).map(|c| HostClient::from(Arc::new(c))) } {
+                match if serverless { HostClient::local() } else if saved.is_empty() { HostClient::guest(device.handle()) } else { AuthenticatedClient::from_saved_session_with_device(device.handle()).map(|c| HostClient::from(Arc::new(c))) } {
                     Ok(c) => {
 
                         let cancel = tokio_util::sync::CancellationToken::new();

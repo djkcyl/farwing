@@ -62,23 +62,9 @@ impl Guest {
             self.retry_at = Instant::now() + std::time::Duration::from_secs(3);
         }
         if self.client.is_none() && !self.blocked && Instant::now() >= self.retry_at {
-            // Without a server (or with "direct connections only") the
-            // host serves direct connections on its own, as `host
-            // --serverless` does; a guest presence would wait for a server
-            // forever and never accept a session.
-            let serverless = crate::account::server::ServerConfig::load()
-                .ok()
-                .flatten()
-                .is_none()
-                || crate::transport::nat::settings::current().serverless;
-            let started = if serverless {
-                HostClient::local()
-            } else {
-                HostClient::guest(device)
-            };
-            match started {
+            match HostClient::signed_out(device) {
                 Ok(client) => {
-                    tracing::info!(serverless, "guest host starting");
+                    tracing::info!(serverless = client.is_local(), "guest host starting");
                     // Probing the encoders takes seconds; do it now, as the
                     // signed-in device centre does at startup, so the first
                     // assistance does not run into the connection deadline.

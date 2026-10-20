@@ -29,7 +29,7 @@ impl SettingsTab {
             Self::Account => "账号与服务器",
             Self::Host => "被控设置",
             Self::Controller => "连接其他设备",
-            Self::Network => "网络与直连",
+            Self::Network => "网络",
             Self::Shortcuts => "快捷键",
             Self::Plugins => "插件",
             Self::Service => "后台服务与驱动",
@@ -42,9 +42,9 @@ impl SettingsTab {
     fn hint(self) -> &'static str {
         match self {
             Self::Account => "当前账号、所连接的服务器和本机身份",
-            Self::Host => "别人连接本机时的总开关、上限、画面与声音、通知；谁可以连接在“本机”页",
+            Self::Host => "别人连接本机时：总开关、直连与局域网、权限上限、画面与声音、通知；谁可以连接在“本机”页",
             Self::Controller => "本机连接其他设备时的画质、编解码与线路",
-            Self::Network => "打洞、端口映射与局域网直连，主控与被控都适用",
+            Self::Network => "打洞与端口映射，主控与被控都适用",
             Self::Shortcuts => "观看窗口中的快捷键",
             Self::Plugins => "视频与输入插件",
             Self::Service => "后台服务，以及输入、虚拟显示与虚拟声卡驱动",
@@ -78,7 +78,6 @@ impl DeviceCenterApp {
         ui.painter()
             .vline(nav.right() + 14.0, full.y_range(), Stroke::new(1.0, LINE));
         let current = self.center_ui.settings_tab;
-        let access = self.access();
         let mut chosen = None;
         ui.scope_builder(
             egui::UiBuilder::new()
@@ -92,8 +91,7 @@ impl DeviceCenterApp {
                 for (group, tabs) in SettingsTab::GROUPS {
                     ui.label(RichText::new(group).small().color(MUTED));
                     for tab in tabs {
-                        let locked = *tab == SettingsTab::Host && access != Access::Account;
-                        if nav_item(ui, tab.icon(), tab.label(), None, locked, current == *tab) {
+                        if nav_item(ui, tab.icon(), tab.label(), None, false, current == *tab) {
                             chosen = Some(*tab);
                         }
                     }
@@ -127,20 +125,7 @@ impl DeviceCenterApp {
                     }
                     SettingsTab::Host => {
                         crate::ui::controls::page_scroll("settings-host").show(ui, |ui| {
-                            if access == Access::Account {
-                                self.host_settings(ui);
-                            } else {
-                                match cards::locked(
-                                    ui,
-                                    "登录后使用被控设置",
-                                    "上限、画面与声音等设置需要登录账号。未登录时，可以在“本机”页开启访问码，让别人连接本机。",
-                                    &[self.sign_in_label(), "前往“本机”"],
-                                ) {
-                                    Some(0) => self.sign_in(),
-                                    Some(_) => self.center_ui.page = Page::ThisDevice,
-                                    None => {}
-                                }
-                            }
+                            self.host_settings(ui);
                             self.notification_settings(ui);
                         });
                     }
@@ -474,12 +459,26 @@ impl DeviceCenterApp {
         }
     }
 
-    /// NAT traversal and direct connections, for both roles.
+    /// NAT traversal, for both roles.
     fn network_settings(&mut self, ui: &mut egui::Ui) {
         section(ui, "打洞与端口映射");
-        // NAT traversal applies to both roles; sessions read it when they
-        // start. In service mode the background service hosts, so the
-        // switches shown are its own and changes go to it as well.
+        self.edit_network(ui, Self::traversal_rows);
+    }
+
+    /// How others reach this device directly (Settings → 被控设置).
+    pub(super) fn direct_settings(&mut self, ui: &mut egui::Ui) {
+        section(ui, "直连与局域网");
+        self.edit_network(ui, Self::direct_rows);
+    }
+
+    /// Show some of the network switches and apply what changed. Sessions
+    /// read them when they start. In service mode the background service
+    /// hosts, so the switches shown are its own and changes go to it as well.
+    fn edit_network(
+        &mut self,
+        ui: &mut egui::Ui,
+        rows: fn(&mut Self, &mut egui::Ui, &mut crate::transport::nat::settings::Settings),
+    ) {
         let service = crate::transport::direct::managed::managed();
         match self.direct.take_outcome() {
             Some(Ok(message)) => self.status = StatusMessage::info(message),
@@ -494,58 +493,7 @@ impl DeviceCenterApp {
             crate::transport::nat::settings::current()
         };
         let mut edited = network;
-        form_row(
-            ui,
-            "激进打洞（对称型 NAT）",
-            "对端为对称型 NAT 时预测其端口，主控与被控均适用",
-            |ui| {
-                crate::ui::controls::switch(ui, &mut edited.aggressive_punching);
-            },
-        );
-        form_row(
-            ui,
-            "允许 UPnP / NAT-PMP / PCP 端口映射",
-            "会话期间在路由器上为直连端口申请映射，结束后删除",
-            |ui| {
-                crate::ui::controls::switch(ui, &mut edited.port_mapping);
-            },
-        );
-        section(ui, "直连");
-        form_row(
-            ui,
-            "允许直连",
-            "允许连接本机时，也接受局域网和地址直连（本账号设备、好友、受信任设备、访问码）",
-            |ui| {
-                crate::ui::controls::switch(ui, &mut edited.direct);
-            },
-        );
-        form_row(
-            ui,
-            "直连端口",
-            "TCP 与 UDP 都用此端口（所有直连会话共用这一个 UDP 端口）。从公网直连时在路由器上转发 TCP 与 UDP 的这个端口",
-            |ui| {
-                ui.add_enabled(
-                    edited.direct,
-                    egui::DragValue::new(&mut edited.direct_port).range(1024..=65_000),
-                );
-            },
-        );
-        form_row(
-            ui,
-            "局域网发现",
-            "在局域网中广播本机，并回应其他设备的查找",
-            |ui| {
-                crate::ui::controls::switch(ui, &mut edited.lan_discovery);
-            },
-        );
-        form_row(
-            ui,
-            "仅直连（不连接服务器）",
-            "被控端不再连接服务器，只能通过局域网或地址直连；好友和服务器中转不可用",
-            |ui| {
-                crate::ui::controls::switch(ui, &mut edited.serverless);
-            },
-        );
+        rows(self, ui, &mut edited);
         if edited != network && !self.direct.sending {
             // This process's controller sessions read the local copy.
             match crate::transport::nat::settings::save(edited) {
@@ -574,5 +522,68 @@ impl DeviceCenterApp {
                 Err(error) => self.status = StatusMessage::error(format!("{error:#}")),
             }
         }
+    }
+
+    fn traversal_rows(&mut self, ui: &mut egui::Ui, edited: &mut crate::transport::nat::settings::Settings) {
+        form_row(
+            ui,
+            "激进打洞（对称型 NAT）",
+            "对端为对称型 NAT 时预测其端口，主控与被控均适用",
+            |ui| {
+                crate::ui::controls::switch(ui, &mut edited.aggressive_punching);
+            },
+        );
+        form_row(
+            ui,
+            "允许 UPnP / NAT-PMP / PCP 端口映射",
+            "会话期间在路由器上为直连端口申请映射，结束后删除",
+            |ui| {
+                crate::ui::controls::switch(ui, &mut edited.port_mapping);
+            },
+        );
+    }
+
+    fn direct_rows(&mut self, ui: &mut egui::Ui, edited: &mut crate::transport::nat::settings::Settings) {
+        form_row(
+            ui,
+            "允许直连",
+            "接受局域网和地址直连（本账号设备、好友、受信任设备、访问码）；还需要开启“允许连接本机”",
+            |ui| {
+                crate::ui::controls::switch(ui, &mut edited.direct);
+            },
+        );
+        form_row(
+            ui,
+            "直连端口",
+            "TCP 与 UDP 都用此端口（所有直连会话共用这一个 UDP 端口）。从公网直连时在路由器上转发 TCP 与 UDP 的这个端口",
+            |ui| {
+                ui.add_enabled(
+                    edited.direct,
+                    egui::DragValue::new(&mut edited.direct_port).range(1024..=65_000),
+                );
+            },
+        );
+        form_row(
+            ui,
+            "局域网发现",
+            "让同一局域网中的设备在“附近”里看到本机（需要允许直连）",
+            |ui| {
+                ui.add_enabled_ui(edited.direct, |ui| {
+                    crate::ui::controls::switch(ui, &mut edited.lan_discovery);
+                });
+            },
+        );
+        // Without a server there is nothing to stop using.
+        if self.access() == Access::NoServer && !edited.serverless {
+            return;
+        }
+        form_row(
+            ui,
+            "仅直连（不连接服务器）",
+            "被控端不再连接服务器，只能通过局域网或地址直连；好友和服务器中转不可用",
+            |ui| {
+                crate::ui::controls::switch(ui, &mut edited.serverless);
+            },
+        );
     }
 }

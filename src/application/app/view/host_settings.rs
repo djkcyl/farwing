@@ -57,7 +57,8 @@ impl DeviceCenterApp {
         self.wol_setup_dialog(ui.ctx());
     }
     fn host_access_settings(&mut self, ui: &mut egui::Ui, host: &crate::features::host::Handle) {
-        let guest = host.is_guest();
+        // Remote power and Wake-on-LAN go through the account's server.
+        let account = !host.is_guest();
         let mut files = host.file_transfer_allowed();
         let mut ports = host.port_mapping_allowed();
         let mut power = host.power_allowed();
@@ -67,21 +68,20 @@ impl DeviceCenterApp {
         let before = (files, ports, power, wol, clipboard, max_participants);
         let enabled = usize::from(clipboard.enabled)
             + usize::from(clipboard.enabled && clipboard.files)
-            + if guest {
-                0
+            + usize::from(files)
+            + usize::from(ports)
+            + if account {
+                usize::from(power) + usize::from(wol)
             } else {
-                [files, ports, power, wol]
-                    .into_iter()
-                    .filter(|v| *v)
-                    .count()
+                0
             };
-        let total = if guest { 2 } else { 6 };
+        let total = if account { 6 } else { 4 };
         let id = egui::Id::new(("host-access-settings", self.login_generation));
         let mut open = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
         form_row(
             ui,
             "访问权限",
-            &format!("已开启 {enabled} / {total} 项"),
+            &format!("已开启 {enabled} / {total} 项 · 对所有连接本机的人生效，各人的权限不会超过这里"),
             |ui| {
                 if ui
                     .add(crate::ui::controls::secondary(if open {
@@ -100,22 +100,26 @@ impl DeviceCenterApp {
             crate::ui::controls::section_frame()
                 .inner_margin(theme::DIALOG_MARGIN)
                 .show(ui, |ui| {
-                    ui.columns(if guest { 1 } else { 2 }, |columns| {
+                    ui.columns(2, |columns| {
                         let ui = &mut columns[0];
                         ui.label(RichText::new("文件与剪贴板").strong());
-                        if !guest {
-                            ui.checkbox(&mut files, "文件浏览与传输");
-                        }
+                        ui.checkbox(&mut files, "文件浏览与传输");
                         ui.checkbox(&mut clipboard.enabled, "剪贴板同步");
                         ui.add_enabled_ui(clipboard.enabled, |ui| {
                             ui.checkbox(&mut clipboard.files, "文件复制粘贴");
                         });
-                        if !guest {
-                            let ui = &mut columns[1];
-                            ui.label(RichText::new("系统与网络").strong());
+                        let ui = &mut columns[1];
+                        ui.label(RichText::new("系统与网络").strong());
+                        ui.checkbox(&mut ports, "端口转发");
+                        if account {
                             ui.checkbox(&mut power, "关机和重启");
-                            ui.checkbox(&mut ports, "端口转发");
                             ui.checkbox(&mut wol, "局域网唤醒协助");
+                        } else {
+                            ui.label(
+                                RichText::new("关机和重启、局域网唤醒协助需要登录账号")
+                                    .small()
+                                    .color(MUTED),
+                            );
                         }
                     });
                     ui.add_space(theme::MENU_GROUP_GAP);
@@ -162,9 +166,29 @@ impl DeviceCenterApp {
             ui.label(RichText::new(message).small().color(MUTED));
         }
     }
+    /// The background service, as it matters to others connecting.
+    pub(super) fn service_row(&mut self, ui: &mut egui::Ui) {
+        let Some((hint, action)) = self.center_ui.components.reach() else {
+            return;
+        };
+        let mut install = false;
+        let mut manage = false;
+        form_row(ui, "后台服务", hint, |ui| match action {
+            Some(label) => install = ui.add(crate::ui::controls::primary(label)).clicked(),
+            None => manage = ui.add(crate::ui::controls::secondary("管理")).clicked(),
+        });
+        if install {
+            self.center_ui.components.request_install();
+        }
+        if manage {
+            self.center_ui.page = Page::Settings;
+            self.center_ui.settings_tab = super::settings::SettingsTab::Service;
+        }
+    }
     fn host_settings_controls(&mut self, ui: &mut egui::Ui) {
         let host = self.host.clone();
         let mut allowed = host.as_ref().is_some_and(|h| h.allowed());
+        section(ui, "连接本机");
         form_row(
             ui,
             "允许连接本机",
@@ -183,7 +207,10 @@ impl DeviceCenterApp {
                 }
             },
         );
+        self.service_row(ui);
+        self.direct_settings(ui);
         if let Some(host) = host.as_ref() {
+            section(ui, "权限");
             if host.request_audio_devices()
                 && self
                     .worker

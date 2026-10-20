@@ -190,6 +190,17 @@ pub(crate) fn save_trusted(device: TrustedDevice) -> Result<()> {
     save_trusted_in(&dir()?, device)
 }
 
+/// Replace the whole list (the background service's, on uninstallation).
+pub(crate) fn replace_trusted(devices: Vec<TrustedDevice>) -> Result<()> {
+    let _guard = guard();
+    let (path, mut trusted) = load_trusted_in(&dir()?)?;
+    trusted.devices = devices
+        .into_iter()
+        .filter(|device| keyed(&device.device_id, &device.public_key))
+        .collect();
+    write(&path, &trusted)
+}
+
 /// Stop trusting `device_id`. Returns how many records were removed.
 pub(crate) fn remove_trusted(device_id: &str) -> Result<usize> {
     let _guard = guard();

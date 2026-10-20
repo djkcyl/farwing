@@ -17,19 +17,20 @@ pub(crate) fn enroll_resident() -> Result<()> {
         return Ok(());
     }
     ensure_resident_owner()?;
-    let identity = KeyringIdentityStore::new()?
-        .load_existing()?
-        .context("尚未建立本机身份")?;
-    let session = KeyringSessionStore::new()?
-        .load()?
-        .context("请先登录账号")?;
+    let identity = KeyringIdentityStore::new()?.load_or_create()?;
+    // Signed out, the service hosts without an account (access codes,
+    // trusted devices, direct connections); signing in later moves it over.
+    let session = KeyringSessionStore::new()?.load()?;
     SecretEntry::new(&service(), IDENTITY_ACCOUNT)?.enroll()?;
     SecretEntry::new(&service(), SESSION_ACCOUNT)?.enroll()?;
-    crate::features::host::enroll_settings(
-        session.user_id(),
-        &identity.client_identity()?.device_id,
-    )?;
+    if let Some(session) = &session {
+        crate::features::host::enroll_settings(
+            session.user_id(),
+            &identity.client_identity()?.device_id,
+        )?;
+    }
     crate::features::host::transfer_guest_settings(&identity.client_identity()?.client_id, true)?;
+    crate::transport::direct::managed::hand_over()?;
     crate::features::host::displays::transfer_preferences(true)?;
     // The resident (SYSTEM) needs the server setting too.
     crate::account::server::ServerConfig::enroll()?;
@@ -69,6 +70,7 @@ pub(crate) fn restore_portable() -> Result<()> {
     SecretEntry::new(&service(), SESSION_ACCOUNT)?.restore_portable()?;
     crate::features::host::displays::transfer_preferences(false)?;
     crate::account::server::ServerConfig::restore_portable()?;
+    crate::transport::direct::managed::take_back();
     Ok(())
 }
 

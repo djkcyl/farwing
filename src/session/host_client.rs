@@ -63,11 +63,31 @@ impl HostClient {
             })),
         })
     }
+    /// This installation signed out: a guest of the server, or a local host
+    /// when there is no server or only direct connections are allowed (a
+    /// guest would wait for a server and never accept a session).
+    pub fn signed_out(device: DeviceHandle) -> Result<Self> {
+        if Self::serverless() {
+            Self::local()
+        } else {
+            Self::guest(device)
+        }
+    }
+    /// A signed-out host does not use a server.
+    pub fn serverless() -> bool {
+        crate::account::server::ServerConfig::load()
+            .ok()
+            .flatten()
+            .is_none()
+            || crate::transport::nat::settings::current().serverless
+    }
     /// A host without a server: this profile's device key and settings, the
     /// device ID derived from the key unless it is registered.
     pub fn local() -> Result<Self> {
         let device = crate::transport::direct::local_device()?;
-        let generation = format!("local:{}", device.identity.client_id);
+        // The same signed-out installation as a guest: the GUI and the
+        // background service may each decide on a server in between.
+        let generation = format!("guest:{}", device.identity.client_id);
         let mut host = host::Handle::load_guest(&device.identity.client_id);
         host.bind_account(generation.clone());
         Ok(Self {
@@ -81,6 +101,9 @@ impl HostClient {
     }
     pub fn is_guest(&self) -> bool {
         matches!(self.identity, Identity::Guest(_))
+    }
+    pub fn is_local(&self) -> bool {
+        matches!(self.identity, Identity::Local(_))
     }
     /// No server is used: a local host, or "direct connections only".
     pub(crate) fn offline(&self) -> bool {

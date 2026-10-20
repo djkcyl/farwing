@@ -238,6 +238,80 @@ pub(crate) fn sync_local_settings(remote: &Settings) {
     }
 }
 
+// Installing the service hands the user's host-side records to the
+// resident through the service vault (writable by the installing user and
+// SYSTEM only); uninstalling it copies the resident's back. Trusted and
+// paired devices and the direct switches thus survive both.
+const HANDOVER: &str = "direct-handover.json";
+
+#[derive(Serialize, Deserialize)]
+struct Handover {
+    settings: Settings,
+    trusted: Vec<TrustedDevice>,
+}
+
+/// Installation: the user's records, for the resident to adopt.
+pub(crate) fn hand_over() -> Result<()> {
+    let state = Handover {
+        settings: crate::transport::nat::settings::current(),
+        trusted: store::trusted(),
+    };
+    let path = crate::platform::windows::host_service::vault::root()?.join(HANDOVER);
+    std::fs::write(path, serde_json::to_vec(&state)?).context("保存交给后台服务的直连记录失败")
+}
+
+/// The resident adopts handed-over records once, replacing its own (which
+/// may be left from an earlier installation). Returns whether there were any.
+pub(crate) fn take_over() -> Result<bool> {
+    let path = crate::platform::windows::host_service::vault::root()?.join(HANDOVER);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    std::fs::remove_file(&path)?;
+    let state: Handover = serde_json::from_slice(&bytes).context("交给后台服务的直连记录无效")?;
+    apply(Action::Network(state.settings))?;
+    let mut trusted = Vec::new();
+    for device in state.trusted {
+        let checked = validate(&Action::Trust {
+            device_id: device.device_id.clone(),
+            public_key: device.public_key.clone(),
+            name: device.name.clone(),
+            grants: device.grants.clone(),
+        })
+        .and_then(|()| checked_caps(&device.grants));
+        match checked {
+            Ok(grants) => trusted.push(TrustedDevice {
+                name: super::sanitize_name(&device.name),
+                grants: store::with_view(&grants),
+                ..device
+            }),
+            Err(error) => tracing::warn!(
+                device = %device.device_id,
+                error = %format!("{error:#}"),
+                "handed-over trusted device skipped"
+            ),
+        }
+    }
+    let count = trusted.len();
+    store::replace_trusted(trusted)?;
+    tracing::info!(trusted = count, "adopted the installing user's direct records");
+    Ok(true)
+}
+
+/// Uninstallation, while the resident still runs: its records become the
+/// user's. Without them the user's previous records stay.
+pub(crate) fn take_back() {
+    let result = query().and_then(|(_, state)| {
+        crate::transport::nat::settings::save(state.settings)?;
+        store::replace_trusted(state.trusted)
+    });
+    if let Err(error) = result {
+        tracing::warn!(error = %format!("{error:#}"), "background service direct records not copied back");
+    }
+}
+
 /// Whether host-side direct state belongs to the background service.
 pub(crate) fn managed() -> bool {
     crate::platform::windows::host_service::resident::managed()
