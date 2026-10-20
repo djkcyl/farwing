@@ -159,6 +159,7 @@ impl Peer {
                 crate::media::geometry::fit_size(size.0, size.1, initial.maximum),
                 initial_fps,
                 true,
+                4,
             )
         } else {
             super::parameters::fixed(

@@ -94,12 +94,16 @@ pub(crate) fn fixed(
     Bounds::video(custom.clamp(1_000_000, 500_000_000))
 }
 
+/// `top`: the highest tier automatic quality may choose. Until its first
+/// decision the estimate may grow up to that tier, so a fast link can be
+/// recognised at once instead of one tier at a time.
 pub(crate) fn automatic(
     format: Format,
     quality: i32,
     source: (u32, u32),
     fps: u32,
     initial: bool,
+    top: i32,
 ) -> Bounds {
     let mut result = standard(format, quality, source, fps);
     result.probe = if quality >= 4 {
@@ -107,7 +111,7 @@ pub(crate) fn automatic(
     } else {
         let next = standard(format, quality + 1, source, fps);
         if initial {
-            next.maximum
+            standard(format, top.clamp(quality + 1, 4), source, fps).maximum
         } else {
             (((f64::from(downgrade_threshold(next.maximum)) + f64::from(next.maximum)) * 0.8)
                 as u32)
@@ -174,6 +178,9 @@ impl AutoQuality {
     }
     pub fn quality(&self) -> i32 {
         self.current
+    }
+    pub fn maximum(&self) -> i32 {
+        self.maximum
     }
     pub fn limit(&mut self, maximum: i32) {
         self.maximum = maximum.clamp(1, 4);
@@ -242,15 +249,18 @@ impl AutoQuality {
         let lower = mean(&self.lower);
         let bounds = standard(format, self.current, source, fps);
         let mut selected = self.current;
-        if probe > bounds.maximum
-            && !self.loss_seen
-            && self.probes.len() >= AUTO_UPGRADE_SAMPLES
-            && self.current < self.maximum
-        {
-            let next = standard(format, self.current + 1, source, fps);
-            if f64::from(probe)
-                > (f64::from(downgrade_threshold(next.maximum)) + f64::from(next.maximum)) * 0.5
+        if !self.loss_seen && self.probes.len() >= AUTO_UPGRADE_SAMPLES {
+            // Up to the highest tier the estimate clears: each tier on the
+            // way would rebuild the encoder and start over with a keyframe.
+            while selected < self.maximum
+                && probe > standard(format, selected, source, fps).maximum
             {
+                let next = standard(format, selected + 1, source, fps);
+                if f64::from(probe)
+                    <= (f64::from(downgrade_threshold(next.maximum)) + f64::from(next.maximum)) * 0.5
+                {
+                    break;
+                }
                 selected += 1;
             }
         }
@@ -589,6 +599,13 @@ mod tests {
         observe(&mut auto, 1, fast);
         assert_eq!(auto.quality(), 2, "not on the first probes");
         observe(&mut auto, 2, fast);
+        assert_eq!(auto.quality(), 4, "straight to the highest tier it clears");
+        // An estimate between the tiers stops on the way.
+        let mut auto = AutoQuality::new(2, 4);
+        let medium = NetworkSample { probe: 18_000_000, ..fast };
+        for second in 0..3 {
+            observe(&mut auto, second, medium);
+        }
         assert_eq!(auto.quality(), 3);
         // Loss once seen keeps the tier where it is.
         let mut auto = AutoQuality::new(2, 4);

@@ -364,6 +364,7 @@ pub(super) fn capture_loop(
                 budget_size,
                 wanted.fps,
                 initial_auto,
+                automatic.as_ref().map_or(4, |auto| auto.maximum()),
             )
         } else {
             crate::features::host::parameters::fixed(
