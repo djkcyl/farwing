@@ -104,8 +104,13 @@ fn prepare(
     let begun = Instant::now();
     let created = super::new_device(adapter);
     drop(previous);
+    // Not `(device, _)`: the context left in `created` would keep the device,
+    // and whatever its taker did on it, until this thread ends.
     let device = match created {
-        Ok((device, _)) => device,
+        Ok((device, context)) => {
+            drop(context);
+            device
+        }
         Err(error) => {
             tracing::debug!(%error, adapter, "GPU warm-up failed");
             super::super::lock(&SPARES).retain(|s| s.id != id);
