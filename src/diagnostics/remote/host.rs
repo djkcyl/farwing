@@ -86,14 +86,14 @@ impl Host {
         self.0
             .input
             .try_send(message)
-            .map_err(|_| anyhow::anyhow!("诊断请求过多"))?;
+            .map_err(|_| anyhow::anyhow!(crate::i18n::t().session.diag_too_many_requests))?;
         Ok(true)
     }
     async fn send(&self, frame: Vec<u8>) -> Result<()> {
         let channel = lock(&self.0.session)
             .upgrade()
             .filter(|c| c.ready_state() == RTCDataChannelState::Open)
-            .ok_or_else(|| anyhow::anyhow!("诊断通道已关闭"))?;
+            .ok_or_else(|| anyhow::anyhow!(crate::i18n::t().session.diag_channel_closed))?;
         tokio::time::timeout(TIMEOUT, channel.send(&Bytes::from(frame))).await??;
         Ok(())
     }
@@ -138,11 +138,11 @@ impl Host {
                 continue;
             };
             if !enabled {
-                self.refuse(id, farwing_protocol::peer::error_code::UNSUPPORTED, "被控端不提供诊断包").await;
+                self.refuse(id, farwing_protocol::peer::error_code::UNSUPPORTED, crate::i18n::t().session.diag_unsupported).await;
                 continue;
             }
             if !allowed() {
-                self.refuse(id, farwing_protocol::peer::error_code::FORBIDDEN, "远端未允许文件与诊断包访问").await;
+                self.refuse(id, farwing_protocol::peer::error_code::FORBIDDEN, crate::i18n::t().session.diag_forbidden).await;
                 continue;
             }
             let job = stop.child_token();
@@ -151,10 +151,10 @@ impl Host {
                 tokio::pin!(work);
                 loop {
                     tokio::select! {
-                        _ = stop.cancelled() => break Err(Outcome::Before(anyhow::anyhow!("诊断连接已关闭"))),
+                        _ = stop.cancelled() => break Err(Outcome::Before(anyhow::anyhow!(crate::i18n::t().session.diag_connection_closed))),
                         _ = tick.tick() => if !allowed() {
                             job.cancel();
-                            break Err(Outcome::After(anyhow::anyhow!("诊断访问权限已撤销或连接已中断")));
+                            break Err(Outcome::After(anyhow::anyhow!(crate::i18n::t().session.diag_access_lost)));
                         },
                         result = &mut work => break result,
                     }
@@ -196,12 +196,12 @@ impl Host {
         message: Option<Received>,
     ) -> std::result::Result<(), Outcome> {
         match message {
-            None => Err(Outcome::Before(anyhow::anyhow!("诊断通道已关闭"))),
+            None => Err(Outcome::Before(anyhow::anyhow!(crate::i18n::t().session.diag_channel_closed))),
             Some(Received::Push(Body::Cancel(cancel))) if cancel.stream == stream => {
                 Err(Outcome::Cancelled)
             }
             Some(Received::Request(id, _)) => {
-                self.refuse(id, farwing_protocol::peer::error_code::BUSY, "正在获取诊断包").await;
+                self.refuse(id, farwing_protocol::peer::error_code::BUSY, crate::i18n::t().session.diag_busy).await;
                 Ok(())
             }
             Some(_) => Ok(()),
@@ -223,12 +223,12 @@ impl Host {
             match task.receiver.try_recv() {
                 Ok(result) => break result.map_err(|e| before(anyhow::Error::msg(e)))?,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    return Err(before(anyhow::anyhow!("远端诊断导出任务已中断")));
+                    return Err(before(anyhow::anyhow!(crate::i18n::t().session.diag_export_interrupted)));
                 }
                 Err(_) => {}
             }
             tokio::select! {
-                _ = job.cancelled() => return Err(before(anyhow::anyhow!("诊断导出已停止"))),
+                _ = job.cancelled() => return Err(before(anyhow::anyhow!(crate::i18n::t().session.diag_export_stopped))),
                 _ = tick.tick() => {
                     let progress = task.progress();
                     self.send(frame(0, 0, Body::Progress(Progress {
@@ -247,7 +247,7 @@ impl Host {
         let (mut file, size, sha256) = async {
             let mut file = tokio::fs::File::open(&exported.path).await?;
             let size = file.metadata().await?.len();
-            ensure!(size > 0 && size <= bundle::ARCHIVE_LIMIT, "诊断包大小无效");
+            ensure!(size > 0 && size <= bundle::ARCHIVE_LIMIT, "{}", crate::i18n::t().session.diag_size_invalid);
             let mut digest = Sha256::new();
             let mut buffer = vec![0; transfer::CHUNK];
             loop {
@@ -278,13 +278,13 @@ impl Host {
         let after = Outcome::After;
         let bulk = lock(&self.0.bulk)
             .upgrade()
-            .ok_or_else(|| after(anyhow::anyhow!("诊断数据通道已关闭")))?;
+            .ok_or_else(|| after(anyhow::anyhow!(crate::i18n::t().session.diag_data_closed)))?;
         let mut buffer = vec![0; transfer::CHUNK];
         let mut offset = 0u64;
         while offset < size {
             let count = file.read(&mut buffer).await.map_err(|e| after(e.into()))?;
             if count == 0 || offset + count as u64 > size {
-                return Err(after(anyhow::anyhow!("诊断包读取长度不一致")));
+                return Err(after(anyhow::anyhow!(crate::i18n::t().session.diag_length_mismatch)));
             }
             // Wait for the controller's credit.
             loop {
@@ -298,9 +298,9 @@ impl Host {
                     break;
                 }
                 tokio::select! {
-                    _ = job.cancelled() => return Err(after(anyhow::anyhow!("诊断传输已停止"))),
+                    _ = job.cancelled() => return Err(after(anyhow::anyhow!(crate::i18n::t().session.diag_transfer_stopped))),
                     _ = &mut changed => {},
-                    _ = tokio::time::sleep(TIMEOUT) => return Err(after(anyhow::anyhow!("主控未确认诊断数据"))),
+                    _ = tokio::time::sleep(TIMEOUT) => return Err(after(anyhow::anyhow!(crate::i18n::t().session.diag_not_acknowledged))),
                     message = requests.recv() => self.interrupted(stream, message).await?,
                 }
             }

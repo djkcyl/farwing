@@ -181,7 +181,7 @@ pub fn local_app_data() -> Result<PathBuf> {
         return Ok(path);
     }
     known_folder(&windows::Win32::UI::Shell::FOLDERID_LocalAppData)
-        .context("无法确定 LOCALAPPDATA 目录")
+        .context(crate::i18n::t().system.local_app_data_unknown)
 }
 
 /// Per-user data root: `%LOCALAPPDATA%\Farwing` for the default profile and
@@ -199,7 +199,7 @@ pub fn local_data_dir() -> Result<PathBuf> {
 /// so it is only meaningful for the default profile.
 pub fn program_data_dir() -> Result<PathBuf> {
     Ok(known_folder(&windows::Win32::UI::Shell::FOLDERID_ProgramData)
-        .context("无法确定 ProgramData 目录")?
+        .context(crate::i18n::t().system.program_data_unknown)?
         .join(PRODUCT_NAME))
 }
 
@@ -212,7 +212,11 @@ fn known_folder(id: &windows::core::GUID) -> Result<PathBuf> {
     let text = unsafe { raw.to_string() };
     unsafe { CoTaskMemFree(Some(raw.0.cast())) };
     let path = PathBuf::from(text?);
-    ensure!(path.is_absolute(), "系统目录无效：{}", path.display());
+    ensure!(
+        path.is_absolute(),
+        "{}",
+        (crate::i18n::t().system.system_folder_invalid)(&path.display().to_string())
+    );
     Ok(path)
 }
 

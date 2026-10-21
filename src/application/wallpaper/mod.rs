@@ -285,12 +285,12 @@ async fn download(address: &str) -> Result<Vec<u8>> {
     let (identity, session) = tokio::task::spawn_blocking(|| -> Result<_> {
         let identity = KeyringIdentityStore::new()?
             .load_existing()?
-            .context("本机设备尚未登记")?;
-        let session = KeyringSessionStore::new()?.load()?.context("尚未登录")?;
+            .context(crate::i18n::t().session.api_not_registered)?;
+        let session = KeyringSessionStore::new()?.load()?.context(crate::i18n::t().common.signed_out)?;
         Ok((identity, session))
     })
     .await??;
-    anyhow::ensure!(session.server() == server.key(), "登录不属于当前服务器");
+    anyhow::ensure!(session.server() == server.key(), "{}", crate::i18n::t().session.session_other_server);
     let mut api = crate::account::api::ServerApi::new(&server)?;
     api.set_identity(identity.client_identity()?);
     api.set_access_token(Some(session.token()))?;

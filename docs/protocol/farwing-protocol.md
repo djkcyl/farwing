@@ -159,10 +159,10 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 成功：HTTP 2xx，JSON 主体即数据（无数据时 `{}`）。失败：
 
 ```json
-{"error": {"code": "device_offline", "message": "目标设备不在线", "retryable": false, "details": {}}}
+{"error": {"code": "forbidden", "message": "two-step verification required", "retryable": false, "details": {"reason": "totp_required"}}}
 ```
 
-客户端按 `code` 处理，不解析 `message`。`rate_limited` 另带 `Retry-After` 头（秒）与 `details.retry_after_ms`。
+客户端按 `code` 处理，不解析也不显示 `message`（英文，供日志与排查）。同一 `code` 有多种情况时，`details.reason` 给出稳定的原因（`farwing_protocol::error::reason`，例如 `totp_required`、`username_taken`、`password_too_short`），需要的参数也在 `details` 中（如 `details.min`）；客户端与网页端按 `code` 与 `reason` 显示自己语言的文字（`docs/i18n.md`）。`rate_limited` 另带 `Retry-After` 头（秒）与 `details.retry_after_ms`。
 
 | code | HTTP | 可重试 | 含义 |
 |------|------|--------|------|

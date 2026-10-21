@@ -295,7 +295,8 @@ fn authorize(pipe: &Pipe) -> Result<()> {
     let sid = vault::sid(pid)?;
     ensure!(
         sid == "S-1-5-18" || Some(sid) == vault::owner()?,
-        "该 Windows 用户无权管理被控服务"
+        "{}",
+        crate::i18n::t().system.service_user_not_allowed
     );
     Ok(())
 }

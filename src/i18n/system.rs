@@ -692,6 +692,10 @@ pub(crate) struct System {
     pub gdi_bitmap_not_selected: &'static str,
     pub gdi_screen_identity_changed: &'static str,
     pub gdi_source_changed: &'static str,
+    pub service_user_not_allowed: &'static str,
+    pub local_app_data_unknown: &'static str,
+    pub program_data_unknown: &'static str,
+    pub system_folder_invalid: fn(&str) -> String,
 }
 
 pub(crate) const ZH_CN: System = System {
@@ -1326,6 +1330,10 @@ pub(crate) const ZH_CN: System = System {
     gdi_bitmap_not_selected: "GDI 未绑定采集位图",
     gdi_screen_identity_changed: "GDI 所选屏幕的身份已变化",
     gdi_source_changed: "GDI 所选源已变化",
+    service_user_not_allowed: "该 Windows 用户无权管理被控服务",
+    local_app_data_unknown: "无法确定 LOCALAPPDATA 目录",
+    program_data_unknown: "无法确定 ProgramData 目录",
+    system_folder_invalid: |path| format!("系统目录无效：{path}"),
 };
 
 pub(crate) const EN: System = System {
@@ -1960,4 +1968,8 @@ pub(crate) const EN: System = System {
     gdi_bitmap_not_selected: "GDI capture bitmap not selected",
     gdi_screen_identity_changed: "The identity of the GDI selected screen changed",
     gdi_source_changed: "The GDI selected source changed",
+    service_user_not_allowed: "This Windows user can't manage the remote access service",
+    local_app_data_unknown: "Can't find the LOCALAPPDATA folder",
+    program_data_unknown: "Can't find the ProgramData folder",
+    system_folder_invalid: |path| format!("Invalid system folder: {path}"),
 };

@@ -752,11 +752,7 @@ impl DeviceCenterApp {
         let (presence, color) = if self.host.as_ref().is_some_and(|h| h.status().connected) {
             (t().center.being_controlled.to_owned(), GREEN)
         } else if unreachable {
-            let text = match self.next_reconnect(ui.ctx()) {
-                Some(seconds) => (t().center.footer_unreachable_in)(seconds),
-                None => t().center.footer_unreachable.to_owned(),
-            };
-            (text, AMBER)
+            (t().center.footer_unreachable.to_owned(), AMBER)
         } else {
             let (text, color) = presence_text(&self.presence);
             (text.to_owned(), color)
@@ -778,8 +774,12 @@ impl DeviceCenterApp {
                     ui.id().with("reconnect-now"),
                     Sense::click(),
                 )
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text(t().center.reconnect_now);
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            let next = self.next_reconnect(ui.ctx());
+            let response = response.on_hover_text(match next {
+                Some(seconds) => (t().center.reconnect_in)(seconds),
+                None => t().center.reconnecting.to_owned(),
+            });
             if response.clicked() {
                 self.reconnect();
             }

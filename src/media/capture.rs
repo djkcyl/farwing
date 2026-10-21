@@ -16,9 +16,14 @@ pub(crate) struct Screen {
     pub render_adapter: Option<u64>,
     pub identity: Option<String>,
 }
-#[derive(Debug, thiserror::Error)]
-#[error("当前连接的显示器已断开")]
+#[derive(Debug)]
 pub(crate) struct SourceGone;
+impl std::fmt::Display for SourceGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(crate::i18n::t().session.capture_display_disconnected)
+    }
+}
+impl std::error::Error for SourceGone {}
 
 /// Ignore device paths returned as display names by some remote implementations.
 /// Keep actual model names intact; identity and selection never use this label.

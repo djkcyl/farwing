@@ -95,7 +95,8 @@ impl Task {
                 REMOTE_EXPORTING
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok(),
-                "远端正在生成诊断包"
+                "{}",
+                crate::i18n::t().session.diag_busy
             );
             Some(RemotePermit)
         } else {

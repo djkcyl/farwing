@@ -86,12 +86,12 @@ impl AuthenticatedClient {
                             readback_needed = true;
                             if let Err(error) = device.ensure(true).await {
                                 reporting::update(|s| {
-                                    s.registration = format!("上报失败：{error:#}")
+                                    s.registration = (crate::i18n::t().session.report_failed)(&format!("{error:#}"))
                                 });
                             }
                         }
                         Err(error) => reporting::update(|s| {
-                            s.registration = format!("信息读取失败：{error:#}")
+                            s.registration = (crate::i18n::t().session.report_read_failed)(&format!("{error:#}"))
                         }),
                         _ => {}
                     }
@@ -101,11 +101,11 @@ impl AuthenticatedClient {
                         match api.device_detail(&identity.device_id).await {
                             Ok(detail) => reporting::update(|s| {
                                 s.server_details = detail.details;
-                                s.readback = "已读取服务端资料".into();
+                                s.readback = crate::i18n::t().session.report_readback_done.into();
                                 s.readback_at = Some(chrono::Utc::now().timestamp());
                             }),
                             Err(error) => {
-                                reporting::update(|s| s.readback = format!("回读失败：{error:#}"))
+                                reporting::update(|s| s.readback = (crate::i18n::t().session.report_readback_failed)(&format!("{error:#}")))
                             }
                         }
                     }
@@ -136,12 +136,13 @@ impl AuthenticatedClient {
                                 attempted_digest = hash.clone();
                                 reporting::update(|s| {
                                     s.wallpaper_digest = hash;
-                                    s.wallpaper = "正在核对壁纸上报".into();
+                                    s.wallpaper = crate::i18n::t().session.wallpaper_checking.into();
                                 });
                                 let current = api.list_devices().await?;
                                 anyhow::ensure!(
                                     current.current_device.device_id == identity.device_id,
-                                    "当前注册设备与上报目标不一致"
+                                    "{}",
+                crate::i18n::t().session.report_device_mismatch
                                 );
                                 synchronize(
                                     api.clone(),
@@ -159,7 +160,7 @@ impl AuthenticatedClient {
                             source_seen = Some(source);
                             if let Err(error) = result {
                                 reporting::update(|s| {
-                                    s.wallpaper = format!("上报未确认：{error:#}")
+                                    s.wallpaper = (crate::i18n::t().session.wallpaper_unconfirmed)(&format!("{error:#}"))
                                 });
                                 tracing::warn!(%error,"device wallpaper publication not confirmed");
                             }
@@ -171,7 +172,7 @@ impl AuthenticatedClient {
                                 tracing::warn!(%error, "device wallpaper source unavailable");
                                 source_error = Some(error.clone());
                             }
-                            reporting::update(|s| s.wallpaper = format!("不可用：{error}"));
+                            reporting::update(|s| s.wallpaper = (crate::i18n::t().session.wallpaper_unavailable)(&error.to_string()));
                         }
                         _ => {}
                     }
@@ -186,7 +187,7 @@ impl AuthenticatedClient {
             tokio::select! {
                 biased;
                 _=ended.cancelled()=>{},
-                result=job=>if let Err(error)=result {reporting::update(|s|s.wallpaper=format!("上报任务已停止：{error:#}"));},
+                result=job=>if let Err(error)=result {reporting::update(|s|s.wallpaper=(crate::i18n::t().session.report_stopped)(&format!("{error:#}")));},
             }
         }));
     }
@@ -258,7 +259,7 @@ async fn synchronize(
         })
     {
         reporting::update(|s| {
-            s.wallpaper = "已同步".into();
+            s.wallpaper = crate::i18n::t().session.wallpaper_synced.into();
             s.wallpaper_url = current_url;
             s.wallpaper_at = Some(chrono::Utc::now().timestamp());
         });
@@ -267,8 +268,8 @@ async fn synchronize(
 
     // The account snapshot and verify_owner bind this job to this application's
     // current registered identity. Hardware descriptions are not identity proofs.
-    let content_type = image_content_type(&image).context("壁纸图片格式不受支持")?;
-    reporting::update(|s| s.wallpaper = "正在上传壁纸".into());
+    let content_type = image_content_type(&image).context(crate::i18n::t().session.wallpaper_format_unsupported)?;
+    reporting::update(|s| s.wallpaper = crate::i18n::t().session.wallpaper_uploading.into());
     verify_owner(&device, &identity, &session).await?;
     let binding = api.upload_wallpaper(image, content_type).await;
     verify_owner(&device, &identity, &session).await?;
@@ -301,7 +302,7 @@ async fn synchronize(
         && list.current_device.wallpaper_url == uploaded_url
     {
         reporting::update(|s| {
-            s.wallpaper = "已上传并确认".into();
+            s.wallpaper = crate::i18n::t().session.wallpaper_uploaded.into();
             s.wallpaper_url = uploaded_url;
             s.wallpaper_at = Some(chrono::Utc::now().timestamp());
         });
