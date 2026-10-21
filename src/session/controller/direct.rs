@@ -21,6 +21,8 @@ use tokio_util::sync::CancellationToken;
 pub struct DirectRequest {
     pub(crate) target: Target,
     pub(crate) auth: Auth,
+    /// The host's name, when known before connecting (a nearby device).
+    pub(crate) name: Option<String>,
 }
 
 impl DirectRequest {
@@ -34,11 +36,25 @@ impl DirectRequest {
             None if ask => Auth::Code(None),
             None => Auth::Key,
         };
-        Ok(Self { target, auth })
+        Ok(Self {
+            target,
+            auth,
+            name: None,
+        })
+    }
+
+    pub fn named(mut self, name: &str) -> Self {
+        self.name = Some(name.to_owned()).filter(|name| !name.is_empty());
+        self
     }
 
     pub fn label(&self) -> String {
         self.target.to_string()
+    }
+
+    /// What the viewer window is called.
+    pub fn title(&self) -> String {
+        self.name.clone().unwrap_or_else(|| self.label())
     }
 }
 

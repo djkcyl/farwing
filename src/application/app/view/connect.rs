@@ -378,7 +378,7 @@ impl DeviceCenterApp {
         let code = code.trim();
         match parse_target(text) {
             Err(error) => self.direct.error = Some(error),
-            Ok(Target::Address(address)) => self.connect_address(&address, code, ask),
+            Ok(Target::Address(address)) => self.connect_address(&address, code, ask, None),
             Ok(Target::ShortNumber(number)) => {
                 if self.access() == Access::NoServer {
                     self.direct.error =
@@ -412,7 +412,7 @@ impl DeviceCenterApp {
             .into_iter()
             .find(|h| h.announce.device_id == id)
         {
-            self.connect_address(&host.target().to_string(), code, ask);
+            self.connect_address(&host.target().to_string(), code, ask, Some(&host.announce.name));
             return;
         }
         if self.access() != Access::NoServer {
@@ -420,7 +420,7 @@ impl DeviceCenterApp {
             return;
         }
         match store::known_host(id).filter(|h| !h.address.is_empty()) {
-            Some(host) => self.connect_address(&host.address, code, ask),
+            Some(host) => self.connect_address(&host.address, code, ask, Some(&host.name)),
             None => {
                 self.direct.error = Some(format!(
                     "找不到设备 {}：没有服务器时，请在“附近”中选择，或输入对方的地址。",
@@ -432,12 +432,16 @@ impl DeviceCenterApp {
 
     /// Connect directly: by this device's key, with an access code, or
     /// asking the other side's user.
-    fn connect_address(&mut self, address: &str, code: &str, ask: bool) {
+    fn connect_address(&mut self, address: &str, code: &str, ask: bool, name: Option<&str>) {
         let code = (!code.is_empty()).then(|| code.to_owned());
         let ask = ask && code.is_none();
         match crate::session::controller::DirectRequest::parse(address, code, ask) {
             Ok(request) => {
                 self.direct.error = None;
+                let request = match name {
+                    Some(name) => request.named(name),
+                    None => request,
+                };
                 self.spawn_direct_viewer(request);
             }
             Err(error) => self.direct.error = Some(format!("{error:#}")),
@@ -554,7 +558,7 @@ impl DeviceCenterApp {
             .unwrap_or_default();
         let pairing = self.direct.pairing_active();
         enum Pick {
-            Key(String),
+            Key(String, String),
             Server(String),
             Code(String, String),
             Pair(String, String),
@@ -609,7 +613,7 @@ impl DeviceCenterApp {
                 |ui| {
                     if own_device || admits {
                         if ui.add(primary("连接")).clicked() {
-                            picked = Some(Pick::Key(target.clone()));
+                            picked = Some(Pick::Key(target.clone(), announce.name.clone()));
                         }
                     } else if let Some(device) = friend {
                         if ui
@@ -649,7 +653,7 @@ impl DeviceCenterApp {
             );
         }
         match picked {
-            Some(Pick::Key(target)) => self.connect_address(&target, "", false),
+            Some(Pick::Key(target, name)) => self.connect_address(&target, "", false, Some(&name)),
             Some(Pick::Server(id)) => {
                 self.selected_device_id = Some(id);
                 self.start_viewer();

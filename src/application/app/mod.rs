@@ -995,7 +995,7 @@ impl DeviceCenterApp {
             .send(GuiCommand::View {
                 generation: self.login_generation,
                 key: key.clone(),
-                alias: request.label(),
+                alias: request.title(),
                 device_id: None,
                 assist: None,
                 direct: Some(request),
