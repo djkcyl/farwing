@@ -53,6 +53,9 @@ pub struct AuthenticatedClient {
     validated: tokio::sync::Mutex<RestoreState>,
     restore_trigger: RestoreTrigger,
     restore_progress: tokio::sync::watch::Sender<RestorationStage>,
+    /// The server was out of reach at the last attempt (restoring the login
+    /// or any request since).
+    unreachable: tokio::sync::watch::Sender<bool>,
     account_name: Mutex<String>,
     publication: Mutex<publication::Sync>,
     features: crate::account::feature_ability::FeatureCatalog,
@@ -118,7 +121,12 @@ impl AuthenticatedClient {
         } else {
             RestoreTrigger::ExplicitLogin
         };
-        let account_name = Mutex::new(session.nickname().to_owned());
+        // As the restored account shows it: the nickname, else the username.
+        let account_name = Mutex::new(if session.nickname().is_empty() {
+            session.username().to_owned()
+        } else {
+            session.nickname().to_owned()
+        });
         Ok(Self {
             host,
             guest: false,
@@ -134,6 +142,7 @@ impl AuthenticatedClient {
             }),
             restore_trigger,
             restore_progress: tokio::sync::watch::channel(RestorationStage::Device).0,
+            unreachable: tokio::sync::watch::channel(false).0,
             account_name,
             publication: Mutex::new(publication::Sync::default()),
             features: crate::account::feature_ability::FeatureCatalog::default(),
@@ -171,6 +180,7 @@ impl AuthenticatedClient {
             }),
             restore_trigger: RestoreTrigger::ExplicitLogin,
             restore_progress: tokio::sync::watch::channel(RestorationStage::Device).0,
+            unreachable: tokio::sync::watch::channel(false).0,
             account_name: Mutex::new(String::new()),
             publication: Mutex::new(publication::Sync::default()),
             features: crate::account::feature_ability::FeatureCatalog::default(),
@@ -268,26 +278,49 @@ impl AuthenticatedClient {
         *self.restore_progress.borrow()
     }
 
-    async fn validate_saved_session(&self) -> Result<()> {
+    /// Restore the saved login before a request. With `wait`, keep trying
+    /// while the server is unreachable (work that should carry on by itself
+    /// once it returns); otherwise give up after one attempt, or at once when
+    /// another request is already retrying against an unreachable server.
+    async fn validate_saved_session(&self, wait: bool) -> Result<()> {
+        let mut away = self.unreachable.subscribe();
         let mut validated = tokio::select! {
             biased;
             _ = self.ended.cancelled() => bail!("account session has ended"),
             validated = self.validated.lock() => validated,
+            _ = away.wait_for(|away| *away), if !wait => return Err(unreachable_error()),
         };
-        if validated.ready {
-            return Ok(());
+        loop {
+            if validated.ready {
+                return Ok(());
+            }
+            if let Some(failure) = &validated.failure {
+                return Err(failure.error());
+            }
+            match self.restore(&mut validated, wait).await {
+                Err(error) if wait && retry_later(&error) => {
+                    tokio::select! {
+                        biased;
+                        _ = self.ended.cancelled() => bail!("account session has ended"),
+                        _ = tokio::time::sleep(RESTORE_RETRY) => {}
+                    }
+                }
+                result => return result,
+            }
         }
-        if let Some(failure) = &validated.failure {
-            return Err(failure.error());
-        }
+    }
+
+    async fn restore(&self, validated: &mut RestoreState, wait: bool) -> Result<()> {
         let device = &self.device;
         let identity = tokio::select! {
             biased;
             _ = self.ended.cancelled() => bail!("account session has ended"),
-            result = session_restore::initialize(device, self.restore_trigger) => result,
+            result = session_restore::initialize(device, self.restore_trigger, wait, &self.unreachable) => result,
         };
         let identity = match identity {
             Ok(identity) => identity,
+            // Not kept: the next request tries again.
+            Err(error) if retry_later(&error) => return Err(error),
             Err(error) => {
                 let failure = match error.downcast::<ApiFailure>() {
                     Ok(error) => RestoreFailure::Api(error),
@@ -317,7 +350,9 @@ impl AuthenticatedClient {
             let token = match token {
                 Ok(token) => token,
                 Err(error) => {
-                    if let Some(failure) = error.downcast_ref::<ApiFailure>() {
+                    if let Some(failure) = error.downcast_ref::<ApiFailure>()
+                        && !failure.code.retryable()
+                    {
                         validated.failure = Some(RestoreFailure::Api(failure.clone()));
                     }
                     return Err(error);
@@ -353,7 +388,13 @@ impl AuthenticatedClient {
                     self.retire();
                     self.clear_saved_generation()?;
                 }
-                validated.failure = Some(RestoreFailure::Api(failure.clone()));
+                if session_restore::out_of_reach(failure.code) {
+                    self.unreachable.send_if_modified(|away| !std::mem::replace(away, true));
+                }
+                // An unreachable or busy server is tried again later.
+                if !failure.code.retryable() {
+                    validated.failure = Some(RestoreFailure::Api(failure.clone()));
+                }
                 return Err(failure.into());
             }
         }
@@ -392,7 +433,10 @@ impl AuthenticatedClient {
     }
 
     pub(crate) async fn restoration_failed(&self) -> bool {
-        self.validated.lock().await.failure.is_some()
+        // A restore still under way (waiting for the server) has not failed.
+        self.validated
+            .try_lock()
+            .is_ok_and(|validated| validated.failure.is_some())
     }
 
     pub async fn logout(&self) -> LogoutOutcome {
@@ -427,12 +471,41 @@ impl AuthenticatedClient {
         }
     }
 
-    /// Run one authenticated request after the saved session is validated.
+    /// Run one authenticated request after the saved session is validated;
+    /// while the server is unreachable it fails within one attempt.
     pub(crate) async fn request<T, F>(&self, request: impl FnOnce(ServerApi) -> F) -> Result<T>
     where
         F: std::future::Future<Output = Result<T>>,
     {
-        self.validate_saved_session().await?;
+        self.request_with(false, request).await
+    }
+
+    /// The same, waiting for an unreachable server: for the host and the
+    /// device list, which carry on by themselves once it returns.
+    pub(crate) async fn request_waiting<T, F>(
+        &self,
+        request: impl FnOnce(ServerApi) -> F,
+    ) -> Result<T>
+    where
+        F: std::future::Future<Output = Result<T>>,
+    {
+        self.request_with(true, request).await
+    }
+
+    /// Whether the server was out of reach at the last attempt.
+    pub(crate) fn server_unreachable(&self) -> bool {
+        *self.unreachable.borrow()
+    }
+
+    async fn request_with<T, F>(
+        &self,
+        wait: bool,
+        request: impl FnOnce(ServerApi) -> F,
+    ) -> Result<T>
+    where
+        F: std::future::Future<Output = Result<T>>,
+    {
+        self.validate_saved_session(wait).await?;
         let api = self
             .api
             .lock()
@@ -447,6 +520,13 @@ impl AuthenticatedClient {
         if !self.is_active() {
             bail!("account session has ended");
         }
+        let away = response
+            .as_ref()
+            .err()
+            .and_then(crate::account::api::failure_code)
+            .is_some_and(session_restore::out_of_reach);
+        self.unreachable
+            .send_if_modified(|current| std::mem::replace(current, away) != away);
         if let Err(error) = &response
             && error
                 .downcast_ref::<ApiFailure>()
@@ -467,7 +547,7 @@ impl AuthenticatedClient {
             bail!("没有账号");
         }
         let list = self
-            .request(|api| async move { api.friend_access().await })
+            .request_waiting(|api| async move { api.friend_access().await })
             .await?;
         let devices = list
             .devices
@@ -490,11 +570,21 @@ impl AuthenticatedClient {
     }
 
     pub async fn list_devices(&self) -> Result<DeviceList> {
+        self.list_devices_with(false).await
+    }
+
+    /// The device centre's list: waits for an unreachable server, so it
+    /// arrives by itself once the server is back.
+    pub(crate) async fn sync_devices(&self) -> Result<DeviceList> {
+        self.list_devices_with(true).await
+    }
+
+    async fn list_devices_with(&self, wait: bool) -> Result<DeviceList> {
         if self.guest {
             bail!("没有账号");
         }
         let list = self
-            .request(|api| async move { api.list_devices().await })
+            .request_with(wait, |api| async move { api.list_devices().await })
             .await?;
         for device in list.all() {
             self.features.remember(device);
@@ -510,6 +600,11 @@ impl AuthenticatedClient {
     /// The account's own devices (including this one) for device management.
     pub async fn device_groups(&self) -> Result<DeviceGroups> {
         Ok(DeviceGroups::from_list(&self.list_devices().await?))
+    }
+
+    /// [`Self::device_groups`] for the device centre (see [`Self::sync_devices`]).
+    pub(crate) async fn sync_device_groups(&self) -> Result<DeviceGroups> {
+        Ok(DeviceGroups::from_list(&self.sync_devices().await?))
     }
 
     // ------------------------------------------------------------ friends
@@ -759,11 +854,27 @@ impl AuthenticatedClient {
     /// registration.
     pub async fn set_policy(&self, policy: DevicePolicy) -> Result<()> {
         let device = &self.device;
-        self.request(|api| async move { api.set_policy(&policy).await })
+        self.request_waiting(|api| async move { api.set_policy(&policy).await })
             .await?;
         device.set_policy(policy).await?;
         Ok(())
     }
+}
+
+/// How long a waiting request pauses before restoring the login again.
+const RESTORE_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A failure that may pass: the server unreachable, busy or failing.
+fn retry_later(error: &anyhow::Error) -> bool {
+    crate::account::api::failure_code(error).is_some_and(|code| code.retryable())
+}
+
+fn unreachable_error() -> anyhow::Error {
+    ApiFailure::new(
+        crate::account::api::ErrorCode::Network,
+        "暂时连不上 Farwing 服务器，连上后自动刷新",
+    )
+    .into()
 }
 
 /// The server answered (as opposed to a lost or unanswered request).

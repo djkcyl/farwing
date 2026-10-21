@@ -157,6 +157,8 @@ struct DeviceCenterApp {
     >,
     detail_pending: Option<String>,
     account_name: String,
+    /// The server was out of reach at the account's last attempt.
+    server_unreachable: bool,
     diagnostics: diagnostics::LocalDiagnostics,
     mutation_pending: bool,
     queued_mutation: Option<DeviceMutation>,
@@ -212,6 +214,7 @@ impl DeviceCenterApp {
             extra_details: Default::default(),
             detail_pending: None,
             account_name: String::new(),
+            server_unreachable: false,
             diagnostics: diagnostics::LocalDiagnostics::start(),
             mutation_pending: false,
             queued_mutation: None,
@@ -336,7 +339,7 @@ impl DeviceCenterApp {
                         });
                     }
                 }
-                GuiEvent::CachedDevices(generation, mut devices) => {
+                GuiEvent::CachedDevices(generation, mut devices, name) => {
                     if generation != self.login_generation
                         || !self.login_restoring
                         || self.devices.is_some()
@@ -353,6 +356,9 @@ impl DeviceCenterApp {
                         device.status = "offline".into();
                     }
                     tracing::info!("device center startup: cached devices shown");
+                    if self.account_name.trim().is_empty() {
+                        self.account_name = name;
+                    }
                     self.cached_devices = true;
                     self.devices = Some(devices);
                     self.normalize_selection();
@@ -578,6 +584,22 @@ impl DeviceCenterApp {
                         String::new()
                     };
                 }
+                GuiEvent::Reachability(generation, away) => {
+                    if generation != self.login_generation {
+                        continue;
+                    }
+                    let back = self.server_unreachable && !away;
+                    self.server_unreachable = away;
+                    // What failed while the server was away comes back by itself.
+                    if back {
+                        if self.friends.error.is_some() {
+                            self.request_friends(friends::FriendOperation::Refresh);
+                        }
+                        if self.assist.last_list_error.is_some() {
+                            self.request_assist_refresh();
+                        }
+                    }
+                }
                 GuiEvent::AssistLists(generation, result) => {
                     if generation != self.login_generation
                         || self.logout_pending
@@ -753,6 +775,7 @@ impl DeviceCenterApp {
     }
 
     fn clear_catalog(&mut self) {
+        self.server_unreachable = false;
         if !self.host.as_ref().is_some_and(|h| h.is_guest()) {
             self.host = None;
         }

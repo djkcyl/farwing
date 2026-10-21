@@ -746,6 +746,8 @@ impl DeviceCenterApp {
 
         let (presence, color) = if self.host.as_ref().is_some_and(|h| h.status().connected) {
             ("正在被控", GREEN)
+        } else if self.server_unreachable {
+            ("连不上服务器", AMBER)
         } else {
             presence_text(&self.presence)
         };

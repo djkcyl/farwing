@@ -289,7 +289,7 @@ impl DeviceSync {
             let client = Arc::clone(client);
             let _ = events.send(GuiEvent::Working("正在同步设备状态".into()));
             self.list_read = Some(Read {
-                task: tokio::spawn(async move { client.list_devices().await }),
+                task: tokio::spawn(async move { client.sync_devices().await }),
                 changes: HashMap::new(),
             });
         }
@@ -297,7 +297,7 @@ impl DeviceSync {
             self.groups_requested = false;
             let client = Arc::clone(client);
             self.group_read = Some(Read {
-                task: tokio::spawn(async move { client.device_groups().await }),
+                task: tokio::spawn(async move { client.sync_device_groups().await }),
                 changes: HashMap::new(),
             });
         }

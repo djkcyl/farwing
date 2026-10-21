@@ -12,15 +12,23 @@ pub(crate) enum RestoreTrigger {
     ExplicitLogin,
 }
 
+/// Register this device, retrying while the server is unreachable when
+/// `wait`, otherwise returning after the first failed attempt. `unreachable`
+/// says whether the server was out of reach at the last attempt.
 pub(crate) async fn initialize(
     device: &DeviceHandle,
     trigger: RestoreTrigger,
+    wait: bool,
+    unreachable: &tokio::sync::watch::Sender<bool>,
 ) -> Result<crate::account::auth::NativeIdentity> {
     let mut long_retries = 0u32;
     loop {
         let explicit = matches!(trigger, RestoreTrigger::ExplicitLogin);
         match device.ensure(explicit || long_retries != 0).await {
-            Ok(identity) => return Ok(identity),
+            Ok(identity) => {
+                unreachable.send_if_modified(|away| std::mem::replace(away, false));
+                return Ok(identity);
+            }
             Err(error) => {
                 let Some(failure) = error.downcast_ref::<ApiFailure>() else {
                     return Err(error);
@@ -31,7 +39,10 @@ pub(crate) async fn initialize(
                 if code != ErrorCode::Network && !code.retryable() {
                     return Err(error);
                 }
-                if long_retries != 0 && code != ErrorCode::Network {
+                if out_of_reach(code) {
+                    unreachable.send_if_modified(|away| !std::mem::replace(away, true));
+                }
+                if !wait || (long_retries != 0 && code != ErrorCode::Network) {
                     return Err(error);
                 }
                 let delay = if explicit {
@@ -45,6 +56,12 @@ pub(crate) async fn initialize(
             }
         }
     }
+}
+
+/// The server could not be reached or did not answer, as opposed to
+/// answering with an error.
+pub(crate) fn out_of_reach(code: ErrorCode) -> bool {
+    matches!(code, ErrorCode::Network | ErrorCode::Timeout | ErrorCode::Unavailable)
 }
 
 pub(crate) async fn restore_user(

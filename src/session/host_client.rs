@@ -222,7 +222,8 @@ impl HostClient {
             let Identity::Account(account) = &self.identity else {
                 bail!("仅直连模式不连接服务器");
             };
-            return account.request(request).await;
+            // The host waits for an unreachable server and carries on.
+            return account.request_waiting(request).await;
         };
         let operation = async {
             let mut active = guest.api.lock().await;

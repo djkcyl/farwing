@@ -126,7 +126,11 @@ pub(super) enum GuiEvent {
     Friends(u64, std::result::Result<super::friends::FriendResult, String>),
     Devices(u64, DeviceList),
     /// The last device list, while the server cannot be reached at startup.
-    CachedDevices(u64, DeviceList),
+    /// The saved device list (or this device alone) and the saved
+    /// account name, while the server has not answered yet.
+    CachedDevices(u64, DeviceList, String),
+    /// Whether the server was out of reach at the last attempt.
+    Reachability(u64, bool),
     Catalog(u64, std::result::Result<catalog::Catalog, String>, String),
     MutationFinished(u64, std::result::Result<MutationOutcome, String>),
     Detail(

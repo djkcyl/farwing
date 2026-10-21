@@ -130,6 +130,7 @@ pub(super) async fn gui_worker_loop(
     // this long whatever the probe does.
     let mut online_after: Option<Instant> = None;
     let mut host_shown: Option<u64> = None;
+    let mut reachability: Option<(u64, bool)> = None;
     let mut startup_media: Option<StartupMedia> = None;
     let mut media_ready = None;
     let mut client: Option<Arc<AuthenticatedClient>> = None;
@@ -904,7 +905,11 @@ pub(super) async fn gui_worker_loop(
                         crate::transport::direct::store::device_list(active_client.user_id())
                             .or_else(this_device_only)
                 {
-                    let _ = events.send(GuiEvent::CachedDevices(generation, list));
+                    let _ = events.send(GuiEvent::CachedDevices(
+                        generation,
+                        list,
+                        active_client.account_name(),
+                    ));
                 }
             }
             let refresh_active = *foreground.borrow();
@@ -942,6 +947,11 @@ pub(super) async fn gui_worker_loop(
                 let _ = events.send(GuiEvent::Warning(format!(
                     "设备同步失败：{error:#}；可手动刷新重试"
                 )));
+            }
+            let away = active_client.server_unreachable();
+            if reachability != Some((catalog_generation, away)) {
+                reachability = Some((catalog_generation, away));
+                let _ = events.send(GuiEvent::Reachability(catalog_generation, away));
             }
             // The 本机 page works with the host before it is online.
             if host_shown != Some(catalog_generation) {
