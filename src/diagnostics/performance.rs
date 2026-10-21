@@ -34,7 +34,12 @@ pub struct PerformanceSnapshot {
     /// The part of `frame_delay_ms` spent in the cinema playout buffer (same
     /// interval average); 0 at low latency.
     pub frame_delay_buffer_ms: u64,
+    /// Primary packets the network lost over the last second, repaired or not.
     pub packet_loss_percent: f64,
+    /// Packets that stayed missing after RTX/FEC, over the same packets.
+    pub unrepaired_loss_percent: f64,
+    pub lost_packets: u64,
+    pub unrepaired_lost_packets: u64,
     pub rtp_jitter_ms: f64,
     pub target_playout_delay_ms: f64,
     pub jitter_playout_delay_ms: f64,
@@ -172,7 +177,8 @@ struct PerformanceInner {
     tracks: RwLock<std::collections::BTreeMap<u64, std::sync::Weak<PerformanceInner>>>,
     started_at: Instant,
     received_bytes: AtomicU64,
-    primary_media_packets_received: AtomicU64,
+    expected_packets: AtomicU64,
+    arrived_packets: AtomicU64,
     final_lost_packets: AtomicU64,
     rtp_jitter_micros: AtomicU64,
     target_playout_delay_micros: AtomicU64,
@@ -565,7 +571,8 @@ const PERFORMANCE_SAMPLE_QUEUE_CAPACITY: usize = 8_192;
 struct RateState {
     sampled_at: Instant,
     received_bytes: u64,
-    primary_media_packets_received: u64,
+    expected_packets: u64,
+    arrived_packets: u64,
     final_lost_packets: u64,
     received_frames: u64,
     decoded_frames: u64,
@@ -577,6 +584,7 @@ struct RateState {
     render_fps: f64,
     actual_fps: f64,
     packet_loss_percent: f64,
+    unrepaired_loss_percent: f64,
 }
 
 impl PerformanceMonitor {
@@ -588,7 +596,8 @@ impl PerformanceMonitor {
                 tracks: RwLock::new(std::collections::BTreeMap::new()),
                 started_at: now,
                 received_bytes: AtomicU64::new(0),
-                primary_media_packets_received: AtomicU64::new(0),
+                expected_packets: AtomicU64::new(0),
+                arrived_packets: AtomicU64::new(0),
                 final_lost_packets: AtomicU64::new(0),
                 rtp_jitter_micros: AtomicU64::new(0),
                 target_playout_delay_micros: AtomicU64::new(0),
@@ -645,7 +654,8 @@ impl PerformanceMonitor {
                 rates: Mutex::new(RateState {
                     sampled_at: now,
                     received_bytes: 0,
-                    primary_media_packets_received: 0,
+                    expected_packets: 0,
+                    arrived_packets: 0,
                     final_lost_packets: 0,
                     received_frames: 0,
                     decoded_frames: 0,
@@ -657,6 +667,7 @@ impl PerformanceMonitor {
                     render_fps: 0.0,
                     actual_fps: 0.0,
                     packet_loss_percent: 0.0,
+                    unrepaired_loss_percent: 0.0,
                 }),
                 rtp_timing: Mutex::new(RtpTimingState {
                     last_arrival: None,
@@ -712,13 +723,13 @@ impl PerformanceMonitor {
             .fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
-    /// Count one packet from the negotiated primary media SSRC for viewer
-    /// diagnostics and the 30-second inbound statistics event. RTX/FEC repair
-    /// packets and padding remain separate counters.
-    pub(crate) fn record_primary_media_packet(&self) {
+    /// One packet arrived on the primary media SSRC (padding included, not
+    /// RTX or FEC repair), making `expected` more packets known to be sent.
+    pub(crate) fn record_primary_arrival(&self, expected: u64) {
         self.inner
-            .primary_media_packets_received
-            .fetch_add(1, Ordering::Relaxed);
+            .expected_packets
+            .fetch_add(expected, Ordering::Relaxed);
+        self.inner.arrived_packets.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn set_nack_state(&self, outstanding: usize, final_lost_packets: u64) {
@@ -1433,6 +1444,13 @@ impl PerformanceMonitor {
             frame_delay_buffer_ms,
             current_delay_ms: optional_millis(common.current_delay_micros.load(Ordering::Relaxed)),
             packet_loss_percent: rates.packet_loss_percent,
+            unrepaired_loss_percent: rates.unrepaired_loss_percent,
+            lost_packets: self
+                .inner
+                .expected_packets
+                .load(Ordering::Relaxed)
+                .saturating_sub(self.inner.arrived_packets.load(Ordering::Relaxed)),
+            unrepaired_lost_packets: self.inner.final_lost_packets.load(Ordering::Relaxed),
             rtp_jitter_ms: micros_to_millis(self.inner.rtp_jitter_micros.load(Ordering::Relaxed)),
             target_playout_delay_ms: micros_to_millis(
                 self.inner
@@ -1581,10 +1599,8 @@ impl PerformanceMonitor {
         }
         let seconds = elapsed.as_secs_f64();
         let received_bytes = self.inner.received_bytes.load(Ordering::Relaxed);
-        let primary_media_packets_received = self
-            .inner
-            .primary_media_packets_received
-            .load(Ordering::Relaxed);
+        let expected_packets = self.inner.expected_packets.load(Ordering::Relaxed);
+        let arrived_packets = self.inner.arrived_packets.load(Ordering::Relaxed);
         let final_lost_packets = self.inner.final_lost_packets.load(Ordering::Relaxed);
         let received_frames = self.inner.received_frames.load(Ordering::Relaxed);
         let decoded_frames = self.inner.decoded_frames.load(Ordering::Relaxed);
@@ -1598,18 +1614,21 @@ impl PerformanceMonitor {
         rates.render_fps = rendered_frames.saturating_sub(rates.rendered_frames) as f64 / seconds;
         rates.actual_fps =
             actual_rendered_frames.saturating_sub(rates.actual_rendered_frames) as f64 / seconds;
-        let received_delta =
-            primary_media_packets_received.saturating_sub(rates.primary_media_packets_received);
-        let lost_delta = final_lost_packets.saturating_sub(rates.final_lost_packets);
-        let packet_delta = received_delta.saturating_add(lost_delta);
-        rates.packet_loss_percent = if packet_delta == 0 {
-            0.0
-        } else {
-            lost_delta as f64 * 100.0 / packet_delta as f64
+        // Late and repeated packets can arrive beyond those expected.
+        let expected_delta = expected_packets.saturating_sub(rates.expected_packets);
+        let lost_delta =
+            expected_delta.saturating_sub(arrived_packets.saturating_sub(rates.arrived_packets));
+        let unrepaired_delta = final_lost_packets.saturating_sub(rates.final_lost_packets);
+        let percent = |lost: u64| match expected_delta {
+            0 => 0.0,
+            expected => lost.min(expected) as f64 * 100.0 / expected as f64,
         };
+        rates.packet_loss_percent = percent(lost_delta);
+        rates.unrepaired_loss_percent = percent(unrepaired_delta);
         rates.sampled_at = now;
         rates.received_bytes = received_bytes;
-        rates.primary_media_packets_received = primary_media_packets_received;
+        rates.expected_packets = expected_packets;
+        rates.arrived_packets = arrived_packets;
         rates.final_lost_packets = final_lost_packets;
         rates.received_frames = received_frames;
         rates.decoded_frames = decoded_frames;

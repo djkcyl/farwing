@@ -26,7 +26,7 @@ impl Metric {
     ];
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::Loss => "最终丢包",
+            Self::Loss => "网络丢包",
             Self::Rtt => "网络往返",
             Self::Jitter => "RTP 抖动",
             Self::FrameDelay => "估算帧延迟",
@@ -43,7 +43,7 @@ impl Metric {
     }
     fn limits(self) -> (f64, f64) {
         match self {
-            Self::Loss => (0.1, 1.0),
+            Self::Loss => (1.0, 5.0),
             Self::Rtt => (80.0, 150.0),
             Self::Jitter => (10.0, 30.0),
             Self::FrameDelay => (60.0, 100.0),

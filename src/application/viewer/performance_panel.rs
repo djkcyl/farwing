@@ -262,6 +262,19 @@ fn network(ui: &mut Ui, s: &PerformanceSnapshot) {
     controls::metric_pair(ui, "待恢复 NACK", format!("{} 包", s.outstanding_nacks));
     controls::metric_pair(
         ui,
+        "未修复丢包",
+        format!("{:.2}%", s.unrepaired_loss_percent),
+    );
+    controls::metric_pair(
+        ui,
+        "丢包累计",
+        format!(
+            "网络 {} / 未修复 {} 包",
+            s.lost_packets, s.unrepaired_lost_packets
+        ),
+    );
+    controls::metric_pair(
+        ui,
         "RTX 累计",
         format!(
             "回灌 {} / 收到 {} 包",

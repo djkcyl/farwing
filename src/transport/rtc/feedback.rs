@@ -208,14 +208,22 @@ impl NackRequester {
     }
 
     pub(super) fn clear_pending(&mut self) {
-        // Clearing pending repairs preserves RTT, sequence anchors,
-        // recovered/keyframe history and cumulative diagnostics.
+        // Clearing pending repairs preserves RTT, sequence anchors and
+        // recovered/keyframe history; what it gives up on was never repaired.
+        self.final_lost_packets = self
+            .final_lost_packets
+            .saturating_add(self.entries.len() as u64);
         self.entries.clear();
     }
 
     pub(super) fn clear_up_to(&mut self, sequence_number: u16) {
+        // Packets still missing below a continuous point were skipped.
+        let before = self.entries.len();
         self.entries
             .retain(|sequence, _| sequence_ahead_or_at(*sequence, sequence_number));
+        self.final_lost_packets = self
+            .final_lost_packets
+            .saturating_add((before - self.entries.len()) as u64);
         self.keyframes
             .retain(|sequence| sequence_ahead_or_at(*sequence, sequence_number));
         self.recovered
@@ -375,6 +383,36 @@ impl NackRequester {
     }
 }
 
+/// Packets the sequence numbers say were sent on the primary stream, counted
+/// as they arrive (RFC 3550 A.3): with the arrivals themselves this gives the
+/// network's loss, before RTX or FEC repairs any of it.
+#[derive(Default)]
+pub(super) struct ArrivalCounter {
+    newest: Option<u16>,
+}
+
+impl ArrivalCounter {
+    /// Packets newly expected once `sequence_number` arrived: the advance of
+    /// the newest sequence number, nothing for a late or repeated one.
+    pub(super) fn expected_by(&mut self, sequence_number: u16) -> u64 {
+        let Some(newest) = self.newest else {
+            self.newest = Some(sequence_number);
+            return 1;
+        };
+        if !sequence_ahead_of(sequence_number, newest) {
+            return 0;
+        }
+        self.newest = Some(sequence_number);
+        let advance = sequence_number.wrapping_sub(newest);
+        // A jump this far is a new sequence, not that much loss.
+        if advance >= RTP_MAX_PACKET_AGE {
+            1
+        } else {
+            u64::from(advance)
+        }
+    }
+}
+
 pub(super) fn sequence_ahead_of(newer: u16, older: u16) -> bool {
     let distance = newer.wrapping_sub(older);
     if distance == 0x8000 {
@@ -454,4 +492,38 @@ pub(super) async fn send_transport_layer_nack(
             write_us = start.elapsed().as_micros(), "packet-repair request write completed");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arrivals_count_the_sequence_advance() {
+        let mut counter = ArrivalCounter::default();
+        assert_eq!(counter.expected_by(65_534), 1);
+        assert_eq!(counter.expected_by(65_535), 1);
+        // 0 and 1 lost across the wrap.
+        assert_eq!(counter.expected_by(2), 3);
+        // A late 1 and a repeated 2 add nothing.
+        assert_eq!(counter.expected_by(1), 0);
+        assert_eq!(counter.expected_by(2), 0);
+        assert_eq!(counter.expected_by(3 + RTP_MAX_PACKET_AGE), 1);
+    }
+
+    #[test]
+    fn given_up_repairs_count_as_unrepaired() {
+        let mut nack = NackRequester::new();
+        nack.on_received(10, true, false);
+        nack.on_received(15, false, false);
+        assert_eq!(nack.outstanding(), 4);
+        // 11 arrives by RTX: repaired.
+        nack.on_received(11, false, true);
+        assert_eq!(nack.outstanding(), 3);
+        nack.clear_up_to(13);
+        assert_eq!(nack.final_lost_packets(), 1);
+        nack.clear_pending();
+        assert_eq!(nack.final_lost_packets(), 3);
+        assert_eq!(nack.outstanding(), 0);
+    }
 }

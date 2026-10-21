@@ -1,8 +1,8 @@
 //! Media receive loops and delivery of complete video frames.
 use super::clock::{RemoteNtpEstimator, frame_sender_timing};
 use super::feedback::{
-    ACTIVE_STREAM_WINDOW, KEYFRAME_PACKET_WINDOW, NackRequester, RTP_NACK_PROCESS_INTERVAL,
-    RtcpFeedbackBuffer, send_picture_loss_indication,
+    ACTIVE_STREAM_WINDOW, ArrivalCounter, KEYFRAME_PACKET_WINDOW, NackRequester,
+    RTP_NACK_PROCESS_INTERVAL, RtcpFeedbackBuffer, send_picture_loss_indication,
 };
 use super::ingress::{
     MediaRecoveryFlags, OrderedVideoIngress, PendingMediaPacket, RedPacket, VideoIngressOrigin,
@@ -282,6 +282,7 @@ pub(super) async fn forward_video_track(
         }
     };
     let mut nack_requester = NackRequester::new();
+    let mut arrivals = ArrivalCounter::default();
     let mut loss_recovery = super::recovery::LossRecovery::new(stream_control, track.ssrc());
     // `dev video --loss`: losses no repair can undo.
     let mut impairment = super::impair::Injector::new();
@@ -329,7 +330,11 @@ pub(super) async fn forward_video_track(
         if !*forwarding_ready.borrow() {
             pending_media.clear();
             receiver.reset_after_pause();
+            // The unrepaired count is cumulative for the whole stream.
+            let unrepaired = nack_requester.final_lost_packets();
             nack_requester = NackRequester::new();
+            nack_requester.final_lost_packets = unrepaired;
+            arrivals = ArrivalCounter::default();
             fec_receiver = rsfec_config
                 .map(|c| RsFecReceiver::new(track.ssrc(), c.max_k, mutable_extensions.clone()));
             flexfec_receiver = FlexFecReceiver::new(track.ssrc(), mutable_extensions.clone());
@@ -339,7 +344,7 @@ pub(super) async fn forward_video_track(
             last_keyframe_packet_at = None;
             last_keyframe_timestamp = None;
             performance.set_frame_buffer_frames(0);
-            performance.set_nack_state(0, 0);
+            performance.set_nack_state(0, unrepaired);
             while !*forwarding_ready.borrow() {
                 tokio::select! {
                     _ = stop.cancelled() => return,
@@ -627,17 +632,15 @@ pub(super) async fn forward_video_track(
                 {
                     continue;
                 }
+                let sequence_number = media.packet.header.sequence_number;
                 if !recovered {
                     performance.record_video_rtp_arrival(media.packet.header.timestamp);
+                    performance.record_primary_arrival(arrivals.expected_by(sequence_number));
                 }
-                let sequence_number = media.packet.header.sequence_number;
                 let payload_type = media.packet.header.payload_type;
                 // A padded RTP datagram is not necessarily an empty packet:
                 // the packet parser has already removed its trailing padding.
                 let is_padding = media.packet.payload.is_empty();
-                if !recovered && !is_padding {
-                    performance.record_primary_media_packet();
-                }
                 let result;
 
                 if is_padding {
