@@ -3,7 +3,7 @@ Signature="$WINDOWS NT$"
 Class=MEDIA
 ClassGuid={4d36e96c-e325-11ce-bfc1-08002be10318}
 Provider=%Provider%
-DriverVer=10/14/2026,1.0.0.1
+DriverVer=10/21/2026,1.0.0.2
 CatalogFile=FarwingAudio.cat
 PnpLockDown=1
 

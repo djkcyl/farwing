@@ -665,9 +665,12 @@ pub(crate) fn run(parent: u32) -> Result<()> {
                                 if tx.blocking_send((request, reply)).is_err() {
                                     break;
                                 }
-                                if let Ok(reply) = result.blocking_recv() {
-                                    pipe.send(&reply, alive)?;
-                                }
+                                // Pausing drops registrations in flight; the
+                                // service still waits on this pipe for an answer.
+                                let reply = result.blocking_recv().unwrap_or_else(|_| {
+                                    Reply::Error("后台请求已取消".into())
+                                });
+                                pipe.send(&reply, alive)?;
                             }
                             Ok(())
                         })();
