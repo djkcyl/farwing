@@ -24,10 +24,15 @@ try {
 
 if (-not $SkipCargo) {
     Push-Location $server
+    # The shared crates lie outside the server's workspace: their source
+    # paths would name this checkout in panic messages.
+    $previous = $env:RUSTFLAGS
+    $env:RUSTFLAGS = "--remap-path-prefix=$((Resolve-Path (Join-Path $server '..')).Path)=farwing"
     try {
         cargo build --release --locked
         if ($LASTEXITCODE) { throw "cargo build failed ($LASTEXITCODE)" }
     } finally {
+        $env:RUSTFLAGS = $previous
         Pop-Location
     }
     Write-Host "farwing-server with the web console: $server\target\release\farwing-server.exe"

@@ -100,6 +100,9 @@ fn main() -> Result<()> {
                 .arg(root.join("packaging/Cargo.toml"))
                 .arg("--target-dir")
                 .arg(target.join("launcher"))
+                // The launcher's crates lie outside its workspace: their
+                // source paths would name this checkout in panic messages.
+                .env("RUSTFLAGS", format!("--remap-path-prefix={}=farwing", root.display()))
                 .env("FARWING_PAYLOAD", &source)
                 .status()?
                 .success(),
