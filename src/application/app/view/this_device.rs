@@ -250,8 +250,9 @@ impl DeviceCenterApp {
         }
         for device in trusted {
             // It trusts this device too: the two are paired.
-            let paired = crate::transport::direct::store::known_host(&device.device_id)
-                .is_some_and(|h| h.trusted);
+            let paired = device.paired
+                || crate::transport::direct::store::known_host(&device.device_id)
+                    .is_some_and(|h| h.trusted);
             let mut edit = false;
             let mut remove = false;
             device_card_with(
@@ -398,6 +399,7 @@ impl DeviceCenterApp {
                     ctx,
                     host.as_ref(),
                     Action::Trust {
+                        paired: false,
                         device_id,
                         public_key,
                         name: name.clone(),

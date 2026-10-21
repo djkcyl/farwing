@@ -504,6 +504,7 @@ impl DeviceCenterApp {
 
     pub(super) fn draw_center(&mut self, ui: &mut egui::Ui) {
         self.center_ui.wallpapers.poll(ui.ctx());
+        self.finish_pairing(ui.ctx());
         if self.needs_login() {
             if self.login_restoring {
                 self.loading_page(ui);

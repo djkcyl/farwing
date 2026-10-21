@@ -552,16 +552,16 @@ impl DeviceCenterApp {
             .unwrap_or_default();
         // Devices this one trusts (the host side, in this process or the
         // background service).
-        let trusting: Vec<String> = self
+        let trusting = self
             .direct_host_state()
-            .map(|state| state.trusted.into_iter().map(|d| d.device_id).collect())
+            .map(|state| state.trusted)
             .unwrap_or_default();
         let pairing = self.direct.pairing_active();
         enum Pick {
             Key(String, String),
             Server(String),
             Code(String, String),
-            Pair(String, String),
+            Pair(String, String, String),
         }
         let mut picked = None;
         for host in found {
@@ -573,7 +573,8 @@ impl DeviceCenterApp {
             let mut chips: Vec<(&str, Color32)> = Vec::new();
             // It lets this device in by its key: no code, no confirmation.
             let admits = store::known_host(&announce.device_id).is_some_and(|h| h.trusted);
-            let paired = admits && trusting.contains(&announce.device_id);
+            let trusted = trusting.iter().find(|d| d.device_id == announce.device_id);
+            let paired = trusted.is_some_and(|d| d.paired) || (admits && trusted.is_some());
             let own_device = own.iter().any(|d| d.device_id == announce.device_id);
             if own_device {
                 chips.push(("本账号", GREEN));
@@ -616,12 +617,23 @@ impl DeviceCenterApp {
                             picked = Some(Pick::Key(target.clone(), announce.name.clone()));
                         }
                     } else if let Some(device) = friend {
+                        // It takes friends' keys directly (also while the
+                        // server cannot be reached); otherwise through it.
+                        let direct = methods(farwing_protocol::direct::method::FRIEND);
                         if ui
                             .add(primary("连接"))
-                            .on_hover_text("经账号连接，按好友给你的权限")
+                            .on_hover_text(if direct {
+                                "在局域网中直连，按好友给你的权限"
+                            } else {
+                                "经账号连接，按好友给你的权限"
+                            })
                             .clicked()
                         {
-                            picked = Some(Pick::Server(device.device_id.clone()));
+                            picked = Some(if direct {
+                                Pick::Key(target.clone(), announce.name.clone())
+                            } else {
+                                Pick::Server(device.device_id.clone())
+                            });
                         }
                     } else if ui
                         .add_enabled(accepts_code, primary("连接"))
@@ -642,6 +654,7 @@ impl DeviceCenterApp {
                         // Two devices may share a name: show which one.
                         picked = Some(Pick::Pair(
                             target.clone(),
+                            announce.device_id.clone(),
                             format!(
                                 "{}（{}）",
                                 announce.name,
@@ -659,10 +672,10 @@ impl DeviceCenterApp {
                 self.start_viewer();
             }
             Some(Pick::Code(target, name)) => self.ask_for_code(target, &name),
-            Some(Pick::Pair(target, name)) => match crate::transport::direct::Target::parse(&target) {
+            Some(Pick::Pair(target, device_id, name)) => match crate::transport::direct::Target::parse(&target) {
                 Ok(target) => {
                     self.direct.error = None;
-                    self.direct.pair(ui.ctx(), target, name);
+                    self.direct.pair(ui.ctx(), target, device_id, name);
                 }
                 Err(error) => self.direct.error = Some(format!("{error:#}")),
             },
@@ -670,41 +683,52 @@ impl DeviceCenterApp {
         }
     }
 
-    /// Pairing in progress: the code to check on the other screen; then
-    /// trusting the other device here once it agreed.
+    /// Finish a pairing whatever page is shown: once both users agreed the
+    /// host trusts this device, so trust it back.
+    pub(super) fn finish_pairing(&mut self, ctx: &egui::Context) {
+        let outcome = {
+            let mut slot = self.direct.pairing.lock().unwrap_or_else(|e| e.into_inner());
+            if slot.as_ref().is_none_or(|p| p.outcome.is_none()) {
+                return;
+            }
+            slot.take().map(|p| (p.name, p.outcome, p.cancel))
+        };
+        let Some((name, Some(outcome), cancel)) = outcome else {
+            return;
+        };
+        match outcome {
+            Ok(host) => {
+                let done = format!("已与 {} 配对：以后双方互相连接都无需访问码或确认", host.name);
+                self.direct.perform(
+                    ctx,
+                    self.host.as_ref(),
+                    crate::transport::direct::managed::Action::Trust {
+                        device_id: host.device_id,
+                        public_key: host.public_key,
+                        name: host.name,
+                        grants: farwing_protocol::caps::all(),
+                        paired: true,
+                    },
+                    done,
+                );
+            }
+            Err(_) if cancel.is_cancelled() => self.direct.note("已取消配对"),
+            Err(error) => self.direct.error = Some(format!("与 {name} 配对失败：{error}")),
+        }
+    }
+
     fn pairing_card(&mut self, ui: &mut egui::Ui) {
         let state = {
             let slot = self.direct.pairing.lock().unwrap_or_else(|e| e.into_inner());
             slot.as_ref()
-                .map(|p| (p.name.clone(), p.code.clone(), p.outcome.clone(), p.cancel.clone()))
+                .filter(|p| p.outcome.is_none())
+                .map(|p| (p.name.clone(), p.code.clone(), p.agree.is_none(), p.cancel.clone()))
         };
-        let Some((name, code, outcome, cancel)) = state else {
+        let Some((name, code, agreed, cancel)) = state else {
             return;
         };
-        if let Some(outcome) = outcome {
-            *self.direct.pairing.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            match outcome {
-                Ok(host) => {
-                    // The other side trusts this device now; trust it back.
-                    let done = format!("已与 {} 配对：以后双方互相连接都无需访问码或确认", host.name);
-                    self.direct.perform(
-                        ui.ctx(),
-                        self.host.as_ref(),
-                        crate::transport::direct::managed::Action::Trust {
-                            device_id: host.device_id,
-                            public_key: host.public_key,
-                            name: host.name,
-                            grants: farwing_protocol::caps::all(),
-                        },
-                        done,
-                    );
-                }
-                Err(_) if cancel.is_cancelled() => self.direct.note("已取消配对"),
-                Err(error) => self.direct.error = Some(format!("与 {name} 配对失败：{error}")),
-            }
-            return;
-        }
         let mut stop = false;
+        let mut agree = false;
         cards::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -719,17 +743,30 @@ impl DeviceCenterApp {
                                     .strong()
                                     .color(BLUE),
                             );
-                            detail(ui, "请在对方电脑上核对配对码与此相同，再点“配对”。");
+                            detail(
+                                ui,
+                                if agreed {
+                                    "已确认，等待对方在其电脑上点“配对”…"
+                                } else {
+                                    "核对对方电脑上显示的配对码与此相同，再在两台电脑上都点“配对”。配对码不同时请取消。"
+                                },
+                            );
                         }
                         None => detail(ui, "正在连接对方…"),
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                     stop = ui.add(crate::ui::controls::secondary("取消")).clicked();
+                    if code.is_some() && !agreed {
+                        agree = ui.add(primary("配对")).clicked();
+                    }
                 });
             });
         });
         ui.add_space(8.0);
+        if agree {
+            self.direct.agree_pairing();
+        }
         if stop {
             cancel.cancel();
         }

@@ -11,8 +11,8 @@ use farwing_protocol::ErrorCode;
 use farwing_protocol::api::{Purpose, Relation};
 use crate::features::host::assist::Decision;
 use farwing_protocol::direct::{
-    self as wire, DirectAuthorized, DirectConfirm, DirectHello, DirectPake, DirectPaired, method,
-    pake_kind, types as dtypes,
+    self as wire, DirectAuthorized, DirectConfirm, DirectHello, DirectPair, DirectPairNonce,
+    DirectPake, DirectPaired, method, pake_kind, types as dtypes,
 };
 use farwing_protocol::realtime::{
     ControllerInfo, Envelope, PeerIdentity, SessionEnd, SessionIncoming, SessionStart,
@@ -92,6 +92,7 @@ impl Endpoint {
             cancel: cancel.clone(),
             pending: Arc::new(tokio::sync::Semaphore::new(wire::MAX_PENDING)),
             own_refreshed: std::sync::Mutex::new(None),
+            pairing: std::sync::Mutex::new(PairingLimits::default()),
         });
         for listener in listeners {
             let shared = Arc::clone(&shared);
@@ -198,7 +199,19 @@ struct Shared {
     cancel: CancellationToken,
     pending: Arc<tokio::sync::Semaphore>,
     own_refreshed: std::sync::Mutex<Option<std::time::Instant>>,
+    pairing: std::sync::Mutex<PairingLimits>,
 }
+
+/// Pairing requests pop up on the host's screen: at most one every few
+/// seconds, and none from a device for a minute after this side said no.
+#[derive(Default)]
+struct PairingLimits {
+    last: Option<std::time::Instant>,
+    declined: std::collections::HashMap<String, std::time::Instant>,
+}
+
+const PAIRING_SPACING: Duration = Duration::from_secs(3);
+const PAIRING_DECLINED: Duration = Duration::from_secs(60);
 
 /// What an authorised controller may do.
 struct Authorized {
@@ -350,7 +363,8 @@ impl Shared {
             match message.kind.as_str() {
                 dtypes::AUTH => break self.by_key(&hello).await?,
                 dtypes::PAIR => {
-                    self.pair(reader, writer, ekm, &hello).await?;
+                    let request: DirectPair = message.body().context("配对请求格式无效")?;
+                    self.pair(reader, writer, ekm, &hello, &request).await?;
                     return Ok(None);
                 }
                 dtypes::PAKE => {
@@ -416,35 +430,125 @@ impl Shared {
         store::find_trusted(&hello.public_key).is_some()
     }
 
-    /// `direct.pair`: once the user here has checked that both screens show
-    /// the same pairing code and agreed, trust the controller with full
-    /// control (it trusts this host in turn).
-    async fn pair<R, W>(&self, reader: &mut R, writer: &mut W, ekm: &[u8], hello: &DirectHello) -> Result<()>
+    /// `direct.pair` (`docs/access-model.md` §7.4): exchange nonces, show
+    /// the code, and once both users agreed trust each other with full
+    /// control.
+    async fn pair<R, W>(
+        &self,
+        reader: &mut R,
+        writer: &mut W,
+        ekm: &[u8],
+        hello: &DirectHello,
+        request: &DirectPair,
+    ) -> Result<()>
     where
         R: AsyncRead + Unpin,
         W: AsyncWrite + Unpin,
     {
-        let code = farwing_protocol::crypto::pairing_code(ekm);
+        let commit = farwing_protocol::crypto::unb64(&request.commit)
+            .ok()
+            .filter(|c| c.len() == 32)
+            .ok_or_else(|| refuse(ErrorCode::BadRequest, "配对请求格式无效"))?;
+        {
+            let mut limits = self.pairing.lock().unwrap_or_else(|e| e.into_inner());
+            let now = std::time::Instant::now();
+            limits.declined.retain(|_, at| now.duration_since(*at) < PAIRING_DECLINED);
+            if limits.declined.contains_key(&hello.device_id) {
+                return Err(refuse(ErrorCode::RateLimited, "对方刚拒绝过配对，请稍后再试"));
+            }
+            if limits.last.is_some_and(|at| now.duration_since(at) < PAIRING_SPACING) {
+                return Err(refuse(ErrorCode::RateLimited, "配对请求太频繁，请稍后再试"));
+            }
+            limits.last = Some(now);
+        }
+        let nonce: [u8; 32] = rand::random();
+        write_frame(
+            writer,
+            &Envelope::new(
+                dtypes::PAIR_NONCE,
+                DirectPairNonce {
+                    nonce: farwing_protocol::crypto::b64(&nonce),
+                },
+            ),
+        )
+        .await?;
+        let message = self
+            .read(reader, Duration::from_millis(wire::HANDSHAKE_TIMEOUT_MS))
+            .await?;
+        ensure!(message.kind == dtypes::PAIR_REVEAL, "对端没有按协议配对");
+        let reveal: DirectPairNonce = message.body().context("配对消息格式无效")?;
+        let theirs = farwing_protocol::crypto::unb64(&reveal.nonce)
+            .ok()
+            .filter(|n| n.len() == 32)
+            .ok_or_else(|| refuse(ErrorCode::BadRequest, "配对消息格式无效"))?;
+        if farwing_protocol::crypto::pairing_commit(&theirs).as_slice() != commit.as_slice() {
+            return Err(refuse(ErrorCode::BadRequest, "配对校验失败"));
+        }
+        let code = farwing_protocol::crypto::pairing_code(ekm, &theirs, &nonce);
+        let declined = |this: &Self| {
+            this.pairing
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .declined
+                .insert(hello.device_id.clone(), std::time::Instant::now());
+        };
+        // This side's answer and the controller's agreement may come in
+        // either order; one read of the connection serves until the latter.
         let asked = self.client.host.assistance.confirm_pairing(
             hello.name.clone(),
             hello.device_id.clone(),
             hello.public_key.clone(),
             code,
         );
-        // The controller sends nothing while it waits: anything from it,
-        // or a closed connection, means it gave up.
-        let decision = tokio::select! {
-            _ = self.cancel.cancelled() => Decision::Reject,
-            decision = asked => decision,
-            _ = read_frame(reader) => Decision::Reject,
-        };
-        match decision {
-            Decision::Trust => {}
-            Decision::Unavailable(reason) => return Err(refuse(ErrorCode::AssistUnavailable, reason)),
-            Decision::Reject | Decision::Allow => {
-                return Err(refuse(ErrorCode::AssistRejected, "对方没有同意配对"));
+        let mut asked = std::pin::pin!(asked);
+        let mut controller = std::pin::pin!(read_frame(reader));
+        let mut ours = false;
+        let mut theirs_agreed = false;
+        let waited = timeout(Duration::from_secs(70), async {
+            while !(ours && theirs_agreed) {
+                tokio::select! {
+                    _ = self.cancel.cancelled() => bail!("被控端已停止直连"),
+                    decision = &mut asked, if !ours => match decision {
+                        Decision::Trust => ours = true,
+                        Decision::Unavailable(reason) => {
+                            return Err(refuse(ErrorCode::AssistUnavailable, reason));
+                        }
+                        Decision::Reject | Decision::Allow => {
+                            declined(self);
+                            return Err(refuse(ErrorCode::AssistRejected, "对方没有同意配对"));
+                        }
+                    },
+                    frame = &mut controller, if !theirs_agreed => match frame {
+                        Ok(Some(envelope)) if envelope.kind == dtypes::PAIR_CONFIRM => {
+                            theirs_agreed = true;
+                        }
+                        // Anything else, or a closed connection: it gave up.
+                        _ => bail!("对端取消了配对"),
+                    },
+                }
+            }
+            Ok(())
+        })
+        .await;
+        match waited {
+            Ok(result) => result?,
+            Err(_) => {
+                declined(self);
+                return Err(refuse(ErrorCode::Timeout, "配对超时"));
             }
         }
+        // Each side trusts the other with full control; the controller
+        // agreed, so it trusts this device too.
+        crate::features::host::assist::trust_paired(&hello.name, &hello.device_id, &hello.public_key);
+        store::remember_host(store::KnownHost {
+            device_id: hello.device_id.clone(),
+            public_key: hello.public_key.clone(),
+            name: hello.name.clone(),
+            address: String::new(),
+            connect_id: String::new(),
+            trusted: true,
+            last_seen: 0,
+        });
         write_frame(
             writer,
             &Envelope::new(dtypes::PAIRED, DirectPaired { grants: farwing_protocol::caps::all() }),

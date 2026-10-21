@@ -214,13 +214,20 @@ pub fn direct_confirm_matches(key: &[u8; 32], label: &str, ekm: &[u8], received:
     unb64(received).is_ok_and(|bytes| bool::from(bytes.ct_eq(&expected)))
 }
 
-/// Six digits both sides of a direct connection show while pairing: from
-/// the TLS exporter, so a device in the middle (two TLS sessions) shows
-/// different digits on each side.
-pub fn pairing_code(ekm: &[u8]) -> String {
-    let digest = Sha256::digest([b"FWPAIRCODE1\n".as_slice(), ekm].concat());
+/// The six-digit code both users compare when pairing two devices. It
+/// binds the TLS connection (`ekm`) and both sides' nonces. The controller
+/// committed to its nonce ([`pairing_commit`]) before it saw the host's, so
+/// a man in the middle, holding a different connection to each side,
+/// cannot steer the two codes to match: one chance in a million.
+pub fn pairing_code(ekm: &[u8], controller: &[u8], host: &[u8]) -> String {
+    let digest = Sha256::digest([b"FWPAIRCODE2\n".as_slice(), ekm, controller, host].concat());
     let value = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) % 1_000_000;
     format!("{value:06}")
+}
+
+/// The controller's commitment to its pairing nonce.
+pub fn pairing_commit(nonce: &[u8]) -> [u8; 32] {
+    Sha256::digest([b"FWPAIRCOMMIT1\n".as_slice(), nonce].concat()).into()
 }
 
 /// Device ID of a device that has no server registration: the first 16
@@ -286,12 +293,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pairing_codes_are_six_digits_bound_to_the_connection() {
-        let code = pairing_code(&[7; 32]);
+    fn pairing_codes_are_six_digits_bound_to_the_connection_and_nonces() {
+        let code = pairing_code(&[7; 32], &[1; 32], &[2; 32]);
         assert_eq!(code.len(), 6);
         assert!(code.bytes().all(|b| b.is_ascii_digit()));
-        assert_eq!(code, pairing_code(&[7; 32]));
-        assert_ne!(code, pairing_code(&[8; 32]));
+        assert_eq!(code, pairing_code(&[7; 32], &[1; 32], &[2; 32]));
+        assert_ne!(code, pairing_code(&[8; 32], &[1; 32], &[2; 32]));
+        assert_ne!(code, pairing_code(&[7; 32], &[3; 32], &[2; 32]));
+        assert_ne!(code, pairing_code(&[7; 32], &[1; 32], &[3; 32]));
+        assert_ne!(pairing_commit(&[1; 32]), pairing_commit(&[2; 32]));
     }
 
     #[test]

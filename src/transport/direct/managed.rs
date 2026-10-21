@@ -45,6 +45,9 @@ pub(crate) enum Action {
         public_key: String,
         name: String,
         grants: Vec<String>,
+        /// Paired: it trusts this device too. Kept once set.
+        #[serde(default)]
+        paired: bool,
     },
     /// What a trusted device may do.
     SetGrants { device_id: String, grants: Vec<String> },
@@ -87,6 +90,7 @@ pub(crate) fn validate(action: &Action) -> Result<()> {
             public_key,
             name,
             grants,
+            ..
         } => {
             checked_device(device_id)?;
             ensure!(
@@ -114,6 +118,7 @@ pub(crate) fn apply(action: Action) -> Result<Applied> {
             public_key,
             name,
             grants,
+            paired,
         } => {
             let now = chrono::Utc::now().timestamp();
             let previous = store::find_trusted(&public_key);
@@ -123,7 +128,8 @@ pub(crate) fn apply(action: Action) -> Result<Applied> {
                 name: super::sanitize_name(&name),
                 grants: store::with_view(&checked_caps(&grants)?),
                 trusted_at: previous.as_ref().map_or(now, |p| p.trusted_at),
-                last_seen: previous.map_or(0, |p| p.last_seen),
+                last_seen: previous.as_ref().map_or(0, |p| p.last_seen),
+                paired: paired || previous.is_some_and(|p| p.paired),
             })?;
             tracing::info!(device = %device_id, "device trusted");
             Ok(Applied::default())
@@ -200,7 +206,12 @@ fn assume(action: &Action) {
             public_key,
             name,
             grants,
+            paired,
         } => {
+            let was_paired = state
+                .trusted
+                .iter()
+                .any(|d| &d.device_id == device_id && d.paired);
             state.trusted.retain(|d| &d.device_id != device_id);
             state.trusted.push(TrustedDevice {
                 device_id: device_id.clone(),
@@ -209,6 +220,7 @@ fn assume(action: &Action) {
                 grants: store::with_view(grants),
                 trusted_at: chrono::Utc::now().timestamp(),
                 last_seen: 0,
+                paired: *paired || was_paired,
             });
         }
         Action::SetGrants { device_id, grants } => {
@@ -279,6 +291,7 @@ pub(crate) fn take_over() -> Result<bool> {
             public_key: device.public_key.clone(),
             name: device.name.clone(),
             grants: device.grants.clone(),
+            paired: device.paired,
         })
         .and_then(|()| checked_caps(&device.grants));
         match checked {
@@ -356,6 +369,7 @@ mod tests {
             public_key: key(n),
             name: format!("PC{n}"),
             grants: vec!["control".into()],
+            paired: false,
         }
     }
 
@@ -368,6 +382,7 @@ mod tests {
                 public_key: key(1),
                 name: "x".into(),
                 grants: vec![],
+                paired: false,
             })
             .is_err(),
             "the ID must be the key's"

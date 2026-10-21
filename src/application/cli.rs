@@ -1365,6 +1365,7 @@ pub fn trusted_add(device_id: &str, key: &str, name: &str, grants: Option<&str>)
     };
     let name = if name.trim().is_empty() { device_id.clone() } else { name.trim().to_owned() };
     host_action(crate::transport::direct::managed::Action::Trust {
+        paired: false,
         device_id: device_id.clone(),
         public_key: key.trim().to_owned(),
         name,

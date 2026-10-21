@@ -279,9 +279,22 @@ fn trusted_device(device_id: &str, public_key: &str) -> Option<crate::transport:
     crate::transport::direct::store::find_trusted(public_key).filter(|d| d.device_id == device_id)
 }
 
+/// Trust a device both users agreed to pair with: full control, as the
+/// other side gives this one.
+pub(crate) fn trust_paired(name: &str, device_id: &str, public_key: &str) {
+    trust(name, device_id, public_key, farwing_protocol::caps::all(), None, true);
+}
+
 /// Trust the device of an allowed request, with the visitor permissions
 /// (within the server's limit on a browser).
-fn trust(name: &str, device_id: &str, public_key: &str, mut grants: Vec<String>, caps_limit: Option<Vec<String>>) {
+fn trust(
+    name: &str,
+    device_id: &str,
+    public_key: &str,
+    mut grants: Vec<String>,
+    caps_limit: Option<Vec<String>>,
+    paired: bool,
+) {
     use crate::transport::direct::store;
     if store::device_id_of(public_key).as_deref() != Some(device_id) {
         return;
@@ -297,8 +310,9 @@ fn trust(name: &str, device_id: &str, public_key: &str, mut grants: Vec<String>,
         grants,
         trusted_at: now,
         last_seen: now,
+        paired,
     }) {
-        Ok(()) => tracing::info!(device = %device_id, "device trusted after confirmation"),
+        Ok(()) => tracing::info!(device = %device_id, paired, "device trusted after confirmation"),
         Err(error) => tracing::warn!(error = %format!("{error:#}"), "device could not be trusted"),
     }
 }
@@ -549,20 +563,17 @@ impl Handle {
                 (true, false) => Decision::Allow,
                 (true, true) => Decision::Trust,
             };
+            // A pairing is trusted once the other side's user agrees too
+            // (`transport::direct::host`).
             if let Some(sender) = state.direct.remove(&id)
                 && sender.send(decision).is_ok()
                 && trust
+                && !pairing
                 && let Some(pending) = pending
             {
-                // A paired device gets full control, as the other side
-                // gives this one.
-                let grants = if pairing {
-                    farwing_protocol::caps::all()
-                } else {
-                    state.snapshot.settings.grants()
-                };
+                let grants = state.snapshot.settings.grants();
                 drop(state);
-                self::trust(&pending.name, &pending.device_id, &pending.public_key, grants, pending.caps_limit);
+                self::trust(&pending.name, &pending.device_id, &pending.public_key, grants, pending.caps_limit, false);
             }
             return Ok(());
         }
@@ -1216,6 +1227,7 @@ async fn run(client: HostClient, mut rx: mpsc::Receiver<Push>, stop: Cancellatio
                             &request.public_key,
                             settings.grants(),
                             request.caps_limit.clone(),
+                            false,
                         );
                     }
                     answered_request = Some(token);

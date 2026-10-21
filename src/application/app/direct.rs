@@ -38,12 +38,14 @@ const SCAN_WINDOW: Duration = Duration::from_millis(1500);
 /// A device that stopped answering leaves the list after this long.
 const SCAN_KEEP: Duration = Duration::from_secs(8);
 
-/// Pairing with a nearby device: both screens show the same code until
-/// the other side's user agrees.
+/// Pairing with a nearby device: both screens show the same code, and
+/// both users agree.
 pub(super) struct Pairing {
     pub name: String,
     /// Known once the connection is up.
     pub code: Option<String>,
+    /// This side's user agrees (taken when they do).
+    pub agree: Option<tokio::sync::oneshot::Sender<()>>,
     /// The other device, once paired; or why not.
     pub outcome: Option<Result<farwing_protocol::direct::DirectHello, String>>,
     pub cancel: tokio_util::sync::CancellationToken,
@@ -154,9 +156,16 @@ impl DirectUi {
         }
     }
 
-    /// Pair with the device at `target`, in the background.
-    pub fn pair(&self, ctx: &egui::Context, target: crate::transport::direct::Target, name: String) {
+    /// Pair with the device `device_id` at `target`, in the background.
+    pub fn pair(
+        &self,
+        ctx: &egui::Context,
+        target: crate::transport::direct::Target,
+        device_id: String,
+        name: String,
+    ) {
         let cancel = tokio_util::sync::CancellationToken::new();
+        let (agree, agreed) = tokio::sync::oneshot::channel();
         {
             let mut slot = self.pairing.lock().unwrap_or_else(|e| e.into_inner());
             if slot.as_ref().is_some_and(|p| p.outcome.is_none()) {
@@ -165,6 +174,7 @@ impl DirectUi {
             *slot = Some(Pairing {
                 name,
                 code: None,
+                agree: Some(agree),
                 outcome: None,
                 cancel: cancel.clone(),
             });
@@ -191,7 +201,10 @@ impl DirectUi {
                     .and_then(|runtime| {
                         runtime.block_on(async {
                             let local = crate::transport::direct::local_device()?;
-                            crate::transport::direct::client::pair(&target, &local, shown, &cancel).await
+                            crate::transport::direct::client::pair(
+                                &target, &device_id, &local, shown, agreed, &cancel,
+                            )
+                            .await
                         })
                     })
                     .map_err(|error| match error.downcast_ref::<crate::account::api::ApiFailure>() {
@@ -225,6 +238,19 @@ impl DirectUi {
             self.scan(ctx);
         } else {
             ctx.request_repaint_after(wait);
+        }
+    }
+
+    /// This side's user agrees to the pairing shown.
+    pub fn agree_pairing(&self) {
+        if let Some(agree) = self
+            .pairing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .and_then(|p| p.agree.take())
+        {
+            let _ = agree.send(());
         }
     }
 

@@ -53,10 +53,18 @@ pub mod types {
     pub const CONFIRM: &str = "direct.confirm";
     /// Host → controller: authorised, with relation and capabilities.
     pub const AUTHORIZED: &str = "direct.authorized";
-    /// Controller → host: pair (trust each other); the host's user checks
-    /// the pairing code ([`crate::crypto::pairing_code`]) and agrees.
+    /// Controller → host: pair (trust each other), committing to the
+    /// controller's nonce ([`super::DirectPair`]). The host answers with
+    /// its nonce, the controller reveals its own, and both users compare
+    /// the code ([`crate::crypto::pairing_code`]) and agree.
     pub const PAIR: &str = "direct.pair";
-    /// Host → controller: paired; the host now trusts the controller.
+    /// Host → controller: the host's nonce ([`super::DirectPairNonce`]).
+    pub const PAIR_NONCE: &str = "direct.pair.nonce";
+    /// Controller → host: the controller's nonce, as committed.
+    pub const PAIR_REVEAL: &str = "direct.pair.reveal";
+    /// Controller → host: the controller's user agrees.
+    pub const PAIR_CONFIRM: &str = "direct.pair.confirm";
+    /// Host → controller: both users agreed; each trusts the other.
     pub const PAIRED: &str = "direct.paired";
 }
 
@@ -145,6 +153,23 @@ pub struct DirectConfirm {
 pub struct DirectAuthorized {
     pub relation: Relation,
     pub grants: Vec<String>,
+}
+
+/// `direct.pair` (controller → host).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DirectPair {
+    /// Base64 of [`crate::crypto::pairing_commit`] of the controller's nonce.
+    pub commit: String,
+}
+
+/// `direct.pair.nonce` (host → controller) and `direct.pair.reveal`
+/// (controller → host).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DirectPairNonce {
+    /// 32 random bytes, base64.
+    pub nonce: String,
 }
 
 /// `direct.paired` (host → controller).

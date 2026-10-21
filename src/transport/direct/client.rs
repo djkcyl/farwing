@@ -11,8 +11,8 @@ use anyhow::{Context, Result, bail, ensure};
 use farwing_protocol::ErrorCode;
 use farwing_protocol::api::Relation;
 use farwing_protocol::direct::{
-    self as wire, DirectAuth, DirectAuthorized, DirectConfirm, DirectHello, DirectPake,
-    DirectPaired, method, pake_kind, types as dtypes,
+    self as wire, DirectAuth, DirectAuthorized, DirectConfirm, DirectHello, DirectPair,
+    DirectPairNonce, DirectPake, DirectPaired, method, pake_kind, types as dtypes,
 };
 use farwing_protocol::realtime::{Envelope, types};
 use std::net::SocketAddr;
@@ -264,23 +264,32 @@ async fn connect_inner(target: &Target, local: &LocalDevice, auth: Auth) -> Resu
     })
 }
 
-/// Pair with a host: both sides show the same pairing code, the host's user
-/// checks it and agrees, and the host trusts this device with full control
-/// (the caller trusts the host in turn). `shown` gets the code to display.
+/// Pair with the host `device_id` at `target` (`docs/access-model.md`
+/// §7.4). `shown` gets the code to compare; `agreed` resolves once this
+/// side's user agrees, and pairing completes once the host's user agrees
+/// too. Returns the host, which then trusts this device.
 pub(crate) async fn pair(
     target: &Target,
+    device_id: &str,
     local: &LocalDevice,
     shown: impl FnOnce(String),
+    agreed: tokio::sync::oneshot::Receiver<()>,
     cancel: &CancellationToken,
 ) -> Result<DirectHello> {
     tokio::select! {
         biased;
         _ = cancel.cancelled() => bail!("配对已取消"),
-        result = pair_inner(target, local, shown) => result,
+        result = pair_inner(target, device_id, local, shown, agreed) => result,
     }
 }
 
-async fn pair_inner(target: &Target, local: &LocalDevice, shown: impl FnOnce(String)) -> Result<DirectHello> {
+async fn pair_inner(
+    target: &Target,
+    device_id: &str,
+    local: &LocalDevice,
+    shown: impl FnOnce(String),
+    agreed: tokio::sync::oneshot::Receiver<()>,
+) -> Result<DirectHello> {
     let Opened {
         mut reader,
         mut writer,
@@ -288,14 +297,60 @@ async fn pair_inner(target: &Target, local: &LocalDevice, shown: impl FnOnce(Str
         ekm,
         address,
     } = open(target, local).await?;
+    // The hello is signed by the key the ID derives from: whatever answers
+    // at the address, only the device the user chose pairs.
+    ensure!(
+        host.device_id == device_id,
+        "{target} 上的设备不是所选的设备（{}）",
+        crate::account::api::device_id_text(device_id)
+    );
     tracing::info!(%address, device = %host.device_id, "pairing with a host");
-    shown(farwing_protocol::crypto::pairing_code(&ekm));
+    let nonce: [u8; 32] = rand::random();
+    let commit = farwing_protocol::crypto::pairing_commit(&nonce);
     write_frame(
         &mut writer,
-        &Envelope::new(dtypes::PAIR, serde_json::Value::Object(Default::default())),
+        &Envelope::new(
+            dtypes::PAIR,
+            DirectPair {
+                commit: farwing_protocol::crypto::b64(&commit),
+            },
+        ),
     )
     .await?;
-    let message = read(&mut reader, DECISION_TIMEOUT).await?;
+    let message = read(&mut reader, STEP_TIMEOUT).await?;
+    ensure!(message.kind == dtypes::PAIR_NONCE, "被控端没有按协议配对");
+    let theirs: DirectPairNonce = message.body().context("配对应答格式无效")?;
+    let host_nonce = farwing_protocol::crypto::unb64(&theirs.nonce)
+        .ok()
+        .filter(|n| n.len() == 32)
+        .context("配对应答格式无效")?;
+    write_frame(
+        &mut writer,
+        &Envelope::new(
+            dtypes::PAIR_REVEAL,
+            DirectPairNonce {
+                nonce: farwing_protocol::crypto::b64(&nonce),
+            },
+        ),
+    )
+    .await?;
+    shown(farwing_protocol::crypto::pairing_code(&ekm, &nonce, &host_nonce));
+    // Until this side agrees the host only ever refuses; one read serves
+    // both phases, so nothing it sent is lost.
+    let mut answer = std::pin::pin!(read(&mut reader, DECISION_TIMEOUT));
+    tokio::select! {
+        agreed = agreed => agreed.map_err(|_| anyhow::anyhow!("配对已取消"))?,
+        message = &mut answer => {
+            message?;
+            bail!("被控端没有按协议配对");
+        }
+    }
+    write_frame(
+        &mut writer,
+        &Envelope::new(dtypes::PAIR_CONFIRM, serde_json::Value::Object(Default::default())),
+    )
+    .await?;
+    let message = answer.await?;
     ensure!(message.kind == dtypes::PAIRED, "被控端没有完成配对");
     let _: DirectPaired = message.body().context("配对应答格式无效")?;
     store::remember_host(KnownHost {

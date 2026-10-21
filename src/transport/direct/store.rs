@@ -85,6 +85,9 @@ pub(crate) struct TrustedDevice {
     pub trusted_at: i64,
     #[serde(default)]
     pub last_seen: i64,
+    /// Both users agreed to pair: it trusts this device too.
+    #[serde(default)]
+    pub paired: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -617,6 +620,7 @@ mod tests {
             grants: vec!["view".into()],
             trusted_at: 1,
             last_seen: 0,
+            paired: false,
         }
     }
 
