@@ -1,6 +1,7 @@
 //! Account snapshots, push overlays, and user-requested device details.
 use super::*;
 use crate::account::api::{DeviceDetail, DeviceGroups};
+use crate::i18n::t;
 use crate::account::device_change::{ChangeKind, DeviceChange};
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -287,7 +288,7 @@ impl DeviceSync {
         if self.list_requested && self.list_read.is_none() {
             self.list_requested = false;
             let client = Arc::clone(client);
-            let _ = events.send(GuiEvent::Working("正在同步设备状态".into()));
+            let _ = events.send(GuiEvent::Working(t().app.syncing_devices.into()));
             self.list_read = Some(Read {
                 task: tokio::spawn(async move { client.sync_devices().await }),
                 changes: HashMap::new(),

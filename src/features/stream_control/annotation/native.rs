@@ -44,8 +44,15 @@ impl StreamControlHandle {
         pending: Pending,
     ) -> Result<i64> {
         ensure_ready(s)?;
-        let token = s.annotation.native_token.context("批注扩展尚未协商")?;
-        anyhow::ensure!(s.annotation.pending.len() < MAX_PENDING, "批注请求仍在等待");
+        let token = s
+            .annotation
+            .native_token
+            .context(t().features.annotation_extension_not_negotiated)?;
+        anyhow::ensure!(
+            s.annotation.pending.len() < MAX_PENDING,
+            "{}",
+            t().features.annotation_requests_pending
+        );
         let id = s.next_sequence;
         let bytes = protocol::encode(Packet {
             token,

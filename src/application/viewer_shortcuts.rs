@@ -1,4 +1,5 @@
 //! User-local player shortcuts. Hook reads are atomic and never perform file IO.
+use crate::i18n::t;
 mod watcher;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -36,11 +37,12 @@ impl Action {
         Self::Performance,
     ];
     pub fn label(self) -> &'static str {
+        let t = &t().viewer;
         match self {
-            Self::ReleaseMouse => "退出键鼠控制",
-            Self::Fullscreen => "切换全屏",
-            Self::Close => "关闭串流窗口",
-            Self::Performance => "切换性能监控",
+            Self::ReleaseMouse => t.shortcut_release_control,
+            Self::Fullscreen => t.shortcut_fullscreen,
+            Self::Close => t.shortcut_close,
+            Self::Performance => t.shortcut_performance,
         }
     }
     fn index(self) -> usize {
@@ -93,23 +95,26 @@ impl Default for Settings {
 }
 impl Settings {
     pub fn validate(&self) -> Result<()> {
-        ensure!(self.schema == 1, "快捷键配置格式不支持");
+        ensure!(self.schema == 1, t().viewer.shortcut_format_unsupported);
         for (index, binding) in self.bindings.iter().enumerate() {
             if let Some(b) = binding {
                 ensure!(
                     (8..=254).contains(&b.key)
                         && !matches!(b.key,16..=18|91..=92|160..=165|229|231)
                         && b.modifiers <= 15,
-                    "不支持此按键"
+                    t().viewer.shortcut_key_unsupported
                 );
-                ensure!(!(b.key == 27 && b.modifiers == 0), "Esc 需配合修饰键");
+                ensure!(
+                    !(b.key == 27 && b.modifiers == 0),
+                    t().viewer.shortcut_esc_needs_modifier
+                );
                 ensure!(
                     !(b.key == 46 && b.modifiers & 5 == 5)
                         && !(b.key == 76 && b.modifiers & 8 != 0),
-                    "此组合由 Windows 保留"
+                    t().viewer.shortcut_reserved_by_windows
                 );
                 if let Some(other) = self.bindings[..index].iter().position(|v| v == binding) {
-                    bail!("与“{}”重复", Action::ALL[other].label());
+                    bail!((t().viewer.shortcut_duplicate)(Action::ALL[other].label()));
                 }
             }
         }
@@ -169,8 +174,11 @@ pub(crate) fn match_key(key: u16, modifiers: u8) -> Option<Action> {
         .find(|a| s.bindings[a.index()] == Some(Binding { key, modifiers }))
 }
 pub(crate) fn label(action: Action) -> String {
-    Settings::unpack(revision()).bindings[action.index()]
-        .map_or_else(|| "未绑定".into(), Binding::label)
+    bound(action).unwrap_or_else(|| t().controls.shortcut_unbound.into())
+}
+/// The action's shortcut, or `None` while it has none.
+pub(crate) fn bound(action: Action) -> Option<String> {
+    Settings::unpack(revision()).bindings[action.index()].map(Binding::label)
 }
 pub(crate) fn capture_active() -> bool {
     let owner = runtime().capture.load(Ordering::Acquire);
@@ -228,7 +236,7 @@ pub(crate) fn modifiers(m: winit::keyboard::ModifiersState) -> u8 {
         | (u8::from(m.super_key()) << 3)
 }
 fn path() -> Result<PathBuf> {
-    let base = crate::product::local_data_dir().context("无法确定本地设置目录")?;
+    let base = crate::product::local_data_dir().context(t().viewer.no_local_settings_dir)?;
     Ok(base.join("shortcuts.json"))
 }
 fn read(path: &std::path::Path) -> Result<Option<Vec<u8>>> {
@@ -239,7 +247,7 @@ fn read(path: &std::path::Path) -> Result<Option<Vec<u8>>> {
     };
     let mut bytes = Vec::new();
     file.take(8193).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= 8192, "快捷键配置过大");
+    ensure!(bytes.len() <= 8192, t().viewer.shortcut_settings_too_large);
     Ok(Some(bytes))
 }
 fn refresh() {
@@ -272,7 +280,10 @@ fn apply_refresh(state: &Runtime, revision: u64, result: Result<Option<Vec<u8>>>
                 .as_ref()
                 .map_or_else(
                     || Ok(Settings::default()),
-                    |b| serde_json::from_slice::<Settings>(b).context("快捷键配置无效"),
+                    |b| {
+                        serde_json::from_slice::<Settings>(b)
+                            .context(t().viewer.shortcut_settings_invalid)
+                    },
                 )
                 .and_then(|s| {
                     s.validate()?;
@@ -308,12 +319,15 @@ fn save(expected: &Option<Vec<u8>>, settings: &Settings) -> Result<()> {
         unsafe {
             let _ = CloseHandle(handle);
         }
-        bail!("其他窗口正在保存快捷键");
+        bail!(t().viewer.shortcut_saving_elsewhere);
     }
     let _guard = FileGuard(handle);
     let path = path()?;
-    ensure!(&read(&path)? == expected, "快捷键已在其他窗口修改");
-    std::fs::create_dir_all(path.parent().context("设置目录无效")?)?;
+    ensure!(
+        &read(&path)? == expected,
+        t().viewer.shortcut_changed_elsewhere
+    );
+    std::fs::create_dir_all(path.parent().context(t().viewer.settings_dir_invalid)?)?;
     let bytes = serde_json::to_vec_pretty(settings)?;
     let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| -> Result<()> {
@@ -392,7 +406,7 @@ impl Editor {
             self.cancel_recording();
         } else if self.pending_unsupported {
             self.pending_unsupported = false;
-            self.error = Some("不支持此按键".into());
+            self.error = Some(t().viewer.shortcut_key_unsupported.into());
         }
     }
     fn reload(&mut self) {
@@ -598,14 +612,16 @@ impl Editor {
         crate::ui::controls::observe_notice(
             ui.ctx(),
             "shortcut-settings-error",
-            "快捷键设置",
+            t().viewer.shortcut_settings,
             crate::ui::controls::DialogIcon::Error,
             validation.as_deref().or(self.error.as_deref()),
         );
         let dirty = self.draft != self.baseline;
         ui.horizontal(|ui| {
             if ui
-                .add(crate::ui::controls::quiet_button("恢复默认"))
+                .add(crate::ui::controls::quiet_button(
+                    t().viewer.restore_defaults,
+                ))
                 .clicked()
             {
                 self.cancel_recording();
@@ -614,7 +630,7 @@ impl Editor {
             }
             if dirty {
                 ui.label(
-                    egui::RichText::new("未保存")
+                    egui::RichText::new(t().viewer.unsaved)
                         .size(crate::ui::theme::SMALL)
                         .color(crate::ui::theme::MUTED),
                 );
@@ -625,7 +641,7 @@ impl Editor {
                         validation.is_none()
                             && self.recording.is_none()
                             && (dirty || self.error.is_some()),
-                        crate::ui::controls::primary("保存更改"),
+                        crate::ui::controls::primary(t().viewer.save_changes),
                     )
                     .clicked()
                 {
@@ -635,12 +651,16 @@ impl Editor {
                     }
                 }
                 if (dirty || self.recording.is_some())
-                    && ui.add(crate::ui::controls::secondary("取消修改")).clicked()
+                    && ui
+                        .add(crate::ui::controls::secondary(t().viewer.discard_changes))
+                        .clicked()
                 {
                     self.reload();
                 }
                 if self.error.is_some()
-                    && ui.add(crate::ui::controls::secondary("重新载入")).clicked()
+                    && ui
+                        .add(crate::ui::controls::secondary(t().viewer.reload))
+                        .clicked()
                 {
                     self.reload();
                 }

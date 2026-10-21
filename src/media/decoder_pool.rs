@@ -105,7 +105,7 @@ impl DecoderPool {
     pub(crate) fn label(&self) -> &str {
         self.decoder
             .as_ref()
-            .map_or("等待可用解码器", NativeVideoDecoder::label)
+            .map_or(crate::i18n::t().session.waiting_for_decoder, NativeVideoDecoder::label)
     }
 
     pub(crate) fn decoder(&mut self) -> Option<&mut NativeVideoDecoder> {

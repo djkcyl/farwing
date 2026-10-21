@@ -1,5 +1,6 @@
 //! Process-wide UI dispatcher. Window creation and destruction stay on one thread.
 use super::{WindowConfig, app::AppFactory};
+use crate::i18n::t;
 use anyhow::{Context, Result};
 use std::{
     sync::{Mutex, OnceLock},
@@ -44,9 +45,9 @@ pub(crate) fn send(request: Request) -> Result<()> {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
-        .context("窗口管理器已关闭")?
+        .context(t().controls.window_manager_closed)?
         .send_event(Event::Request(request))
-        .map_err(|_| anyhow::anyhow!("窗口管理器已关闭"))
+        .map_err(|_| anyhow::anyhow!(t().controls.window_manager_closed))
 }
 pub(crate) async fn viewer(
     key: String,
@@ -54,5 +55,5 @@ pub(crate) async fn viewer(
 ) -> Result<()> {
     let (done, closed) = tokio::sync::oneshot::channel();
     send(Request::Viewer { key, config, done })?;
-    closed.await.context("观看窗口已关闭")?
+    closed.await.context(t().controls.viewer_window_closed)?
 }

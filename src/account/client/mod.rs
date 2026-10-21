@@ -5,6 +5,7 @@ use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
 use tokio_util::sync::CancellationToken;
+use crate::i18n::t;
 
 use crate::account::api::{
     ApiFailure, DeviceGroups, DeviceList, DevicePolicy, Purpose, RealtimeTicket, ServerApi,
@@ -24,7 +25,7 @@ const GUEST_USER: &str = "guest";
 
 impl std::fmt::Display for NoSavedSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("尚未登录当前 Farwing 服务器")
+        f.write_str(t().session.not_signed_in_to_server)
     }
 }
 impl std::error::Error for NoSavedSession {}
@@ -76,7 +77,7 @@ impl RestoreFailure {
     fn error(&self) -> anyhow::Error {
         match self {
             Self::Api(error) => error.clone().into(),
-            Self::Local(message) => anyhow::anyhow!("本机初始化失败：{message}"),
+            Self::Local(message) => anyhow::anyhow!("{}", (t().session.local_init_failed)(message)),
         }
     }
 }
@@ -153,7 +154,7 @@ impl AuthenticatedClient {
     /// to hosts that trust it or with an access code. Its guest token is
     /// requested on first use.
     pub(crate) fn guest(device: DeviceHandle) -> Result<Self> {
-        let server = ServerConfig::load()?.context("没有设置服务器")?;
+        let server = ServerConfig::load()?.context(t().session.no_server_set)?;
         let identity = device.identity().client_identity()?;
         // A placeholder login: never saved, never sent (the guest token is).
         let session = LoginSession::new(
@@ -544,7 +545,7 @@ impl AuthenticatedClient {
     /// them on direct connections (`docs/access-model.md` §2.2).
     pub(crate) async fn refresh_friend_access(&self) -> Result<()> {
         if self.guest {
-            bail!("没有账号");
+            bail!("{}", t().common.signed_out);
         }
         let list = self
             .request_waiting(|api| async move { api.friend_access().await })
@@ -581,7 +582,7 @@ impl AuthenticatedClient {
 
     async fn list_devices_with(&self, wait: bool) -> Result<DeviceList> {
         if self.guest {
-            bail!("没有账号");
+            bail!("{}", t().common.signed_out);
         }
         let list = self
             .request_with(wait, |api| async move { api.list_devices().await })
@@ -665,7 +666,7 @@ impl AuthenticatedClient {
 
     pub async fn revoke_auth_session(&self, device_id: &str) -> Result<()> {
         if device_id == self.device_id() {
-            bail!("不能移除本机登录");
+            bail!("{}", t().session.cannot_remove_own_login);
         }
         self.request(|api| async move { api.revoke_auth_session(device_id).await })
             .await
@@ -702,7 +703,7 @@ impl AuthenticatedClient {
     ) -> Result<(String, String)> {
         let groups = self.device_groups().await?;
         if !groups.entries().any(|(_, d)| d.device_id == id) {
-            bail!("设备已不在本账号中");
+            bail!("{}", t().session.device_not_in_account);
         }
         let result = self
             .request(|api| async move { api.rename_device(id, alias).await })
@@ -716,7 +717,7 @@ impl AuthenticatedClient {
                 response.alias
             }
             Err(error) if is_server_failure(&error) => {
-                return Err(error.context("设备改名被服务端拒绝"));
+                return Err(error.context(t().session.rename_rejected));
             }
             result => {
                 // A timeout/response mismatch is not evidence that a write did
@@ -731,8 +732,8 @@ impl AuthenticatedClient {
                     let error = result
                         .err()
                         .map(|e| format!("{e:#}"))
-                        .unwrap_or_else(|| "返回的设备 ID 不匹配".into());
-                    bail!("改名结果未确认：{error}");
+                        .unwrap_or_else(|| t().session.returned_device_id_mismatch.into());
+                    bail!("{}", (t().session.rename_unconfirmed)(&error));
                 }
             }
         };
@@ -741,15 +742,15 @@ impl AuthenticatedClient {
         {
             return Ok((
                 actual,
-                format!("服务端已改名，但本地注册名称保存失败：{error:#}"),
+                (t().session.renamed_local_save_failed)(&format!("{error:#}")),
             ));
         }
-        Ok((actual, "设备名称已更新".into()))
+        Ok((actual, t().session.device_renamed.into()))
     }
 
     pub(crate) async fn remove_account_device(&self, id: &str) -> Result<String> {
         if id == self.device_id() {
-            bail!("不能移除本机设备");
+            bail!("{}", t().session.cannot_remove_this_device);
         }
         let present = self
             .device_groups()
@@ -757,24 +758,24 @@ impl AuthenticatedClient {
             .entries()
             .any(|(_, d)| d.device_id == id);
         if !present {
-            bail!("设备或所有权已变化");
+            bail!("{}", t().session.device_or_owner_changed);
         }
         let result = self
             .request(|api| async move { api.remove_device(id).await })
             .await;
         if let Err(error) = result {
             if is_server_failure(&error) {
-                return Err(error.context("设备移除被服务端拒绝"));
+                return Err(error.context(t().session.remove_rejected));
             }
             let absent = self
                 .device_groups()
                 .await
                 .map(|g| !g.entries().any(|(_, d)| d.device_id == id));
             if !matches!(absent, Ok(true)) {
-                bail!("移除结果未确认：{error:#}");
+                bail!("{}", (t().session.remove_unconfirmed)(&format!("{error:#}")));
             }
         }
-        Ok("设备已移除".into())
+        Ok(t().session.device_removed.into())
     }
 
     pub(crate) async fn power_owned_device(
@@ -786,18 +787,18 @@ impl AuthenticatedClient {
         let id = expected.validated_device_id()?;
         let groups = self.device_groups().await?;
         if id == self.device_id() || id == groups.current_device_id {
-            bail!("本机设备不支持电源操作");
+            bail!("{}", t().session.power_not_for_this_device);
         }
         let device = groups
             .desktop_devices
             .iter()
             .find(|d| d.device_id == id)
-            .context("设备或所有权已变化")?;
+            .context(t().session.device_or_owner_changed)?;
         if device.alias != expected.alias || device.platform != expected.platform {
-            bail!("设备名称或平台已变化");
+            bail!("{}", t().session.device_name_or_platform_changed);
         }
         if device.participant_count() > expected.participant_count() {
-            bail!("该设备新增了远控连接");
+            bail!("{}", t().session.device_new_connection);
         }
         action.check(device, &self.features)?;
         // One user decision produces one request; a lost acknowledgement is
@@ -824,11 +825,11 @@ impl AuthenticatedClient {
                 Ok(receipt)
             }
             Err(error) if is_server_failure(&error) => {
-                Err(error.context(format!("{}请求被服务端拒绝", action.label())))
+                Err(error.context((t().session.power_rejected)(action.label())))
             }
             Err(error) => bail!(
-                "{}结果未确认：{error:#}",
-                action.label()
+                "{}",
+                (t().session.power_unconfirmed)(action.label(), &format!("{error:#}"))
             ),
         }
     }
@@ -872,7 +873,7 @@ fn retry_later(error: &anyhow::Error) -> bool {
 fn unreachable_error() -> anyhow::Error {
     ApiFailure::new(
         crate::account::api::ErrorCode::Network,
-        "无法连接 Farwing 服务器",
+        "cannot connect",
     )
     .into()
 }

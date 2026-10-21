@@ -1,7 +1,8 @@
 // The user centre's first page: online devices, who is connected to mine,
 // open friend requests, recent logins.
+import { useT } from '../../i18n/react';
 import { useAuth } from '../../lib/auth';
-import { ago, displayName, platformText, PURPOSES, RELATIONS } from '../../lib/format';
+import { ago, displayName, platformText, purposeText, relationText } from '../../lib/format';
 import { Link } from '../../lib/router';
 import type { AuthSession, DeviceList, FriendRequests } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
@@ -9,6 +10,8 @@ import { DeviceCard } from '../../ui/DeviceCard';
 import { Alert, Badge, Card, Empty, Loading, PageHeader, Stat } from '../../ui/kit';
 
 export default function Home() {
+  const t = useT();
+  const m = t.account.home;
   const auth = useAuth();
   const devices = useApi<DeviceList>('/api/v2/devices', 10000);
   const requests = useApi<FriendRequests>('/api/v2/friends/requests', 30000);
@@ -23,30 +26,34 @@ export default function Home() {
 
   return (
     <div className="stack">
-      <PageHeader title={`你好，${displayName(auth.me)}`} subtitle={auth.info?.instance_name} />
+      <PageHeader title={displayName(auth.me)} subtitle={auth.info?.instance_name} />
       <div className="grid grid-stats">
         <Stat
-          label="我的电脑在线"
+          label={m.myComputersOnline}
           value={`${hosts.filter((x) => x.status === 'online').length} / ${hosts.length}`}
           tone={hosts.some((x) => x.status === 'online') ? 'green' : undefined}
         />
         <Stat
-          label="好友共享"
+          label={m.sharedByFriends}
           value={d.shared.length}
-          hint={`${d.shared.filter((x) => x.status === 'online').length} 台在线`}
+          hint={m.onlineCount(d.shared.filter((x) => x.status === 'online').length)}
         />
-        <Stat label="正在连接我的电脑" value={connections.length} tone={connections.length ? 'amber' : undefined} />
-        <Stat label="好友申请" value={incoming} hint={incoming ? <Link to="/friends">去处理</Link> : undefined} />
+        <Stat label={m.connectedToMine} value={connections.length} tone={connections.length ? 'amber' : undefined} />
+        <Stat
+          label={m.friendRequests}
+          value={incoming}
+          hint={incoming ? <Link to="/friends">{m.viewRequests}</Link> : undefined}
+        />
       </div>
 
       <div>
         <div className="section-title">
-          <h2>在线的设备</h2>
-          <Link to="/devices">全部设备</Link>
+          <h2>{m.onlineDevices}</h2>
+          <Link to="/devices">{m.allDevices}</Link>
         </div>
         {online.length === 0 ? (
           <Card>
-            <Empty icon="monitor" title="暂无在线设备" />
+            <Empty icon="monitor" title={m.noOnlineDevices} />
           </Card>
         ) : (
           <div className="device-grid">
@@ -58,19 +65,19 @@ export default function Home() {
       </div>
 
       <div className="grid grid-2">
-        <Card title="正在连接我的电脑" pad={false}>
+        <Card title={m.connectedToMine} pad={false}>
           {connections.length === 0 ? (
-            <Empty icon="activity" title="没有人在连接" />
+            <Empty icon="activity" title={t.account.noConnections} />
           ) : (
             <div className="list">
               {connections.map(({ host, p }) => (
                 <div className="list-item" key={p.participant_id}>
                   <div className="grow">
                     <div>
-                      {p.nickname || '访客'} <span className="muted">→ {host}</span>
+                      {p.nickname || t.common.guest} <span className="muted">→ {host}</span>
                     </div>
                     <div className="small muted">
-                      {p.device_alias} · {RELATIONS[p.relation] ?? p.relation} · {PURPOSES[p.purpose] ?? p.purpose}
+                      {p.device_alias} · {relationText(p.relation)} · {purposeText(p.purpose)}
                     </div>
                   </div>
                   <span className="small faint">{ago(p.started_at)}</span>
@@ -79,7 +86,7 @@ export default function Home() {
             </div>
           )}
         </Card>
-        <Card title="最近登录" actions={<Link to="/account">管理</Link>} pad={false}>
+        <Card title={m.recentLogins} actions={<Link to="/account">{t.common.manage}</Link>} pad={false}>
           {!logins.data ? (
             <Loading />
           ) : (
@@ -92,7 +99,7 @@ export default function Home() {
                     <div className="grow">
                       <div className="row gap-sm">
                         <span className="ellipsis">{s.device_alias}</span>
-                        {s.current && <Badge tone="blue">这个浏览器</Badge>}
+                        {s.current && <Badge tone="blue">{t.common.thisBrowser}</Badge>}
                       </div>
                       <div className="small muted">{platformText(s.platform)}</div>
                     </div>

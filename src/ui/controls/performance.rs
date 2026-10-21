@@ -1,5 +1,6 @@
 //! Shared metric and time-series controls; callers supply existing measurements.
 use super::*;
+use crate::i18n::t;
 use egui::{Align2, FontId, Rect, Sense, pos2};
 
 pub(crate) fn metric_pair(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
@@ -13,12 +14,17 @@ pub(crate) fn metric_pair_colored(
     color: Color32,
 ) {
     let value = value.into();
+    // English labels are longer than the Chinese ones.
+    let width = match crate::i18n::language() {
+        crate::i18n::Language::ZhCn => 116.0,
+        crate::i18n::Language::En => 148.0,
+    };
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
-            vec2(116.0, 18.0),
+            vec2(width, 18.0),
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
-                ui.set_min_width(116.0);
+                ui.set_min_width(width);
                 ui.label(RichText::new(label).size(theme::SMALL).color(MUTED));
             },
         );
@@ -51,11 +57,15 @@ pub(crate) fn performance_header(ui: &mut egui::Ui) {
     ui.painter().text(
         rect.left_center(),
         Align2::LEFT_CENTER,
-        "指标",
+        t().controls.metric,
         font.clone(),
         MUTED,
     );
-    for (x, label) in columns.into_iter().zip(["当前", "均值", "峰值"]) {
+    let t = &t().controls;
+    for (x, label) in columns
+        .into_iter()
+        .zip([t.metric_current, t.metric_average, t.metric_peak])
+    {
         ui.painter().text(
             pos2(x, rect.center().y),
             Align2::RIGHT_CENTER,
@@ -67,7 +77,7 @@ pub(crate) fn performance_header(ui: &mut egui::Ui) {
     ui.painter().text(
         pos2(plot.right(), rect.center().y),
         Align2::RIGHT_CENTER,
-        "30 秒趋势",
+        t.trend_30s,
         font,
         MUTED,
     );
@@ -195,12 +205,12 @@ pub(crate) fn performance_trace(ui: &mut egui::Ui, now: f64, trace: PerformanceT
                 .filter(|(at, _)| (*at - time).abs() < 0.6)
                 .and_then(|(_, v)| *v);
             ui.label(format!(
-                "{:.1} 秒前  {} {}",
-                now - time,
+                "{}  {} {}",
+                (t().controls.seconds_ago)(now - time),
                 format_value(value),
                 trace.unit
             ));
         }
-        ui.label(format!("纵轴 0–{top:.2} {}", trace.unit));
+        ui.label((t().controls.y_axis)(top, trace.unit));
     });
 }

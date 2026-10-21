@@ -1,4 +1,5 @@
 use super::{graph::*, *};
+use crate::i18n::t;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,6 +25,8 @@ pub(crate) struct Editor {
     parameter_edit: Option<egui::Id>,
     wire_routes: wires::Cache,
     reroute_selection: Option<(String, usize)>,
+    /// The interface language the catalog's built-in labels were loaded in.
+    language: Option<crate::i18n::Language>,
 }
 enum DocumentSwitch {
     New,
@@ -140,7 +143,10 @@ impl Editor {
         if self.catalog.is_none() {
             self.refresh();
             self.new_document();
+        } else if self.language != Some(crate::i18n::language()) {
+            self.refresh();
         }
+        self.language = Some(crate::i18n::language());
         let mut load = None;
         let mut create = false;
         egui::Frame::new()
@@ -152,15 +158,15 @@ impl Editor {
                 crate::ui::controls::configure(ui.style_mut(), crate::ui::controls::HEIGHT);
                 ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
                 ui.horizontal(|ui| {
-                    ui.menu_button("文件", |ui| {
-                        if ui.button("新建节点图").clicked() {
+                    ui.menu_button(t().features.plugin_menu_file, |ui| {
+                        if ui.button(t().features.plugin_new_graph).clicked() {
                             create = true;
                             ui.close();
                         }
                         ui.separator();
-                        ui.weak("打开节点图");
+                        ui.weak(t().features.plugin_open_graph);
                         if self.saved.is_empty() {
-                            ui.weak("暂无已保存的节点图");
+                            ui.weak(t().features.plugin_no_saved_graphs);
                         }
                         egui::ScrollArea::vertical()
                             .max_height(240.0)
@@ -177,7 +183,7 @@ impl Editor {
                                 }
                             });
                         ui.separator();
-                        if ui.button("打开图文件夹").clicked() {
+                        if ui.button(t().features.plugin_open_graph_folder).clicked() {
                             if let Err(e) = directory().and_then(|p| open_folder(&p)) {
                                 self.message = e.to_string();
                             }
@@ -192,15 +198,15 @@ impl Editor {
                                 &mut doc.name,
                                 crate::ui::controls::HEIGHT,
                             )
-                            .hint_text("节点图名称"),
+                            .hint_text(t().features.plugin_graph_name),
                         )
-                        .on_hover_text("节点图名称");
+                        .on_hover_text(t().features.plugin_graph_name);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .add_sized(
                                 [64.0, crate::ui::controls::HEIGHT],
-                                crate::ui::controls::primary("应用"),
+                                crate::ui::controls::primary(t().common.apply),
                             )
                             .clicked()
                         {
@@ -209,7 +215,7 @@ impl Editor {
                         if ui
                             .add_sized(
                                 [64.0, crate::ui::controls::HEIGHT],
-                                egui::Button::new("保存"),
+                                egui::Button::new(t().common.save),
                             )
                             .clicked()
                         {
@@ -218,7 +224,7 @@ impl Editor {
                         if ui
                             .add_sized(
                                 [64.0, crate::ui::controls::HEIGHT],
-                                egui::Button::new("校验"),
+                                egui::Button::new(t().features.plugin_validate),
                             )
                             .clicked()
                         {
@@ -231,10 +237,10 @@ impl Editor {
                     if ui
                         .add_enabled(
                             !self.undo.is_empty(),
-                            egui::Button::new("撤销")
+                            egui::Button::new(t().features.plugin_undo)
                                 .min_size(Vec2::new(56.0, crate::ui::controls::HEIGHT)),
                         )
-                        .on_hover_text("撤销上一步")
+                        .on_hover_text(t().features.plugin_undo_hint)
                         .clicked()
                     {
                         self.undo();
@@ -242,10 +248,10 @@ impl Editor {
                     if ui
                         .add_enabled(
                             !self.redo.is_empty(),
-                            egui::Button::new("重做")
+                            egui::Button::new(t().features.plugin_redo)
                                 .min_size(Vec2::new(56.0, crate::ui::controls::HEIGHT)),
                         )
-                        .on_hover_text("重做上一步")
+                        .on_hover_text(t().features.plugin_redo_hint)
                         .clicked()
                     {
                         self.redo();
@@ -254,21 +260,28 @@ impl Editor {
                     if ui
                         .add_sized(
                             [96.0, crate::ui::controls::HEIGHT],
-                            egui::Button::new("刷新节点库"),
+                            egui::Button::new(t().features.plugin_refresh_library),
                         )
                         .clicked()
                     {
                         self.refresh();
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.menu_button("帮助", |ui| {
+                        let text = &t().features;
+                        ui.menu_button(text.plugin_menu_help, |ui| {
                             for (action, gesture) in [
-                                ("添加节点", "从节点库拖入"),
-                                ("连线", "拖动端口"),
-                                ("添加中继点", "双击连线"),
-                                ("平移画布", "中键拖动"),
-                                ("缩放画布", "滚轮"),
-                                ("多选节点", "Ctrl + 单击"),
+                                (text.plugin_help_add_node, text.plugin_help_add_node_gesture),
+                                (text.plugin_help_connect, text.plugin_help_connect_gesture),
+                                (
+                                    text.plugin_help_add_reroute,
+                                    text.plugin_help_add_reroute_gesture,
+                                ),
+                                (text.plugin_help_pan, text.plugin_help_pan_gesture),
+                                (text.plugin_help_zoom, text.plugin_help_zoom_gesture),
+                                (
+                                    text.plugin_help_multi_select,
+                                    text.plugin_help_multi_select_gesture,
+                                ),
                             ] {
                                 ui.horizontal(|ui| {
                                     ui.add_sized([105.0, 24.0], egui::Label::new(action));
@@ -286,7 +299,7 @@ impl Editor {
                         if ui
                             .add_sized(
                                 [72.0, crate::ui::controls::HEIGHT],
-                                egui::Button::new("适应画布"),
+                                egui::Button::new(t().features.plugin_fit_canvas),
                             )
                             .clicked()
                         {
@@ -295,7 +308,7 @@ impl Editor {
                         if ui
                             .add_sized(
                                 [72.0, crate::ui::controls::HEIGHT],
-                                egui::Button::new("整理节点"),
+                                egui::Button::new(t().features.plugin_arrange_nodes),
                             )
                             .clicked()
                         {
@@ -322,7 +335,7 @@ impl Editor {
             crate::ui::controls::notice(
                 ui.ctx(),
                 "plugin-editor",
-                "节点图",
+                t().features.plugin_graph,
                 crate::ui::controls::DialogIcon::Info,
                 std::mem::take(&mut self.message),
             );
@@ -376,15 +389,17 @@ impl Editor {
                 ui.set_width(360.0);
                 cancel = crate::ui::controls::dialog_header(
                     ui,
-                    "节点图尚未保存",
+                    t().features.plugin_unsaved_title,
                     crate::ui::controls::DialogIcon::Warning,
                     true,
                 );
-                ui.label("未保存的修改将丢失");
+                ui.label(t().features.plugin_unsaved_body);
                 let (accept, dismiss) = crate::ui::controls::dialog_actions(
                     ui,
-                    Some(crate::ui::controls::DialogAction::new("继续编辑")),
-                    Some("放弃修改并切换"),
+                    Some(crate::ui::controls::DialogAction::new(
+                        t().features.plugin_keep_editing,
+                    )),
+                    Some(t().features.plugin_discard_and_switch),
                 );
                 cancel |= accept;
                 discard = dismiss;
@@ -407,9 +422,9 @@ impl Editor {
         match result {
             Ok(()) => {
                 self.message = if apply {
-                    "已应用"
+                    t().features.plugin_applied
                 } else {
-                    "已保存草稿"
+                    t().features.plugin_draft_saved
                 }
                 .into();
                 self.baseline = serde_json::to_value(doc).ok();
@@ -466,9 +481,13 @@ impl Editor {
             self.message = match compile(doc, catalog) {
                 Ok(plan) => {
                     if plan.warnings.is_empty() {
-                        "校验通过".into()
+                        t().features.plugin_validation_passed.into()
                     } else {
-                        format!("校验通过\n{}", plan.warnings.join("\n"))
+                        format!(
+                            "{}\n{}",
+                            t().features.plugin_validation_passed,
+                            plan.warnings.join("\n")
+                        )
                     }
                 }
                 Err(errors) => errors
@@ -502,7 +521,7 @@ impl Editor {
         }
     }
     fn library(&mut self, ui: &mut egui::Ui) {
-        ui.strong("节点库");
+        ui.strong(t().features.plugin_node_library);
         let types = self
             .catalog
             .as_ref()
@@ -518,7 +537,7 @@ impl Editor {
                 let mut groups: BTreeMap<String, Vec<_>> = BTreeMap::new();
                 for ty in &types {
                     let category = if ty.definition.category.is_empty() {
-                        "其他"
+                        t().features.plugin_category_other
                     } else {
                         &ty.definition.category
                     };
@@ -610,7 +629,7 @@ impl Editor {
             .as_ref()
             .is_none_or(|doc| doc.nodes.len() >= 64)
         {
-            self.message = "节点数量已达上限".into();
+            self.message = t().features.plugin_node_limit.into();
             return;
         }
         self.checkpoint();
@@ -663,7 +682,7 @@ impl Editor {
                 self.insert_node(node);
                 ui.ctx().request_repaint();
             } else if inside && !capacity {
-                self.message = "节点数量已达上限".into();
+                self.message = t().features.plugin_node_limit.into();
             }
             return;
         }
@@ -1032,12 +1051,12 @@ impl Editor {
             let mut edited = node.clone();
             let mut edit_id = None;
             nr.context_menu(|ui| {
-                let enabled = ui.checkbox(&mut edited.enabled, "启用节点");
+                let enabled = ui.checkbox(&mut edited.enabled, t().features.plugin_enable_node);
                 if enabled.changed() {
                     edit_id = Some(enabled.id);
                 }
                 ui.separator();
-                if ui.button("断开连线").clicked() {
+                if ui.button(t().features.plugin_disconnect_wires).clicked() {
                     remove_edges.extend(
                         doc.edges
                             .iter()
@@ -1046,7 +1065,7 @@ impl Editor {
                     );
                     ui.close();
                 }
-                if ui.button("删除节点").clicked() {
+                if ui.button(t().features.plugin_delete_node).clicked() {
                     remove_nodes.insert(node.id.clone());
                     ui.close();
                 }
@@ -1056,7 +1075,7 @@ impl Editor {
                 .get(&node.type_id)
                 .map(|t| t.definition.description.as_str())
                 .filter(|s| !s.is_empty())
-                .unwrap_or("无说明");
+                .unwrap_or(t().features.plugin_no_description);
             let description_rect = Rect::from_min_max(
                 r.min + Vec2::new(12.0, 37.0),
                 Pos2::new(r.right() - 12.0, r.top() + 76.0),
@@ -1132,7 +1151,7 @@ impl Editor {
                 );
                 rows.set_clip_rect(r.intersect(rect));
                 rows.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
-                rows.weak("图层顺序 · 上层在前");
+                rows.weak(t().features.plugin_layer_order);
                 let mut swap = None;
                 for (i, edge) in layers.iter().enumerate() {
                     rows.push_id(&edge.id, |ui| {
@@ -1141,25 +1160,27 @@ impl Editor {
                                 .nodes
                                 .iter()
                                 .find(|n| n.id == edge.from.node)
-                                .map_or("未知节点", |n| node_name(n, &catalog));
+                                .map_or(t().features.plugin_unknown_node, |n| {
+                                    node_name(n, &catalog)
+                                });
                             ui.add_sized([190.0, 26.0], egui::Label::new(name).truncate());
                             if ui
                                 .add_enabled(i > 0, egui::Button::new("↑"))
-                                .on_hover_text("上移一层")
+                                .on_hover_text(t().features.plugin_layer_up)
                                 .clicked()
                             {
                                 swap = Some((i, i - 1));
                             }
                             if ui
                                 .add_enabled(i + 1 < layers.len(), egui::Button::new("↓"))
-                                .on_hover_text("下移一层")
+                                .on_hover_text(t().features.plugin_layer_down)
                                 .clicked()
                             {
                                 swap = Some((i, i + 1));
                             }
                             if crate::ui::controls::close_button(
                                 ui,
-                                "断开图层",
+                                t().features.plugin_disconnect_layer,
                                 crate::ui::controls::COMPACT_HEIGHT,
                             )
                             .clicked()
@@ -1318,7 +1339,7 @@ impl Editor {
                     wire_consumed = true;
                 }
                 response.context_menu(|ui| {
-                    if ui.button("删除中继点").clicked() {
+                    if ui.button(t().features.plugin_delete_reroute).clicked() {
                         remove_knot = Some(key);
                         ui.close();
                     }
@@ -1369,7 +1390,7 @@ impl Editor {
             }
             pr.clone().on_hover_text(hint.join("\n"));
             pr.context_menu(|ui| {
-                if ui.button("断开连线").clicked() {
+                if ui.button(t().features.plugin_disconnect_wires).clicked() {
                     remove_edges.extend(
                         doc.edges
                             .iter()
@@ -1547,7 +1568,7 @@ impl Editor {
             .as_ref()
             .is_none_or(|d| d.nodes.len() + nodes.len() > 64 || d.edges.len() + edges.len() > 256)
         {
-            self.message = "超出图规模限制".into();
+            self.message = t().features.plugin_graph_too_large.into();
             return;
         }
         self.checkpoint();

@@ -1,5 +1,6 @@
 // Accounts: search, create (with a typed or generated password).
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { ago, date } from '../../lib/format';
@@ -34,6 +35,7 @@ export function OnceDialog({
   onClose(): void;
   children: ReactNode;
 }) {
+  const t = useT();
   return (
     <Dialog
       open={open}
@@ -41,12 +43,12 @@ export function OnceDialog({
       onClose={onClose}
       footer={
         <Button variant="primary" onClick={onClose}>
-          完成
+          {t.common.done}
         </Button>
       }
     >
       {children}
-      <Alert tone="amber">只显示这一次</Alert>
+      <Alert tone="amber">{t.admin.users.shownOnce}</Alert>
     </Dialog>
   );
 }
@@ -60,6 +62,8 @@ function CreateUser({
   onClose(): void;
   onCreated(username: string, password: string | null): void;
 }) {
+  const t = useT();
+  const m = t.admin.users;
   const [username, setUsername] = useState('');
   const [nickname, setNickname] = useState('');
   const [password, setPassword] = useState('');
@@ -93,41 +97,43 @@ function CreateUser({
   return (
     <Dialog
       open={open}
-      title="创建账号"
+      title={m.create}
       onClose={onClose}
       footer={
         <>
-          <Button onClick={onClose}>取消</Button>
+          <Button onClick={onClose}>{t.common.cancel}</Button>
           <Button variant="primary" type="submit" form="create-user" loading={busy}>
-            创建
+            {t.common.create}
           </Button>
         </>
       }
     >
       <form id="create-user" className="stack" onSubmit={submit}>
         {error && <Alert>{error}</Alert>}
-        <Field label="用户名" hint="1–64 位字母、数字或 . _ - @">
+        <Field label={m.username} hint={t.auth.register.usernameHint}>
           <Input value={username} onChange={(e) => setUsername(e.target.value)} required />
         </Field>
-        <Field label="昵称">
+        <Field label={m.nickname}>
           <Input value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={64} />
         </Field>
-        <Field label="初始密码">
+        <Field label={m.initialPassword}>
           <Input
             type="password"
             autoComplete="new-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="随机生成"
+            placeholder={m.generated}
           />
         </Field>
-        <Checkbox checked={admin} onChange={setAdmin} label="设为管理员" />
+        <Checkbox checked={admin} onChange={setAdmin} label={m.makeAdmin} />
       </form>
     </Dialog>
   );
 }
 
 export default function Users() {
+  const t = useT();
+  const m = t.admin.users;
   const { me } = useAuth();
   const { toast } = useOverlay();
   const { data, error, reload } = useApi<AccountSummary[]>('/api/v2/admin/users');
@@ -145,12 +151,12 @@ export default function Users() {
   return (
     <div className="stack">
       <PageHeader
-        title="账号"
+        title={t.nav.users}
         actions={
           <>
-            <SearchBox value={query} onChange={setQuery} placeholder="搜索用户名或昵称" />
+            <SearchBox value={query} onChange={setQuery} placeholder={m.searchPlaceholder} />
             <Button variant="primary" icon="plus" onClick={() => setCreating(true)}>
-              创建账号
+              {m.create}
             </Button>
           </>
         }
@@ -160,18 +166,18 @@ export default function Users() {
         {!data ? (
           <Loading />
         ) : rows.length === 0 ? (
-          <Empty icon="user" title={query ? '没有匹配的账号' : '暂无账号'} />
+          <Empty icon="user" title={query ? m.noMatch : m.empty} />
         ) : (
           <div className="table-wrap">
             <table className="table">
               <thead>
                 <tr>
-                  <th>账号</th>
-                  <th>角色</th>
-                  <th>状态</th>
-                  <th>设备</th>
-                  <th>最近在线</th>
-                  <th>创建</th>
+                  <th>{t.admin.col.account}</th>
+                  <th>{m.role}</th>
+                  <th>{t.admin.col.status}</th>
+                  <th>{m.devices}</th>
+                  <th>{t.admin.col.lastSeen}</th>
+                  <th>{t.admin.col.created}</th>
                 </tr>
               </thead>
               <tbody>
@@ -180,15 +186,21 @@ export default function Users() {
                     <td>
                       <div className="cell-main">
                         {u.nickname || u.username}
-                        {u.id === me?.user_id && <span className="muted small">（我）</span>}
+                        {u.id === me?.user_id && <span className="muted small">{m.you}</span>}
                       </div>
                       <div className="cell-sub">{u.username}</div>
                     </td>
                     <td>
-                      {u.role === 'admin' ? <Badge tone="blue">管理员</Badge> : <span className="muted">用户</span>}
-                      {u.totp && <span className="muted small"> · 二次验证</span>}
+                      {u.role === 'admin' ? (
+                        <Badge tone="blue">{t.common.admin}</Badge>
+                      ) : (
+                        <span className="muted">{t.common.user}</span>
+                      )}
+                      {u.totp && <span className="muted small"> · {m.totp}</span>}
                     </td>
-                    <td>{u.disabled ? <Badge tone="red">已禁用</Badge> : <Badge tone="green">正常</Badge>}</td>
+                    <td>
+                      {u.disabled ? <Badge tone="red">{m.disabled}</Badge> : <Badge tone="green">{m.active}</Badge>}
+                    </td>
                     <td>{u.devices}</td>
                     <td className="nowrap">
                       {u.last_seen_at ? ago(u.last_seen_at) : <span className="muted">—</span>}
@@ -208,12 +220,14 @@ export default function Users() {
           setCreating(false);
           void reload();
           if (password) setCreated({ username, password });
-          else toast(`已创建 ${username}`);
+          else toast(m.created(username));
         }}
       />
-      <OnceDialog title="账号已创建" open={!!created} onClose={() => setCreated(undefined)}>
+      <OnceDialog title={m.createdTitle} open={!!created} onClose={() => setCreated(undefined)}>
         <p>
-          账号 <b>{created?.username}</b> 的初始密码：
+          {m.initialPasswordOf[0]}
+          <b>{created?.username}</b>
+          {m.initialPasswordOf[1]}
         </p>
         <div className="secret">
           <Copy text={created?.password ?? ''} />

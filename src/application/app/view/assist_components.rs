@@ -28,12 +28,15 @@ pub(super) fn grouped_id(id: &str) -> String {
     }
 }
 
+/// A value shown as a button that copies it; `action` names the button,
+/// `feedback` replaces the value for a moment once copied.
 pub(super) fn copy_value(
     ui: &mut egui::Ui,
     salt: &str,
     size: egui::Vec2,
     display: RichText,
     value: Option<&str>,
+    action: &str,
     feedback: &str,
 ) {
     let copied_id = ui.id().with(("assist-copy", salt));
@@ -62,7 +65,7 @@ pub(super) fn copy_value(
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
             ui.is_enabled() && value.is_some(),
-            feedback.trim_start_matches("已"),
+            action,
         )
     });
     if response.clicked()

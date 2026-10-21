@@ -20,6 +20,7 @@ pub(crate) use process::{Sample, Shared};
 pub(crate) use ui::paint_plugin_icon;
 pub(crate) use video::{ChainShared, Graph, Tap};
 
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use farwing_plugin_api as sdk;
 use serde::{Deserialize, Serialize};
@@ -57,7 +58,7 @@ impl Manifest {
             .nodes
             .iter()
             .find(|n| n.type_id == type_id)
-            .context("插件未提供此节点")?;
+            .context(t().features.plugin_node_not_provided)?;
         let mut selected = self.clone();
         selected.capability = match node.implementation {
             sdk::NodeImplementation::FrameAnalysis | sdk::NodeImplementation::SceneSource => {
@@ -71,7 +72,11 @@ impl Manifest {
         selected.dependencies.extend(node.dependencies.clone());
         selected.dependencies.sort();
         selected.dependencies.dedup();
-        ensure!(selected.dependencies.len() <= 8, "节点依赖过多");
+        ensure!(
+            selected.dependencies.len() <= 8,
+            "{}",
+            t().features.plugin_node_dependencies_limit
+        );
         selected.config = node.config.clone();
         selected.config_labels = node.config_labels.clone();
         selected.config_schema = node.config_schema.clone();
@@ -116,7 +121,10 @@ pub(crate) fn open_folder(path: &Path) -> Result<()> {
         )
     };
     if result.0 as isize <= 32 {
-        anyhow::bail!("打开文件夹失败（{}）", result.0 as isize);
+        anyhow::bail!(
+            "{}",
+            (t().features.plugin_open_folder_failed)(result.0 as isize)
+        );
     }
     Ok(())
 }
@@ -129,12 +137,16 @@ fn valid_id(id: &str) -> bool {
 }
 fn read_manifest(path: &Path) -> Result<Manifest> {
     let library = std::fs::canonicalize(path)?;
-    let directory = std::fs::canonicalize(path.parent().context("插件目录无效")?)?;
+    let directory = std::fs::canonicalize(
+        path.parent()
+            .context(t().features.plugin_directory_invalid)?,
+    )?;
     ensure!(
         library.parent() == Some(directory.as_path()),
-        "插件动态库超出自身目录"
+        "{}",
+        t().features.plugin_library_outside_own_folder
     );
-    let bytes = metadata::read(&library)?.context("动态库没有插件内嵌清单")?;
+    let bytes = metadata::read(&library)?.context(t().features.plugin_manifest_missing)?;
     let mut m: Manifest = serde_json::from_slice(&bytes)?;
     ensure!(
         valid_id(&m.id)
@@ -143,15 +155,18 @@ fn read_manifest(path: &Path) -> Result<Manifest> {
             && m.dependencies.len() <= 8
             && m.dependencies.iter().all(|id| valid_id(id))
             && m.config.is_object(),
-        "插件清单或 ABI 不兼容"
+        "{}",
+        t().features.plugin_manifest_incompatible
     );
     ensure!(
         matches!(m.capability.as_str(), "nodes" | "inference"),
-        "未知插件能力"
+        "{}",
+        t().features.plugin_capability_unknown
     );
     ensure!(
         (m.capability == "nodes") != m.nodes.is_empty(),
-        "插件能力与节点声明不一致"
+        "{}",
+        t().features.plugin_capability_mismatch
     );
     m.path = library;
     Ok(m)
@@ -168,7 +183,8 @@ pub(crate) fn discover() -> Result<Vec<Manifest>> {
     let mut ids = BTreeSet::new();
     ensure!(
         entries.iter().all(|m| ids.insert(m.id.clone())),
-        "存在重复插件 ID"
+        "{}",
+        t().features.plugin_id_duplicate
     );
     Ok(entries)
 }
@@ -190,12 +206,16 @@ fn plan(path: &Path, node: Option<&str>) -> Result<Vec<Manifest>> {
     let requested = if let Some(node) = node {
         requested.for_node(node)?
     } else {
-        ensure!(requested.nodes.is_empty(), "必须指定插件节点");
+        ensure!(
+            requested.nodes.is_empty(),
+            "{}",
+            t().features.plugin_node_required
+        );
         requested
     };
     *all.iter_mut()
         .find(|m| m.id == requested.id)
-        .context("插件不在目录中")? = requested.clone();
+        .context(t().features.plugin_not_in_folder)? = requested.clone();
     fn visit(
         id: &str,
         all: &[Manifest],
@@ -208,18 +228,20 @@ fn plan(path: &Path, node: Option<&str>) -> Result<Vec<Manifest>> {
         }
         ensure!(
             pending.len() < 8 && pending.insert(id.into()),
-            "插件依赖循环或层级过深"
+            "{}",
+            t().features.plugin_dependency_cycle
         );
         let m = all
             .iter()
             .find(|m| m.id == id)
-            .with_context(|| format!("缺少依赖：{id}"))?;
+            .with_context(|| (t().features.plugin_dependency_missing)(id))?;
         for dependency in &m.dependencies {
             ensure!(
                 all.iter().any(|provider| provider.id == *dependency
                     && provider.nodes.is_empty()
                     && provider.capability == "inference"),
-                "缺少推理依赖：{dependency}"
+                "{}",
+                (t().features.plugin_inference_dependency_missing)(dependency)
             );
             visit(dependency, all, pending, done, out)?;
         }
@@ -238,10 +260,11 @@ fn plan(path: &Path, node: Option<&str>) -> Result<Vec<Manifest>> {
         &mut BTreeSet::new(),
         &mut out,
     )?;
-    ensure!(out.len() <= 8, "插件不是分析入口或依赖过多");
+    ensure!(out.len() <= 8, "{}", t().features.plugin_not_analysis_entry);
     ensure!(
         out.iter().filter(|m| m.capability == "inference").count() <= 1,
-        "推理依赖冲突"
+        "{}",
+        t().features.plugin_inference_conflict
     );
     Ok(out)
 }

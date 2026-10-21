@@ -10,6 +10,7 @@ use crate::application::viewer::{
     ConnectionProgress, NativeViewerSession, ViewerDisplayHandle, ViewerWindowEvent,
     run_connecting_viewer_window,
 };
+use crate::i18n::t;
 use crate::media::ConnectionMediaOptions;
 use anyhow::{Context as _, Result, anyhow};
 use std::sync::Arc;
@@ -322,7 +323,7 @@ pub(super) async fn run_viewer_connection_owner(
                 Err(error) if !cancel.is_cancelled() && retry_session_failure(&error) && retries < 5 => {
                     retries += 1;
                     resolved.refresh_after_upgrade |= update_attempt;
-                    reporter(ConnectionProgress::working(4, "正在重新连接", format!("{error:#}（{retries}/5）")));
+                    reporter(ConnectionProgress::working(4, t().session.progress_reconnecting, (t().session.progress_retry_count)(&format!("{error:#}"), retries)));
                     if update_attempt {
                         cancellable(cancel,async {tokio::time::sleep(crate::features::remote_upgrade::UPDATE_PROBE_INTERVAL).await;Ok(())}).await?;
                     }
@@ -358,7 +359,7 @@ pub(super) async fn run_viewer_connection_owner(
                     if update_attempt && !cancel.is_cancelled() && retry_session_failure(&error) && retries<5 {
                         retries+=1;
                         resolved.refresh_after_upgrade=true;
-                        display=update_reconnect_display(&resolved,reporter,cancel,&viewer_sender,update_started.context("更新等待状态已丢失")?).await?;
+                        display=update_reconnect_display(&resolved,reporter,cancel,&viewer_sender,update_started.context(t().session.error_update_state_lost)?).await?;
                         cancellable(cancel,async {tokio::time::sleep(crate::features::remote_upgrade::UPDATE_PROBE_INTERVAL).await;Ok(())}).await?;
                         continue;
                     }
@@ -366,9 +367,9 @@ pub(super) async fn run_viewer_connection_owner(
                 }
             };
             if audio_only {
-                reporter(ConnectionProgress::ready("仅音频连接已建立"));
+                reporter(ConnectionProgress::ready(t().session.connected_audio_only));
                 viewer_sender.send(ViewerWindowEvent::Listening(crate::application::viewer::AudioView::new(session_control.clone(), None)))
-                    .map_err(|_| anyhow!("音频窗口已关闭"))?;
+                    .map_err(|_| anyhow!("{}", t().session.error_audio_window_closed))?;
             }
             if update_attempt {tracing::info!("media resumed after controlled update");update_started=None;}
             if let Some(since) = recovering.take() {
@@ -378,7 +379,7 @@ pub(super) async fn run_viewer_connection_owner(
             if !cancel.is_cancelled() && let Some(assist) = &mut resolved.assist
                 && let Err(error) = assist.remember_success(&resolved.client).await {
                 tracing::warn!(%error, "connected assistance code was not saved");
-                reporter(ConnectionProgress::ready(format!("已连接 · 访问码未保存：{error}")));
+                reporter(ConnectionProgress::ready((t().session.connected_code_not_saved)(&error.to_string())));
             }
             let upgrade = session_control.remote_upgrade();
             let upgrade_deadline = async {
@@ -409,11 +410,11 @@ pub(super) async fn run_viewer_connection_owner(
                         let (progress_tx, progress_rx) = std::sync::mpsc::channel();
                         let (display_tx, display_rx) = oneshot::channel();
                         *reporter = Arc::new(move |progress| { let _ = progress_tx.send(progress); });
-                        reporter(ConnectionProgress::working(1, if wanted { "切换为仅音频" } else { "恢复画面" }, "正在切换媒体模式"));
+                        reporter(ConnectionProgress::working(1, if wanted { t().session.progress_switching_to_audio } else { t().session.progress_restoring_picture }, t().session.progress_switching_media));
                         viewer_sender.send(ViewerWindowEvent::Reconnect {
                             alias:resolved.summary.alias.clone(), window:None, progress:progress_rx, display:display_tx,
-                        }).map_err(|_| anyhow!("媒体窗口已关闭"))?;
-                        let mode_display = cancellable(cancel, async { display_rx.await.context("媒体窗口未完成切换") }).await?;
+                        }).map_err(|_| anyhow!("{}", t().session.error_media_window_closed))?;
+                        let mode_display = cancellable(cancel, async { display_rx.await.context(t().session.error_media_window_not_switched) }).await?;
                         close = None;
                         let switched = if wanted {
                             cancellable(cancel, await_media_startup(controller.forwarder.session.end_waiter(), controller.start_listening())).await
@@ -431,12 +432,12 @@ pub(super) async fn run_viewer_connection_owner(
                             let _ = session_control.set_video_enabled(false).await;
                             audio_only = true;
                             session_control.request_audio_only(true);
-                            viewer_sender.send(ViewerWindowEvent::Listening(crate::application::viewer::AudioView::new(session_control.clone(), Some(format!("媒体切换失败：{error:#}"))))).map_err(|_| anyhow!("媒体窗口已关闭"))?;
+                            viewer_sender.send(ViewerWindowEvent::Listening(crate::application::viewer::AudioView::new(session_control.clone(), Some((t().session.error_media_switch_failed)(&format!("{error:#}")))))).map_err(|_| anyhow!("{}", t().session.error_media_window_closed))?;
                         } else {
                             audio_only = wanted;
                             if wanted {
                                 viewer_sender.send(ViewerWindowEvent::Listening(crate::application::viewer::AudioView::new(session_control.clone(), None)))
-                                    .map_err(|_| anyhow!("音频窗口已关闭"))?;
+                                    .map_err(|_| anyhow!("{}", t().session.error_audio_window_closed))?;
                             }
                         }
                         resolved.profile.audio_only = audio_only;
@@ -451,14 +452,14 @@ pub(super) async fn run_viewer_connection_owner(
                         let next = match next {
                             Ok(next) => next,
                             Err(error) => {
-                                switcher.failed(format!("无法切换：{error}"));
+                                switcher.failed((t().session.error_switch_failed)(&error.to_string()));
                                 continue;
                             }
                         };
                         let (progress_tx, progress_rx) = std::sync::mpsc::channel();
                         let (display_tx, display_rx) = oneshot::channel();
                         *reporter = Arc::new(move |progress| { let _ = progress_tx.send(progress); });
-                        reporter(ConnectionProgress::working(1, "切换设备", format!("正在连接 {}", next.summary.alias)));
+                        reporter(ConnectionProgress::working(1, t().session.progress_switching_device, (t().session.progress_connecting_to)(&next.summary.alias)));
                         if let Some(background)=next.background.clone(){reporter(ConnectionProgress::background(background));}
                         // The UI releases input and joins every old screen/decoder,
                         // retaining the window in which the user selected the device.
@@ -517,7 +518,7 @@ pub(super) async fn run_viewer_connection_owner(
                     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
                     let (display_tx, display_rx) = oneshot::channel();
                     *reporter = Arc::new(move |progress| { let _ = progress_tx.send(progress); });
-                    reporter(ConnectionProgress::working(4, "正在重新连接", format!("{error:#}")));
+                    reporter(ConnectionProgress::working(4, t().session.progress_reconnecting, format!("{error:#}")));
                     if let Some(background)=resolved.background.clone(){reporter(ConnectionProgress::background(background));}
                     viewer_sender.send(ViewerWindowEvent::Reconnect { alias: resolved.summary.alias.clone(), window: None, progress: progress_rx, display: display_tx })
                         .map_err(|_| anyhow!("player window closed during reconnect"))?;
@@ -569,8 +570,8 @@ async fn wait_before_rebuild(
         loop {
             reporter(ConnectionProgress::working(
                 1,
-                "等待设备上线",
-                format!("设备离线 · 最多再等 {} 秒", remaining()),
+                t().session.progress_waiting_device,
+                (t().session.progress_device_offline_wait)(remaining()),
             ).with_retry(&retry));
             let online = cancellable(cancel, async {
                 Ok(resolved
@@ -592,8 +593,8 @@ async fn wait_before_rebuild(
             }
             anyhow::ensure!(
                 std::time::Instant::now() < deadline,
-                "设备在 {} 分钟内没有重新上线",
-                RECOVERY_LIMIT.as_secs() / 60
+                "{}",
+                (t().session.error_device_not_back)(RECOVERY_LIMIT.as_secs() / 60)
             );
             let waited = cancellable(cancel, async {
                 tokio::select! {
@@ -615,8 +616,8 @@ async fn wait_before_rebuild(
     tracing::info!(attempt, delay_ms = delay.as_millis(), %error, "rebuilding the session after a delay");
     reporter(ConnectionProgress::working(
         4,
-        "正在重新连接",
-        format!("{error:#}；{} 秒后第 {attempt} 次重试", delay.as_secs()),
+        t().session.progress_reconnecting,
+        (t().session.progress_retry_in)(&format!("{error:#}"), delay.as_secs(), attempt),
     ).with_retry(&retry));
     cancellable(cancel, async {
         tokio::select! {
@@ -650,9 +651,9 @@ async fn update_reconnect_display(
             progress: progress_rx,
             display: display_tx,
         })
-        .map_err(|_| anyhow!("更新等待窗口已关闭"))?;
+        .map_err(|_| anyhow!("{}", t().session.error_update_window_closed))?;
     cancellable(cancel, async {
-        display_rx.await.context("更新等待窗口已关闭")
+        display_rx.await.context(t().session.error_update_window_closed)
     })
     .await
 }
@@ -681,7 +682,7 @@ pub(super) async fn present_video(
         await_media_startup(session.ended(), async {
             tokio::time::timeout(Duration::from_secs(30), viewer.startup())
                 .await
-                .context("等待视频首帧超时")?
+                .context(t().session.error_picture_timeout)?
         }),
     )
     .await?;
@@ -689,7 +690,7 @@ pub(super) async fn present_video(
         .peer
         .selected_route_details()
         .await
-        .unwrap_or_else(|| "已连接".into());
+        .unwrap_or_else(|| t().session.connected.into());
     reporter(ConnectionProgress::ready(format!(
         "{route} · {} · {}",
         playback.codec,
@@ -710,7 +711,7 @@ pub(super) async fn present_video(
     }
     sender
         .send(ViewerWindowEvent::Playing(Box::new(viewer)))
-        .map_err(|_| anyhow!("画面窗口已关闭"))?;
+        .map_err(|_| anyhow!("{}", t().session.error_video_window_closed))?;
     // The window takes the session at once instead of at its next UI update
     // (up to 33 ms while connecting).
     if let Some(wake) = wake {

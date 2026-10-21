@@ -6,6 +6,7 @@ use super::{
     recovery, recovery_backoff, report_progress, viewing, windows,
 };
 use crate::application::viewer::{ConnectionProgress, ViewerDisplayHandle, ViewerWindowEvent};
+use crate::i18n::t;
 use crate::media::{ConnectionMediaOptions, ConnectionMediaProfile, LocalDisplayInfo, detect_local_display};
 use crate::transport::direct::{self, Target, client::Auth};
 use anyhow::{Context as _, Result, anyhow};
@@ -81,7 +82,7 @@ pub(super) async fn run_owner(
     cancel: &CancellationToken,
     reporter: &mut ConnectionProgressReporter,
 ) -> Result<()> {
-    report_progress(Some(reporter), 1, "准备直连", "");
+    report_progress(Some(reporter), 1, t().session.progress_preparing_direct, "");
     let local = direct::local_device()?;
     let display_info = detect_local_display().unwrap_or(LocalDisplayInfo::FALLBACK);
     let profile = options.resolve(display_info)?;
@@ -229,23 +230,23 @@ async fn connect_once(
     report_progress(
         Some(reporter),
         3,
-        "直连被控端",
-        format!("正在连接 {alias}（{}）", request.target),
+        t().session.progress_connecting_direct,
+        (t().session.progress_connecting_to_address)(alias, &request.target.to_string()),
     );
     let connected = direct::client::connect(&request.target, local, request.auth.clone(), cancel).await?;
     let host = connected.host.clone();
     report_progress(
         Some(reporter),
         4,
-        "直连已授权",
+        t().session.progress_direct_authorized,
         format!(
             "{} · {}",
             host.name,
             match connected.relation {
-                Relation::Own => "本账号设备",
-                Relation::Trusted => "对方信任本机",
-                Relation::Assist => "访客",
-                Relation::Friend => "好友设备",
+                Relation::Own => t().session.relation_own,
+                Relation::Trusted => t().session.relation_trusted,
+                Relation::Assist => t().session.relation_guest,
+                Relation::Friend => t().session.relation_friend,
             },
         ),
     );
@@ -310,8 +311,8 @@ async fn wait(
 ) -> Result<()> {
     anyhow::ensure!(
         since.elapsed() < RECOVERY_LIMIT,
-        "被控端在 {} 分钟内没有恢复",
-        RECOVERY_LIMIT.as_secs() / 60
+        "{}",
+        (t().session.error_host_not_back)(RECOVERY_LIMIT.as_secs() / 60)
     );
     let delay = if recovery(error) == Recovery::WaitDevice {
         Duration::from_secs(3)
@@ -322,8 +323,12 @@ async fn wait(
     let retry = crate::application::viewer::RetryNow::default();
     reporter(ConnectionProgress::working(
         if recovery(error) == Recovery::WaitDevice { 1 } else { 4 },
-        if recovery(error) == Recovery::WaitDevice { "等待被控端" } else { "正在重新连接" },
-        format!("{error:#}；{} 秒后第 {attempt} 次重试", delay.as_secs()),
+        if recovery(error) == Recovery::WaitDevice {
+            t().session.progress_waiting_host
+        } else {
+            t().session.progress_reconnecting
+        },
+        (t().session.progress_retry_in)(&format!("{error:#}"), delay.as_secs(), attempt),
     ).with_retry(&retry));
     cancellable(cancel, async {
         tokio::select! {
@@ -348,7 +353,7 @@ async fn reconnect_display(
     *reporter = Arc::new(move |progress| {
         let _ = progress_tx.send(progress);
     });
-    reporter(ConnectionProgress::working(4, "正在重新连接", format!("{error:#}")));
+    reporter(ConnectionProgress::working(4, t().session.progress_reconnecting, format!("{error:#}")));
     sender
         .send(ViewerWindowEvent::Reconnect {
             alias: alias.to_owned(),

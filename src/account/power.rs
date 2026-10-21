@@ -1,5 +1,6 @@
 //! Account-device power commands.
 use crate::account::api::DeviceInfo;
+use crate::i18n::t;
 use anyhow::{Result, bail};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12,9 +13,9 @@ pub(crate) enum PowerAction {
 impl PowerAction {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Wake => "开机",
-            Self::Shutdown => "关机",
-            Self::Reboot => "重启",
+            Self::Wake => t().session.power_wake,
+            Self::Shutdown => t().session.power_shutdown,
+            Self::Reboot => t().session.power_restart,
         }
     }
 
@@ -25,18 +26,18 @@ impl PowerAction {
     ) -> Result<()> {
         device.validated_device_id()?;
         if !device.platform.is_desktop() || !device.controlled_support {
-            bail!("该设备不支持电脑电源操作");
+            bail!("{}", t().session.power_unsupported_device);
         }
         if !device.controllable {
-            bail!("该设备未开放远程控制");
+            bail!("{}", t().session.power_control_not_allowed);
         }
         match self {
             Self::Wake => {
                 if !device.is_offline() {
-                    bail!("只有离线设备可以发送开机请求");
+                    bail!("{}", t().session.power_wake_offline_only);
                 }
                 if !device.support_wol {
-                    bail!("该设备未提供远程开机能力");
+                    bail!("{}", t().session.power_wake_unsupported);
                 }
             }
             Self::Shutdown | Self::Reboot => {
@@ -46,10 +47,10 @@ impl PowerAction {
                     crate::account::feature_ability::Feature::Reboot
                 };
                 if !features.policy_for(device).supports(feature) {
-                    bail!("该设备未声明支持此电源操作");
+                    bail!("{}", t().session.power_action_unsupported);
                 }
                 if !device.is_connected() {
-                    bail!("只有在线设备可以关机或重启");
+                    bail!("{}", t().session.power_online_only);
                 }
             }
         }
@@ -70,24 +71,24 @@ pub(crate) struct PowerReceipt {
 impl PowerReceipt {
     pub fn summary(&self, action: PowerAction) -> String {
         if action != PowerAction::Wake {
-            return "请求已受理，等待设备状态变化".into();
+            return t().session.power_accepted.into();
         }
         let mut routes = Vec::new();
         match self.local_packets {
-            Some(0) => routes.push("当前设备同网（本机发送失败）".to_owned()),
-            Some(sent) => routes.push(format!("本机已发送 {sent} 个唤醒报文")),
+            Some(0) => routes.push(t().session.wake_same_network_send_failed.to_owned()),
+            Some(sent) => routes.push((t().session.wake_packets_sent)(sent)),
             None if self.current_device_in_same_network == Some(true) => {
-                routes.push("当前设备同网".to_owned())
+                routes.push(t().session.wake_same_network.to_owned())
             }
             None => {}
         }
         if let Some(count) = self.assist_count {
-            routes.push(format!("{count} 台协助设备"));
+            routes.push((t().session.wake_helper_devices)(count));
         }
         if routes.is_empty() {
-            "开机请求已受理，等待上线".into()
+            t().session.wake_accepted.into()
         } else {
-            format!("开机请求已受理，等待上线 · {}", routes.join(" · "))
+            (t().session.wake_accepted_via)(&routes.join(" · "))
         }
     }
 }

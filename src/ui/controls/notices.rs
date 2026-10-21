@@ -1,5 +1,6 @@
 //! Window-local operation messages. Publishing a message never consumes page layout.
 use super::{DialogAction, DialogIcon, dialog_actions, dialog_frame, dialog_header, theme};
+use crate::i18n::t;
 use egui::{Context, Id};
 use std::collections::{HashMap, VecDeque};
 
@@ -232,13 +233,13 @@ pub(crate) fn show_notices(ctx: &Context) {
             let (yes, no) = dialog_actions(
                 ui,
                 Some(DialogAction::new(
-                    current.action.as_deref().unwrap_or("知道了"),
+                    current.action.as_deref().unwrap_or(t().common.got_it),
                 )),
                 current
                     .action
                     .as_ref()
                     .filter(|_| current.report)
-                    .map(|_| "关闭"),
+                    .map(|_| t().common.close),
             );
             accepted = yes;
             closed |= no;
@@ -291,7 +292,7 @@ pub(crate) fn progress_notice(
             title,
             DialogIcon::Waiting,
             Some(message),
-            Some("关闭提示"),
+            Some(t().common.close),
             false,
             false,
         );

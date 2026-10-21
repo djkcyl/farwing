@@ -1,15 +1,17 @@
 //! User-owned file browser roots. Called only by the ordinary-user file worker.
+use crate::i18n::t;
 use std::path::PathBuf;
 use windows::Win32::{System::Com::CoTaskMemFree, UI::Shell::*};
 
 pub(crate) fn known_folders() -> Vec<(PathBuf, &'static str, &'static str)> {
+    let names = &t().system;
     [
-        (FOLDERID_Documents, "文档", "document"),
-        (FOLDERID_Desktop, "桌面", "desktop"),
-        (FOLDERID_Pictures, "图片", "picture"),
-        (FOLDERID_Videos, "视频", "video"),
-        (FOLDERID_Music, "音乐", "music"),
-        (FOLDERID_Downloads, "下载", "download"),
+        (FOLDERID_Documents, names.location_documents, "document"),
+        (FOLDERID_Desktop, names.location_desktop, "desktop"),
+        (FOLDERID_Pictures, names.location_pictures, "picture"),
+        (FOLDERID_Videos, names.location_videos, "video"),
+        (FOLDERID_Music, names.location_music, "music"),
+        (FOLDERID_Downloads, names.location_downloads, "download"),
     ]
     .into_iter()
     .filter_map(|(id, name, icon)| unsafe {

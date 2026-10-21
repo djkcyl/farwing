@@ -1,5 +1,6 @@
 use super::*;
 use crate::account::client::AuthenticatedClient;
+use crate::i18n::t;
 use crate::session::controller::ControllerConnection;
 
 #[derive(Clone, Default)]
@@ -28,7 +29,7 @@ impl Handle {
     pub(crate) fn send(&self, command: Command) -> Result<()> {
         self.commands
             .try_send(command)
-            .context("上一个操作尚未完成")
+            .context(t().features.mapping_busy)
     }
     pub(crate) fn set_enabled(&self, enabled: bool) {
         self.enabled.send_replace(enabled);
@@ -150,23 +151,26 @@ async fn connect(
     transport: crate::media::ConnectionMediaOptions,
     stop: &CancellationToken,
 ) -> Result<ControllerConnection> {
-    let list = tokio::select! {biased;_=stop.cancelled()=>anyhow::bail!("已取消连接"),result=client.list_devices()=>result?};
+    let list = tokio::select! {biased;_=stop.cancelled()=>anyhow::bail!("{}", t().features.mapping_connect_cancelled),result=client.list_devices()=>result?};
     let current = list.with_capability(&device.device_id, farwing_protocol::caps::PORTS)?;
     ensure!(
         current.platform.is_desktop()
             && current.controllable
             && current.controlled_support
             && current.is_connected(),
-        "设备当前不可连接"
+        "{}",
+        t().features.mapping_device_unavailable
     );
     ensure!(
         current.device_id != client.device_id(),
-        "不能连接本机虚拟设备"
+        "{}",
+        t().features.mapping_self_device
     );
     let policy = client.feature_catalog().policy_for(current);
     ensure!(
         policy.supports(crate::account::feature_ability::Feature::PortMapping),
-        "被控端版本不支持端口转发"
+        "{}",
+        t().features.mapping_host_unsupported
     );
     ControllerConnection::connect_mapping(client, current, policy, transport, stop).await
 }
@@ -232,7 +236,7 @@ async fn run(
                 let controller = connect(&client, &device, network, &cancel).await?;
                 let ready = tokio::select! {
                     biased;
-                    _=cancel.cancelled()=>Err(anyhow::anyhow!("已取消连接")),
+                    _=cancel.cancelled()=>Err(anyhow::anyhow!("{}", t().features.mapping_connect_cancelled)),
                     result=controller.wait_port_mapping_ready()=>result,
                 };
                 if let Err(error) = ready {
@@ -264,7 +268,7 @@ async fn run(
             lock(&state).error = Some(match result {
                 Ok(Err(e)) => e.to_string(),
                 Err(e) => e.to_string(),
-                _ => "设备连接已关闭".into(),
+                _ => t().features.mapping_device_disconnected.into(),
             });
             connection = None;
             request_stop = None;
@@ -381,10 +385,10 @@ async fn run(
                                 let old=&next[index];
                                 if old.enabled && (old.protocol!=rule.protocol || old.target!=rule.target || old.remote_port!=rule.remote_port || old.local_addr!=rule.local_addr || old.local_port!=rule.local_port) {rule.id=new_id();}
                                 next[index]=rule;
-                            } else {ensure!(next.len()<256,"规则过多");next.push(rule);}
+                            } else {ensure!(next.len()<256,"{}",t().features.mapping_too_many_rules);next.push(rule);}
                         },
                         Command::Delete(id)=>next.retain(|r|r.id!=id),
-                        Command::Enable(id,value)=>{next.iter_mut().find(|r|r.id==id).context("规则不存在")?.enabled=value;},
+                        Command::Enable(id,value)=>{next.iter_mut().find(|r|r.id==id).context(t().features.mapping_rule_not_found)?.enabled=value;},
                         Command::Retry|Command::Probe(_)=>{},
                     }
                     store.save(&next)?;rules=next;Ok(())

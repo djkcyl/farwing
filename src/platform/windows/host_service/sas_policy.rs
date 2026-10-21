@@ -1,4 +1,5 @@
 //! Explicit installer-owned SAS policy change with conditional restoration.
+use crate::i18n::t;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -33,7 +34,7 @@ fn read() -> Result<Option<u32>> {
         return Ok(None);
     }
     result.ok()?;
-    ensure!(value <= 3, "安全注意序列策略值未知，未修改");
+    ensure!(value <= 3, "{}", t().system.service_sas_policy_unknown);
     Ok(Some(value))
 }
 fn write(value: Option<u32>) -> Result<()> {
@@ -68,7 +69,8 @@ pub(super) fn enable(directory: &Path) -> Result<()> {
         let previous: Change = serde_json::from_slice(&std::fs::read(&file)?)?;
         ensure!(
             previous.schema == 1 && matches!(previous.applied, 1 | 3),
-            "被控服务策略记录无效"
+            "{}",
+            t().system.service_invalid_policy_record
         );
         if current == Some(previous.applied) {
             return Ok(());
@@ -99,7 +101,8 @@ pub(super) fn restore(directory: &Path) -> Result<()> {
         change.schema == 1
             && matches!(change.applied, 1 | 3)
             && change.previous.is_none_or(|v| v <= 3),
-        "被控服务策略记录无效"
+        "{}",
+        t().system.service_invalid_policy_record
     );
     if read()? == Some(change.applied) {
         write(change.previous)?;

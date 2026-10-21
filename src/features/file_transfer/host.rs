@@ -10,6 +10,7 @@ use super::{
     storage,
     wire::{self, Body, Failure, Frame, code},
 };
+use crate::i18n::t;
 use crate::transport::transfer::{Chunk, Credit, INITIAL_WINDOW, Window};
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -126,11 +127,11 @@ struct Output {
 }
 impl Output {
     async fn send(&self, packet: Packet) -> Result<()> {
-        ensure!(packet.data.len() <= MAX_FRAME, "文件响应过大");
+        ensure!(packet.data.len() <= MAX_FRAME, "{}", t().features.transfer_response_too_large);
         self.output
             .send(packet)
             .await
-            .map_err(|_| anyhow::anyhow!("文件连接已结束"))
+            .map_err(|_| anyhow::anyhow!("{}", t().features.transfer_connection_ended))
     }
     /// Answer request `request_id`; fragments are never interleaved with a
     /// cancellation.
@@ -251,7 +252,7 @@ impl Engine {
                     window.receive(received, chunk.data.len())
                 };
                 if let Err(error) = accounted {
-                    *super::lock(&active.shared.fault) = Some(format!("主控端超出文件传输窗口：{error}"));
+                    *super::lock(&active.shared.fault) = Some((t().features.transfer_controller_exceeded_window)(&error.to_string()));
                     active.shared.stop.cancel();
                     return Ok(());
                 }
@@ -271,7 +272,7 @@ impl Engine {
                 let Some(received) = self.fragments.push(&header, body)? else {
                     return Ok(());
                 };
-                ensure!(received.request_id != 0, "主控端发送了文件推送");
+                ensure!(received.request_id != 0, "{}", t().features.transfer_controller_sent_push);
                 self.request(received.request_id, received.body)?;
             }
         }
@@ -288,7 +289,7 @@ impl Engine {
             | Body::Rename(_)
             | Body::Remove(_)
             | Body::Exists(_) => {
-                ensure!(self.work.len() < 32, "同时进行的文件操作过多");
+                ensure!(self.work.len() < 32, "{}", t().features.transfer_too_many_operations);
                 let store = self.store.clone();
                 let stop = self.stop.child_token();
                 self.work.spawn(async move {
@@ -378,7 +379,7 @@ impl Engine {
             other => {
                 return Err(Failure::new(
                     code::PROTOCOL,
-                    format!("不支持的文件请求 {}", other.name()),
+                    (t().features.transfer_unsupported_request)(other.name()),
                 )
                 .into());
             }
@@ -390,17 +391,17 @@ impl Engine {
     fn admit(&mut self, id: u32, key: String) -> Result<((u32, u64), transfer::Run)> {
         ensure!(
             self.transfers.len() < 8,
-            Failure::new(code::BUSY, "同时传输的文件任务过多")
+            Failure::new(code::BUSY, t().features.transfer_too_many_transfers)
         );
         ensure!(
             id != 0 && !self.transfers.contains_key(&id),
-            Failure::new(code::PROTOCOL, "文件传输编号重复")
+            Failure::new(code::PROTOCOL, t().features.transfer_duplicate_id)
         );
         ensure!(
             key.is_empty() || !self.transfers.values().any(|t| t.key == key),
-            Failure::new(code::BUSY, "同一任务正在传输")
+            Failure::new(code::BUSY, t().features.transfer_task_in_progress)
         );
-        self.generation = self.generation.checked_add(1).context("文件任务代次已用尽")?;
+        self.generation = self.generation.checked_add(1).context(t().features.transfer_generations_exhausted)?;
         let (events, receiver) = mpsc::unbounded_channel();
         let shared = Arc::new(Shared {
             credit: Mutex::new(Credit::new(INITIAL_WINDOW)),
@@ -436,11 +437,11 @@ impl Engine {
         let active = self
             .transfers
             .get(&transfer)
-            .ok_or_else(|| Failure::new(code::CANCELLED, "文件传输已结束"))?;
+            .ok_or_else(|| Failure::new(code::CANCELLED, t().features.transfer_ended))?;
         active
             .events
             .send(Event::Start(id, body))
-            .map_err(|_| Failure::new(code::CANCELLED, "文件传输已结束"))?;
+            .map_err(|_| Failure::new(code::CANCELLED, t().features.transfer_ended))?;
         Ok(())
     }
 
@@ -460,7 +461,7 @@ impl Engine {
                     transfer,
                     entry: active.entry.load(std::sync::atomic::Ordering::Acquire),
                     error_code: code::DENIED,
-                    message: "被控端已撤销文件传输权限".into(),
+                    message: t().features.transfer_permission_revoked.into(),
                 }))
             })
             .collect()

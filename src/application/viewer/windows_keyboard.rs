@@ -1,6 +1,7 @@
 //! Foreground keyboard routing. The hook never waits for transport or logs keys.
 //! Keys are tracked by virtual key locally and forwarded by the HID usage of
 //! their scan code, so the host's layout and IME interpret them.
+use crate::i18n::t;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, MutexGuard, OnceLock, mpsc};
 use std::thread::JoinHandle;
@@ -32,7 +33,7 @@ pub(super) fn remove_unused_raw_keyboard() -> Result<()> {
         hwndTarget: HWND::default(),
     };
     unsafe { RegisterRawInputDevices(&[keyboard], std::mem::size_of::<RAWINPUTDEVICE>() as u32) }
-        .context("移除未使用的 Raw 键盘注册失败")?;
+        .context(t().viewer.raw_keyboard_remove_failed)?;
     tracing::debug!("unused raw keyboard registration removed; raw mouse retained");
     Ok(())
 }
@@ -404,8 +405,8 @@ impl KeyboardHook {
                     let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
                 }
                 let result = (|| -> Result<_> {
-                    let module =
-                        unsafe { GetModuleHandleW(None) }.context("取得键盘控制模块失败")?;
+                    let module = unsafe { GetModuleHandleW(None) }
+                        .context(t().viewer.keyboard_module_failed)?;
                     unsafe {
                         SetWindowsHookExW(
                             WH_KEYBOARD_LL,
@@ -414,7 +415,7 @@ impl KeyboardHook {
                             0,
                         )
                     }
-                    .context("安装键盘控制钩子失败")
+                    .context(t().viewer.keyboard_hook_failed)
                 })();
                 let hook = match result {
                     Ok(hook) => hook,
@@ -443,10 +444,10 @@ impl KeyboardHook {
                 r.clear();
                 r.installed = false;
             })
-            .context("创建键盘输入线程失败")?;
+            .context(t().viewer.keyboard_thread_create_failed)?;
         match receive
             .recv()
-            .context("键盘输入线程启动失败")
+            .context(t().viewer.keyboard_thread_start_failed)
             .and_then(|result| result)
         {
             Ok(thread_id) => Ok(Self {

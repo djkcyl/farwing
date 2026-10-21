@@ -7,6 +7,7 @@ use super::{StartupStage, WORKER_TICK, assist, device_sync, power};
 use crate::account::client::AuthenticatedClient;
 use crate::account::login::{self, LoginProgress};
 use crate::account::server::ServerConfig;
+use crate::i18n::t;
 use crate::session::presence::{ActivePresence, PresenceEvent, PresenceState};
 use anyhow::{Result, anyhow};
 use std::sync::Arc;
@@ -36,7 +37,7 @@ impl GuiWorker {
                 Ok(runtime) => runtime,
                 Err(error) => {
                     let _ = event_sender
-                        .send(GuiEvent::Error(format!("启动失败：{error}")));
+                        .send(GuiEvent::Error((t().app.start_failed)(&error.to_string())));
                     return;
                 }
             };
@@ -108,14 +109,16 @@ pub(super) async fn gui_worker_loop(
         )
         .await
         {
-            let _ = events.send(GuiEvent::Warning(format!("后台服务启动失败：{error:#}")));
+            let _ = events.send(GuiEvent::Warning((t().app.service_start_failed)(&format!(
+                "{error:#}"
+            ))));
         }
     }
     let device_runtime = match crate::session::device_session::DeviceRuntime::start() {
         Ok(runtime) => runtime,
         Err(error) => {
-            let _ = events.send(GuiEvent::SessionUnavailable(format!(
-                "无法读取本机身份：{error:#}"
+            let _ = events.send(GuiEvent::SessionUnavailable((t().app.cant_read_identity)(
+                &format!("{error:#}"),
             )));
             return;
         }
@@ -286,9 +289,9 @@ pub(super) async fn gui_worker_loop(
                                     background,
                                 )
                             })
-                            .ok_or_else(|| "未登录".to_owned())
+                            .ok_or_else(|| t().common.signed_out.to_owned())
                     } else {
-                        Err("账号状态已改变".into())
+                        Err(t().app.account_changed.into())
                     };
                     let _ =
                         events.send(GuiEvent::Viewer(generation, key, alias, device_id, result));
@@ -357,7 +360,7 @@ pub(super) async fn gui_worker_loop(
                     if generation != catalog_generation || logout_task.is_some() {
                         let _ = events.send(GuiEvent::Friends(
                             generation,
-                            Err("当前无法处理好友操作".into()),
+                            Err(t().app.friends_unavailable.into()),
                         ));
                     } else if let Some(client) = &client {
                         let client = Arc::clone(client);
@@ -371,7 +374,7 @@ pub(super) async fn gui_worker_loop(
                     } else {
                         let _ = events.send(GuiEvent::Friends(
                             generation,
-                            Err("未登录".into()),
+                            Err(t().common.signed_out.into()),
                         ));
                     }
                 }
@@ -404,7 +407,7 @@ pub(super) async fn gui_worker_loop(
                         let _ = events.send(GuiEvent::AssistOperation(
                             generation,
                             sequence,
-                            Err("当前无法连接".into()),
+                            Err(t().app.cant_connect.into()),
                         ));
                     } else if let Some(client) = acting {
                         assist_operation_is_query = operation.is_query();
@@ -432,7 +435,7 @@ pub(super) async fn gui_worker_loop(
                     {
                         let _ = events.send(GuiEvent::MutationFinished(
                             generation,
-                            Err("当前无法执行设备操作".into()),
+                            Err(t().app.device_operations_unavailable.into()),
                         ));
                     } else if let Some(client) = &client {
                         let client = Arc::clone(client);
@@ -601,7 +604,7 @@ pub(super) async fn gui_worker_loop(
                     } else {
                         let _ = events.send(GuiEvent::LoggedOut(
                             crate::account::client::LogoutOutcome {
-                                remote_error: Some("无账号会话".into()),
+                                remote_error: Some(t().app.no_account_session.into()),
                                 local_error: None,
                             },
                         ));
@@ -688,7 +691,7 @@ pub(super) async fn gui_worker_loop(
                     let _ = events.send(GuiEvent::AssistOperation(
                         assist_operation_context.0,
                         assist_operation_context.1,
-                        Err(format!("连接操作中断：{error}")),
+                        Err((t().app.connection_interrupted)(&error.to_string())),
                     ));
                 }
             }
@@ -721,7 +724,7 @@ pub(super) async fn gui_worker_loop(
                 Err(error) => {
                     let _ = events.send(GuiEvent::AssistLists(
                         assist_lists_generation,
-                        Err(format!("记录读取中断：{error}")),
+                        Err((t().app.records_interrupted)(&error.to_string())),
                     ));
                 }
             }
@@ -736,8 +739,8 @@ pub(super) async fn gui_worker_loop(
                 Err(error) => {
                     let _ =
                         events.send(GuiEvent::LoggedOut(crate::account::client::LogoutOutcome {
-                            remote_error: Some(format!("退出任务异常：{error}")),
-                            local_error: Some(format!("退出任务异常：{error}")),
+                            remote_error: Some((t().app.sign_out_error)(&error.to_string())),
+                            local_error: Some((t().app.sign_out_error)(&error.to_string())),
                         }));
                 }
             }
@@ -783,7 +786,7 @@ pub(super) async fn gui_worker_loop(
             client = None;
             allow_load = false;
             let _ = events.send(GuiEvent::AccountEnded(
-                "账号会话已结束".into(),
+                t().app.account_session_ended.into(),
             ));
             stop_active_signal(&mut host_signal).await;
         }
@@ -814,7 +817,9 @@ pub(super) async fn gui_worker_loop(
             let signal = host_signal.take().expect("finished presence");
             presence_stopped = true;
             if let Err(error) = signal.task.await.unwrap_or_else(|error| Err(error.into())) {
-                let _ = events.send(GuiEvent::Warning(format!("本机在线会话已停止：{error:#}")));
+                let _ = events.send(GuiEvent::Warning((t().app.presence_stopped)(&format!(
+                    "{error:#}"
+                ))));
             }
             let _ = events.send(GuiEvent::Presence(PresenceState::Offline));
         }
@@ -857,7 +862,9 @@ pub(super) async fn gui_worker_loop(
                     } else {
                         tracing::warn!(%error, "saved account could not be opened; credentials retained");
                         guest_allowed = true;
-                        GuiEvent::SessionUnavailable(format!("无法打开账号会话：{error:#}"))
+                        GuiEvent::SessionUnavailable((t().app.cant_open_account)(&format!(
+                            "{error:#}"
+                        )))
                     };
                     let _ = events.send(event);
                 }
@@ -899,8 +906,8 @@ pub(super) async fn gui_worker_loop(
                         .await
                         .unwrap_or_else(|error| Err(error.into()))
                     {
-                        let _ = events.send(GuiEvent::Warning(format!(
-                            "媒体能力检查失败：{error:#}"
+                        let _ = events.send(GuiEvent::Warning((t().app.media_check_failed)(
+                            &format!("{error:#}"),
                         )));
                     }
                     media_ready = Some(catalog_generation);
@@ -955,8 +962,8 @@ pub(super) async fn gui_worker_loop(
                 if active_client.restoration_failed().await {
                     allow_load = false;
                     tracing::warn!(%error, "saved account restoration failed");
-                    let _ = events.send(GuiEvent::SessionUnavailable(format!(
-                        "登录恢复失败：{error:#}"
+                    let _ = events.send(GuiEvent::SessionUnavailable((t().app.restore_failed)(
+                        &format!("{error:#}"),
                     )));
                     device_sync.reset().await;
                     client = None;
@@ -965,16 +972,16 @@ pub(super) async fn gui_worker_loop(
                     guest_allowed = true;
                     continue;
                 }
-                let _ = events.send(GuiEvent::Warning(format!(
-                    "设备同步失败：{error:#}"
-                )));
+                let _ = events.send(GuiEvent::Warning((t().app.device_sync_failed)(&format!(
+                    "{error:#}"
+                ))));
             }
             let away = active_client.server_unreachable();
             if reachability != Some((catalog_generation, away)) {
                 reachability = Some((catalog_generation, away));
                 let _ = events.send(GuiEvent::Reachability(catalog_generation, away));
             }
-            // The 本机 page works with the host before it is online.
+            // The "this device" page works with the host before it is online.
             if host_shown != Some(catalog_generation) {
                 host_shown = Some(catalog_generation);
                 let _ = events.send(GuiEvent::Host(

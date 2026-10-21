@@ -4,6 +4,7 @@ use super::{
     OutgoingControlMessage, StreamControlHandle, StreamControlState, ensure_business_ready,
     feature_supported, lock, protocol,
 };
+use crate::i18n::t;
 use anyhow::{Result, anyhow, bail};
 
 impl StreamControlHandle {
@@ -21,7 +22,8 @@ impl StreamControlHandle {
             let mut state = lock(&self.shared);
             anyhow::ensure!(
                 state.pb_connected && state.text_channel_open,
-                "媒体控制通道尚未就绪"
+                "{}",
+                t().features.stream_media_control_not_ready
             );
             let sequence = state.next_sequence;
             state.next_sequence += 1;
@@ -36,12 +38,12 @@ impl StreamControlHandle {
                     protocol: protocol(&state),
                     completion: Some(complete),
                 })
-                .map_err(|_| anyhow!("媒体连接已关闭"))?;
+                .map_err(|_| anyhow!("{}", t().features.stream_media_connection_closed))?;
         }
         tokio::time::timeout(std::time::Duration::from_secs(5), done)
             .await
-            .map_err(|_| anyhow!("画面切换请求发送超时"))?
-            .map_err(|_| anyhow!("媒体连接已关闭"))?
+            .map_err(|_| anyhow!("{}", t().features.stream_video_switch_timeout))?
+            .map_err(|_| anyhow!("{}", t().features.stream_media_connection_closed))?
             .map_err(anyhow::Error::msg)?;
         if enabled {
             self.set_viewing_enabled(true);
@@ -61,7 +63,7 @@ impl StreamControlHandle {
             }
         })
         .await
-        .map_err(|_| anyhow!("媒体控制通道握手超时"))
+        .map_err(|_| anyhow!("{}", t().features.stream_media_control_handshake_timeout))
     }
     /// Ordinary desktop capture only. Negative IDs include all-screen actions
     /// and are never accepted from a single monitor/window operation.
@@ -74,7 +76,7 @@ impl StreamControlHandle {
                     crate::account::feature_ability::Feature::MultiScreen,
                 )
             {
-                bail!("被控端未开放多屏观看");
+                bail!("{}", t().features.stream_multi_screen_unavailable);
             }
         }
         if screen_id < 0
@@ -84,7 +86,7 @@ impl StreamControlHandle {
                 .iter()
                 .any(|screen| screen.id == screen_id)
         {
-            bail!("显示器已不可用");
+            bail!("{}", t().features.stream_display_unavailable);
         }
         if active {
             self.ensure_video_tracks_registered().await?;
@@ -94,7 +96,7 @@ impl StreamControlHandle {
             let mut state = lock(&self.shared);
             ensure_business_ready(&state)?;
             if screen_id < 0 || !state.screens.iter().any(|screen| screen.id == screen_id) {
-                bail!("显示器已不可用");
+                bail!("{}", t().features.stream_display_unavailable);
             }
             let sequence = state.next_sequence;
             state.next_sequence += 1;
@@ -110,12 +112,12 @@ impl StreamControlHandle {
                     protocol: protocol(&state),
                     completion: Some(complete),
                 })
-                .map_err(|_| anyhow!("观看连接已关闭"))?;
+                .map_err(|_| anyhow!("{}", t().features.stream_viewing_connection_closed))?;
         }
         tokio::time::timeout(std::time::Duration::from_secs(5), done)
             .await
-            .map_err(|_| anyhow!("屏幕采集请求发送超时"))?
-            .map_err(|_| anyhow!("观看连接已关闭"))?
+            .map_err(|_| anyhow!("{}", t().features.stream_capture_request_timeout))?
+            .map_err(|_| anyhow!("{}", t().features.stream_viewing_connection_closed))?
             .map_err(anyhow::Error::msg)
     }
 
@@ -140,10 +142,11 @@ impl StreamControlHandle {
             let mut state = lock(&self.shared);
             anyhow::ensure!(
                 state.pb_connected && state.text_channel_open,
-                "媒体控制通道尚未就绪"
+                "{}",
+                t().features.stream_media_control_not_ready
             );
             if state.available_video_tracks.is_empty() {
-                bail!("被控端未协商可用的视频轨道");
+                bail!("{}", t().features.stream_no_tracks_offered);
             }
             state.track_registration_error = None;
             self.maybe_register_video_tracks(&mut state);
@@ -159,7 +162,7 @@ impl StreamControlHandle {
                         return Ok(());
                     }
                     if !state.pb_connected {
-                        bail!("观看连接已断开");
+                        bail!("{}", t().features.stream_viewing_connection_lost);
                     }
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -169,8 +172,9 @@ impl StreamControlHandle {
         .map_err(|_| {
             let mut state = lock(&self.shared);
             state.track_registration = None;
-            state.track_registration_error = Some("视频轨道注册未收到确认".into());
-            anyhow!("视频轨道注册未收到确认")
+            state.track_registration_error =
+                Some(t().features.stream_track_registration_unconfirmed.into());
+            anyhow!("{}", t().features.stream_track_registration_unconfirmed)
         })?
     }
 
@@ -207,7 +211,8 @@ impl StreamControlHandle {
         {
             state.track_registration = Some((sequence, tracks));
         } else {
-            state.track_registration_error = Some("视频轨道注册发送失败".into());
+            state.track_registration_error =
+                Some(t().features.stream_track_registration_unsent.into());
         }
     }
 }

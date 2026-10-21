@@ -1,6 +1,7 @@
 //! Local shutdown/reboot with a scoped duplicate token; no permanent privilege or policy changes.
 use super::host_service::pipe::Handle;
 use anyhow::{Context, Result, ensure};
+use crate::i18n::t;
 use windows::{
     Win32::{
         Foundation::*,
@@ -35,7 +36,11 @@ fn token() -> Result<Handle> {
         };
         SetLastError(ERROR_SUCCESS);
         AdjustTokenPrivileges(token.0, false, Some(&privileges), 0, None, None)?;
-        ensure!(GetLastError() == ERROR_SUCCESS, "当前运行身份没有关机权限");
+        ensure!(
+            GetLastError() == ERROR_SUCCESS,
+            "{}",
+            t().system.power_no_shutdown_privilege
+        );
         Ok(token)
     }
 }
@@ -75,6 +80,6 @@ pub(crate) fn execute(action: crate::features::host::power::Action) -> Result<()
             action == crate::features::host::power::Action::Reboot,
             SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_MINOR_OTHER | SHTDN_REASON_FLAG_PLANNED,
         )
-        .context("Windows 未接受电源请求")
+        .context(t().system.power_request_rejected)
     }
 }

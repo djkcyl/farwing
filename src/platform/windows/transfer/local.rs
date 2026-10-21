@@ -4,6 +4,7 @@
 //! resource references. (A D3D12 allocator would cost the process a device:
 //! about 20 MB and 7 driver threads, and 45-80 ms to create per session.)
 use super::*;
+use crate::i18n::t;
 
 pub(super) struct Transfer {
     slots: Vec<Arc<Slot>>,
@@ -55,7 +56,8 @@ impl Transfer {
     ) -> Result<Self> {
         ensure!(
             input.MipLevels == 1 && input.ArraySize == 1 && input.SampleDesc.Count == 1,
-            "同卡交付需要单层非多重采样纹理"
+            "{}",
+            t().system.transfer_local_texture_unsupported
         );
         unsafe {
             let source_context: ID3D11DeviceContext4 = source.GetImmediateContext()?.cast()?;
@@ -85,7 +87,8 @@ impl Transfer {
                     None,
                     Some(&mut write),
                 )?;
-                let write: ID3D11Texture2D = write.context("同卡共享纹理")?;
+                let write: ID3D11Texture2D =
+                    write.context(t().system.transfer_local_shared_texture)?;
                 let shared = Handle(write.cast::<IDXGIResource1>()?.CreateSharedHandle(
                     None,
                     DXGI_SHARED_RESOURCE_READ.0 | DXGI_SHARED_RESOURCE_WRITE.0,
@@ -96,7 +99,7 @@ impl Transfer {
                     .OpenSharedResource1(shared.0)?;
                 let mut ready = None;
                 source5.CreateFence(0, D3D11_FENCE_FLAG_SHARED, &mut ready)?;
-                let ready: ID3D11Fence = ready.context("同卡交付写入fence")?;
+                let ready: ID3D11Fence = ready.context(t().system.transfer_local_write_fence)?;
                 let shared = Handle(ready.CreateSharedHandle(None, 0x10000000, PCWSTR::null())?);
                 let mut remote_ready = None;
                 destination5.OpenSharedFence(shared.0, &mut remote_ready)?;
@@ -108,8 +111,8 @@ impl Transfer {
                     write,
                     read,
                     ready,
-                    remote_ready: remote_ready.context("同卡交付源fence")?,
-                    consumed: consumed.context("同卡交付读取fence")?,
+                    remote_ready: remote_ready.context(t().system.transfer_local_source_fence)?,
+                    consumed: consumed.context(t().system.transfer_local_read_fence)?,
                     value: AtomicU64::new(0),
                     leased: AtomicBool::new(false),
                     failed: AtomicBool::new(false),
@@ -126,7 +129,8 @@ impl Transfer {
                     !slot.failed.load(Ordering::Acquire)
                         && slot.consumed.GetCompletedValue() != u64::MAX
                         && slot.ready.GetCompletedValue() != u64::MAX,
-                    "同卡交付fence或设备失效"
+                    "{}",
+                    t().system.transfer_local_fence_lost
                 );
             }
             let Some(index) = (0..self.slots.len())
@@ -145,7 +149,7 @@ impl Transfer {
                 .value
                 .load(Ordering::Acquire)
                 .checked_add(1)
-                .context("同卡交付fence编号溢出")?;
+                .context(t().system.transfer_local_fence_overflow)?;
             slot.value.store(value, Ordering::Release);
             // Poison before submission: any failure must replace the bridge,
             // never reuse a surface with an untracked in-flight write/read.

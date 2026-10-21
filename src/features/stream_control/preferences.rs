@@ -1,6 +1,7 @@
 //! Device-scoped user intent, separate from temporary session/input state.
 use super::{StreamControlHandle, StreamControlState, lock};
 use crate::features::viewing_settings::{DevicePreferences, PerformancePanelMode};
+use crate::i18n::t;
 use anyhow::Result;
 
 impl StreamControlHandle {
@@ -67,7 +68,8 @@ impl StreamControlHandle {
             .mouse
             .set_throttle(preferences.mouse_throttle, preferences.mouse_throttle_rate)
         {
-            state.device_persistence_error = Some(format!("鼠标节流未启用：{error:#}"));
+            state.device_persistence_error =
+                Some((t().features.stream_mouse_throttle_failed)(&format!("{error:#}")));
         }
         state.baseline.weak_network = preferences.weak_network.wire();
         state.baseline.cinema = preferences.cinema;
@@ -75,7 +77,9 @@ impl StreamControlHandle {
         self.clipboard.set_files(preferences.clipboard_files);
         if let Err(error) = self.clipboard.set_enabled(preferences.clipboard_sync) {
             self.clipboard
-                .protocol_error(format!("恢复剪贴板偏好失败：{error:#}"));
+                .protocol_error((t().features.stream_clipboard_restore_failed)(
+                    &format!("{error:#}"),
+                ));
         }
         self.refresh_mouse_policy(&mut state);
         // Loading is not a user edit and must not overwrite the saved record.

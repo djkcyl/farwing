@@ -1,5 +1,6 @@
 //! Thread-affine Windows input operations. Ownership lives in the input engine.
 use anyhow::{Result, ensure};
+use crate::i18n::t;
 use std::time::{Duration, Instant};
 use windows::Win32::{
     Foundation::HANDLE,
@@ -32,8 +33,8 @@ pub(crate) fn send(items: &[INPUT]) -> Result<()> {
     // submission never leaves an unrecorded press behind.
     ensure!(
         n == items.len(),
-        "Windows输入提交不完整（{n}/{}）",
-        items.len()
+        "{}",
+        (t().system.input_submission_incomplete)(n, items.len())
     );
     Ok(())
 }
@@ -107,7 +108,7 @@ pub(crate) fn button(button: u8, down: bool) -> Result<()> {
         16 => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, 0),
         32 => (MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, 1),
         64 => (MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, 2),
-        _ => anyhow::bail!("无效鼠标按键"),
+        _ => anyhow::bail!("{}", t().system.input_mouse_button_invalid),
     };
     mouse(0, 0, data, if down { d } else { u })
 }
@@ -126,7 +127,7 @@ impl Desktop {
         use windows::Win32::UI::HiDpi::*;
         let dpi =
             unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
-        ensure!(!dpi.0.is_null(), "无法启用输入线程物理坐标");
+        ensure!(!dpi.0.is_null(), "{}", t().system.input_physical_coordinates_failed);
         let original = match unsafe { GetThreadDesktop(GetCurrentThreadId()) } {
             Ok(desktop) => desktop,
             Err(error) => {

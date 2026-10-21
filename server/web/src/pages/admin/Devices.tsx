@@ -1,6 +1,7 @@
 // Every device on the server: owner, online state, where it registered;
 // sign out (unbind) or drop its connections.
 import { useMemo, useState } from 'react';
+import { useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
 import { byName } from '../../lib/devices';
 import { ago, connectIdText, dateTime, deviceIdText, platformText } from '../../lib/format';
@@ -13,6 +14,8 @@ import { useOverlay } from '../../ui/overlay';
 type Filter = 'all' | 'online' | 'hosts' | 'guests';
 
 export default function AdminDevices() {
+  const t = useT();
+  const m = t.admin.devices;
   const { confirm, toast } = useOverlay();
   const { data, error, reload } = useApi<AdminDevice[]>('/api/v2/admin/devices', 10000);
   const [query, setQuery] = useState('');
@@ -51,36 +54,36 @@ export default function AdminDevices() {
   return (
     <div className="stack">
       <PageHeader
-        title="全部设备"
-        actions={<SearchBox value={query} onChange={setQuery} placeholder="名称、设备 ID、短号、账号、IP" />}
+        title={t.nav.allDevices}
+        actions={<SearchBox value={query} onChange={setQuery} placeholder={m.searchPlaceholder} />}
       />
       {error && <Alert>{error}</Alert>}
       <Tabs<Filter>
         value={filter}
         onChange={setFilter}
         items={[
-          { id: 'all', label: `全部 ${count('all')}` },
-          { id: 'online', label: `在线 ${count('online')}` },
-          { id: 'hosts', label: `可被控 ${count('hosts')}` },
-          { id: 'guests', label: `未登录账号 ${count('guests')}` },
+          { id: 'all', label: m.all(count('all')) },
+          { id: 'online', label: m.online(count('online')) },
+          { id: 'hosts', label: m.hosts(count('hosts')) },
+          { id: 'guests', label: m.guests(count('guests')) },
         ]}
       />
       <Card pad={false}>
         {!data ? (
           <Loading />
         ) : rows.length === 0 ? (
-          <Empty icon="monitor" title="没有匹配的设备" />
+          <Empty icon="monitor" title={m.noMatch} />
         ) : (
           <div className="table-wrap">
             <table className="table">
               <thead>
                 <tr>
-                  <th>设备</th>
-                  <th>平台</th>
-                  <th>账号</th>
-                  <th>短号</th>
-                  <th>状态</th>
-                  <th>注册</th>
+                  <th>{t.admin.col.device}</th>
+                  <th>{t.admin.col.platform}</th>
+                  <th>{t.admin.col.account}</th>
+                  <th>{t.admin.col.connectId}</th>
+                  <th>{t.admin.col.status}</th>
+                  <th>{m.registered}</th>
                   <th />
                 </tr>
               </thead>
@@ -90,7 +93,7 @@ export default function AdminDevices() {
                     <td>
                       <div className="cell-main row gap-sm">
                         <span className="ellipsis">{d.alias}</span>
-                        {d.host && <Badge>可被控</Badge>}
+                        {d.host && <Badge>{m.host}</Badge>}
                       </div>
                       <div className="cell-sub mono">{deviceIdText(d.device_id)}</div>
                     </td>
@@ -104,7 +107,7 @@ export default function AdminDevices() {
                       {d.owner_id ? (
                         <Link to={`/admin/users/${d.owner_id}`}>{d.owner}</Link>
                       ) : (
-                        <span className="muted">未登录</span>
+                        <span className="muted">{t.admin.signedOut}</span>
                       )}
                     </td>
                     <td className="mono nowrap">{connectIdText(d.connect_id) || <span className="muted">—</span>}</td>
@@ -120,18 +123,18 @@ export default function AdminDevices() {
                       {d.online && (
                         <IconButton
                           icon="power"
-                          label="断开连接"
+                          label={m.disconnect}
                           onClick={async () => {
                             if (
                               await confirm({
-                                title: '断开连接',
-                                message: `${d.alias} 的所有连接将断开。`,
-                                confirm: '断开',
+                                title: m.disconnectTitle,
+                                message: m.disconnectMessage(d.alias),
+                                confirm: m.disconnectConfirm,
                               })
                             )
                               await act(
                                 () => call('POST', `/api/v2/admin/devices/${d.device_id}/disconnect`, {}),
-                                '已断开',
+                                m.disconnected,
                               );
                           }}
                         />
@@ -139,18 +142,21 @@ export default function AdminDevices() {
                       {d.owner_id && (
                         <IconButton
                           icon="unlink"
-                          label="解绑并注销"
+                          label={t.admin.unbind.label}
                           variant="danger"
                           onClick={async () => {
                             if (
                               await confirm({
-                                title: '解绑设备',
-                                message: `${d.alias} 将从 ${d.owner} 的账号移除并退出登录。`,
-                                confirm: '解绑',
+                                title: t.admin.unbind.title,
+                                message: t.admin.unbind.message(d.alias, d.owner ?? ''),
+                                confirm: t.admin.unbind.confirm,
                                 danger: true,
                               })
                             )
-                              await act(() => call('DELETE', `/api/v2/admin/devices/${d.device_id}`), '已解绑');
+                              await act(
+                                () => call('DELETE', `/api/v2/admin/devices/${d.device_id}`),
+                                t.admin.unbind.done,
+                              );
                           }}
                         />
                       )}

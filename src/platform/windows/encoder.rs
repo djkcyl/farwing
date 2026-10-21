@@ -1,4 +1,5 @@
 //! Hardware first; negotiated Rust software codecs share the capture lifecycle.
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use windows::{
     Win32::{Graphics::Direct3D11::*, System::Com::*},
@@ -70,13 +71,13 @@ pub(crate) fn probe(
     let mut acquired_frame = false;
     for (adapter, device, backend, format) in candidates {
         if !is_active() {
-            anyhow::bail!("被控准备已取消");
+            anyhow::bail!("{}", t().system.encode_preparation_cancelled);
         }
         let probe = (|| -> Result<Capability> {
             let cached = &mut samples[usize::from(format.depth == 10)];
             for _ in 0..if cached.is_none() { 20 } else { 0 } {
                 if !is_active() {
-                    anyhow::bail!("被控准备已取消");
+                    anyhow::bail!("{}", t().system.encode_preparation_cancelled);
                 }
                 if let Some(frame) = desktop.next(50, 1, false, format.depth == 10, (1280, 720))? {
                     acquired_frame = true;
@@ -84,7 +85,9 @@ pub(crate) fn probe(
                     break;
                 }
             }
-            let frame = cached.as_ref().context("尚未取得所选桌面画面")?;
+            let frame = cached
+                .as_ref()
+                .context(t().system.encode_no_desktop_frame)?;
             let rate = Rate {
                 target: 2_000_000,
                 peak: 2_000_000,
@@ -124,7 +127,7 @@ pub(crate) fn probe(
             let mut output = None;
             for i in 0..20 {
                 if !is_active() {
-                    anyhow::bail!("被控准备已取消");
+                    anyhow::bail!("{}", t().system.encode_preparation_cancelled);
                 }
                 let delivery = if let Some(transfer) = transfer.as_mut() {
                     match transfer.copy(frame, &is_active)? {
@@ -156,13 +159,14 @@ pub(crate) fn probe(
                 }
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            let output = output.context("编码器未输出可验证的序列头")?;
+            let output = output.context(t().system.encode_no_sequence_header)?;
             ensure!(
                 output.chroma_format_idc == format.chroma
                     && output.bit_depth_luma == format.depth
                     && output.bit_depth_chroma == format.depth
                     && (output.visible_width, output.visible_height) == (frame.width, frame.height),
-                "编码器实际码流与请求格式不一致"
+                "{}",
+                t().system.encode_format_mismatch
             );
             Ok(Capability {
                 adapter,
@@ -187,13 +191,21 @@ pub(crate) fn probe(
     }
     ensure!(
         acquired_frame,
-        "所选桌面尚未提供可采集的画面：{}",
-        last_failure.as_deref().unwrap_or("未取得桌面首帧")
+        "{}",
+        (t().system.encode_desktop_no_frame)(
+            last_failure
+                .as_deref()
+                .unwrap_or(t().system.encode_no_first_frame)
+        )
     );
     ensure!(
         !result.is_empty(),
-        "所选桌面没有可用的视频编码器：{}",
-        last_failure.as_deref().unwrap_or("没有编码候选")
+        "{}",
+        (t().system.encode_no_encoder)(
+            last_failure
+                .as_deref()
+                .unwrap_or(t().system.encode_no_candidate)
+        )
     );
     Ok(result)
 }
@@ -288,7 +300,7 @@ impl Encoder {
                 0x8086 => Ok(Self::Intel(super::qsv::Encoder::new(
                     device, size, format, rate, color,
                 )?)),
-                _ => anyhow::bail!("当前采集适配器没有可用的硬件编码候选"),
+                _ => anyhow::bail!("{}", t().system.encode_no_hardware_candidate),
             }
         }
     }
@@ -380,7 +392,8 @@ impl Encoder {
         }
         ensure!(
             !cancel.load(std::sync::atomic::Ordering::Acquire),
-            "编码已取消"
+            "{}",
+            t().system.encode_cancelled
         );
         match self {
             Self::Software(e) => e.encode(texture, timestamp, keyframe, control, cancel),

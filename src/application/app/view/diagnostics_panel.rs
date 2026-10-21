@@ -1,5 +1,6 @@
 use super::*;
 use crate::features::host::format::{Backend, Codec};
+use crate::i18n::t;
 use crate::ui::controls::{diagnostics_empty, diagnostics_row, diagnostics_table};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -37,18 +38,19 @@ impl DeviceCenterApp {
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing = vec2(theme::DIAGNOSTICS_GAP, 4.0);
             ui.horizontal(|ui| {
+                let text = &t().settings;
                 for (tab, label) in [
-                    (Tab::Device, "设备概览"),
-                    (Tab::Publication, "设备上报"),
-                    (Tab::Encoding, "编码能力"),
-                    (Tab::Decoding, "解码检查"),
-                    (Tab::Sessions, "当前会话"),
-                    (Tab::Wol, "远程开机"),
+                    (Tab::Device, text.diag_tab_overview),
+                    (Tab::Publication, text.diag_tab_registration),
+                    (Tab::Encoding, text.diag_tab_encoding),
+                    (Tab::Decoding, text.diag_tab_decoding),
+                    (Tab::Sessions, text.diag_tab_sessions),
+                    (Tab::Wol, text.wol_remote_wake),
                 ] {
                     ui.selectable_value(&mut self.center_ui.diagnostics.tab, tab, label);
                 }
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    if ui.link("日志").clicked() {
+                    if ui.link(text.tab_logs).clicked() {
                         self.center_ui.settings_tab = super::settings::SettingsTab::Logs;
                     }
                 });
@@ -76,6 +78,7 @@ impl DeviceCenterApp {
     fn diagnostic_wol(&mut self, ui: &mut egui::Ui) {
         self.wol_setup_entry(ui);
         ui.separator();
+        let text = &t().settings;
         let state = &mut self.center_ui.diagnostics;
         if let Some(rx) = &state.wol_refresh {
             match rx.try_recv() {
@@ -84,26 +87,26 @@ impl DeviceCenterApp {
                     state.wol_refresh = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    state.wol_error = Some("刷新任务中断".into());
+                    state.wol_error = Some(text.refresh_interrupted.into());
                     state.wol_refresh = None;
                 }
                 Err(_) => {}
             }
         }
         let Some(host) = self.host.clone() else {
-            diagnostics_empty(ui, "被控未开启");
+            diagnostics_empty(ui, text.host_off);
             return;
         };
         let wol = host.status().wol;
         ui.horizontal(|ui| {
-            ui.label("局域网信息登记");
+            ui.label(text.lan_registration);
             if ui
                 .add_enabled(
                     host.allowed()
                         && (host.wol_allowed() || host.status().wol_setup.enabled == Some(true))
                         && !wol.reporting
                         && state.wol_refresh.is_none(),
-                    egui::Button::new("刷新网络登记"),
+                    egui::Button::new(text.refresh_registration),
                 )
                 .clicked()
             {
@@ -126,19 +129,19 @@ impl DeviceCenterApp {
         });
         diagnostics_row(
             ui,
-            "状态",
+            text.status,
             if wol.message.is_empty() {
-                "未开启局域网唤醒协助"
+                text.wol_assistance_off
             } else {
                 &wol.message
             },
         );
         if let Some(name) = &wol.interface_name {
-            diagnostics_row(ui, "网卡", name);
+            diagnostics_row(ui, text.adapter, name);
         }
         if let Some(info) = &wol.network {
-            diagnostics_row(ui, "本机IPv4", &info.inner_ip);
-            diagnostics_row(ui, "子网掩码", &info.subnet_mask);
+            diagnostics_row(ui, text.ipv4_address, &info.inner_ip);
+            diagnostics_row(ui, text.subnet_mask, &info.subnet_mask);
             diagnostics_row(ui, "MAC", &info.mac);
         }
         let stamp = |v: Option<i64>| {
@@ -148,35 +151,37 @@ impl DeviceCenterApp {
                         .format("%Y-%m-%d %H:%M:%S")
                         .to_string()
                 })
-                .unwrap_or_else(|| "尚无记录".into())
+                .unwrap_or_else(|| text.no_record.into())
         };
-        diagnostics_row(ui, "最近登记", &stamp(wol.registered_at));
-        diagnostics_row(ui, "最近发包", &stamp(wol.last_sent_at));
-        diagnostics_row(ui, "已发送报文", &wol.packets_sent.to_string());
+        diagnostics_row(ui, text.last_registered, &stamp(wol.registered_at));
+        diagnostics_row(ui, text.last_sent, &stamp(wol.last_sent_at));
+        diagnostics_row(ui, text.packets_sent, &wol.packets_sent.to_string());
         if let Some(error) = wol.error.as_ref().or(state.wol_error.as_ref()) {
             ui.colored_label(theme::AMBER, error);
         }
     }
 
     fn diagnostic_device(&self, ui: &mut egui::Ui) {
+        let text = &t().settings;
         diagnostics_row(
             ui,
-            "显示器",
+            text.display,
             &format!(
                 "{} × {} · {} Hz",
                 self.local_display.width, self.local_display.height, self.local_display.refresh_hz
             ),
         );
-        for (label, value) in &self.diagnostics.rows {
-            diagnostics_row(ui, label, value);
+        for (row, value) in &self.diagnostics.rows {
+            diagnostics_row(ui, row.label(), value);
         }
         for value in &self.diagnostics.graphics {
-            diagnostics_row(ui, "渲染设备", value);
+            diagnostics_row(ui, text.render_device, value);
         }
     }
 
     fn diagnostic_publication(&mut self, ui: &mut egui::Ui) {
         use crate::account::reporting;
+        let text = &t().settings;
         let state = &mut self.center_ui.diagnostics;
         if let Some(rx) = &state.publication_refresh {
             match rx.try_recv() {
@@ -185,18 +190,18 @@ impl DeviceCenterApp {
                     state.publication_refresh = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    state.publication_error = Some("刷新任务中断".into());
+                    state.publication_error = Some(text.refresh_interrupted.into());
                     state.publication_refresh = None;
                 }
                 Err(_) => {}
             }
         }
         ui.horizontal(|ui| {
-            ui.label("注册资料与壁纸");
+            ui.label(text.registration_and_wallpaper);
             if ui
                 .add_enabled(
                     state.publication_refresh.is_none(),
-                    egui::Button::new("重新读取并上报"),
+                    egui::Button::new(text.report_again),
                 )
                 .clicked()
             {
@@ -224,7 +229,7 @@ impl DeviceCenterApp {
         let snapshot = reporting::snapshot();
         let value = |s: &str| {
             if s.is_empty() {
-                "未读取".to_owned()
+                text.not_read.to_owned()
             } else {
                 s.to_owned()
             }
@@ -237,51 +242,51 @@ impl DeviceCenterApp {
                         .format("%Y-%m-%d %H:%M:%S")
                         .to_string()
                 })
-                .unwrap_or_else(|| "尚未确认".into())
+                .unwrap_or_else(|| text.not_confirmed.into())
         };
-        diagnostics_row(ui, "注册设备", &value(&snapshot.device_id));
-        diagnostics_row(ui, "客户端标识", &value(&snapshot.client_id));
-        diagnostics_row(ui, "硬件上报", &value(&snapshot.registration));
-        diagnostics_row(ui, "上报时间", &time(snapshot.registered_at));
-        diagnostics_row(ui, "上报名称", &value(&snapshot.reported_name));
+        diagnostics_row(ui, text.registered_device, &value(&snapshot.device_id));
+        diagnostics_row(ui, text.client_id, &value(&snapshot.client_id));
+        diagnostics_row(ui, text.hardware_report, &value(&snapshot.registration));
+        diagnostics_row(ui, text.reported_at, &time(snapshot.registered_at));
+        diagnostics_row(ui, text.reported_name, &value(&snapshot.reported_name));
         diagnostics_row(
             ui,
-            "被控许可",
+            text.host_allowed,
             if snapshot.reported_controllable {
-                "允许"
+                text.allowed
             } else {
-                "关闭"
+                text.disallowed
             },
         );
         if let Some(hardware) = snapshot.hardware {
-            diagnostics_row(ui, "系统 UUID", &hardware.system_uuid);
-            diagnostics_row(ui, "Windows 标识", &hardware.machine_guid);
-            for (label, text) in [
-                ("系统设备名", hardware.name),
-                ("操作系统", hardware.os),
-                ("主板", hardware.base_board),
-                ("处理器", hardware.cpu),
-                ("显卡", hardware.video.join(" / ")),
-                ("网卡地址", hardware.mac),
-                ("活动显示器", hardware.screen),
+            diagnostics_row(ui, text.system_uuid, &hardware.system_uuid);
+            diagnostics_row(ui, text.windows_id, &hardware.machine_guid);
+            for (label, fact) in [
+                (text.computer_name, hardware.name),
+                (text.operating_system, hardware.os),
+                (text.motherboard, hardware.base_board),
+                (text.processor, hardware.cpu),
+                (text.graphics, hardware.video.join(" / ")),
+                (text.mac_address, hardware.mac),
+                (text.active_display, hardware.screen),
             ] {
                 diagnostics_row(
                     ui,
                     label,
-                    &if text.is_empty() {
-                        "系统未提供".into()
+                    &if fact.is_empty() {
+                        text.not_provided.into()
                     } else {
-                        text
+                        fact
                     },
                 );
             }
             diagnostics_row(
                 ui,
-                "物理内存",
+                text.memory,
                 &if hardware.memory > 0 {
                     format!("{} MiB", hardware.memory)
                 } else {
-                    "系统未提供".into()
+                    text.not_provided.into()
                 },
             );
             for error in hardware.errors {
@@ -289,15 +294,15 @@ impl DeviceCenterApp {
             }
         }
         ui.separator();
-        diagnostics_row(ui, "服务端回读", &value(&snapshot.readback));
-        diagnostics_row(ui, "回读时间", &time(snapshot.readback_at));
-        for (label, text) in &snapshot.server_details {
-            diagnostics_row(ui, label, text);
+        diagnostics_row(ui, text.server_readback, &value(&snapshot.readback));
+        diagnostics_row(ui, text.read_back_at, &time(snapshot.readback_at));
+        for (label, detail) in &snapshot.server_details {
+            diagnostics_row(ui, label, detail);
         }
         ui.separator();
-        diagnostics_row(ui, "壁纸状态", &value(&snapshot.wallpaper));
-        diagnostics_row(ui, "图片来源", &value(&snapshot.wallpaper_file));
-        diagnostics_row(ui, "确认时间", &time(snapshot.wallpaper_at));
+        diagnostics_row(ui, text.wallpaper, &value(&snapshot.wallpaper));
+        diagnostics_row(ui, text.image_source, &value(&snapshot.wallpaper_file));
+        diagnostics_row(ui, text.confirmed_at, &time(snapshot.wallpaper_at));
         if !snapshot.wallpaper_url.is_empty() {
             if let Some(texture) = self.center_ui.wallpapers.texture(
                 ui.ctx(),
@@ -313,8 +318,9 @@ impl DeviceCenterApp {
     }
 
     fn diagnostic_encoding(&mut self, ui: &mut egui::Ui) {
+        let text = &t().settings;
         let Some(caps) = self.host.as_ref().and_then(|host| host.capabilities()) else {
-            diagnostics_empty(ui, "暂无编码能力");
+            diagnostics_empty(ui, text.no_encoding);
             return;
         };
         let mut groups = Vec::new();
@@ -333,23 +339,23 @@ impl DeviceCenterApp {
             self.center_ui.diagnostics.encoder = groups.first().copied();
         }
         let Some((adapter, backend)) = self.center_ui.diagnostics.encoder else {
-            diagnostics_empty(ui, "暂无可用编码器");
+            diagnostics_empty(ui, text.no_encoders);
             return;
         };
         let backend_label = |key: (u64, Backend)| {
             if key.1 == Backend::Software {
-                format!("{} · 软件", key.1.name())
+                (text.software_backend)(key.1.name())
             } else {
                 let device = caps
                     .adapters
                     .iter()
                     .find(|a| a.luid == key.0)
-                    .map_or("图形适配器", |a| a.name.as_str());
+                    .map_or(text.graphics_adapter, |a| a.name.as_str());
                 format!("{} · {}", key.1.name(), device)
             }
         };
         ui.horizontal(|ui| {
-            crate::ui::controls::diagnostics_label(ui, "编码器");
+            crate::ui::controls::diagnostics_label(ui, text.encoder);
             egui::ComboBox::from_id_salt("diagnostics-encoder")
                 .width(ui.available_width())
                 .selected_text(backend_label((adapter, backend)))
@@ -368,10 +374,10 @@ impl DeviceCenterApp {
             .adapters
             .iter()
             .find(|a| a.luid == adapter)
-            .map_or("软件编码", |a| a.name.as_str());
+            .map_or(text.software_encoding, |a| a.name.as_str());
         let processing_device = diagnostics_row(
             ui,
-            "处理设备",
+            text.processing_device,
             if backend == Backend::Software {
                 "CPU"
             } else {
@@ -379,14 +385,14 @@ impl DeviceCenterApp {
             },
         );
         if backend == Backend::Software {
-            diagnostics_row(ui, "图形输入设备", device)
-                .on_hover_text(format!("适配器标识 {adapter:016X}"));
+            diagnostics_row(ui, text.input_adapter, device)
+                .on_hover_text((text.adapter_id)(adapter));
         } else {
-            processing_device.on_hover_text(format!("适配器标识 {adapter:016X}"));
+            processing_device.on_hover_text((text.adapter_id)(adapter));
         }
         diagnostics_row(
             ui,
-            "检查源",
+            text.probe_source,
             &format!(
                 "{} · {} × {}",
                 caps.screen.label(),
@@ -410,19 +416,25 @@ impl DeviceCenterApp {
             .collect();
         diagnostics_table(
             ui,
-            &["编码", "色彩", "位深", "尺寸上限"],
+            &[
+                text.column_codec,
+                text.column_chroma,
+                text.column_depth,
+                text.column_max_size,
+            ],
             &rows,
             |_, _| TEXT,
         );
     }
 
     fn diagnostic_decoding(&mut self, ui: &mut egui::Ui) {
+        let text = &t().settings;
         ui.horizontal(|ui| {
             let busy = self.diagnostics.busy();
             if crate::ui::controls::diagnostics_action(
                 ui,
                 busy || !self.has_viewers(),
-                if busy { "停止检查" } else { "完整检查" },
+                if busy { text.stop_check } else { text.full_check },
             )
             .clicked()
             {
@@ -452,9 +464,9 @@ impl DeviceCenterApp {
             .count();
         diagnostics_row(
             ui,
-            "检查状态",
+            text.check_status,
             &if self.diagnostics.busy() {
-                format!("已处理 {done} / {total}")
+                (text.check_progress)(done, total)
             } else {
                 report.message.clone()
             },
@@ -468,7 +480,7 @@ impl DeviceCenterApp {
             .decoder
             .min(report.backends.len() - 1);
         ui.horizontal(|ui| {
-            crate::ui::controls::diagnostics_label(ui, "解码器");
+            crate::ui::controls::diagnostics_label(ui, text.decoder);
             egui::ComboBox::from_id_salt("diagnostics-decoder")
                 .width(ui.available_width())
                 .selected_text(&report.backends[self.center_ui.diagnostics.decoder].name)
@@ -483,9 +495,9 @@ impl DeviceCenterApp {
                 });
         });
         let backend = &report.backends[self.center_ui.diagnostics.decoder];
-        diagnostics_row(ui, "处理设备", backend.device.as_deref().unwrap_or("CPU"));
+        diagnostics_row(ui, text.processing_device, backend.device.as_deref().unwrap_or("CPU"));
         ui.add_space(theme::DIAGNOSTICS_GAP);
-        let mut headers = vec!["格式".to_owned()];
+        let mut headers = vec![text.column_format.to_owned()];
         headers.extend(backend.sizes.iter().map(|&(w, h)| match (w, h) {
             (1280, 720) => "720p".to_owned(),
             (1920, 1080) => "1080p".to_owned(),
@@ -527,6 +539,7 @@ impl DeviceCenterApp {
     }
 
     fn diagnostic_sessions(&self, ui: &mut egui::Ui) {
+        let text = &t().settings;
         let host = self.host.as_ref().map(|host| host.status());
         let viewing: Vec<_> = self
             .viewers
@@ -535,96 +548,97 @@ impl DeviceCenterApp {
             .filter_map(|s| s.handle.info().map(|info| (s.alias.clone(), info)))
             .collect();
         if !host.as_ref().is_some_and(|host| host.session_active) && viewing.is_empty() {
-            diagnostics_empty(ui, "暂无活动会话");
+            diagnostics_empty(ui, text.no_sessions);
             return;
         }
         if let Some(host) = host.filter(|host| host.session_active) {
-            ui.strong("本机被控");
-            diagnostics_row(ui, "连接状态", &host.message);
+            ui.strong(text.hosting);
+            diagnostics_row(ui, text.connection_state, &host.message);
             diagnostics_row(
                 ui,
-                "输入后端",
-                host.input_backend.as_deref().unwrap_or("等待控制"),
+                text.input_backend,
+                host.input_backend.as_deref().unwrap_or(text.waiting_for_control),
             );
             diagnostics_row(
                 ui,
-                "剪贴板同步",
+                text.clipboard_sync,
                 if host.clipboard.active {
                     if host.clipboard.files {
-                        "文字、图片和文件"
+                        text.clipboard_all
                     } else {
-                        "文字和图片"
+                        text.clipboard_text_images
                     }
                 } else {
-                    "未启用或等待用户桌面"
+                    text.clipboard_off
                 },
             );
             diagnostics_row(
                 ui,
-                "端口转发",
-                &format!(
-                    "{} 个连接 · 发送 {} B / 接收 {} B",
-                    host.ports.connections, host.ports.sent, host.ports.received
+                text.port_forwarding,
+                &(text.ports_summary)(
+                    host.ports.connections as u64,
+                    host.ports.sent,
+                    host.ports.received,
                 ),
             );
             if let Some(error) = &host.ports.error {
-                diagnostics_row(ui, "转发状态", error);
+                diagnostics_row(ui, text.forwarding_status, error);
             }
             diagnostics_row(
                 ui,
-                "独立文件传输",
+                text.standalone_file_transfer,
                 if host.files.active {
-                    "用户权限执行"
+                    text.files_as_user
                 } else {
-                    "未启用或等待连接"
+                    text.files_off
                 },
             );
             if let Some(error) = &host.files.error {
-                diagnostics_row(ui, "文件传输状态", error);
+                diagnostics_row(ui, text.transfer_status, error);
             }
             if let Some(error) = &host.clipboard.error {
                 ui.colored_label(theme::RED, error);
             }
             if let Some(error) = &host.input_error {
-                diagnostics_row(ui, "输入状态", error);
+                diagnostics_row(ui, text.input_status, error);
             }
             diagnostics_row(
                 ui,
-                "桌面声音",
+                text.desktop_audio,
                 if host.audio.capturing {
-                    "正在采集"
+                    text.capturing
                 } else if host.audio.configured {
-                    "等待播放设备"
+                    text.waiting_for_playback
                 } else {
-                    "未协商音频"
+                    text.audio_not_negotiated
                 },
             );
             if !host.audio.device.is_empty() {
-                diagnostics_row(ui, "音频设备", &host.audio.device);
+                diagnostics_row(ui, text.audio_device, &host.audio.device);
             }
             if host.audio.target_bitrate != 0 {
                 diagnostics_row(
                     ui,
-                    "目标音频码率",
+                    text.audio_bitrate,
                     &format!("{} kbps", host.audio.target_bitrate / 1000),
                 );
             }
             if let Some(error) = &host.audio.error {
-                diagnostics_row(ui, "音频状态", error);
+                diagnostics_row(ui, text.audio_status, error);
             }
             diagnostics_row(
                 ui,
-                "虚拟麦克风",
+                text.virtual_microphone,
                 if host.microphone.active {
-                    "应用正在使用"
+                    text.microphone_in_use
                 } else if host.microphone.enabled {
-                    "等待本机应用使用"
+                    text.microphone_waiting
                 } else {
-                    "未开启"
+                    text.wol_disabled
                 },
             );
             if let Some(error) = &host.microphone.error {
-                diagnostics_row(ui, "麦克风状态", error);
+                diagnostics_row(ui, text.microphone_status, error);
             }
             let adapters = self
                 .host
@@ -638,47 +652,47 @@ impl DeviceCenterApp {
                 };
                 ui.add_space(theme::DIAGNOSTICS_GAP);
                 if let Some(screen) = stream.screen {
-                    ui.strong(format!("{} · 视频轨道 {}", screen.label(), index + 1));
+                    ui.strong((text.video_track)(&screen.label(), index + 1));
                 }
-                diagnostics_row(ui, "编码器", active.backend.name())
-                    .on_hover_text(format!("适配器标识 {:016X}", active.adapter));
+                diagnostics_row(ui, text.encoder, active.backend.name())
+                    .on_hover_text((text.adapter_id)(active.adapter));
                 diagnostics_row(
                     ui,
-                    "实际编码显卡",
+                    text.encoding_gpu,
                     adapters
                         .iter()
                         .find(|a| a.luid == active.adapter)
-                        .map_or("未知", |a| a.name.as_str()),
+                        .map_or(t().common.unknown, |a| a.name.as_str()),
                 );
                 diagnostics_row(
                     ui,
-                    "本次显卡首选",
-                    active.preferred_gpu.map_or("自动", |id| {
+                    text.preferred_gpu,
+                    active.preferred_gpu.map_or(text.automatic, |id| {
                         adapters
                             .iter()
                             .find(|a| a.id == Some(id))
-                            .map_or("已选显卡不可用", |a| a.name.as_str())
+                            .map_or(text.selected_gpu_unavailable, |a| a.name.as_str())
                     }),
                 );
                 diagnostics_row(
                     ui,
-                    "本次格式首选",
+                    text.preferred_codec,
                     match active.preferred_codec {
                         Some(1) => "H.264",
                         Some(2) => "HEVC",
                         Some(5) => "AV1",
-                        _ => "自动",
+                        _ => text.automatic,
                     },
                 );
-                diagnostics_row(ui, "选择原因", active.selection.label());
+                diagnostics_row(ui, text.selection_reason, active.selection.label());
                 diagnostics_row(
                     ui,
-                    "采集方式",
-                    stream.capture.as_deref().unwrap_or("等待采集"),
+                    text.capture_method,
+                    stream.capture.as_deref().unwrap_or(text.waiting_for_capture),
                 );
                 diagnostics_row(
                     ui,
-                    "输出格式",
+                    text.output_format,
                     &format!(
                         "{} · {} · {} bit",
                         codec_label(active.format.codec),
@@ -688,34 +702,31 @@ impl DeviceCenterApp {
                 );
                 diagnostics_row(
                     ui,
-                    "输出配置",
-                    &format!(
-                        "{} × {} · {} FPS 上限",
-                        active.size.0, active.size.1, active.fps
-                    ),
+                    text.output,
+                    &(text.output_value)(active.size.0, active.size.1, active.fps),
                 );
                 diagnostics_row(
                     ui,
-                    "目标码率",
+                    text.bitrate,
                     &format!("{:.2} Mbps", active.target_bps as f64 / 1_000_000.0),
                 );
             }
         }
         for (alias, info) in viewing {
             ui.add_space(theme::DIAGNOSTICS_GAP);
-            ui.strong(format!("当前观看 · {alias}"));
+            ui.strong((text.viewing)(&alias));
             for (label, value) in [
-                ("本机解码器", info.decoder),
-                ("接收码流", info.video_format),
-                ("连接线路", info.connection),
-                ("远端编码器", info.remote_encoder),
-                ("远端采集", info.remote_capture),
+                (text.local_decoder, info.decoder),
+                (text.received_stream, info.video_format),
+                (text.route, info.connection),
+                (text.remote_encoder, info.remote_encoder),
+                (text.remote_capture, info.remote_capture),
             ] {
                 diagnostics_row(
                     ui,
                     label,
                     if value.is_empty() {
-                        "等待会话建立"
+                        text.waiting_for_session
                     } else {
                         &value
                     },

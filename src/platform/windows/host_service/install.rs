@@ -1,4 +1,5 @@
 //! Deployment and identity of the optional privileged host service.
+use crate::i18n::t;
 use crate::platform::windows::components::{Status, application as deployment};
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -15,7 +16,7 @@ use windows::{
 const SERVICE: &str = crate::product::SERVICE_NAME;
 use deployment::RECEIPT;
 #[derive(Debug, thiserror::Error)]
-#[error("需要更新被控服务")]
+#[error("{}", crate::i18n::t().system.service_update_required)]
 pub(crate) struct NeedsUpdate;
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -43,14 +44,16 @@ fn images() -> Result<Images> {
     let path = directory()?.join("images.json");
     ensure!(
         std::fs::metadata(&path)?.len() < 4096,
-        "被控服务登记信息无效"
+        "{}",
+        t().system.service_invalid_registration
     );
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
 pub(crate) fn verify_client(pid: u32) -> Result<()> {
     ensure!(
         super::process::image_hash(&super::process::image(pid)?)? == images()?.client,
-        "控制中心与被控服务版本不匹配"
+        "{}",
+        t().system.service_version_mismatch
     );
     Ok(())
 }
@@ -80,7 +83,8 @@ fn verify_service(service: &Sc) -> Result<bool> {
         let current = path.eq_ignore_ascii_case(&command()?);
         ensure!(
             config.dwServiceType == SERVICE_WIN32_OWN_PROCESS && current,
-            "现有同名服务不属于本程序，已保留"
+            "{}",
+            t().system.service_not_owned
         );
         Ok(current)
     }
@@ -93,11 +97,12 @@ pub(crate) fn status() -> Result<Status> {
         if owned {
             ensure!(
                 std::fs::read_to_string(dir.join("owner.txt"))? == RECEIPT,
-                "被控服务目录归属不匹配"
+                "{}",
+                t().system.service_directory_not_owned
             );
         }
         return Ok(Status {
-            label: "未安装".into(),
+            label: t().system.install_not_installed.into(),
             installed: false,
             removable: owned,
             ready: false,
@@ -118,11 +123,11 @@ pub(crate) fn status() -> Result<Status> {
     }
     Ok(Status {
         label: if !current || !compatible {
-            "需要更新"
+            t().system.install_needs_update
         } else if state.dwCurrentState == SERVICE_RUNNING {
-            "已运行"
+            t().system.service_running
         } else {
-            "已安装，未运行"
+            t().system.service_stopped
         }
         .into(),
         installed: true,
@@ -139,7 +144,7 @@ pub(crate) fn verify_resident(pid: u32) -> Result<()> {
 fn verify_endpoint(pid: u32, check_client: bool) -> Result<()> {
     let manager = manager(SC_MANAGER_CONNECT)?;
     let service = service(&manager, SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS)?
-        .context("被控服务未安装")?;
+        .context(t().system.service_host_not_installed)?;
     if !verify_service(&service)? {
         return Err(NeedsUpdate.into());
     }
@@ -156,7 +161,8 @@ fn verify_endpoint(pid: u32, check_client: bool) -> Result<()> {
     }
     ensure!(
         pid != 0 && state.dwCurrentState == SERVICE_RUNNING && state.dwProcessId == pid,
-        "被控服务身份无效"
+        "{}",
+        t().system.service_invalid_identity
     );
     // Ordinary users cannot open the SYSTEM process. SCM owns both the verified
     // executable path and running PID; the pipe supplies its server PID.
@@ -169,7 +175,8 @@ fn verify_endpoint(pid: u32, check_client: bool) -> Result<()> {
     }
     ensure!(
         super::process::image_hash(&deployment::image()?)? == registered.host,
-        "被控服务文件与登记信息不匹配"
+        "{}",
+        t().system.service_files_mismatch
     );
     Ok(())
 }
@@ -194,14 +201,15 @@ fn stop(service: &Sc) -> Result<()> {
         }
         ensure!(
             start.elapsed() < Duration::from_secs(10),
-            "等待被控服务退出超时"
+            "{}",
+            t().system.service_stop_timeout
         );
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("被控服务仍有活动会话")]
+#[error("{}", crate::i18n::t().system.service_active_sessions)]
 pub(crate) struct ActiveSession;
 
 // A repair/uninstall cannot invalidate a live input or capture agent.
@@ -231,7 +239,8 @@ fn ensure_idle(service: &Sc) -> Result<()> {
                 super::resident::call(super::resident::Request::Quiescent)?.checked()?,
                 super::resident::Reply::Done
             ),
-            "后台会话尚未排空"
+            "{}",
+            t().system.service_not_drained
         );
     }
     let snapshot = super::pipe::Handle(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)? });
@@ -251,9 +260,9 @@ fn ensure_idle(service: &Sc) -> Result<()> {
             || !String::from_utf16_lossy(&entry.szExeFile[..len]).eq_ignore_ascii_case(
                 deployment::image()?
                     .file_name()
-                    .context("安装文件名无效")?
+                    .context(t().system.component_invalid_install_file_name)?
                     .to_str()
-                    .context("安装文件名无效")?,
+                    .context(t().system.component_invalid_install_file_name)?,
             ))
         {
             // A service-launched ordinary control center is not a privileged
@@ -270,7 +279,8 @@ fn ensure_idle(service: &Sc) -> Result<()> {
     if let Err(e) = result {
         ensure!(
             e.code() == ERROR_NO_MORE_FILES.to_hresult(),
-            "无法检查被控服务使用状态：{e}"
+            "{}",
+            (t().system.service_usage_check_failed)(&e.to_string())
         );
     }
     Ok(())
@@ -313,7 +323,7 @@ pub(crate) fn start_installed() -> Result<()> {
         &manager,
         SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS | SERVICE_START,
     )?
-    .context("服务尚未安装")?;
+    .context(t().system.service_host_not_installed)?;
     verify_service(&service)?;
     let mut state = SERVICE_STATUS::default();
     unsafe {
@@ -418,7 +428,7 @@ pub(crate) fn install(allow_sas: bool) -> Result<bool> {
         let service = service
             .as_ref()
             .or(existing.as_ref())
-            .context("服务句柄缺失")?;
+            .context(t().system.service_handle_missing)?;
         let mut actions = [
             SC_ACTION {
                 Type: SC_ACTION_RESTART,
@@ -504,11 +514,13 @@ pub(crate) fn uninstall() -> Result<bool> {
             std::fs::symlink_metadata(&directory)?.file_attributes()
                 & FILE_ATTRIBUTE_REPARSE_POINT.0
                 == 0,
-            "被控服务目录不可为重解析点"
+            "{}",
+            t().system.service_directory_reparse
         );
         ensure!(
             std::fs::read_to_string(directory.join("owner.txt"))? == RECEIPT,
-            "被控服务目录归属不匹配，已保留"
+            "{}",
+            t().system.service_directory_not_owned_kept
         );
     }
 

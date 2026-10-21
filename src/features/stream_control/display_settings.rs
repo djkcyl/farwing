@@ -180,7 +180,7 @@ impl DisplayChanges {
             }
             None => {
                 self.observations.remove(&id);
-                "显示设置已生效".into()
+                t().features.stream_display_applied.into()
             }
         };
         self.status.insert(
@@ -217,13 +217,15 @@ impl DisplayChanges {
                 .dpi
                 .is_none_or(|dpi| dpi == screen.display.current_dpi);
             let actual = match (mode_matches, dpi_matches) {
-                (true, true) => "已达到所选值",
-                (true, false) if observation.resolution.is_some() => "DPI 未达到所选值",
-                _ => "未完全达到所选值",
+                (true, true) => t().features.stream_display_reached,
+                (true, false) if observation.resolution.is_some() => {
+                    t().features.stream_display_dpi_not_reached
+                }
+                _ => t().features.stream_display_not_fully_reached,
             };
             if let Some(status) = self.status.get_mut(id) {
                 status.awaiting_report = false;
-                let message = format!("{}；{actual}", observation.reason);
+                let message = (t().features.stream_display_result)(&observation.reason, actual);
                 if status.message != message {
                     tracing::info!(
                         screen_id = *id,
@@ -253,9 +255,9 @@ impl DisplayChanges {
                     .requested_dpi
                     .is_none_or(|dpi| dpi == screen.display.current_dpi);
             let message = if matches {
-                "显示设置已生效"
+                t().features.stream_display_applied
             } else {
-                "远端显示状态已变化"
+                t().features.stream_display_changed_remotely
             };
             if status.message != message {
                 status.message = message.into();
@@ -278,7 +280,7 @@ impl DisplayChanges {
             return false;
         };
         let pending = self.pending.remove(&id).expect("matched display operation");
-        self.finish(id, &pending, Some(format!("发送失败：{reason}")));
+        self.finish(id, &pending, Some((t().features.stream_send_failed)(reason)));
         true
     }
     pub(super) fn ack(&mut self, sequence: i64, response: &PbCaptureSettingResponse) -> bool {
@@ -309,7 +311,9 @@ impl DisplayChanges {
             self.finish(
                 id,
                 &pending,
-                Some(format!("被控未能应用显示设置：{}", failures.join("；"))),
+                Some((t().features.stream_display_apply_failed)(
+                    &failures.join(t().features.stream_separator),
+                )),
             );
         }
         true
@@ -332,7 +336,8 @@ impl DisplayChanges {
                     Step::Dpi(dpi) => screen.display.current_dpi == dpi,
                 }
             });
-            let error = (!reached).then(|| "等待屏幕状态超时".to_owned());
+            let error =
+                (!reached).then(|| t().features.stream_display_report_timeout.to_owned());
             self.finish(*id, &pending, error);
         }
         !expired.is_empty()
@@ -349,7 +354,11 @@ fn resolve(
     choice: DisplayResolution,
 ) -> Result<(RemoteDisplayMode, i32)> {
     let (mode, kind) = expand_resolution(info, choice)?;
-    anyhow::ensure!(info.modes.contains(&mode), "此分辨率需切换到超级屏");
+    anyhow::ensure!(
+        info.modes.contains(&mode),
+        "{}",
+        t().features.stream_resolution_needs_super_screen
+    );
     Ok((mode, kind))
 }
 
@@ -361,7 +370,7 @@ pub(super) fn expand_resolution(
         DisplayResolution::Mode(mode) => (mode, 4),
         DisplayResolution::Initial => (
             info.initial
-                .ok_or_else(|| anyhow!("远端未提供初始分辨率"))?,
+                .ok_or_else(|| anyhow!("{}", t().features.stream_no_initial_resolution))?,
             3,
         ),
         DisplayResolution::FollowLocal { width, height } => {
@@ -385,9 +394,14 @@ pub(super) fn expand_resolution(
 fn validate_dpi(state: &StreamControlState, info: &RemoteDisplayInfo, dpi: u32) -> Result<()> {
     anyhow::ensure!(
         state.peer.has(crate::protocol::peer::feature::DISPLAY_CONFIG),
-        "对端未开放DPI设置"
+        "{}",
+        t().features.stream_dpi_settings_unavailable
     );
-    anyhow::ensure!(info.dpis.contains(&dpi), "远端不支持此 DPI");
+    anyhow::ensure!(
+        info.dpis.contains(&dpi),
+        "{}",
+        t().features.stream_dpi_unsupported
+    );
     Ok(())
 }
 
@@ -411,7 +425,7 @@ impl StreamControlHandle {
             state.display_changes.finish(
                 screen_id,
                 &pending,
-                Some("已停止等待本次显示设置".into()),
+                Some(t().features.stream_display_wait_stopped.into()),
             );
             if let Some(status) = state.display_changes.status.get_mut(&screen_id) {
                 status.error = false;
@@ -426,20 +440,26 @@ impl StreamControlHandle {
     ) -> Result<()> {
         let mut state = lock(&self.shared);
         ensure_ready(&state)?;
-        anyhow::ensure!(supported(&state), "显示设置仅支持 Windows 被控端");
+        anyhow::ensure!(
+            supported(&state),
+            "{}",
+            t().features.stream_display_windows_only
+        );
         anyhow::ensure!(
             request.resolution.is_some() || request.dpi.is_some(),
-            "未选择显示设置"
+            "{}",
+            t().features.stream_display_nothing_selected
         );
         anyhow::ensure!(
             request.resolution.is_none() || request.dpi.is_none(),
-            "分辨率与 DPI 不能同时修改"
+            "{}",
+            t().features.stream_resolution_and_dpi_together
         );
         let screen = state
             .screens
             .iter()
             .find(|s| s.id == screen_id && s.id >= 0)
-            .context("显示器已断开")?;
+            .context(t().features.stream_display_disconnected)?;
         // Tab menus address the clicked screen directly, without
         // selecting it or starting a capture track first.
         anyhow::ensure!(
@@ -448,7 +468,8 @@ impl StreamControlHandle {
                     &state,
                     crate::account::feature_ability::Feature::MultiScreen
                 ),
-            "对端未开放多屏显示设置"
+            "{}",
+            t().features.stream_multi_display_settings_unavailable
         );
         let resolution = request
             .resolution
@@ -488,8 +509,8 @@ impl StreamControlHandle {
             DisplayChangeStatus {
                 pending: true,
                 message: match step {
-                    Step::Resolution(..) => "正在切换分辨率…",
-                    Step::Dpi(_) => "正在切换DPI…",
+                    Step::Resolution(..) => t().features.stream_changing_resolution,
+                    Step::Dpi(_) => t().features.stream_changing_dpi,
                 }
                 .into(),
                 error: false,
@@ -516,7 +537,7 @@ impl StreamControlHandle {
             .screens
             .iter()
             .find(|screen| screen.id == id)
-            .context("显示器已断开")?;
+            .context(t().features.stream_display_disconnected)?;
         request.resolution_width = i32::try_from(screen.display.current.width)?;
         request.resolution_height = i32::try_from(screen.display.current.height)?;
         request.resolution_pixel_width = i32::try_from(screen.display.current.pixel_width)?;
@@ -550,7 +571,7 @@ impl StreamControlHandle {
                 protocol: protocol(state),
                 completion: None,
             })
-            .map_err(|_| anyhow!("显示设置发送任务已结束"))?;
+            .map_err(|_| anyhow!("{}", t().features.stream_display_sender_stopped))?;
         Ok(sequence)
     }
 
@@ -562,9 +583,9 @@ impl StreamControlHandle {
             let failure = if pending.generation != state.protocol_generation
                 || ensure_ready(state).is_err()
             {
-                Some("连接状态已变化，显示设置未确认".into())
+                Some(t().features.stream_display_connection_changed.into())
             } else if screen.is_none() {
-                Some("显示器已断开".into())
+                Some(t().features.stream_display_disconnected.into())
             } else {
                 None
             };

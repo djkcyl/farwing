@@ -1,4 +1,5 @@
 //! Optional audio component, using the common PnP/installation transaction.
+use crate::i18n::t;
 use crate::platform::windows::components::{Kind, Operation, Status, driver::Package};
 use anyhow::{Context, Result, ensure};
 use windows::core::GUID;
@@ -35,16 +36,16 @@ pub(crate) fn bridge_open_error(error: windows::core::Error) -> anyhow::Error {
     .any(|code| error.code() == code.to_hresult());
     let reason = if missing {
         match PACKAGE.unavailable_reason() {
-            Ok(Some(reason)) => format!("Farwing 虚拟声卡不可用：{reason}"),
-            Ok(None) => "Farwing 虚拟声卡接口不可用".into(),
-            Err(status) => format!("Farwing 虚拟声卡接口不可用，设备状态读取失败：{status:#}"),
+            Ok(Some(reason)) => (t().system.driver_audio_unavailable)(&reason),
+            Ok(None) => t().system.driver_audio_interface_unavailable.into(),
+            Err(status) => (t().system.driver_audio_status_failed)(&format!("{status:#}")),
         }
     } else if error.code() == ERROR_ACCESS_DENIED.to_hresult() {
-        "无法访问 Farwing 虚拟声卡".into()
+        t().system.driver_audio_access_denied.into()
     } else if error.code() == ERROR_SHARING_VIOLATION.to_hresult() {
-        "Farwing 虚拟声卡正被其他会话或进程使用".into()
+        t().system.driver_audio_in_use_elsewhere.into()
     } else {
-        "无法打开 Farwing 虚拟声卡接口".into()
+        t().system.driver_audio_open_failed.into()
     };
     // Preserve the original Windows error for policy classification and the
     // installer's occupancy guard; the diagnostic text is not an error code.
@@ -59,7 +60,8 @@ fn idle() -> Result<()> {
                 let state = bridge.state()?;
                 ensure!(
                     state.microphone_running == 0 && state.speaker_running == 0,
-                    "虚拟声卡正在使用"
+                    "{}",
+                    t().system.driver_audio_in_use
                 );
             }
             Err(error) => {
@@ -79,7 +81,11 @@ fn idle() -> Result<()> {
                         .iter()
                         .any(|code| error.code() == code.to_hresult())
                     });
-                ensure!(missing, "虚拟声卡接口不可用或正在使用中：{error:#}");
+                ensure!(
+                    missing,
+                    "{}",
+                    (t().system.driver_audio_unavailable_or_busy)(&format!("{error:#}"))
+                );
             }
         }
     }
@@ -91,7 +97,7 @@ fn idle() -> Result<()> {
 pub(crate) struct TestSigningRequired;
 impl std::fmt::Display for TestSigningRequired {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("虚拟声卡驱动未加载：需要允许测试签名驱动")
+        f.write_str(t().system.driver_audio_test_signing)
     }
 }
 impl std::error::Error for TestSigningRequired {}
@@ -106,8 +112,8 @@ pub(crate) fn execute(operation: Operation) -> Result<bool> {
     idle()?;
     match operation {
         Operation::Install => {
-            let mut defaults =
-                super::defaults::Defaults::snapshot().context("无法保存安装前的默认音频设备")?;
+            let mut defaults = super::defaults::Defaults::snapshot()
+                .context(t().system.driver_audio_save_defaults_failed)?;
             let existed = status()?.installed;
             // Windows decides whether this boot permits the test-signed image.
             // TESTSIGNING is not the only supported development route (the
@@ -124,12 +130,12 @@ pub(crate) fn execute(operation: Operation) -> Result<bool> {
                     // use: take the installation back rather than leave it.
                     match PACKAGE.removal().and_then(|removal| removal.execute()) {
                         Ok(_) => Err(TestSigningRequired.into()),
-                        Err(removal) => Err(error.context(format!(
-                            "虚拟声卡驱动未加载，撤回安装失败：{removal:#}"
-                        ))),
+                        Err(removal) => Err(error.context((t().system.driver_audio_rollback_failed)(&format!(
+                            "{removal:#}"
+                        )))),
                     }
                 }
-                result => result.context("虚拟声卡安装或加载失败"),
+                result => result.context(t().system.driver_audio_install_failed),
             }
             .and_then(|reboot| {
                 if !reboot {
@@ -137,7 +143,9 @@ pub(crate) fn execute(operation: Operation) -> Result<bool> {
                 }
                 Ok(reboot)
             });
-            let restored = defaults.restore().context("安装后恢复默认音频设备失败");
+            let restored = defaults
+                .restore()
+                .context(t().system.driver_audio_restore_defaults_failed);
             match (installed, restored) {
                 (Err(error), _) => Err(error),
                 (Ok(_), Err(error)) => Err(error),
@@ -145,7 +153,8 @@ pub(crate) fn execute(operation: Operation) -> Result<bool> {
             }
         }
         Operation::Uninstall => {
-            super::Defaults::recover_defaults().context("卸载前恢复默认音频设备失败")?;
+            super::Defaults::recover_defaults()
+                .context(t().system.component_restore_audio_before_uninstall_failed)?;
             PACKAGE.removal()?.execute()
         }
     }

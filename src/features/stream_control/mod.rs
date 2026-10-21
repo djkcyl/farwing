@@ -10,6 +10,7 @@
 mod audio_quality;
 pub(crate) mod control_turn;
 use crate::diagnostics::performance::PerformanceMonitor;
+use crate::i18n::t;
 pub use crate::features::network_control::NetworkControlSnapshot;
 pub use crate::features::remote_cursor::{CursorImage, RemoteCursor};
 pub use crate::features::remote_input::MouseMode;
@@ -92,14 +93,14 @@ impl StreamQuality {
         }
     }
 
-    pub const fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
-            Self::Auto => "自动",
-            Self::Original => "原画",
-            Self::High => "超清",
-            Self::Clear => "高清",
-            Self::Custom => "自定义",
-            Self::Fast => "低码率",
+            Self::Auto => t().features.stream_quality_auto,
+            Self::Original => t().features.stream_quality_original,
+            Self::High => t().features.stream_quality_ultra,
+            Self::Clear => t().features.stream_quality_high,
+            Self::Custom => t().features.stream_quality_custom,
+            Self::Fast => t().features.stream_quality_low_bitrate,
         }
     }
 
@@ -202,7 +203,7 @@ impl StreamControlPreferences {
     pub(crate) fn initial_capture_quality(self) -> Result<(u64, u64, u64)> {
         let bitrate = if self.settings.quality == StreamQuality::Custom {
             if !(1..=MAX_CUSTOM_BITRATE_MBPS).contains(&self.settings.custom_bitrate_mbps) {
-                bail!("自定义码率超出有效范围");
+                bail!("{}", t().features.stream_custom_bitrate_out_of_range);
             }
             u64::from(
                 self.settings
@@ -274,11 +275,11 @@ impl RemoteScreen {
             .unwrap_or(0)
             + 1;
         match kind {
-            2 => "超级屏".into(),
-            1 => format!("虚拟屏 {number}"),
+            2 => t().features.stream_super_screen.into(),
+            1 => (t().features.stream_virtual_screen_numbered)(number),
             _ => match crate::media::capture::monitor_name(&self.name) {
-                Some(name) => format!("显示屏 {number}（{name}）"),
-                None => format!("显示屏 {number}"),
+                Some(name) => (t().features.stream_display_numbered_named)(number, name),
+                None => (t().features.stream_display_numbered)(number),
             },
         }
     }
@@ -708,18 +709,18 @@ impl StreamControlHandle {
             crate::account::feature_ability::Feature::ManualTransfer,
         ) {
             network.available = false;
-            network.unavailable_reason = Some("被控端未开放手动中转");
+            network.unavailable_reason = Some(t().features.stream_manual_relay_unavailable);
         }
         let waiting_for = if !state.control_channel_open {
-            Some("CONTROL 通道")
+            Some(t().features.stream_waiting_control_channel)
         } else if !state.text_channel_open {
-            Some("TEXT 通道")
+            Some(t().features.stream_waiting_text_channel)
         } else if !state.pb_connected {
-            Some("PB 特性协商")
+            Some(t().features.stream_waiting_feature_negotiation)
         } else if state.remote_display.is_none() {
-            Some("活动屏幕基线")
+            Some(t().features.stream_waiting_screen_baseline)
         } else if state.baseline.codec_type == 0 {
-            Some("视频编码协商")
+            Some(t().features.stream_waiting_codec_negotiation)
         } else {
             None
         };
@@ -730,10 +731,9 @@ impl StreamControlHandle {
                 .err()
                 .map(|e| e.to_string()),
             custom_bitrate_limit: state.custom_bitrate_limit,
-            auto_quality_label: format!(
-                "自动（{}）",
-                quality_name(state.baseline.auto_frame_quality)
-            ),
+            auto_quality_label: (t().features.stream_quality_auto_with)(quality_name(
+                state.baseline.auto_frame_quality,
+            )),
             true_color_supported: color_supported(&state),
             true_color_unavailable: validate_color(&state, true)
                 .err()
@@ -843,7 +843,7 @@ impl StreamControlHandle {
             &lock(&self.shared),
             crate::account::feature_ability::Feature::ManualTransfer,
         ) {
-            bail!("被控端未开放手动中转");
+            bail!("{}", t().features.stream_manual_relay_unavailable);
         }
         self.network.request(enabled)
     }
@@ -908,11 +908,11 @@ impl StreamControlHandle {
             state.pending_sequences.clear();
             state.pending_capture_preferences.clear();
             restore_confirmed_capture(state);
-            state.last_error = Some("串流设置发送任务已经停止".to_owned());
+            state.last_error = Some(t().features.stream_settings_sender_stopped.to_owned());
             state
                 .performance
-                .fail_stream_switch(sequence, "串流设置发送任务已经停止");
-            bail!("串流设置发送任务已经停止");
+                .fail_stream_switch(sequence, t().features.stream_settings_sender_stopped);
+            bail!("{}", t().features.stream_settings_sender_stopped);
         }
         state
             .pending_capture_preferences
@@ -936,26 +936,26 @@ impl StreamControlHandle {
 fn ensure_ready(state: &StreamControlState) -> Result<()> {
     ensure_business_ready(state)?;
     if state.remote_display.is_none() {
-        bail!("屏幕状态尚未就绪");
+        bail!("{}", t().features.stream_screen_state_not_ready);
     }
     if state.baseline.codec_type == 0 {
-        bail!("视频编码尚未完成协商");
+        bail!("{}", t().features.stream_codec_not_negotiated);
     }
     Ok(())
 }
 
 fn ensure_business_ready(state: &StreamControlState) -> Result<()> {
     if !state.control_channel_open {
-        bail!("控制通道尚未打开");
+        bail!("{}", t().features.stream_control_channel_closed);
     }
     if !state.text_channel_open {
-        bail!("会话通道尚未打开");
+        bail!("{}", t().features.stream_session_channel_closed);
     }
     if !state.pb_connected {
-        bail!("对端特性协商尚未完成");
+        bail!("{}", t().features.stream_peer_negotiation_pending);
     }
     if protocol(state) == StreamControlProtocol::Unsupported {
-        bail!("对端不支持当前串流协议");
+        bail!("{}", t().features.stream_protocol_unsupported);
     }
     Ok(())
 }

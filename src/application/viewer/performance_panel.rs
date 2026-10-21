@@ -5,6 +5,7 @@ use super::hud::health_color;
 use crate::diagnostics::performance::PerformanceMonitor;
 use crate::diagnostics::performance::PerformanceSnapshot;
 use crate::diagnostics::performance::health::Metric;
+use crate::i18n::t;
 use crate::ui::{controls, theme};
 use egui::{RichText, Ui};
 use std::{collections::VecDeque, time::Duration};
@@ -106,7 +107,7 @@ pub(super) fn show(
     panel.sample(monitor.history_identity(), s);
     ctx.request_repaint_after(Duration::from_millis(250));
     let width = theme::PERFORMANCE_WIDTH.min((ctx.content_rect().width() - 56.0).max(340.0));
-    egui::Window::new("性能监控")
+    egui::Window::new(t().viewer.performance_monitor)
         .id(egui::Id::new((id, "monitor")))
         .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -12.0])
         .default_width(width)
@@ -119,7 +120,11 @@ pub(super) fn show(
             ui.set_width(width);
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("性能监控").size(theme::COMPACT_TEXT).strong());
+                ui.label(
+                    RichText::new(t().viewer.performance_monitor)
+                        .size(theme::COMPACT_TEXT)
+                        .strong(),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         RichText::new(format_uptime(s.uptime))
@@ -147,10 +152,11 @@ pub(super) fn show(
                 .show(ui, |ui| {
                     controls::performance_header(ui);
                     let now = s.uptime.as_secs_f64();
+                    let t = &t().viewer;
                     panel.trace(
                         ui,
                         0,
-                        "画面更新",
+                        t.frame_updates,
                         "FPS",
                         30.0,
                         1,
@@ -161,7 +167,7 @@ pub(super) fn show(
                     panel.trace(
                         ui,
                         1,
-                        "网络往返",
+                        t.network_rtt,
                         "ms",
                         5.0,
                         2,
@@ -172,7 +178,7 @@ pub(super) fn show(
                     panel.trace(
                         ui,
                         2,
-                        "接收码率",
+                        t.receive_bitrate,
                         "Mbps",
                         1.0,
                         2,
@@ -187,20 +193,20 @@ pub(super) fn show(
                         health_metric(&mut columns[1], s, Metric::Loss);
                         controls::metric_pair(
                             &mut columns[1],
-                            "近期呈现丢帧",
+                            t.recent_frame_drops,
                             s.health
                                 .recent_drop_percent
                                 .map_or_else(|| "—".into(), |v| format!("{v:.2}%")),
                         );
                     });
                     ui.add_space(theme::MENU_GROUP_GAP);
-                    egui::CollapsingHeader::new("网络与恢复")
+                    egui::CollapsingHeader::new(t.section_network)
                         .id_salt((id, "network"))
                         .show(ui, |ui| network(ui, s));
-                    egui::CollapsingHeader::new("解码与呈现")
+                    egui::CollapsingHeader::new(t.section_playback)
                         .id_salt((id, "playback"))
                         .show(ui, |ui| playback(ui, s));
-                    egui::CollapsingHeader::new("媒体与切换")
+                    egui::CollapsingHeader::new(t.section_media)
                         .id_salt((id, "media"))
                         .show(ui, |ui| media(ui, s));
                 });
@@ -220,7 +226,7 @@ fn health_metric(ui: &mut Ui, s: &PerformanceSnapshot, metric: Metric) {
             || "—".into(),
             // The cinema buffer is part of the value but not judged.
             |v| match allowance >= 0.5 {
-                true => format!("{} · 含观影缓冲 {allowance:.0} ms", metric.format(v)),
+                true => (t().viewer.with_cinema_buffer)(&metric.format(v), allowance),
                 false => metric.format(v),
             },
         ),
@@ -232,80 +238,66 @@ fn heading(ui: &mut Ui, title: &str) {
     ui.label(RichText::new(title).size(theme::TINY).color(theme::MUTED));
 }
 fn network(ui: &mut Ui, s: &PerformanceSnapshot) {
+    let t = &t().viewer;
     controls::metric_pair(
         ui,
-        "自动切路",
-        format!(
-            "{} · 尝试 {} / 成功 {}",
+        t.route_switching,
+        (t.route_switching_value)(
             match s.network_switch_phase {
-                1 => "UDP 中转",
-                2 => "TLS 中转",
-                _ => "直连",
+                1 => t.route_udp_relay,
+                2 => t.route_tls_relay,
+                _ => t.route_direct,
             },
             s.network_switch_attempts,
-            s.network_switch_successes
+            s.network_switch_successes,
         ),
     );
     controls::metric_pair(
         ui,
-        "入口队列",
-        format!(
-            "{} 包 · 峰值 {}",
-            s.ingress_queue_packets, s.ingress_queue_peak_packets
-        ),
+        t.ingress_queue,
+        (t.ingress_queue_value)(s.ingress_queue_packets, s.ingress_queue_peak_packets),
     );
-    controls::metric_pair(ui, "待恢复 NACK", format!("{} 包", s.outstanding_nacks));
+    controls::metric_pair(ui, t.pending_nack, (t.packets)(s.outstanding_nacks));
     controls::metric_pair(
         ui,
-        "未修复丢包",
+        t.unrepaired_loss,
         format!("{:.2}%", s.unrepaired_loss_percent),
     );
     controls::metric_pair(
         ui,
-        "丢包累计",
-        format!(
-            "网络 {} / 未修复 {} 包",
-            s.lost_packets, s.unrepaired_lost_packets
-        ),
+        t.lost_packets,
+        (t.lost_packets_value)(s.lost_packets, s.unrepaired_lost_packets),
     );
     controls::metric_pair(
         ui,
-        "RTX 累计",
-        format!(
-            "回灌 {} / 收到 {} 包",
-            s.rtx_packets_accepted, s.rtx_packets_received
-        ),
+        t.rtx_total,
+        (t.rtx_value)(s.rtx_packets_accepted, s.rtx_packets_received),
     );
     controls::metric_pair(
         ui,
-        "FEC 累计",
-        format!(
-            "恢复 {} / 修复包 {}",
-            s.fec_packets_recovered, s.fec_packets_received
-        ),
+        t.fec_total,
+        (t.fec_value)(s.fec_packets_recovered, s.fec_packets_received),
     );
     controls::metric_pair(
         ui,
-        "接收总量",
+        t.total_received,
         format!("{:.1} MiB", s.total_received_rtp_bytes as f64 / 1_048_576.0),
     );
     controls::metric_pair(
         ui,
-        "接收调度",
+        t.playout,
         if s.low_latency_playout {
-            "低延迟 · 直接呈现".into()
+            t.low_latency_direct.into()
         } else {
-            format!(
-                "目标 {:.1} / 抖动估计 {:.1} ms",
-                s.target_playout_delay_ms, s.jitter_playout_delay_ms
-            )
+            (t.playout_target)(s.target_playout_delay_ms, s.jitter_playout_delay_ms)
         },
     );
 }
 fn playback(ui: &mut Ui, s: &PerformanceSnapshot) {
+    let t = &t().viewer;
     controls::metric_pair(
         ui,
-        "接收 / 解码 / 呈现",
+        t.receive_decode_present,
         format!(
             "{:.1} / {:.1} / {:.1} FPS",
             s.receive_fps, s.decode_fps, s.render_fps
@@ -313,34 +305,39 @@ fn playback(ui: &mut Ui, s: &PerformanceSnapshot) {
     );
     health_metric(ui, s, Metric::FrameDelay);
     health_metric(ui, s, Metric::PresentationStall);
-    heading(ui, "最近一帧 · 首包接收到呈现提交 · ms");
+    heading(ui, t.heading_last_frame);
     for (label, value) in [
-        ("组帧 / 恢复", s.assembly_delay_ms),
-        ("输入排队", s.input_queue_delay_ms),
-        ("解码", s.decode_pipeline_delay_ms),
-        ("纹理交接", s.surface_transfer_delay_ms),
-        ("呈现等待", s.present_wait_delay_ms),
-        ("渲染排队", s.render_queue_delay_ms),
+        (t.assembly_recovery, s.assembly_delay_ms),
+        (t.input_queue, s.input_queue_delay_ms),
+        (t.decode, s.decode_pipeline_delay_ms),
+        (t.texture_handoff, s.surface_transfer_delay_ms),
+        (t.present_wait, s.present_wait_delay_ms),
+        (t.render_queue, s.render_queue_delay_ms),
     ] {
         controls::metric_pair(ui, label, format!("{value:.2}"));
     }
     if !s.low_latency_playout {
-        controls::metric_pair(ui, "其中观影缓冲", format!("{:.2}", s.playout_hold_ms));
+        controls::metric_pair(
+            ui,
+            t.cinema_buffer_part,
+            format!("{:.2}", s.playout_hold_ms),
+        );
     }
     controls::metric_pair(
         ui,
-        "近 300 帧",
-        format!(
-            "均值 {:.2} / P95 {:.2} / 最大 {:.2}",
-            s.local_frame_delay_average_ms, s.local_frame_delay_p95_ms, s.local_frame_delay_max_ms
+        t.last_300_frames,
+        (t.average_p95_max)(
+            s.local_frame_delay_average_ms,
+            s.local_frame_delay_p95_ms,
+            s.local_frame_delay_max_ms,
         ),
     );
-    heading(ui, "帧间隔 · 均值 / P95 / 最大 · ms");
+    heading(ui, t.heading_frame_interval);
     for (label, c) in [
-        ("源时间戳", s.source_cadence),
-        ("组帧到达", s.receive_cadence),
-        ("解码输出", s.decode_cadence),
-        ("呈现提交", s.render_cadence),
+        (t.source_timestamps, s.source_cadence),
+        (t.assembled_arrival, s.receive_cadence),
+        (t.decoder_output, s.decode_cadence),
+        (t.present_submit, s.render_cadence),
     ] {
         controls::metric_pair(
             ui,
@@ -348,56 +345,53 @@ fn playback(ui: &mut Ui, s: &PerformanceSnapshot) {
             format!("{:.2} / {:.2} / {:.2}", c.average_ms, c.p95_ms, c.max_ms),
         );
     }
-    heading(ui, "队列 · 当前 / 峰值");
+    heading(ui, t.heading_queues);
     for (label, current, peak) in [
         (
-            "组帧缓冲",
+            t.frame_buffer,
             s.frame_buffer_frames,
             s.frame_buffer_peak_frames,
         ),
         (
-            "解码队列",
+            t.decoder_queue,
             s.decoder_queue_frames,
             s.decoder_queue_peak_frames,
         ),
         (
-            "呈现队列",
+            t.present_queue,
             s.presentation_queue_frames,
             s.presentation_queue_peak_frames,
         ),
     ] {
-        controls::metric_pair(ui, label, format!("{current} / {peak} 帧"));
+        controls::metric_pair(ui, label, (t.frames_current_peak)(current, peak));
     }
     controls::metric_pair(
         ui,
-        "累计丢弃",
-        format!(
-            "解码前 {} / 呈现 {} 帧",
-            s.predecode_dropped_frames, s.dropped_present_frames
-        ),
+        t.dropped,
+        (t.dropped_value)(s.predecode_dropped_frames, s.dropped_present_frames),
     );
     controls::metric_pair(
         ui,
-        "累计呈现丢帧",
+        t.present_drops,
         format!("{:.2}%", s.presentation_drop_percent),
     );
     controls::metric_pair(
         ui,
-        "长间隔累计",
+        t.long_intervals,
         format!(
             "100–179 ms: {} · ≥180 ms: {} · ≥500 ms: {}",
             s.small_jank_count, s.jank_count, s.big_jank_count
         ),
     );
     if let Some(p) = &s.pipeline_stats {
-        heading(ui, "采集至解码 · P50 / P90 · ms");
+        heading(ui, t.heading_capture_to_decode);
         for (label, phase) in [
-            ("远端采集", p.capture),
-            ("远端编码", p.encode),
-            ("远端节奏控制", p.pacer),
-            ("传输", p.transport),
-            ("组帧", p.assembly),
-            ("解码", p.decode),
+            (t.remote_capture, p.capture),
+            (t.remote_encode, p.encode),
+            (t.remote_pacing, p.pacer),
+            (t.transport, p.transport),
+            (t.assembly, p.assembly),
+            (t.decode, p.decode),
         ] {
             controls::metric_pair(
                 ui,
@@ -410,7 +404,7 @@ fn playback(ui: &mut Ui, s: &PerformanceSnapshot) {
         }
         controls::metric_pair(
             ui,
-            "发送 / 接收帧率",
+            t.send_receive_fps,
             format!(
                 "{} / {:.1} FPS",
                 p.source_fps
@@ -421,60 +415,59 @@ fn playback(ui: &mut Ui, s: &PerformanceSnapshot) {
         if let Some(v) = p.sending {
             controls::metric_pair(
                 ui,
-                "发送总计",
-                format!("均值 {:.2} / 最大 {:.2} ms", v.average_ms, v.max_ms),
+                t.sending_total,
+                (t.average_max_ms)(v.average_ms, v.max_ms),
             );
         }
         if let Some(v) = p.e2e {
             controls::metric_pair(
                 ui,
-                "采集→解码完成",
-                format!(
-                    "均值 {:.2} / P50 {:.2} / P90 {:.2} / P99 {:.2} / 最大 {:.2} ms",
-                    v.average_ms, v.p50_ms, v.p90_ms, v.p99_ms, v.max_ms
-                ),
+                t.capture_to_decoded,
+                (t.end_to_end_value)(v.average_ms, v.p50_ms, v.p90_ms, v.p99_ms, v.max_ms),
             );
         }
     }
 }
 fn media(ui: &mut Ui, s: &PerformanceSnapshot) {
-    heading(ui, "当前画面");
+    let t = &t().viewer;
+    heading(ui, t.heading_current_video);
     for (label, value) in [
-        ("画质", &s.quality),
-        ("编码", &s.video_codec),
-        ("码流格式", &s.video_format),
-        ("本地解码器", &s.decoder),
-        ("远端采集", &s.remote_capture),
-        ("远端编码器", &s.remote_encoder),
+        (t.quality, &s.quality),
+        (t.codec, &s.video_codec),
+        (t.stream_format, &s.video_format),
+        (t.local_decoder, &s.decoder),
+        (t.remote_capture, &s.remote_capture),
+        (t.remote_encoder, &s.remote_encoder),
     ] {
         controls::metric_pair(ui, label, if value.is_empty() { "—" } else { value });
     }
-    controls::metric_pair(ui, "解码尺寸", format_resolution(s.decoded_resolution));
+    controls::metric_pair(ui, t.decoded_size, format_resolution(s.decoded_resolution));
     controls::metric_pair(
         ui,
-        "累计帧数",
-        format!(
-            "接收 {} / 解码 {} / 呈现 {}",
-            s.total_received_frames, s.total_decoded_frames, s.total_rendered_frames
+        t.total_frames,
+        (t.total_frames_value)(
+            s.total_received_frames,
+            s.total_decoded_frames,
+            s.total_rendered_frames,
         ),
     );
-    controls::metric_pair(ui, "累计关键帧", s.total_key_frames_decoded.to_string());
+    controls::metric_pair(ui, t.key_frames, s.total_key_frames_decoded.to_string());
     controls::metric_pair(
         ui,
-        "累计画面更新",
+        t.total_frame_updates,
         s.total_actual_rendered_frames.to_string(),
     );
-    heading(ui, "最近串流切换");
+    heading(ui, t.heading_last_switch);
     if let Some(v) = &s.stream_switch {
         controls::metric_pair(
             ui,
-            "状态",
+            t.switch_state,
             format!("{} · #{}, {:.0} ms", v.stage, v.sequence, v.age_ms),
         );
-        controls::metric_pair(ui, "目标", &v.target);
+        controls::metric_pair(ui, t.switch_target, &v.target);
         controls::metric_pair(
             ui,
-            "分辨率",
+            t.resolution,
             format!(
                 "{} → {}",
                 format_resolution(v.from_resolution),
@@ -482,24 +475,24 @@ fn media(ui: &mut Ui, s: &PerformanceSnapshot) {
             ),
         );
         for (label, value) in [
-            ("请求→回执", v.request_to_ack_ms),
-            ("请求→持续画面", v.request_to_continuity_ms),
-            ("请求→关键帧", v.request_to_media_ms),
-            ("请求→呈现", v.request_to_present_ms),
-            ("接收间隔", v.receive_gap_ms),
-            ("解码间隔", v.decode_gap_ms),
-            ("呈现间隔", v.presentation_gap_ms),
+            (t.request_to_ack, v.request_to_ack_ms),
+            (t.request_to_steady_video, v.request_to_continuity_ms),
+            (t.request_to_key_frame, v.request_to_media_ms),
+            (t.request_to_present, v.request_to_present_ms),
+            (t.receive_gap, v.receive_gap_ms),
+            (t.decode_gap, v.decode_gap_ms),
+            (t.present_gap, v.presentation_gap_ms),
         ] {
             controls::metric_pair(ui, label, ms(value));
         }
         crate::ui::controls::observe_notice(
             ui.ctx(),
             "performance-switch-error",
-            "画面切换异常",
+            t.video_switch_failed,
             crate::ui::controls::DialogIcon::Error,
             v.error.as_deref(),
         );
     } else {
-        controls::metric_pair(ui, "切换记录", "暂无");
+        controls::metric_pair(ui, t.switch_log, crate::i18n::t().common.none);
     }
 }

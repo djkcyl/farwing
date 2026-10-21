@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
+use crate::i18n::t;
 use anyhow::{Result, bail};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
@@ -428,10 +429,10 @@ impl RemoteInput {
     pub fn system_command(&self, owner: u64, command: SystemCommand) -> Result<()> {
         let mut s = self.lock();
         if s.keyboard_platform != farwing_protocol::Platform::Windows {
-            bail!("仅支持向 Windows 设备发送系统命令");
+            bail!("{}", t().features.remote_input_system_command_windows_only);
         }
         if !s.ready || s.stopping || s.mode == MouseMode::View || s.waiting_for_neutral {
-            bail!("键鼠控制未开启或按键未松开");
+            bail!("{}", t().features.remote_input_control_off_or_keys_held);
         }
         // Retire physical input before the command, keeping any release owed
         // to transport; the host also releases its holds before executing it.
@@ -444,7 +445,7 @@ impl RemoteInput {
                 down: true,
             },
         ) {
-            bail!("键鼠输入队列已满");
+            bail!("{}", t().features.remote_input_queue_full);
         }
         drop(s);
         self.wake.notify_one();
@@ -623,10 +624,10 @@ impl RemoteInput {
     pub fn enable(&self, mode: MouseMode, relative: bool) -> Result<()> {
         let mut s = self.lock();
         if !s.ready || s.stopping {
-            bail!("控制连接尚未就绪");
+            bail!("{}", t().features.remote_input_control_not_ready);
         }
         if s.transport_recovery.as_ref().is_some_and(|r| !r.confirmed) {
-            bail!("键鼠通道正在恢复");
+            bail!("{}", t().features.remote_input_channel_recovering);
         }
         if s.mode == mode {
             s.relative = relative;
@@ -855,12 +856,15 @@ impl RemoteInput {
                 && s.held[0]
                 && s.remote_held[0]
                 && s.drag_hold.is_none(),
-            "原拖动按下已失效"
+            "{}",
+            t().features.remote_input_drag_released
         );
         s.drag_serial = s
             .drag_serial
             .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("拖动代次已用尽"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("{}", t().features.remote_input_drag_serials_exhausted)
+            })?;
         let serial = s.drag_serial;
         s.drag_hold = Some((owner, serial));
         Ok(DragHold(Arc::new(DragHoldInner {
@@ -1098,7 +1102,9 @@ impl RemoteInput {
                             tracing::warn!(%error, "remote input stopped by polling timer failure");
                             Self::release_locked(&mut s);
                             s.mode = MouseMode::View;
-                            s.error = Some(format!("鼠标节流计时失败，控制已停止：{error:#}"));
+                            s.error = Some((t().features.remote_input_throttle_timer_failed)(
+                                &format!("{error:#}"),
+                            ));
                             drop(s);
                             self.wake.notify_one();
                             self.repaint();
@@ -1318,13 +1324,13 @@ impl RemoteInput {
     ) -> Result<()> {
         let mut s = self.lock();
         if !s.ready || s.stopping || s.mode == MouseMode::View || !s.relative {
-            bail!("相对鼠标控制未开启");
+            bail!("{}", t().features.remote_input_relative_off);
         }
         if !guard() || !Self::claim(&mut s, owner) {
-            bail!("控制不可用");
+            bail!("{}", t().features.remote_input_control_unavailable);
         }
         if s.assists.len() >= 4 && !s.assists.contains_key(&lease) {
-            bail!("控制来源数量超限");
+            bail!("{}", t().features.remote_input_too_many_sources);
         }
         s.assists.insert(lease, (owner, guard));
         Ok(())
@@ -1535,7 +1541,7 @@ impl RemoteInput {
                             .retain(|e| e.usage().is_none_or(|(queued, _)| queued != usage));
                     }
                 }
-                s.error = Some(format!("键鼠发送失败，已停止控制：{error}"));
+                s.error = Some((t().features.remote_input_send_failed)(&error.to_string()));
                 // One best-effort release pass. Never retry presses/clicks, or
                 // loop forever if the release itself cannot be sent.
             }

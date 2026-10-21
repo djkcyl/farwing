@@ -36,7 +36,8 @@ impl Resampler {
     pub(crate) fn with_rates(input_rate: u32, output_rate: u32) -> Result<Self> {
         ensure!(
             (8_000..=384_000).contains(&output_rate) && (8_000..=384_000).contains(&input_rate),
-            "不支持采样率转换：{input_rate} → {output_rate}"
+            "{}",
+            (crate::i18n::t().session.resample_rates_unsupported)(input_rate, output_rate)
         );
         let input_rate = input_rate as usize;
         let output_rate = output_rate as usize;
@@ -97,7 +98,8 @@ impl Resampler {
     pub fn process(&mut self, input: &[f32], output: &mut [f32]) -> Result<(usize, usize)> {
         ensure!(
             input.len().is_multiple_of(2) && output.len().is_multiple_of(2),
-            "音频重采样声道不完整"
+            "{}",
+            crate::i18n::t().session.resample_channels_incomplete
         );
         let mut consumed = 0;
         let mut produced = 0;

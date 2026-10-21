@@ -4,6 +4,7 @@ use crate::ui::theme::{
     self, ACCENT as BLUE, AMBER, BG, GREEN, LINE, LOGO_LOADING, LOGO_LOGIN, LOGO_SIDEBAR, MUTED,
     RED, SIDEBAR, SURFACE, TEXT,
 };
+use crate::i18n::t;
 use egui::{Align, Color32, FontId, RichText, Sense, Stroke, vec2};
 
 mod about;
@@ -48,12 +49,13 @@ enum Page {
 }
 impl Page {
     fn title(self) -> &'static str {
+        let text = t();
         match self {
-            Self::Devices => "设备",
-            Self::Friends => "好友",
-            Self::ThisDevice => "本机",
-            Self::DeviceDetails => "设备详情",
-            Self::Settings => "设置",
+            Self::Devices => text.center.page_devices,
+            Self::Friends => text.center.page_friends,
+            Self::ThisDevice => text.center.page_this_device,
+            Self::DeviceDetails => text.center.page_device_details,
+            Self::Settings => text.common.settings,
         }
     }
 }
@@ -367,11 +369,12 @@ fn nav_item(
 }
 
 fn presence_text(state: &PresenceState) -> (&'static str, Color32) {
+    let text = &t().center;
     match state {
-        PresenceState::Connecting => ("本机正在上线", MUTED),
-        PresenceState::Online => ("本机在线", GREEN),
-        PresenceState::Reconnecting => ("本机正在重连", AMBER),
-        PresenceState::Offline => ("本机离线", MUTED),
+        PresenceState::Connecting => (text.presence_connecting, MUTED),
+        PresenceState::Online => (text.presence_online, GREEN),
+        PresenceState::Reconnecting => (text.presence_reconnecting, AMBER),
+        PresenceState::Offline => (text.presence_offline, MUTED),
     }
 }
 
@@ -572,12 +575,12 @@ impl DeviceCenterApp {
                     ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
                 let response = response
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text("上游项目 OpenUUYC");
+                    .on_hover_text(t().center.upstream_project);
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(
                         egui::WidgetType::Button,
                         true,
-                        "在 GitHub 查看上游项目 OpenUUYC",
+                        t().center.upstream_project_link,
                     )
                 });
                 let title_color = if response.hovered() { BLUE } else { TEXT };
@@ -607,7 +610,7 @@ impl DeviceCenterApp {
                 if nav_item(
                     ui,
                     Icon::Monitor,
-                    "设备",
+                    Page::Devices.title(),
                     Some(count).filter(|_| access == Access::Account),
                     false,
                     self.center_ui.page == Page::Devices
@@ -625,7 +628,7 @@ impl DeviceCenterApp {
                 if nav_item(
                     ui,
                     Icon::Friends,
-                    "好友",
+                    Page::Friends.title(),
                     pending,
                     locked(Page::Friends),
                     self.center_ui.page == Page::Friends,
@@ -643,7 +646,7 @@ impl DeviceCenterApp {
                 if nav_item(
                     ui,
                     Icon::Host,
-                    "本机",
+                    Page::ThisDevice.title(),
                     connected,
                     false,
                     self.center_ui.page == Page::ThisDevice,
@@ -656,7 +659,7 @@ impl DeviceCenterApp {
                 if nav_item(
                     ui,
                     Icon::Settings,
-                    "设置",
+                    Page::Settings.title(),
                     None,
                     false,
                     self.center_ui.page == Page::Settings
@@ -689,9 +692,9 @@ impl DeviceCenterApp {
         }
 
         let account = if self.logout_pending {
-            "正在退出账号…"
+            t().center.signing_out
         } else if self.account_name.trim().is_empty() {
-            "已登录"
+            t().center.signed_in
         } else {
             &self.account_name
         };
@@ -726,9 +729,9 @@ impl DeviceCenterApp {
             let response = ui
                 .interact(exit, ui.id().with("account-logout"), Sense::click())
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("退出账号");
+                .on_hover_text(t().common.sign_out);
             response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "退出账号")
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, t().common.sign_out)
             });
             if response.hovered() {
                 ui.painter().rect_filled(exit, 5.0, SURFACE);
@@ -747,11 +750,11 @@ impl DeviceCenterApp {
         let unreachable = self.server_unreachable
             && !self.host.as_ref().is_some_and(|h| h.status().connected);
         let (presence, color) = if self.host.as_ref().is_some_and(|h| h.status().connected) {
-            ("正在被控".to_owned(), GREEN)
+            (t().center.being_controlled.to_owned(), GREEN)
         } else if unreachable {
             let text = match self.next_reconnect(ui.ctx()) {
-                Some(seconds) => format!("无法连接服务器 · {seconds} 秒"),
-                None => "无法连接服务器 · 重连中".to_owned(),
+                Some(seconds) => (t().center.footer_unreachable_in)(seconds),
+                None => t().center.footer_unreachable.to_owned(),
             };
             (text, AMBER)
         } else {
@@ -776,7 +779,7 @@ impl DeviceCenterApp {
                     Sense::click(),
                 )
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("立即重连");
+                .on_hover_text(t().center.reconnect_now);
             if response.clicked() {
                 self.reconnect();
             }
@@ -792,36 +795,38 @@ impl DeviceCenterApp {
 
     fn draw_version(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         use super::updates::State;
+        let text = &t().center;
         let current = format!("v{}", env!("CARGO_PKG_VERSION"));
+        let prerelease_offered = self.updates.allow_prerelease();
         let (label, color, mut hint, destination) = match &self.updates.state {
             State::Checking => (
-                "检查中…".into(),
+                text.checking.into(),
                 MUTED,
-                format!("当前版本 {current}"),
+                (text.current_version)(&current),
                 None,
             ),
             State::Current => (
                 current.clone(),
                 MUTED,
-                format!("已是最新{}", self.updates.release_label()),
+                (text.up_to_date)(prerelease_offered).to_owned(),
                 None,
             ),
             State::Ahead => (
                 current.clone(),
                 MUTED,
-                format!("高于最新{}", self.updates.release_label()),
+                (text.ahead_of_release)(prerelease_offered).to_owned(),
                 None,
             ),
             State::NoRelease => (
                 current.clone(),
                 MUTED,
-                format!("暂无公开{}", self.updates.release_label()),
+                (text.no_public_release)(prerelease_offered).to_owned(),
                 None,
             ),
             State::Failed(error) => (
                 format!("{current} !"),
                 AMBER,
-                format!("检查更新失败：{error}"),
+                (text.update_check_failed)(error),
                 None,
             ),
             State::Available {
@@ -835,17 +840,10 @@ impl DeviceCenterApp {
                     if label.chars().count() <= 10 {
                         label
                     } else {
-                        "有新版本".into()
+                        text.new_version.into()
                     },
                     BLUE,
-                    format!(
-                        "发现{} v{version}（当前 {current}）",
-                        if *prerelease {
-                            "测试版"
-                        } else {
-                            "新版本"
-                        }
-                    ),
+                    (text.update_available)(*prerelease, version, &current),
                     Some(url.clone()),
                 )
             }
@@ -854,7 +852,8 @@ impl DeviceCenterApp {
         let wait = self.updates.retry_wait();
         let enabled = !checking && (destination.is_some() || wait == 0);
         if !checking && destination.is_none() && wait > 0 {
-            hint.push_str(&format!("\n{wait} 秒后可重新检查"));
+            hint.push('\n');
+            hint.push_str(&(text.check_again_in)(wait));
         }
         let mut job = egui::text::LayoutJob::simple_singleline(
             label,
@@ -885,7 +884,11 @@ impl DeviceCenterApp {
             )
             .on_hover_text(hint);
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "检查更新")
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                enabled,
+                t().center.check_for_updates,
+            )
         });
         let response = if enabled {
             response.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -923,7 +926,7 @@ impl DeviceCenterApp {
             crate::ui::controls::notice(
                 ui.ctx(),
                 "device-center-status",
-                "操作提示",
+                t().center.notice,
                 icon,
                 self.status.text.clone(),
             );
@@ -935,7 +938,7 @@ impl DeviceCenterApp {
         if self.viewers.active.len() > 1 {
             let mut close = None;
             ui.menu_button(
-                format!("观看窗口（{}）", self.viewers.active.len()),
+                (t().center.viewer_windows)(self.viewers.active.len()),
                 |ui| {
                     for session in &self.viewers.active {
                         ui.horizontal(|ui| {
@@ -945,7 +948,7 @@ impl DeviceCenterApp {
                                     crate::ui::controls::secondary(&format!(
                                         "{} · {}",
                                         session.alias,
-                                        session.device_id.as_deref().unwrap_or("经服务器连接")
+                                        session.device_id.as_deref().unwrap_or(t().center.via_server)
                                     )),
                                 )
                                 .clicked()
@@ -957,9 +960,9 @@ impl DeviceCenterApp {
                                 .add_enabled(
                                     !session.closing,
                                     crate::ui::controls::secondary(if session.closing {
-                                        "正在关闭"
+                                        t().center.closing
                                     } else {
-                                        "断开"
+                                        t().common.disconnect
                                     }),
                                 )
                                 .clicked()
@@ -980,7 +983,7 @@ impl DeviceCenterApp {
             if ui
                 .add_enabled(
                     self.viewers.active.iter().any(|s| !s.closing),
-                    crate::ui::controls::secondary("结束全部观看"),
+                    crate::ui::controls::secondary(t().center.stop_all_viewing),
                 )
                 .clicked()
             {
@@ -997,7 +1000,7 @@ impl DeviceCenterApp {
         // Inline in the existing right-aligned header; never add a session row
         // above the device list or assistance form.
         if ui
-            .add_enabled(!closing, crate::ui::controls::secondary("结束观看"))
+            .add_enabled(!closing, crate::ui::controls::secondary(t().center.stop_viewing))
             .clicked()
         {
             if let Some(session) = self.viewers.active.iter_mut().find(|s| s.key == key) {
@@ -1006,9 +1009,9 @@ impl DeviceCenterApp {
             }
         }
         let text = if closing {
-            format!("正在关闭  {alias}")
+            (t().center.closing_viewer)(&alias)
         } else {
-            format!("观看窗口已打开  ·  {alias}")
+            (t().center.viewer_open)(&alias)
         };
         ui.add_sized(
             [
@@ -1047,7 +1050,7 @@ impl DeviceCenterApp {
                 if ui
                     .add_enabled(
                         !self.login_running && !self.logout_pending && !self.has_viewers(),
-                        primary("刷新"),
+                        primary(t().common.refresh),
                     )
                     .clicked()
                 {
@@ -1082,9 +1085,9 @@ impl DeviceCenterApp {
             match cards::confirm(
                 ctx,
                 "change-server",
-                "更换服务器？",
-                "退出后本机将从账号中移除",
-                "退出并更换",
+                t().center.change_server_title,
+                t().center.change_server_body,
+                t().center.change_server_action,
             ) {
                 Some(true) => {
                     self.center_ui.change_server = false;
@@ -1118,9 +1121,9 @@ impl DeviceCenterApp {
                 cancel = crate::ui::controls::dialog_header(
                     ui,
                     if rename {
-                        "重命名设备"
+                        t().center.rename_device
                     } else {
-                        "从账号移除设备？"
+                        t().center.remove_device_title
                     },
                     if rename {
                         crate::ui::controls::DialogIcon::Edit
@@ -1140,38 +1143,38 @@ impl DeviceCenterApp {
                 if rename {
                     ui.add_sized(
                         [ui.available_width(), theme::CONTROL_HEIGHT],
-                        singleline_input(&mut edit.alias).hint_text("设备名称"),
+                        singleline_input(&mut edit.alias).hint_text(t().center.device_name),
                     );
                     crate::ui::controls::observe_form_notice(
                         ui.ctx(),
                         "device-name-validation",
-                        "名称无效",
+                        t().center.invalid_name,
                         crate::ui::controls::DialogIcon::Warning,
                         edit.alias
                             .chars()
                             .any(char::is_control)
-                            .then_some("名称不能包含换行或控制字符"),
+                            .then_some(t().center.name_control_characters),
                     );
                     if let Some(catalog) = &self.catalog
                         && edit.device.device_id == catalog.groups.current_device_id
                         && ui
-                            .button(format!("使用短名  {}", catalog.suggested_name))
+                            .button((t().center.use_short_name)(&catalog.suggested_name))
                             .clicked()
                     {
                         edit.alias = catalog.suggested_name.clone();
                     }
                 } else {
                     if self.viewer_for_device(&edit.device.device_id).is_some() {
-                        ui.colored_label(AMBER, "当前观看将结束");
+                        ui.colored_label(AMBER, t().center.viewing_will_end);
                     }
                 }
                 let (accept, dismiss) = crate::ui::controls::dialog_actions(
                     ui,
                     Some(
                         crate::ui::controls::DialogAction::new(if rename {
-                            "保存名称"
+                            t().center.save_name
                         } else {
-                            "确认移除"
+                            t().common.remove
                         })
                         .enabled(
                             !self.mutation_pending
@@ -1182,7 +1185,7 @@ impl DeviceCenterApp {
                         )
                         .danger(!rename),
                     ),
-                    Some("取消"),
+                    Some(t().common.cancel),
                 );
                 commit = accept;
                 cancel |= dismiss;
@@ -1232,10 +1235,9 @@ impl DeviceCenterApp {
                 content.horizontal(|ui| {
                     ui.strong(self.startup_stage.title());
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                        ui.weak(format!(
-                            "步骤 {} / {}",
+                        ui.weak((t().center.startup_step)(
                             current + 1,
-                            StartupStage::ALL.len()
+                            StartupStage::ALL.len(),
                         ));
                     });
                 });
@@ -1278,17 +1280,18 @@ impl DeviceCenterApp {
                                 .color(if active { TEXT } else { MUTED }),
                         );
                         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                            let text = &t().center;
                             let status = if index < current {
-                                "已完成".into()
+                                text.stage_done.into()
                             } else if active {
                                 let elapsed = self.startup_stage_since.elapsed().as_secs();
                                 if elapsed >= 3 {
-                                    format!("进行中 · {elapsed} 秒")
+                                    (text.stage_running_for)(elapsed)
                                 } else {
-                                    "进行中".into()
+                                    text.stage_running.into()
                                 }
                             } else {
-                                "等待".into()
+                                text.stage_waiting.into()
                             };
                             ui.label(
                                 RichText::new(status)
@@ -1413,15 +1416,16 @@ fn divider(ui: &mut egui::Ui, text: &str) {
 
 /// Step one: which Farwing Server to use, or none at all.
 fn server_step(ui: &mut egui::Ui, form: &mut LoginForm, busy: bool, action: &mut LoginAction) {
+    let text = &t().center;
     let width = ui.available_width();
-    step_title(ui, "连接服务器");
-    ui.label(RichText::new("服务器地址").color(MUTED));
+    step_title(ui, text.connect_server);
+    ui.label(RichText::new(text.server_address).color(MUTED));
     let before = form.server.clone();
     ui.add_enabled_ui(!busy, |ui| {
         let response = ui.add_sized(
             [width, theme::CONTROL_HEIGHT],
             singleline_input(&mut form.server)
-                .hint_text("例如 farwing.example.com:8443")
+                .hint_text(text.server_address_hint)
                 .char_limit(256),
         );
         if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -1433,7 +1437,7 @@ fn server_step(ui: &mut egui::Ui, form: &mut LoginForm, busy: bool, action: &mut
         form.advance = false;
     }
     ui.add_space(6.0);
-    ui.label(RichText::new("证书指纹（可选）").color(MUTED));
+    ui.label(RichText::new(text.fingerprint_optional).color(MUTED));
     ui.add_enabled_ui(!busy, |ui| {
         ui.add_sized(
             [width, theme::CONTROL_HEIGHT],
@@ -1450,9 +1454,9 @@ fn server_step(ui: &mut egui::Ui, form: &mut LoginForm, busy: bool, action: &mut
             .add_enabled(
                 ready,
                 login_button(if form.probing() && !form.advance {
-                    "正在检查…"
+                    text.checking
                 } else {
-                    "检查证书"
+                    text.check_certificate
                 })
                 .min_size(vec2(half, theme::CONTROL_HEIGHT)),
             )
@@ -1461,9 +1465,9 @@ fn server_step(ui: &mut egui::Ui, form: &mut LoginForm, busy: bool, action: &mut
             .add_enabled(
                 ready,
                 login_button(if form.saving_server || (form.advance && form.probing()) {
-                    "正在连接…"
+                    text.connecting
                 } else {
-                    "下一步"
+                    t().common.next
                 })
                 .fill(BLUE)
                 .stroke(Stroke::NONE)
@@ -1477,11 +1481,11 @@ fn server_step(ui: &mut egui::Ui, form: &mut LoginForm, busy: bool, action: &mut
             let trusted = form.certificate_trusted();
             ui.label(
                 RichText::new(if probe.trusted_by_system {
-                    "证书受系统信任"
+                    text.certificate_trusted_by_system
                 } else if trusted {
-                    "证书与指纹一致"
+                    text.certificate_matches
                 } else {
-                    "证书不受系统信任"
+                    text.certificate_untrusted
                 })
                 .size(theme::COMPACT_TEXT)
                 .color(if trusted { MUTED } else { AMBER }),
@@ -1498,7 +1502,7 @@ fn server_step(ui: &mut egui::Ui, form: &mut LoginForm, busy: bool, action: &mut
                 action.trust |= ui
                     .add_enabled(
                         !busy,
-                        login_button("指纹无误，信任并继续")
+                        login_button(text.trust_and_continue)
                             .min_size(vec2(width, theme::CONTROL_HEIGHT)),
                     )
                     .clicked();
@@ -1516,11 +1520,11 @@ fn server_step(ui: &mut egui::Ui, form: &mut LoginForm, busy: bool, action: &mut
         ui.add_space(4.0);
         ui.colored_label(AMBER, error);
     }
-    divider(ui, "或者");
+    divider(ui, text.or);
     action.direct |= ui
         .add_enabled(
             !busy,
-            login_button("不使用服务器 · 局域网直连").min_size(vec2(width, theme::CONTROL_HEIGHT)),
+            login_button(text.without_server).min_size(vec2(width, theme::CONTROL_HEIGHT)),
         )
         .clicked();
 }
@@ -1533,19 +1537,20 @@ fn account_step(
     can_cancel: bool,
     action: &mut LoginAction,
 ) {
+    let text = &t().center;
     let width = ui.available_width();
-    step_title(ui, "登录账号");
+    step_title(ui, text.sign_in_title);
     let origin = LoginForm::saved_origin().unwrap_or_else(|| form.server.clone());
     ui.horizontal(|ui| {
-        ui.label(RichText::new("服务器").color(MUTED));
+        ui.label(RichText::new(text.server).color(MUTED));
         ui.add(egui::Label::new(RichText::new(&origin).color(TEXT)).truncate())
             .on_hover_text(&origin);
         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-            action.change_server |= ui.add_enabled(!busy, egui::Link::new("更换")).clicked();
+            action.change_server |= ui.add_enabled(!busy, egui::Link::new(text.change)).clicked();
         });
     });
     ui.add_space(8.0);
-    ui.label(RichText::new("用户名").color(MUTED));
+    ui.label(RichText::new(text.username).color(MUTED));
     ui.add_enabled_ui(!busy, |ui| {
         ui.add_sized(
             [width, theme::CONTROL_HEIGHT],
@@ -1553,7 +1558,7 @@ fn account_step(
         );
     });
     ui.add_space(6.0);
-    ui.label(RichText::new("密码").color(MUTED));
+    ui.label(RichText::new(text.password).color(MUTED));
     ui.add_enabled_ui(!busy, |ui| {
         let response = ui.add_sized(
             [width, theme::CONTROL_HEIGHT],
@@ -1570,7 +1575,11 @@ fn account_step(
         .add_enabled_ui(!busy && form.can_submit(), |ui| {
             ui.add_sized(
                 [width, theme::CONTROL_HEIGHT],
-                login_button(if form.submitting { "正在登录…" } else { "登录" })
+                login_button(if form.submitting {
+                    text.signing_in
+                } else {
+                    t().common.sign_in
+                })
                     .fill(BLUE)
                     .stroke(Stroke::NONE),
             )
@@ -1588,7 +1597,7 @@ fn account_step(
             crate::ui::controls::notice(
                 ui.ctx(),
                 "password-login-result",
-                "登录提示",
+                text.sign_in_failed,
                 crate::ui::controls::DialogIcon::Error,
                 std::mem::take(&mut form.status),
             );
@@ -1598,23 +1607,24 @@ fn account_step(
         action.cancel = ui
             .add_sized(
                 [width, theme::CONTROL_HEIGHT],
-                login_button("取消").frame(false),
+                login_button(t().common.cancel).frame(false),
             )
             .clicked();
     }
-    divider(ui, "无需登录");
+    divider(ui, text.without_account);
     ui.horizontal(|ui| {
         let half = (width - ui.spacing().item_spacing.x) / 2.0;
         action.guest |= ui
             .add_enabled(
                 !busy,
-                login_button("让别人连接本机").min_size(vec2(half, theme::CONTROL_HEIGHT)),
+                login_button(text.allow_connections_here)
+                    .min_size(vec2(half, theme::CONTROL_HEIGHT)),
             )
             .clicked();
         action.direct |= ui
             .add_enabled(
                 !busy,
-                login_button("连接其他设备").min_size(vec2(half, theme::CONTROL_HEIGHT)),
+                login_button(text.connect_to_device).min_size(vec2(half, theme::CONTROL_HEIGHT)),
             )
             .clicked();
     });
@@ -1630,15 +1640,15 @@ impl DeviceCenterApp {
                 ui.set_width(410.0);
                 cancel = crate::ui::controls::dialog_header(
                     ui,
-                    "退出登录？",
+                    t().center.sign_out_title,
                     crate::ui::controls::DialogIcon::Warning,
                     true,
                 );
-                ui.label("本机将从账号中移除");
+                ui.label(t().center.sign_out_body);
                 let (accept, dismiss) = crate::ui::controls::dialog_actions(
                     ui,
-                    Some(crate::ui::controls::DialogAction::new("退出登录").danger(true)),
-                    Some("取消"),
+                    Some(crate::ui::controls::DialogAction::new(t().common.sign_out).danger(true)),
+                    Some(t().common.cancel),
                 );
                 confirm = accept;
                 cancel |= dismiss;
@@ -1656,6 +1666,6 @@ impl DeviceCenterApp {
         self.logout_pending = true;
         self.cancel_login();
         self.stop_viewer();
-        self.status = StatusMessage::info("正在结束观看并退出账号…");
+        self.status = StatusMessage::info(t().center.ending_viewing_and_signing_out);
     }
 }

@@ -1,4 +1,5 @@
 //! Windows device facts and the registered user's static desktop wallpaper.
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{io::Read, path::PathBuf};
@@ -44,7 +45,7 @@ pub(crate) fn registry_string(root: HKEY, key: &str, name: &str) -> Result<Strin
         )
         .ok()?;
     }
-    ensure!(size > 0 && size <= 65536, "系统字符串长度无效");
+    ensure!(size > 0 && size <= 65536, "{}", t().system.profile_registry_value_invalid);
     let mut text = vec![0u16; (size as usize).div_ceil(2)];
     unsafe {
         RegGetValueW(
@@ -89,21 +90,22 @@ impl Hardware {
         };
         ensure!(
             !value.name.is_empty() && !value.machine_guid.is_empty(),
-            "本机名称或机器标识缺失"
+            "{}",
+            t().system.profile_identity_missing
         );
         let mut field = |label: &str, result: Result<String>| match result {
             Ok(value) if !value.is_empty() => value,
             Ok(_) => {
-                value.errors.push(format!("{label}：系统未提供"));
+                value.errors.push((t().system.profile_not_provided)(label));
                 String::new()
             }
             Err(e) => {
-                value.errors.push(format!("{label}：{e:#}"));
+                value.errors.push((t().system.profile_field_failed)(label, &format!("{e:#}")));
                 String::new()
             }
         };
         value.cpu = field(
-            "处理器",
+            t().system.profile_cpu,
             registry_string(
                 HKEY_LOCAL_MACHINE,
                 r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
@@ -111,7 +113,7 @@ impl Hardware {
             ),
         );
         value.base_board = field(
-            "主板",
+            t().system.profile_base_board,
             (|| {
                 let key = r"HARDWARE\DESCRIPTION\System\BIOS";
                 Ok(format!(
@@ -122,7 +124,7 @@ impl Hardware {
             })(),
         );
         value.os = field(
-            "操作系统",
+            t().system.profile_os,
             (|| {
                 let key = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
                 let build = registry_string(HKEY_LOCAL_MACHINE, key, "CurrentBuildNumber")?;
@@ -134,10 +136,13 @@ impl Hardware {
                 Ok(format!("{product} 64-bit · Build {build}"))
             })(),
         );
-        value.mac = field("网卡地址", primary_mac());
+        value.mac = field(t().system.profile_mac, primary_mac());
         match graphics() {
             Ok(names) => value.video = names,
-            Err(e) => value.errors.push(format!("显卡：{e:#}")),
+            Err(e) => value.errors.push((t().system.profile_field_failed)(
+                t().system.profile_graphics,
+                &format!("{e:#}"),
+            )),
         }
         let mut memory = MEMORYSTATUSEX {
             dwLength: size_of::<MEMORYSTATUSEX>() as u32,
@@ -145,7 +150,10 @@ impl Hardware {
         };
         match unsafe { GlobalMemoryStatusEx(&mut memory) } {
             Ok(()) => value.memory = (memory.ullTotalPhys / (1024 * 1024)) as i64,
-            Err(e) => value.errors.push(format!("内存：{e}")),
+            Err(e) => value.errors.push((t().system.profile_field_failed)(
+                t().system.profile_memory,
+                &e.to_string(),
+            )),
         }
         value.screen = unsafe {
             format!(
@@ -185,34 +193,38 @@ pub(crate) fn system_uuid() -> Result<String> {
     let size = unsafe { GetSystemFirmwareTable(RSMB, 0, None) };
     ensure!(
         size >= 8 && size <= 16 * 1024 * 1024,
-        "无法读取 SMBIOS 系统标识"
+        "{}",
+        t().system.profile_smbios_unreadable
     );
     let mut raw = vec![0; size as usize];
     ensure!(
         unsafe { GetSystemFirmwareTable(RSMB, 0, Some(&mut raw)) } == size,
-        "SMBIOS 数据读取不完整"
+        "{}",
+        t().system.profile_smbios_incomplete
     );
     ensure!(
         (raw[1], raw[2]) >= (2, 6),
-        "SMBIOS 版本不支持标准 UUID 字节序"
+        "{}",
+        t().system.profile_smbios_version_unsupported
     );
     let length = u32::from_le_bytes(raw[4..8].try_into()?) as usize;
-    let table = raw.get(8..8 + length).context("SMBIOS 长度无效")?;
+    let table = raw.get(8..8 + length).context(t().system.profile_smbios_length_invalid)?;
     let mut offset = 0;
     while let Some(header) = table.get(offset..offset + 4) {
         let length = usize::from(header[1]);
-        ensure!(length >= 4, "SMBIOS 结构长度无效");
+        ensure!(length >= 4, "{}", t().system.profile_smbios_structure_length_invalid);
         let record = table
             .get(offset..offset + length)
-            .context("SMBIOS 结构不完整")?;
+            .context(t().system.profile_smbios_structure_incomplete)?;
         if header[0] == 1 {
             let bytes: [u8; 16] = record
                 .get(8..24)
-                .context("SMBIOS 系统 UUID 缺失")?
+                .context(t().system.profile_smbios_uuid_missing)?
                 .try_into()?;
             ensure!(
                 bytes.iter().any(|b| *b != 0) && bytes.iter().any(|b| *b != 255),
-                "SMBIOS 未提供有效系统 UUID"
+                "{}",
+                t().system.profile_smbios_uuid_invalid
             );
             return Ok(uuid::Uuid::from_bytes_le(bytes).to_string().to_uppercase());
         }
@@ -221,14 +233,14 @@ pub(crate) fn system_uuid() -> Result<String> {
         }
         let strings = table
             .get(offset + length..)
-            .context("SMBIOS 字符串区无效")?;
+            .context(t().system.profile_smbios_strings_invalid)?;
         let end = strings
             .windows(2)
             .position(|s| s == [0, 0])
-            .context("SMBIOS 字符串区不完整")?;
+            .context(t().system.profile_smbios_strings_incomplete)?;
         offset += length + end + 2;
     }
-    anyhow::bail!("SMBIOS 系统信息不存在")
+    anyhow::bail!("{}", t().system.profile_smbios_system_missing)
 }
 
 fn primary_mac() -> Result<String> {
@@ -240,7 +252,7 @@ fn primary_mac() -> Result<String> {
             GetAdaptersAddresses(0, GAA_FLAG_INCLUDE_GATEWAYS, None, Some(start), &mut size)
         };
         if code == ERROR_BUFFER_OVERFLOW.0 {
-            ensure!(size <= 1024 * 1024, "网卡列表过大");
+            ensure!(size <= 1024 * 1024, "{}", t().system.profile_adapter_list_too_large);
             continue;
         }
         WIN32_ERROR(code).ok()?;
@@ -274,7 +286,7 @@ fn primary_mac() -> Result<String> {
             .map(|(_, mac)| mac)
             .unwrap_or_default());
     }
-    anyhow::bail!("网卡列表持续变化")
+    anyhow::bail!("{}", t().system.profile_adapter_list_changing)
 }
 
 /// This machine's IPv4 addresses on its LAN: Ethernet and Wi-Fi adapters
@@ -361,7 +373,7 @@ impl WallpaperUser {
                 token: None,
             });
         }
-        let owner = vault::owner()?.context("壁纸用户未登记")?;
+        let owner = vault::owner()?.context(t().system.wallpaper_user_unregistered)?;
         let mut token = HANDLE::default();
         unsafe {
             windows::Win32::System::RemoteDesktop::WTSQueryUserToken(
@@ -369,11 +381,12 @@ impl WallpaperUser {
                 &mut token,
             )
         }
-        .context("当前没有可读取壁纸的已登录用户")?;
+        .context(t().system.wallpaper_no_signed_in_user)?;
         let token = Handle(token);
         ensure!(
             vault::token_sid(token.0)? == owner,
-            "当前登录用户不是设备登记用户"
+            "{}",
+            t().system.wallpaper_user_mismatch
         );
         unsafe {
             windows::Win32::Security::ImpersonateLoggedOnUser(token.0)?;
@@ -419,7 +432,7 @@ fn wallpaper_source_inner(user: &WallpaperUser) -> Result<WallpaperSource> {
     // loaded desktop settings, never SYSTEM's wallpaper or another session's.
     let (root, key) = user.desktop_key();
     let path = registry_string(root, &key, "WallPaper")?;
-    ensure!(!path.is_empty(), "Windows 当前没有静态图片壁纸");
+    ensure!(!path.is_empty(), "{}", t().system.wallpaper_none);
     let path = PathBuf::from(path);
     resolve_wallpaper(path, || {
         Ok((
@@ -446,24 +459,27 @@ fn resolve_wallpaper(
     }
     // Do not pick an arbitrary old thumbnail when the original was removed.
     // The standard current cache must identify this exact configured image.
-    let (cached_path, bytes) = cache().context("壁纸原文件不可用")?;
+    let (cached_path, bytes) = cache().context(t().system.wallpaper_original_unavailable)?;
     let cached_from = transcoded_source(&bytes);
     ensure!(
         cached_from.as_ref() == Some(&path),
-        "壁纸原文件不可用，壁纸缓存不匹配"
+        "{}",
+        t().system.wallpaper_cache_mismatch
     );
-    wallpaper_file(cached_path, path).context("壁纸原文件和缓存均不可用")
+    wallpaper_file(cached_path, path).context(t().system.wallpaper_all_unavailable)
 }
 
 fn wallpaper_file(path: PathBuf, configured_path: PathBuf) -> Result<WallpaperSource> {
     ensure!(
         path.is_absolute() && !path.to_string_lossy().starts_with(r"\\"),
-        "壁纸必须是本机文件"
+        "{}",
+        t().system.wallpaper_not_local
     );
-    let metadata = std::fs::metadata(&path).context("读取当前 Windows 壁纸")?;
+    let metadata = std::fs::metadata(&path).context(t().system.wallpaper_read_failed)?;
     ensure!(
         metadata.is_file() && metadata.len() <= 64 * 1024 * 1024,
-        "壁纸文件过大或不是图片文件"
+        "{}",
+        t().system.wallpaper_file_invalid
     );
     Ok(WallpaperSource {
         path,
@@ -489,7 +505,11 @@ fn wallpaper_cache_record(root: HKEY, key: &str) -> Result<Vec<u8>> {
         )
         .ok()?;
     }
-    ensure!((26..=65536).contains(&size), "Windows 壁纸缓存记录长度无效");
+    ensure!(
+        (26..=65536).contains(&size),
+        "{}",
+        t().system.wallpaper_cache_record_invalid
+    );
     let mut bytes = vec![0u8; size as usize];
     unsafe {
         RegGetValueW(
@@ -529,7 +549,7 @@ pub(crate) fn wallpaper_image(source: &WallpaperSource) -> Result<Vec<u8>> {
     std::fs::File::open(&source.path)?
         .take(64 * 1024 * 1024 + 1)
         .read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= 64 * 1024 * 1024, "壁纸文件过大");
+    ensure!(bytes.len() <= 64 * 1024 * 1024, "{}", t().system.wallpaper_too_large);
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16384);
@@ -544,7 +564,8 @@ pub(crate) fn wallpaper_image(source: &WallpaperSource) -> Result<Vec<u8>> {
     let jpeg = compose_wallpaper(decoded)?;
     ensure!(
         wallpaper_source_inner(&user)? == *source,
-        "壁纸在读取期间已改变"
+        "{}",
+        t().system.wallpaper_changed
     );
     Ok(jpeg)
 }
@@ -552,7 +573,7 @@ fn compose_wallpaper(decoded: image::DynamicImage) -> Result<Vec<u8>> {
     // Device cards use 16:9: crop centrally without stretching the source.
     // Use integer 16x9 units so both the crop and output have the exact ratio.
     let units = (decoded.width() / 16).min(decoded.height() / 9);
-    ensure!(units > 0, "壁纸尺寸不足 16×9");
+    ensure!(units > 0, "{}", t().system.wallpaper_too_small);
     let (width, height) = (units * 16, units * 9);
     let crop = decoded.crop_imm(
         (decoded.width() - width) / 2,

@@ -2,6 +2,7 @@
 use super::wake::Wake;
 use super::{Clipboard, Settings, Status};
 use crate::features::drag_drop::{Endpoint, HostPolicy, Role};
+use crate::i18n::t;
 use crate::platform::windows::host_service::{pipe::Pipe, process, vault};
 use crate::protocol::peer_platform::PeerPlatform;
 use anyhow::{Result, ensure};
@@ -165,7 +166,7 @@ impl Backend {
                 bulk: false,
                 data,
             })
-            .map_err(|_| anyhow::anyhow!("OLE用户队列已满或关闭"))?;
+            .map_err(|_| anyhow::anyhow!("{}", t().features.clipboard_ole_queue_full))?;
         self.wake.notify();
         Ok(())
     }
@@ -239,7 +240,7 @@ impl Local {
                             tokio::time::sleep(Duration::from_millis(1)).await;
                         }
                         Err(mpsc::TrySendError::Disconnected(_)) => {
-                            anyhow::bail!("剪贴板发送队列已关闭")
+                            anyhow::bail!("{}", t().features.clipboard_send_queue_closed)
                         }
                     }
                 }
@@ -475,7 +476,7 @@ fn worker(
                             packet = value;
                             wake.wait(None)?;
                         }
-                        Err(_) => anyhow::bail!("剪贴板网络发送已关闭"),
+                        Err(_) => anyhow::bail!("{}", t().features.clipboard_network_send_closed),
                     }
                 }
             }
@@ -527,11 +528,13 @@ impl Remote {
         pipe.accept(|| !stop.is_cancelled() && agent.alive() && std::time::Instant::now() < until)?;
         ensure!(
             pipe.peer_pid(true)? == agent.pid,
-            "剪贴板用户进程身份不匹配"
+            "{}",
+            t().features.clipboard_agent_pid_mismatch
         );
         ensure!(
             pipe.peer_session(true)? == process::active_session(),
-            "剪贴板用户会话已改变"
+            "{}",
+            t().features.clipboard_agent_session_changed
         );
         Ok(Self {
             pipe,
@@ -560,19 +563,21 @@ impl Remote {
 pub(crate) fn run(name: &str, parent: u32) -> Result<()> {
     ensure!(
         name.starts_with(PREFIX.as_str()) && name.len() < 150,
-        "剪贴板会话管道无效"
+        "{}",
+        t().features.clipboard_pipe_invalid
     );
     ensure!(
         vault::sid(std::process::id())? != "S-1-5-18",
-        "剪贴板不能使用系统权限"
+        "{}",
+        t().features.clipboard_system_account
     );
-    let pipe = Pipe::client(name)?.ok_or_else(|| anyhow::anyhow!("剪贴板会话已结束"))?;
-    ensure!(pipe.peer_pid(false)? == parent, "剪贴板父进程身份不匹配");
+    let pipe = Pipe::client(name)?.ok_or_else(|| anyhow::anyhow!("{}", t().features.clipboard_session_ended))?;
+    ensure!(pipe.peer_pid(false)? == parent, "{}", t().features.clipboard_parent_mismatch);
     let session = process::session(std::process::id())?;
     // A normal user cannot OpenProcess on the SYSTEM resident. Windows supplies
     // the authenticated pipe peer identity without granting process/token access.
     // The privileged parent independently accepts only its own newly spawned PID.
-    ensure!(pipe.peer_session(false)? == session, "剪贴板用户会话不匹配");
+    ensure!(pipe.peer_session(false)? == session, "{}", t().features.clipboard_session_mismatch);
     let permitted = || {
         crate::platform::windows::host_service::user_backend::permitted()
             && process::active_session() == session
@@ -598,7 +603,7 @@ pub(crate) fn run(name: &str, parent: u32) -> Result<()> {
             let local = local.as_ref().unwrap();
             local.update(request.policy)?;
             if let Some(packet) = request.packet {
-                ensure!(packet.len() < 524288, "剪贴板IPC消息过大");
+                ensure!(packet.len() < 524288, "{}", t().features.clipboard_ipc_too_large);
                 local.receive(&packet)?;
             }
             super::frame::send(

@@ -1,4 +1,5 @@
 //! Notification area integration on the existing Windows event-loop thread.
+use crate::i18n::t;
 use anyhow::{Result, ensure};
 use std::sync::atomic::{AtomicU8, Ordering};
 use windows::{
@@ -7,7 +8,7 @@ use windows::{
         System::{LibraryLoader::GetModuleHandleW, Registry::*},
         UI::{HiDpi::*, Shell::*, WindowsAndMessaging::*},
     },
-    core::{PCWSTR, w},
+    core::{HSTRING, PCWSTR, w},
 };
 const CALLBACK: u32 = WM_APP + 43;
 pub(super) struct Tray {
@@ -76,8 +77,8 @@ fn data(window: HWND, icon: HICON) -> NOTIFYICONDATAW {
     // Non-default profiles show their name so concurrent instances are distinguishable.
     let mut tip = crate::product::display_name();
     match STATE.load(Ordering::Relaxed) {
-        1 => tip.push_str(" · 正在被控"),
-        2 => tip.push_str(" · 不允许连接本机"),
+        1 => tip = format!("{tip} · {}", t().controls.tray_controlled),
+        2 => tip = format!("{tip} · {}", t().controls.tray_connections_off),
         _ => {}
     }
     let limit = data.szTip.len() - 1;
@@ -127,7 +128,7 @@ impl Tray {
                 None,
             )?;
             let tray = Self { window };
-            ensure!(add(window), "无法创建托盘图标");
+            ensure!(add(window), t().controls.tray_create_failed);
             Ok(tray)
         }
     }
@@ -166,9 +167,12 @@ unsafe extern "system" fn procedure(
             }
             WM_RBUTTONUP | WM_CONTEXTMENU => unsafe {
                 if let Ok(menu) = CreatePopupMenu() {
-                    let _ = AppendMenuW(menu, MF_STRING, 1, w!("打开 Farwing"));
+                    // In the language at the time the menu opens.
+                    let open = HSTRING::from(t().controls.tray_open);
+                    let exit = HSTRING::from(t().controls.tray_exit);
+                    let _ = AppendMenuW(menu, MF_STRING, 1, &open);
                     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
-                    let _ = AppendMenuW(menu, MF_STRING, 2, w!("退出"));
+                    let _ = AppendMenuW(menu, MF_STRING, 2, &exit);
                     let mut point = POINT::default();
                     let _ = GetCursorPos(&mut point);
                     let _ = SetForegroundWindow(window);

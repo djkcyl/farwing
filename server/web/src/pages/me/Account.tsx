@@ -2,6 +2,7 @@
 // and where it is signed in.
 import { useState, type FormEvent } from 'react';
 import { encode } from 'uqr';
+import { useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { ago, dateTime, platformText } from '../../lib/format';
@@ -11,10 +12,16 @@ import { Alert, Badge, Button, Card, Copy, Empty, Field, Input, Loading, PageHea
 import { Dialog, useOverlay } from '../../ui/overlay';
 
 function QrCode({ text }: { text: string }) {
+  const t = useT();
   const qr = encode(text, { ecc: 'M', border: 2 });
   const path = qr.data.flatMap((row, y) => row.map((on, x) => (on ? `M${x} ${y}h1v1h-1z` : ''))).join('');
   return (
-    <svg className="qr" viewBox={`0 0 ${qr.size} ${qr.size}`} shapeRendering="crispEdges" aria-label="二维码">
+    <svg
+      className="qr"
+      viewBox={`0 0 ${qr.size} ${qr.size}`}
+      shapeRendering="crispEdges"
+      aria-label={t.account.twoStep.qrCode}
+    >
       <rect width={qr.size} height={qr.size} fill="#fff" />
       <path d={path} fill="#000" />
     </svg>
@@ -22,12 +29,13 @@ function QrCode({ text }: { text: string }) {
 }
 
 function Profile() {
+  const t = useT();
   const auth = useAuth();
   const { toast } = useOverlay();
   const [nickname, setNickname] = useState(auth.me?.nickname ?? '');
   const [busy, setBusy] = useState(false);
   return (
-    <Card title="个人资料">
+    <Card title={t.account.profile.title}>
       <form
         className="stack"
         onSubmit={async (e) => {
@@ -35,7 +43,7 @@ function Profile() {
           setBusy(true);
           try {
             await call('PATCH', '/api/v2/me', { nickname: nickname.trim() });
-            toast('已保存');
+            toast(t.common.saved);
             await auth.refresh();
           } catch (err) {
             toast(errorText(err), 'red');
@@ -45,10 +53,12 @@ function Profile() {
         }}
       >
         <Rows>
-          <Row label="用户名">{auth.me?.username}</Row>
-          <Row label="角色">{auth.isAdmin ? <Badge tone="blue">管理员</Badge> : '用户'}</Row>
+          <Row label={t.account.username}>{auth.me?.username}</Row>
+          <Row label={t.account.profile.role}>
+            {auth.isAdmin ? <Badge tone="blue">{t.common.admin}</Badge> : t.common.user}
+          </Row>
         </Rows>
-        <Field label="昵称">
+        <Field label={t.account.nickname}>
           <Input value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={64} />
         </Field>
         <div>
@@ -58,7 +68,7 @@ function Profile() {
             loading={busy}
             disabled={nickname.trim() === (auth.me?.nickname ?? '')}
           >
-            保存
+            {t.common.save}
           </Button>
         </div>
       </form>
@@ -67,6 +77,8 @@ function Profile() {
 }
 
 function Password() {
+  const t = useT();
+  const m = t.account.password;
   const { toast } = useOverlay();
   const [old, setOld] = useState('');
   const [next, setNext] = useState('');
@@ -77,7 +89,7 @@ function Password() {
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (next !== again) {
-      setError('两次输入的新密码不一致');
+      setError(m.mismatch);
       return;
     }
     setBusy(true);
@@ -87,7 +99,7 @@ function Password() {
       setOld('');
       setNext('');
       setAgain('');
-      toast('密码已修改，其他登录已注销');
+      toast(m.changed);
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -96,10 +108,10 @@ function Password() {
   }
 
   return (
-    <Card title="修改密码">
+    <Card title={m.title}>
       <form className="stack" onSubmit={submit}>
         {error && <Alert>{error}</Alert>}
-        <Field label="当前密码">
+        <Field label={t.account.currentPassword}>
           <Input
             type="password"
             autoComplete="current-password"
@@ -108,7 +120,7 @@ function Password() {
             required
           />
         </Field>
-        <Field label="新密码" hint="至少 8 位">
+        <Field label={m.newPassword} hint={m.hint}>
           <Input
             type="password"
             autoComplete="new-password"
@@ -118,7 +130,7 @@ function Password() {
             required
           />
         </Field>
-        <Field label="确认新密码">
+        <Field label={m.confirm}>
           <Input
             type="password"
             autoComplete="new-password"
@@ -129,7 +141,7 @@ function Password() {
         </Field>
         <div>
           <Button type="submit" variant="primary" loading={busy}>
-            修改密码
+            {m.title}
           </Button>
         </div>
       </form>
@@ -138,6 +150,8 @@ function Password() {
 }
 
 function TwoStep() {
+  const t = useT();
+  const m = t.account.twoStep;
   const auth = useAuth();
   const { toast } = useOverlay();
   const security = auth.security;
@@ -173,31 +187,31 @@ function TwoStep() {
   }
 
   return (
-    <Card title="二次验证">
+    <Card title={m.title}>
       {security.totp ? (
         <div className="row gap wrap">
-          <Badge tone="green">已开启</Badge>
-          <span className="small muted">剩余 {security.recovery_codes_left} 个恢复码</span>
+          <Badge tone="green">{t.common.enabled}</Badge>
+          <span className="small muted">{m.recoveryLeft(security.recovery_codes_left)}</span>
           <span className="grow" />
           <Button variant="danger" onClick={() => setStep('disable')}>
-            关闭二次验证
+            {m.disable}
           </Button>
         </div>
       ) : (
         <div>
           <Button variant="primary" icon="lock" onClick={() => setStep('password')}>
-            开启二次验证
+            {m.enable}
           </Button>
         </div>
       )}
 
       <Dialog
         open={step === 'password' || step === 'scan'}
-        title="开启二次验证"
+        title={m.enable}
         onClose={close}
         footer={
           <>
-            <Button onClick={close}>取消</Button>
+            <Button onClick={close}>{t.common.cancel}</Button>
             {step === 'password' ? (
               <Button
                 variant="primary"
@@ -209,7 +223,7 @@ function TwoStep() {
                   })
                 }
               >
-                下一步
+                {t.common.next}
               </Button>
             ) : (
               <Button
@@ -227,7 +241,7 @@ function TwoStep() {
                   })
                 }
               >
-                开启
+                {m.turnOn}
               </Button>
             )}
           </>
@@ -235,7 +249,7 @@ function TwoStep() {
       >
         {error && <Alert>{error}</Alert>}
         {step === 'password' ? (
-          <Field label="当前密码">
+          <Field label={t.account.currentPassword}>
             <Input
               type="password"
               autoComplete="current-password"
@@ -249,13 +263,13 @@ function TwoStep() {
               <div className="row gap wrap" style={{ alignItems: 'flex-start' }}>
                 <QrCode text={setup.uri} />
                 <div className="stack-sm grow">
-                  <span className="small muted">密钥</span>
+                  <span className="small muted">{m.secret}</span>
                   <div className="secret small">
                     <Copy text={setup.secret} />
                   </div>
                 </div>
               </div>
-              <Field label="验证码">
+              <Field label={t.account.verificationCode}>
                 <Input
                   className="code"
                   inputMode="numeric"
@@ -272,11 +286,11 @@ function TwoStep() {
 
       <Dialog
         open={step === 'codes'}
-        title="保存恢复码"
+        title={m.saveCodes}
         onClose={close}
         footer={
           <Button variant="primary" onClick={close}>
-            我已保存
+            {t.common.done}
           </Button>
         }
       >
@@ -286,37 +300,37 @@ function TwoStep() {
           ))}
         </div>
         <div>
-          <Copy text={codes.join('\n')} display="复制全部" mono={false} />
+          <Copy text={codes.join('\n')} display={t.common.copyAll} mono={false} />
         </div>
-        <Alert tone="amber">只显示这一次</Alert>
+        <Alert tone="amber">{m.shownOnce}</Alert>
       </Dialog>
 
       <Dialog
         open={step === 'disable'}
-        title="关闭二次验证"
+        title={m.disable}
         onClose={close}
         footer={
           <>
-            <Button onClick={close}>取消</Button>
+            <Button onClick={close}>{t.common.cancel}</Button>
             <Button
               variant="danger"
               loading={busy}
               onClick={() =>
                 run(async () => {
                   await call('POST', '/api/v2/me/totp/disable', { password, code: code.trim() });
-                  toast('二次验证已关闭');
+                  toast(m.disabled);
                   close();
                   await auth.refresh();
                 })
               }
             >
-              关闭
+              {m.turnOff}
             </Button>
           </>
         }
       >
         {error && <Alert>{error}</Alert>}
-        <Field label="当前密码">
+        <Field label={t.account.currentPassword}>
           <Input
             type="password"
             autoComplete="current-password"
@@ -324,7 +338,7 @@ function TwoStep() {
             onChange={(e) => setPassword(e.target.value)}
           />
         </Field>
-        <Field label="验证码或恢复码">
+        <Field label={m.codeOrRecovery}>
           <Input value={code} onChange={(e) => setCode(e.target.value)} />
         </Field>
       </Dialog>
@@ -333,15 +347,17 @@ function TwoStep() {
 }
 
 function Logins() {
+  const t = useT();
+  const m = t.account.logins;
   const { confirm, toast } = useOverlay();
   const { data, error, reload } = useApi<{ sessions: AuthSession[] }>('/api/v2/auth/sessions');
   return (
-    <Card title="我的登录" pad={false}>
+    <Card title={m.title} pad={false}>
       {error && <Alert>{error}</Alert>}
       {!data ? (
         <Loading />
       ) : data.sessions.length === 0 ? (
-        <Empty icon="lock" title="没有登录" />
+        <Empty icon="lock" title={m.none} />
       ) : (
         <div className="list">
           {[...data.sessions]
@@ -351,10 +367,10 @@ function Logins() {
                 <div className="grow">
                   <div className="row gap-sm">
                     <span className="ellipsis">{s.device_alias}</span>
-                    {s.current && <Badge tone="blue">这个浏览器</Badge>}
+                    {s.current && <Badge tone="blue">{t.common.thisBrowser}</Badge>}
                   </div>
                   <div className="small muted">
-                    {platformText(s.platform)} · 登录于 {dateTime(s.created_at)} · {ago(s.last_used_at)}使用
+                    {m.line(platformText(s.platform), dateTime(s.created_at), ago(s.last_used_at))}
                   </div>
                 </div>
                 {!s.current && (
@@ -364,15 +380,15 @@ function Logins() {
                     onClick={async () => {
                       if (
                         await confirm({
-                          title: '注销登录',
-                          message: `${s.device_alias} 将退出这个账号。`,
-                          confirm: '注销',
+                          title: m.revokeTitle,
+                          message: m.revokeMessage(s.device_alias),
+                          confirm: m.revoke,
                           danger: true,
                         })
                       ) {
                         try {
                           await call('DELETE', `/api/v2/auth/sessions/${s.device_id}`);
-                          toast('已注销');
+                          toast(m.revoked);
                           await reload();
                         } catch (err) {
                           toast(errorText(err), 'red');
@@ -380,7 +396,7 @@ function Logins() {
                       }
                     }}
                   >
-                    注销
+                    {m.revoke}
                   </Button>
                 )}
               </div>
@@ -392,9 +408,10 @@ function Logins() {
 }
 
 export default function Account() {
+  const t = useT();
   return (
     <div className="stack">
-      <PageHeader title="账号与安全" />
+      <PageHeader title={t.nav.account} />
       <div className="grid grid-2">
         <Profile />
         <Password />

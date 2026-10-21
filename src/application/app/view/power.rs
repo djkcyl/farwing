@@ -1,5 +1,6 @@
 use super::*;
 use crate::account::power::PowerAction;
+use crate::i18n::t;
 
 pub(super) struct PowerConfirmation {
     device: DeviceInfo,
@@ -30,22 +31,23 @@ impl DeviceCenterApp {
         let mut commit = false;
         let mut cancel = false;
         let issue = self.power_available(&confirm.device, confirm.action).err();
+        let text = &t().settings;
         let response = egui::Modal::new(egui::Id::new("device-power-confirmation"))
             .frame(dialog_frame()).show(ctx, |ui| {
                 ui.set_width(450.0_f32.min(ctx.content_rect().width() - 60.0));
-                cancel = crate::ui::controls::dialog_header(ui, &format!("{}这台设备？", confirm.action.label()), crate::ui::controls::DialogIcon::Warning, true);
+                cancel = crate::ui::controls::dialog_header(ui, (text.power_title)(confirm.action), crate::ui::controls::DialogIcon::Warning, true);
                 ui.add(egui::Label::new(RichText::new(display_alias(&confirm.device)).strong()).wrap());
                 ui.label(RichText::new(&confirm.device.device_id).monospace().color(MUTED));
                 ui.label(format!("{} · {}", confirm.device.platform_label(), confirm.device.status_label()));
                 ui.add_space(12.0);
                 if confirm.action != PowerAction::Wake {
-                    ui.colored_label(AMBER, "未保存的工作可能丢失，远控连接将断开");
+                    ui.colored_label(AMBER, text.power_warning);
                     if confirm.device.participant_count() > 0 {
-                        ui.label(format!("{} 人正在连接", confirm.device.participant_count()));
+                        ui.label((text.power_people_connected)(confirm.device.participant_count()));
                     }
                 }
                 if let Some(issue) = &issue { ui.colored_label(AMBER, issue.to_string()); }
-                let (accept, dismiss) = crate::ui::controls::dialog_actions(ui, Some(crate::ui::controls::DialogAction::new(&format!("确认{}", confirm.action.label())).enabled(issue.is_none()).danger(confirm.action != PowerAction::Wake)), Some("取消"));
+                let (accept, dismiss) = crate::ui::controls::dialog_actions(ui, Some(crate::ui::controls::DialogAction::new((text.power_confirm)(confirm.action)).enabled(issue.is_none()).danger(confirm.action != PowerAction::Wake)), Some(t().common.cancel));
                 commit = accept;
                 cancel |= dismiss;
             });
@@ -61,13 +63,14 @@ impl DeviceCenterApp {
 
     pub(super) fn power_results(&mut self, ui: &mut egui::Ui) {
         let mut dismiss = Vec::new();
+        let text = &t().settings;
         for (id, progress) in &self.power_progress {
             let message = if progress.waiting {
                 format!(
-                    "{} · {}\n已等待 {} 秒",
+                    "{} · {}\n{}",
                     display_alias(&progress.device),
                     progress.message,
-                    progress.elapsed()
+                    (text.power_waited)(progress.elapsed())
                 )
             } else {
                 format!("{} · {}", display_alias(&progress.device), progress.message)
@@ -75,7 +78,7 @@ impl DeviceCenterApp {
             if crate::ui::controls::observe_notice_action(
                 ui.ctx(),
                 ("device-power-result", id),
-                "设备电源操作",
+                text.power_notice_title,
                 if progress.waiting {
                     crate::ui::controls::DialogIcon::Waiting
                 } else {
@@ -83,9 +86,9 @@ impl DeviceCenterApp {
                 },
                 Some(&message),
                 if progress.waiting {
-                    "停止等待"
+                    text.stop_waiting
                 } else {
-                    "知道了"
+                    t().common.got_it
                 },
             )
             .is_some()

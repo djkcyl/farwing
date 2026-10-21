@@ -4,6 +4,7 @@
 //! desktop: never in Session 0, over the logon screen or on the secure desktop.
 use super::{MemberView, PointerView};
 use crate::media::capture::Screen;
+use crate::i18n::t;
 use crate::platform::windows::{
     host_service::process,
     participant_overlay::{self as platform, Key, Overlay, Shape, Sprite},
@@ -202,7 +203,7 @@ fn label(member: &MemberView) -> String {
         .into_iter()
         .map(|text| clean(text))
         .find(|text| !text.is_empty())
-        .unwrap_or_else(|| "参与者".into());
+        .unwrap_or_else(|| t().features.host_participant.into());
     if name.chars().count() > MAX_LABEL {
         name.chars().take(MAX_LABEL - 1).chain(Some('…')).collect()
     } else {
@@ -522,7 +523,7 @@ mod tests {
         m.device_name = "办公室电脑".into();
         assert_eq!(label(&m), "办公室电脑");
         m.device_name.clear();
-        assert_eq!(label(&m), "参与者");
+        assert_eq!(label(&m), crate::i18n::t().features.host_participant);
         m.nickname = "一二三四五六七八九十一二三四五六七八".into();
         let short = label(&m);
         assert_eq!(short.chars().count(), MAX_LABEL);

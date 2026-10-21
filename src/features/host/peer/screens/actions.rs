@@ -1,5 +1,6 @@
 //! Screen mutations keep media owners separate from the native topology owner.
 use super::*;
+use crate::i18n::t;
 
 pub(super) struct Running {
     streams: Vec<(usize, i32, VideoConfig)>,
@@ -64,14 +65,15 @@ impl Screens {
                 .find(|s| s.screen.primary)
                 .or(catalog.first())
                 .map(|s| s.screen.id)
-                .context("没有可用的显示器")?
+                .context(t().features.screen_none_available)?
         };
         self.start(id).await
     }
     pub(crate) async fn create_virtual(&mut self, resolutions: Vec<(u32, u32)>) -> Result<()> {
         ensure!(
             self.available_slot().is_some() || self.registered.len() == 1,
-            "没有空闲的已登记视频轨道"
+            "{}",
+            t().features.peer_no_free_track
         );
         let before = self.running();
         let screen = self.displays.create(&self.lease, resolutions).await?;
@@ -88,13 +90,21 @@ impl Screens {
     }
     pub(crate) async fn remove_virtual(&mut self, id: i32) -> Result<()> {
         let info = self.info(id)?;
-        ensure!(info.kind == 1, "目标不是扩展虚拟屏");
-        let identity = info.screen.identity.context("缺少显示目标身份")?;
+        ensure!(
+            info.kind == 1,
+            "{}",
+            t().features.screen_not_extended_virtual
+        );
+        let identity = info
+            .screen
+            .identity
+            .context(t().features.screen_target_identity_missing)?;
         // A virtual-screen wire type is not a lease on another driver's screen.
         // Reject unsupported removal before interrupting its active capture.
         ensure!(
             self.displays.owns(&identity),
-            "此虚拟屏由其他会话或程序管理"
+            "{}",
+            t().features.screen_managed_elsewhere
         );
         let before = self.running();
         self.stop(id).await?;
@@ -116,7 +126,11 @@ impl Screens {
         dpi: u32,
         saved: bool,
     ) -> Result<i32> {
-        ensure!(!self.registered.is_empty(), "没有已登记视频轨道");
+        ensure!(
+            !self.registered.is_empty(),
+            "{}",
+            t().features.peer_no_registered_track
+        );
         let before = self.running();
         self.stop(-1).await?;
         let result = self.displays.enter_super(width, height, dpi, saved).await;
@@ -155,7 +169,9 @@ impl Screens {
         width: u32,
         height: u32,
     ) -> Result<i32> {
-        let target = info.target.context("缺少真实显示目标")?;
+        let target = info
+            .target
+            .context(t().features.screen_physical_target_missing)?;
         if !self.displays.owns(&target.identity) {
             self.displays.set_resolution(target, width, height).await?;
             self.refresh()?;

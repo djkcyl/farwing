@@ -298,7 +298,7 @@ fn check_protocol(h: &HeaderMap) -> ApiResult<()> {
             Ok(())
         }
         _ => Err(
-            ApiError::new(ErrorCode::ProtocolUnsupported, "不支持的协议版本").with_details(json!({
+            ApiError::new(ErrorCode::ProtocolUnsupported, "unsupported protocol version").with_details(json!({
                 "min": farwing_protocol::MIN_PROTOCOL_VERSION,
                 "max": farwing_protocol::PROTOCOL_VERSION,
             })),

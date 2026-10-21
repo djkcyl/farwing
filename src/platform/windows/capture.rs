@@ -1,4 +1,5 @@
 //! Desktop Duplication ownership and top-down BGRA frames.
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use windows::{
     Win32::{
@@ -117,7 +118,8 @@ fn outputs() -> Result<Vec<(IDXGIAdapter1, IDXGIOutput1, Screen)>> {
                 let height = u32::try_from(bounds.bottom - bounds.top)?;
                 ensure!(
                     width > 0 && height > 0 && width <= 16384 && height <= 16384,
-                    "无效屏幕尺寸"
+                    "{}",
+                    t().system.capture_invalid_screen_size
                 );
                 let length = desc
                     .DeviceName
@@ -266,7 +268,7 @@ fn new_device(luid: u64) -> Result<(ID3D11Device, ID3D11DeviceContext)> {
                 break;
             }
         }
-        let adapter = selected.context("采集适配器已移除")?;
+        let adapter = selected.context(t().system.capture_adapter_removed)?;
         let (mut device, mut context) = (None, None);
         D3D11CreateDevice(
             &adapter,
@@ -279,9 +281,12 @@ fn new_device(luid: u64) -> Result<(ID3D11Device, ID3D11DeviceContext)> {
             None,
             Some(&mut context),
         )?;
-        let device = device.context("创建图形设备失败")?;
+        let device = device.context(t().system.capture_create_device_failed)?;
         super::gpu_scheduling::configure_device(&device);
-        Ok((device, context.context("创建图形上下文失败")?))
+        Ok((
+            device,
+            context.context(t().system.capture_create_context_failed)?,
+        ))
     }
 }
 use super::adapter_type;
@@ -425,7 +430,8 @@ impl Desktop {
                 ensure!(
                     capture.screen.identity == screen.identity
                         && capture.screen.adapter == screen.adapter,
-                    "采集准备期间所选屏幕变化"
+                    "{}",
+                    t().system.capture_screen_changed_preparing
                 );
                 Backend::Dxgi(capture)
             }
@@ -558,7 +564,8 @@ impl Desktop {
                 ensure!(
                     preferred.screen.identity == self.screen.identity
                         && preferred.screen.adapter == self.screen.adapter,
-                    "恢复期间所选屏幕变化"
+                    "{}",
+                    t().system.capture_screen_changed_recovering
                 );
                 self.recovery_probe = Some(Box::new(RecoveryProbe {
                     capture: preferred,

@@ -4,6 +4,7 @@
 //! grants per-stream credit for TCP data.
 
 use crate::protocol::peer::{self, FrameType};
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use bytes::Bytes;
 use prost::Message as _;
@@ -123,12 +124,13 @@ impl Body {
 impl Open {
     /// Check the request before anything is resolved or connected.
     pub(crate) fn validate(&self) -> Result<()> {
-        ensure!(self.stream != 0, "无效转发编号");
+        ensure!(self.stream != 0, "{}", t().features.mapping_invalid_stream);
         ensure!(
             matches!(self.proto, proto::TCP | proto::UDP),
-            "不支持的转发协议"
+            "{}",
+            t().features.mapping_unsupported_protocol
         );
-        ensure!((1..=65535).contains(&self.port), "无效目标端口");
+        ensure!((1..=65535).contains(&self.port), "{}", t().features.mapping_invalid_target_port);
         let host = self.host.trim();
         ensure!(
             !host.is_empty()
@@ -136,7 +138,8 @@ impl Open {
                 && host
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'_' | b'[' | b']')),
-            "无效目标地址"
+            "{}",
+            t().features.mapping_invalid_target_address
         );
         Ok(())
     }
@@ -151,11 +154,11 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Option<Body>> {
     let Some(body) = peer::body_of(FrameType::Port, bytes) else {
         return Ok(None);
     };
-    ensure!(body.len() <= DATA_LIMIT + 256, "端口转发消息过大");
-    let message = PortMessage::decode(body).context("无效端口转发消息")?;
-    let body = message.body.context("端口转发消息为空")?;
+    ensure!(body.len() <= DATA_LIMIT + 256, "{}", t().features.mapping_message_too_large);
+    let message = PortMessage::decode(body).context(t().features.mapping_invalid_message)?;
+    let body = message.body.context(t().features.mapping_empty_message)?;
     if let Body::Data(data) = &body {
-        ensure!(data.data.len() <= DATA_LIMIT, "端口转发数据块过大");
+        ensure!(data.data.len() <= DATA_LIMIT, "{}", t().features.mapping_data_too_large);
     }
     Ok(Some(body))
 }
@@ -168,10 +171,11 @@ pub(crate) fn decode_datagram(bytes: &[u8]) -> Result<Option<Datagram>> {
     let Some(body) = peer::body_of(FrameType::PortDatagram, bytes) else {
         return Ok(None);
     };
-    let datagram = Datagram::decode(body).context("无效 UDP 数据报")?;
+    let datagram = Datagram::decode(body).context(t().features.mapping_invalid_datagram)?;
     ensure!(
         datagram.stream != 0 && datagram.data.len() <= DATAGRAM_LIMIT,
-        "无效 UDP 数据报"
+        "{}",
+        t().features.mapping_invalid_datagram
     );
     Ok(Some(datagram))
 }
@@ -193,28 +197,29 @@ pub(crate) fn decode_flow(bytes: &[u8]) -> Result<Option<crate::transport::trans
     let Some(body) = peer::body_of(FrameType::Flow, bytes) else {
         return Ok(None);
     };
-    let flow = crate::transport::transfer::Flow::decode(body).context("无效流量窗口消息")?;
+    let flow = crate::transport::transfer::Flow::decode(body).context(t().features.mapping_invalid_flow)?;
     Ok((flow.channel == crate::transport::transfer::channel::TUNNEL).then_some(flow))
 }
 
 /// Human-readable outcome of an `Open`.
 pub(crate) fn describe(code: i32, message: &str) -> String {
+    let text = &t().features;
     let reason = match code {
-        code::OK => "成功",
-        code::REFUSED => "目标拒绝连接",
-        code::UNREACHABLE => "目标不可达",
-        code::FORBIDDEN => "被控端未允许端口转发",
-        code::TIMEOUT => "连接目标超时",
-        code::DNS_FAILED => "无法解析目标地址",
-        code::LIMIT => "被控端的转发连接数已达上限",
-        code::PROTOCOL => "端口转发协议错误",
-        code::CLOSED => "转发已关闭",
-        _ => "目标连接失败",
+        code::OK => text.mapping_succeeded,
+        code::REFUSED => text.mapping_target_refused,
+        code::UNREACHABLE => text.mapping_target_unreachable,
+        code::FORBIDDEN => text.mapping_host_forbidden,
+        code::TIMEOUT => text.mapping_target_timeout,
+        code::DNS_FAILED => text.mapping_target_unresolved,
+        code::LIMIT => text.mapping_host_limit,
+        code::PROTOCOL => text.mapping_protocol_error,
+        code::CLOSED => text.mapping_closed,
+        _ => text.mapping_target_failed,
     };
     if message.is_empty() {
         reason.to_owned()
     } else {
-        format!("{reason}：{message}")
+        (text.mapping_reason_detail)(reason, message)
     }
 }
 

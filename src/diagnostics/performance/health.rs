@@ -26,12 +26,12 @@ impl Metric {
     ];
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::Loss => "网络丢包",
-            Self::Rtt => "网络往返",
-            Self::Jitter => "RTP 抖动",
-            Self::FrameDelay => "估算帧延迟",
-            Self::LocalDelay => "本地单帧",
-            Self::PresentationStall => "呈现停滞",
+            Self::Loss => crate::i18n::t().session.health_loss,
+            Self::Rtt => crate::i18n::t().session.health_round_trip,
+            Self::Jitter => crate::i18n::t().session.health_jitter,
+            Self::FrameDelay => crate::i18n::t().session.health_frame_delay,
+            Self::LocalDelay => crate::i18n::t().session.health_local_frame,
+            Self::PresentationStall => crate::i18n::t().session.health_presentation_stall,
         }
     }
     pub(crate) fn format(self, value: f64) -> String {

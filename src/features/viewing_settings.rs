@@ -6,6 +6,8 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use crate::i18n::t;
+
 use crate::features::stream_control::{
     LoadedStreamControl, MAX_CUSTOM_BITRATE_MBPS, SavedStreamControl, StreamControlHandle,
     StreamControlSettings, ViewingPreferenceUpdate,
@@ -65,8 +67,8 @@ impl WeakNetwork {
     }
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::Bitrate => "优先降低码率",
-            Self::FrameRate => "优先降低帧率",
+            Self::Bitrate => t().features.viewing_weak_network_bitrate,
+            Self::FrameRate => t().features.viewing_weak_network_frame_rate,
         }
     }
 }
@@ -97,11 +99,13 @@ impl DevicePreferences {
     fn validate(self) -> Result<Self> {
         anyhow::ensure!(
             !self.codec.is_some_and(|codec| codec.restricted()),
-            "设备首选不能包含全局格式限制"
+            "{}",
+            t().features.viewing_device_codec_restricted
         );
         anyhow::ensure!(
             self.mouse_mode != crate::features::remote_input::MouseMode::View,
-            "已保存的鼠标模式无效"
+            "{}",
+            t().features.viewing_saved_mouse_mode_invalid
         );
         Ok(self)
     }
@@ -131,18 +135,27 @@ struct Record {
 impl Record {
     fn decode(bytes: &[u8]) -> Result<Self> {
         let record: Self = serde_json::from_slice(bytes)
-            .map_err(|error| anyhow::anyhow!("已保存的画面设置格式无效：{error}"))?;
+            .map_err(|error| {
+                anyhow::anyhow!((t().features.viewing_saved_settings_malformed)(
+                    &error.to_string()
+                ))
+            })?;
         record.validate()?;
         Ok(record)
     }
 
     fn validate(&self) -> Result<()> {
-        anyhow::ensure!(self.schema == 1, "画面设置版本不受支持");
+        anyhow::ensure!(
+            self.schema == 1,
+            "{}",
+            t().features.viewing_settings_version_unsupported
+        );
         anyhow::ensure!(
             self.settings.is_none_or(|settings| {
                 (1..=MAX_CUSTOM_BITRATE_MBPS).contains(&settings.custom_bitrate_mbps)
             }) && (1..=6).contains(&self.auto_frame_quality),
-            "已保存的画面设置数值无效"
+            "{}",
+            t().features.viewing_saved_settings_invalid
         );
         Ok(())
     }
@@ -158,7 +171,7 @@ impl ViewingSettingsStore {
     pub(crate) fn new(user_id: &str, publisher_id: &str) -> Result<Self> {
         crate::account::api::validate_device_id(publisher_id)?;
         if user_id.is_empty() {
-            bail!("无法确定画面设置所属账号");
+            bail!("{}", t().features.viewing_settings_account_unknown);
         }
         let service = crate::product::keyring_service(&format!(
             "viewing.{:x}",
@@ -177,15 +190,21 @@ impl ViewingSettingsStore {
                     )),
                     publisher_id,
                 )
-                .map_err(|_| anyhow::anyhow!("设备偏好存储不可用"))?,
+                .map_err(|_| {
+                    anyhow::anyhow!("{}", t().features.viewing_device_storage_unavailable)
+                })?,
             ),
             viewing: Arc::new(
                 Entry::new(&service, publisher_id)
-                    .map_err(|_| anyhow::anyhow!("画面设置存储不可用"))?,
+                    .map_err(|_| {
+                        anyhow::anyhow!("{}", t().features.viewing_settings_storage_unavailable)
+                    })?,
             ),
             audio: Arc::new(
                 Entry::new(&audio_service, publisher_id)
-                    .map_err(|_| anyhow::anyhow!("音量设置存储不可用"))?,
+                    .map_err(|_| {
+                        anyhow::anyhow!("{}", t().features.viewing_volume_storage_unavailable)
+                    })?,
             ),
             microphone: Arc::new(
                 Entry::new(
@@ -195,7 +214,9 @@ impl ViewingSettingsStore {
                     )),
                     publisher_id,
                 )
-                .map_err(|_| anyhow::anyhow!("麦克风设置存储不可用"))?,
+                .map_err(|_| {
+                    anyhow::anyhow!("{}", t().features.viewing_microphone_storage_unavailable)
+                })?,
             ),
         })
     }
@@ -206,7 +227,7 @@ impl ViewingSettingsStore {
             let bytes = match entry.get_secret() {
                 Ok(bytes) => bytes,
                 Err(Error::NoEntry) => return Ok(None),
-                Err(_) => bail!("无法读取此设备的画面设置"),
+                Err(_) => bail!("{}", t().features.viewing_settings_read_failed),
             };
             let record = Record::decode(&bytes)?;
             Ok(Some(LoadedStreamControl {
@@ -215,7 +236,7 @@ impl ViewingSettingsStore {
             }))
         })
         .await
-        .context("画面设置读取任务中断")?
+        .context(t().features.viewing_settings_read_interrupted)?
     }
 
     async fn save(&self, saved: SavedStreamControl) -> Result<()> {
@@ -230,10 +251,10 @@ impl ViewingSettingsStore {
             let bytes = serde_json::to_vec(&record)?;
             entry
                 .set_secret(&bytes)
-                .map_err(|_| anyhow::anyhow!("无法保存此设备的画面设置"))
+                .map_err(|_| anyhow::anyhow!("{}", t().features.viewing_settings_save_failed))
         })
         .await
-        .context("画面设置保存任务中断")?
+        .context(t().features.viewing_settings_save_interrupted)?
     }
 
     pub(crate) async fn load_audio(&self) -> Result<Option<crate::media::audio::AudioSettings>> {
@@ -242,17 +263,17 @@ impl ViewingSettingsStore {
             let bytes = match entry.get_secret() {
                 Ok(bytes) => bytes,
                 Err(Error::NoEntry) => return Ok(None),
-                Err(_) => bail!("无法读取此设备的音量设置"),
+                Err(_) => bail!("{}", t().features.viewing_volume_read_failed),
             };
             let record: AudioRecord = serde_json::from_slice(&bytes)
-                .map_err(|_| anyhow::anyhow!("已保存的音量设置格式无效"))?;
+                .map_err(|_| anyhow::anyhow!("{}", t().features.viewing_volume_malformed))?;
             if record.schema != 1 || record.settings.volume > crate::media::audio::MAX_VOLUME {
-                bail!("已保存的音量设置无效");
+                bail!("{}", t().features.viewing_volume_invalid);
             }
             Ok(Some(record.settings))
         })
         .await
-        .context("音量设置读取任务中断")?
+        .context(t().features.viewing_volume_read_interrupted)?
     }
 
     async fn save_audio(&self, settings: crate::media::audio::AudioSettings) -> Result<()> {
@@ -264,10 +285,10 @@ impl ViewingSettingsStore {
             })?;
             entry
                 .set_secret(&bytes)
-                .map_err(|_| anyhow::anyhow!("无法保存此设备的音量设置"))
+                .map_err(|_| anyhow::anyhow!("{}", t().features.viewing_volume_save_failed))
         })
         .await
-        .context("音量设置保存任务中断")?
+        .context(t().features.viewing_volume_save_interrupted)?
     }
 
     pub(crate) async fn load_microphone(&self) -> Result<crate::media::audio::encoder::Quality> {
@@ -276,13 +297,13 @@ impl ViewingSettingsStore {
             let bytes = match entry.get_secret() {
                 Ok(bytes) => bytes,
                 Err(Error::NoEntry) => return Ok(Default::default()),
-                Err(_) => bail!("无法读取麦克风音质设置"),
+                Err(_) => bail!("{}", t().features.viewing_microphone_read_failed),
             };
             let quality: crate::media::audio::encoder::Quality = serde_json::from_slice(&bytes)?;
             quality.restore()
         })
         .await
-        .context("麦克风设置读取任务中断")?
+        .context(t().features.viewing_microphone_read_interrupted)?
     }
     async fn save_microphone(&self, quality: crate::media::audio::encoder::Quality) -> Result<()> {
         quality.validate()?;
@@ -290,10 +311,10 @@ impl ViewingSettingsStore {
         tokio::task::spawn_blocking(move || {
             entry
                 .set_secret(&serde_json::to_vec(&quality)?)
-                .map_err(|_| anyhow::anyhow!("无法保存麦克风音质设置"))
+                .map_err(|_| anyhow::anyhow!("{}", t().features.viewing_microphone_save_failed))
         })
         .await
-        .context("麦克风设置保存任务中断")?
+        .context(t().features.viewing_microphone_save_interrupted)?
     }
     pub(crate) async fn load_device(&self) -> Result<DevicePreferences> {
         let entry = self.device.clone();
@@ -301,15 +322,19 @@ impl ViewingSettingsStore {
             let bytes = match entry.get_secret() {
                 Ok(bytes) => bytes,
                 Err(Error::NoEntry) => return Ok(DevicePreferences::default()),
-                Err(_) => bail!("无法读取此设备的控制偏好"),
+                Err(_) => bail!("{}", t().features.viewing_device_read_failed),
             };
             let record: DeviceRecord =
-                serde_json::from_slice(&bytes).context("设备偏好格式无效")?;
-            anyhow::ensure!(record.schema == 1, "设备偏好版本无效");
+                serde_json::from_slice(&bytes).context(t().features.viewing_device_malformed)?;
+            anyhow::ensure!(
+                record.schema == 1,
+                "{}",
+                t().features.viewing_device_version_invalid
+            );
             record.preferences.validate()
         })
         .await
-        .context("设备偏好读取任务中断")
+        .context(t().features.viewing_device_read_interrupted)
         .and_then(|r| r)
     }
 
@@ -336,10 +361,10 @@ impl ViewingSettingsStore {
             })?;
             entry
                 .set_secret(&bytes)
-                .map_err(|_| anyhow::anyhow!("无法保存此设备的控制偏好"))
+                .map_err(|_| anyhow::anyhow!("{}", t().features.viewing_device_save_failed))
         })
         .await
-        .context("设备偏好写入任务中断")?
+        .context(t().features.viewing_device_save_interrupted)?
     }
 
     pub(crate) fn bind_local_preferences(self, handle: StreamControlHandle) -> PreferenceWriter {
@@ -469,16 +494,20 @@ impl ViewingSettingsStore {
                     settings: None,
                     auto_frame_quality: quality,
                 },
-                Err(_) => bail!("无法读取此设备的画面设置"),
+                Err(_) => bail!("{}", t().features.viewing_settings_read_failed),
             };
-            anyhow::ensure!((1..=6).contains(&quality), "自动画质状态无效");
+            anyhow::ensure!(
+                (1..=6).contains(&quality),
+                "{}",
+                t().features.viewing_auto_quality_invalid
+            );
             record.auto_frame_quality = quality;
             entry
                 .set_secret(&serde_json::to_vec(&record)?)
-                .map_err(|_| anyhow::anyhow!("无法保存自动画质"))
+                .map_err(|_| anyhow::anyhow!("{}", t().features.viewing_auto_quality_save_failed))
         })
         .await
-        .context("自动画质写入任务中断")?
+        .context(t().features.viewing_auto_quality_save_interrupted)?
     }
 }
 

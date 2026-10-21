@@ -21,12 +21,12 @@ impl DisplayAspect {
     ];
     pub fn label(self) -> &'static str {
         match self {
-            Self::Video => "保持画面比例",
-            Self::Display => "跟随目标显示器比例",
-            Self::Wide => "拉伸至 16:9",
-            Self::WideTen => "拉伸至 16:10",
-            Self::Standard => "拉伸至 4:3",
-            Self::UltraWide => "拉伸至 21:9",
+            Self::Video => crate::i18n::t().session.aspect_keep,
+            Self::Display => crate::i18n::t().session.aspect_display,
+            Self::Wide => crate::i18n::t().session.aspect_16_9,
+            Self::WideTen => crate::i18n::t().session.aspect_16_10,
+            Self::Standard => crate::i18n::t().session.aspect_4_3,
+            Self::UltraWide => crate::i18n::t().session.aspect_21_9,
         }
     }
     pub fn ratio(self, preferred: Option<(u32, u32)>) -> Option<(u32, u32)> {

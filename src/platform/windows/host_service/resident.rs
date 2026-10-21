@@ -1,5 +1,6 @@
 //! Single unattended account owner, independent of the ordinary desktop UI.
 use super::{pipe::Pipe, process, vault};
+use crate::i18n::t;
 use crate::{
     account::{
         auth::{KeyringSessionStore, NativeIdentity, SessionStore},
@@ -223,7 +224,7 @@ pub(crate) fn call(request: Request) -> Result<Reply> {
                 {
                     ()
                 }
-                Ok(None) => anyhow::bail!("被控后台尚未启动"),
+                Ok(None) => anyhow::bail!("{}", t().system.service_resident_not_started),
                 Err(error) => return Err(error),
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -244,7 +245,7 @@ pub(crate) fn call(request: Request) -> Result<Reply> {
 pub(crate) async fn request(request: Request) -> Result<Reply> {
     tokio::task::spawn_blocking(move || call(request))
         .await
-        .context("被控后台请求中断")?
+        .context(t().system.service_resident_request_interrupted)?
 }
 
 /// A missing pipe is not proof that the host has stopped. Check SCM before
@@ -256,7 +257,7 @@ pub(crate) async fn pause_for_exit() -> Result<()> {
         }
         match call(Request::Pause) {
             Ok(Reply::Done) => Ok(()),
-            Ok(_) => anyhow::bail!("结束被控后台返回无效响应"),
+            Ok(_) => anyhow::bail!("{}", t().system.service_resident_invalid_exit_reply),
             Err(error) => match super::install::running() {
                 Ok(false) => Ok(()),
                 _ => Err(error),
@@ -264,7 +265,7 @@ pub(crate) async fn pause_for_exit() -> Result<()> {
         }
     })
     .await
-    .context("被控后台退出请求中断")?
+    .context(t().system.service_resident_exit_interrupted)?
 }
 
 fn authorize(pipe: &Pipe) -> Result<()> {
@@ -422,7 +423,11 @@ fn control_connection(
                     }
                 }
                 request => {
-                    ensure!(!paused.load(Ordering::Acquire), "被控后台已退出");
+                    ensure!(
+                        !paused.load(Ordering::Acquire),
+                        "{}",
+                        t().system.service_resident_exited
+                    );
                     if forward
                         .as_ref()
                         .is_some_and(|(_, pipe)| pipe.queued_bytes().is_err())
@@ -458,14 +463,19 @@ fn wait_for_session(
     loop {
         ensure!(
             running() && !paused.load(Ordering::Acquire),
-            "后台启动等待已取消"
+            "{}",
+            t().system.service_resident_start_cancelled
         );
         let pid = child.load(Ordering::Acquire);
         if pid != 0 {
             match Pipe::client(&SESSION) {
                 Ok(Some(pipe)) => {
                     if child.load(Ordering::Acquire) == pid {
-                        ensure!(pipe.peer_pid(false)? == pid, "被控后台进程身份不匹配");
+                        ensure!(
+                            pipe.peer_pid(false)? == pid,
+                            "{}",
+                            t().system.service_resident_identity_mismatch
+                        );
                         if waited {
                             tracing::info!(
                                 pid,
@@ -491,7 +501,8 @@ fn wait_for_session(
         }
         ensure!(
             started.elapsed() < Duration::from_secs(10),
-            "等待被控后台就绪超时"
+            "{}",
+            t().system.service_resident_start_timeout
         );
         waited = true;
         // Poll readiness only: no RPC has been sent, and no side effect is replayed.
@@ -568,7 +579,8 @@ fn boot_pause(value: Option<bool>) -> Result<bool> {
             };
             ensure!(
                 result.is_ok() || result == windows::Win32::Foundation::ERROR_FILE_NOT_FOUND,
-                "无法读取本次开机退出状态"
+                "{}",
+                t().system.service_boot_state_read_failed
             );
             Ok(value != 0)
         }
@@ -670,7 +682,9 @@ pub(crate) fn run(parent: u32) -> Result<()> {
                                 // Pausing drops registrations in flight; the
                                 // service still waits on this pipe for an answer.
                                 let reply = result.blocking_recv().unwrap_or_else(|_| {
-                                    Reply::Error("后台请求已取消".into())
+                                    Reply::Error(
+                                        t().system.service_resident_request_cancelled.into(),
+                                    )
                                 });
                                 pipe.send(&reply, alive)?;
                             }
@@ -706,7 +720,7 @@ async fn run_account(mut incoming: Incoming, running: &impl Fn() -> bool) -> Res
                 ) {
                     Reply::Done
                 } else {
-                    Reply::Error("本机尚未授权常驻被控".into())
+                    Reply::Error(t().system.service_resident_not_authorized.into())
                 };
                 let _ = reply.send(result);
             } else if incoming.is_closed() {
@@ -760,7 +774,7 @@ async fn run_authorized_account(
             }
             if let Some((request, reply)) = command {
                 if paused()? && !matches!(&request,Request::Pause|Request::Quiescent) {
-                    let _=reply.send(Reply::Error("被控后台已暂停".into()));
+                    let _=reply.send(Reply::Error(t().system.service_resident_paused.into()));
                     continue;
                 }
                 // "Direct connections only" changed: rebuild the presence.
@@ -786,12 +800,12 @@ async fn run_authorized_account(
                         }
                         let idle = super::activity::idle() && super::user_backend::idle()?;
                         tracing::info!(idle, "background host paused");
-                        if idle {Ok(Reply::Done)}else{Err(anyhow::anyhow!("会话资源尚未排空"))}
+                        if idle {Ok(Reply::Done)}else{Err(anyhow::anyhow!("{}", t().system.service_resources_not_released))}
                     },
                     Request::Quiescent => {
                         if client.as_ref().is_none_or(|c|c.host.status().connection.is_none())
                             && preparation.is_none() && initializers.is_empty() && super::activity::idle() && super::user_backend::idle()? {Ok(Reply::Done)}
-                        else{Err(anyhow::anyhow!("后台仍有活动会话"))}
+                        else{Err(anyhow::anyhow!("{}", t().system.service_resident_sessions_active))}
                     },
                     Request::Reconnect => {
                         crate::session::reconnect::now();
@@ -827,7 +841,7 @@ async fn run_authorized_account(
                         .map(|_| Reply::Done),
                     request => {
                         async {
-                            let current = client.as_ref().context("后台尚未恢复账号")?;
+                            let current = client.as_ref().context(t().system.service_account_not_restored)?;
                             let account = current.generation();
                             match request {
                                 Request::Snapshot { ui, device_cursor } => {
@@ -861,7 +875,7 @@ async fn run_authorized_account(
                                     state: Box::new(crate::transport::direct::managed::HostDirect::current()),
                                 }),
                                 Request::Direct { account: expected, action } => {
-                                    ensure!(expected == account, "账号已改变");
+                                    ensure!(expected == account, "{}", t().system.service_account_changed);
                                     let applied = crate::transport::direct::managed::apply(action)?;
                                     if let Some(device) = applied.end_sessions_of {
                                         // A device no longer trusted loses its current sessions too.
@@ -871,17 +885,17 @@ async fn run_authorized_account(
                                     Ok(Reply::Done)
                                 }
                                 Request::Assist { account: expected, action } => {
-                                    ensure!(expected == account, "账号已改变");
+                                    ensure!(expected == account, "{}", t().system.service_account_changed);
                                     current.host.assistance.act(action)?;
                                     Ok(Reply::Done)
                                 },
-                                Request::RefreshWol => {ensure!(!current.is_guest(), "未登录");current.host.wol.refresh();Ok(Reply::Done)},
+                                Request::RefreshWol => {ensure!(!current.is_guest(), "{}", t().common.signed_out);current.host.wol.refresh();Ok(Reply::Done)},
                                 Request::WolSetup { account: expected, action } => {
-                                    ensure!(expected == account && !current.is_guest(), "账号已改变或未登录");
+                                    ensure!(expected == account && !current.is_guest(), "{}", t().system.service_account_changed_or_signed_out);
                                     current.host.wol_setup.act(action)?;
                                     Ok(Reply::Done)
                                 },
-                                Request::RefreshPublication => {ensure!(!current.is_guest(), "未登录");crate::account::reporting::REFRESH.notify_one();Ok(Reply::Done)},
+                                Request::RefreshPublication => {ensure!(!current.is_guest(), "{}", t().common.signed_out);crate::account::reporting::REFRESH.notify_one();Ok(Reply::Done)},
                                 Request::Settings {
                                     account: expected,
                                     allowed,
@@ -897,7 +911,7 @@ async fn run_authorized_account(
                                     wol,
                                     max_participants,
                                 } => {
-                                    ensure!(expected == account, "账号已改变");
+                                    ensure!(expected == account, "{}", t().system.service_account_changed);
                                     encoding.validate()?;
                                     if let Some(device)=&audio_device {device.validate()?;}
                                     current.host.set_encoding_settings(encoding)?;
@@ -919,27 +933,27 @@ async fn run_authorized_account(
                                     Ok(Reply::Done)
                                 }
                                 Request::Disconnect { account: expected, session } => {
-                                    ensure!(expected == account, "账号已改变");
-                                    ensure!(current.host.disconnect_session(&session), "该连接已结束或已更换");
+                                    ensure!(expected == account, "{}", t().system.service_account_changed);
+                                    ensure!(current.host.disconnect_session(&session), "{}", t().system.service_connection_ended);
                                     Ok(Reply::Done)
                                 }
                                 Request::BlockControl { account: expected, session, blocked } => {
-                                    ensure!(expected == account, "账号已改变");
-                                    ensure!(current.host.block_control(&session, blocked), "该连接已结束或已更换");
+                                    ensure!(expected == account, "{}", t().system.service_account_changed);
+                                    ensure!(current.host.block_control(&session, blocked), "{}", t().system.service_connection_ended);
                                     Ok(Reply::Done)
                                 }
                                 Request::Retry { account: expected } => {
-                                    ensure!(expected == account, "账号已改变");
+                                    ensure!(expected == account, "{}", t().system.service_account_changed);
                                     current.host.retry();
                                     Ok(Reply::Done)
                                 }
                                 Request::Retire { account: expected } => {
-                                    ensure!(expected == account, "账号已改变");
+                                    ensure!(expected == account, "{}", t().system.service_account_changed);
                                     blocked = account;
                                     current.retire();
                                     Ok(Reply::Done)
                                 }
-                                _ => anyhow::bail!("后台命令无效"),
+                                _ => anyhow::bail!("{}", t().system.service_invalid_command),
                             }
                         }
                         .await

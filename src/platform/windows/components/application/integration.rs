@@ -17,7 +17,8 @@ pub(super) fn register(enabled: bool) -> Result<()> {
             let result = RegDeleteTreeW(HKEY_LOCAL_MACHINE, KEY);
             ensure!(
                 result.is_ok() || result == ERROR_FILE_NOT_FOUND,
-                "无法移除应用登记"
+                "{}",
+                t().system.component_unregister_failed
             );
             return Ok(());
         }
@@ -105,12 +106,13 @@ pub(super) fn shortcuts(enabled: bool) -> Result<()> {
             let end = target
                 .iter()
                 .position(|c| *c == 0)
-                .context("快捷方式目标无效")?;
+                .context(t().system.component_invalid_shortcut_target)?;
             let target = PathBuf::from(String::from_utf16_lossy(&target[..end]));
             ensure!(
                 target == image
                     || crate::platform::windows::notifications::owns_shortcut(&link, &target),
-                "已有同名快捷方式指向其他程序，已保留"
+                "{}",
+                t().system.component_shortcut_conflict
             );
         }
         if enabled {

@@ -506,7 +506,7 @@ pub(super) async fn send_remote_input(
         let epoch = event.epoch;
         let result = tokio::select! {
             biased;
-            _ = mouse.epoch_cancelled(epoch) => Err(anyhow::anyhow!("鼠标连接代次已变更")),
+            _ = mouse.epoch_cancelled(epoch) => Err(anyhow::anyhow!("{}", crate::i18n::t().session.mouse_channel_replaced)),
             result = tokio::time::timeout(event.event.send_timeout(),
                 async {
                     let release=event.event.releases();
@@ -523,8 +523,8 @@ pub(super) async fn send_remote_input(
                     else {kcp.send_control(&channel,event.event.encode()).await}
                 }) => result
                 .map_err(|_| { timed_out = true; match kcp.send_failure_reason() {
-                    Some(reason) => anyhow::anyhow!("键鼠输入发送超时：{reason}"),
-                    None => anyhow::anyhow!("键鼠输入发送超时"),
+                    Some(reason) => anyhow::anyhow!("{}", (crate::i18n::t().session.input_send_timeout_reason)(&reason.to_string())),
+                    None => anyhow::anyhow!("{}", crate::i18n::t().session.input_send_timeout),
                 } })
                 .and_then(|result| result.map(|_| ())),
         };

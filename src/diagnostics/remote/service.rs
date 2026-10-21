@@ -32,7 +32,7 @@ pub(crate) fn snapshot(controller: &str, target: &str) -> Option<Snapshot> {
 pub(crate) fn cancel(controller: &str, target: &str) {
     if let Some(job) = lock(jobs()).get(&key(controller, target)) {
         job.cancel.cancel();
-        lock(&job.view).progress.stage = "正在取消…".into();
+        lock(&job.view).progress.stage = crate::i18n::t().session.rdiag_cancelling.into();
     }
 }
 pub(crate) fn start(
@@ -49,7 +49,7 @@ pub(crate) fn start(
         view: Mutex::new(Snapshot {
             busy: true,
             progress: super::bundle::Progress {
-                stage: "正在连接设备…".into(),
+                stage: crate::i18n::t().session.rdiag_connecting.into(),
                 completed: 0,
                 total: 0,
             },
@@ -69,7 +69,7 @@ pub(crate) fn start(
                 view.cancelled = job.cancel.is_cancelled();
                 if view.cancelled {
                     view.error = None;
-                    view.progress.stage = "已取消获取".into();
+                    view.progress.stage = crate::i18n::t().session.rdiag_cancelled_short.into();
                 } else {
                     // Keep the error chain in diagnostics, not in the product label.
                     tracing::warn!(error = %format!("{error:#}"), "remote diagnostic request failed");
@@ -96,25 +96,26 @@ async fn run(
     options: ConnectionMediaOptions,
     job: &Job,
 ) -> Result<Snapshot> {
-    let list = tokio::select! {_=job.cancel.cancelled()=>anyhow::bail!("已取消获取远端诊断包"),list=client.list_devices()=>list.context("无法读取设备状态")?};
+    let list = tokio::select! {_=job.cancel.cancelled()=>anyhow::bail!("{}", crate::i18n::t().session.rdiag_cancelled),list=client.list_devices()=>list.context(crate::i18n::t().session.rdiag_device_state_unreadable)?};
     let target = list.with_capability(&device.device_id, farwing_protocol::caps::DIAGNOSTICS)?;
     target
         .validated_device_id()
-        .context("设备信息无效")?;
+        .context(crate::i18n::t().session.rdiag_device_info_invalid)?;
     ensure!(
         target.platform == farwing_protocol::Platform::Windows
             && target.device_id != client.device_id()
             && target.is_connected()
             && target.controllable
             && target.controlled_support,
-        "设备当前不可获取诊断包"
+        "{}",
+        crate::i18n::t().session.rdiag_device_unavailable
     );
     let policy = client.feature_catalog().policy_for(target);
     let connection =
         ControllerConnection::connect_files(client, target, policy, options, &job.cancel)
             .await
-            .context("连接设备失败")?;
-    lock(&job.view).progress.stage = "等待远端响应…".into();
+            .context(crate::i18n::t().session.rdiag_connect_failed)?;
+    lock(&job.view).progress.stage = crate::i18n::t().session.rdiag_waiting_response.into();
     let wire = connection.stream_control_handle().diagnostics().clone();
     let mut started = false;
     let result = collect(&wire, job, &mut started).await;
@@ -139,28 +140,28 @@ async fn run(
 }
 async fn collect(wire: &Controller, job: &Job, started: &mut bool) -> Result<Snapshot> {
     tokio::select! {
-        _=job.cancel.cancelled()=>anyhow::bail!("已取消获取远端诊断包"),
+        _=job.cancel.cancelled()=>anyhow::bail!("{}", crate::i18n::t().session.rdiag_cancelled),
         ready=tokio::time::timeout(Duration::from_secs(15),async {
             loop {
-                ensure!(!wire.is_closed(), "诊断连接已关闭");
+                ensure!(!wire.is_closed(), "{}", crate::i18n::t().session.rdiag_connection_closed);
                 let view=wire.snapshot();
-                if view.supported {ensure!(view.allowed,"远端未允许账号内文件访问");return Ok::<_,anyhow::Error>(());}
+                if view.supported {ensure!(view.allowed, "{}", crate::i18n::t().session.rdiag_files_not_allowed);return Ok::<_,anyhow::Error>(());}
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
-        })=>ready.map_err(|_| anyhow::anyhow!("远端未响应诊断请求"))??,
+        })=>ready.map_err(|_| anyhow::anyhow!("{}", crate::i18n::t().session.rdiag_no_response))??,
     }
-    wire.start().context("无法开始获取诊断包")?;
+    wire.start().context(crate::i18n::t().session.rdiag_start_failed)?;
     *started = true;
     loop {
         let snapshot = wire.snapshot();
         if !snapshot.busy {
             if let Some(error) = &snapshot.error {
-                return Err(anyhow::anyhow!(error.clone()).context("诊断包获取未完成"));
+                return Err(anyhow::anyhow!(error.clone()).context(crate::i18n::t().session.rdiag_fetch_incomplete));
             }
-            ensure!(snapshot.path.is_some(), "远端诊断包未完成");
+            ensure!(snapshot.path.is_some(), "{}", crate::i18n::t().session.rdiag_remote_incomplete);
             return Ok(snapshot);
         }
         *lock(&job.view) = snapshot;
-        tokio::select! {_=job.cancel.cancelled()=>anyhow::bail!("已取消获取远端诊断包"),_=tokio::time::sleep(Duration::from_millis(100))=>{}}
+        tokio::select! {_=job.cancel.cancelled()=>anyhow::bail!("{}", crate::i18n::t().session.rdiag_cancelled),_=tokio::time::sleep(Duration::from_millis(100))=>{}}
     }
 }

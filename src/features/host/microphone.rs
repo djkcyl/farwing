@@ -9,6 +9,7 @@
 mod routing;
 use super::{Lease, lock};
 use crate::protocol::microphone as errors;
+use crate::i18n::t;
 use crate::{
     media::audio::neteq,
     platform::windows::virtual_audio::{Bridge, State},
@@ -63,7 +64,7 @@ impl PolicyFailure {
     fn not_allowed() -> Self {
         Self {
             code: errors::NOT_ALLOWED,
-            detail: "本次会话不允许麦克风输入".into(),
+            detail: t().features.microphone_not_allowed.into(),
         }
     }
     fn bridge(error: anyhow::Error) -> anyhow::Error {
@@ -171,7 +172,7 @@ impl Session {
                 std::thread::Builder::new()
                     .name("host-microphone".into())
                     .spawn(move || run(rx))
-                    .context("无法创建虚拟麦克风线程")?;
+                    .context(t().features.microphone_thread_failed)?;
                 *mixer = Some(requests.clone());
                 requests
             }
@@ -217,11 +218,11 @@ impl Receiver {
                     done,
                 },
             ))
-            .map_err(|_| anyhow::anyhow!("麦克风设置繁忙"))?;
+            .map_err(|_| anyhow::anyhow!(t().features.microphone_busy))?;
         tokio::time::timeout(Duration::from_secs(3), result)
             .await
-            .context("麦克风设置超时")?
-            .context("麦克风执行线程已结束")?
+            .context(t().features.microphone_timeout)?
+            .context(t().features.microphone_worker_stopped)?
     }
     pub fn status(&self) -> tokio::sync::watch::Receiver<Status> {
         self.shared.status.subscribe()
@@ -571,7 +572,7 @@ impl Mixer {
             }
             if command.done.is_closed() || command.intent != shared.intent.load(Ordering::Acquire)
             {
-                anyhow::bail!("麦克风请求已撤销");
+                anyhow::bail!("{}", t().features.microphone_request_withdrawn);
             }
             shared.enabled.store(true, Ordering::Release);
             shared.retained.store(true, Ordering::Release);

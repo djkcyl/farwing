@@ -42,7 +42,8 @@ fn ensure_resident_owner() -> Result<()> {
     use crate::platform::windows::host_service::vault;
     anyhow::ensure!(
         vault::owner()? == Some(vault::sid(std::process::id())?),
-        "服务未登记到当前 Windows 用户"
+        "{}",
+        crate::i18n::t().session.resident_owner_mismatch
     );
     Ok(())
 }
@@ -321,7 +322,7 @@ impl NativeIdentity {
 
     fn validate_schema(&self) -> Result<()> {
         if self.schema != IDENTITY_SCHEMA {
-            bail!("本机设备注册记录需要重新建立");
+            bail!("{}", crate::i18n::t().session.registration_record_outdated);
         }
         Uuid::parse_str(&self.client_id).context("saved installation id is not a UUID")?;
         self.key_seed()?;

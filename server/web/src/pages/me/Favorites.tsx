@@ -1,6 +1,7 @@
 // Saved short codes (favourites, recent connections), shared with the
 // client. Access codes stay on each client; the web never stores them.
 import { useState, type FormEvent } from 'react';
+import { useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
 import { ago, connectIdText, dateTime } from '../../lib/format';
 import { navigate } from '../../lib/router';
@@ -18,6 +19,8 @@ const toItem = (s: SavedDevice) => ({
 });
 
 export default function Favorites() {
+  const t = useT();
+  const m = t.account.favorites;
   const { confirm, toast } = useOverlay();
   const [tab, setTab] = useState<Tab>('favorites');
   const favorites = useApi<{ saved: SavedDevice[] }>('/api/v2/assist/saved/favorites');
@@ -47,21 +50,21 @@ export default function Favorites() {
             s.connect_id === editing.connect_id ? { ...toItem(s), remark: remark.trim() } : toItem(s),
           ),
         );
-        toast('已保存');
+        toast(t.common.saved);
       } else {
         if (!/^\d{9}$/.test(id)) {
-          setError('短号是 9 位数字');
+          setError(m.badConnectId);
           return;
         }
         if (current.some((s) => s.connect_id === id)) {
-          setError('已经收藏过这个短号');
+          setError(m.duplicate);
           return;
         }
         await put([
           ...current.map(toItem),
           { connect_id: id, remark: remark.trim(), favorited_at: Math.floor(Date.now() / 1000) },
         ]);
-        toast('已收藏');
+        toast(m.added);
       }
       setAdding(false);
       setEditing(undefined);
@@ -73,7 +76,7 @@ export default function Favorites() {
   return (
     <div className="stack">
       <PageHeader
-        title="收藏"
+        title={t.nav.favorites}
         actions={
           <Button
             variant="primary"
@@ -85,7 +88,7 @@ export default function Favorites() {
               setAdding(true);
             }}
           >
-            收藏短号
+            {m.add}
           </Button>
         }
       />
@@ -93,8 +96,8 @@ export default function Favorites() {
         value={tab}
         onChange={setTab}
         items={[
-          { id: 'favorites', label: `收藏 ${favorites.data?.saved.length ?? ''}` },
-          { id: 'recent', label: `最近连接 ${recent.data?.saved.length ?? ''}` },
+          { id: 'favorites', label: `${m.favorites} ${favorites.data?.saved.length ?? ''}` },
+          { id: 'recent', label: `${m.recent} ${recent.data?.saved.length ?? ''}` },
         ]}
       />
       {(favorites.error || recent.error) && <Alert>{favorites.error ?? recent.error}</Alert>}
@@ -104,33 +107,37 @@ export default function Favorites() {
         ) : list.length === 0 ? (
           <Empty
             icon={tab === 'favorites' ? 'star' : 'activity'}
-            title={tab === 'favorites' ? '暂无收藏' : '暂无最近连接'}
+            title={tab === 'favorites' ? m.noFavorites : m.noRecent}
           />
         ) : (
           <div className="table-wrap">
             <table className="table">
               <thead>
                 <tr>
-                  <th>设备</th>
-                  <th>短号</th>
-                  <th>{tab === 'favorites' ? '收藏于' : '最近连接'}</th>
+                  <th>{m.device}</th>
+                  <th>{t.account.connectId}</th>
+                  <th>{tab === 'favorites' ? m.favoritedAt : m.lastConnected}</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
                 {list.map((s) => (
                   <tr key={s.connect_id + s.publisher_device_id}>
-                    <td className="cell-main">{s.remark || <span className="muted">（无备注）</span>}</td>
+                    <td className="cell-main">{s.remark || <span className="muted">{t.common.noNote}</span>}</td>
                     <td className="mono">{connectIdText(s.connect_id)}</td>
                     <td className="nowrap muted">
                       {tab === 'favorites' ? dateTime(s.favorited_at) : ago(s.last_connected_at)}
                     </td>
                     <td className="actions">
-                      <IconButton icon="play" label="观看" onClick={() => navigate(`/visit?code=${s.connect_id}`)} />
+                      <IconButton
+                        icon="play"
+                        label={t.devices.watch}
+                        onClick={() => navigate(`/visit?code=${s.connect_id}`)}
+                      />
                       {tab === 'favorites' && (
                         <IconButton
                           icon="edit"
-                          label="修改备注"
+                          label={m.editNote}
                           onClick={() => {
                             setEditing(s);
                             setCode(s.connect_id);
@@ -141,14 +148,13 @@ export default function Favorites() {
                       )}
                       <IconButton
                         icon="trash"
-                        label="删除"
+                        label={t.common.delete}
                         variant="danger"
                         onClick={async () => {
                           if (
                             await confirm({
-                              title: '删除',
-                              message: `删除 ${connectIdText(s.connect_id)}？`,
-                              confirm: '删除',
+                              title: m.deleteTitle(connectIdText(s.connect_id)),
+                              confirm: t.common.delete,
                               danger: true,
                             })
                           ) {
@@ -159,7 +165,7 @@ export default function Favorites() {
                                 await call('DELETE', `/api/v2/assist/saved/recent/${s.publisher_device_id}`);
                                 await recent.reload();
                               }
-                              toast('已删除');
+                              toast(t.common.deleted);
                             } catch (err) {
                               toast(errorText(err), 'red');
                             }
@@ -176,23 +182,23 @@ export default function Favorites() {
       </Card>
       <Dialog
         open={adding || !!editing}
-        title={editing ? '修改备注' : '收藏短号'}
+        title={editing ? m.editNote : m.add}
         onClose={() => {
           setAdding(false);
           setEditing(undefined);
         }}
         footer={
           <>
-            <Button onClick={() => (setAdding(false), setEditing(undefined))}>取消</Button>
+            <Button onClick={() => (setAdding(false), setEditing(undefined))}>{t.common.cancel}</Button>
             <Button variant="primary" type="submit" form="favorite-form">
-              保存
+              {t.common.save}
             </Button>
           </>
         }
       >
         <form id="favorite-form" className="stack" onSubmit={submit}>
           {error && <Alert>{error}</Alert>}
-          <Field label="短号">
+          <Field label={t.account.connectId}>
             <Input
               className="mono"
               value={code}
@@ -201,7 +207,7 @@ export default function Favorites() {
               placeholder="000 000 000"
             />
           </Field>
-          <Field label="备注">
+          <Field label={t.account.note}>
             <Input value={remark} onChange={(e) => setRemark(e.target.value)} maxLength={64} />
           </Field>
         </form>

@@ -1,4 +1,5 @@
 //! Viewer-only stream settings UI. Protocol decisions stay in stream_control.
+use crate::i18n::t;
 use egui::{Align, FontId, RichText, Sense, Stroke, vec2};
 
 use crate::features::stream_control::{
@@ -41,17 +42,18 @@ enum Page {
 
 impl Page {
     fn title(self) -> &'static str {
+        let t = &t().viewer;
         match self {
-            Self::Quality => "画质",
-            Self::Codec => "此设备编码偏好",
-            Self::WeakNetwork => "网络不佳时",
-            Self::Custom => "自定义码率",
-            Self::Advanced => "高级设置",
-            Self::Audio => "音频",
-            Self::Microphone => "麦克风",
-            Self::Mouse => "鼠标模式",
-            Self::DisplayAspect => "本地显示比例",
-            Self::Display => "显示设置",
+            Self::Quality => t.quality,
+            Self::Codec => t.page_codec,
+            Self::WeakNetwork => t.page_weak_network,
+            Self::Custom => t.custom_bitrate,
+            Self::Advanced => t.advanced_settings,
+            Self::Audio => t.audio,
+            Self::Microphone => t.microphone,
+            Self::Mouse => t.mouse_mode,
+            Self::DisplayAspect => t.local_aspect,
+            Self::Display => t.display_settings,
         }
     }
 }
@@ -65,7 +67,7 @@ pub(super) struct StreamControlUi {
     display: display_menu::DisplayMenu,
     pub(super) local_error: Option<String>,
     format_confirm: Option<(i32, StreamControlSettings)>,
-    /// A running "获取被控剪贴板": the number of formats or the error.
+    /// A running "Get remote clipboard": the number of formats or the error.
     clipboard_pull: Option<std::sync::Arc<std::sync::Mutex<Option<Result<usize, String>>>>>,
 }
 
@@ -182,7 +184,12 @@ fn speaker_button(ui: &mut egui::Ui, volume: u8, muted: &mut bool) {
         response.mark_changed();
     }
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *muted, "静音")
+        egui::WidgetInfo::selected(
+            egui::WidgetType::Checkbox,
+            ui.is_enabled(),
+            *muted,
+            t().viewer.mute,
+        )
     });
     if response.hovered() || response.has_focus() {
         ui.painter().rect_filled(rect, 4.0, HOVER);
@@ -230,7 +237,11 @@ fn speaker_button(ui: &mut egui::Ui, volume: u8, muted: &mut bool) {
             ui.painter().add(egui::Shape::line(points, stroke));
         }
     }
-    response.on_hover_text(if *muted { "取消静音" } else { "静音" });
+    response.on_hover_text(if *muted {
+        t().viewer.unmute
+    } else {
+        t().viewer.mute
+    });
 }
 
 #[derive(Clone, Copy)]
@@ -412,15 +423,12 @@ fn volume_bar(
         }
         ui.add_space(4.0);
         let choose_output =
-            crate::ui::controls::audio_output_button(ui, "音频设置", ROW_HEIGHT).clicked();
+            crate::ui::controls::audio_output_button(ui, t().viewer.audio_settings, ROW_HEIGHT)
+                .clicked();
         let hint = if *volume > 100 {
-            format!(
-                "音量 {}% · 增益 +{:.1} dB",
-                *volume,
-                20.0 * (f32::from(*volume) / 100.0).log10()
-            )
+            (t().viewer.volume_gain)(*volume, 20.0 * (f32::from(*volume) / 100.0).log10())
         } else {
-            format!("音量 {}%", *volume)
+            (t().viewer.volume)(*volume)
         };
         (response.on_hover_text(hint), choose_output)
     })
@@ -431,9 +439,9 @@ fn bitrate_editor(ui: &mut egui::Ui, value: &mut u32, multi_screen: bool, limit:
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.label(if multi_screen {
-            "每屏码率"
+            t().viewer.bitrate_per_screen
         } else {
-            "视频码率"
+            t().viewer.video_bitrate
         });
         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
             ui.label(format!("{value}/{limit} Mbps"));
@@ -499,7 +507,7 @@ pub(super) fn show_stream_control_window(
     crate::ui::controls::observe_notice(
         ctx,
         "microphone-error",
-        "麦克风",
+        t().viewer.microphone,
         crate::ui::controls::DialogIcon::Error,
         mic.error.as_deref(),
     );
@@ -507,18 +515,18 @@ pub(super) fn show_stream_control_window(
     crate::ui::controls::progress_notice(
         ctx,
         "audio-device-query",
-        "音频设备",
+        t().viewer.audio_devices,
         (state.open && state.page == Page::Audio && !audio.output_devices().loaded)
-            .then_some("正在读取输出设备…"),
+            .then_some(t().viewer.reading_output_devices),
     );
     let audio_error = audio.snapshot().error;
     if crate::ui::controls::observe_notice_action(
         ctx,
         "audio-output-error",
-        "音频输出异常",
+        t().viewer.audio_output_problem,
         crate::ui::controls::DialogIcon::Error,
         audio_error.as_deref(),
-        "重试",
+        t().common.retry,
     ) == Some(true)
     {
         crate::ui::controls::clear_notice(ctx, "audio-output-error");
@@ -528,14 +536,14 @@ pub(super) fn show_stream_control_window(
     if crate::ui::controls::observe_notice_action(
         ctx,
         "audio-device-query-error",
-        "音频设备检查失败",
+        t().viewer.audio_device_check_failed,
         crate::ui::controls::DialogIcon::Error,
         audio
             .output_devices()
             .error
             .as_deref()
             .filter(|_| state.open && state.page == Page::Audio),
-        "重新检查",
+        t().viewer.check_again,
     ) == Some(true)
     {
         crate::ui::controls::clear_notice(ctx, "audio-device-query-error");
@@ -548,7 +556,7 @@ pub(super) fn show_stream_control_window(
     crate::ui::controls::observe_notice(
         ctx,
         "remote-input-error",
-        "控制已停止",
+        t().viewer.control_stopped,
         crate::ui::controls::DialogIcon::Error,
         snapshot.mouse_error.as_deref(),
     );
@@ -556,13 +564,13 @@ pub(super) fn show_stream_control_window(
     crate::ui::controls::progress_notice(
         ctx,
         "network-switch-progress",
-        "切换连接线路",
-        (state.open && snapshot.network.pending).then_some("正在切换线路…"),
+        t().viewer.switch_route,
+        (state.open && snapshot.network.pending).then_some(t().viewer.switching_route),
     );
     crate::ui::controls::observe_notice(
         ctx,
         "network-switch-result",
-        "连接线路",
+        t().viewer.route,
         crate::ui::controls::DialogIcon::Info,
         snapshot.network.notice.as_deref().filter(|_| state.open),
     );
@@ -570,7 +578,7 @@ pub(super) fn show_stream_control_window(
     crate::ui::controls::observe_notice(
         ctx,
         "remote-session-notice",
-        "远端提示",
+        t().viewer.remote_notice,
         crate::ui::controls::DialogIcon::Info,
         snapshot.remote_notice.as_deref(),
     );
@@ -600,7 +608,7 @@ pub(super) fn show_stream_control_window(
     } else {
         WIDTH
     };
-    egui::Window::new("串流画质")
+    egui::Window::new(t().viewer.stream_quality)
         .id(egui::Id::new("runtime-stream-settings-window"))
         .open(&mut open)
         .collapsible(false)
@@ -620,12 +628,12 @@ pub(super) fn show_stream_control_window(
             ui.set_width(menu_width);
             ui.horizontal(|ui| {
                 if state.page != Page::Quality {
-                    back = icon_button(ui, Icon::Back, "返回").clicked();
+                    back = icon_button(ui, Icon::Back, t().common.back).clicked();
                 }
                 let title = if state.page == Page::Display {
-                    "显示设置".to_owned()
+                    t().viewer.display_settings.to_owned()
                 } else if multi_screen && matches!(state.page, Page::Quality | Page::Custom) {
-                    format!("{} · 全部屏幕", state.page.title())
+                    (t().viewer.all_screens)(state.page.title())
                 } else {
                     state.page.title().to_owned()
                 };
@@ -635,7 +643,7 @@ pub(super) fn show_stream_control_window(
                         .strong(),
                 );
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    close = icon_button(ui, Icon::Close, "关闭").clicked();
+                    close = icon_button(ui, Icon::Close, t().common.close).clicked();
                 });
             });
             ui.add_space(SECTION_GAP);
@@ -665,26 +673,27 @@ pub(super) fn show_stream_control_window(
                                 let locked = handle.participants().shared_view();
                                 if locked {
                                     ui.label(
-                                        RichText::new(format!(
-                                            "多人观看：统一 1080p · {} FPS · 观影模式",
-                                            crate::features::host::shared_view::FPS
+                                        RichText::new((t().viewer.shared_view)(
+                                            crate::features::host::shared_view::FPS,
                                         ))
                                         .size(crate::ui::theme::SMALL)
                                         .strong(),
                                     );
                                     section_separator(ui);
                                 }
-                                if menu_row(ui, "此设备编码偏好", codec.map_or("跟随全局", |value| value.label()), None, !locked, true).clicked() {
+                                if menu_row(ui, t().viewer.page_codec, codec.map_or(t().viewer.follow_global, |value| value.label()), None, !locked, true).clicked() {
                                     state.page = Page::Codec;
                                 }
-                                if menu_row(ui, "网络不佳时", preferences.weak_network.label(), None, !locked, true)
+                                if menu_row(ui, t().viewer.page_weak_network, preferences.weak_network.label(), None, !locked, true)
                                     .clicked()
                                 {
                                     state.page = Page::WeakNetwork;
                                 }
                                 let mut cinema = preferences.cinema || locked;
                                 if ui
-                                    .add_enabled_ui(!locked, |ui| switch_row(ui, "观影模式", &mut cinema))
+                                    .add_enabled_ui(!locked, |ui| {
+                                        switch_row(ui, t().viewer.cinema_mode, &mut cinema)
+                                    })
                                     .inner
                                     .changed()
                                 {
@@ -699,12 +708,12 @@ pub(super) fn show_stream_control_window(
                                         snapshot.auto_quality_label.as_str(),
                                         String::new(),
                                     ),
-                                    (StreamQuality::Original, "原画", "30M".into()),
-                                    (StreamQuality::High, "超清", "14M".into()),
-                                    (StreamQuality::Clear, "高清", "8M".into()),
+                                    (StreamQuality::Original, t().viewer.quality_original, "30M".into()),
+                                    (StreamQuality::High, t().viewer.quality_very_high, "14M".into()),
+                                    (StreamQuality::Clear, t().viewer.quality_high, "8M".into()),
                                     (
                                         StreamQuality::Custom,
-                                        "自定义码率",
+                                        t().viewer.custom_bitrate,
                                         format!(
                                             "{} Mbps",
                                             settings
@@ -744,14 +753,14 @@ pub(super) fn show_stream_control_window(
                                         }
                                     }
                                     if more && !snapshot.custom_bitrate_supported {
-                                        response.on_hover_text("被控端不支持");
+                                        response.on_hover_text(t().viewer.not_supported_by_remote);
                                     }
                                 }
                                 ui.add_space(crate::ui::theme::MENU_GROUP_GAP);
                                 if menu_row(
                                     ui,
-                                    "显示器分辨率与 DPI",
-                                    "当前屏幕",
+                                    t().viewer.resolution_and_dpi,
+                                    t().viewer.this_screen,
                                     None,
                                     snapshot.display_settings_supported,
                                     true,
@@ -763,7 +772,7 @@ pub(super) fn show_stream_control_window(
                                 ui.add_space(crate::ui::theme::MENU_GROUP_GAP);
                                 ui.horizontal(|ui| {
                                     let label = ui.label(
-                                        RichText::new("帧率上限")
+                                        RichText::new(t().viewer.frame_rate_limit)
                                             .size(crate::ui::theme::TINY)
                                             .color(MUTED),
                                     );
@@ -819,7 +828,7 @@ pub(super) fn show_stream_control_window(
                                 if snapshot.true_color_supported {
                                     ui.add_space(crate::ui::theme::MENU_GROUP_GAP);
                                     ui.label(
-                                        RichText::new("色度采样")
+                                        RichText::new(t().viewer.chroma_subsampling)
                                             .size(crate::ui::theme::TINY)
                                             .color(MUTED),
                                     );
@@ -868,7 +877,7 @@ pub(super) fn show_stream_control_window(
                                     }
                                 }
                                 section_separator(ui);
-                                if menu_row(ui, "高级设置", "", None, true, true).clicked() {
+                                if menu_row(ui, t().viewer.advanced_settings, "", None, true, true).clicked() {
                                     state.page = Page::Advanced;
                                 }
                                 let audio = handle.audio();
@@ -885,9 +894,9 @@ pub(super) fn show_stream_control_window(
                                     state.local_error = audio.refresh_output_devices().err().map(|error| error.to_string());
                                 }
                                 if audio_status.device.is_empty() && !audio_status.receiving {
-                                    volume_response.on_hover_text("等待音频");
+                                    volume_response.on_hover_text(t().viewer.waiting_for_audio);
                                 } else if !audio_status.device.is_empty() {
-                                    volume_response.on_hover_text(format!("输出：{}", audio_status.device));
+                                    volume_response.on_hover_text((t().viewer.audio_output)(&audio_status.device));
                                 }
                                 audio.set_settings(audio_settings);
                             });
@@ -896,7 +905,7 @@ pub(super) fn show_stream_control_window(
                         let codec = handle.device_preferences().codec;
                         for value in std::iter::once(None)
                             .chain(crate::media::CodecPreference::PREFERRED.into_iter().map(Some)) {
-                            if menu_row(ui, value.map_or("跟随全局", |value| value.label()), "", Some(codec == value), true, false).clicked()
+                            if menu_row(ui, value.map_or(t().viewer.follow_global, |value| value.label()), "", Some(codec == value), true, false).clicked()
                                 && codec != value {
                                 handle.set_codec_preference(value);
                             }
@@ -924,7 +933,7 @@ pub(super) fn show_stream_control_window(
                         let selected = audio.selected_output();
                         let outputs = audio.output_devices();
                         ctx.request_repaint_after(std::time::Duration::from_millis(250));
-                        if menu_row(ui, "跟随系统默认", "", Some(selected.is_none()), true, false).clicked() {
+                        if menu_row(ui, t().viewer.follow_system_default, "", Some(selected.is_none()), true, false).clicked() {
                             audio.set_output_device(None);
                         }
                         section_separator(ui);
@@ -939,9 +948,9 @@ pub(super) fn show_stream_control_window(
                                     }
                                 }
                                 if outputs.loaded && outputs.devices.is_empty() && outputs.error.is_none() {
-                                    ui.label(RichText::new("未找到输出设备").color(MUTED));
+                                    ui.label(RichText::new(t().viewer.no_output_devices).color(MUTED));
                                 }
-crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", "音频设备已断开", crate::ui::controls::DialogIcon::Warning, (outputs.loaded && selected.as_ref().is_some_and(|id| !outputs.devices.iter().any(|device| &device.id == id))).then_some("所选设备已断开"));
+crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", t().viewer.audio_device_disconnected, crate::ui::controls::DialogIcon::Warning, (outputs.loaded && selected.as_ref().is_some_and(|id| !outputs.devices.iter().any(|device| &device.id == id))).then_some(t().viewer.selected_device_disconnected));
                             });
                     }
                     Page::Advanced => {
@@ -951,17 +960,17 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", "音�
                             .show(ui, |ui| {
                                 let aspect = handle.device_preferences().display_aspect;
                                 let label = match aspect {
-                                    crate::media::geometry::DisplayAspect::Video => "保持画面比例",
-                                    crate::media::geometry::DisplayAspect::Display => "跟随目标显示器",
+                                    crate::media::geometry::DisplayAspect::Video => t().viewer.aspect_keep_video,
+                                    crate::media::geometry::DisplayAspect::Display => t().viewer.aspect_follow_display,
                                     crate::media::geometry::DisplayAspect::Wide => "16:9",
                                     crate::media::geometry::DisplayAspect::WideTen => "16:10",
                                     crate::media::geometry::DisplayAspect::Standard => "4:3",
                                     crate::media::geometry::DisplayAspect::UltraWide => "21:9",
                                 };
-                                if menu_row(ui, "本地显示比例", label, None, true, true).clicked() {
+                                if menu_row(ui, t().viewer.local_aspect, label, None, true, true).clicked() {
                                     state.page = Page::DisplayAspect;
                                 }
-                                if menu_row(ui, "仅音频模式", "", None, true, false).clicked() {
+                                if menu_row(ui, t().viewer.audio_only_mode, "", None, true, false).clicked() {
                                     handle.request_audio_only(true);
                                     state.open = false;
                                 }
@@ -969,7 +978,7 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", "音�
                                 let mut relay = snapshot.network.relay_enabled;
                                 let response = ui
                                     .add_enabled_ui(snapshot.network.available, |ui| {
-                                        switch_row(ui, "高速中转连接 Beta", &mut relay)
+                                        switch_row(ui, t().viewer.fast_relay_beta, &mut relay)
                                     })
                                     .inner;
                                 if response.changed() {
@@ -983,13 +992,13 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", "音�
                                 }
                                 switch_row(
                                     ui,
-                                    "性能监控常驻",
+                                    t().viewer.performance_always_visible,
                                     &mut view.performance_always_visible,
                                 );
                                 ui.horizontal(|ui| {
                                     for (mode, label) in [
-                                        (super::PerformancePanelMode::Compact, "精简"),
-                                        (super::PerformancePanelMode::Detailed, "详细"),
+                                        (super::PerformancePanelMode::Compact, t().viewer.performance_compact),
+                                        (super::PerformancePanelMode::Detailed, t().viewer.performance_detailed),
                                     ] {
                                         if ui.add_sized(
                                             [(WIDTH - 6.0) / 2.0, ROW_HEIGHT],
@@ -1000,52 +1009,52 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", "音�
                                     }
                                 });
                                 let mode_label = match snapshot.mouse_preference {
-                                    MouseMode::Smart | MouseMode::View => "智能鼠标",
-                                    MouseMode::Remote => "被控端鼠标",
-                                    MouseMode::Local => "主控端鼠标",
+                                    MouseMode::Smart | MouseMode::View => t().viewer.mouse_smart,
+                                    MouseMode::Remote => t().viewer.mouse_remote,
+                                    MouseMode::Local => t().viewer.mouse_local,
                                 };
-                                if menu_row(ui, "鼠标模式", mode_label, None, true, true).clicked()
+                                if menu_row(ui, t().viewer.mouse_mode, mode_label, None, true, true).clicked()
                                 {
                                     state.page = Page::Mouse;
                                 }
-                                switch_row(ui, "拦截本机快捷键", &mut view.intercept_shortcuts);
+                                switch_row(ui, t().viewer.intercept_shortcuts, &mut view.intercept_shortcuts);
                                 let clipboard = handle.clipboard();
                                 let input=handle.microphone().selected_input();
                                 let devices=handle.microphone().input_devices();
-                                let name=input.as_ref().map(|id|devices.devices.iter().find(|d|&d.id==id).map(|d|d.name.as_str()).unwrap_or(if devices.error.is_some() {"所选麦克风"}else{"所选设备已断开"})).unwrap_or("跟随系统默认");
-                                if menu_row(ui,"麦克风",name,None,true,true)
+                                let name=input.as_ref().map(|id|devices.devices.iter().find(|d|&d.id==id).map(|d|d.name.as_str()).unwrap_or(if devices.error.is_some() {t().viewer.selected_microphone}else{t().viewer.selected_device_disconnected})).unwrap_or(t().viewer.follow_system_default);
+                                if menu_row(ui,t().viewer.microphone,name,None,true,true)
                                     .on_hover_text(name).clicked() {
                                     state.page=Page::Microphone;
                                     state.local_error=handle.microphone().refresh_input_devices().err().map(|e|e.to_string());
                                 }
                                 if mic.enabled {
-                                    let label=if mic.pending {"等待远端确认"}else if mic.capturing {"麦克风正在发送"}else if mic.remote_active {"正在打开本机麦克风"}else{"等待远端应用使用麦克风"};
+                                    let label=if mic.pending {t().viewer.mic_waiting_remote}else if mic.capturing {t().viewer.mic_sending}else if mic.remote_active {t().viewer.mic_opening}else{t().viewer.mic_waiting_app};
                                     ui.label(RichText::new(label).color(MUTED));
                                     if mic.capturing {
                                         ui.add(egui::ProgressBar::new(mic.level.clamp(0.0,1.0)).text(&mic.device));
                                         ctx.request_repaint_after(std::time::Duration::from_millis(100));
                                     }
-                                    if mic.error.is_some() && menu_row(ui,"重试麦克风","",None,true,false).clicked() {handle.microphone().retry();}
+                                    if mic.error.is_some() && menu_row(ui,t().viewer.retry_microphone,"",None,true,false).clicked() {handle.microphone().retry();}
                                 }
                                 let clip = clipboard.snapshot();
                                 let mut enabled = clip.enabled;
-                                if switch_row(ui, "剪贴板同步", &mut enabled).changed() {
+                                if switch_row(ui, t().viewer.clipboard_sync, &mut enabled).changed() {
                                     if let Err(error) = handle.set_clipboard_enabled(enabled) {
                                         state.local_error = Some(error.to_string());
                                     }
                                 }
                                 if enabled {
                                     let mut files = clip.files;
-                                    if switch_row(ui, "文件复制", &mut files).changed() {
+                                    if switch_row(ui, t().viewer.file_copy, &mut files).changed() {
                                         handle.set_clipboard_files(files);
                                     }
-                                    crate::ui::controls::progress_notice(ui.ctx(),"clipboard-wait","剪贴板同步",(!clip.active && snapshot.mouse_mode != MouseMode::View).then_some("等待剪贴板通道就绪"));
-crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同步失败", crate::ui::controls::DialogIcon::Error, clip.error.as_deref());
+                                    crate::ui::controls::progress_notice(ui.ctx(),"clipboard-wait",t().viewer.clipboard_sync,(!clip.active && snapshot.mouse_mode != MouseMode::View).then_some(t().viewer.clipboard_waiting));
+crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", t().viewer.clipboard_sync_failed, crate::ui::controls::DialogIcon::Error, clip.error.as_deref());
                                 }
                                 // Manual copy of the host clipboard: also for participants
                                 // without automatic sync (view mode, not controlling).
                                 let pulling = state.clipboard_pull.is_some();
-                                if menu_row(ui, "获取被控剪贴板", if pulling { "正在获取…" } else { "" }, None, clip.active && !pulling, false)
+                                if menu_row(ui, t().viewer.pull_clipboard, if pulling { t().viewer.pulling } else { "" }, None, clip.active && !pulling, false)
                                     .clicked()
                                 {
                                     let result = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -1062,8 +1071,8 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                                 if let Some(result) = finished {
                                     state.clipboard_pull = None;
                                     match result {
-                                        Ok(_) => crate::ui::controls::notice(ui.ctx(), "clipboard-pull", "获取被控剪贴板", crate::ui::controls::DialogIcon::Ready, "已复制到本机剪贴板"),
-                                        Err(error) => crate::ui::controls::notice(ui.ctx(), "clipboard-pull", "获取被控剪贴板", crate::ui::controls::DialogIcon::Error, error),
+                                        Ok(_) => crate::ui::controls::notice(ui.ctx(), "clipboard-pull", t().viewer.pull_clipboard, crate::ui::controls::DialogIcon::Ready, t().viewer.copied_to_local_clipboard),
+                                        Err(error) => crate::ui::controls::notice(ui.ctx(), "clipboard-pull", t().viewer.pull_clipboard, crate::ui::controls::DialogIcon::Error, error),
                                     }
                                 } else if pulling {
                                     ctx.request_repaint_after(std::time::Duration::from_millis(200));
@@ -1076,11 +1085,11 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                                 section_separator(ui);
                                 use crate::features::remote_input::SystemCommand;
                                 for (label, command) in [
-                                    ("发送 Ctrl+Alt+Del", SystemCommand::Sas),
-                                    ("锁定远端设备", SystemCommand::Lock),
-                                    ("任务管理器", SystemCommand::TaskManager),
-                                    ("显示桌面", SystemCommand::ShowDesktop),
-                                    ("任务视图", SystemCommand::TaskView),
+                                    (t().viewer.send_ctrl_alt_del, SystemCommand::Sas),
+                                    (t().viewer.lock_remote_device, SystemCommand::Lock),
+                                    (t().viewer.task_manager, SystemCommand::TaskManager),
+                                    (t().viewer.show_desktop, SystemCommand::ShowDesktop),
+                                    (t().viewer.task_view, SystemCommand::TaskView),
                                 ] {
                                     if menu_row(ui, label, "", None, can_send, false).clicked() {
                                         view.system_command = Some(command);
@@ -1104,8 +1113,8 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                             section_separator(ui);
                             ui.add(
                                 egui::Label::new(
-                                    RichText::new(format!(
-                                        "目标显示器原始尺寸：{width} × {height}"
+                                    RichText::new((t().viewer.remote_display_native_size)(
+                                        width, height,
                                     ))
                                     .size(crate::ui::theme::TINY)
                                     .color(MUTED),
@@ -1117,7 +1126,7 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                     Page::Microphone => {
                         let microphone=handle.microphone();
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("音质").size(crate::ui::theme::SMALL).color(MUTED));
+                            ui.label(RichText::new(t().controls.audio_quality).size(crate::ui::theme::SMALL).color(MUTED));
                             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                                 ui.label(RichText::new("kbps").size(crate::ui::theme::SMALL).color(MUTED));
                             });
@@ -1127,20 +1136,20 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                             if let Err(error)=microphone.set_quality(quality) {state.local_error=Some(error.to_string());}
                         }
                         if let Some(bitrate)=microphone.target_bitrate() {
-                            if bitrate<quality.kbps*1000 {ui.label(RichText::new(format!("本次连接目标码率：{} kbps",bitrate/1000)).color(MUTED));}
+                            if bitrate<quality.kbps*1000 {ui.label(RichText::new((t().viewer.mic_target_bitrate)(bitrate/1000)).color(MUTED));}
                         }
                         ui.add_space(crate::ui::theme::MENU_GROUP_GAP);
-                        ui.label(RichText::new("输入设备").size(crate::ui::theme::SMALL).color(MUTED));
+                        ui.label(RichText::new(t().viewer.input_devices).size(crate::ui::theme::SMALL).color(MUTED));
                         let selected=microphone.selected_input();
                         let inputs=microphone.input_devices();
                         ctx.request_repaint_after(std::time::Duration::from_millis(250));
                         egui::ScrollArea::vertical().id_salt("microphone-input-devices")
                             .max_height((ctx.content_rect().height()-250.0).clamp(100.0,360.0))
                             .show(ui,|ui| {
-                                if menu_row(ui,"跟随系统默认","",Some(selected.is_none()),true,false).clicked() {
+                                if menu_row(ui,t().viewer.follow_system_default,"",Some(selected.is_none()),true,false).clicked() {
                                     microphone.set_input_device(None);
                                 }
-                                if inputs.updated.is_none() {ui.label(RichText::new("正在读取麦克风设备…").color(MUTED));}
+                                if inputs.updated.is_none() {ui.label(RichText::new(t().viewer.reading_microphones).color(MUTED));}
                                 for input in &inputs.devices {
                                     if menu_row(ui,&input.name,"",Some(selected.as_ref()==Some(&input.id)),true,false)
                                         .on_hover_text(&input.name).clicked() {
@@ -1148,19 +1157,19 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                                     }
                                 }
                                 if inputs.updated.is_some() && inputs.devices.is_empty() && inputs.error.is_none() {
-                                    ui.label(RichText::new("未找到麦克风设备").color(MUTED));
+                                    ui.label(RichText::new(t().viewer.no_microphones).color(MUTED));
                                 }
                                 if inputs.error.is_none() && selected.as_ref().is_some_and(|id| inputs.updated.is_some() && !inputs.devices.iter().any(|d|&d.id==id)) {
-                                    ui.label(RichText::new("所选麦克风已断开").color(MUTED));
+                                    ui.label(RichText::new(t().viewer.selected_microphone_disconnected).color(MUTED));
                                 }
                             });
-                        crate::ui::controls::observe_notice(ui.ctx(),"microphone-device-query","麦克风设备",crate::ui::controls::DialogIcon::Error,inputs.error.as_deref());
+                        crate::ui::controls::observe_notice(ui.ctx(),"microphone-device-query",t().viewer.microphone_devices,crate::ui::controls::DialogIcon::Error,inputs.error.as_deref());
                     }
                     Page::Mouse => {
                         for (mode, label) in [
-                            (MouseMode::Smart, "智能鼠标"),
-                            (MouseMode::Remote, "使用被控端鼠标"),
-                            (MouseMode::Local, "使用主控端鼠标"),
+                            (MouseMode::Smart, t().viewer.mouse_smart),
+                            (MouseMode::Remote, t().viewer.use_remote_mouse),
+                            (MouseMode::Local, t().viewer.use_local_mouse),
                         ] {
                             if menu_row(
                                 ui,
@@ -1185,7 +1194,7 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                         let preferences = handle.device_preferences();
                         let mut throttle = preferences.mouse_throttle;
                         let mut rate = preferences.mouse_throttle_rate;
-                        let mut changed = switch_row(ui, "鼠标发送节流", &mut throttle).changed();
+                        let mut changed = switch_row(ui, t().viewer.mouse_throttle, &mut throttle).changed();
                         ui.add_enabled_ui(throttle, |ui| {
                             ui.horizontal(|ui| {
                                 for choice in crate::features::remote_input::MouseThrottleRate::ALL {
@@ -1205,11 +1214,10 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                         separator(ui);
                         ui.add_space(7.0);
                         ui.label(
-                            RichText::new(format!(
-                                "退出控制快捷键：{}",
-                                crate::application::viewer_shortcuts::label(
-                                    crate::application::viewer_shortcuts::Action::ReleaseMouse
-                                )
+                            RichText::new((t().viewer.release_shortcut)(
+                                &crate::application::viewer_shortcuts::label(
+                                    crate::application::viewer_shortcuts::Action::ReleaseMouse,
+                                ),
                             ))
                             .size(crate::ui::theme::TINY)
                             .color(MUTED),
@@ -1229,7 +1237,7 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                                 || snapshot.last_error.is_some();
                             ui.horizontal(|ui| {
                                 ui.label(
-                                    RichText::new(if state.dirty { "尚未应用" } else { "" })
+                                    RichText::new(if state.dirty { t().viewer.not_applied } else { "" })
                                         .size(crate::ui::theme::TINY)
                                         .color(MUTED),
                                 );
@@ -1237,7 +1245,7 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                                     if ui
                                         .add_enabled(
                                             can_apply,
-                                            egui::Button::new("应用")
+                                            egui::Button::new(t().common.apply)
                                                 .fill(if can_apply { ACCENT } else { HOVER })
                                                 .stroke(Stroke::NONE)
                                                 .min_size(vec2(76.0, 30.0)),
@@ -1252,8 +1260,8 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                     }
                 }
                 if state.page != Page::Display {
-                    crate::ui::controls::observe_notice(ui.ctx(), "stream-settings-error", "设置未生效", crate::ui::controls::DialogIcon::Error, state.local_error.as_deref().or(snapshot.cursor_error.as_deref()).or(snapshot.last_error.as_deref()).or(snapshot.network.error.as_deref()));
-                    crate::ui::controls::observe_notice(ui.ctx(), "stream-settings-save", "设置未保存", crate::ui::controls::DialogIcon::Error, snapshot.persistence_error.as_deref());
+                    crate::ui::controls::observe_notice(ui.ctx(), "stream-settings-error", t().viewer.settings_not_applied, crate::ui::controls::DialogIcon::Error, state.local_error.as_deref().or(snapshot.cursor_error.as_deref()).or(snapshot.last_error.as_deref()).or(snapshot.network.error.as_deref()));
+                    crate::ui::controls::observe_notice(ui.ctx(), "stream-settings-save", t().viewer.settings_not_saved, crate::ui::controls::DialogIcon::Error, snapshot.persistence_error.as_deref());
                 }
             });
         });
@@ -1264,7 +1272,7 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                 ui.set_width(340.0);
                 let close = crate::ui::controls::dialog_header(
                     ui,
-                    "调整显示效果？",
+                    t().viewer.change_display_format,
                     crate::ui::controls::DialogIcon::Info,
                     true,
                 );
@@ -1280,8 +1288,8 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                 ));
                 let (apply, cancel) = crate::ui::controls::dialog_actions(
                     ui,
-                    Some(crate::ui::controls::DialogAction::new("应用")),
-                    Some("取消"),
+                    Some(crate::ui::controls::DialogAction::new(t().common.apply)),
+                    Some(t().common.cancel),
                 );
                 {
                     if close || cancel {

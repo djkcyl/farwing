@@ -1,4 +1,5 @@
 use super::Rule;
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use std::{
@@ -10,8 +11,8 @@ pub(crate) struct Store(PathBuf);
 impl Store {
     pub(crate) fn new(account: &str, device: &str) -> Result<Self> {
         crate::account::api::validate_device_id(device)?;
-        ensure!(!account.is_empty(), "无法确定规则所属账号");
-        let base = crate::product::local_data_dir().context("本地设置目录不可用")?;
+        ensure!(!account.is_empty(), "{}", t().features.mapping_no_account);
+        let base = crate::product::local_data_dir().context(t().features.mapping_no_settings_dir)?;
         Ok(Self(
             base.join("port-mapping")
                 .join(format!("{:x}", Sha256::digest(account.as_bytes())))
@@ -26,14 +27,14 @@ impl Store {
         };
         let mut bytes = Vec::new();
         file.take(1_048_577).read_to_end(&mut bytes)?;
-        ensure!(bytes.len() <= 1_048_576, "规则文件过大");
-        let rules: Vec<Rule> = serde_json::from_slice(&bytes).context("端口转发规则文件无效")?;
+        ensure!(bytes.len() <= 1_048_576, "{}", t().features.mapping_rules_file_too_large);
+        let rules: Vec<Rule> = serde_json::from_slice(&bytes).context(t().features.mapping_rules_file_invalid)?;
         validate(&rules)?;
         Ok(rules)
     }
     pub(crate) fn save(&self, rules: &[Rule]) -> Result<()> {
         validate(rules)?;
-        std::fs::create_dir_all(self.0.parent().context("规则路径无效")?)?;
+        std::fs::create_dir_all(self.0.parent().context(t().features.mapping_rules_path_invalid)?)?;
         let tmp = self
             .0
             .with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
@@ -55,11 +56,11 @@ impl Store {
     }
 }
 fn validate(rules: &[Rule]) -> Result<()> {
-    ensure!(rules.len() <= 256, "规则过多");
+    ensure!(rules.len() <= 256, "{}", t().features.mapping_too_many_rules);
     let mut ids = std::collections::HashSet::new();
     for rule in rules {
         rule.validate()?;
-        ensure!(ids.insert(rule.id), "规则编号重复");
+        ensure!(ids.insert(rule.id), "{}", t().features.mapping_duplicate_rule_id);
     }
     Ok(())
 }

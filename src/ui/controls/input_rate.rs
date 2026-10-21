@@ -1,5 +1,6 @@
 //! Passive warning painted without registering an input region.
 use super::theme;
+use crate::i18n::t;
 
 pub(crate) fn input_rate_warning(ctx: &egui::Context, hz: u32, bounds: egui::Rect) {
     let margin = theme::INPUT_WARNING_MARGIN;
@@ -12,7 +13,7 @@ pub(crate) fn input_rate_warning(ctx: &egui::Context, hz: u32, bounds: egui::Rec
         egui::Id::new("mouse-polling-warning"),
     ));
     let title = painter.layout(
-        format!("鼠标输入频率较高 · 约 {} Hz", hz),
+        (t().controls.high_mouse_rate)(hz),
         egui::FontId::proportional(theme::BODY),
         theme::AMBER,
         width - margin * 2.0,

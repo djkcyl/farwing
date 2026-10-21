@@ -1,6 +1,7 @@
 // Client update announcements (what `GET /api/v2/updates/{platform}`
-// offers to clients and the download links on "连接到本服务器").
+// offers to clients and the download links on "Connect to this server").
 import { useState, type FormEvent } from 'react';
+import { useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
 import { dateTime, platformText } from '../../lib/format';
 import type { Announcement } from '../../lib/types';
@@ -33,6 +34,8 @@ const BLANK: Announcement = {
 };
 
 function Editor({ value, onClose, onSaved }: { value: Announcement | undefined; onClose(): void; onSaved(): void }) {
+  const t = useT();
+  const m = t.admin.updates;
   const [form, setForm] = useState<Announcement>(BLANK);
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -63,14 +66,14 @@ function Editor({ value, onClose, onSaved }: { value: Announcement | undefined; 
   return (
     <Dialog
       open={!!value}
-      title={form.id ? '编辑更新公告' : '发布更新'}
+      title={form.id ? m.edit : m.publish}
       onClose={onClose}
       wide
       footer={
         <>
-          <Button onClick={onClose}>取消</Button>
+          <Button onClick={onClose}>{t.common.cancel}</Button>
           <Button variant="primary" type="submit" form="update-form" loading={busy}>
-            {form.id ? '保存' : '发布'}
+            {form.id ? t.common.save : m.publishSubmit}
           </Button>
         </>
       }
@@ -78,7 +81,7 @@ function Editor({ value, onClose, onSaved }: { value: Announcement | undefined; 
       <form id="update-form" className="stack" onSubmit={submit}>
         {error && <Alert>{error}</Alert>}
         <div className="grid grid-2">
-          <Field label="平台">
+          <Field label={m.platform}>
             <Select value={form.platform} onChange={(e) => set({ platform: e.target.value })}>
               {['windows', 'macos', 'linux', 'android', 'ios'].map((p) => (
                 <option key={p} value={p}>
@@ -87,14 +90,14 @@ function Editor({ value, onClose, onSaved }: { value: Announcement | undefined; 
               ))}
             </Select>
           </Field>
-          <Field label="渠道">
+          <Field label={m.channel}>
             <Select value={form.channel} onChange={(e) => set({ channel: e.target.value })}>
-              <option value="stable">正式版（stable）</option>
-              <option value="beta">测试版（beta）</option>
+              <option value="stable">{m.stableOption}</option>
+              <option value="beta">{m.betaOption}</option>
             </Select>
           </Field>
         </div>
-        <Field label="版本号">
+        <Field label={m.version}>
           <Input
             value={form.version}
             onChange={(e) => set({ version: e.target.value })}
@@ -103,10 +106,10 @@ function Editor({ value, onClose, onSaved }: { value: Announcement | undefined; 
             placeholder="0.2.0"
           />
         </Field>
-        <Field label="下载地址">
+        <Field label={m.url}>
           <Input value={form.url} onChange={(e) => set({ url: e.target.value })} required placeholder="https://" />
         </Field>
-        <Field label="更新说明">
+        <Field label={m.notes}>
           <textarea
             name="notes"
             className="input"
@@ -115,13 +118,15 @@ function Editor({ value, onClose, onSaved }: { value: Announcement | undefined; 
             maxLength={16384}
           />
         </Field>
-        <Checkbox checked={form.prerelease} onChange={(v) => set({ prerelease: v })} label="标记为预发布版本" />
+        <Checkbox checked={form.prerelease} onChange={(v) => set({ prerelease: v })} label={m.prerelease} />
       </form>
     </Dialog>
   );
 }
 
 export default function Updates() {
+  const t = useT();
+  const m = t.admin.updates;
   const { confirm, toast } = useOverlay();
   const { data, error, reload } = useApi<Announcement[]>('/api/v2/admin/updates');
   const [editing, setEditing] = useState<Announcement>();
@@ -129,10 +134,10 @@ export default function Updates() {
   return (
     <div className="stack">
       <PageHeader
-        title="客户端更新"
+        title={t.nav.updates}
         actions={
           <Button variant="primary" icon="plus" onClick={() => setEditing({ ...BLANK })}>
-            发布更新
+            {m.publish}
           </Button>
         }
       />
@@ -141,17 +146,17 @@ export default function Updates() {
         {!data ? (
           <Loading />
         ) : data.length === 0 ? (
-          <Empty icon="download" title="暂无更新公告" />
+          <Empty icon="download" title={m.empty} />
         ) : (
           <div className="table-wrap">
             <table className="table">
               <thead>
                 <tr>
-                  <th>版本</th>
-                  <th>平台</th>
-                  <th>渠道</th>
-                  <th>下载地址</th>
-                  <th>发布</th>
+                  <th>{m.versionCol}</th>
+                  <th>{m.platform}</th>
+                  <th>{m.channel}</th>
+                  <th>{m.url}</th>
+                  <th>{m.published}</th>
                   <th />
                 </tr>
               </thead>
@@ -161,7 +166,7 @@ export default function Updates() {
                     <td>
                       <div className="cell-main row gap-sm">
                         {a.version}
-                        {a.prerelease && <Badge tone="amber">预发布</Badge>}
+                        {a.prerelease && <Badge tone="amber">{m.prereleaseBadge}</Badge>}
                       </div>
                       {a.notes && (
                         <div className="cell-sub ellipsis" style={{ maxWidth: 280 }}>
@@ -170,7 +175,7 @@ export default function Updates() {
                       )}
                     </td>
                     <td>{platformText(a.platform)}</td>
-                    <td>{a.channel === 'stable' ? '正式版' : '测试版'}</td>
+                    <td>{a.channel === 'stable' ? m.stable : m.beta}</td>
                     <td className="small ellipsis" style={{ maxWidth: 260 }}>
                       <a href={a.url} target="_blank" rel="noreferrer">
                         {a.url}
@@ -178,23 +183,23 @@ export default function Updates() {
                     </td>
                     <td className="nowrap muted">{dateTime(a.published_at)}</td>
                     <td className="actions">
-                      <IconButton icon="edit" label="编辑" onClick={() => setEditing(a)} />
+                      <IconButton icon="edit" label={t.common.edit} onClick={() => setEditing(a)} />
                       <IconButton
                         icon="trash"
-                        label="删除"
+                        label={t.common.delete}
                         variant="danger"
                         onClick={async () => {
                           if (
                             await confirm({
-                              title: '删除更新公告',
-                              message: `删除 ${platformText(a.platform)} ${a.version}？`,
-                              confirm: '删除',
+                              title: m.deleteTitle,
+                              message: m.deleteMessage(platformText(a.platform), a.version),
+                              confirm: t.common.delete,
                               danger: true,
                             })
                           ) {
                             try {
                               await call('DELETE', `/api/v2/admin/updates/${a.id}`);
-                              toast('已删除');
+                              toast(t.common.deleted);
                               await reload();
                             } catch (err) {
                               toast(errorText(err), 'red');
@@ -215,7 +220,7 @@ export default function Updates() {
         onClose={() => setEditing(undefined)}
         onSaved={() => {
           setEditing(undefined);
-          toast('已保存');
+          toast(t.common.saved);
           void reload();
         }}
       />

@@ -1,6 +1,7 @@
 //! One measured card layout for access, transfer and result notifications.
 use super::theme;
 use crate::application::app::notifications::{ButtonKind, Card, Verb};
+use crate::i18n::t;
 use egui::{Align, FontId, Layout, Rect, RichText, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
 use std::sync::Arc;
 
@@ -65,7 +66,8 @@ fn header(ui: &mut Ui, card: &Card) -> bool {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     let close = Rect::from_min_size(pos2(rect.right() - height, rect.top()), Vec2::splat(height));
     let mut close_ui = ui.new_child(UiBuilder::new().max_rect(close));
-    let dismiss = super::close_button(&mut close_ui, "收起通知", height).clicked();
+    let dismiss =
+        super::close_button(&mut close_ui, t().controls.dismiss_notification, height).clicked();
     let mut end = close.left() - theme::NOTIFICATION_GAP;
     if card.confirmation {
         let seconds = format!(

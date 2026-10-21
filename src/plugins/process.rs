@@ -1,4 +1,5 @@
 use super::*;
+use crate::i18n::t;
 use std::os::windows::{io::AsRawHandle, process::CommandExt};
 use std::{
     io::BufRead,
@@ -134,7 +135,7 @@ impl Runtime {
                     if !shared.enabled.load(Ordering::Acquire) || Instant::now() > *lock(&deadline)
                     {
                         if shared.enabled.load(Ordering::Acquire) {
-                            shared.fail("插件响应超时，已停用".into());
+                            shared.fail(t().features.plugin_timed_out.into());
                         }
                         timer_stop.store(true, Ordering::Release);
                         if let Some(child) = lock(&timer_child).as_mut() {
@@ -193,7 +194,9 @@ fn run(
         .stderr(Stdio::piped())
         .creation_flags(0x08000000);
     crate::diagnostics::logging::configure_child(&mut command);
-    let mut child = command.spawn().context("启动插件宿主")?;
+    let mut child = command
+        .spawn()
+        .context(t().features.plugin_host_start_failed)?;
     let job = match Job::attach(&child) {
         Ok(j) => j,
         Err(e) => {
@@ -216,7 +219,7 @@ fn run(
             "plugin initialization handshake failed"
         );
         shared.ready.store(true, Ordering::Release);
-        lock(&shared.display).status = "运行中".into();
+        lock(&shared.display).status = t().features.plugin_running.into();
         shared.context.request_repaint();
         let mut last_view = None;
         let mut last_sample = Instant::now();
@@ -322,7 +325,8 @@ fn run(
                                 }
                             })
                     }),
-                "插件输入指令超限"
+                "{}",
+                t().features.plugin_input_commands_limit
             );
             if request.width > 0 {
                 tracing::trace!(target: "farwing::plugins", sequence, elapsed_ms = started.elapsed().as_secs_f64()*1000.0, "analysis frame completed");
@@ -372,7 +376,8 @@ fn run(
                         .map(|u| u.pixels.len())
                         .sum::<usize>()
                         <= 8 * 1024 * 1024,
-                "插件纹理更新积压"
+                "{}",
+                t().features.plugin_texture_backlog
             );
             display.reply = Some(Reply {
                 generation,

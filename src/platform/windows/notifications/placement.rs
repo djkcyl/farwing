@@ -1,4 +1,5 @@
 //! Keep an existing notification anchored as its display's work area changes.
+use crate::i18n::t;
 use anyhow::{Result, anyhow};
 use windows::Win32::{
     Foundation::{LPARAM, RECT},
@@ -21,7 +22,8 @@ pub(crate) struct Placement {
 impl Placement {
     pub(crate) fn new(window: &Window) -> Result<Self> {
         let monitor = unsafe { MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY) };
-        let info = monitor_info(monitor).ok_or_else(|| anyhow!("读取通知显示区域失败"))?;
+        let info = monitor_info(monitor)
+            .ok_or_else(|| anyhow!("{}", t().system.notification_area_read_failed))?;
         window.set_skip_taskbar(true);
         window.set_window_level(WindowLevel::AlwaysOnTop);
         let mut placement = Self {
@@ -66,7 +68,7 @@ impl Placement {
                         let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
                         Some((monitor, monitor_info(monitor)?))
                     })
-                    .ok_or_else(|| anyhow!("当前没有可用的通知显示区域"))?;
+                    .ok_or_else(|| anyhow!("{}", t().system.notification_no_display_area))?;
                 self.monitor = monitor;
                 self.device = info.szDevice;
                 info

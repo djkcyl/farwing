@@ -565,6 +565,10 @@ textarea.input {
   color: var(--faint);
   min-width: 220px;
 }
+/* English placeholders are longer. */
+html[lang='en'] .search {
+  min-width: 280px;
+}
 .search:focus-within {
   border-color: var(--focus);
 }
@@ -964,9 +968,53 @@ table.table {
   }
 }
 
+/* ---------------------------------------------------------------- language */
+
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.lang-switch:hover {
+  color: var(--text);
+}
+.lang-switch select {
+  appearance: none;
+  border: 0;
+  background: transparent
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca7b8' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")
+    no-repeat right center;
+  color: inherit;
+  font: inherit;
+  padding: 2px 16px 2px 0;
+  cursor: pointer;
+  outline: none;
+}
+.lang-switch select:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.lang-switch option {
+  background: var(--surface);
+  color: var(--text);
+}
+.lang-corner {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+}
+.sidebar-lang {
+  padding: 0 12px 10px 22px;
+}
+
 /* --------------------------------------------------------------- auth pages */
 
 .auth-page {
+  position: relative;
   min-height: 100vh;
   display: grid;
   place-items: center;
@@ -1134,6 +1182,9 @@ table.table {
   width: 56px;
   flex: none;
 }
+html[lang='en'] .caps-group {
+  width: 84px;
+}
 .caps-editor {
   padding: 10px 12px;
   border: 1px solid var(--line);
@@ -1243,6 +1294,8 @@ table.table {
   right: 0;
   top: calc(100% + 6px);
   min-width: 220px;
+  width: max-content;
+  max-width: 320px;
   background: var(--surface);
   border: 1px solid #4e658b;
   border-radius: var(--radius);
@@ -1565,7 +1618,7 @@ table.table {
 }
 .stats {
   display: grid;
-  grid-template-columns: 84px 1fr;
+  grid-template-columns: minmax(84px, max-content) 1fr;
   gap: 6px 10px;
   margin: 0;
   padding: 6px 14px 14px;
@@ -1611,6 +1664,8 @@ table.table {
     left: 8px;
     right: 8px;
     top: calc(100% + 4px);
+    width: auto;
+    max-width: none;
   }
   .viewer-panel {
     left: 12px;

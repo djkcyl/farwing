@@ -3,6 +3,9 @@
 //! until the next change. Everything else stays in the configuration file.
 
 use crate::config::Config;
+use crate::error::{ApiError, ApiResult};
+use farwing_protocol::ErrorCode;
+use farwing_protocol::error::reason;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -75,18 +78,35 @@ impl RuntimeSettings {
         ]
     }
 
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> ApiResult<()> {
+        const NAME_MAX: usize = 64;
+        const BITRATE: std::ops::RangeInclusive<u32> = 1..=10_000;
         let name = self.instance_name.trim();
-        if name.is_empty() || name.chars().count() > 64 {
-            return Err("实例名称应为 1–64 个字符");
+        if name.is_empty() || name.chars().count() > NAME_MAX {
+            return Err(ApiError::reason(
+                ErrorCode::BadRequest,
+                reason::INSTANCE_NAME_INVALID,
+                "instance_name must be 1-64 characters",
+            )
+            .with_detail("max", NAME_MAX));
         }
-        if self.bitrate_limit_mbps.is_some_and(|n| n == 0 || n > 10_000) {
-            return Err("码率上限应为 1–10000 Mbit/s");
+        if self.bitrate_limit_mbps.is_some_and(|n| !BITRATE.contains(&n)) {
+            return Err(ApiError::reason(
+                ErrorCode::BadRequest,
+                reason::BITRATE_LIMIT_INVALID,
+                "bitrate_limit_mbps must be 1-10000",
+            )
+            .with_detail("min", *BITRATE.start())
+            .with_detail("max", *BITRATE.end()));
         }
         if !self.web_caps.iter().any(|c| c == farwing_protocol::caps::VIEW)
             || self.web_caps.iter().any(|c| !farwing_protocol::caps::WEB.contains(&c.as_str()))
         {
-            return Err("网页端能力必须包含观看，且只能从网页端支持的能力中选择");
+            return Err(ApiError::reason(
+                ErrorCode::BadRequest,
+                reason::WEB_CAPS_INVALID,
+                "web_caps must include view and only browser capabilities",
+            ));
         }
         Ok(())
     }

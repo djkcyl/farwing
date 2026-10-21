@@ -1,5 +1,6 @@
 //! Persistent controlled-device settings, isolated by account and registered device.
 use crate::account::auth::SecretEntry as Entry;
+use crate::i18n::t;
 use anyhow::{Result, bail, ensure};
 use keyring::Error;
 use serde::{Deserialize, Serialize};
@@ -45,10 +46,10 @@ fn max_participants_default() -> u32 {
 
 impl Store {
     pub fn guest(installation: &str) -> Result<Self> {
-        uuid::Uuid::parse_str(installation).map_err(|_| anyhow::anyhow!("本机安装身份无效"))?;
+        uuid::Uuid::parse_str(installation).map_err(|_| anyhow::anyhow!(t().features.host_installation_invalid))?;
         Ok(Self(Arc::new(
             Entry::new(&crate::product::keyring_service("host.guest"), installation)
-                .map_err(|_| anyhow::anyhow!("未登录时的被控设置存储不可用"))?,
+                .map_err(|_| anyhow::anyhow!(t().features.host_guest_settings_unavailable))?,
         ), true))
     }
     pub(super) fn enroll(&self) -> Result<()> {
@@ -58,14 +59,14 @@ impl Store {
         self.0.restore_portable()
     }
     pub fn new(account: &str, device: &str) -> Result<Self> {
-        ensure!(!account.is_empty(), "无法确定被控设置所属账号");
+        ensure!(!account.is_empty(), "{}", t().features.host_settings_no_account);
         crate::account::api::validate_device_id(device)?;
         let service = crate::product::keyring_service(&format!(
             "host.{:x}",
             Sha256::digest(account.as_bytes())
         ));
         Ok(Self(Arc::new(
-            Entry::new(&service, device).map_err(|_| anyhow::anyhow!("被控设置存储不可用"))?,
+            Entry::new(&service, device).map_err(|_| anyhow::anyhow!(t().features.host_settings_unavailable))?,
         ), false))
     }
     pub fn load(
@@ -104,11 +105,11 @@ impl Store {
                     max_participants_default(),
                 ));
             }
-            Err(_) => bail!("无法读取被控设置"),
+            Err(_) => bail!("{}", t().features.host_settings_read_failed),
         };
         let record: Record =
-            serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("已保存的被控设置无效"))?;
-        ensure!(record.schema == 1, "不支持的被控设置格式");
+            serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!(t().features.host_settings_invalid))?;
+        ensure!(record.schema == 1, "{}", t().features.host_settings_unsupported);
         let audio_quality = record.audio_quality.restore()?;
         record.assistance.validate()?;
         if let Some(device) = &record.audio_device {
@@ -168,6 +169,6 @@ impl Store {
                 wol,
                 max_participants,
             })?)
-            .map_err(|_| anyhow::anyhow!("无法保存被控设置"))
+            .map_err(|_| anyhow::anyhow!(t().features.host_settings_save_failed))
     }
 }

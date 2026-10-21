@@ -47,9 +47,8 @@ impl Settings {
     pub(crate) fn validate(&self) -> Result<()> {
         anyhow::ensure!(
             DIRECT_PORTS.contains(&self.direct_port),
-            "直连端口应在 {}–{} 之间",
-            DIRECT_PORTS.start(),
-            DIRECT_PORTS.end()
+            "{}",
+            (crate::i18n::t().session.direct_port_range)(*DIRECT_PORTS.start(), *DIRECT_PORTS.end())
         );
         Ok(())
     }
@@ -82,9 +81,9 @@ fn path() -> Result<std::path::PathBuf> {
 
 fn read(path: &std::path::Path) -> Result<Settings> {
     match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).context("读取网络设置失败"),
+        Ok(bytes) => serde_json::from_slice(&bytes).context(crate::i18n::t().session.network_settings_read_failed),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
-        Err(error) => Err(error).context("读取网络设置失败"),
+        Err(error) => Err(error).context(crate::i18n::t().session.network_settings_read_failed),
     }
 }
 
@@ -107,7 +106,7 @@ pub(crate) fn current() -> Settings {
 pub(crate) fn save(settings: Settings) -> Result<()> {
     settings.validate()?;
     let path = path()?;
-    let parent = path.parent().context("网络设置目录无效")?;
+    let parent = path.parent().context(crate::i18n::t().session.network_settings_folder_invalid)?;
     std::fs::create_dir_all(parent)?;
     let temporary = parent.join(format!(".network-{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| -> Result<()> {
@@ -124,7 +123,7 @@ pub(crate) fn save(settings: Settings) -> Result<()> {
     if result.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
-    result.context("保存网络设置失败")?;
+    result.context(crate::i18n::t().session.network_settings_save_failed)?;
     publish(settings);
     Ok(())
 }

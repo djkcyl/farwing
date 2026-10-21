@@ -5,6 +5,8 @@ use axum::response::{IntoResponse, Response};
 use farwing_protocol::{ErrorBody, ErrorCode, ErrorEnvelope};
 use serde_json::{Value, json};
 
+/// A failed request. `message` is a short English text for logs and
+/// `curl`; clients show their own text for `code` and `details.reason`.
 #[derive(Debug)]
 pub struct ApiError {
     pub code: ErrorCode,
@@ -23,8 +25,24 @@ impl ApiError {
         }
     }
 
+    /// One of several cases of `code` (`farwing_protocol::error::reason`).
+    pub fn reason(code: ErrorCode, reason: &'static str, message: impl Into<String>) -> Self {
+        Self::new(code, message).with_detail("reason", reason)
+    }
+
     pub fn with_details(mut self, details: Value) -> Self {
         self.details = details;
+        self
+    }
+
+    /// Add one `details` field (a parameter of the client's text).
+    pub fn with_detail(mut self, key: &str, value: impl Into<Value>) -> Self {
+        if !self.details.is_object() {
+            self.details = json!({});
+        }
+        if let Some(map) = self.details.as_object_mut() {
+            map.insert(key.to_owned(), value.into());
+        }
         self
     }
 
@@ -32,35 +50,35 @@ impl ApiError {
         Self::new(ErrorCode::BadRequest, msg)
     }
     pub fn unauthorized() -> Self {
-        Self::new(ErrorCode::Unauthorized, "缺少或无效的登录凭据")
+        Self::new(ErrorCode::Unauthorized, "missing or invalid access token")
     }
     pub fn device_unauthorized() -> Self {
-        Self::new(ErrorCode::DeviceUnauthorized, "设备凭据无效")
+        Self::new(ErrorCode::DeviceUnauthorized, "invalid device signature")
     }
     pub fn forbidden(msg: impl Into<String>) -> Self {
         Self::new(ErrorCode::Forbidden, msg)
     }
     pub fn not_found() -> Self {
-        Self::new(ErrorCode::NotFound, "不存在")
+        Self::new(ErrorCode::NotFound, "not found")
     }
     pub fn device_not_found() -> Self {
-        Self::new(ErrorCode::DeviceNotFound, "设备不存在")
+        Self::new(ErrorCode::DeviceNotFound, "device not found")
     }
     pub fn device_offline() -> Self {
-        Self::new(ErrorCode::DeviceOffline, "目标设备不在线")
+        Self::new(ErrorCode::DeviceOffline, "target device is offline")
     }
     pub fn internal() -> Self {
-        Self::new(ErrorCode::Internal, "服务器内部错误")
+        Self::new(ErrorCode::Internal, "internal server error")
     }
     pub fn rate_limited(retry_after_ms: u64) -> Self {
-        Self::new(ErrorCode::RateLimited, "请求过于频繁")
+        Self::new(ErrorCode::RateLimited, "too many requests")
             .with_details(json!({ "retry_after_ms": retry_after_ms }))
     }
     pub fn payload_too_large() -> Self {
-        Self::new(ErrorCode::PayloadTooLarge, "请求体过大")
+        Self::new(ErrorCode::PayloadTooLarge, "request body too large")
     }
     pub fn timeout() -> Self {
-        Self::new(ErrorCode::Timeout, "等待对端超时")
+        Self::new(ErrorCode::Timeout, "timed out waiting for the peer")
     }
 
     pub fn body(&self) -> ErrorBody {
@@ -71,13 +89,13 @@ impl ApiError {
 impl From<ErrorCode> for ApiError {
     fn from(code: ErrorCode) -> Self {
         let msg = match code {
-            ErrorCode::Busy => "被控端同时连接人数已达上限",
-            ErrorCode::HostDisabled => "目标未开启允许被控",
-            ErrorCode::DeviceOffline => "目标设备不在线",
-            ErrorCode::Forbidden => "无权访问",
-            ErrorCode::NotFound => "不存在",
-            ErrorCode::DeviceNotFound => "设备不存在",
-            ErrorCode::Conflict => "状态已变化",
+            ErrorCode::Busy => "host has reached its participant limit",
+            ErrorCode::HostDisabled => "target does not accept this connection",
+            ErrorCode::DeviceOffline => "target device is offline",
+            ErrorCode::Forbidden => "forbidden",
+            ErrorCode::NotFound => "not found",
+            ErrorCode::DeviceNotFound => "device not found",
+            ErrorCode::Conflict => "state has changed",
             _ => code.as_str(),
         };
         Self::new(code, msg)

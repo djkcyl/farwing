@@ -53,7 +53,7 @@ impl ServerHttp {
                 " (windows; x86_64)"
             ))
             .build()
-            .context("创建 HTTPS 客户端失败")?;
+            .context(crate::i18n::t().session.https_client_failed)?;
         *cache = Some((server.clone(), client.clone()));
         Ok(Self {
             client,

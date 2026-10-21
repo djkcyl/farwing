@@ -1,6 +1,7 @@
 //! Friends, friend requests and what each friend may do on this account's
 //! devices.
 use super::*;
+use crate::i18n::t;
 use farwing_protocol::api::{Friend, FriendRequest, Grants, UserSummary};
 
 #[derive(Default)]
@@ -66,31 +67,38 @@ pub(super) async fn execute(
         }
         FriendOperation::Add(username) => match client.send_friend_request(&username).await {
             Ok(farwing_protocol::api::FriendRequestOutcome::Sent { .. }) => {
-                FriendResult::Done("好友申请已发送".into())
+                FriendResult::Done(t().app.friend_request_sent.into())
             }
             Ok(farwing_protocol::api::FriendRequestOutcome::Accepted { friend }) => {
-                FriendResult::Done(format!("已与 {} 成为好友", friend.user.display_name()))
+                FriendResult::Done((t().app.now_friends)(&friend.user.display_name()))
             }
             Err(error) => {
                 use crate::account::api::ErrorCode;
                 match crate::account::api::failure_code(&error) {
-                    Some(ErrorCode::UserNotFound) => anyhow::bail!("没有找到该用户名"),
-                    Some(ErrorCode::AlreadyFriends) => anyhow::bail!("你们已经是好友"),
+                    Some(ErrorCode::UserNotFound) => anyhow::bail!(t().app.user_not_found),
+                    Some(ErrorCode::AlreadyFriends) => anyhow::bail!(t().app.already_friends),
                     _ => return Err(error),
                 }
             }
         },
         FriendOperation::Answer(id, accept) => {
             client.answer_friend_request(&id, accept).await?;
-            FriendResult::Done(if accept { "已接受好友申请" } else { "已拒绝好友申请" }.into())
+            FriendResult::Done(
+                if accept {
+                    t().app.friend_request_accepted
+                } else {
+                    t().app.friend_request_declined
+                }
+                .into(),
+            )
         }
         FriendOperation::Cancel(id) => {
             client.cancel_friend_request(&id).await?;
-            FriendResult::Done("已撤回好友申请".into())
+            FriendResult::Done(t().app.friend_request_withdrawn.into())
         }
         FriendOperation::Remove(user_id) => {
             client.remove_friend(&user_id).await?;
-            FriendResult::Done("已解除好友关系".into())
+            FriendResult::Done(t().app.friend_removed.into())
         }
         FriendOperation::LoadGrants(user) => {
             let grants = client.grants(&user.user_id).await?;
@@ -98,7 +106,7 @@ pub(super) async fn execute(
         }
         FriendOperation::SaveGrants(user_id, grants) => {
             client.set_grants(&user_id, grants).await?;
-            FriendResult::Done("权限已保存".into())
+            FriendResult::Done(t().app.permissions_saved.into())
         }
     })
 }
@@ -106,19 +114,20 @@ pub(super) async fn execute(
 /// Display label of a session capability.
 pub(super) fn cap_label(cap: &str) -> &'static str {
     use farwing_protocol::caps;
+    let text = &t().app;
     match cap {
-        caps::VIEW => "观看画面",
-        caps::CONTROL => "键鼠控制",
-        caps::CLIPBOARD => "剪贴板",
-        caps::FILES => "文件传输",
-        caps::PORTS => "端口转发",
-        caps::POWER => "关机重启与唤醒",
-        caps::AUDIO => "接收声音",
-        caps::MICROPHONE => "麦克风",
-        caps::DISPLAY => "显示设置",
-        caps::DIAGNOSTICS => "诊断包",
-        caps::ANNOTATION => "批注",
-        _ => "未知能力",
+        caps::VIEW => text.cap_view,
+        caps::CONTROL => text.cap_control,
+        caps::CLIPBOARD => text.cap_clipboard,
+        caps::FILES => text.cap_files,
+        caps::PORTS => text.cap_ports,
+        caps::POWER => text.cap_power,
+        caps::AUDIO => text.cap_audio,
+        caps::MICROPHONE => text.cap_microphone,
+        caps::DISPLAY => text.cap_display,
+        caps::DIAGNOSTICS => text.cap_diagnostics,
+        caps::ANNOTATION => text.cap_annotation,
+        _ => text.cap_unknown,
     }
 }
 
@@ -148,7 +157,7 @@ impl DeviceCenterApp {
         {
             self.friends.loading = false;
             self.friends.busy = false;
-            self.friends.error = Some("请求发送失败".into());
+            self.friends.error = Some(t().app.request_send_failed.into());
         }
     }
 

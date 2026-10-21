@@ -3,6 +3,7 @@ use super::{
     capture::{Frame, Screen},
     preprocess::{Converter, Request},
 };
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use windows::{
     Win32::{
@@ -57,7 +58,7 @@ impl Capture {
                 bitmap: HBITMAP::default(),
                 previous: HGDIOBJ::default(),
                 bits: std::ptr::null_mut(),
-                texture: texture.context("创建GDI上传纹理")?,
+                texture: texture.context(t().system.gdi_create_upload_texture)?,
                 converter,
             };
             let name: Vec<_> = result
@@ -67,9 +68,17 @@ impl Capture {
                 .chain(Some(0))
                 .collect();
             result.source = CreateDCW(w!("DISPLAY"), PCWSTR(name.as_ptr()), PCWSTR::null(), None);
-            ensure!(!result.source.0.is_null(), "无法取得所选屏幕GDI上下文");
+            ensure!(
+                !result.source.0.is_null(),
+                "{}",
+                t().system.gdi_no_screen_dc
+            );
             result.memory = CreateCompatibleDC(Some(result.source));
-            ensure!(!result.memory.0.is_null(), "无法创建GDI采集上下文");
+            ensure!(
+                !result.memory.0.is_null(),
+                "{}",
+                t().system.gdi_create_dc_failed
+            );
             let info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -90,11 +99,12 @@ impl Capture {
                 None,
                 0,
             )?;
-            ensure!(!result.bits.is_null(), "GDI没有返回图像内存");
+            ensure!(!result.bits.is_null(), "{}", t().system.gdi_no_bits);
             result.previous = SelectObject(result.memory, result.bitmap.into());
             ensure!(
                 !result.previous.0.is_null() && result.previous.0 as isize != -1,
-                "GDI未绑定采集位图"
+                "{}",
+                t().system.gdi_bitmap_not_selected
             );
             Ok(result)
         }
@@ -114,14 +124,16 @@ impl Capture {
         if self.screen.identity.is_some() {
             ensure!(
                 super::capture::display_identity(&self.screen.device_name) == self.screen.identity,
-                "GDI所选屏幕身份变化，需要重建"
+                "{}",
+                t().system.gdi_screen_identity_changed
             );
         } else {
             let current = super::capture::refresh(&self.screen)?;
             ensure!(
                 current.device_name == self.screen.device_name
                     && current.adapter == self.screen.adapter,
-                "GDI所选源变化，需要重建"
+                "{}",
+                t().system.gdi_source_changed
             );
         }
         let mut mode = DEVMODEW {
@@ -139,7 +151,8 @@ impl Capture {
                 .as_bool()
                     && mode.dmPelsWidth == self.screen.width
                     && mode.dmPelsHeight == self.screen.height,
-                "GDI所选源变化，需要重建"
+                "{}",
+                t().system.gdi_source_changed
             );
             BitBlt(
                 self.memory,

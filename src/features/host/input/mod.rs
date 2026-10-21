@@ -1,4 +1,5 @@
 //! Authenticated controlled-session input ownership.
+use crate::i18n::t;
 mod backend;
 pub(crate) mod broker;
 pub(crate) mod config;
@@ -332,7 +333,7 @@ impl Receiver {
             gate.pending.clear();
             self.shared
                 .lease
-                .input_status(None, Some("输入阻塞，正在恢复".into()));
+                .input_status(None, Some(t().features.input_blocked_recovering.into()));
         } else {
             gate.pending.push_back(item);
         }
@@ -387,7 +388,7 @@ fn register(shared: Arc<Shared>) -> Result<mpsc::SyncSender<()>> {
     std::thread::Builder::new()
         .name("host-input".into())
         .spawn(move || serve(rx))
-        .context("无法启动被控输入线程")?;
+        .context(t().features.input_thread_start_failed)?;
     registry.wake = Some(tx.clone());
     Ok(tx)
 }
@@ -659,7 +660,9 @@ impl Worker {
         if let Err(error) = hub.admit(self.id) {
             shared.lease.input_status(
                 hub.engine.as_ref().map(Backend::backend),
-                Some(format!("切换控制者时释放输入失败：{error}")),
+                Some((t().features.input_handover_release_failed)(
+                    &error.to_string(),
+                )),
             );
             return;
         }
@@ -700,7 +703,10 @@ impl Worker {
                 Some(engine.backend()),
                 Some(match release {
                     Ok(()) => error.to_string(),
-                    Err(release) => format!("{error}；释放输入失败：{release}"),
+                    Err(release) => (t().features.input_release_also_failed)(
+                        &error.to_string(),
+                        &release.to_string(),
+                    ),
                 }),
             );
         } else {

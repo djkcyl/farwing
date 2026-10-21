@@ -1,4 +1,5 @@
 //! Local diagnostics use the same Windows fact collector as device registration.
+use crate::i18n::t;
 use crate::media::LocalDisplayInfo;
 use crate::media::decoder::diagnostics::{self as decoding, Event, Report, Status};
 
@@ -9,11 +10,38 @@ use std::sync::{
 };
 
 pub(super) struct LocalDiagnostics {
-    pub rows: Vec<(String, String)>,
+    pub rows: Vec<(Row, String)>,
     pub graphics: Vec<String>,
     pub probe: Option<Report>,
-    facts: Option<Receiver<Vec<(String, String)>>>,
+    facts: Option<Receiver<Vec<(Row, String)>>>,
     probing: Option<ProbeTask>,
+}
+
+/// What a hardware row shows; labelled in the current language when drawn.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Row {
+    DeviceName,
+    OperatingSystem,
+    Processor,
+    Motherboard,
+    Memory,
+    ReadNote,
+    Hardware,
+}
+
+impl Row {
+    pub fn label(self) -> &'static str {
+        let t = t();
+        match self {
+            Self::DeviceName => t.app.device_name,
+            Self::OperatingSystem => t.settings.operating_system,
+            Self::Processor => t.settings.processor,
+            Self::Motherboard => t.settings.motherboard,
+            Self::Memory => t.settings.memory,
+            Self::ReadNote => t.app.read_note,
+            Self::Hardware => t.app.hardware,
+        }
+    }
 }
 
 struct ProbeTask {
@@ -55,7 +83,7 @@ impl LocalDiagnostics {
                     self.facts = None;
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    self.rows = vec![("硬件信息".into(), "读取失败".into())];
+                    self.rows = vec![(Row::Hardware, t().app.read_failed.into())];
                     self.facts = None;
                 }
                 Err(_) => {}
@@ -89,7 +117,7 @@ impl LocalDiagnostics {
         if finished {
             if let Some(report) = self.probe.as_mut() {
                 if report.message.is_empty() {
-                    report.message = "检查任务中断".into();
+                    report.message = t().app.check_interrupted.into();
                 }
                 for cell in report
                     .backends
@@ -128,13 +156,14 @@ impl LocalDiagnostics {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     decoding::run(display, &tx, worker_cancel.clone())
                 }));
+                let text = &t().app;
                 let message = if worker_cancel.load(Ordering::Acquire) {
-                    "检查已停止".into()
+                    text.check_stopped.into()
                 } else {
                     match result {
-                        Ok(Ok(())) => "检查完成".into(),
-                        Ok(Err(error)) => format!("检查失败：{error:#}"),
-                        Err(_) => "检查任务异常结束".into(),
+                        Ok(Ok(())) => text.check_complete.into(),
+                        Ok(Err(error)) => (text.check_failed)(&format!("{error:#}")),
+                        Err(_) => text.check_crashed.into(),
                     }
                 };
                 let _ = tx.send(Event::Finished(message));
@@ -147,24 +176,30 @@ impl LocalDiagnostics {
                     thread: Some(thread),
                 })
             }
-            Err(error) => self.probe.as_mut().unwrap().message = format!("无法启动检查：{error}"),
+            Err(error) => {
+                self.probe.as_mut().unwrap().message =
+                    (t().app.cant_start_check)(&error.to_string())
+            }
         }
     }
 }
 
-fn hardware() -> Vec<(String, String)> {
+fn hardware() -> Vec<(Row, String)> {
     match crate::platform::windows::device_profile::Hardware::read() {
         Ok(hardware) => {
             let mut rows = vec![
-                ("设备名称".into(), hardware.name),
-                ("操作系统".into(), hardware.os),
-                ("处理器".into(), hardware.cpu),
-                ("主板".into(), hardware.base_board),
-                ("物理内存".into(), format!("{} MiB", hardware.memory)),
+                (Row::DeviceName, hardware.name),
+                (Row::OperatingSystem, hardware.os),
+                (Row::Processor, hardware.cpu),
+                (Row::Motherboard, hardware.base_board),
+                (Row::Memory, format!("{} MiB", hardware.memory)),
             ];
-            rows.extend(hardware.errors.into_iter().map(|e| ("读取提示".into(), e)));
+            rows.extend(hardware.errors.into_iter().map(|e| (Row::ReadNote, e)));
             rows
         }
-        Err(error) => vec![("硬件信息".into(), format!("读取失败：{error:#}"))],
+        Err(error) => vec![(
+            Row::Hardware,
+            (t().app.read_failed_with)(&format!("{error:#}")),
+        )],
     }
 }

@@ -4,6 +4,7 @@ mod files;
 mod worker;
 use super::DeviceCenterApp;
 use crate::features::host::assist;
+use crate::i18n::t;
 use crate::ui::{App, controls, theme};
 use std::collections::{HashMap, HashSet};
 use std::sync::{
@@ -22,10 +23,11 @@ pub(crate) enum Mode {
 impl Mode {
     pub const ALL: [Self; 3] = [Self::Gui, Self::Windows, Self::Both];
     pub fn label(self) -> &'static str {
+        let text = &t().app;
         match self {
-            Self::Gui => "程序浮窗",
-            Self::Windows => "Windows 通知",
-            Self::Both => "两者同时",
+            Self::Gui => text.mode_gui,
+            Self::Windows => text.mode_windows,
+            Self::Both => text.mode_both,
         }
     }
     fn gui(self) -> bool {
@@ -50,7 +52,7 @@ pub(crate) struct Card {
     pub detail: String,
     pub expires_at: i64,
     pub confirmation: bool,
-    /// A pairing request: its answers are "拒绝" and "配对".
+    /// A pairing request: its answers are "deny" and "pair".
     pub pairing: bool,
     pub busy: bool,
     pub connected: bool,
@@ -80,17 +82,18 @@ pub(crate) struct CardAction {
 }
 impl Card {
     pub fn actions(&self) -> Vec<CardAction> {
+        let text = &t().app;
         if self.confirmation && self.pairing {
             let enabled = !self.busy && self.expires_at > chrono::Utc::now().timestamp();
             return vec![
                 CardAction {
-                    label: "拒绝",
+                    label: t().common.deny,
                     verb: Verb::Reject,
                     kind: ButtonKind::Normal,
                     enabled,
                 },
                 CardAction {
-                    label: if self.busy { "正在提交" } else { "配对" },
+                    label: if self.busy { text.submitting } else { text.pair },
                     verb: Verb::Trust,
                     kind: ButtonKind::Primary,
                     enabled,
@@ -101,22 +104,22 @@ impl Card {
             let enabled = !self.busy && self.expires_at > chrono::Utc::now().timestamp();
             return vec![
                 CardAction {
-                    label: "拒绝",
+                    label: t().common.deny,
                     verb: Verb::Reject,
                     kind: ButtonKind::Normal,
                     enabled,
                 },
                 CardAction {
-                    label: "允许并信任",
+                    label: text.allow_and_trust,
                     verb: Verb::Trust,
                     kind: ButtonKind::Normal,
                     enabled,
                 },
                 CardAction {
                     label: if self.busy {
-                        "正在提交"
+                        text.submitting
                     } else {
-                        "允许本次"
+                        text.allow_once
                     },
                     verb: Verb::Allow,
                     kind: ButtonKind::Primary,
@@ -125,13 +128,13 @@ impl Card {
             ];
         }
         let (label, verb) = if self.transfer.as_ref().is_some_and(|t| t.folder.is_some()) {
-            ("打开文件夹", Verb::OpenFolder)
+            (text.open_folder, Verb::OpenFolder)
         } else {
             (
                 if self.expires_at == 0 {
-                    "控制中心"
+                    text.control_center
                 } else {
-                    "查看"
+                    text.view
                 },
                 Verb::Open,
             )
@@ -144,7 +147,7 @@ impl Card {
         }];
         if self.disconnect.is_some() {
             actions.push(CardAction {
-                label: "断开连接",
+                label: t().common.disconnect,
                 verb: Verb::Disconnect,
                 kind: ButtonKind::Danger,
                 enabled: true,
@@ -163,13 +166,13 @@ impl Action {
         let prefix = format!("{}://", crate::product::notification_scheme());
         let s = uri
             .strip_prefix(prefix.as_str())
-            .ok_or_else(|| anyhow::anyhow!("通知地址无效"))?;
+            .ok_or_else(|| anyhow::anyhow!(t().app.invalid_notification_uri))?;
         let (verb, ticket) = s
             .split_once('/')
-            .ok_or_else(|| anyhow::anyhow!("通知参数无效"))?;
+            .ok_or_else(|| anyhow::anyhow!(t().app.invalid_notification_parameters))?;
         anyhow::ensure!(
             ticket.len() == 32 && ticket.bytes().all(|c| c.is_ascii_hexdigit()),
-            "通知标识无效"
+            t().app.invalid_notification_id
         );
         let verb = match verb {
             "allow" => Verb::Allow,
@@ -178,7 +181,7 @@ impl Action {
             "open" => Verb::Open,
             "folder" => Verb::OpenFolder,
             "disconnect" => Verb::Disconnect,
-            _ => anyhow::bail!("不支持的通知操作"),
+            _ => anyhow::bail!(t().app.unsupported_notification_action),
         };
         Ok(Self {
             ticket: ticket.into(),
@@ -429,6 +432,7 @@ impl Center {
             self.last_source.clear();
         }
         let now = chrono::Utc::now().timestamp();
+        let text = &t().app;
         // Transfers are not tied to a participant: only end the only one.
         let disconnect = status_snapshot
             .as_ref()
@@ -468,30 +472,33 @@ impl Center {
                     Card {
                         disconnect: None,
                         ticket: String::new(),
-                        title: if pairing.is_some() { "配对请求" } else { "连接请求" }.into(),
+                        title: if pairing.is_some() {
+                            text.pairing_request
+                        } else {
+                            text.connection_request
+                        }
+                        .into(),
                         body: if p.device_id.is_empty() {
                             clean(&p.name)
                         } else {
-                            format!(
-                                "{} · 设备 ID {}",
-                                clean(&p.name),
-                                crate::account::api::device_id_text(&p.device_id)
+                            (text.name_with_device_id)(
+                                &clean(&p.name),
+                                &crate::account::api::device_id_text(&p.device_id),
                             )
                         },
                         detail: if p.responding {
-                            "正在提交…".into()
+                            text.submitting_ellipsis.into()
                         } else if let Some(code) = &pairing {
-                            format!(
-                                "配对码 {} {} · 配对后可互相完全控制",
+                            (text.pairing_code)(
                                 &code[..code.len().min(3)],
-                                &code[code.len().min(3)..]
+                                &code[code.len().min(3)..],
                             )
                         } else if browser_controls == Some(false) {
-                            "网页端 · 仅观看和收听".into()
+                            text.browser_view_only.into()
                         } else if browser_controls == Some(true) {
-                            "网页端 · 请求观看和控制".into()
+                            text.browser_view_and_control.into()
                         } else {
-                            "请求观看和控制".into()
+                            text.view_and_control.into()
                         },
                         expires_at: p.expires_at,
                         confirmation: true,
@@ -508,12 +515,12 @@ impl Center {
                     Card {
                         disconnect: None,
                         ticket: String::new(),
-                        title: "收到连接尝试".into(),
-                        body: "对方正在连接本机".into(),
+                        title: text.connection_attempt.into(),
+                        body: text.incoming_connection.into(),
                         detail: if a.verifying {
-                            "正在校验访问码".into()
+                            text.verifying_access_code.into()
                         } else {
-                            "未获得控制权限".into()
+                            text.no_control_permission.into()
                         },
                         expires_at: a.expires_at,
                         confirmation: false,
@@ -529,11 +536,11 @@ impl Center {
             let keys: HashSet<_> = active.iter().map(|a| a.key.clone()).collect();
             for active in active {
                 let title = if active.lost {
-                    "正在确认被控状态"
+                    text.confirming_host
                 } else if connected {
-                    "正在被远程访问"
+                    text.being_accessed
                 } else {
-                    "远程连接中断"
+                    text.remote_connection_lost
                 };
                 if connected && !active.lost {
                     self.last_source
@@ -580,7 +587,7 @@ impl Center {
                 Card {
                     disconnect: None,
                     ticket: String::new(),
-                    title: "连接提示".into(),
+                    title: text.connection_notice.into(),
                     body: clean(error),
                     detail: String::new(),
                     expires_at: *until,
@@ -606,7 +613,7 @@ impl Center {
             card.ticket = ticket.clone();
             card.busy |= self.claimed.contains(&ticket);
             if card.confirmation && card.busy {
-                card.detail = "正在提交…".into();
+                card.detail = text.submitting_ellipsis.into();
             }
             targets.insert(
                 ticket,
@@ -648,7 +655,7 @@ impl Center {
                     key: "remote-access-notifications".into(),
                     config: crate::ui::WindowConfig {
                         viewport: egui::ViewportBuilder::default()
-                            .with_title(format!("{} · 远程访问", crate::APP_NAME))
+                            .with_title((text.notifications_window_title)(crate::APP_NAME))
                             .with_inner_size([theme::NOTIFICATION_WIDTH, 220.])
                             .with_resizable(false)
                             .with_active(false)
@@ -794,19 +801,18 @@ impl DeviceCenterApp {
                     self.catalog.as_ref(),
                 )
                 .map(|c| c.source)
-                .unwrap_or_else(|| "远程设备".into());
+                .unwrap_or_else(|| t().app.remote_device.into());
                 EndNotice {
                     id: end.id,
                     peer,
                     card: Card {
                         disconnect: None,
                         ticket: String::new(),
-                        title: "远程连接已结束".into(),
+                        title: t().app.remote_connection_ended.into(),
                         body: clean(&source),
-                        detail: format!(
-                            "本次连接 {}",
-                            super::controlled_caption::duration(seconds)
-                        ),
+                        detail: (t().app.session_length)(&super::controlled_caption::duration(
+                            seconds,
+                        )),
                         expires_at: end.ended_at.saturating_add(10),
                         confirmation: false,
                         pairing: false,
@@ -860,7 +866,7 @@ impl DeviceCenterApp {
                             })
                             .is_err()
                         {
-                            self.notifications.error = Some("提交失败".into());
+                            self.notifications.error = Some(t().app.submit_failed.into());
                         }
                     }
                 }

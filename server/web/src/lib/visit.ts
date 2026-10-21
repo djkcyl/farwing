@@ -2,7 +2,8 @@
 // §2.4): reach a host by its short number or device ID with its access code
 // (SPAKE2, the code never leaves the browser) or the host user's
 // confirmation. Signed-in browsers ask as their account; others as a guest.
-import { ApiError, call, hasToken, registerDevice } from './api';
+import { t } from '../i18n';
+import { ApiError, call, errorText, hasToken, registerDevice } from './api';
 import { deviceIdOf, unb64 } from './encoding';
 import { ASSIST_PAKE_SLOTS, keyConfirm, keyConfirmMatches, pakeStart } from './spake2';
 import type { Admission, SessionTicket } from './viewer';
@@ -28,11 +29,21 @@ type AssistJoin = SessionTicket & { host: AssistHost };
 
 export type VisitStep = 'asking' | 'checking' | 'confirming' | 'joining';
 
+/// Why a visit failed: a code with visitor wording (`viewer.visit.errors`),
+/// or another failure (`cause`) in its own words. The message is in the
+/// language of the moment; `text()` gives it in the current one.
 export class VisitError extends Error {
   code: string;
-  constructor(code: string, message: string) {
-    super(message);
+  constructor(code: string, cause?: unknown) {
+    super(code, { cause });
     this.code = code;
+    this.message = this.text();
+  }
+
+  text(): string {
+    const known = (t().viewer.visit.errors as Record<string, string>)[this.code];
+    if (known) return known;
+    return this.cause === undefined ? this.code : errorText(this.cause);
   }
 }
 
@@ -64,23 +75,12 @@ export function parseTarget(text: string): { connect_id?: string; device_id?: st
   return undefined;
 }
 
-const MESSAGES: Record<string, string> = {
-  assist_code_invalid: '访问码不正确',
-  assist_code_required: '对方要求输入访问码',
-  assist_rejected: '对方拒绝了本次连接',
-  assist_unavailable: '对方未开放访客连接',
-  device_offline: '对方设备不在线',
-  device_not_found: '没有找到这个短号或设备 ID',
-  not_found: '没有找到这个短号或设备 ID',
-  timeout: '等待对方确认超时',
-  rate_limited: '尝试次数太多',
-  busy: '对方的连接数已满',
-};
-
-function wrap(error: unknown): VisitError {
+/// Server errors keep their code (visitor wording where there is one, the
+/// server error's otherwise).
+export function visitError(error: unknown): VisitError {
   if (error instanceof VisitError) return error;
-  if (error instanceof ApiError) return new VisitError(error.code, MESSAGES[error.code] ?? error.message);
-  return new VisitError('error', (error as Error)?.message ?? String(error));
+  if (error instanceof ApiError) return new VisitError(error.code, error);
+  return new VisitError('error', error);
 }
 
 /// Ask the host to admit this browser; resolves with the session to join.
@@ -90,8 +90,8 @@ export async function visitAdmission(
   onStep: (step: VisitStep) => void,
 ): Promise<Admission> {
   const addressed = parseTarget(target);
-  if (!addressed) throw new VisitError('bad_request', '请输入 9 位短号或 16 位设备 ID');
-  const bearer = hasToken() ? undefined : await guestToken().catch((e) => Promise.reject(wrap(e)));
+  if (!addressed) throw new VisitError('bad_target');
+  const bearer = hasToken() ? undefined : await guestToken().catch((e) => Promise.reject(visitError(e)));
   const options = { bearer };
   // One SPAKE2 instance per host code slot, all from the typed code.
   const states = code ? Array.from({ length: ASSIST_PAKE_SLOTS }, () => pakeStart(code)) : [];
@@ -107,7 +107,7 @@ export async function visitAdmission(
     requestId = pending.request_id;
     let key: Uint8Array | undefined;
     if (!pending.trusted && pending.mode !== 'confirmation') {
-      if (!states.length) throw new VisitError('assist_code_required', MESSAGES.assist_code_required);
+      if (!states.length) throw new VisitError('assist_code_required');
       onStep('checking');
       for (let i = 0; i < states.length && !key; i++) {
         const message = pending.pake[i];
@@ -121,7 +121,7 @@ export async function visitAdmission(
         }
       }
       // A wrong code is detected here; nothing about it was sent.
-      if (!key) throw new VisitError('assist_code_invalid', MESSAGES.assist_code_invalid);
+      if (!key) throw new VisitError('assist_code_invalid');
     }
     onStep(!pending.trusted && pending.mode !== 'password' ? 'confirming' : 'joining');
     const joined = await call<AssistJoin>(
@@ -136,7 +136,7 @@ export async function visitAdmission(
       joined.host.public_key !== pending.host.public_key ||
       (await deviceIdOf(unb64(joined.host.public_key))) !== joined.host.device_id
     ) {
-      throw new VisitError('identity', '对方设备身份发生变化');
+      throw new VisitError('identity');
     }
     onStep('joining');
     return { ticket: joined, hostId: joined.host.device_id, pakeKey: key };
@@ -144,7 +144,7 @@ export async function visitAdmission(
     if (requestId) {
       void call('POST', `/api/v2/assist/requests/${requestId}/cancel`, {}, options).catch(() => undefined);
     }
-    throw wrap(error);
+    throw visitError(error);
   }
 }
 

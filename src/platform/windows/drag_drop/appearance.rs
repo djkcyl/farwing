@@ -1,6 +1,7 @@
 //! Shell drag-image metadata and local identity. No file contents or clipboard writes.
 pub(crate) use crate::protocol::drag_drop::DragImage;
 use anyhow::{Context, Result, ensure};
+use crate::i18n::t;
 use std::{
     mem::ManuallyDrop,
     os::windows::ffi::OsStrExt,
@@ -69,7 +70,7 @@ pub fn identify(data: &IDataObject, identity: Identity) -> Result<()> {
         let ptr = GlobalLock(memory);
         if ptr.is_null() {
             let _ = GlobalFree(Some(memory));
-            anyhow::bail!("拖放身份内存不可用");
+            anyhow::bail!("{}", t().system.drag_identity_memory_unavailable);
         }
         let bytes = std::slice::from_raw_parts_mut(ptr.cast::<u8>(), 16);
         bytes[..8].copy_from_slice(&identity.token.to_le_bytes());

@@ -1,6 +1,7 @@
 //! Default-device COM calls and recovery journal IO never run in the PCM feeder.
 use super::{Shared, lock};
 use crate::platform::windows::virtual_audio::Routing;
+use crate::i18n::t;
 use anyhow::{Context, Result};
 use std::{
     sync::{Arc, Mutex, mpsc},
@@ -46,7 +47,7 @@ impl Worker {
                                 }
                                 Err(error) => {
                                     retry = Instant::now() + Duration::from_secs(1);
-                                    Some(format!("默认音频设备调整失败：{error:#}"))
+                                    Some((t().features.audio_defaults_failed)(&format!("{error:#}")))
                                 }
                             };
                             for shared in lock(&participants).iter() {
@@ -69,7 +70,7 @@ impl Worker {
                 }
                 drop(defaults);
             })
-            .context("启动默认音频设备管理线程")?;
+            .context(t().features.audio_defaults_thread_failed)?;
         Ok(Self {
             stop,
             thread: Some(thread),

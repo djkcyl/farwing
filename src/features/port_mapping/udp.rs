@@ -2,6 +2,7 @@
 //! unordered, unreliable dgram channel; overload drops single datagrams and
 //! never truncates or splices them.
 use super::*;
+use crate::i18n::t;
 use tokio::net::UdpSocket;
 
 /// An association ends after this long without traffic.
@@ -15,7 +16,7 @@ pub(super) async fn run_rule(
 ) {
     let result=async {
         rule.validate()?;
-        let socket=Arc::new(UdpSocket::bind(SocketAddr::new(rule.local_addr,rule.local_port)).await.context("无法监听 UDP 端口")?);
+        let socket=Arc::new(UdpSocket::bind(SocketAddr::new(rule.local_addr,rule.local_port)).await.context(t().features.mapping_udp_listen_failed)?);
         lock(&stats).listening=true;
         let mut flows=HashMap::<SocketAddr,mpsc::Sender<Bytes>>::new();
         let mut jobs=JoinSet::new();
@@ -78,14 +79,14 @@ async fn association(
                 tokio::select! {
                     _=tokio::time::sleep(IDLE)=>return Ok(()),
                     packet=packets.recv()=>{
-                        let packet=packet.context("UDP 监听已关闭")?;
+                        let packet=packet.context(t().features.mapping_udp_listener_closed)?;
                         let size=packet.len();
                         if transport.send_datagram(stream.id(),packet).await? {
                             lock(&stats).sent+=size as u64;
                         }
                     },
                     message=inbound.recv()=>{
-                        match message.context("UDP 通道已关闭")? {
+                        match message.context(t().features.mapping_udp_channel_closed)? {
                             Inbound::Datagram(data) => {
                                 Transport::datagram_taken(&stream);
                                 socket.send_to(&data,source).await?;
@@ -93,7 +94,7 @@ async fn association(
                             }
                             Inbound::Reset(reset) if reset.code == wire::code::CLOSED => return Ok(()),
                             Inbound::Reset(reset) => anyhow::bail!(wire::describe(reset.code, &reset.message)),
-                            _ => anyhow::bail!("UDP 转发收到无效消息"),
+                            _ => anyhow::bail!("{}", t().features.mapping_udp_invalid_message),
                         }
                     }
                 }

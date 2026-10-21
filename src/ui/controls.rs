@@ -1,5 +1,6 @@
 //! Shared control appearance for the center, viewer menus and node editor.
 use super::theme::{self, HOVER, LINE, MUTED, SURFACE, TEXT};
+use crate::i18n::t;
 use egui::{Color32, RichText, Stroke, vec2};
 mod audio_quality;
 mod diagnostics;
@@ -228,7 +229,11 @@ pub(crate) fn shortcut_row(
         .interact(keys, ui.id().with((id, "binding")), Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("修改{label}快捷键"))
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            (t().controls.shortcut_change)(label),
+        )
     });
     if recording || response.hovered() {
         painter.rect_filled(
@@ -247,14 +252,14 @@ pub(crate) fn shortcut_row(
         painter.text(
             keys.center() + vec2(0.0, -7.0),
             Align2::CENTER_CENTER,
-            pending.unwrap_or("请按快捷键"),
+            pending.unwrap_or(t().controls.shortcut_press),
             FontId::proportional(theme::SMALL),
             TEXT,
         );
         painter.text(
             keys.center() + vec2(0.0, 9.0),
             Align2::CENTER_CENTER,
-            "Esc 取消",
+            t().controls.shortcut_esc_cancel,
             FontId::proportional(theme::TINY),
             MUTED,
         );
@@ -291,7 +296,7 @@ pub(crate) fn shortcut_row(
         painter.text(
             keys.center(),
             Align2::CENTER_CENTER,
-            "未绑定",
+            t().controls.shortcut_unbound,
             FontId::proportional(theme::SMALL),
             MUTED,
         );
@@ -299,7 +304,7 @@ pub(crate) fn shortcut_row(
     let clear_response = ui
         .scope_builder(egui::UiBuilder::new().max_rect(clear), |ui| {
             ui.add_enabled_ui(binding.is_some(), |ui| {
-                close_button(ui, "解绑快捷键", COMPACT_HEIGHT)
+                close_button(ui, t().controls.shortcut_clear, COMPACT_HEIGHT)
             })
             .inner
         })
@@ -376,7 +381,7 @@ pub fn connection_details_header(ui: &mut egui::Ui, elapsed: &str) -> bool {
     ui.painter().text(
         rect.left_center() + vec2(12.0, 0.0),
         egui::Align2::LEFT_CENTER,
-        "连接详情",
+        t().controls.connection_details,
         egui::FontId::proportional(theme::COMPACT_TEXT),
         TEXT,
     );
@@ -389,7 +394,8 @@ pub fn connection_details_header(ui: &mut egui::Ui, elapsed: &str) -> bool {
     );
     let close_rect =
         egui::Rect::from_min_max(egui::pos2(rect.right() - 94.0, rect.top()), rect.max);
-    ui.put(close_rect, quiet_button("收起详情")).clicked()
+    ui.put(close_rect, quiet_button(t().controls.hide_details))
+        .clicked()
 }
 
 pub fn connection_stage_row(
@@ -534,7 +540,7 @@ pub fn viewer_device_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
         ],
         Stroke::new(1.0, MUTED),
     ));
-    response.on_hover_text("切换在线设备")
+    response.on_hover_text(t().controls.switch_online_device)
 }
 
 pub fn viewer_caption_separator(ui: &egui::Ui, center: egui::Pos2) {
@@ -552,7 +558,7 @@ pub fn device_menu_header(ui: &mut egui::Ui, busy: bool) -> bool {
     ui.painter().text(
         rect.left_center() + vec2(10.0, 0.0),
         egui::Align2::LEFT_CENTER,
-        "切换设备",
+        t().controls.switch_device,
         egui::FontId::proportional(theme::SMALL),
         MUTED,
     );
@@ -585,7 +591,9 @@ pub fn device_menu_header(ui: &mut egui::Ui, busy: bool) -> bool {
         vec![end + vec2(-3.0, -1.0), end, end + vec2(-1.0, 3.0)],
         stroke,
     ));
-    response.on_hover_text("刷新设备列表").clicked()
+    response
+        .on_hover_text(t().controls.refresh_devices)
+        .clicked()
 }
 
 pub fn device_menu_row(
@@ -731,7 +739,7 @@ pub fn dialog_frame() -> egui::Frame {
 /// Release text is displayed locally; it never loads remote images or HTML.
 pub(crate) fn release_notes(ui: &mut egui::Ui, notes: &str) {
     if notes.trim().is_empty() {
-        ui.label(RichText::new("暂无更新说明").color(MUTED));
+        ui.label(RichText::new(t().controls.no_release_notes).color(MUTED));
         return;
     }
     for line in notes.lines() {
@@ -797,9 +805,9 @@ pub(crate) fn visibility_button(ui: &mut egui::Ui, visible: &mut bool) -> egui::
             egui::WidgetType::Button,
             ui.is_enabled(),
             if *visible {
-                "隐藏访问码"
+                t().controls.hide_access_code
             } else {
-                "显示访问码"
+                t().controls.show_access_code
             },
         )
     });
@@ -863,7 +871,7 @@ pub fn back_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
         text,
         color,
     );
-    response.on_hover_text("返回上一页（Esc）")
+    response.on_hover_text(t().controls.back_esc)
 }
 
 pub fn paint_close(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
@@ -1107,9 +1115,13 @@ pub fn screen_tab(
     if let Some(close) = close {
         closed = close.clicked();
         close.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "关闭虚拟屏")
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                ui.is_enabled(),
+                t().controls.close_virtual_screen,
+            )
         });
-        response = response.union(close.on_hover_text("关闭虚拟屏"));
+        response = response.union(close.on_hover_text(t().controls.close_virtual_screen));
     }
     (response, closed)
 }
@@ -1134,7 +1146,11 @@ pub fn screen_add(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
         ui.painter()
             .line_segment([center - vec2(0.0, 4.5), center + vec2(0.0, 4.5)], stroke);
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "添加虚拟屏")
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                enabled,
+                t().controls.add_virtual_screen,
+            )
         });
         response
     })
@@ -1210,6 +1226,8 @@ pub fn menu_row(
     job.wrap.max_rows = 1;
     job.wrap.break_anywhere = true;
     let galley = ui.painter().layout_job(job);
+    // A label or detail cut short (longer translations) shows in full on hover.
+    let elided = galley.elided || detail_galley.elided;
     ui.painter().galley(
         egui::pos2(label_left, rect.center().y - galley.size().y / 2.0),
         galley,
@@ -1235,6 +1253,14 @@ pub fn menu_row(
             .line_segment([center + vec2(-2.0, -3.5), center + vec2(1.5, 0.0)], stroke);
         ui.painter()
             .line_segment([center + vec2(1.5, 0.0), center + vec2(-2.0, 3.5)], stroke);
+    }
+    if elided {
+        return response.on_hover_ui(|ui| {
+            ui.label(label);
+            if !detail.is_empty() {
+                ui.label(RichText::new(detail).color(MUTED));
+            }
+        });
     }
     response
 }
@@ -1302,9 +1328,9 @@ pub fn setting_row(
     let cancel = close_button(
         &mut actions,
         &if edited {
-            format!("撤销{label}修改")
+            (t().controls.undo_setting)(label)
         } else {
-            "停止等待".into()
+            t().controls.stop_waiting.into()
         },
         COMPACT_HEIGHT,
     )
@@ -1320,7 +1346,7 @@ pub fn setting_row(
             egui::WidgetInfo::labeled(
                 egui::WidgetType::Button,
                 actions.is_enabled(),
-                format!("应用{label}"),
+                (t().controls.apply_setting)(label),
             )
         });
         let center = response.rect.center();
@@ -1332,7 +1358,9 @@ pub fn setting_row(
             ],
             Stroke::new(1.6, ACCENT),
         );
-        response.on_hover_text(format!("应用{label}")).clicked()
+        response
+            .on_hover_text((t().controls.apply_setting)(label))
+            .clicked()
     } else {
         actions.add_sized(
             vec2(COMPACT_HEIGHT, COMPACT_HEIGHT),

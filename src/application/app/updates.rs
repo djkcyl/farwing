@@ -3,6 +3,7 @@
 //! The administrator publishes release metadata in the server configuration;
 //! the check needs no login. Without a configured server or feed there is no
 //! update source and nothing is contacted.
+use crate::i18n::t;
 use anyhow::{Context, Result};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
@@ -60,13 +61,6 @@ impl UpdateCheck {
     pub fn allow_prerelease(&self) -> bool {
         self.settings.allow_prerelease
     }
-    pub fn release_label(&self) -> &'static str {
-        if self.allow_prerelease() {
-            "可用版本"
-        } else {
-            "正式版"
-        }
-    }
     pub fn set_allow_prerelease(&mut self, allow: bool, ctx: &egui::Context) -> Result<()> {
         if allow == self.allow_prerelease() {
             return Ok(());
@@ -118,13 +112,13 @@ impl UpdateCheck {
                                 biased;
                                 _ = cancel_rx => None,
                                 result = tokio::time::timeout(Duration::from_secs(25), latest(allow_prerelease)) =>
-                                    Some(result.context("更新检查超时").and_then(|r|r)),
+                                    Some(result.context(t().app.update_check_timeout).and_then(|r|r)),
                             }
                         });
                         runtime.shutdown_background();
                         result
                     }
-                    Err(error) => Some(Err(error).context("无法启动更新检查")),
+                    Err(error) => Some(Err(error).context(t().app.cant_start_update_check)),
                 };
                 if let Some(result) = result {
                     let _ = tx.send(result);
@@ -137,7 +131,10 @@ impl UpdateCheck {
                 self.cancel = Some(cancel_tx);
                 self.state = State::Checking;
             }
-            Err(error) => self.state = State::Failed(format!("无法启动更新检查：{error}")),
+            Err(error) => {
+                self.state =
+                    State::Failed((t().app.cant_start_update_check_with)(&error.to_string()))
+            }
         }
     }
 
@@ -148,7 +145,7 @@ impl UpdateCheck {
         let result = match rx.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("更新检查未完成")),
+            Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!(t().app.update_check_incomplete)),
         };
         self.pending = None;
         self.cancel = None;
@@ -189,7 +186,7 @@ async fn latest(allow_prerelease: bool) -> Result<State> {
     let release = api
         .latest_release(channel)
         .await
-        .context("无法从 Farwing 服务器获取版本信息")?;
+        .context(t().app.cant_get_version)?;
     match release {
         Some(release) => release_state(release, env!("CARGO_PKG_VERSION"), allow_prerelease),
         None => Ok(State::NoRelease),
@@ -202,12 +199,12 @@ fn release_state(
     allow_prerelease: bool,
 ) -> Result<State> {
     let version = semver::Version::parse(release.version.strip_prefix('v').unwrap_or(&release.version))
-        .context("服务器提供的版本号格式不正确")?;
+        .context(t().app.invalid_server_version)?;
     let prerelease = release.prerelease || !version.pre.is_empty();
     if prerelease && !allow_prerelease {
         return Ok(State::NoRelease);
     }
-    let current = semver::Version::parse(current).context("当前程序版本号格式不正确")?;
+    let current = semver::Version::parse(current).context(t().app.invalid_current_version)?;
     Ok(match version.cmp_precedence(&current) {
         std::cmp::Ordering::Equal => State::Current,
         std::cmp::Ordering::Less => State::Ahead,

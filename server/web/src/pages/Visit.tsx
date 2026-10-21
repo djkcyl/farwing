@@ -2,24 +2,19 @@
 // device ID, with its access code or the host user's confirmation. Works
 // without an account (as a guest) and signed in (as the account).
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useT } from '../i18n/react';
 import { useAuth } from '../lib/auth';
 import { connectIdText } from '../lib/format';
 import { Link, navigate, useLocation } from '../lib/router';
 import { warmUpPake } from '../lib/spake2';
-import { parseTarget, VisitError, visitAdmission, type VisitStep } from '../lib/visit';
+import { parseTarget, VisitError, visitAdmission, visitError, type VisitStep } from '../lib/visit';
 import type { Admission } from '../lib/viewer';
 import { Alert, Button, Field, Input, Spinner } from '../ui/kit';
 import { AuthFrame } from './Login';
 import { ViewerScreen } from '../ui/ViewerScreen';
 
-const STEPS: Record<VisitStep, string> = {
-  asking: '正在联系对方',
-  checking: '正在验证访问码',
-  confirming: '等待对方允许',
-  joining: '正在建立会话',
-};
-
 export default function Visit() {
+  const t = useT();
   const auth = useAuth();
   const { query } = useLocation();
   const [target, setTarget] = useState(() => {
@@ -29,7 +24,7 @@ export default function Visit() {
   const [mode, setMode] = useState<'code' | 'confirm'>('code');
   const [code, setCode] = useState('');
   const [step, setStep] = useState<VisitStep>();
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<VisitError>();
   const [watching, setWatching] = useState(false);
   const first = useRef<Admission | undefined>(undefined);
   const [confirmed, setConfirmed] = useState(false);
@@ -45,7 +40,7 @@ export default function Visit() {
     e.preventDefault();
     setError(undefined);
     if (!parseTarget(target)) {
-      setError('请输入 9 位短号或 16 位设备 ID');
+      setError(new VisitError('bad_target'));
       return;
     }
     secret.current = mode === 'code' ? code.trim() : '';
@@ -57,7 +52,7 @@ export default function Visit() {
       });
       setWatching(true);
     } catch (err) {
-      setError(err instanceof VisitError ? err.message : String(err));
+      setError(visitError(err));
     } finally {
       setStep(undefined);
     }
@@ -67,7 +62,7 @@ export default function Visit() {
     return (
       <ViewerScreen
         title={parseTarget(target)?.connect_id ? connectIdText(parseTarget(target)!.connect_id) : target}
-        subtitle="访客观看"
+        subtitle={t.viewer.visit.title}
         // A session needing the host user's confirmation is not re-asked
         // automatically.
         autoRetry={!confirmed}
@@ -87,24 +82,24 @@ export default function Visit() {
   const busy = !!step;
   return (
     <AuthFrame
-      title="访客观看"
+      title={t.viewer.visit.title}
       foot={
         auth.status === 'signed_in' ? (
-          <Link to="/">返回用户中心</Link>
+          <Link to="/">{t.viewer.visit.backHome}</Link>
         ) : (
           <>
-            <Link to="/login">用账号登录</Link>
+            <Link to="/login">{t.viewer.visit.signIn}</Link>
             <span />
           </>
         )
       }
     >
       <form className="stack" onSubmit={submit}>
-        {error && <Alert>{error}</Alert>}
+        {error && <Alert>{error.text()}</Alert>}
         {auth.info && !auth.info.guests && auth.status !== 'signed_in' && (
-          <Alert tone="amber">本服务器未开启游客功能</Alert>
+          <Alert tone="amber">{t.viewer.visit.guestsOff}</Alert>
         )}
-        <Field label="短号或设备 ID">
+        <Field label={t.viewer.visit.target}>
           <Input
             className="mono"
             value={target}
@@ -117,14 +112,14 @@ export default function Visit() {
         </Field>
         <div className="row gap-sm">
           <button type="button" className={`chip ${mode === 'code' ? 'on' : ''}`} onClick={() => setMode('code')}>
-            使用访问码
+            {t.viewer.visit.useCode}
           </button>
           <button type="button" className={`chip ${mode === 'confirm' ? 'on' : ''}`} onClick={() => setMode('confirm')}>
-            请对方确认
+            {t.viewer.visit.askHost}
           </button>
         </div>
         {mode === 'code' && (
-          <Field label="访问码">
+          <Field label={t.viewer.visit.code}>
             <Input
               type="password"
               autoComplete="off"
@@ -138,15 +133,15 @@ export default function Visit() {
         )}
         {busy && (
           <div className="row gap-sm muted">
-            <Spinner size={16} /> {STEPS[step!]}
+            <Spinner size={16} /> {t.viewer.visit.steps[step!]}
           </div>
         )}
         <Button type="submit" variant="primary" className="btn-block" loading={busy}>
-          开始观看
+          {t.viewer.visit.start}
         </Button>
         {busy && step === 'confirming' && (
           <Button variant="ghost" onClick={() => navigate('/visit', true)}>
-            取消
+            {t.common.cancel}
           </Button>
         )}
       </form>

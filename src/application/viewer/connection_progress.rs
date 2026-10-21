@@ -1,4 +1,5 @@
 use super::*;
+use crate::i18n::t;
 use crate::ui::{controls, theme};
 
 impl ConnectionProgressApp {
@@ -11,14 +12,14 @@ impl ConnectionProgressApp {
             .show(ui, |ui| {
                 ui.add_space(12.0);
                 ui.label(
-                    egui::RichText::new(if failed && self.current.title == "连接已结束" {
-                        "连接已结束"
+                    egui::RichText::new(if failed && self.current.ended {
+                        t().viewer.connection_ended
                     } else if failed {
-                        "连接失败"
+                        t().viewer.connection_failed
                     } else if ready {
-                        "已连接"
+                        t().viewer.connected
                     } else {
-                        "正在连接"
+                        t().viewer.connecting
                     })
                     .size(theme::SMALL)
                     .color(theme::MUTED),
@@ -33,12 +34,13 @@ impl ConnectionProgressApp {
                     .wrap(),
                 );
                 ui.add_space(28.0);
+                let t = &t().viewer;
                 let stages = [
-                    (1, "检查设备"),
-                    (3, "创建会话"),
-                    (4, "建立连接"),
-                    (6, "选择线路"),
-                    (9, "准备画面"),
+                    (1, t.stage_check_device),
+                    (3, t.stage_create_session),
+                    (4, t.stage_connect),
+                    (6, t.stage_choose_route),
+                    (9, t.stage_prepare_video),
                 ];
                 let active = stages
                     .iter()
@@ -56,9 +58,9 @@ impl ConnectionProgressApp {
                 ui.add_space((ui.available_height() - controls::HEIGHT).max(16.0));
                 if ui
                     .add(controls::secondary(if failed {
-                        "关闭窗口"
+                        t.close_window
                     } else {
-                        "取消连接"
+                        t.cancel_connection
                     }))
                     .clicked()
                 {
@@ -85,7 +87,7 @@ impl ConnectionProgressApp {
                 };
                 if controls::connection_details_header(
                     ui,
-                    &format!("{:.1} 秒", elapsed.as_secs_f64()),
+                    &(t().viewer.elapsed_seconds)(elapsed.as_secs_f64()),
                 ) {
                     self.details_open = false;
                     ui.ctx().request_repaint();
@@ -109,7 +111,7 @@ impl ConnectionProgressApp {
                 ui.separator();
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new("连接记录")
+                    egui::RichText::new(t().viewer.connection_log)
                         .size(theme::SMALL)
                         .color(theme::MUTED),
                 );
@@ -235,19 +237,19 @@ impl ConnectionProgressApp {
                             .truncate(),
                         );
                         content.add_space(10.0);
-                        let ended = self.current.title == "连接已结束";
-                        let phase = if failed && ended {
-                            "连接已结束"
+                        let t = &t().viewer;
+                        let phase = if failed && self.current.ended {
+                            t.connection_ended
                         } else if failed {
-                            "连接失败"
+                            t.connection_failed
                         } else if ready {
-                            "已连接"
+                            t.connected
                         } else {
                             match self.current.step {
-                                0..=2 => "正在检查设备状态…",
-                                3..=5 => "正在建立安全连接…",
-                                6..=8 => "正在连接远程设备…",
-                                _ => "正在准备远程画面…",
+                                0..=2 => t.phase_checking_device,
+                                3..=5 => t.phase_securing,
+                                6..=8 => t.phase_connecting,
+                                _ => t.phase_preparing_video,
                             }
                         };
                         content.label(
@@ -278,16 +280,16 @@ impl ConnectionProgressApp {
                                 .wrap(),
                             );
                             content.add_space(12.0);
-                            if content.add(controls::primary("立即重试")).clicked() {
+                            if content.add(controls::primary(t.retry_now)).clicked() {
                                 retry.trigger();
                             }
                         }
                         content.add_space(24.0);
                         if content
                             .add(controls::secondary(if failed {
-                                "关闭窗口"
+                                t.close_window
                             } else {
-                                "取消连接"
+                                t.cancel_connection
                             }))
                             .clicked()
                         {
@@ -296,9 +298,9 @@ impl ConnectionProgressApp {
                         content.add_space(6.0);
                         if content
                             .add(controls::quiet_button(if self.details_open {
-                                "收起连接详情"
+                                t.hide_connection_details
                             } else {
-                                "连接详情"
+                                crate::i18n::t().controls.connection_details
                             }))
                             .clicked()
                         {

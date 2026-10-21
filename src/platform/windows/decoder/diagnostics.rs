@@ -1,5 +1,6 @@
 //! Readback only for explicit local diagnostics; never in the playback path.
 use super::WindowsGpuVideoFrame;
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -38,7 +39,8 @@ impl WindowsGpuVideoFrame {
                 desc.Format,
                 DXGI_FORMAT_NV12 | DXGI_FORMAT_P010 | DXGI_FORMAT_AYUV | DXGI_FORMAT_Y410
             ),
-            "不支持的读回格式"
+            "{}",
+            t().system.decoder_unsupported_readback_format
         );
         ensure!(
             points.iter().all(|&(x, y)| x < self.width()
@@ -51,7 +53,8 @@ impl WindowsGpuVideoFrame {
                     .visible_y()
                     .checked_add(y)
                     .is_some_and(|y| y < desc.Height)),
-            "读回坐标超出纹理"
+            "{}",
+            t().system.decoder_readback_out_of_bounds
         );
         let device: ID3D11Device = unsafe { self.texture().GetDevice()? };
         let context = unsafe { device.GetImmediateContext()? };
@@ -65,7 +68,7 @@ impl WindowsGpuVideoFrame {
         unsafe {
             device.CreateTexture2D(&desc, None, Some(&mut staging))?;
         }
-        let staging = staging.context("无法创建诊断读回纹理")?;
+        let staging = staging.context(t().system.decoder_create_readback_texture)?;
         let _acquired = crate::platform::surface::acquire_owned_texture_sync(self.texture(), 1000)?
             .map(Acquired);
         unsafe {
@@ -84,7 +87,11 @@ impl WindowsGpuVideoFrame {
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         loop {
-            ensure!(!cancel.load(Ordering::Acquire), "检查已取消");
+            ensure!(
+                !cancel.load(Ordering::Acquire),
+                "{}",
+                t().system.decoder_check_cancelled
+            );
             match unsafe {
                 context.Map(
                     &staging,
@@ -96,7 +103,11 @@ impl WindowsGpuVideoFrame {
             } {
                 Ok(()) => break,
                 Err(e) if e.code() == DXGI_ERROR_WAS_STILL_DRAWING => {
-                    ensure!(Instant::now() < deadline, "GPU像素读回超时");
+                    ensure!(
+                        Instant::now() < deadline,
+                        "{}",
+                        t().system.decoder_readback_timeout
+                    );
                     std::thread::sleep(Duration::from_millis(1));
                 }
                 Err(e) => return Err(e.into()),
@@ -110,7 +121,8 @@ impl WindowsGpuVideoFrame {
         };
         ensure!(
             !mapped.pData.is_null() && u64::from(mapped.RowPitch) >= u64::from(desc.Width) * bytes,
-            "无效GPU行跨度"
+            "{}",
+            t().system.decoder_invalid_pitch
         );
         let pitch = mapped.RowPitch as usize;
         let base = mapped.pData.cast::<u8>();

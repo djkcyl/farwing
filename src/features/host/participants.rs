@@ -13,6 +13,7 @@ use crate::protocol::participants::{
     self as wire, Click, Participant, ParticipantPointer, Participants, Pointer,
 };
 use std::collections::BTreeMap;
+use crate::i18n::t;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -279,14 +280,14 @@ fn publish_host_event(kind: i32, expected_downtime_ms: u32, message: &str, excep
 /// (`DISPLAY_CHANGING`) why their picture is about to change.
 pub(crate) fn display_changed(actor: Option<u64>, nickname: &str) {
     let who = if nickname.trim().is_empty() {
-        "另一位参与者"
+        t().features.host_other_participant
     } else {
         nickname.trim()
     };
     publish_host_event(
         crate::protocol::host_event::kind::DISPLAY_CHANGING,
         2_000,
-        &format!("{who} 修改了被控端的显示设置"),
+        &(t().features.host_display_changed_by)(who),
         actor,
     );
 }
@@ -363,7 +364,7 @@ pub(crate) fn take_control(key: u64, automatic: bool) -> Result<(), Refusal> {
         Some(holder) if state.members.contains_key(&holder) => {
             let name = state.members[&holder].profile.nickname.clone();
             Err(Refusal::HeldBy(if name.trim().is_empty() {
-                "另一位参与者".into()
+                t().features.host_other_participant.into()
             } else {
                 name
             }))

@@ -253,7 +253,7 @@ impl Microphone {
         s.pending = None;
         s.enabled = false;
         s.confirmed = false;
-        s.error = Some(format!("麦克风请求发送失败：{error}"));
+        s.error = Some((crate::i18n::t().session.mic_request_send_failed)(&error.to_string()));
         self.0.refresh(&s);
         true
     }
@@ -468,7 +468,7 @@ fn open_tone(
                 std::thread::sleep(next.saturating_duration_since(Instant::now()));
             }
         })
-        .context("无法启动测试音")?;
+        .context(crate::i18n::t().session.test_tone_failed)?;
     Ok(Tone {
         stop,
         thread: Some(thread),
@@ -504,7 +504,7 @@ fn capture_owner(shared: Arc<Shared>) {
                 },
                 Err(error) => InputDevices {
                     devices: Vec::new(),
-                    error: Some(format!("读取麦克风设备失败：{error}")),
+                    error: Some((crate::i18n::t().session.mic_devices_unreadable)(&error.to_string())),
                     updated: Some(Instant::now()),
                 },
             };
@@ -575,9 +575,9 @@ fn capture_owner(shared: Arc<Shared>) {
             let result = device
                 .ok_or_else(|| {
                     if selection.is_some() {
-                        anyhow!("所选麦克风已断开")
+                        anyhow!("{}", crate::i18n::t().session.mic_disconnected)
                     } else {
-                        anyhow!("没有可用的默认麦克风")
+                        anyhow!("{}", crate::i18n::t().session.mic_no_default)
                     }
                 })
                 .and_then(|device| match dev_tone() {
@@ -613,7 +613,7 @@ fn capture_owner(shared: Arc<Shared>) {
                 Err(e) => {
                     let mut state = lock(&shared.state);
                     if shared.current(generation) {
-                        state.error = Some(format!("麦克风不可用：{e:#}"));
+                        state.error = Some((crate::i18n::t().session.mic_unavailable)(&format!("{e:#}")));
                     }
                     failures += 1;
                 }
@@ -640,7 +640,7 @@ fn open_input(
 ) -> Result<cpal::Stream> {
     let supported = device
         .default_input_config()
-        .context("读取麦克风格式失败")?;
+        .context(crate::i18n::t().session.mic_format_unreadable)?;
     let config = supported.config();
     let stream = match supported.sample_format() {
         cpal::SampleFormat::F32 => {
@@ -658,17 +658,17 @@ fn open_input(
         cpal::SampleFormat::F64 => {
             build_input::<f64>(device, config, shared.clone(), attempt, generation, origin)
         }
-        format => Err(anyhow!("麦克风格式不受支持：{format}")),
+        format => Err(anyhow!("{}", (crate::i18n::t().session.mic_format_unsupported)(&format.to_string()))),
     }?;
     stream
         .play()
-        .context("启动麦克风失败")?;
+        .context(crate::i18n::t().session.mic_start_failed)?;
     let mut s = lock(&shared.state);
     if shared.current(generation) {
         s.device = device
             .description()
             .map(|d| d.name().to_owned())
-            .unwrap_or_else(|_| "系统默认麦克风".into());
+            .unwrap_or_else(|_| crate::i18n::t().session.mic_default_name.into());
         s.error = None;
     }
     tracing::info!(
@@ -708,7 +708,7 @@ fn input_error(
         }
         return;
     }
-    state.error = Some(format!("麦克风设备中断：{error}"));
+    state.error = Some((crate::i18n::t().session.mic_device_interrupted)(&error.to_string()));
     failed.store(true, Ordering::Release);
     drop(state);
     shared.notify();
@@ -725,7 +725,7 @@ fn build_input<T: cpal::SizedSample + cpal::Sample>(
 where
     f32: cpal::FromSample<T>,
 {
-    ensure!(config.channels > 0, "麦克风没有声道");
+    ensure!(config.channels > 0, "{}", crate::i18n::t().session.mic_no_channels);
     let channels = config.channels as usize;
     let mut resampler = crate::media::audio::dsp::Resampler::with_rates(config.sample_rate, RATE)?;
     let mut input = [0f32; 320];
@@ -812,5 +812,5 @@ where
             },
             None,
         )
-        .context("打开麦克风失败")
+        .context(crate::i18n::t().session.mic_open_failed)
 }

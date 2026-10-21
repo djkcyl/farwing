@@ -63,7 +63,7 @@ async fn admin_allow_list_limits_the_console_by_address() {
     promote(&srv, "root");
     let root = browser(&srv, "root").await;
     let r = srv.get("/api/v2/admin/overview", &root).await;
-    r.err(403, "forbidden");
+    r.err_reason(403, "forbidden", "admin_network_denied");
     // The user centre is not limited.
     srv.get("/api/v2/me/security", &root).await.ok();
     srv.shutdown().await;
@@ -81,10 +81,10 @@ async fn totp_guards_the_admin_console() {
     // Only administrators turn it on; the password is required.
     srv.post("/api/v2/me/totp/setup", &alice, json!({"password": PASSWORD}))
         .await
-        .err(403, "forbidden");
+        .err_reason(403, "forbidden", "totp_admin_only");
     srv.post("/api/v2/me/totp/setup", &root, json!({"password": "wrong-password"}))
         .await
-        .err(403, "forbidden");
+        .err_reason(403, "forbidden", "password_incorrect");
     let setup = srv
         .post("/api/v2/me/totp/setup", &root, json!({"password": PASSWORD}))
         .await;
@@ -92,7 +92,7 @@ async fn totp_guards_the_admin_console() {
     assert!(setup.body["uri"].as_str().unwrap().starts_with("otpauth://totp/"));
     srv.post("/api/v2/me/totp/enable", &root, json!({"code": "000000"}))
         .await
-        .err(403, "forbidden");
+        .err_reason(403, "forbidden", "totp_code_incorrect");
     let enabled = srv
         .post("/api/v2/me/totp/enable", &root, json!({"code": totp_code(&secret)}))
         .await;
@@ -111,8 +111,7 @@ async fn totp_guards_the_admin_console() {
     let s = srv.get("/api/v2/me/security", &root2).await;
     assert_eq!((s.ok()["totp"].as_bool(), s.body["verified"].as_bool()), (Some(true), Some(false)));
     let r = srv.get("/api/v2/admin/overview", &root2).await;
-    r.err(403, "forbidden");
-    assert_eq!(r.body["error"]["details"]["totp_required"], true);
+    r.err_reason(403, "forbidden", "totp_required");
     srv.post("/api/v2/auth/totp", &root2, json!({"code": "123456"}))
         .await
         .err(403, "forbidden");
@@ -158,11 +157,11 @@ async fn last_administrator_and_self_are_protected() {
         let r = srv
             .call(Method::PATCH, &format!("/api/v2/admin/users/{root_id}"), &root, Some(body))
             .await;
-        r.err(400, "bad_request");
+        r.err_reason(400, "bad_request", "last_admin");
     }
     srv.delete(&format!("/api/v2/admin/users/{root_id}"), &root)
         .await
-        .err(400, "bad_request");
+        .err_reason(400, "bad_request", "self_delete");
     // The command line refuses too.
     assert!(farwing_server::admin::user_set_role(&srv.cfg, "root", false).is_err());
 
@@ -194,13 +193,17 @@ async fn administrators_manage_accounts() {
     assert!(generated.len() >= 12);
     srv.post("/api/v2/admin/users", &root, json!({"username": "carol"}))
         .await
-        .err(409, "conflict");
-    srv.post("/api/v2/admin/users", &root, json!({"username": "bad name!", "password": "long-enough-1"}))
-        .await
-        .err(400, "bad_request");
-    srv.post("/api/v2/admin/users", &root, json!({"username": "dave", "password": "short"}))
-        .await
-        .err(400, "bad_request");
+        .err_reason(409, "conflict", "username_taken");
+    let r = srv
+        .post("/api/v2/admin/users", &root, json!({"username": "bad name!", "password": "long-enough-1"}))
+        .await;
+    r.err_reason(400, "bad_request", "username_invalid");
+    assert_eq!(r.body["error"]["details"]["max"], 64);
+    let r = srv
+        .post("/api/v2/admin/users", &root, json!({"username": "dave", "password": "short"}))
+        .await;
+    r.err_reason(400, "bad_request", "password_too_short");
+    assert_eq!(r.body["error"]["details"]["min"], 8);
 
     let mut carol = srv.init_device("CAROL-PC", "windows", true).await;
     let login = srv
@@ -236,7 +239,7 @@ async fn administrators_manage_accounts() {
         .ok();
     srv.post("/api/v2/auth/login", &carol, json!({"username": "carol", "password": new_password}))
         .await
-        .err(401, "unauthorized");
+        .err_reason(401, "unauthorized", "login_failed");
 
     srv.delete(&format!("/api/v2/admin/users/{carol_id}"), &root).await.ok();
     srv.get(&format!("/api/v2/admin/users/{carol_id}"), &root)
@@ -255,6 +258,18 @@ async fn administrators_manage_accounts() {
     for kind in ["user.create", "user.password", "user.update", "user.delete", "login"] {
         assert!(kinds.contains(&kind), "{kind} missing in {kinds:?}");
     }
+    // Details are language-neutral JSON.
+    let entries = audit.body.as_array().unwrap();
+    let detail = |kind: &str, ok: bool| -> serde_json::Value {
+        let e = entries
+            .iter()
+            .find(|e| e["kind"] == kind && e["ok"] == ok)
+            .unwrap_or_else(|| panic!("no {kind} entry"));
+        serde_json::from_str(e["detail"].as_str().unwrap()).unwrap()
+    };
+    assert_eq!(detail("user.update", true), json!({"disabled": true}));
+    assert_eq!(detail("login", false), json!({"reason": "login_failed"}));
+    assert!(detail("login", true)["device_id"].is_string());
     let only = srv.get("/api/v2/admin/audit?kind=user.delete", &root).await;
     assert_eq!(only.ok().as_array().unwrap().len(), 1);
     srv.shutdown().await;
@@ -279,7 +294,7 @@ async fn invitations_register_accounts() {
     // Registration is off by default.
     srv.post("/api/v2/auth/register", &newcomer, body.clone())
         .await
-        .err(403, "forbidden");
+        .err(403, "registration_disabled");
     let settings = srv.get("/api/v2/admin/settings", &root).await;
     let mut runtime = settings.ok()["runtime"].clone();
     runtime["registration"] = json!(true);
@@ -292,7 +307,7 @@ async fn invitations_register_accounts() {
         json!({"invite": "AAAA-BBBB-CCCC", "username": "erin", "password": "erin-password"}),
     )
     .await
-    .err(400, "bad_request");
+    .err_reason(400, "bad_request", "invite_invalid");
     let reg = srv.post("/api/v2/auth/register", &newcomer, body).await;
     let mut erin = newcomer.clone();
     erin.access = Some(reg.ok()["access_token"].as_str().unwrap().to_owned());
@@ -315,7 +330,7 @@ async fn invitations_register_accounts() {
         json!({"invite": code, "username": "frank", "password": "frank-password"}),
     )
     .await
-    .err(400, "bad_request");
+    .err_reason(400, "bad_request", "invite_expired");
     let uses = srv.get(&format!("/api/v2/admin/invites/{invite_id}/uses"), &root).await;
     assert_eq!(uses.ok()[0]["username"], "erin");
 
@@ -351,7 +366,13 @@ async fn settings_and_announcements_apply_at_once() {
     assert_eq!(info.ok()["server"]["instance_name"], "Lab");
     assert_eq!(srv.get("/api/v2/config", &root).await.ok()["bitrate_limit_mbps"], 40);
     runtime["bitrate_limit_mbps"] = json!(0);
-    srv.put("/api/v2/admin/settings", &root, runtime).await.err(400, "bad_request");
+    let r = srv.put("/api/v2/admin/settings", &root, runtime).await;
+    r.err_reason(400, "bad_request", "bitrate_limit_invalid");
+    assert_eq!((r.body["error"]["details"]["min"].as_u64(), r.body["error"]["details"]["max"].as_u64()), (Some(1), Some(10_000)));
+    let audit = srv.get("/api/v2/admin/audit?kind=settings.save", &root).await;
+    let detail: serde_json::Value =
+        serde_json::from_str(audit.ok()[0]["detail"].as_str().unwrap()).unwrap();
+    assert_eq!(detail, json!({"instance_name": "Lab", "bitrate_limit_mbps": 40}));
 
     srv.post(
         "/api/v2/admin/updates",
@@ -368,7 +389,7 @@ async fn settings_and_announcements_apply_at_once() {
                "url": "ftp://example.com/x", "published_at": 0}),
     )
     .await
-    .err(400, "bad_request");
+    .err_reason(400, "bad_request", "update_url_invalid");
     let updates = srv.get("/api/v2/updates/windows", &root).await;
     assert_eq!(updates.ok()["latest"]["version"], "0.2.0", "{}", updates.body);
     let info = srv.get("/api/v2/web/info", &root).await;
@@ -397,7 +418,7 @@ async fn browser_logins_expire_sooner_and_web_caps_limit_browsers() {
     );
     srv.post("/api/v2/sessions", &web, json!({"target_device_id": host.id, "purpose": "ports"}))
         .await
-        .err(403, "forbidden");
+        .err_reason(403, "forbidden", "web_not_allowed");
     // Client devices are not limited.
     let r = srv
         .post("/api/v2/sessions", &pc, json!({"target_device_id": host.id, "purpose": "desktop"}))
@@ -414,7 +435,7 @@ async fn browser_logins_expire_sooner_and_web_caps_limit_browsers() {
     runtime["web_caps"] = json!(["audio"]);
     srv.put("/api/v2/admin/settings", &web, runtime.clone())
         .await
-        .err(400, "bad_request");
+        .err_reason(400, "bad_request", "web_caps_invalid");
     runtime["web_caps"] = json!(["audio", "view"]);
     let saved = srv.put("/api/v2/admin/settings", &web, runtime).await;
     assert_eq!(saved.ok()["web_caps"], json!(["view", "audio"]));
@@ -455,7 +476,7 @@ async fn wrong_password_is_not_a_lost_login() {
         json!({"old_password": "not-the-password", "new_password": "new-password-1"}),
     )
     .await
-    .err(403, "forbidden");
+    .err_reason(403, "forbidden", "current_password_incorrect");
     srv.get("/api/v2/me", &web).await.ok();
     srv.post(
         "/api/v2/me/password",

@@ -3,6 +3,7 @@ pub(crate) mod application;
 pub(crate) mod driver;
 pub(crate) mod files;
 pub(crate) mod suite;
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::{
@@ -45,11 +46,13 @@ impl RemovalOptions {
             !(self.remove_display_driver || self.remove_audio_driver || self.remove_data)
                 || (operation == Operation::Uninstall
                     && matches!(kind, Kind::Suite | Kind::Application)),
-            "附加卸载选项只适用于整套卸载"
+            "{}",
+            t().system.component_removal_options_full_uninstall_only
         );
         ensure!(
             !self.remove_data || kind == Kind::Application,
-            "清除数据仅适用于卸载程序"
+            "{}",
+            t().system.component_remove_data_application_only
         );
         Ok(())
     }
@@ -127,12 +130,12 @@ impl Kind {
     ];
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::Application => "程序",
-            Self::Suite => "服务",
-            Self::HostService => "被控服务",
-            Self::InputDriver => "输入驱动",
-            Self::DisplayDriver => "虚拟显示驱动",
-            Self::AudioDriver => "虚拟音频驱动",
+            Self::Application => t().system.component_application,
+            Self::Suite => t().system.component_suite,
+            Self::HostService => t().system.component_host_service,
+            Self::InputDriver => t().system.component_input_driver,
+            Self::DisplayDriver => t().system.component_display_driver,
+            Self::AudioDriver => t().system.component_audio_driver,
         }
     }
     /// (subject, SHA-1 thumbprint, DER bytes) of the bundled driver signing
@@ -156,7 +159,7 @@ fn certificate_subject(bytes: &[u8]) -> String {
     unsafe {
         let context = CertCreateCertificateContext(X509_ASN_ENCODING, bytes);
         if context.is_null() {
-            return "组件签名证书无效".into();
+            return t().system.component_certificate_invalid.into();
         }
         let kind = CERT_X500_NAME_STR.0;
         let para = Some(std::ptr::from_ref(&kind).cast());
@@ -172,7 +175,8 @@ pub(crate) fn trust_certificate(kind: Kind) -> Result<()> {
     use windows::Win32::Security::Cryptography::*;
     ensure!(
         !matches!(kind, Kind::HostService | Kind::Suite | Kind::Application),
-        "被控服务不需要驱动证书"
+        "{}",
+        t().system.component_no_driver_certificate
     );
     // Without a bundled certificate the catalog must chain to a signer
     // Windows already trusts; verify_catalog checks that afterwards.
@@ -181,7 +185,11 @@ pub(crate) fn trust_certificate(kind: Kind) -> Result<()> {
     };
     unsafe {
         let context = CertCreateCertificateContext(X509_ASN_ENCODING, bytes);
-        ensure!(!context.is_null(), "组件签名证书无效");
+        ensure!(
+            !context.is_null(),
+            "{}",
+            t().system.component_certificate_invalid
+        );
         let mut hash = [0u8; 20];
         let mut length = hash.len() as u32;
         let result = CertGetCertificateContextProperty(
@@ -195,7 +203,8 @@ pub(crate) fn trust_certificate(kind: Kind) -> Result<()> {
         let actual = hash.iter().map(|b| format!("{b:02X}")).collect::<String>();
         ensure!(
             length == 20 && actual == expected,
-            "组件签名证书与内置指纹不匹配"
+            "{}",
+            t().system.component_certificate_mismatch
         );
         for name in [w!("ROOT"), w!("TrustedPublisher")] {
             let store = CertOpenStore(
@@ -286,7 +295,8 @@ impl Serial {
         let result = unsafe { WaitForSingleObject(handle.0, 0) };
         ensure!(
             result == WAIT_OBJECT_0 || result == WAIT_ABANDONED,
-            "已有组件操作正在进行"
+            "{}",
+            t().system.component_operation_in_progress
         );
         Ok(Self(handle))
     }
@@ -326,11 +336,16 @@ fn request_with_resume(
         MAINTENANCE
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok(),
-        "已有组件操作正在进行"
+        "{}",
+        t().system.component_operation_in_progress
     );
     let _maintenance = Maintenance;
     if kind == Kind::Application {
-        ensure!(operation == Operation::Uninstall, "无效程序操作");
+        ensure!(
+            operation == Operation::Uninstall,
+            "{}",
+            t().system.component_invalid_application_operation
+        );
         return application::request_uninstall(removal);
     }
     if kind == Kind::Suite {
@@ -349,7 +364,7 @@ fn request_with_resume(
             kind,
         );
     }
-    anyhow::bail!("请使用统一安装或卸载入口")
+    anyhow::bail!("{}", t().system.component_unsupported_operation)
 }
 pub(super) fn elevate(args: &str, kind: Kind) -> Result<bool> {
     let exe = dunce::canonicalize(std::env::current_exe()?)?;
@@ -369,19 +384,24 @@ pub(super) fn elevate(args: &str, kind: Kind) -> Result<bool> {
         nShow: SW_HIDE.0,
         ..Default::default()
     };
-    unsafe { ShellExecuteExW(&mut info) }.context("组件操作未启动")?;
+    unsafe { ShellExecuteExW(&mut info) }.context(t().system.component_operation_not_started)?;
     let process = super::host_service::pipe::Handle(info.hProcess);
-    ensure!(!process.0.is_invalid(), "组件操作进程不可用");
+    ensure!(
+        !process.0.is_invalid(),
+        "{}",
+        t().system.component_operation_process_unavailable
+    );
     ensure!(
         unsafe { WaitForSingleObject(process.0, INFINITE) } == WAIT_OBJECT_0,
-        "无法等待组件操作完成"
+        "{}",
+        t().system.component_operation_wait_failed
     );
     let mut code = 0;
     unsafe {
         GetExitCodeProcess(process.0, &mut code)?;
     }
     if code == 170 {
-        anyhow::bail!("被控服务仍有活动会话");
+        anyhow::bail!("{}", t().system.service_active_sessions);
     }
     if code == 2404 {
         return Err(super::display::install::DriverInUse.into());
@@ -390,12 +410,12 @@ pub(super) fn elevate(args: &str, kind: Kind) -> Result<bool> {
         return Err(super::virtual_audio::install::TestSigningRequired.into());
     }
     if code == 32 {
-        anyhow::bail!("仍有 Farwing 程序在运行");
+        anyhow::bail!("{}", t().system.component_program_running);
     }
     ensure!(
         code == 0 || code == 3010,
-        "{}操作失败（退出码 {code}）",
-        kind.label()
+        "{}",
+        (t().system.component_operation_failed)(kind.label(), code)
     );
     Ok(code == 3010)
 }

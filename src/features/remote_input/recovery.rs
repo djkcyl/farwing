@@ -125,7 +125,7 @@ impl RemoteInput {
             Err(error) => {
                 s.transport_recovery = None;
                 Self::release_locked(&mut s);
-                s.error = Some(format!("键鼠通道恢复失败，已停止控制：{error}"));
+                s.error = Some((t().features.remote_input_recovery_failed)(&error.to_string()));
                 tracing::warn!(%error, "remote input transport recovery failed");
             }
         }

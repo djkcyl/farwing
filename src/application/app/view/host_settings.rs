@@ -1,12 +1,14 @@
 use super::*;
+use crate::i18n::t;
 
 impl DeviceCenterApp {
     pub(super) fn notification_settings(&mut self, ui: &mut egui::Ui) {
-        section(ui, "远程访问通知");
+        let text = &t().settings;
+        section(ui, text.section_notifications);
         let mut mode = self.notifications.mode;
         form_row(
             ui,
-            "通知方式",
+            text.notification_style,
             "",
             |ui| {
                 egui::ComboBox::from_id_salt("remote-notification-mode")
@@ -24,14 +26,14 @@ impl DeviceCenterApp {
         }
         if let Some(error) = &self.notifications.error {
             ui.label(egui::RichText::new(error).color(theme::AMBER));
-            if ui.button("重试通知").clicked() {
+            if ui.button(text.retry_notifications).clicked() {
                 self.notifications.set_mode(mode);
             }
         }
         if ui
             .add_enabled(
                 self.notifications.available(),
-                crate::ui::controls::secondary("查看当前通知"),
+                crate::ui::controls::secondary(text.show_notifications),
             )
             .clicked()
         {
@@ -47,7 +49,7 @@ impl DeviceCenterApp {
             })
             .is_err()
         {
-            self.status = StatusMessage::error("被控设置保存失败");
+            self.status = StatusMessage::error(t().settings.host_save_failed);
         }
     }
     pub(super) fn host_settings(&mut self, ui: &mut egui::Ui) {
@@ -78,16 +80,17 @@ impl DeviceCenterApp {
         let total = if account { 6 } else { 4 };
         let id = egui::Id::new(("host-access-settings", self.login_generation));
         let mut open = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
+        let text = &t().settings;
         form_row(
             ui,
-            "访问权限",
-            &format!("已开启 {enabled} / {total} 项"),
+            text.access_permissions,
+            &(text.permissions_enabled)(enabled, total),
             |ui| {
                 if ui
                     .add(crate::ui::controls::secondary(if open {
-                        "收起"
+                        text.collapse
                     } else {
-                        "展开"
+                        text.expand
                     }))
                     .clicked()
                 {
@@ -102,31 +105,31 @@ impl DeviceCenterApp {
                 .show(ui, |ui| {
                     ui.columns(2, |columns| {
                         let ui = &mut columns[0];
-                        ui.label(RichText::new("文件与剪贴板").strong());
-                        ui.checkbox(&mut files, "文件浏览与传输");
-                        ui.checkbox(&mut clipboard.enabled, "剪贴板同步");
+                        ui.label(RichText::new(text.files_and_clipboard).strong());
+                        ui.checkbox(&mut files, text.file_transfer);
+                        ui.checkbox(&mut clipboard.enabled, text.clipboard_sync);
                         ui.add_enabled_ui(clipboard.enabled, |ui| {
-                            ui.checkbox(&mut clipboard.files, "文件复制粘贴");
+                            ui.checkbox(&mut clipboard.files, text.clipboard_files);
                         });
                         let ui = &mut columns[1];
-                        ui.label(RichText::new("系统与网络").strong());
-                        ui.checkbox(&mut ports, "端口转发");
+                        ui.label(RichText::new(text.system_and_network).strong());
+                        ui.checkbox(&mut ports, text.port_forwarding);
                         if account {
-                            ui.checkbox(&mut power, "关机和重启");
-                            ui.checkbox(&mut wol, "局域网唤醒协助");
+                            ui.checkbox(&mut power, text.power_control);
+                            ui.checkbox(&mut wol, text.wol_assistance);
                         }
                     });
                     ui.add_space(theme::MENU_GROUP_GAP);
                     ui.horizontal(|ui| {
-                        ui.label("同时连接人数上限");
+                        ui.label(text.max_participants);
                         egui::ComboBox::from_id_salt("host-max-participants")
-                            .selected_text(format!("{max_participants} 人"))
+                            .selected_text((text.people)(max_participants))
                             .show_ui(ui, |ui| {
                                 for limit in 1..=farwing_protocol::limits::MAX_PARTICIPANTS {
                                     ui.selectable_value(
                                         &mut max_participants,
                                         limit,
-                                        format!("{limit} 人"),
+                                        (text.people)(limit),
                                     );
                                 }
                             });
@@ -167,9 +170,10 @@ impl DeviceCenterApp {
         };
         let mut install = false;
         let mut manage = false;
-        form_row(ui, "后台服务", reach.state, |ui| match reach.action {
+        let text = &t().settings;
+        form_row(ui, text.background_service, reach.state, |ui| match reach.action {
             Some(label) => install = ui.add(crate::ui::controls::primary(label)).clicked(),
-            None => manage = ui.add(crate::ui::controls::secondary("管理")).clicked(),
+            None => manage = ui.add(crate::ui::controls::secondary(text.manage)).clicked(),
         });
         if install {
             self.center_ui.components.request_install();
@@ -182,10 +186,11 @@ impl DeviceCenterApp {
     fn host_settings_controls(&mut self, ui: &mut egui::Ui) {
         let host = self.host.clone();
         let mut allowed = host.as_ref().is_some_and(|h| h.allowed());
-        section(ui, "连接本机");
+        let text = &t().settings;
+        section(ui, text.section_connections);
         form_row(
             ui,
-            "允许连接本机",
+            text.allow_connections,
             "",
             |ui| {
                 if ui
@@ -204,7 +209,7 @@ impl DeviceCenterApp {
         self.service_row(ui);
         self.direct_settings(ui);
         if let Some(host) = host.as_ref() {
-            section(ui, "权限");
+            section(ui, text.section_permissions);
             if host.request_audio_devices()
                 && self
                     .worker
@@ -220,13 +225,13 @@ impl DeviceCenterApp {
             if !host.is_guest() {
                 self.wol_setup_entry(ui);
             }
-            section(ui, "画面与声音");
+            section(ui, text.section_video_audio);
             let inventory = host.audio_devices();
             let mut quality = host.audio_quality();
             let mut quality_changed = false;
             form_row(
                 ui,
-                "桌面声音音质",
+                text.audio_quality,
                 "",
                 |ui| {
                     quality_changed = crate::ui::controls::audio_quality(ui, &mut quality);
@@ -242,7 +247,7 @@ impl DeviceCenterApp {
             let mut selected_defaults = original_defaults;
             form_row(
                 ui,
-                "默认音频设备",
+                text.default_audio_devices,
                 "",
                 |ui| {
                     egui::ComboBox::from_id_salt("host-audio-defaults")
@@ -267,7 +272,7 @@ impl DeviceCenterApp {
             let original_device = host.audio_device();
             let mut selected_device = original_device.clone();
             let selected_name = match original_device.as_ref() {
-                None => "跟随系统默认".to_owned(),
+                None => text.system_default_device.to_owned(),
                 Some(device) => inventory
                     .devices
                     .iter()
@@ -275,19 +280,19 @@ impl DeviceCenterApp {
                     .map(|d| d.name.clone())
                     .unwrap_or_else(|| {
                         if inventory.updated.is_some() && inventory.error.is_none() {
-                            format!("{}（未连接）", device.name)
+                            (text.device_disconnected)(&device.name)
                         } else {
                             device.name.clone()
                         }
                     }),
             };
-            form_row(ui, "声音采集设备", "", |ui| {
+            form_row(ui, text.audio_capture_device, "", |ui| {
                 egui::ComboBox::from_id_salt("host-audio-device")
                     .width(238.0)
                     .truncate()
                     .selected_text(&selected_name)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut selected_device, None, "跟随系统默认");
+                        ui.selectable_value(&mut selected_device, None, text.system_default_device);
                         for device in &inventory.devices {
                             ui.push_id(&device.id, |ui| {
                                 let chosen =
@@ -305,9 +310,9 @@ impl DeviceCenterApp {
                         if let Some(error) = &inventory.error {
                             ui.colored_label(RED, error);
                         } else if inventory.pending && inventory.updated.is_none() {
-                            ui.label("正在读取设备…");
+                            ui.label(text.reading_devices);
                         } else if inventory.devices.is_empty() {
-                            ui.label("暂无可用播放设备");
+                            ui.label(text.no_playback_devices);
                         }
                     });
             });
@@ -329,7 +334,7 @@ impl DeviceCenterApp {
             };
             form_row(
                 ui,
-                "编码格式",
+                text.codec,
                 "",
                 |ui| {
                     if selected.codec != EncoderCodec::Automatic {
@@ -352,11 +357,11 @@ impl DeviceCenterApp {
             );
             form_row(
                 ui,
-                "编码器",
+                text.encoder,
                 "",
                 |ui| {
                     if selected.mode == EncoderMode::Software {
-                        ui.label("仅软件编码");
+                        ui.label(text.software_encoding_only);
                     } else {
                         self.media_inventory
                             .draw(ui, "host-encoder-gpu", &mut selected.gpu, true);
@@ -365,26 +370,26 @@ impl DeviceCenterApp {
             );
             form_row(
                 ui,
-                "GPU 调度",
+                text.gpu_scheduling,
                 "",
                 |ui| {
                     egui::ComboBox::from_id_salt("host-gpu-scheduling")
                         .width(238.)
                         .selected_text(if selected.gpu_compatibility {
-                            "兼容优先"
+                            text.prefer_compatibility
                         } else {
-                            "流畅优先（推荐）"
+                            text.prefer_smoothness
                         })
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut selected.gpu_compatibility,
                                 false,
-                                "流畅优先（推荐）",
+                                text.prefer_smoothness,
                             );
                             ui.selectable_value(
                                 &mut selected.gpu_compatibility,
                                 true,
-                                "兼容优先",
+                                text.prefer_compatibility,
                             );
                         });
                 },
@@ -396,7 +401,7 @@ impl DeviceCenterApp {
             egui::CollapsingHeader::new(restriction)
                 .id_salt("host-codec-limits")
                 .show(ui, |ui| {
-                    form_row(ui, "编码方式", "", |ui| {
+                    form_row(ui, text.encoding_mode, "", |ui| {
                         egui::ComboBox::from_id_salt("host-encoder-mode")
                             .width(238.)
                             .selected_text(selected.mode.label())
@@ -415,11 +420,11 @@ impl DeviceCenterApp {
                                 }
                             });
                     });
-                    form_row(ui, "格式限制", "", |ui| {
+                    form_row(ui, text.codec_restriction, "", |ui| {
                         egui::ComboBox::from_id_salt("host-encoder-codec")
                             .width(238.)
                             .selected_text(if selected.codec == EncoderCodec::Automatic {
-                                "不限制"
+                                text.unrestricted
                             } else {
                                 selected.codec.label()
                             })
@@ -432,7 +437,7 @@ impl DeviceCenterApp {
                                                 &mut selected.codec,
                                                 codec,
                                                 if codec == EncoderCodec::Automatic {
-                                                    "不限制"
+                                                    text.unrestricted
                                                 } else {
                                                     codec.label()
                                                 },
@@ -453,21 +458,21 @@ impl DeviceCenterApp {
         let status = host.as_ref().map(|host| host.status()).unwrap_or_default();
 
         let message = if status.message.is_empty() {
-            "已禁止被控"
+            text.host_disabled
         } else {
             &status.message
         };
         let message = if status.saving {
-            format!("{message} · 正在保存设置…")
+            (text.saving_settings)(message)
         } else {
             message.to_owned()
         };
-        // Listed participants each have their own "断开" below.
+        // Listed participants each have their own disconnect button below.
         let listed = !status.connections.is_empty();
         let action = if status.session_active {
-            (!listed).then_some("断开连接")
+            (!listed).then_some(t().common.disconnect)
         } else if allowed && !status.ready && status.error.is_some() {
-            Some("重试")
+            Some(t().common.retry)
         } else {
             None
         };
@@ -509,7 +514,7 @@ impl DeviceCenterApp {
             crate::ui::controls::observe_notice(
                 ui.ctx(),
                 (source, self.login_generation),
-                "被控设置",
+                text.tab_host,
                 crate::ui::controls::DialogIcon::Error,
                 error.as_deref(),
             );

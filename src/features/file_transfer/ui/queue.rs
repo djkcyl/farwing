@@ -1,4 +1,5 @@
 use super::{Command, Direction, Snapshot, TaskState, size, theme};
+use crate::i18n::t;
 use crate::ui::controls::{
     self,
     files::{self, Icon},
@@ -82,9 +83,9 @@ pub(super) fn show(
                     Icon::Collapse
                 },
                 if q.collapsed {
-                    "展开队列"
+                    t().features.transfer_expand_queue
                 } else {
-                    "收起队列"
+                    t().features.transfer_collapse_queue
                 },
                 true,
             )
@@ -92,14 +93,15 @@ pub(super) fn show(
             {
                 q.collapsed = !q.collapsed;
             }
-            ui.label(egui::RichText::new("传输队列").strong());
+            ui.label(egui::RichText::new(t().features.transfer_queue).strong());
             ui.add_space(8.);
+            let text = &t().features;
             for (filter, label, count) in [
-                (None, "全部", s.records.len()),
-                (Some(0), "进行中", counts[0]),
-                (Some(1), "已暂停", counts[1]),
-                (Some(2), "已完成", counts[2]),
-                (Some(3), "失败", counts[3]),
+                (None, text.transfer_filter_all, s.records.len()),
+                (Some(0), text.transfer_filter_active, counts[0]),
+                (Some(1), text.transfer_state_paused, counts[1]),
+                (Some(2), text.transfer_state_done, counts[2]),
+                (Some(3), text.transfer_state_failed, counts[3]),
             ] {
                 if ui
                     .selectable_label(q.filter == filter, format!("{label} {count}"))
@@ -111,19 +113,19 @@ pub(super) fn show(
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add_enabled(counts[2] > 0, controls::quiet_button("清除已完成"))
+                    .add_enabled(counts[2] > 0, controls::quiet_button(text.transfer_clear_completed))
                     .clicked()
                 {
                     action = Some(Action::Command(Command::ClearCompleted));
                 }
                 if counts[0] > 0 {
-                    if ui.add(controls::quiet_button("全部暂停")).clicked() {
+                    if ui.add(controls::quiet_button(text.transfer_pause_all)).clicked() {
                         action = Some(Action::Command(Command::PauseAll));
                     }
                 } else if ui
                     .add_enabled(
                         s.connected && counts[1] + counts[3] > 0,
-                        controls::quiet_button("全部继续"),
+                        controls::quiet_button(text.transfer_resume_all),
                     )
                     .clicked()
                 {
@@ -138,11 +140,15 @@ pub(super) fn show(
     let table = Rect::from_min_max(header.left_bottom(), rect.max);
     files::panel(ui, table, false);
     let headings = Rect::from_min_size(table.min + vec2(1., 1.), vec2(table.width() - 2., 28.));
-    for (col, label) in
-        columns(headings)
-            .iter()
-            .zip(["文件名", "方向", "进度", "速度", "剩余", "操作"])
-    {
+    let text = &t().features;
+    for (col, label) in columns(headings).iter().zip([
+        text.transfer_column_file,
+        text.transfer_column_direction,
+        text.transfer_column_progress,
+        text.transfer_column_speed,
+        text.transfer_column_remaining,
+        text.transfer_column_actions,
+    ]) {
         files::text(ui, col.shrink2(vec2(10., 0.)), label, theme::MUTED, false);
     }
     ui.painter().line_segment(
@@ -210,9 +216,9 @@ pub(super) fn show(
                             .unwrap_or_default()
                     ));
                     let dir = if r.direction == Direction::Upload {
-                        format!("本机 → {alias}")
+                        format!("{} → {alias}", text.transfer_local)
                     } else {
-                        format!("{alias} → 本机")
+                        format!("{alias} → {}", text.transfer_local)
                     };
                     files::text(
                         ui,
@@ -285,11 +291,11 @@ pub(super) fn show(
                             .ceil()
                             .min(u64::MAX as f64) as u64;
                         if seconds >= 3600 {
-                            format!("{} 时 {} 分", seconds / 3600, (seconds % 3600) / 60)
+                            (text.transfer_eta_hours)(seconds / 3600, (seconds % 3600) / 60)
                         } else if seconds >= 60 {
-                            format!("{} 分 {} 秒", seconds / 60, seconds % 60)
+                            (text.transfer_eta_minutes)(seconds / 60, seconds % 60)
                         } else {
-                            format!("{seconds} 秒")
+                            (text.transfer_eta_seconds)(seconds)
                         }
                     } else {
                         "—".into()
@@ -308,11 +314,11 @@ pub(super) fn show(
                             .layout(egui::Layout::left_to_right(egui::Align::Center)),
                         |ui| {
                             if matches!(r.state, TaskState::Running | TaskState::Queued) {
-                                if files::icon(ui, Icon::Pause, "暂停", true).clicked() {
+                                if files::icon(ui, Icon::Pause, text.transfer_pause, true).clicked() {
                                     action = Some(Action::Command(Command::Pause(r.key.clone())));
                                 }
                             } else if matches!(r.state, TaskState::Paused | TaskState::Failed) {
-                                if files::icon(ui, Icon::Resume, "继续", s.connected).clicked() {
+                                if files::icon(ui, Icon::Resume, text.transfer_resume, s.connected).clicked() {
                                     action = Some(Action::Command(Command::Resume(r.key.clone())));
                                 }
                             } else {
@@ -326,9 +332,9 @@ pub(super) fn show(
                                 ui,
                                 Icon::Close,
                                 if complete {
-                                    "移除记录"
+                                    text.transfer_remove_record
                                 } else {
-                                    "取消传输"
+                                    text.transfer_cancel_transfer
                                 },
                                 true,
                             )
@@ -350,11 +356,11 @@ pub(super) fn show(
             ui,
             body,
             match q.filter {
-                None => "没有传输任务",
-                Some(0) => "没有进行中的任务",
-                Some(1) => "没有暂停的任务",
-                Some(2) => "没有已完成的任务",
-                _ => "没有失败的任务",
+                None => text.transfer_no_tasks,
+                Some(0) => text.transfer_no_active_tasks,
+                Some(1) => text.transfer_no_paused_tasks,
+                Some(2) => text.transfer_no_completed_tasks,
+                _ => text.transfer_no_failed_tasks,
             },
         );
     }

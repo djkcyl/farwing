@@ -21,7 +21,7 @@ interface AuthState {
   security?: Security;
   info?: WebInfo;
   /// Why the user was signed out (shown on the login page).
-  notice?: string;
+  notice?: 'expired';
 }
 
 interface AuthContextValue extends AuthState {
@@ -64,14 +64,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setState((s) => ({
         status: 'signed_out',
         info,
-        notice: hasToken() ? undefined : (s.notice ?? '登录已过期'),
+        notice: hasToken() ? undefined : (s.notice ?? 'expired'),
       }));
     }
   }, []);
 
   useEffect(() => {
     setUnauthorizedHandler(() =>
-      setState((s) => (s.status === 'signed_out' ? s : { status: 'signed_out', info: s.info, notice: '登录已过期' })),
+      setState((s) => (s.status === 'signed_out' ? s : { status: 'signed_out', info: s.info, notice: 'expired' })),
     );
     void syncClock()
       .catch(() => undefined)

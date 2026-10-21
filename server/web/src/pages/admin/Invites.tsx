@@ -1,5 +1,7 @@
 // Invitation codes: create (shown once), revoke, see who registered.
 import { useState, type FormEvent } from 'react';
+import type { Messages } from '../../i18n';
+import { useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
 import { sitePath } from '../../lib/base';
 import { dateTime } from '../../lib/format';
@@ -25,21 +27,21 @@ import {
 import { Dialog, useOverlay } from '../../ui/overlay';
 import { OnceDialog } from './Users';
 
-function state(i: Invite): [string, Tone] {
-  if (i.revoked_at) return ['已作废', 'muted'];
-  if (i.expires_at && i.expires_at * 1000 <= Date.now()) return ['已过期', 'muted'];
-  if (i.max_uses !== null && i.uses >= i.max_uses) return ['已用完', 'muted'];
-  return ['可用', 'green'];
+type InviteMessages = Messages['admin']['invites'];
+
+function state(i: Invite, m: InviteMessages): [string, Tone] {
+  if (i.revoked_at) return [m.revoked, 'muted'];
+  if (i.expires_at && i.expires_at * 1000 <= Date.now()) return [m.expired, 'muted'];
+  if (i.max_uses !== null && i.uses >= i.max_uses) return [m.usedUp, 'muted'];
+  return [m.valid, 'green'];
 }
 
-const VALIDITY = [
-  { hours: 24, label: '1 天' },
-  { hours: 24 * 7, label: '7 天' },
-  { hours: 24 * 30, label: '30 天' },
-  { hours: 0, label: '永久有效' },
-];
+/// Validity choices in hours (0: no expiry).
+const VALIDITY = [24, 24 * 7, 24 * 30, 0];
 
 function CreateInvite({ open, onClose, onCreated }: { open: boolean; onClose(): void; onCreated(code: string): void }) {
+  const t = useT();
+  const m = t.admin.invites;
   const [note, setNote] = useState('');
   const [uses, setUses] = useState('1');
   const [hours, setHours] = useState(24 * 7);
@@ -70,62 +72,64 @@ function CreateInvite({ open, onClose, onCreated }: { open: boolean; onClose(): 
   return (
     <Dialog
       open={open}
-      title="生成邀请码"
+      title={m.create}
       onClose={onClose}
       footer={
         <>
-          <Button onClick={onClose}>取消</Button>
+          <Button onClick={onClose}>{t.common.cancel}</Button>
           <Button variant="primary" type="submit" form="create-invite" loading={busy}>
-            生成
+            {m.createSubmit}
           </Button>
         </>
       }
     >
       <form id="create-invite" className="stack" onSubmit={submit}>
         {error && <Alert>{error}</Alert>}
-        <Field label="备注">
+        <Field label={m.note}>
           <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={128} />
         </Field>
-        <Field label="可用次数">
+        <Field label={m.maxUses}>
           <Input
             type="number"
             min={1}
             max={1000}
             value={uses}
             onChange={(e) => setUses(e.target.value)}
-            placeholder="不限"
+            placeholder={t.common.unlimited}
           />
         </Field>
-        <Field label="有效期">
+        <Field label={m.validity}>
           <Select value={hours} onChange={(e) => setHours(Number(e.target.value))}>
-            {VALIDITY.map((v) => (
-              <option key={v.hours} value={v.hours}>
-                {v.label}
+            {VALIDITY.map((h) => (
+              <option key={h} value={h}>
+                {h ? m.days(h / 24) : m.noExpiry}
               </option>
             ))}
           </Select>
         </Field>
-        <Checkbox checked={autoFriend} onChange={setAutoFriend} label="自动加我为好友" />
+        <Checkbox checked={autoFriend} onChange={setAutoFriend} label={m.autoFriend} />
       </form>
     </Dialog>
   );
 }
 
 function Uses({ invite, onClose }: { invite: Invite | undefined; onClose(): void }) {
+  const t = useT();
+  const m = t.admin.invites;
   const { data, error } = useApi<InviteUse[]>(invite ? `/api/v2/admin/invites/${invite.id}/uses` : null);
   return (
-    <Dialog open={!!invite} title={`使用记录 · ${invite?.note || '邀请码'}`} onClose={onClose} wide>
+    <Dialog open={!!invite} title={m.usesTitle(invite?.note || m.invite)} onClose={onClose} wide>
       {error && <Alert>{error}</Alert>}
       {!data ? (
         <Loading />
       ) : data.length === 0 ? (
-        <Empty icon="ticket" title="暂无使用记录" />
+        <Empty icon="ticket" title={m.noUses} />
       ) : (
         <table className="table">
           <thead>
             <tr>
-              <th>注册的账号</th>
-              <th>时间</th>
+              <th>{m.registeredAccount}</th>
+              <th>{t.admin.col.time}</th>
               <th>IP</th>
             </tr>
           </thead>
@@ -136,7 +140,7 @@ function Uses({ invite, onClose }: { invite: Invite | undefined; onClose(): void
                   {u.username ? (
                     <Link to={`/admin/users/${u.user_id}`}>{u.username}</Link>
                   ) : (
-                    <span className="muted">已删除</span>
+                    <span className="muted">{t.common.deleted}</span>
                   )}
                 </td>
                 <td className="nowrap">{dateTime(u.used_at)}</td>
@@ -151,6 +155,8 @@ function Uses({ invite, onClose }: { invite: Invite | undefined; onClose(): void
 }
 
 export default function Invites() {
+  const t = useT();
+  const m = t.admin.invites;
   const { confirm, toast } = useOverlay();
   const { data, error, reload } = useApi<Invite[]>('/api/v2/admin/invites');
   const users = useApi<AccountSummary[]>('/api/v2/admin/users');
@@ -164,16 +170,17 @@ export default function Invites() {
   return (
     <div className="stack">
       <PageHeader
-        title="邀请码"
+        title={t.nav.invites}
         actions={
           <Button variant="primary" icon="plus" onClick={() => setCreating(true)}>
-            生成邀请码
+            {m.create}
           </Button>
         }
       />
       {settings.data && !settings.data.runtime.registration && (
         <Alert tone="amber">
-          <Link to="/admin/settings">邀请码注册</Link>已关闭
+          <Link to="/admin/settings">{m.registrationOff[0]}</Link>
+          {m.registrationOff[1]}
         </Alert>
       )}
       {error && <Alert>{error}</Alert>}
@@ -181,58 +188,58 @@ export default function Invites() {
         {!data ? (
           <Loading />
         ) : data.length === 0 ? (
-          <Empty icon="ticket" title="暂无邀请码" />
+          <Empty icon="ticket" title={m.empty} />
         ) : (
           <div className="table-wrap">
             <table className="table">
               <thead>
                 <tr>
-                  <th>备注</th>
-                  <th>状态</th>
-                  <th>已用</th>
-                  <th>有效期至</th>
-                  <th>自动加好友</th>
-                  <th>创建</th>
+                  <th>{m.note}</th>
+                  <th>{t.admin.col.status}</th>
+                  <th>{m.used}</th>
+                  <th>{m.expires}</th>
+                  <th>{m.autoFriendCol}</th>
+                  <th>{t.admin.col.created}</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
                 {data.map((i) => {
-                  const [text, tone] = state(i);
+                  const [text, tone] = state(i, m);
                   return (
                     <tr key={i.id}>
                       <td>
-                        <div className="cell-main">{i.note || <span className="muted">（无备注）</span>}</div>
-                        <div className="cell-sub">由 {names.get(i.created_by) ?? '已删除的账号'} 生成</div>
+                        <div className="cell-main">{i.note || <span className="muted">{t.common.noNote}</span>}</div>
+                        <div className="cell-sub">{m.createdBy(names.get(i.created_by) ?? m.deletedAccount)}</div>
                       </td>
                       <td>
                         <Badge tone={tone}>{text}</Badge>
                       </td>
                       <td>
-                        {i.uses} / {i.max_uses ?? '不限'}
+                        {i.uses} / {i.max_uses ?? t.common.unlimited}
                       </td>
-                      <td className="nowrap">{i.expires_at ? dateTime(i.expires_at) : '永久'}</td>
-                      <td>{i.auto_friend ? '是' : '否'}</td>
+                      <td className="nowrap">{i.expires_at ? dateTime(i.expires_at) : m.never}</td>
+                      <td>{i.auto_friend ? t.common.yes : t.common.no}</td>
                       <td className="nowrap muted">{dateTime(i.created_at)}</td>
                       <td className="actions">
-                        <IconButton icon="log" label="使用记录" onClick={() => setViewing(i)} />
+                        <IconButton icon="log" label={m.uses} onClick={() => setViewing(i)} />
                         {!i.revoked_at && (
                           <IconButton
                             icon="trash"
-                            label="作废"
+                            label={m.revoke}
                             variant="danger"
                             onClick={async () => {
                               if (
                                 await confirm({
-                                  title: '作废邀请码',
-                                  message: '作废后不能再用于注册。',
-                                  confirm: '作废',
+                                  title: m.revokeTitle,
+                                  message: m.revokeMessage,
+                                  confirm: m.revoke,
                                   danger: true,
                                 })
                               ) {
                                 try {
                                   await call('DELETE', `/api/v2/admin/invites/${i.id}`);
-                                  toast('已作废');
+                                  toast(m.revokedToast);
                                   await reload();
                                 } catch (err) {
                                   toast(errorText(err), 'red');
@@ -259,13 +266,13 @@ export default function Invites() {
           void reload();
         }}
       />
-      <OnceDialog title="邀请码已生成" open={!!code} onClose={() => setCode(undefined)}>
-        <Field label="邀请码">
+      <OnceDialog title={m.createdTitle} open={!!code} onClose={() => setCode(undefined)}>
+        <Field label={m.invite}>
           <div className="secret">
             <Copy text={code ?? ''} />
           </div>
         </Field>
-        <Field label="注册链接">
+        <Field label={m.link}>
           <div className="secret small">
             <Copy text={link} />
           </div>

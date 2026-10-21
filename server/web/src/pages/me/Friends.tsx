@@ -1,11 +1,12 @@
 // Friends: add, answer requests, and what each friend may do on this
 // account's devices (the same editor as the client's).
 import { useEffect, useState, type FormEvent } from 'react';
+import { useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
 import { byName } from '../../lib/devices';
 import {
-  CAP_GROUPS,
-  CAP_PRESETS,
+  capGroups,
+  capPresets,
   capText,
   dateTime,
   DEFAULT_FRIEND,
@@ -56,11 +57,12 @@ function Person({
 }
 
 function CapsEditor({ value, onChange }: { value: string[]; onChange(v: string[]): void }) {
+  const t = useT();
   return (
     <div className="stack-sm caps-editor">
       <div className="row gap-sm wrap">
-        <span className="small muted caps-group">快速选择</span>
-        {CAP_PRESETS.map(([label, preset]) => (
+        <span className="small muted caps-group">{t.account.friends.presets}</span>
+        {capPresets().map(([label, preset]) => (
           <button
             type="button"
             key={label}
@@ -71,7 +73,7 @@ function CapsEditor({ value, onChange }: { value: string[]; onChange(v: string[]
           </button>
         ))}
       </div>
-      {CAP_GROUPS.map(([group, members]) => (
+      {capGroups().map(([group, members]) => (
         <div className="row gap wrap" key={group}>
           <span className="small muted caps-group">{group}</span>
           {members.map((cap) => (
@@ -105,6 +107,8 @@ function GrantsEditor({
   devices: Device[];
   onClose(): void;
 }) {
+  const t = useT();
+  const m = t.account.friends;
   const { toast } = useOverlay();
   const [grants, setGrants] = useState<Grants>();
   const [original, setOriginal] = useState<string>();
@@ -143,7 +147,7 @@ function GrantsEditor({
     setBusy(true);
     try {
       await call('PUT', `/api/v2/grants/${friend.user_id}`, grants);
-      toast('已保存');
+      toast(t.common.saved);
       onClose();
     } catch (err) {
       setError(errorText(err));
@@ -155,51 +159,51 @@ function GrantsEditor({
   return (
     <Dialog
       open={!!friend}
-      title={`${friend ? displayName(friend) : ''} 的权限`}
+      title={m.grantsTitle(friend ? displayName(friend) : '')}
       onClose={onClose}
       wide
       footer={
         <>
-          <Button onClick={onClose}>取消</Button>
+          <Button onClick={onClose}>{t.common.cancel}</Button>
           <Button
             variant="primary"
             onClick={save}
             loading={busy}
             disabled={!grants || JSON.stringify(grants) === original}
           >
-            保存
+            {t.common.save}
           </Button>
         </>
       }
     >
       {error && <Alert>{error}</Alert>}
       {!grants ? (
-        !error && <Loading text="正在读取权限" />
+        !error && <Loading text={m.loadingGrants} />
       ) : (
         <>
           <div className="stack-sm">
-            <h3>所有设备</h3>
+            <h3>{m.allDevices}</h3>
             <div className="row gap-sm">
               <button
                 type="button"
                 className={`chip ${sharing ? 'on' : ''}`}
                 onClick={() => !sharing && setGrants({ ...grants, default: [...DEFAULT_FRIEND] })}
               >
-                共享
+                {m.shared}
               </button>
               <button
                 type="button"
                 className={`chip ${!sharing ? 'on' : ''}`}
                 onClick={() => sharing && setGrants({ ...grants, default: [] })}
               >
-                不共享
+                {m.notShared}
               </button>
             </div>
             {sharing && <CapsEditor value={grants.default} onChange={(v) => setGrants({ ...grants, default: v })} />}
           </div>
           <div className="stack-sm">
-            <h3>按设备设置</h3>
-            {devices.length === 0 && <span className="small muted">暂无设备</span>}
+            <h3>{m.perDevice}</h3>
+            {devices.length === 0 && <span className="small muted">{t.account.noDevices}</span>}
             {devices.map((d) => {
               const mode = modeOf(grants, d.device_id);
               const effective = grants.devices[d.device_id] ?? grants.default;
@@ -222,9 +226,9 @@ function GrantsEditor({
                         else setDevice(d.device_id, grants.default.length ? [...grants.default] : [...DEFAULT_FRIEND]);
                       }}
                     >
-                      <option value="default">跟随默认</option>
-                      <option value="custom">单独设置</option>
-                      <option value="hidden">不共享</option>
+                      <option value="default">{m.followDefault}</option>
+                      <option value="custom">{m.custom}</option>
+                      <option value="hidden">{m.notShared}</option>
                     </Select>
                   </div>
                   {mode === 'custom' && (
@@ -241,6 +245,8 @@ function GrantsEditor({
 }
 
 export default function Friends() {
+  const t = useT();
+  const m = t.account.friends;
   const { confirm, toast } = useOverlay();
   const friends = useApi<{ friends: Friend[] }>('/api/v2/friends', 15000);
   const requests = useApi<FriendRequests>('/api/v2/friends/requests', 15000);
@@ -274,7 +280,7 @@ export default function Friends() {
       const r = await call<{ sent?: unknown; accepted?: unknown }>('POST', '/api/v2/friends/requests', {
         username: username.trim(),
       });
-      toast(r.accepted ? '已成为好友' : '已发送好友申请');
+      toast(r.accepted ? m.added : m.requestSent);
       setUsername('');
       await reload();
     } catch (err) {
@@ -290,24 +296,24 @@ export default function Friends() {
   return (
     <div className="stack">
       <PageHeader
-        title="好友"
+        title={t.nav.friends}
         actions={
           <form className="row gap-sm" onSubmit={add}>
             <Input
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              placeholder="用户名"
+              placeholder={t.account.username}
               style={{ width: 200 }}
             />
             <Button type="submit" variant="primary" icon="userPlus" loading={busy}>
-              添加好友
+              {m.add}
             </Button>
           </form>
         }
       />
       {(friends.error || requests.error) && <Alert>{friends.error ?? requests.error}</Alert>}
       {incoming.length > 0 && (
-        <Card title={`好友申请（${incoming.length}）`} pad={false}>
+        <Card title={m.requests(incoming.length)} pad={false}>
           <div className="list">
             {incoming.map((r) => (
               <Person
@@ -318,32 +324,30 @@ export default function Friends() {
                     <Button
                       size="sm"
                       variant="primary"
-                      onClick={() =>
-                        act(() => call('POST', `/api/v2/friends/requests/${r.id}/accept`, {}), '已成为好友')
-                      }
+                      onClick={() => act(() => call('POST', `/api/v2/friends/requests/${r.id}/accept`, {}), m.added)}
                     >
-                      接受
+                      {m.accept}
                     </Button>
                     <Button
                       size="sm"
-                      onClick={() => act(() => call('POST', `/api/v2/friends/requests/${r.id}/reject`, {}), '已拒绝')}
+                      onClick={() => act(() => call('POST', `/api/v2/friends/requests/${r.id}/reject`, {}), m.declined)}
                     >
-                      拒绝
+                      {m.decline}
                     </Button>
                   </>
                 }
               >
-                {dateTime(r.created_at)} 申请加你为好友
+                {m.requestedAt(dateTime(r.created_at))}
               </Person>
             ))}
           </div>
         </Card>
       )}
-      <Card title={`好友（${friends.data?.friends.length ?? 0}）`} pad={false}>
+      <Card title={m.friends(friends.data?.friends.length ?? 0)} pad={false}>
         {!friends.data ? (
           <Loading />
         ) : friends.data.friends.length === 0 ? (
-          <Empty icon="users" title="暂无好友" />
+          <Empty icon="users" title={m.noFriends} />
         ) : (
           <div className="list">
             {friends.data.friends.map((f) => (
@@ -353,7 +357,7 @@ export default function Friends() {
                 actions={
                   <>
                     <Button size="sm" icon="share" onClick={() => setEditing(f.user)}>
-                      权限
+                      {m.permissions}
                     </Button>
                     <Button
                       size="sm"
@@ -361,28 +365,28 @@ export default function Friends() {
                       onClick={async () => {
                         if (
                           await confirm({
-                            title: '删除好友',
-                            message: '你们将不再互相共享设备。',
-                            confirm: '删除',
+                            title: m.removeTitle,
+                            message: m.removeMessage,
+                            confirm: m.remove,
                             danger: true,
                           })
                         )
-                          await act(() => call('DELETE', `/api/v2/friends/${f.user.user_id}`), '已删除好友');
+                          await act(() => call('DELETE', `/api/v2/friends/${f.user.user_id}`), m.removed);
                       }}
                     >
-                      删除
+                      {m.remove}
                     </Button>
                   </>
                 }
               >
-                {dateTime(f.since)} 成为好友
+                {m.since(dateTime(f.since))}
               </Person>
             ))}
           </div>
         )}
       </Card>
       {outgoing.length > 0 && (
-        <Card title={`我发出的申请（${outgoing.length}）`} pad={false}>
+        <Card title={m.sentRequests(outgoing.length)} pad={false}>
           <div className="list">
             {outgoing.map((r) => (
               <Person
@@ -392,13 +396,13 @@ export default function Friends() {
                   <Button
                     size="sm"
                     variant="ghost"
-                    onClick={() => act(() => call('DELETE', `/api/v2/friends/requests/${r.id}`), '已撤回')}
+                    onClick={() => act(() => call('DELETE', `/api/v2/friends/requests/${r.id}`), m.withdrawn)}
                   >
-                    撤回
+                    {m.withdraw}
                   </Button>
                 }
               >
-                {dateTime(r.created_at)} 发出，等待对方接受
+                {m.sentAt(dateTime(r.created_at))}
               </Person>
             ))}
           </div>

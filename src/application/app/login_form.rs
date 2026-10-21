@@ -2,6 +2,7 @@
 //! account credentials.
 use super::*;
 use crate::account::server::{CertificateProbe, ServerConfig};
+use crate::i18n::t;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 /// The two steps of signing in: the server first, then the account. The
@@ -127,7 +128,9 @@ impl LoginForm {
                 self.probe = None;
                 self.probe_rx = Some(rx);
             }
-            Err(error) => self.probe = Some(Err(format!("无法检查服务器：{error}"))),
+            Err(error) => {
+                self.probe = Some(Err((t().app.cant_check_server)(&error.to_string())))
+            }
         }
     }
 
@@ -157,7 +160,7 @@ impl LoginForm {
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
-                self.probe = Some(Err("服务器检查未完成".into()));
+                self.probe = Some(Err(t().app.server_check_incomplete.into()));
                 self.probe_rx = None;
             }
         }
@@ -211,9 +214,9 @@ impl DeviceCenterApp {
         self.login_form.generation = self.login_form.generation.wrapping_add(1);
         self.login_form.submitting = true;
         self.login_form.error = None;
-        self.login_form.status = "正在登录…".into();
+        self.login_form.status = t().app.signing_in.into();
         self.login_error = None;
-        self.login_status = "正在登录…".into();
+        self.login_status = t().app.signing_in.into();
         self.sync_login_running();
         if self
             .worker
@@ -228,8 +231,8 @@ impl DeviceCenterApp {
         {
             self.login_form.submitting = false;
             self.sync_login_running();
-            self.login_form.status = "登录失败".into();
-            self.login_form.error = Some("登录请求发送失败".into());
+            self.login_form.status = (t().app.sign_in_failed)(t().app.sign_in_send_failed);
+            self.login_form.error = Some(t().app.sign_in_send_failed.into());
         }
     }
 
@@ -254,7 +257,7 @@ impl DeviceCenterApp {
             .is_err()
         {
             self.login_form.saving_server = false;
-            self.login_form.error = Some("保存服务器失败".into());
+            self.login_form.error = Some(t().app.save_server_failed.into());
         }
     }
 
@@ -267,7 +270,7 @@ impl DeviceCenterApp {
                 self.login_form.status.clear();
             }
             Err(error) => {
-                self.login_form.status = format!("保存服务器失败：{error}");
+                self.login_form.status = (t().app.save_server_failed_with)(&error);
                 self.login_form.error = Some(error);
             }
         }

@@ -1,5 +1,6 @@
 use super::*;
 use crate::account::power::{PowerAction, PowerReceipt};
+use crate::i18n::t;
 
 pub(super) struct AcceptedPower {
     pub device: DeviceInfo,
@@ -43,9 +44,9 @@ impl PowerProgress {
         if observed {
             self.waiting = false;
             self.message = match self.action {
-                PowerAction::Wake => "设备已上线",
-                PowerAction::Shutdown => "设备已离线",
-                PowerAction::Reboot => "设备已重新上线",
+                PowerAction::Wake => t().app.power_online,
+                PowerAction::Shutdown => t().app.power_offline,
+                PowerAction::Reboot => t().app.power_back_online,
             }
             .into();
         }
@@ -59,16 +60,16 @@ impl PowerProgress {
 impl DeviceCenterApp {
     pub(super) fn power_available(&self, device: &DeviceInfo, action: PowerAction) -> Result<()> {
         if self.mutation_pending || self.logout_pending || self.login_running {
-            anyhow::bail!("正在处理账号或设备操作");
+            anyhow::bail!(t().app.power_busy);
         }
         if self
             .power_progress
             .get(&device.device_id)
             .is_some_and(|p| p.waiting)
         {
-            anyhow::bail!("正在等待电源操作结果");
+            anyhow::bail!(t().app.power_waiting);
         }
-        let catalog = self.catalog.as_ref().context("设备列表未就绪")?;
+        let catalog = self.catalog.as_ref().context(t().app.devices_not_ready)?;
         if device.device_id == catalog.groups.current_device_id
             || !catalog
                 .groups
@@ -76,7 +77,7 @@ impl DeviceCenterApp {
                 .iter()
                 .any(|d| d.device_id == device.device_id)
         {
-            anyhow::bail!("仅支持本账号的电脑");
+            anyhow::bail!(t().app.power_own_computers_only);
         }
         action.check(device, &catalog.features)
     }
@@ -124,9 +125,9 @@ impl DeviceCenterApp {
             if progress.waiting && progress.elapsed() >= 120 {
                 progress.waiting = false;
                 progress.message = match progress.action {
-                    PowerAction::Wake => "等待超时，未确认上线",
-                    PowerAction::Shutdown => "等待超时，未确认离线",
-                    PowerAction::Reboot => "等待超时，未确认重启",
+                    PowerAction::Wake => t().app.power_timeout_online,
+                    PowerAction::Shutdown => t().app.power_timeout_offline,
+                    PowerAction::Reboot => t().app.power_timeout_restart,
                 }
                 .into();
             }

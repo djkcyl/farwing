@@ -23,10 +23,10 @@ impl From<i32> for Outcome {
 impl Outcome {
     pub(super) fn message(self) -> String {
         match self {
-            Self::NotLoggedIn => "被控端未登录，批注已关闭".into(),
-            Self::Locked => "被控端已锁定".into(),
-            Self::Rejected => "远端未完成批注操作".into(),
-            Self::Unknown(code) => format!("批注操作未完成（{code}）"),
+            Self::NotLoggedIn => t().features.annotation_host_signed_out.into(),
+            Self::Locked => t().features.annotation_host_locked.into(),
+            Self::Rejected => t().features.annotation_rejected.into(),
+            Self::Unknown(code) => (t().features.annotation_failed_code)(code),
             Self::Applied => unreachable!("successful operation has no error message"),
         }
     }
@@ -49,7 +49,7 @@ impl StreamControlHandle {
     ) -> Result<i64> {
         // Annotation always travels as native ANNOTATION frames.
         if s.annotation.native_token.is_none() {
-            bail!("对端批注尚未就绪");
+            bail!("{}", t().features.annotation_remote_not_ready);
         }
         self.send_native_draw(
             s,
@@ -83,8 +83,9 @@ impl StreamControlHandle {
             annotation_generation: Some(s.annotation.generation),
         };
         if self.outgoing.send(outgoing).is_err() {
-            s.annotation.uncertain("批注发送任务已停止".into());
-            bail!("批注发送任务已停止");
+            s.annotation
+                .uncertain(t().features.annotation_sender_stopped.into());
+            bail!("{}", t().features.annotation_sender_stopped);
         }
         Ok(seq)
     }

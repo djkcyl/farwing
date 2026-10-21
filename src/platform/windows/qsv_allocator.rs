@@ -1,5 +1,6 @@
 //! Stable oneVPL D3D11 handles; native Lock/Unlock bind MemId without CPU readback.
 use super::lock;
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use farwing_vpl_sys as v;
 use std::{collections::HashMap, ffi::c_void, ptr, sync::Mutex};
@@ -60,7 +61,8 @@ impl Allocator {
         let mut state = lock(&self.state);
         ensure!(
             state.allocations.is_empty(),
-            "QSV关闭后仍持有原生分配，不能复用会话"
+            "{}",
+            t().system.qsv_allocations_outstanding
         );
         state.surfaces.clear();
         // The callback object and pthis remain stable; only future allocations

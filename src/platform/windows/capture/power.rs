@@ -1,4 +1,5 @@
 //! Power availability belongs to a live capture, not to the persistent monitor.
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use windows::{
     Win32::{
@@ -23,7 +24,9 @@ pub(super) struct Request {
 
 impl Request {
     pub(super) fn new() -> Result<Self> {
-        let mut reason: Vec<u16> = "Farwing 正在采集远程桌面"
+        let mut reason: Vec<u16> = t()
+            .system
+            .capture_power_reason
             .encode_utf16()
             .chain(Some(0))
             .collect();
@@ -35,24 +38,26 @@ impl Request {
             ..Default::default()
         };
         let mut request = Self {
-            handle: unsafe { PowerCreateRequest(&context) }.context("创建采集电源请求失败")?,
+            handle: unsafe { PowerCreateRequest(&context) }
+                .context(t().system.capture_power_request_failed)?,
             system: false,
             display: false,
         };
         // Handle-scoped requests compose across concurrent captures and source
         // replacement; releasing one cannot clear another thread's requirement.
         unsafe { PowerSetRequest(request.handle, PowerRequestSystemRequired) }
-            .context("保持采集系统运行失败")?;
+            .context(t().system.capture_keep_system_failed)?;
         request.system = true;
         unsafe { PowerSetRequest(request.handle, PowerRequestDisplayRequired) }
-            .context("保持采集显示工作失败")?;
+            .context(t().system.capture_keep_display_failed)?;
         request.display = true;
         // Explicitly wake an already idle display before opening duplication.
         // No CONTINUOUS thread state to leak into a reused blocking worker, and
         // no synthetic input, away mode or change to the user's power plan.
         ensure!(
             unsafe { SetThreadExecutionState(ES_DISPLAY_REQUIRED) }.0 != 0,
-            "唤醒采集显示失败"
+            "{}",
+            t().system.capture_wake_display_failed
         );
         tracing::debug!("capture display power request acquired");
         Ok(request)

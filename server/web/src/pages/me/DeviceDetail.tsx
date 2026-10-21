@@ -1,5 +1,6 @@
 // One device: facts, hardware, who is connected; rename or remove own ones.
 import { useState } from 'react';
+import { useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
 import {
   ago,
@@ -8,9 +9,10 @@ import {
   dateTime,
   deviceIdText,
   displayName,
+  listText,
   platformText,
-  PURPOSES,
-  RELATIONS,
+  purposeText,
+  relationText,
   shareSummary,
 } from '../../lib/format';
 import { Link, navigate } from '../../lib/router';
@@ -22,6 +24,8 @@ import { Alert, Button, Card, Copy, Empty, Field, Input, Loading, Online, PageHe
 import { Dialog, useOverlay } from '../../ui/overlay';
 
 export default function DeviceDetail({ params }: { params: Record<string, string> }) {
+  const t = useT();
+  const m = t.account.device;
   const { confirm, toast } = useOverlay();
   const detail = useApi<Detail>(`/api/v2/devices/${params.id}/detail`, 10000);
   const list = useApi<DeviceList>('/api/v2/devices', 10000);
@@ -32,20 +36,20 @@ export default function DeviceDetail({ params }: { params: Record<string, string
   if (!d) return detail.error ? <Alert>{detail.error}</Alert> : <Loading />;
   const device = [...(list.data?.own ?? []), ...(list.data?.shared ?? [])].find((x) => x.device_id === d.device_id);
   const own = !d.owner;
-  const blocker = device ? viewBlocker(device) : '正在读取';
+  const blocker = device ? viewBlocker(device) : t.common.loading;
 
   return (
     <div className="stack">
       <PageHeader
         back={
           <Link to="/devices" className="back">
-            <Icon name="back" size={14} /> 设备
+            <Icon name="back" size={14} /> {t.nav.devices}
           </Link>
         }
         title={d.alias}
         subtitle={
           <span className="row gap-sm">
-            <Online online={d.online} text={d.online ? '在线' : `离线 · ${ago(d.last_seen_at)}`} />
+            <Online online={d.online} text={d.online ? t.common.online : m.offlineSince(ago(d.last_seen_at))} />
             <span>·</span>
             <span>
               {platformText(d.platform)} {d.version}
@@ -61,7 +65,7 @@ export default function DeviceDetail({ params }: { params: Record<string, string
               title={blocker}
               onClick={() => navigate(`/view/${d.device_id}`)}
             >
-              在浏览器中观看
+              {m.watchInBrowser}
             </Button>
             {own && (
               <Button
@@ -71,7 +75,7 @@ export default function DeviceDetail({ params }: { params: Record<string, string
                   setRenaming(true);
                 }}
               >
-                重命名
+                {t.common.rename}
               </Button>
             )}
             {own && (
@@ -81,15 +85,15 @@ export default function DeviceDetail({ params }: { params: Record<string, string
                 onClick={async () => {
                   if (
                     await confirm({
-                      title: '从账号移除',
-                      message: `${d.alias} 将退出这个账号。`,
-                      confirm: '移除',
+                      title: m.removeTitle,
+                      message: m.removeMessage(d.alias),
+                      confirm: t.common.remove,
                       danger: true,
                     })
                   ) {
                     try {
                       await call('DELETE', `/api/v2/devices/${d.device_id}`);
-                      toast('已移除');
+                      toast(m.removed);
                       navigate('/devices');
                     } catch (err) {
                       toast(errorText(err), 'red');
@@ -97,61 +101,61 @@ export default function DeviceDetail({ params }: { params: Record<string, string
                   }
                 }}
               >
-                移除
+                {t.common.remove}
               </Button>
             )}
           </>
         }
       />
       <div className="grid grid-2">
-        <Card title="设备">
+        <Card title={m.info}>
           <Rows>
-            <Row label="设备 ID">
+            <Row label={t.account.deviceId}>
               <Copy text={d.device_id} display={deviceIdText(d.device_id)} />
             </Row>
             {d.connect_id && (
-              <Row label="短号">
+              <Row label={t.account.connectId}>
                 <Copy text={d.connect_id} display={connectIdText(d.connect_id)} />
               </Row>
             )}
-            <Row label="系统">{d.os || '—'}</Row>
-            <Row label="版本">{d.version || '—'}</Row>
-            <Row label="注册时间">{dateTime(d.registered_at)}</Row>
-            <Row label="最近在线">{d.online ? '现在' : ago(d.last_seen_at)}</Row>
-            {d.owner && <Row label="所属">{displayName(d.owner)}</Row>}
-            {device && !own && <Row label="我的权限">{shareSummary(device.granted)}</Row>}
+            <Row label={m.os}>{d.os || '—'}</Row>
+            <Row label={t.account.version}>{d.version || '—'}</Row>
+            <Row label={m.registered}>{dateTime(d.registered_at)}</Row>
+            <Row label={m.lastSeen}>{d.online ? m.now : ago(d.last_seen_at)}</Row>
+            {d.owner && <Row label={m.owner}>{displayName(d.owner)}</Row>}
+            {device && !own && <Row label={m.myPermissions}>{shareSummary(device.granted)}</Row>}
           </Rows>
         </Card>
         {d.hardware ? (
-          <Card title="硬件">
+          <Card title={m.hardware}>
             <Rows>
-              <Row label="处理器">{d.hardware.cpu || '—'}</Row>
-              <Row label="显卡">{d.hardware.video.join('、') || '—'}</Row>
-              <Row label="内存">{d.hardware.memory ? bytes(d.hardware.memory) : '—'}</Row>
-              <Row label="主板">{d.hardware.base_board || '—'}</Row>
-              <Row label="屏幕">{d.hardware.screen || '—'}</Row>
+              <Row label={m.cpu}>{d.hardware.cpu || '—'}</Row>
+              <Row label={m.gpu}>{listText(d.hardware.video) || '—'}</Row>
+              <Row label={m.memory}>{d.hardware.memory ? bytes(d.hardware.memory) : '—'}</Row>
+              <Row label={m.board}>{d.hardware.base_board || '—'}</Row>
+              <Row label={m.screen}>{d.hardware.screen || '—'}</Row>
             </Rows>
           </Card>
         ) : (
-          <Card title="硬件">
-            <Empty icon="info" title={own ? '暂无硬件信息' : '仅设备主人可见'} />
+          <Card title={m.hardware}>
+            <Empty icon="info" title={own ? m.noHardware : m.ownerOnly} />
           </Card>
         )}
       </div>
-      <Card title="正在连接" pad={false}>
+      <Card title={m.connections} pad={false}>
         {!device || device.participants.length === 0 ? (
-          <Empty icon="users" title="没有人在连接" />
+          <Empty icon="users" title={t.account.noConnections} />
         ) : (
           <div className="list">
             {device.participants.map((p) => (
               <div className="list-item" key={p.participant_id}>
                 <div className="grow">
-                  <div>{p.nickname || '访客'}</div>
+                  <div>{p.nickname || t.common.guest}</div>
                   <div className="small muted">
-                    {p.device_alias} · {RELATIONS[p.relation] ?? p.relation} · {PURPOSES[p.purpose] ?? p.purpose}
+                    {p.device_alias} · {relationText(p.relation)} · {purposeText(p.purpose)}
                   </div>
                 </div>
-                <span className="small faint">{ago(p.started_at)}开始</span>
+                <span className="small faint">{m.startedAgo(ago(p.started_at))}</span>
               </div>
             ))}
           </div>
@@ -159,30 +163,30 @@ export default function DeviceDetail({ params }: { params: Record<string, string
       </Card>
       <Dialog
         open={renaming}
-        title="重命名设备"
+        title={m.renameTitle}
         onClose={() => setRenaming(false)}
         footer={
           <>
-            <Button onClick={() => setRenaming(false)}>取消</Button>
+            <Button onClick={() => setRenaming(false)}>{t.common.cancel}</Button>
             <Button
               variant="primary"
               onClick={async () => {
                 try {
                   await call('PATCH', `/api/v2/devices/${d.device_id}`, { alias: alias.trim() });
                   setRenaming(false);
-                  toast('已重命名');
+                  toast(m.renamed);
                   await detail.reload();
                 } catch (err) {
                   toast(errorText(err), 'red');
                 }
               }}
             >
-              保存
+              {t.common.save}
             </Button>
           </>
         }
       >
-        <Field label="名称">
+        <Field label={t.account.name}>
           <Input value={alias} onChange={(e) => setAlias(e.target.value)} maxLength={64} />
         </Field>
       </Dialog>

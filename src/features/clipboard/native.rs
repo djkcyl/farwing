@@ -181,14 +181,14 @@ pub(super) fn post(command: Command) -> Result<()> {
         return if matches!(command, Command::Remove(_)) {
             Ok(())
         } else {
-            Err(anyhow!("剪贴板服务尚未启动"))
+            Err(anyhow!("{}", t().features.clipboard_not_started))
         };
     };
     let worker = worker.as_ref().map_err(|e| anyhow!(e.clone()))?;
     worker
         .sender
         .try_send(command)
-        .map_err(|_| anyhow!("剪贴板工作队列繁忙"))?;
+        .map_err(|_| anyhow!("{}", t().features.clipboard_worker_busy))?;
     unsafe {
         PostMessageW(Some(HWND(worker.hwnd as _)), WAKE, WPARAM(0), LPARAM(0))?;
     }
@@ -292,7 +292,7 @@ fn retain_rendered(offer: &RemoteOffer) -> Result<()> {
         .get()
         .and_then(|w| w.as_ref().ok())
         .map(|w| HWND(w.hwnd as _))
-        .ok_or_else(|| anyhow!("剪贴板窗口已关闭"))?;
+        .ok_or_else(|| anyhow!("{}", t().features.clipboard_window_closed))?;
     let cache = lock(&offer.cached).clone();
     let mut opened = false;
     for _ in 0..10 {
@@ -302,7 +302,7 @@ fn retain_rendered(offer: &RemoteOffer) -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    ensure!(opened, "剪贴板正在被其他程序占用");
+    ensure!(opened, "{}", t().features.clipboard_in_use);
     let result = (|| -> Result<()> {
         unsafe {
             EmptyClipboard()?;
@@ -352,7 +352,7 @@ fn process(command: Command) {
                 let s = weak
                     .upgrade()
                     .filter(|s| s.valid(epoch) && s.file_allowed())
-                    .ok_or_else(|| anyhow!("文件发布已取消"))?;
+                    .ok_or_else(|| anyhow!("{}", t().features.clipboard_publish_cancelled))?;
                 let ids = vec![
                     (
                         formats::register("FileGroupDescriptorW"),
@@ -424,7 +424,7 @@ fn process(command: Command) {
                     s.refuse(
                         id,
                         farwing_protocol::peer::error_code::UNAVAILABLE,
-                        "剪贴板同步已暂停",
+                        t().features.clipboard_paused,
                     );
                 } else if let Err(e) = serve(&s, epoch, id, body) {
                     s.refuse(
@@ -443,7 +443,8 @@ fn process(command: Command) {
 fn set_offer(s: Arc<Inner>, epoch: u64, offer: u32, formats: Vec<wire::Format>) -> Result<()> {
     ensure!(
         s.file_offers.is_none() || !formats.is_empty(),
-        "独立文件提议为空"
+        "{}",
+        t().features.clipboard_empty_file_offer
     );
     if formats.is_empty() {
         retire_owner(false);
@@ -477,7 +478,7 @@ fn set_offer(s: Arc<Inner>, epoch: u64, offer: u32, formats: Vec<wire::Format>) 
         }
     }
     if links.is_empty() {
-        ensure!(s.file_offers.is_none(), "未提供可接收的文件格式");
+        ensure!(s.file_offers.is_none(), "{}", t().features.clipboard_no_file_format);
         return Ok(());
     }
     if s.file_offers.is_some() {
@@ -487,7 +488,8 @@ fn set_offer(s: Arc<Inner>, epoch: u64, offer: u32, formats: Vec<wire::Format>) 
                 && links
                     .iter()
                     .all(|f| f.local == descriptor || f.local == formats::register("FileContents")),
-            "独立会话只接受文件格式"
+            "{}",
+            t().features.clipboard_files_only
         );
     } else {
         retire_owner(false);
@@ -516,7 +518,7 @@ fn set_offer(s: Arc<Inner>, epoch: u64, offer: u32, formats: Vec<wire::Format>) 
     if let Some(sender) = &offer.session.file_offers {
         sender
             .try_send(FileOffer(offer.clone()))
-            .map_err(|_| anyhow!("文件提议接收方已关闭或繁忙"))?;
+            .map_err(|_| anyhow!("{}", t().features.clipboard_offer_receiver_busy))?;
         return Ok(());
     }
     let object = data_object(offer.clone());
@@ -667,7 +669,7 @@ fn pull(s: &Arc<Inner>, epoch: u64, id: u32) -> Result<()> {
     use farwing_protocol::peer::error_code;
     let object = clipboard_retry(|| unsafe { OleGetClipboard() })?;
     if excluded(&object) {
-        s.refuse(id, error_code::FORBIDDEN, "被控剪贴板内容不允许同步");
+        s.refuse(id, error_code::FORBIDDEN, t().features.clipboard_excluded);
         return Ok(());
     }
     let (source, ids) = describe(object)?;
@@ -735,12 +737,12 @@ fn get_medium(o: &IDataObject, id: u32, index: i32, tymed: u32) -> Result<Medium
 fn global_bytes(h: HGLOBAL) -> Result<Vec<u8>> {
     unsafe {
         let size = GlobalSize(h);
-        ensure!(size <= MAX_DATA, "剪贴板内容超过内存预算");
+        ensure!(size <= MAX_DATA, "{}", t().features.clipboard_over_budget);
         if size == 0 {
             return Ok(Vec::new());
         }
         let ptr = GlobalLock(h);
-        ensure!(!ptr.is_null(), "无法锁定剪贴板内容");
+        ensure!(!ptr.is_null(), "{}", t().features.clipboard_lock_failed);
         let bytes = std::slice::from_raw_parts(ptr.cast::<u8>(), size).to_vec();
         let _ = GlobalUnlock(h);
         Ok(bytes)
@@ -770,7 +772,7 @@ struct LocalSource {
 }
 impl LocalSource {
     fn data(&self, format: &Format, platform: i32) -> Result<Vec<u8>> {
-        ensure!(!self.files, "文件数据必须通过文件请求获取");
+        ensure!(!self.files, "{}", t().features.clipboard_files_need_request);
         let kind = if matches!(format.local, 14 | 0x8e) {
             TYMED_ENHMF
         } else {
@@ -779,7 +781,7 @@ impl LocalSource {
         let medium = get_medium(
             self.object
                 .as_ref()
-                .ok_or_else(|| anyhow!("文件来源不含文本"))?,
+                .ok_or_else(|| anyhow!("{}", t().features.clipboard_source_no_text))?,
             format.local,
             -1,
             kind.0 as u32,
@@ -788,11 +790,12 @@ impl LocalSource {
             unsafe {
                 let h = medium.0.u.hEnhMetaFile;
                 let n = GetEnhMetaFileBits(h, None);
-                ensure!(n as usize <= MAX_DATA, "图元文件过大");
+                ensure!(n as usize <= MAX_DATA, "{}", t().features.clipboard_metafile_too_large);
                 let mut data = vec![0; n as usize];
                 ensure!(
                     GetEnhMetaFileBits(h, Some(&mut data)) == n,
-                    "无法读取图元文件"
+                    "{}",
+                    t().features.clipboard_metafile_read_failed
                 );
                 data
             }
@@ -802,22 +805,22 @@ impl LocalSource {
         formats::convert(data, format, platform, true)
     }
     fn files(&self) -> Result<Arc<LocalFiles>> {
-        ensure!(self.files, "本次剪贴板不含文件");
+        ensure!(self.files, "{}", t().features.clipboard_no_files);
         if let Some(prepared) = &self.prepared {
             return Ok(prepared.clone());
         }
         let object = self
             .object
             .as_ref()
-            .ok_or_else(|| anyhow!("文件来源不可用"))?;
+            .ok_or_else(|| anyhow!("{}", t().features.clipboard_source_unavailable))?;
         if let Ok(m) = get_medium(object, 15, -1, TYMED_HGLOBAL.0 as u32) {
             let drop = HDROP(unsafe { m.0.u.hGlobal.0 });
             let count = unsafe { DragQueryFileW(drop, u32::MAX, None) };
-            ensure!(count as usize <= MAX_FILES, "文件数量过多");
+            ensure!(count as usize <= MAX_FILES, "{}", t().features.clipboard_too_many_files);
             let mut items = Vec::new();
             for i in 0..count {
                 let size = unsafe { DragQueryFileW(drop, i, None) };
-                ensure!(size > 0 && size < 32768, "无效的文件路径");
+                ensure!(size > 0 && size < 32768, "{}", t().features.clipboard_invalid_path);
                 let mut buf = vec![0u16; size as usize + 1];
                 unsafe {
                     DragQueryFileW(drop, i, Some(&mut buf));
@@ -825,12 +828,13 @@ impl LocalSource {
                 let path = PathBuf::from(String::from_utf16(&buf[..size as usize])?);
                 ensure!(
                     std::fs::symlink_metadata(&path)?.file_attributes() & 0x400 == 0,
-                    "不传输重解析点或链接"
+                    "{}",
+                    t().features.clipboard_no_links
                 );
                 let root = dunce::canonicalize(&path)?;
                 let name = path
                     .file_name()
-                    .ok_or_else(|| anyhow!("不能复制磁盘根目录"))?
+                    .ok_or_else(|| anyhow!("{}", t().features.clipboard_drive_root_copy))?
                     .to_string_lossy()
                     .into_owned();
                 collect_file(&root, &root, &name, &mut items)?;
@@ -862,7 +866,7 @@ impl LocalSource {
                     unsafe { GlobalSize(content.0.u.hGlobal) as u64 }
                 } else {
                     let stream = unsafe { content.0.u.pstm.as_ref().cloned() }
-                        .ok_or_else(|| anyhow!("文件流不可用"))?;
+                        .ok_or_else(|| anyhow!("{}", t().features.clipboard_stream_unavailable))?;
                     let mut stat = STATSTG::default();
                     unsafe {
                         stream.Stat(&mut stat, STATFLAG_NONAME)?;
@@ -910,19 +914,21 @@ pub(super) fn prepare_files(
 ) -> Result<PreparedFiles> {
     ensure!(
         !paths.is_empty() && paths.len() <= MAX_FILES,
-        "拖放文件数量无效"
+        "{}",
+        t().features.clipboard_drag_count_invalid
     );
     let mut items = Vec::new();
     for path in paths {
-        ensure!(allowed(), "文件准备已取消");
+        ensure!(allowed(), "{}", t().features.clipboard_prepare_cancelled);
         ensure!(
             std::fs::symlink_metadata(&path)?.file_attributes() & 0x400 == 0,
-            "不传输重解析点或链接"
+            "{}",
+            t().features.clipboard_no_links
         );
         let root = dunce::canonicalize(&path)?;
         let name = path
             .file_name()
-            .ok_or_else(|| anyhow!("不能拖放磁盘根目录"))?
+            .ok_or_else(|| anyhow!("{}", t().features.clipboard_drive_root_drag))?
             .to_string_lossy();
         collect_file_guarded(&root, &root, &name, &mut items, &allowed)?;
     }
@@ -939,16 +945,17 @@ fn file_summary<'a>(items: impl Iterator<Item = &'a FileItem>) -> Result<FileSum
         if summary.first_name.is_empty() {
             summary.first_name = item.path.clone();
         }
-        ensure!(safe_name(&item.path), "文件名称不安全");
+        ensure!(safe_name(&item.path), "{}", t().features.clipboard_unsafe_name);
         summary.count += 1;
         summary.bytes = summary
             .bytes
             .checked_add(item.size)
-            .ok_or_else(|| anyhow!("文件总大小溢出"))?;
+            .ok_or_else(|| anyhow!("{}", t().features.clipboard_total_size_overflow))?;
     }
     ensure!(
         summary.count > 0 && summary.count as usize <= MAX_FILES,
-        "文件清单为空或过大"
+        "{}",
+        t().features.clipboard_file_list_size
     );
     Ok(summary)
 }
@@ -1008,15 +1015,16 @@ fn collect_file_guarded(
     items: &mut Vec<LocalFile>,
     allowed: &dyn Fn() -> bool,
 ) -> Result<()> {
-    ensure!(allowed(), "文件准备已取消");
+    ensure!(allowed(), "{}", t().features.clipboard_prepare_cancelled);
     ensure!(
         items.len() < MAX_FILES && safe_name(name),
-        "文件数量或名称不支持"
+        "{}",
+        t().features.clipboard_files_unsupported
     );
     let meta = std::fs::symlink_metadata(path)?;
-    ensure!(meta.file_attributes() & 0x400 == 0, "不传输重解析点或链接");
+    ensure!(meta.file_attributes() & 0x400 == 0, "{}", t().features.clipboard_no_links);
     let canonical = dunce::canonicalize(path)?;
-    ensure!(canonical.starts_with(root), "文件超出复制范围");
+    ensure!(canonical.starts_with(root), "{}", t().features.clipboard_outside_copy);
     items.push(LocalFile {
         desc: FileItem {
             path: name.replace('/', "\\"),
@@ -1046,14 +1054,15 @@ impl LocalFiles {
         let f = self
             .items
             .get(r.index as usize)
-            .ok_or_else(|| anyhow!("无效的文件索引"))?;
-        ensure!(r.length as usize <= FILE_BLOCK, "文件读取请求过大");
-        ensure!(f.desc.attributes & 0x10 == 0, "目录没有文件内容");
+            .ok_or_else(|| anyhow!("{}", t().features.clipboard_invalid_index))?;
+        ensure!(r.length as usize <= FILE_BLOCK, "{}", t().features.clipboard_read_too_large);
+        ensure!(f.desc.attributes & 0x10 == 0, "{}", t().features.clipboard_directory_no_content);
         let n = (r.length as u64).min(f.desc.size.saturating_sub(r.offset)) as usize;
         if let Some(path) = &f.path {
             ensure!(
                 dunce::canonicalize(path)?.starts_with(f.root.as_ref().unwrap()),
-                "文件超出原始复制范围"
+                "{}",
+                t().features.clipboard_outside_original
             );
             let mut file = std::fs::OpenOptions::new()
                 .read(true)
@@ -1062,7 +1071,8 @@ impl LocalFiles {
                 .open(path)?;
             ensure!(
                 file.metadata()?.file_attributes() & 0x400 == 0,
-                "文件已变为链接"
+                "{}",
+                t().features.clipboard_became_link
             );
             // Validate the opened handle, not just the path before opening (junction races).
             let mut final_name = vec![0u16; 32768];
@@ -1075,14 +1085,16 @@ impl LocalFiles {
             } as usize;
             ensure!(
                 size > 0 && size < final_name.len(),
-                "无法确认复制文件的实际路径"
+                "{}",
+                t().features.clipboard_path_unverified
             );
             let final_path =
                 dunce::simplified(Path::new(&String::from_utf16(&final_name[..size])?))
                     .to_path_buf();
             ensure!(
                 final_path.starts_with(f.root.as_ref().unwrap()),
-                "打开的文件超出原始复制范围"
+                "{}",
+                t().features.clipboard_opened_outside
             );
             file.seek(SeekFrom::Start(r.offset))?;
             let mut data = vec![0; n];
@@ -1100,7 +1112,7 @@ impl LocalFiles {
         let source = self
             .object
             .as_ref()
-            .ok_or_else(|| anyhow!("文件来源已关闭"))?;
+            .ok_or_else(|| anyhow!("{}", t().features.clipboard_source_closed))?;
         let medium = get_medium(
             source,
             formats::register("FileContents"),
@@ -1113,7 +1125,7 @@ impl LocalFiles {
             return Ok(bytes[start..(start + n).min(bytes.len())].to_vec());
         }
         let stream =
-            unsafe { medium.0.u.pstm.as_ref().cloned() }.ok_or_else(|| anyhow!("没有文件流"))?;
+            unsafe { medium.0.u.pstm.as_ref().cloned() }.ok_or_else(|| anyhow!("{}", t().features.clipboard_no_file_stream))?;
         unsafe {
             stream.Seek(i64::try_from(r.offset)?, STREAM_SEEK_SET, None)?;
             let mut bytes = vec![0; n];
@@ -1138,22 +1150,22 @@ fn serve(s: &Arc<Inner>, epoch: u64, id: u32, body: Body) -> Result<()> {
         Body::Fetch(fetch) => {
             let result = (|| -> Result<Vec<u8>> {
                 let (source, formats, offer) =
-                    published.ok_or_else(|| anyhow!("原剪贴板已失效"))?;
-                ensure!(offer == fetch.offer, "原剪贴板已失效");
-                let wanted = fetch.format.ok_or_else(|| anyhow!("缺少剪贴板格式"))?;
+                    published.ok_or_else(|| anyhow!("{}", t().features.clipboard_offer_expired))?;
+                ensure!(offer == fetch.offer, "{}", t().features.clipboard_offer_expired);
+                let wanted = fetch.format.ok_or_else(|| anyhow!("{}", t().features.clipboard_format_missing))?;
                 let format = formats
                     .iter()
                     .find(|f| {
                         f.wire.id == wanted.id
                             && (wanted.name.is_empty() || wanted.name == f.wire.name)
                     })
-                    .ok_or_else(|| anyhow!("未发布该剪贴板格式"))?;
+                    .ok_or_else(|| anyhow!("{}", t().features.clipboard_format_not_offered))?;
                 source.data(format, s.platform.load(Ordering::Acquire))
             })();
             match result {
                 Ok(data) if !data.is_empty() => s.respond_data(epoch, id, fetch.stream, data),
                 Ok(_) => {
-                    s.refuse(id, error_code::NOT_FOUND, "剪贴板内容为空");
+                    s.refuse(id, error_code::NOT_FOUND, t().features.clipboard_empty);
                     Ok(())
                 }
                 Err(error) => {
@@ -1165,7 +1177,7 @@ fn serve(s: &Arc<Inner>, epoch: u64, id: u32, body: Body) -> Result<()> {
         }
         Body::ListFiles(list) => {
             let result = (|| -> Result<Arc<LocalFiles>> {
-                ensure!(s.file_allowed(), "文件剪贴板已关闭");
+                ensure!(s.file_allowed(), "{}", t().features.clipboard_files_off);
                 let existing = STATE.with(|v| {
                     v.borrow()
                         .as_ref()
@@ -1175,10 +1187,10 @@ fn serve(s: &Arc<Inner>, epoch: u64, id: u32, body: Body) -> Result<()> {
                     return Ok(files);
                 }
                 let (source, _, offer) =
-                    published.ok_or_else(|| anyhow!("原文件剪贴板已失效"))?;
-                ensure!(offer == list.offer, "原文件剪贴板已失效");
+                    published.ok_or_else(|| anyhow!("{}", t().features.clipboard_file_offer_expired))?;
+                ensure!(offer == list.offer, "{}", t().features.clipboard_file_offer_expired);
                 let files = source.files()?;
-                ensure!(!files.items.is_empty(), "文件列表为空");
+                ensure!(!files.items.is_empty(), "{}", t().features.clipboard_file_list_empty);
                 let inserted = STATE.with(|v| {
                     let mut v = v.borrow_mut();
                     let v = v.as_mut().unwrap();
@@ -1188,7 +1200,7 @@ fn serve(s: &Arc<Inner>, epoch: u64, id: u32, body: Body) -> Result<()> {
                     v.tasks.insert((s.id, list.offer), files.clone());
                     true
                 });
-                ensure!(inserted, "正在读取的剪贴板文件过多");
+                ensure!(inserted, "{}", t().features.clipboard_too_many_reads);
                 Ok(files)
             })();
             match result {
@@ -1214,10 +1226,10 @@ fn serve(s: &Arc<Inner>, epoch: u64, id: u32, body: Body) -> Result<()> {
             });
             let result = if s.file_allowed() {
                 files
-                    .ok_or_else(|| anyhow!("文件任务已失效"))
+                    .ok_or_else(|| anyhow!("{}", t().features.clipboard_file_task_expired))
                     .and_then(|f| f.read(&read))
             } else {
-                Err(anyhow!("文件剪贴板已关闭"))
+                Err(anyhow!("{}", t().features.clipboard_files_off))
             };
             match result {
                 Ok(data) => s.respond_data(epoch, id, read.stream, data),
@@ -1230,17 +1242,18 @@ fn serve(s: &Arc<Inner>, epoch: u64, id: u32, body: Body) -> Result<()> {
         }
         Body::Pull(_) => pull(s, epoch, id),
         _ => {
-            s.refuse(id, error_code::BAD_REQUEST, "无效的剪贴板请求");
+            s.refuse(id, error_code::BAD_REQUEST, t().features.clipboard_invalid_request);
             Ok(())
         }
     }
 }
 pub(super) fn parse_descriptors(bytes: &[u8]) -> Result<Vec<FileItem>> {
-    ensure!(bytes.len() >= 4, "无效文件描述");
+    ensure!(bytes.len() >= 4, "{}", t().features.clipboard_invalid_descriptor);
     let count = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
     ensure!(
         count <= MAX_FILES && 4 + count * 592 <= bytes.len(),
-        "无效文件描述长度"
+        "{}",
+        t().features.clipboard_invalid_descriptor_length
     );
     let mut out = Vec::with_capacity(count);
     for b in bytes[4..4 + count * 592].chunks_exact(592) {
@@ -1251,7 +1264,7 @@ pub(super) fn parse_descriptors(bytes: &[u8]) -> Result<Vec<FileItem>> {
             .take_while(|c| *c != 0)
             .collect();
         let name = String::from_utf16(&name)?;
-        ensure!(safe_name(&name), "不支持的文件名称");
+        ensure!(safe_name(&name), "{}", t().features.clipboard_unsupported_name);
         out.push(FileItem {
             path: name,
             attributes: u32at(36),
@@ -1262,11 +1275,11 @@ pub(super) fn parse_descriptors(bytes: &[u8]) -> Result<Vec<FileItem>> {
     Ok(out)
 }
 fn descriptor_bytes(items: &[FileItem]) -> Result<Vec<u8>> {
-    ensure!(items.len() <= MAX_FILES, "文件数量过多");
+    ensure!(items.len() <= MAX_FILES, "{}", t().features.clipboard_too_many_files);
     let mut bytes = vec![0; 4 + items.len() * 592];
     bytes[..4].copy_from_slice(&(items.len() as u32).to_le_bytes());
     for (b, f) in bytes[4..].chunks_exact_mut(592).zip(items) {
-        ensure!(safe_name(&f.path), "不安全的远端文件名称");
+        ensure!(safe_name(&f.path), "{}", t().features.clipboard_unsafe_remote_name);
         b[..4].copy_from_slice(&0x4064u32.to_le_bytes());
         b[36..40].copy_from_slice(&f.attributes.to_le_bytes());
         b[56..64].copy_from_slice(&f.mtime.to_le_bytes());
@@ -1376,7 +1389,8 @@ impl RemoteOffer {
     fn valid(&self) -> Result<()> {
         ensure!(
             self.alive.load(Ordering::Acquire) && self.session.valid(self.epoch),
-            "剪贴板来源已失效"
+            "{}",
+            t().features.clipboard_source_expired
         );
         Ok(())
     }

@@ -1,5 +1,6 @@
 //! Serial notification I/O, coalesced outside the UI and media threads.
 use super::{Action, Card, Mode};
+use crate::i18n::t;
 use crate::platform::windows::notifications::{Native, Toast, ToastAction};
 use anyhow::{Context, Result};
 use std::sync::{Arc, Mutex, mpsc};
@@ -22,7 +23,7 @@ pub(super) struct Worker {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 fn path() -> Result<std::path::PathBuf> {
-    let base = crate::product::local_data_dir().context("无法确定通知设置目录")?;
+    let base = crate::product::local_data_dir().context(t().app.notification_folder_unknown)?;
     Ok(base.join("notifications.json"))
 }
 fn load() -> Result<Mode> {
@@ -53,7 +54,9 @@ impl Worker {
             let mut mode = match load() {
                 Ok(mode) => mode,
                 Err(e) => {
-                    let _ = tx.send(Event::Error(Some(format!("通知设置：{e}"))));
+                    let _ = tx.send(Event::Error(Some((t().app.notification_settings_error)(
+                        &e.to_string(),
+                    ))));
                     Mode::Gui
                 }
             };
@@ -97,7 +100,7 @@ impl Worker {
                                 && bytes[0].is_ascii_alphabetic()
                                 && bytes[1] == b':'
                                 && folder.is_dir(),
-                            "文件所在目录已不可用"
+                            t().app.folder_unavailable
                         );
                         crate::diagnostics::logging::open_folder(&folder)?;
                     }
@@ -146,7 +149,7 @@ impl Worker {
                                 progress: c.transfer.as_ref().and_then(|t| t.progress),
                                 key: c.ticket.clone(),
                                 title: if c.connected {
-                                    "远程连接已建立".into()
+                                    t().app.remote_connection_established.into()
                                 } else {
                                     c.title.clone()
                                 },
@@ -168,7 +171,9 @@ impl Worker {
                     }
                     Ok(())
                 })();
-                let error = result.err().map(|e| format!("通知：{e:#}"));
+                let error = result
+                    .err()
+                    .map(|e| (t().app.notification_error)(&format!("{e:#}")));
                 if error != last_error {
                     let _ = tx.send(Event::Error(error.clone()));
                     ctx.request_repaint();

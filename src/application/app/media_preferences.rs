@@ -1,3 +1,4 @@
+use crate::i18n::t;
 use crate::media::selection::GpuId;
 use crate::platform::capture::EncodingAdapter;
 
@@ -5,7 +6,7 @@ pub(super) fn limits_title(
     mode: crate::media::selection::ProcessingMode,
     codec: Option<&str>,
 ) -> String {
-    let mut text = "高级限制".to_owned();
+    let mut text = t().settings.advanced_restrictions.to_owned();
     if mode != crate::media::selection::ProcessingMode::Automatic {
         text.push_str(" · ");
         text.push_str(mode.label());
@@ -65,7 +66,7 @@ impl Inventory {
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.pending = None;
-                    self.error = Some("读取显卡列表失败".into());
+                    self.error = Some(t().settings.gpu_list_failed.into());
                 }
                 Err(_) => {
                     ui.ctx()
@@ -85,7 +86,7 @@ impl Inventory {
                     0x10de => "NVENC",
                     0x1002 => "AMF",
                     0x8086 => "QSV",
-                    _ => "硬编",
+                    _ => t().settings.hardware_encoder,
                 }
             } else {
                 "DXVA11"
@@ -104,12 +105,12 @@ impl Inventory {
             format!("{} · {backend}{location}", a.name)
         };
         let text = selected.map_or_else(
-            || "自动".to_owned(),
+            || t().settings.automatic.to_owned(),
             |id| {
                 self.adapters
                     .iter()
                     .find(|a| a.id == Some(id))
-                    .map_or_else(|| "已选显卡不可用".to_owned(), label)
+                    .map_or_else(|| t().settings.selected_gpu_unavailable.to_owned(), label)
             },
         );
         egui::ComboBox::from_id_salt(id)
@@ -117,14 +118,14 @@ impl Inventory {
             .truncate()
             .selected_text(text)
             .show_ui(ui, |ui| {
-                ui.selectable_value(selected, None, "自动");
+                ui.selectable_value(selected, None, t().settings.automatic);
                 for adapter in &self.adapters {
                     if let Some(key) = adapter.id {
                         ui.selectable_value(selected, Some(key), label(adapter));
                     }
                 }
                 ui.separator();
-                if ui.selectable_label(false, "刷新显卡列表").clicked() {
+                if ui.selectable_label(false, t().settings.refresh_gpu_list).clicked() {
                     self.refresh();
                 }
             });

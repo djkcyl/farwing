@@ -276,7 +276,7 @@ impl NativeVideoDecoder {
                     decoder: Box::new(decoder),
                     frame_reader,
                     candidate,
-                    label: "Farwing 软件解码".to_owned(),
+                    label: crate::i18n::t().session.decoder_software.to_owned(),
 
                     software_slot,
                 })
@@ -294,22 +294,22 @@ impl NativeVideoDecoder {
     ) {
         use crate::media::selection::{ProcessingMode, resolve_gpu};
         let note = if recovered {
-            Some("原候选不可用，已回退")
+            Some(crate::i18n::t().session.decoder_note_recovered)
         } else if preference.mode == ProcessingMode::Software {
             None
         } else if let Some(id) = preference.gpu {
             match resolve_gpu(Some(id)) {
-                None => Some("首选显卡不可用，自动选择"),
+                None => Some(crate::i18n::t().session.decoder_note_missing_gpu),
                 Some(adapter) if self.candidate != (DecoderCandidate::WindowsD3d11 { adapter }) => {
-                    Some("首选显卡不支持本次格式，已回退")
+                    Some(crate::i18n::t().session.selection_gpu_format)
                 }
-                _ => Some("首选显卡"),
+                _ => Some(crate::i18n::t().session.decoder_note_preferred_gpu),
             }
         } else {
             None
         };
         if let Some(note) = note {
-            self.label.push_str(&format!("（{note}）"));
+            self.label.push_str(&(crate::i18n::t().session.decoder_note)(note));
         }
         tracing::info!(preference=?preference, actual=?self.candidate, reason=note.unwrap_or("selected"), "decoder preference resolved");
     }
@@ -357,9 +357,8 @@ impl NativeVideoDecoder {
             decoder: Box::new(backend),
             frame_reader: FrameReader::Windows(reader),
             candidate: DecoderCandidate::WindowsD3d11 { adapter },
-            label: format!(
-                "{} · DXVA11 硬解",
-                crate::platform::capture::encoding_adapters()
+            label: (crate::i18n::t().session.decoder_hardware)(
+                &crate::platform::capture::encoding_adapters()
                     .ok()
                     .and_then(|items| items.into_iter().find(|a| a.luid == adapter))
                     .map_or_else(|| platform_label().into(), |a| a.name)

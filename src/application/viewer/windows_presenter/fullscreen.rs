@@ -1,6 +1,7 @@
 //! Fullscreen chrome floats over video; it never changes the video/input geometry.
 use super::chrome::{PlayerChromeAction, PlayerTitleBar, player_title_bar};
 use crate::application::viewer_shortcuts::{self, Action};
+use crate::i18n::t;
 use crate::ui::{controls, theme};
 use std::time::{Duration, Instant};
 
@@ -124,14 +125,15 @@ fn floating_width(ctx: &egui::Context) -> f32 {
 }
 
 fn show_hint(ctx: &egui::Context, top: f32) {
-    let fullscreen = viewer_shortcuts::label(Action::Fullscreen);
-    let release = viewer_shortcuts::label(Action::ReleaseMouse);
-    let mut text = String::from("已进入全屏");
-    if fullscreen != "未绑定" {
-        text.push_str(&format!("\n退出全屏：{fullscreen}"));
+    let t = &t().viewer;
+    let mut text = String::from(t.fullscreen_entered);
+    if let Some(key) = viewer_shortcuts::bound(Action::Fullscreen) {
+        text.push('\n');
+        text.push_str(&(t.fullscreen_exit_key)(&key));
     }
-    if release != "未绑定" {
-        text.push_str(&format!("\n退出键鼠控制：{release}"));
+    if let Some(key) = viewer_shortcuts::bound(Action::ReleaseMouse) {
+        text.push('\n');
+        text.push_str(&(t.release_control_key)(&key));
     }
     // Paint only: this reminder must never intercept desktop input or focus.
     let painter = ctx.layer_painter(egui::LayerId::new(

@@ -6,6 +6,7 @@ use super::{
 use crate::account::api::{ApiFailure, ErrorCode};
 use crate::account::client::AuthenticatedClient;
 use crate::application::viewer::ConnectionProgress;
+use crate::i18n::t;
 use crate::media::{
     ConnectionMediaOptions, ConnectionMediaProfile, LocalDisplayInfo, detect_local_display,
 };
@@ -49,9 +50,9 @@ impl ResolvedConnection {
                     .devices
                     .iter()
                     .find(|d| d.device_id == self.target_device_id)
-                    .context("更新后设备已不在当前账号中")?;
+                    .context(t().session.error_updated_device_missing)?;
                 device.validated_device_id()?;
-                anyhow::ensure!(device.platform == farwing_protocol::Platform::Windows, "更新后的设备类型已变化");
+                anyhow::ensure!(device.platform == farwing_protocol::Platform::Windows, "{}", t().session.error_updated_platform_changed);
                 if readiness.observe(
                     device.is_connected() && device.controlled_support && device.controllable,
                     std::time::Instant::now(),
@@ -61,14 +62,14 @@ impl ResolvedConnection {
                     );
                     return Ok(());
                 }
-                report_progress(reporter, 1, "等待被控端更新完成", "");
+                report_progress(reporter, 1, t().session.progress_waiting_update, "");
                 tokio::time::sleep(crate::features::remote_upgrade::UPDATE_PROBE_INTERVAL).await;
             }
         };
         cancellable(cancel, async {
             tokio::time::timeout_at(deadline, operation)
                 .await
-                .context("等待被控端更新完成超时")?
+                .context(t().session.error_update_wait_timeout)?
         })
         .await
     }
@@ -136,7 +137,7 @@ impl ResolvedConnection {
             return Ok(connection);
         }
         if self.target_device_id == self.controller_device_id {
-            bail!("cannot connect the device to itself");
+            bail!("{}", t().session.error_connect_to_self);
         }
         // Diagnostics: `FARWING_SIGNAL_PRESENCE=wait` lets a standalone
         // viewer's own presence connection come up first, so that the session
@@ -151,7 +152,7 @@ impl ResolvedConnection {
             tracing::info!(ready, "waited for the presence connection");
         }
         tracing::info!("creating server session");
-        report_progress(reporter, 3, "正在创建会话", "");
+        report_progress(reporter, 3, t().session.progress_creating_session, "");
         let mut pake_key = None;
         let room = if let Some(assist) = &mut self.assist {
             let reply = assist
@@ -194,8 +195,8 @@ impl ResolvedConnection {
                         report_progress(
                             reporter,
                             3,
-                            "重新请求会话",
-                            format!("{error}；3 秒后重试（{retries}/5）"),
+                            t().session.progress_requesting_session_again,
+                            (t().session.progress_session_retry)(&error.to_string(), *retries),
                         );
                         cancellable(cancel, async {
                             tokio::time::sleep(Duration::from_secs(3)).await;
@@ -214,8 +215,8 @@ impl ResolvedConnection {
                 .devices
                 .iter()
                 .find(|device| device.device_id == self.target_device_id)
-                .context("更新后的设备已不在当前账号中")?;
-            anyhow::ensure!(device.platform == farwing_protocol::Platform::Windows, "更新后的设备类型已变化");
+                .context(t().session.error_updated_device_missing)?;
+            anyhow::ensure!(device.platform == farwing_protocol::Platform::Windows, "{}", t().session.error_updated_platform_changed);
             self.target_version = device.version_name.clone();
             self.refresh_after_upgrade = false;
         }
@@ -304,7 +305,8 @@ impl ResolvedConnection {
         };
         anyhow::ensure!(
             local.identity.device_id == self.controller_device_id,
-            "本机设备身份已改变"
+            "{}",
+            t().session.error_local_identity_changed
         );
         let mut connection = ControllerConnection::establish(
             room,
@@ -399,8 +401,8 @@ pub(super) async fn resolve_connection_with_client(
     reporter: Option<&ConnectionProgressReporter>,
     target_id: Option<&str>,
 ) -> Result<ResolvedConnection> {
-    report_progress(reporter, 1, "正在读取本机信息", "");
-    report_progress(reporter, 2, "正在检查设备状态", "");
+    report_progress(reporter, 1, t().session.progress_reading_local, "");
+    report_progress(reporter, 2, t().session.progress_checking_device, "");
     let devices = client.list_devices().await?;
     if let Some(id) = target_id {
         crate::account::api::validate_device_id(id)?;
@@ -408,7 +410,7 @@ pub(super) async fn resolve_connection_with_client(
     if target_id.map_or(devices.current_device.alias == alias, |id| {
         devices.current_device.device_id == id
     }) {
-        bail!("cannot connect the current device to itself");
+        bail!("{}", t().session.error_connect_to_self);
     }
 
     let matches = devices
@@ -418,9 +420,9 @@ pub(super) async fn resolve_connection_with_client(
         .filter(|device| target_id.map_or(device.alias == alias, |id| device.device_id == id))
         .collect::<Vec<_>>();
     let device = match matches.as_slice() {
-        [] => bail!("no device has the exact alias `{alias}`"),
+        [] => bail!("{}", (t().session.error_no_device_named)(alias)),
         [device] => *device,
-        _ => bail!("more than one device has the alias `{alias}`; rename one before connecting"),
+        _ => bail!("{}", (t().session.error_several_devices_named)(alias)),
     };
     let background =
         crate::application::wallpaper::Source::new(&device.device_id, &device.wallpaper_url);
@@ -428,16 +430,16 @@ pub(super) async fn resolve_connection_with_client(
         reporter(ConnectionProgress::background(background.clone()));
     }
     if !device.platform.is_desktop() {
-        bail!("this device type is for account management only");
+        bail!("{}", t().session.error_management_only_device);
     }
     if !device.is_connected() {
-        bail!("device `{alias}` is offline");
+        bail!("{}", (t().session.error_device_offline)(alias));
     }
     if !device.controlled_support || !device.controllable {
-        bail!("device `{alias}` does not currently allow control");
+        bail!("{}", (t().session.error_device_not_controllable)(alias));
     }
     if device.is_shared() && !device.granted(farwing_protocol::caps::VIEW) {
-        bail!("device `{alias}` is not shared with this account for viewing");
+        bail!("{}", (t().session.error_device_not_shared_for_viewing)(alias));
     }
     let _gate = shared::connection_gate(&shared::key(&client.device_id(), &device.device_id))
         .lock_owned()
@@ -447,23 +449,20 @@ pub(super) async fn resolve_connection_with_client(
         Ok(display) => (display, None),
         Err(error) => (
             LocalDisplayInfo::FALLBACK,
-            Some(format!(
-                "local display detection failed ({error:#}); using 1920×1080 @ 60 Hz"
-            )),
+            Some((t().session.display_detection_failed)(&format!("{error:#}"))),
         ),
     };
     let profile = options.resolve(display)?;
     report_progress(
         reporter,
         2,
-        "设备可连接",
-        format!(
-            "本机显示 {}×{} @ {} Hz · {} FPS · {}",
+        t().session.progress_device_available,
+        (t().session.progress_local_display)(
             display.width,
             display.height,
             display.refresh_hz,
             profile.stream_fps,
-            profile.codec.label()
+            profile.codec.label(),
         ),
     );
     let target_device_id = device.validated_device_id()?.to_owned();

@@ -63,14 +63,17 @@ fn ensure_recovered(root: &Path) -> Result<()> {
         reject_reparse(&directory)?;
         ensure!(
             std::fs::read_dir(directory)?.next().is_none(),
-            "屏幕布局尚未恢复，不能清除数据"
+            "{}",
+            t().system.component_displays_not_recovered
         );
     }
     Ok(())
 }
 pub(super) fn machine() -> Result<()> {
     let root = crate::platform::windows::host_service::vault::root()?;
-    let directory = root.parent().context("本机数据目录无效")?;
+    let directory = root
+        .parent()
+        .context(t().system.component_invalid_data_directory)?;
     reject_reparse(directory)?;
     reject_reparse(&root)?;
     ensure_recovered(&root)?;
@@ -88,7 +91,7 @@ pub(super) fn user() -> Result<()> {
     // containing its branding or other applications' credential entries.
     keyring::Entry::store_status()
         .as_ref()
-        .map_err(|_| anyhow::anyhow!("系统凭据库不可用"))?;
+        .map_err(|_| anyhow::anyhow!("{}", t().system.component_credential_store_unavailable))?;
     let entries = keyring_core::Entry::search(&std::collections::HashMap::from([(
         "pattern",
         CREDENTIAL_PATTERN,

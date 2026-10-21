@@ -1,4 +1,6 @@
 use super::*;
+use crate::i18n::t;
+
 impl DeviceCenterApp {
     pub(super) fn fetch_diagnostics(&mut self, device: crate::account::api::DeviceInfo) {
         if self.logout_pending || self.mutation_pending {
@@ -14,34 +16,35 @@ impl DeviceCenterApp {
             })
             .is_err()
         {
-            self.status = StatusMessage::error("获取诊断包失败");
+            self.status = StatusMessage::error(t().settings.get_diagnostics_failed);
         }
     }
 }
 pub(super) fn button_label(snapshot: Option<&crate::diagnostics::remote::Snapshot>) -> String {
     use crate::diagnostics::remote::Phase;
+    let text = &t().settings;
     let Some(state) = snapshot else {
-        return "获取诊断包".into();
+        return text.get_diagnostics.into();
     };
     if state.busy {
-        let phase = match state.phase {
-            Phase::Connecting => return "正在连接…".into(),
-            Phase::Preparing => "打包",
-            Phase::Downloading => "下载",
-            Phase::Saving => return "正在保存…".into(),
+        let (busy, percent) = match state.phase {
+            Phase::Connecting => return text.connecting.into(),
+            Phase::Preparing => (text.packing, text.packing_percent),
+            Phase::Downloading => (text.downloading, text.downloading_percent),
+            Phase::Saving => return text.saving.into(),
         };
         return if state.progress.total > 0 {
-            format!("{} {:.0}%", phase, state.progress.fraction() * 100.0)
+            percent(state.progress.fraction() * 100.0)
         } else {
-            format!("正在{}…", phase)
+            busy.into()
         };
     }
     if state.path.is_some() {
-        "诊断包已保存".into()
+        text.diagnostics_saved.into()
     } else if state.error.is_some() {
-        "获取失败".into()
+        text.get_failed.into()
     } else {
-        "获取诊断包".into()
+        text.get_diagnostics.into()
     }
 }
 
@@ -53,6 +56,7 @@ pub(super) fn popup(
     can_start: bool,
 ) -> bool {
     let mut start = response.clicked() && can_start && snapshot.is_none_or(|s| s.cancelled);
+    let text = &t().settings;
     egui::Popup::from_toggle_button_response(response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
@@ -60,14 +64,14 @@ pub(super) fn popup(
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new("远端诊断包")
+                    egui::RichText::new(text.remote_diagnostics)
                         .size(theme::SECTION)
                         .strong(),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if crate::ui::controls::close_button(
                         ui,
-                        "收起面板",
+                        text.collapse_panel,
                         crate::ui::controls::COMPACT_HEIGHT,
                     )
                     .clicked()
@@ -89,7 +93,7 @@ pub(super) fn popup(
                             ui.label(&p.stage);
                         });
                     }
-                    if ui.button("取消获取").clicked() {
+                    if ui.button(text.cancel_get).clicked() {
                         crate::diagnostics::remote::service::cancel(controller, target);
                     }
                     ui.ctx().request_repaint_after(Duration::from_millis(100));
@@ -97,9 +101,9 @@ pub(super) fn popup(
                 Some(state) if state.path.is_some() => {
                     ui.label(
                         egui::RichText::new(if state.warnings > 0 {
-                            "已保存，部分日志未包含"
+                            text.saved_partial
                         } else {
-                            "诊断包已保存"
+                            text.diagnostics_saved
                         })
                         .color(if state.warnings > 0 {
                             theme::AMBER
@@ -120,20 +124,20 @@ pub(super) fn popup(
                     )
                     .on_hover_text(path.display().to_string());
                     ui.horizontal(|ui| {
-                        if ui.button("打开文件夹").clicked() {
+                        if ui.button(t().app.open_folder).clicked() {
                             if let Err(error) = crate::diagnostics::bundle::open_folder(path) {
                                 tracing::warn!(%error,"open diagnostic folder failed");
                                 crate::ui::controls::notice(
                                     ui.ctx(),
                                     ("diagnostic-folder", target),
-                                    "无法打开文件夹",
+                                    text.cant_open_folder,
                                     crate::ui::controls::DialogIcon::Error,
                                     path.display().to_string(),
                                 );
                             }
                         }
                         start |= ui
-                            .add_enabled(can_start, egui::Button::new("重新获取"))
+                            .add_enabled(can_start, egui::Button::new(text.get_again))
                             .clicked();
                     });
                 }
@@ -142,19 +146,19 @@ pub(super) fn popup(
                         egui::RichText::new(state.error.as_deref().unwrap()).color(theme::AMBER),
                     );
                     start |= ui
-                        .add_enabled(can_start, egui::Button::new("重试"))
+                        .add_enabled(can_start, egui::Button::new(t().common.retry))
                         .clicked();
                 }
                 Some(_) => {
-                    ui.label(egui::RichText::new("已取消本次获取").color(theme::MUTED));
+                    ui.label(egui::RichText::new(text.get_cancelled).color(theme::MUTED));
                     start |= ui
-                        .add_enabled(can_start, egui::Button::new("重新获取"))
+                        .add_enabled(can_start, egui::Button::new(text.get_again))
                         .clicked();
                 }
                 None => {
                     ui.horizontal(|ui| {
                         ui.add(egui::Spinner::new().size(16.0));
-                        ui.label("正在准备连接…");
+                        ui.label(text.preparing_connection);
                     });
                 }
             }

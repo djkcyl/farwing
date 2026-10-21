@@ -4,6 +4,7 @@ mod media_preferences;
 use crate::account::api::{DeviceInfo, DeviceList};
 use crate::account::client::AuthenticatedClient;
 use crate::account::login::LoginProgress;
+use crate::i18n::t;
 use crate::media::{
     CodecPreference, ConnectionMediaOptions, FrameRateChoice, LocalDisplayInfo, TransportChoice,
     detect_local_display,
@@ -53,11 +54,11 @@ pub fn run(options: GuiOptions) -> Result<()> {
         Ok(display) => (display, None),
         Err(error) => (
             LocalDisplayInfo::FALLBACK,
-            Some(format!("显示器探测失败：{error:#}")),
+            Some((t().app.display_detect_failed)(&format!("{error:#}"))),
         ),
     };
     let display_warning = match (display_warning, options.startup_warning) {
-        (Some(a), Some(b)) => Some(format!("{a}；{b}")),
+        (Some(a), Some(b)) => Some((t().app.join_warnings)(&a, &b)),
         (a, b) => a.or(b),
     };
     options
@@ -67,7 +68,7 @@ pub fn run(options: GuiOptions) -> Result<()> {
 
     let viewport = egui::ViewportBuilder::default()
         .with_visible(!options.background)
-        .with_title(format!("{} · 控制中心", crate::APP_NAME))
+        .with_title(window_title())
         .with_icon(crate::ui::branding::icon())
         .with_inner_size([1180.0, 760.0])
         .with_min_inner_size([1024.0, 720.0]);
@@ -88,6 +89,11 @@ pub fn run(options: GuiOptions) -> Result<()> {
         }),
     )
 }
+/// The device centre's window title in the current language.
+fn window_title() -> String {
+    (t().app.window_title)(crate::APP_NAME)
+}
+
 pub fn notification_activation(uri: &str) -> Result<()> {
     notifications::Action::parse(uri)?;
     instance::deliver_notification(uri)
@@ -120,12 +126,13 @@ impl StartupStage {
         }
     }
     fn title(self) -> &'static str {
+        let text = &t().app;
         match self {
-            Self::Identity => "读取本机身份",
-            Self::Credentials => "读取登录凭据",
-            Self::Device => "初始化设备会话",
-            Self::Account => "校验账号登录状态",
-            Self::Devices => "获取设备清单",
+            Self::Identity => text.stage_identity,
+            Self::Credentials => text.stage_credentials,
+            Self::Device => text.stage_device,
+            Self::Account => text.stage_account,
+            Self::Devices => text.stage_devices,
         }
     }
 }
@@ -217,7 +224,7 @@ impl DeviceCenterApp {
             host: None,
             notifications: notifications::Center::new(ctx),
             status: display_warning.map_or_else(
-                || StatusMessage::info("正在加载设备"),
+                || StatusMessage::info(t().app.loading_devices),
                 StatusMessage::warning,
             ),
             refreshed_at: None,
@@ -254,15 +261,17 @@ impl DeviceCenterApp {
                         }
                         Err(error) => {
                             self.exit_requested = false;
-                            self.status = StatusMessage::error(format!("退出失败：{error}"));
+                            let text = &t().app;
+                            self.status =
+                                StatusMessage::error((text.exit_failed_with)(&error.to_string()));
                             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                             // The status line is not on every page (startup, login).
                             crate::ui::controls::notice(
                                 ctx,
                                 "exit-failed",
-                                "无法退出",
+                                text.cant_exit,
                                 crate::ui::controls::DialogIcon::Error,
-                                format!("被控未停止：{error}"),
+                                (text.host_not_stopped)(&error.to_string()),
                             );
                         }
                     }
@@ -303,7 +312,7 @@ impl DeviceCenterApp {
                         && !self.logout_pending
                         && self.startup_stage != stage
                     {
-                        tracing::info!(stage = stage.title(), "device center startup");
+                        tracing::info!(stage = ?stage, "device center startup");
                         self.startup_stage = stage;
                         self.startup_stage_since = Instant::now();
                     }
@@ -365,7 +374,7 @@ impl DeviceCenterApp {
                     self.refresh_pending = false;
                     self.cached_devices = false;
                     if !self.status.kind.is_alert() {
-                        self.status = StatusMessage::success("设备状态已刷新");
+                        self.status = StatusMessage::success(t().app.devices_refreshed);
                     }
                     if self.login_restoring {
                         tracing::info!("device center startup: devices shown");
@@ -413,7 +422,7 @@ impl DeviceCenterApp {
                         }
                         Ok(MutationOutcome::Power(accepted)) => {
                             self.accept_power(*accepted);
-                            StatusMessage::info("电源请求已受理")
+                            StatusMessage::info(t().app.power_accepted)
                         }
                         Err(message) => StatusMessage::warning(message),
                     };
@@ -460,7 +469,7 @@ impl DeviceCenterApp {
                     self.status = StatusMessage::warning(message);
                     self.login_restoring = false;
                     self.login_error = Some(self.status.text.clone());
-                    self.login_status = "无法恢复登录".into();
+                    self.login_status = t().app.cant_restore_sign_in.into();
                 }
                 GuiEvent::ServerSaved(result) => self.finish_server(result),
                 GuiEvent::SignedOut => {
@@ -482,11 +491,12 @@ impl DeviceCenterApp {
                         continue;
                     }
                     self.login_form.error = None;
+                    let text = &t().app;
                     self.login_status = match progress {
-                        LoginProgress::ValidatingSavedSession => "正在恢复登录…",
-                        LoginProgress::RegisteringDevice => "正在登记本机设备…",
-                        LoginProgress::DeviceRegistered => "本机设备已登记",
-                        LoginProgress::SubmittingCredentials => "正在验证账号…",
+                        LoginProgress::ValidatingSavedSession => text.restoring_sign_in,
+                        LoginProgress::RegisteringDevice => text.registering_device,
+                        LoginProgress::DeviceRegistered => text.device_registered,
+                        LoginProgress::SubmittingCredentials => text.verifying_account,
                     }
                     .to_owned();
                     self.login_form.status = self.login_status.clone();
@@ -505,8 +515,8 @@ impl DeviceCenterApp {
                             self.login_restoring = true;
                             self.startup_stage = StartupStage::Device;
                             self.startup_stage_since = Instant::now();
-                            self.login_status = "正在加载设备…".to_owned();
-                            self.status = StatusMessage::success("登录成功");
+                            self.login_status = t().app.loading_devices.to_owned();
+                            self.status = StatusMessage::success(t().app.signed_in);
                             self.refresh_pending = true;
                         }
                         Err(error) => {
@@ -520,8 +530,8 @@ impl DeviceCenterApp {
                             self.login_form.error = Some(message.clone());
                             self.login_restoring = false;
                             self.login_error = Some(message.clone());
-                            self.login_status = "登录未完成".to_owned();
-                            self.status = StatusMessage::error(format!("登录失败：{message}"));
+                            self.login_status = t().app.sign_in_incomplete.to_owned();
+                            self.status = StatusMessage::error((t().app.sign_in_failed)(&message));
                         }
                     }
                 }
@@ -538,7 +548,7 @@ impl DeviceCenterApp {
                     self.presence = PresenceState::Offline;
                     self.status = StatusMessage::warning(message);
                     self.refresh_pending = false;
-                    self.login_status = "登录已失效".into();
+                    self.login_status = t().app.sign_in_expired.into();
                 }
                 GuiEvent::LoggedOut(outcome) => {
                     self.login_form.clear_private();
@@ -549,14 +559,15 @@ impl DeviceCenterApp {
                     self.cached_devices = false;
                     self.selected_device_id = None;
                     self.presence = PresenceState::Offline;
+                    let text = &t().app;
                     self.status = match (outcome.remote_error, outcome.local_error) {
                         (_, Some(error)) => {
-                            StatusMessage::error(format!("本地凭据删除失败：{error}"))
+                            StatusMessage::error((text.delete_credentials_failed)(&error.to_string()))
                         }
                         (Some(error), None) => {
-                            StatusMessage::warning(format!("服务器未确认退出：{error}"))
+                            StatusMessage::warning((text.sign_out_unconfirmed)(&error.to_string()))
                         }
-                        (None, None) => StatusMessage::success("已退出登录"),
+                        (None, None) => StatusMessage::success(text.signed_out),
                     };
                     self.login_restoring = false;
                     self.login_running = false;
@@ -566,7 +577,7 @@ impl DeviceCenterApp {
                         .is_alert()
                         .then(|| self.status.text.clone());
                     self.login_status = if self.login_error.is_some() {
-                        "退出未完成".into()
+                        text.sign_out_incomplete.into()
                     } else {
                         String::new()
                     };
@@ -637,15 +648,16 @@ impl DeviceCenterApp {
             if generation != self.login_generation {
                 continue;
             }
+            let text = &t().app;
             self.status = match result {
                 Ok(crate::session::controller::windows::ViewerEnd::Closed) => {
-                    StatusMessage::success(format!("{alias} 的观看窗口已关闭"))
+                    StatusMessage::success((text.viewer_closed)(&alias))
                 }
                 Ok(crate::session::controller::windows::ViewerEnd::RoomReleased(reason)) => {
-                    StatusMessage::notice(format!("与 {alias} 的连接已结束：{reason}"))
+                    StatusMessage::notice((text.connection_ended)(&alias, &reason.to_string()))
                 }
                 Err(error) => {
-                    StatusMessage::error(format!("{alias} 的观看窗口异常停止：{error}"))
+                    StatusMessage::error((text.viewer_crashed)(&alias, &error.to_string()))
                 }
             };
             if self.devices.is_some() && !self.logout_pending {
@@ -657,7 +669,7 @@ impl DeviceCenterApp {
             self.logout_sent = self.worker.commands.send(GuiCommand::Logout).is_ok();
             if !self.logout_sent {
                 self.logout_pending = false;
-                self.status = StatusMessage::error("退出登录失败");
+                self.status = StatusMessage::error(t().app.sign_out_failed);
             }
         }
         if let Some(id) = self
@@ -699,7 +711,7 @@ impl DeviceCenterApp {
     fn login_restore_error(&mut self, message: &str) {
         if self.devices.is_none() && self.catalog.is_none() && !self.login_running {
             self.login_restoring = false;
-            self.login_status = "连接失败".into();
+            self.login_status = t().app.connection_failed.into();
             self.login_error = Some(message.to_owned());
         }
     }
@@ -716,7 +728,7 @@ impl DeviceCenterApp {
             || self.mutation_pending
             || (self.assist.busy && !self.assist.querying)
         {
-            self.status = StatusMessage::warning("设备操作未完成");
+            self.status = StatusMessage::warning(t().app.device_operation_pending);
             return false;
         }
         true
@@ -850,7 +862,7 @@ impl DeviceCenterApp {
             if let Some(id) = change.close_target() {
                 self.stop_device_viewers(id);
             }
-            self.status = StatusMessage::info("正在等待连接结束…");
+            self.status = StatusMessage::info(t().app.waiting_for_connections);
             self.queued_mutation = Some(change);
         } else {
             self.send_mutation(change);
@@ -869,19 +881,19 @@ impl DeviceCenterApp {
             .is_err()
         {
             self.mutation_pending = false;
-            self.status = StatusMessage::error("设备操作发送失败");
+            self.status = StatusMessage::error(t().app.device_operation_send_failed);
             self.pending_power = None;
         } else {
-            self.status = StatusMessage::info("正在处理设备操作…");
+            self.status = StatusMessage::info(t().app.processing_device_operation);
         }
     }
 
     fn request_refresh(&mut self) {
         if self.worker.commands.send(GuiCommand::Refresh).is_ok() {
             self.refresh_pending = true;
-            self.status = StatusMessage::info("正在刷新设备状态");
+            self.status = StatusMessage::info(t().app.refreshing_devices);
         } else {
-            self.status = StatusMessage::error("刷新失败");
+            self.status = StatusMessage::error(t().app.refresh_failed);
         }
     }
 
@@ -893,11 +905,11 @@ impl DeviceCenterApp {
             return;
         }
         let Some(device) = self.selected_device().cloned() else {
-            self.status = StatusMessage::warning("未选择设备");
+            self.status = StatusMessage::warning(t().app.no_device_selected);
             return;
         };
         if !self.is_viewing_target(&device.device_id) {
-            self.status = StatusMessage::warning("此设备不能观看");
+            self.status = StatusMessage::warning(t().app.device_not_viewable);
             return;
         }
         if let Err(message) = self.connection_issue(&device) {
@@ -921,21 +933,22 @@ impl DeviceCenterApp {
     }
 
     fn viewer_action_issue(&self, device: &DeviceInfo) -> Option<String> {
+        let text = &t().app;
         if self.logout_pending {
-            Some("正在退出账号".into())
+            Some(text.signing_out.into())
         } else if self.mutation_pending {
-            Some("正在处理设备操作".into())
+            Some(text.processing_device_operation.into())
         } else if self
             .viewers
             .opening
             .contains_key(&viewing::Key::Device(device.device_id.clone()))
         {
-            Some("正在打开观看窗口".into())
+            Some(text.opening_viewer.into())
         } else if self
             .viewer_for_device(&device.device_id)
             .is_some_and(|s| s.closing)
         {
-            Some("正在关闭观看窗口".into())
+            Some(text.closing_viewer.into())
         } else {
             self.connection_issue(device).err()
         }
@@ -1011,7 +1024,7 @@ impl DeviceCenterApp {
             .is_err()
         {
             self.viewers.opening.remove(&key);
-            self.status = StatusMessage::error("无法打开观看窗口");
+            self.status = StatusMessage::error(t().app.cant_open_viewer);
         }
     }
     /// Open a viewer for a host reached directly (§12), logged in or not.
@@ -1042,7 +1055,7 @@ impl DeviceCenterApp {
             .is_err()
         {
             self.viewers.opening.remove(&key);
-            self.status = StatusMessage::error("无法打开观看窗口");
+            self.status = StatusMessage::error(t().app.cant_open_viewer);
         }
     }
     fn prepare_exit(&mut self) {
@@ -1056,7 +1069,7 @@ impl DeviceCenterApp {
         self.exit_pending = self.worker.commands.send(GuiCommand::PrepareExit).is_ok();
         if !self.exit_pending {
             self.exit_requested = false;
-            self.status = StatusMessage::error("退出失败");
+            self.status = StatusMessage::error(t().app.exit_failed);
         }
     }
     fn has_viewers(&self) -> bool {
@@ -1200,26 +1213,32 @@ fn all_devices(devices: &DeviceList) -> impl Iterator<Item = (&'static str, &Dev
     devices
         .devices
         .iter()
-        .map(|device| ("我的设备", device))
-        .chain(devices.shared.iter().map(|device| ("好友设备", device)))
+        .map(|device| (t().app.my_devices, device))
+        .chain(
+            devices
+                .shared
+                .iter()
+                .map(|device| (t().app.friend_devices, device)),
+        )
 }
 
 fn connectability_error(device: &DeviceInfo) -> std::result::Result<(), String> {
+    let text = &t().app;
     if !device.is_connected() {
-        return Err(format!("{} 当前离线", display_alias(device)));
+        return Err((text.device_offline)(display_alias(device)));
     }
     if !device.controlled_support || !device.controllable {
-        return Err(format!("{} 未开放远程控制", display_alias(device)));
+        return Err((text.remote_control_off)(display_alias(device)));
     }
     if device.is_shared() && !device.granted(farwing_protocol::caps::VIEW) {
-        return Err(format!("{} 未授予你观看权限", display_alias(device)));
+        return Err((text.view_not_granted)(display_alias(device)));
     }
     Ok(())
 }
 
 fn display_alias(device: &DeviceInfo) -> &str {
     if device.alias.is_empty() {
-        "未命名设备"
+        t().app.unnamed_device
     } else {
         &device.alias
     }

@@ -6,35 +6,46 @@ use crate::application::app::friends::cap_label;
 use farwing_protocol::caps;
 
 /// Capabilities by what they let the other side do, in display order.
-const GROUPS: [(&str, &[&str]); 3] = [
-    ("观看", &[caps::VIEW, caps::AUDIO, caps::ANNOTATION]),
-    (
-        "操作",
-        &[caps::CONTROL, caps::CLIPBOARD, caps::MICROPHONE, caps::FILES],
-    ),
-    (
-        "管理",
-        &[caps::DISPLAY, caps::PORTS, caps::POWER, caps::DIAGNOSTICS],
-    ),
+const GROUPS: [&[&str]; 3] = [
+    &[caps::VIEW, caps::AUDIO, caps::ANNOTATION],
+    &[caps::CONTROL, caps::CLIPBOARD, caps::MICROPHONE, caps::FILES],
+    &[caps::DISPLAY, caps::PORTS, caps::POWER, caps::DIAGNOSTICS],
 ];
 
+/// The title of [`GROUPS`]`[index]`.
+fn group_title(index: usize) -> &'static str {
+    let text = &t().center;
+    match index {
+        0 => text.caps_view,
+        1 => text.caps_control,
+        _ => text.caps_manage,
+    }
+}
+
 /// Common capability sets, offered as one-click choices.
-const PRESETS: [(&str, &[&str]); 3] = [
-    ("仅观看", &[caps::VIEW, caps::AUDIO, caps::ANNOTATION]),
-    (
-        "协作",
-        &[
-            caps::VIEW,
-            caps::CONTROL,
-            caps::CLIPBOARD,
-            caps::FILES,
-            caps::AUDIO,
-            caps::MICROPHONE,
-            caps::ANNOTATION,
-        ],
-    ),
-    ("完全控制", caps::ALL),
+const PRESETS: [&[&str]; 3] = [
+    &[caps::VIEW, caps::AUDIO, caps::ANNOTATION],
+    &[
+        caps::VIEW,
+        caps::CONTROL,
+        caps::CLIPBOARD,
+        caps::FILES,
+        caps::AUDIO,
+        caps::MICROPHONE,
+        caps::ANNOTATION,
+    ],
+    caps::ALL,
 ];
+
+/// The name of [`PRESETS`]`[index]`.
+fn preset_title(index: usize) -> &'static str {
+    let text = &t().center;
+    match index {
+        0 => text.preset_view_only,
+        1 => text.preset_collaborate,
+        _ => text.full_control,
+    }
+}
 
 const AVATAR_COLORS: [Color32; 6] = [
     Color32::from_rgb(75, 136, 235),
@@ -251,7 +262,7 @@ pub(super) fn confirm(
             let (accept, dismiss) = crate::ui::controls::dialog_actions(
                 ui,
                 Some(crate::ui::controls::DialogAction::new(action).danger(true)),
-                Some("取消"),
+                Some(t().common.cancel),
             );
             if accept {
                 answer = Some(true);
@@ -274,20 +285,21 @@ fn same_set(list: &[String], preset: &[&str]) -> bool {
 pub(super) fn caps_editor(ui: &mut egui::Ui, id: impl egui::AsIdSalt, list: &mut Vec<String>) -> bool {
     let mut changed = false;
     ui.push_id(id, |ui| {
+        let width = group_label_width(ui);
         ui.horizontal_wrapped(|ui| {
-            group_label(ui, "快速选择");
-            for (label, preset) in PRESETS {
+            group_label(ui, t().center.presets, width);
+            for (index, preset) in PRESETS.into_iter().enumerate() {
                 let selected = same_set(list, preset);
-                if choice(ui, selected, label).clicked() && !selected {
+                if choice(ui, selected, preset_title(index)).clicked() && !selected {
                     *list = caps::normalize(preset);
                     changed = true;
                 }
             }
         });
         ui.add_space(4.0);
-        for (group, members) in GROUPS {
+        for (index, members) in GROUPS.into_iter().enumerate() {
             ui.horizontal_wrapped(|ui| {
-                group_label(ui, group);
+                group_label(ui, group_title(index), width);
                 for cap in members {
                     let mut on = list.iter().any(|c| c == cap);
                     if ui.checkbox(&mut on, cap_label(cap)).changed() {
@@ -303,7 +315,7 @@ pub(super) fn caps_editor(ui: &mut egui::Ui, id: impl egui::AsIdSalt, list: &mut
         }
         if !list.is_empty() && !list.iter().any(|c| c == caps::VIEW) {
             ui.label(
-                RichText::new("未勾选“观看画面”时，对方无法连接")
+                RichText::new((t().center.view_required)(&cap_label(caps::VIEW)))
                     .size(theme::SMALL)
                     .color(AMBER),
             );
@@ -315,8 +327,22 @@ pub(super) fn caps_editor(ui: &mut egui::Ui, id: impl egui::AsIdSalt, list: &mut
     changed
 }
 
-fn group_label(ui: &mut egui::Ui, text: &str) {
-    let (rect, _) = ui.allocate_exact_size(vec2(56.0, 20.0), Sense::hover());
+/// One width for the editor's row titles, so the rows line up.
+fn group_label_width(ui: &egui::Ui) -> f32 {
+    std::iter::once(t().center.presets)
+        .chain((0..GROUPS.len()).map(group_title))
+        .map(|text| {
+            ui.painter()
+                .layout_no_wrap(text.into(), FontId::proportional(theme::SMALL), MUTED)
+                .size()
+                .x
+                + 8.0
+        })
+        .fold(56.0, f32::max)
+}
+
+fn group_label(ui: &mut egui::Ui, text: &str, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
     ui.painter().text(
         rect.left_center(),
         egui::Align2::LEFT_CENTER,
@@ -395,7 +421,7 @@ pub(super) fn locked(ui: &mut egui::Ui, title: &str, actions: &[&str]) -> Option
 /// A local date and time.
 pub(super) fn when(seconds: i64) -> String {
     if seconds <= 0 {
-        return "未知".into();
+        return t().common.unknown.into();
     }
     chrono::DateTime::from_timestamp(seconds, 0)
         .map(|t| {
@@ -411,7 +437,7 @@ pub(super) fn when(seconds: i64) -> String {
 pub(super) fn caps_icons(ui: &mut egui::Ui, list: &[String], empty: &str) {
     let granted: Vec<&str> = GROUPS
         .iter()
-        .flat_map(|(_, group)| group.iter().copied())
+        .flat_map(|group| group.iter().copied())
         .filter(|cap| list.iter().any(|c| c == cap))
         .collect();
     if granted.is_empty() {

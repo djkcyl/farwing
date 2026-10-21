@@ -1,12 +1,14 @@
+use crate::i18n::t;
 use crate::media::audio::encoder::Quality;
 
 fn label(kbps: u32) -> &'static str {
+    let t = &t().controls;
     match kbps {
-        64 => "省带宽 · 64 kbps",
-        128 => "标准 · 128 kbps",
-        192 => "高音质 · 192 kbps",
-        256 => "极高音质 · 256 kbps",
-        _ => "未选择",
+        64 => t.audio_quality_64,
+        128 => t.audio_quality_128,
+        192 => t.audio_quality_192,
+        256 => t.audio_quality_256,
+        _ => t.audio_quality_unselected,
     }
 }
 
@@ -56,15 +58,15 @@ pub(crate) fn remote_audio_quality(
     let status = handle.audio_quality_snapshot();
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new("接收音质 · kbps")
+            egui::RichText::new(t().controls.received_audio_quality)
                 .size(super::theme::SMALL)
                 .color(super::theme::MUTED),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let note = if status.pending {
-                "正在应用…".to_owned()
+                t().controls.applying.to_owned()
             } else if status.available && status.effective_bps < status.quality.kbps * 1000 {
-                format!("协商上限 {} kbps", status.effective_bps / 1000)
+                (t().controls.negotiated_limit)(status.effective_bps / 1000)
             } else {
                 String::new()
             };
@@ -77,7 +79,7 @@ pub(crate) fn remote_audio_quality(
     });
     if !status.available {
         ui.label(
-            egui::RichText::new("音质由被控端设置")
+            egui::RichText::new(t().controls.audio_quality_set_by_host)
                 .size(super::theme::SMALL)
                 .color(super::theme::MUTED),
         );
@@ -111,13 +113,13 @@ pub(crate) fn remote_audio_quality_inline(
     let status = handle.audio_quality_snapshot();
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new("音质")
+            egui::RichText::new(t().controls.audio_quality)
                 .size(super::theme::SMALL)
                 .color(super::theme::MUTED),
         );
         if !status.available {
             ui.label(
-                egui::RichText::new("由被控端设置")
+                egui::RichText::new(t().controls.set_by_host)
                     .size(super::theme::SMALL)
                     .color(super::theme::MUTED),
             );

@@ -98,7 +98,7 @@ impl Manager {
             Err(std::sync::mpsc::TryRecvError::Empty) => (),
             Err(_) => {
                 self.pending = None;
-                self.error = Some("安装任务已中断".into());
+                self.error = Some(t().center.install_interrupted.into());
             }
         }
     }
@@ -119,14 +119,15 @@ impl Manager {
             return;
         }
         let installed = self.status.as_ref().is_some_and(|s| s.installed);
+        let text = &t().center;
         let label = if self.pending.is_some() {
-            "正在处理…"
+            text.working
         } else if self.reboot {
-            "需要重启 Windows"
+            text.restart_required
         } else if installed {
-            "更新服务"
+            text.update_service
         } else {
-            "安装服务"
+            text.install_service
         };
         let actionable = self
             .status
@@ -140,11 +141,11 @@ impl Manager {
             self.confirm = Some(Operation::Install);
         }
         response.on_hover_text(if active {
-            "正在被控"
+            text.being_controlled
         } else {
             self.status
                 .as_ref()
-                .map_or("正在检查服务", |s| s.label.as_str())
+                .map_or(text.checking_service, |s| s.label.as_str())
         });
     }
     /// What the background service means for reaching this device, and the
@@ -154,23 +155,24 @@ impl Manager {
             return None;
         }
         let status = self.status.as_ref()?;
+        let text = &t().center;
         Some(if status.ready {
             ServiceReach {
-                state: "已安装",
+                state: text.installed,
                 color: GREEN,
                 action: None,
             }
         } else if status.installed {
             ServiceReach {
-                state: "需要更新",
+                state: text.update_required,
                 color: AMBER,
-                action: Some("更新服务"),
+                action: Some(text.update_service),
             }
         } else {
             ServiceReach {
-                state: "未安装",
+                state: text.not_installed,
                 color: MUTED,
-                action: Some("安装服务"),
+                action: Some(text.install_service),
             }
         })
     }
@@ -180,35 +182,34 @@ impl Manager {
         }
     }
     pub(super) fn management(&mut self, ui: &mut egui::Ui, active: bool) {
+        let text = &t().center;
         if !crate::product::is_default_profile() {
-            section(ui, "服务管理");
-            ui.label(format!(
-                "profile「{}」以便携模式运行",
-                crate::product::profile()
-            ));
+            section(ui, text.service_management);
+            ui.label((text.portable_profile)(crate::product::profile()));
             return;
         }
         self.poll();
-        section(ui, "服务管理");
+        section(ui, text.service_management);
         let label = self
             .status
             .as_ref()
-            .map_or("正在检查…", |s| s.label.as_str())
+            .map_or(text.checking, |s| s.label.as_str())
             .to_owned();
         let removable = self.status.as_ref().is_some_and(|s| s.removable);
         let installable = self.status.as_ref().is_some_and(|s| !s.installed);
-        form_row(ui, "常驻服务", &label, |ui| {
+        form_row(ui, text.resident_service, &label, |ui| {
+            let busy = if active {
+                text.being_controlled
+            } else {
+                text.working
+            };
             if installable
                 && ui
                     .add_enabled(
                         !active && !self.reboot && self.pending.is_none(),
-                        crate::ui::controls::primary("安装服务"),
+                        crate::ui::controls::primary(text.install_service),
                     )
-                    .on_disabled_hover_text(if active {
-                        "正在被控"
-                    } else {
-                        "正在处理"
-                    })
+                    .on_disabled_hover_text(busy)
                     .clicked()
             {
                 self.confirm = Some(Operation::Install);
@@ -217,20 +218,15 @@ impl Manager {
                 return;
             }
             let idle = !active && !self.reboot && self.pending.is_none();
-            let busy = if active {
-                "正在被控"
-            } else {
-                "正在处理"
-            };
             if ui
-                .add_enabled(idle, egui::Button::new("修复安装"))
+                .add_enabled(idle, egui::Button::new(text.repair))
                 .on_disabled_hover_text(busy)
                 .clicked()
             {
                 self.confirm = Some(Operation::Install);
             }
             if ui
-                .add_enabled(idle, egui::Button::new("卸载服务"))
+                .add_enabled(idle, egui::Button::new(text.uninstall_service))
                 .on_disabled_hover_text(busy)
                 .clicked()
             {
@@ -249,20 +245,21 @@ impl Manager {
         let audio = audio_result.and_then(|status| status.as_ref().ok());
         let installed = audio.is_some_and(|s| s.installed);
         let removable = audio.is_some_and(|s| s.removable);
+        let text = &t().center;
         let label = match audio_result {
             Some(Ok(status)) => status.label.clone(),
-            Some(Err(error)) => format!("检查失败：{error}"),
-            None => "正在检查…".into(),
+            Some(Err(error)) => (text.check_failed)(error),
+            None => text.checking.into(),
         };
-        form_row(ui, "虚拟声卡", &label, |ui| {
+        form_row(ui, text.virtual_audio, &label, |ui| {
             if !audio.is_some_and(|status| status.ready)
                 && ui
                     .add_enabled(
                         !active && self.pending.is_none(),
                         egui::Button::new(if installed {
-                            "更新驱动"
+                            text.update_driver
                         } else {
-                            "安装驱动"
+                            text.install_driver
                         }),
                     )
                     .clicked()
@@ -272,7 +269,7 @@ impl Manager {
             if ui
                 .add_enabled(
                     !active && self.pending.is_none() && removable,
-                    egui::Button::new("卸载驱动"),
+                    egui::Button::new(text.uninstall_driver),
                 )
                 .clicked()
             {
@@ -282,16 +279,17 @@ impl Manager {
     }
     fn audio_dialog(&mut self, ctx: &egui::Context, active: bool) {
         if let Some(operation) = self.audio_confirm {
+            let text = &t().center;
             let title = if operation == Operation::Install {
                 if self.components.iter().any(|(kind, status)| {
                     *kind == Kind::AudioDriver && status.as_ref().is_ok_and(|s| s.installed)
                 }) {
-                    "更新虚拟声卡"
+                    text.update_virtual_audio
                 } else {
-                    "安装虚拟声卡"
+                    text.install_virtual_audio
                 }
             } else {
-                "卸载虚拟声卡"
+                text.uninstall_virtual_audio
             };
             let mut accepted = false;
             let mut dismissed = false;
@@ -300,10 +298,10 @@ impl Manager {
                     ui.set_width(460.0);
                     dismissed = crate::ui::controls::dialog_header(ui, title, crate::ui::controls::DialogIcon::Warning, true);
                     if operation == Operation::Uninstall {
-                        ui.label("将移除虚拟扬声器和虚拟麦克风");
+                        ui.label(text.removes_virtual_audio);
                     }
                     let (yes, close) = crate::ui::controls::dialog_actions(ui,
-                        Some(crate::ui::controls::DialogAction::new(title).enabled(!active && self.pending.is_none())), Some("取消"));
+                        Some(crate::ui::controls::DialogAction::new(title).enabled(!active && self.pending.is_none())), Some(t().common.cancel));
                     accepted = yes;
                     dismissed |= close;
                 });
@@ -331,7 +329,7 @@ impl Manager {
             self.offered = true;
             let remember = (|| -> anyhow::Result<bool> {
                 let path = crate::product::local_data_dir()
-                    .context("本地设置目录不可用")?
+                    .context(t().center.local_settings_unavailable)?
                     .join("resident-install-prompt.seen");
                 let seen = path.exists();
                 if !seen {
@@ -352,7 +350,7 @@ impl Manager {
         crate::ui::controls::observe_notice(
             ctx,
             "component-error",
-            "服务管理",
+            t().center.service_management,
             crate::ui::controls::DialogIcon::Error,
             self.error.as_deref(),
         );
@@ -361,23 +359,24 @@ impl Manager {
             let mut dismiss = false;
             let result = egui::Modal::new(egui::Id::new("component-confirm")).frame(crate::ui::controls::dialog_frame()).show(ctx, |ui| {
                 ui.set_width(480.0);
-                let verb = if operation == Operation::Uninstall { "卸载服务" } else if self.status.as_ref().is_some_and(|s| s.installed) { "更新服务" } else { "安装服务" };
+                let text = &t().center;
+                let verb = if operation == Operation::Uninstall { text.uninstall_service } else if self.status.as_ref().is_some_and(|s| s.installed) { text.update_service } else { text.install_service };
                 dismiss = crate::ui::controls::dialog_header(ui,verb,crate::ui::controls::DialogIcon::Warning,true);
                 if operation == Operation::Install {
                     let drivers = crate::platform::windows::input::install::bundled() || crate::platform::windows::display::install::bundled();
-                    ui.checkbox(&mut self.allow_sas,"允许服务发送 Ctrl+Alt+Del");
-                    if drivers { ui.collapsing("驱动与证书", |ui| {
+                    ui.checkbox(&mut self.allow_sas, text.allow_sas);
+                    if drivers { ui.collapsing(text.drivers_and_certificates, |ui| {
                         if let Some((subject, thumbprint, _)) = Kind::InputDriver.certificate() { ui.label(subject); ui.label(egui::RichText::new(thumbprint).monospace().small()); }
-                        ui.label("安装时加入受信任根证书和受信任发布者");
-                        ui.hyperlink_to("显示驱动上游与许可证", "https://github.com/SudoMaker/SudoVDA");
+                        ui.label(text.certificate_stores);
+                        ui.hyperlink_to(text.driver_source, "https://github.com/SudoMaker/SudoVDA");
                     }); }
                 } else {
-                    ui.label("将停止开机被控");
-                    ui.checkbox(&mut self.removal.remove_display_driver, "同时卸载 Farwing 虚拟显示驱动" );
-                    ui.checkbox(&mut self.removal.remove_audio_driver, "同时卸载 Farwing 虚拟声卡" );
+                    ui.label(text.stops_startup_access);
+                    ui.checkbox(&mut self.removal.remove_display_driver, text.also_remove_display_driver);
+                    ui.checkbox(&mut self.removal.remove_audio_driver, text.also_remove_audio_driver);
                 }
                 for (kind,status) in &self.components { ui.horizontal(|ui| { ui.label(kind.label()); ui.label(match status { Ok(s) => s.label.as_str(), Err(e) => e.as_str() }); }); }
-                let (yes, close) = crate::ui::controls::dialog_actions(ui,Some(crate::ui::controls::DialogAction::new(verb).enabled(!active && self.pending.is_none())),Some("取消")); accepted = yes; dismiss |= close;
+                let (yes, close) = crate::ui::controls::dialog_actions(ui,Some(crate::ui::controls::DialogAction::new(verb).enabled(!active && self.pending.is_none())),Some(t().common.cancel)); accepted = yes; dismiss |= close;
             });
             if accepted {
                 self.confirm = None;

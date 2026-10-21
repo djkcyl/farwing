@@ -1,5 +1,6 @@
 //! Private interface of the Farwing Input driver.
 use anyhow::{Result, ensure};
+use crate::i18n::t;
 use windows::{
     Win32::{
         Foundation::*,
@@ -83,7 +84,7 @@ impl Device {
                     if WaitForSingleObject(event.0, 500) != WAIT_OBJECT_0 {
                         let _ = CancelIoEx(self.handle, Some(&overlapped));
                         let _ = GetOverlappedResult(self.handle, &overlapped, &mut count, true);
-                        anyhow::bail!("输入驱动请求超时");
+                        anyhow::bail!("{}", t().system.input_driver_timeout);
                     }
                     GetOverlappedResult(self.handle, &overlapped, &mut count, false)?;
                 }
@@ -93,11 +94,15 @@ impl Device {
         Ok(())
     }
     pub fn report(&mut self, data: &[u8]) -> Result<()> {
-        ensure!(data.len() <= 256 && !data.is_empty(), "HID报告长度无效");
+        ensure!(
+            data.len() <= 256 && !data.is_empty(),
+            "{}",
+            t().system.input_hid_report_invalid
+        );
         self.sequence = self
             .sequence
             .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("输入序号已耗尽"))?;
+            .ok_or_else(|| anyhow::anyhow!("{}", t().system.input_sequence_exhausted))?;
         let mut bytes = Vec::with_capacity(28 + data.len());
         bytes.extend(MAGIC.to_le_bytes());
         bytes.extend(VERSION.to_le_bytes());

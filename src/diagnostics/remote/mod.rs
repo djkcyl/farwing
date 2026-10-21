@@ -117,13 +117,13 @@ fn decode(bytes: &[u8]) -> Result<Option<Received>> {
     let (header, _) = peer::decode(bytes)?;
     if header.is_response() && header.is_error() {
         let error = farwing_protocol::peer::PeerError::decode(body)
-            .context("无效的诊断错误回复")?;
+            .context(crate::i18n::t().session.rdiag_error_reply_invalid)?;
         return Ok(Some(Received::Failure(header.request_id, error.message)));
     }
     let message = DiagnosticsMessage::decode(body)
-        .context("无效的诊断消息")?
+        .context(crate::i18n::t().session.rdiag_message_invalid)?
         .body
-        .context("诊断消息没有受支持的内容")?;
+        .context(crate::i18n::t().session.rdiag_message_empty)?;
     Ok(Some(match (header.request_id, header.is_response()) {
         (0, _) => Received::Push(message),
         (id, false) => Received::Request(id, message),

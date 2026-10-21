@@ -1,4 +1,5 @@
 //! Durable display recovery intent, separate from optional controller preferences.
+use crate::i18n::t;
 use crate::platform::display::topology::SavedTopology;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -67,7 +68,7 @@ pub(super) fn root() -> Result<PathBuf> {
 }
 fn portable_root() -> Result<PathBuf> {
     Ok(crate::product::local_data_dir()
-        .context("本地显示配置目录不可用")?
+        .context(t().features.screen_config_dir_unavailable)?
         .join("displays"))
 }
 pub(super) fn transfer_preferences(to_service: bool) -> Result<()> {
@@ -127,13 +128,20 @@ pub(super) fn read<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     };
     let mut bytes = Vec::new();
     file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= 1024 * 1024, "显示配置文件过大");
+    ensure!(
+        bytes.len() <= 1024 * 1024,
+        "{}",
+        t().features.screen_config_too_large
+    );
     Ok(Some(
-        serde_json::from_slice(&bytes).context("显示配置文件损坏")?,
+        serde_json::from_slice(&bytes).context(t().features.screen_config_corrupt)?,
     ))
 }
 pub(super) fn write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    fs::create_dir_all(path.parent().context("显示配置路径无效")?)?;
+    fs::create_dir_all(
+        path.parent()
+            .context(t().features.screen_config_path_invalid)?,
+    )?;
     let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
     let result = (|| {
         let mut file = fs::OpenOptions::new()

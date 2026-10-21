@@ -1,5 +1,6 @@
 //! Queue readiness only; permissions and payloads stay on the authenticated pipe.
 use crate::platform::windows::host_service::pipe::Handle;
+use crate::i18n::t;
 use anyhow::{Result, ensure};
 use windows::{
     Win32::{Foundation::*, System::Threading::*},
@@ -52,7 +53,8 @@ impl Wake {
             result == WAIT_TIMEOUT
                 || (result.0 >= WAIT_OBJECT_0.0
                     && result.0 < WAIT_OBJECT_0.0 + handles.len() as u32),
-            "剪贴板队列等待失败"
+            "{}",
+            t().features.clipboard_wait_failed
         );
         Ok(())
     }

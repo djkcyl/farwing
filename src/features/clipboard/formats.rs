@@ -111,7 +111,7 @@ pub(super) fn outgoing(ids: &[(u32, String)], platform: i32, files: bool) -> Vec
     out
 }
 fn utf16(bytes: &[u8]) -> Result<String> {
-    ensure!(bytes.len() % 2 == 0, "无效的Unicode剪贴板");
+    ensure!(bytes.len() % 2 == 0, "{}", t().features.clipboard_invalid_unicode);
     let mut words: Vec<u16> = bytes
         .chunks_exact(2)
         .map(|b| u16::from_le_bytes([b[0], b[1]]))
@@ -165,10 +165,10 @@ pub(super) fn convert(data: Vec<u8>, f: &Format, platform: i32, outbound: bool) 
         "public.html" => {
             if outbound {
                 let start =
-                    field(&data, "StartHTML:").ok_or_else(|| anyhow!("HTML剪贴板缺少起始位置"))?;
+                    field(&data, "StartHTML:").ok_or_else(|| anyhow!("{}", t().features.clipboard_html_missing_start))?;
                 let end =
-                    field(&data, "EndHTML:").ok_or_else(|| anyhow!("HTML剪贴板缺少结束位置"))?;
-                ensure!(start <= end && end <= data.len(), "无效的HTML剪贴板范围");
+                    field(&data, "EndHTML:").ok_or_else(|| anyhow!("{}", t().features.clipboard_html_missing_end))?;
+                ensure!(start <= end && end <= data.len(), "{}", t().features.clipboard_html_invalid_range);
                 data[start..end].to_vec()
             } else {
                 let html = std::str::from_utf8(&data)?.trim_end_matches('\0');
@@ -220,22 +220,23 @@ pub(super) fn convert(data: Vec<u8>, f: &Format, platform: i32, outbound: bool) 
             if outbound {
                 data
             } else {
-                ensure!(data.len() >= 14, "无效的位图输出");
+                ensure!(data.len() >= 14, "{}", t().features.clipboard_invalid_bitmap);
                 data[14..].to_vec()
             }
         }
         _ => data,
     };
-    ensure!(out.len() <= MAX_DATA, "转换后的剪贴板内容过大");
+    ensure!(out.len() <= MAX_DATA, "{}", t().features.clipboard_converted_too_large);
     Ok(out)
 }
 fn dib_to_bmp(d: &[u8]) -> Result<Vec<u8>> {
-    ensure!(d.len() >= 40, "无效的DIB");
+    ensure!(d.len() >= 40, "{}", t().features.clipboard_invalid_dib);
     let u32at = |i| u32::from_le_bytes(d[i..i + 4].try_into().unwrap());
     let header = u32at(0) as usize;
     ensure!(
         matches!(header, 40 | 52 | 56 | 108 | 124) && header <= d.len(),
-        "不支持的DIB头"
+        "{}",
+        t().features.clipboard_unsupported_dib_header
     );
     let bits = u16::from_le_bytes([d[14], d[15]]);
     let compression = u32at(16);
@@ -257,8 +258,8 @@ fn dib_to_bmp(d: &[u8]) -> Result<Vec<u8>> {
     let offset = header
         .checked_add(masks)
         .and_then(|v| v.checked_add(palette.checked_mul(4)?))
-        .ok_or_else(|| anyhow!("DIB尺寸溢出"))?;
-    ensure!(offset <= d.len(), "无效的DIB像素偏移");
+        .ok_or_else(|| anyhow!("{}", t().features.clipboard_dib_size_overflow))?;
+    ensure!(offset <= d.len(), "{}", t().features.clipboard_invalid_dib_offset);
     let mut out = Vec::with_capacity(14 + d.len());
     out.extend_from_slice(b"BM");
     out.extend_from_slice(&((14 + d.len()) as u32).to_le_bytes());

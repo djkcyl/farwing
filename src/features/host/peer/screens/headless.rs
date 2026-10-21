@@ -1,6 +1,7 @@
 //! Capture handoff for the machine-owned headless display. The connection may
 //! retire it only after a replacement produces frames; disconnect leaves it alive.
 use super::*;
+use crate::i18n::t;
 use std::time::{Duration, Instant};
 
 pub(super) fn same_source(a: &capture::Screen, b: &capture::Screen) -> bool {
@@ -235,12 +236,13 @@ impl Screens {
             let Some((index, original)) = candidate else {
                 return Ok(());
             };
-            self.lease.update(true, true, "正在准备常驻虚拟屏…");
+            self.lease
+                .update(true, true, t().features.screen_preparing_persistent);
             let Some(fallback) = self
                 .displays
                 .ensure_fallback(original.clone())
                 .await
-                .context("无法建立常驻虚拟屏")?
+                .context(t().features.screen_persistent_failed)?
             else {
                 return Ok(());
             };
@@ -307,7 +309,10 @@ impl Screens {
             .min_by_key(|i| (i.screen.identity != r.original.identity, !i.screen.primary))
             .map(|i| i.screen.clone());
         if let Some(original) = &original {
-            let identity = original.identity.clone().context("替代显示器缺少身份")?;
+            let identity = original
+                .identity
+                .clone()
+                .context(t().features.screen_replacement_identity_missing)?;
             if r.replacement_since
                 .as_ref()
                 .is_none_or(|(id, _)| id != &identity)
@@ -409,7 +414,7 @@ impl Screens {
                 let outcome = probe.task.take().unwrap().await;
                 r.probe = None;
                 r.retry_at = now + Duration::from_secs(10);
-                let outcome = outcome.context("屏幕恢复检查中断")?;
+                let outcome = outcome.context(t().features.screen_recovery_check_interrupted)?;
                 if let Ok(screen) = outcome {
                     if original.as_ref().is_some_and(|s| same_source(s, &screen)) {
                         r.returning = Some(now);

@@ -1,4 +1,5 @@
 //! Shared icons and interaction states for the player caption.
+use crate::i18n::t;
 use crate::ui::theme;
 
 pub(crate) fn viewer_fullscreen_handle(ui: &mut egui::Ui) -> (egui::Response, egui::Rect) {
@@ -24,7 +25,11 @@ pub(crate) fn viewer_fullscreen_handle(ui: &mut egui::Ui) -> (egui::Response, eg
         egui::StrokeKind::Outside,
     );
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "展开全屏操作栏")
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            ui.is_enabled(),
+            t().controls.show_fullscreen_toolbar,
+        )
     });
     (response, hit_rect)
 }
@@ -61,9 +66,9 @@ pub(crate) fn viewer_caption_button(
                 egui::WidgetType::Button,
                 ui.is_enabled(),
                 match icon {
-                    ViewerCaptionIcon::Minimize => "最小化",
-                    ViewerCaptionIcon::Close => "关闭",
-                    _ => "窗口操作",
+                    ViewerCaptionIcon::Minimize => t().controls.minimize,
+                    ViewerCaptionIcon::Close => t().common.close,
+                    _ => t().controls.window_actions,
                 },
             )
         });

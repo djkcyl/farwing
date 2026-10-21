@@ -79,10 +79,12 @@ fn with_headers(mut response: Response, cache: &'static str) -> Response {
     response
 }
 
-const NOT_BUILT: &str = "<!doctype html><meta charset=utf-8><title>Farwing</title>\
+/// Shown to whoever builds the server without the web console (a developer).
+const NOT_BUILT: &str = "<!doctype html><html lang=en><meta charset=utf-8><title>Farwing</title>\
 <body style=\"font-family:sans-serif;background:#16181d;color:#e6e8ee;padding:48px\">\
-<h1>Farwing Server</h1><p>网页端没有构建：在 server/web 中运行 <code>npm ci &amp;&amp; npm run build</code>，\
-再重新编译服务端（或使用 build-web 脚本）。客户端接口不受影响。</p></body>";
+<h1>Farwing Server</h1><p>The web console is not built. Run <code>npm ci &amp;&amp; npm run build</code> \
+in server/web, then build the server again (or use the build-web script). The client API works \
+without it.</p></body></html>";
 
 /// Fallback for every path the API does not handle.
 pub async fn serve(State(app): State<App>, method: Method, uri: Uri, headers: HeaderMap) -> Response {

@@ -141,50 +141,108 @@ impl fmt::Debug for ClientIdentity {
 }
 
 /// A server-reported failure, or a local network failure (`ErrorCode::Network`).
+///
+/// Shown (`Display`) as the text for `code` and `reason` in the interface
+/// language (`crate::i18n::errors`); `message` is the sender's developer
+/// text, for logs only.
 #[derive(Clone, Debug)]
 pub struct ApiFailure {
     pub code: ErrorCode,
     pub message: String,
+    /// `details.reason`: which case of `code` this is
+    /// (`farwing_protocol::error::reason`).
+    pub reason: Option<String>,
     pub status: u16,
     pub details: serde_json::Value,
 }
 
 impl fmt::Display for ApiFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.message.is_empty() {
-            write!(f, "Farwing 服务器返回错误（{}）", self.code)
-        } else {
-            write!(f, "{}（{}）", self.message, self.code)
-        }
+        f.write_str(&crate::i18n::t().errors.text(
+            self.code,
+            self.reason.as_deref(),
+            &self.details,
+        ))
     }
 }
 
 impl std::error::Error for ApiFailure {}
 
 impl ApiFailure {
+    /// A failure found here; `message` is for logs.
     pub(crate) fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
+            reason: None,
             status: code.http_status(),
             details: serde_json::Value::Null,
         }
     }
 
+    /// A failure found here, of a particular case (`reason`) of `code`.
+    pub(crate) fn with_reason(mut self, reason: &str) -> Self {
+        self.reason = Some(reason.to_owned());
+        if !self.details.is_object() {
+            self.details = serde_json::json!({});
+        }
+        if let Some(details) = self.details.as_object_mut() {
+            details.insert("reason".into(), reason.into());
+        }
+        self
+    }
+
+    /// Add one `details` field (a parameter of the reason's text).
+    pub(crate) fn with_detail(mut self, key: &str, value: impl Into<serde_json::Value>) -> Self {
+        if !self.details.is_object() {
+            self.details = serde_json::json!({});
+        }
+        if let Some(details) = self.details.as_object_mut() {
+            details.insert(key.to_owned(), value.into());
+        }
+        self
+    }
+
+    /// An error received from a server or a host (HTTPS, realtime or
+    /// direct connection), keeping its code, reason and details.
+    pub(crate) fn from_body(body: farwing_protocol::ErrorBody, status: u16) -> Self {
+        Self {
+            code: body.code,
+            reason: body
+                .reason()
+                .map(|reason| reason.chars().filter(|c| !c.is_control()).take(64).collect()),
+            message: sanitize_message(&body.message),
+            status,
+            details: body.details,
+        }
+    }
+
+    /// An error received on the realtime plane or from a host over a
+    /// direct connection (no HTTP status).
+    pub(crate) fn received(body: farwing_protocol::ErrorBody) -> Self {
+        let status = body.code.http_status();
+        let failure = Self::from_body(body, status);
+        tracing::debug!(code = %failure.code, reason = ?failure.reason, message = %failure.message, "peer reported an error");
+        failure
+    }
+
     pub(crate) fn network(error: &reqwest::Error) -> Self {
-        let message = if error.is_timeout() {
-            "连接 Farwing 服务器超时".to_owned()
+        use farwing_protocol::error::reason;
+        let (message, reason) = if error.is_timeout() {
+            ("timed out", Some(reason::TIMED_OUT))
         } else if error.is_connect() {
-            "无法连接 Farwing 服务器".to_owned()
+            ("cannot connect", None)
         } else {
-            "与 Farwing 服务器的连接中断".to_owned()
+            ("connection lost", Some(reason::CONNECTION_LOST))
         };
         tracing::debug!(error = %error, "Farwing HTTPS transport failed");
-        Self {
-            code: ErrorCode::Network,
-            message,
+        let failure = Self {
             status: 0,
-            details: serde_json::Value::Null,
+            ..Self::new(ErrorCode::Network, message)
+        };
+        match reason {
+            Some(reason) => failure.with_reason(reason),
+            None => failure,
         }
     }
 
@@ -465,9 +523,13 @@ impl DeviceList {
             .shared
             .iter()
             .find(|d| d.device_id == device_id)
-            .context("设备已不在当前账号或好友共享中")?;
+            .ok_or_else(|| {
+                ApiFailure::new(ErrorCode::DeviceNotFound, "device not in this account or shared")
+            })?;
         if !device.granted.iter().any(|granted| granted == cap) {
-            bail!("设备主人没有授予你这项权限");
+            return Err(ApiFailure::new(ErrorCode::Forbidden, format!("{cap} not granted"))
+                .with_reason(farwing_protocol::error::reason::NOT_GRANTED)
+                .into());
         }
         Ok(device)
     }
@@ -692,7 +754,9 @@ impl AssistJoined {
         }
         validate_device_id(&self.host.device_id)?;
         if self.host.device_id == controller_id {
-            bail!("不能连接本机身份");
+            return Err(ApiFailure::new(ErrorCode::BadRequest, "assisting this device itself")
+                .with_reason(farwing_protocol::error::reason::SELF_CONNECT)
+                .into());
         }
         anyhow::ensure!(
             farwing_protocol::crypto::valid_public_key(&self.host.public_key),
@@ -931,7 +995,10 @@ impl ServerApi {
     pub async fn send_friend_request(&self, username: &str) -> Result<wire::FriendRequestOutcome> {
         let username = username.trim();
         if username.is_empty() || username.chars().any(char::is_control) {
-            bail!("请输入对方的用户名");
+            return Err(ApiFailure::new(ErrorCode::BadRequest, "invalid username")
+                .with_reason(farwing_protocol::error::reason::USERNAME_INVALID)
+                .with_detail("max", 64)
+                .into());
         }
         self.call(
             Method::POST,
@@ -1038,7 +1105,10 @@ impl ServerApi {
     pub async fn rename_device(&self, id: &str, alias: &str) -> Result<RenamedDevice> {
         validate_device_id(id)?;
         if alias.trim().is_empty() || alias.chars().any(char::is_control) {
-            bail!("设备名称不能为空或包含控制字符");
+            return Err(ApiFailure::new(ErrorCode::BadRequest, "invalid device name")
+                .with_reason(farwing_protocol::error::reason::DEVICE_NAME_INVALID)
+                .with_detail("max", 64)
+                .into());
         }
         self.call(
             Method::PATCH,
@@ -1632,13 +1702,15 @@ fn json<T: Serialize + ?Sized>(body: &T) -> Result<Body> {
 fn decode<T: DeserializeOwned>(path: &str, status: u16, body: &[u8]) -> Result<T> {
     // An error envelope wins regardless of status.
     if let Ok(envelope) = serde_json::from_slice::<farwing_protocol::ErrorEnvelope>(body) {
-        let failure = ApiFailure {
-            code: envelope.error.code,
-            message: sanitize_message(&envelope.error.message),
+        let failure = ApiFailure::from_body(envelope.error, status);
+        tracing::debug!(
+            path,
             status,
-            details: envelope.error.details,
-        };
-        tracing::debug!(path, status, code = %failure.code, "Farwing API request failed");
+            code = %failure.code,
+            reason = ?failure.reason,
+            message = %failure.message,
+            "Farwing API request failed"
+        );
         return Err(failure.into());
     }
     if !(200..300).contains(&status) {
@@ -1651,12 +1723,7 @@ fn decode<T: DeserializeOwned>(path: &str, status: u16, body: &[u8]) -> Result<T
 
 fn failure_from(status: u16, body: &[u8]) -> ApiFailure {
     if let Ok(envelope) = serde_json::from_slice::<farwing_protocol::ErrorEnvelope>(body) {
-        return ApiFailure {
-            code: envelope.error.code,
-            message: sanitize_message(&envelope.error.message),
-            status,
-            details: envelope.error.details,
-        };
+        return ApiFailure::from_body(envelope.error, status);
     }
     let code = match status {
         400 => ErrorCode::BadRequest,
@@ -1671,11 +1738,10 @@ fn failure_from(status: u16, body: &[u8]) -> ApiFailure {
         502..=504 => ErrorCode::Unavailable,
         _ => ErrorCode::Internal,
     };
+    tracing::debug!(status, code = %code, "Farwing API answered without an error body");
     ApiFailure {
-        code,
-        message: format!("HTTP {status}"),
         status,
-        details: serde_json::Value::Null,
+        ..ApiFailure::new(code, format!("HTTP {status}"))
     }
 }
 
@@ -1688,10 +1754,12 @@ fn sanitize_message(message: &str) -> String {
 }
 
 fn sanitize_assist(error: anyhow::Error) -> anyhow::Error {
-    // Never surface server text for assistance challenges in the UI.
+    // Never surface server text for assistance challenges: `Display` shows
+    // only the code's and reason's text, and the message is dropped for
+    // whatever still reads it (logged by `decode`).
     match error.downcast::<ApiFailure>() {
         Ok(mut failure) => {
-            failure.message = "连接请求失败".into();
+            failure.message.clear();
             failure.into()
         }
         Err(error) => error,
@@ -1709,6 +1777,16 @@ mod tests {
         let failure = error.downcast_ref::<ApiFailure>().unwrap();
         assert_eq!(failure.code, ErrorCode::AssistCodeRequired);
         assert_eq!(failure.details["mode"], "password");
+        assert_eq!(failure.reason, None);
+        let body = br#"{"error":{"code":"forbidden","message":"two-step verification required","details":{"reason":"totp_required"}}}"#;
+        let error = decode::<IgnoredAny>("/x", 403, body).unwrap_err();
+        let failure = error.downcast_ref::<ApiFailure>().unwrap();
+        assert_eq!(failure.reason.as_deref(), Some("totp_required"));
+        // Shown in the interface language, never the server's message.
+        let shown = failure.to_string();
+        let texts = [crate::i18n::Language::ZhCn, crate::i18n::Language::En]
+            .map(|l| crate::i18n::messages(l).errors.totp_required);
+        assert!(texts.contains(&shown.as_str()), "{shown}");
         let unknown = decode::<IgnoredAny>("/x", 401, b"").unwrap_err();
         assert!(unknown.downcast_ref::<ApiFailure>().unwrap().invalid_saved_credentials());
         let device: DeviceInfo = serde_json::from_str(

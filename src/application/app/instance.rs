@@ -44,7 +44,8 @@ impl Drop for Instance {
 
 fn acquire_named(name: PCWSTR) -> Result<Option<Instance>> {
     // Object lifetime is the reservation; no thread ownership or abandoned lock remains.
-    let handle = unsafe { CreateMutexW(None, false, name) }.context("创建程序实例保护失败")?;
+    let handle =
+        unsafe { CreateMutexW(None, false, name) }.context(crate::i18n::t().app.instance_lock_failed)?;
     let exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
     let instance = Instance(handle);
     if exists {
@@ -75,7 +76,10 @@ fn acquire_with_activation(activate: bool) -> Result<Option<Instance>> {
             }
             return result;
         }
-        Err(error) => format!("无法启动 {}：{error:#}", product::display_name()),
+        Err(error) => (crate::i18n::t().app.cant_start)(
+            &product::display_name(),
+            &format!("{error:#}"),
+        ),
     };
     let message: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
     let title = product::wide(&product::display_name());
@@ -91,7 +95,7 @@ fn acquire_with_activation(activate: bool) -> Result<Option<Instance>> {
 }
 
 pub(crate) fn register_window(hwnd: HWND) -> Result<()> {
-    anyhow::ensure!(show_message() != 0, "注册控制中心恢复消息失败");
+    anyhow::ensure!(show_message() != 0, crate::i18n::t().app.register_restore_failed);
     unsafe {
         SetWindowSubclass(hwnd, Some(window_message), SHOW_SUBCLASS, 0).ok()?;
     }
@@ -102,7 +106,7 @@ pub(crate) fn register_window(hwnd: HWND) -> Result<()> {
             Some(HANDLE(hwnd.0)),
         )
     }
-    .context("标记控制中心窗口失败");
+    .context(crate::i18n::t().app.mark_window_failed);
     if result.is_err() {
         unsafe {
             let _ = RemoveWindowSubclass(hwnd, Some(window_message), SHOW_SUBCLASS);
@@ -192,7 +196,7 @@ fn activate_existing() -> Result<()> {
                 let _ = AllowSetForegroundWindow(pid);
             }
             let message = show_message();
-            anyhow::ensure!(message != 0, "注册控制中心恢复消息失败");
+            anyhow::ensure!(message != 0, crate::i18n::t().app.register_restore_failed);
             PostMessageW(Some(hwnd), message, WPARAM(0), LPARAM(0))?;
         }
     }
@@ -206,10 +210,10 @@ fn exit_message() -> u32 {
     })
 }
 pub(crate) fn reserve_installer() -> Result<Instance> {
-    acquire_named(INSTALLER.pcwstr())?.context("已有安装或卸载窗口")
+    acquire_named(INSTALLER.pcwstr())?.context(crate::i18n::t().app.installer_open)
 }
 pub(crate) fn reserve_update() -> Result<Instance> {
-    acquire_named(UPDATING.pcwstr())?.context("已有程序更新正在进行")
+    acquire_named(UPDATING.pcwstr())?.context(crate::i18n::t().app.update_in_progress)
 }
 pub(crate) struct Running {
     window: HWND,
@@ -270,15 +274,15 @@ fn running_image(expected: &std::path::Path) -> Result<Option<Running>> {
         }
         anyhow::ensure!(
             process::session(pid)? == session && vault::sid(pid)? == sid,
-            "运行版本不属于当前 Windows 用户会话"
+            crate::i18n::t().app.other_session
         );
-        anyhow::ensure!(found.is_none(), "检测到多个控制中心");
+        anyhow::ensure!(found.is_none(), crate::i18n::t().app.several_control_centers);
         // Pin the process handle and verify the HWND still belongs to it.
         let mut current = 0;
         unsafe {
             GetWindowThreadProcessId(window, Some(&mut current));
         }
-        anyhow::ensure!(current == pid, "运行程序已变化");
+        anyhow::ensure!(current == pid, crate::i18n::t().app.program_changed);
         found = Some(Running {
             window,
             process: pinned,
@@ -288,9 +292,9 @@ fn running_image(expected: &std::path::Path) -> Result<Option<Running>> {
 }
 pub(crate) fn deliver_notification(uri: &str) -> Result<()> {
     use windows::Win32::{System::DataExchange::COPYDATASTRUCT, UI::WindowsAndMessaging::*};
-    anyhow::ensure!(uri.len() <= 256, "通知参数过长");
-    let running =
-        running_image(&std::env::current_exe()?)?.context("通知已过期或控制中心已退出")?;
+    anyhow::ensure!(uri.len() <= 256, crate::i18n::t().app.notification_too_long);
+    let running = running_image(&std::env::current_exe()?)?
+        .context(crate::i18n::t().app.notification_expired)?;
     // Protocol activation carries the user's foreground grant to the existing UI.
     let mut pid = 0;
     unsafe {
@@ -318,7 +322,7 @@ pub(crate) fn deliver_notification(uri: &str) -> Result<()> {
     };
     anyhow::ensure!(
         result.0 != 0 && accepted == 1,
-        "通知已失效或控制中心不可用"
+        crate::i18n::t().app.notification_invalid
     );
     Ok(())
 }
@@ -333,13 +337,13 @@ impl Running {
         if !unsafe { IsWindow(Some(self.window)) }.as_bool() {
             anyhow::ensure!(
                 unsafe { WaitForSingleObject(self.process.0, 45_000) } == WAIT_OBJECT_0,
-                "等待旧版本退出超时"
+                crate::i18n::t().app.old_version_exit_timeout
             );
             return Ok(());
         }
         let mut reply = 0usize;
         let message = exit_message();
-        anyhow::ensure!(message != 0, "注册更新退出消息失败");
+        anyhow::ensure!(message != 0, crate::i18n::t().app.register_update_exit_failed);
         anyhow::ensure!(
             unsafe {
                 SendMessageTimeoutW(
@@ -353,22 +357,22 @@ impl Running {
                 )
             }
             .0 != 0,
-            "旧版本未响应退出请求"
+            crate::i18n::t().app.old_version_not_responding
         );
-        anyhow::ensure!(reply != 2, "旧版本正在处理组件操作");
+        anyhow::ensure!(reply != 2, crate::i18n::t().app.old_version_busy);
         if reply == 0 {
             // Existing builds predate ExitForUpdate. Their current winit owner
             // accepts this registered destroy request and runs the application's
             // on_exit/shutdown cleanup. Never synthesize WM_DESTROY or kill a PID.
             let destroy = unsafe { RegisterWindowMessageW(w!("Winit::DestroyMsg")) };
-            anyhow::ensure!(destroy != 0, "注册窗口退出消息失败");
+            anyhow::ensure!(destroy != 0, crate::i18n::t().app.register_window_exit_failed);
             unsafe {
                 PostMessageW(Some(self.window), destroy, WPARAM(0), LPARAM(0))?;
             }
         }
         anyhow::ensure!(
             unsafe { WaitForSingleObject(self.process.0, 45_000) } == WAIT_OBJECT_0,
-            "等待旧版本退出超时"
+            crate::i18n::t().app.old_version_exit_timeout
         );
         Ok(())
     }

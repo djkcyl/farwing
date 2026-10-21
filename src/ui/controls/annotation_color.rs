@@ -1,4 +1,5 @@
 //! Compact colour editor for annotation; no generic numeric-mode or eyedropper UI.
+use crate::i18n::t;
 use crate::ui::theme;
 use egui::ecolor::HsvaGamma;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Ui, pos2, vec2};
@@ -80,7 +81,7 @@ pub(super) fn show(ui: &mut Ui, rgb: &mut [u8; 3], opacity: &mut u8) {
     ui.spacing_mut().interact_size.y = theme::COMPACT_HEIGHT;
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new("画笔颜色")
+            egui::RichText::new(t().controls.pen_color)
                 .size(theme::COMPACT_TEXT)
                 .strong(),
         );
@@ -139,7 +140,7 @@ pub(super) fn show(ui: &mut Ui, rgb: &mut [u8; 3], opacity: &mut u8) {
         ),
         4.,
     );
-    response.on_hover_text("饱和度与明度");
+    response.on_hover_text(t().controls.saturation_brightness);
 
     let (r, response) = ui.allocate_exact_size(
         vec2(width, theme::ANNOTATION_COLOR_BAR_HEIGHT),
@@ -174,11 +175,11 @@ pub(super) fn show(ui: &mut Ui, rgb: &mut [u8; 3], opacity: &mut u8) {
         pos2(r.left() + editor.hsv.h * r.width(), r.center().y),
         4.,
     );
-    response.on_hover_text("色相");
+    response.on_hover_text(t().controls.hue);
 
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new("不透明度")
+            egui::RichText::new(t().controls.opacity)
                 .size(theme::SMALL)
                 .color(theme::MUTED),
         );
@@ -257,9 +258,11 @@ pub(super) fn show(ui: &mut Ui, rgb: &mut [u8; 3], opacity: &mut u8) {
     crate::ui::controls::observe_notice(
         ui.ctx(),
         "annotation-color-error",
-        "颜色格式无效",
+        t().controls.invalid_color,
         crate::ui::controls::DialogIcon::Error,
-        editor.invalid_hex.then_some("应为六位十六进制"),
+        editor
+            .invalid_hex
+            .then_some(t().controls.hex_color_expected),
     );
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.;

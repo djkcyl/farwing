@@ -29,8 +29,12 @@ pub(crate) struct TurnResponse {
 /// Why a take is refused while `holder` (a nickname) controls.
 pub(crate) fn held_by(holder: &str) -> String {
     let holder = holder.trim();
-    let holder = if holder.is_empty() { "另一位参与者" } else { holder };
-    format!("{holder} 正在控制")
+    let holder = if holder.is_empty() {
+        t().features.stream_another_participant
+    } else {
+        holder
+    };
+    (t().features.stream_held_by)(holder)
 }
 
 impl StreamControlHandle {
@@ -84,7 +88,7 @@ impl StreamControlHandle {
         tracing::info!(automatic, message = %response.message, "control token refused");
         let notice = (!automatic).then(|| {
             if response.message.is_empty() {
-                "被控端未允许本机控制".to_owned()
+                t().features.stream_control_refused.to_owned()
             } else {
                 response.message
             }
@@ -102,7 +106,8 @@ impl StreamControlHandle {
             return false;
         }
         state.turn_request = None;
-        let notice = (!automatic).then(|| "未能向被控端请求键鼠控制权".to_owned());
+        let notice =
+            (!automatic).then(|| t().features.stream_control_request_failed.to_owned());
         self.leave_control_locked(state, notice);
         true
     }
@@ -114,7 +119,10 @@ impl StreamControlHandle {
             // Our take is still on its way; the list predates it.
             return;
         }
-        self.leave_control_locked(state, Some("被控端已收回键鼠控制权".to_owned()));
+        self.leave_control_locked(
+            state,
+            Some(t().features.stream_control_withdrawn.to_owned()),
+        );
     }
 
     fn leave_control_locked(&self, state: &mut StreamControlState, notice: Option<String>) {

@@ -68,7 +68,7 @@ impl StreamControlHandle {
         let mut s = lock(&self.shared);
         ensure_ready(&s)?;
         if !s.annotation.owners.contains(&owner) {
-            bail!("批注窗口已关闭");
+            bail!("{}", t().features.annotation_window_closed);
         }
         self.set_board_locked(&mut s, screen, color)
     }
@@ -80,16 +80,16 @@ impl StreamControlHandle {
         color: Option<[u8; 3]>,
     ) -> Result<()> {
         if !s.annotation.enabled || s.annotation.toggling() || s.annotation.uncertain {
-            bail!("批注尚未就绪");
+            bail!("{}", t().features.annotation_not_ready);
         }
         if s.annotation.busy() {
-            bail!("批注操作进行中");
+            bail!("{}", t().features.annotation_busy);
         }
         let display = s
             .screens
             .iter()
             .find(|v| v.id == screen && screen >= 0)
-            .ok_or_else(|| anyhow!("批注屏幕已变化"))?;
+            .ok_or_else(|| anyhow!("{}", t().features.annotation_screen_changed))?;
         let metrics = Metrics::from_display(display);
         let wanted = color.map(|rgb| u32::from_be_bytes([255, rgb[0], rgb[1], rgb[2]]));
         let old = s.annotation.boards.get(&screen);
@@ -117,7 +117,7 @@ impl StreamControlHandle {
             }
             return Ok(());
         }
-        bail!("对端批注尚未就绪")
+        bail!("{}", t().features.annotation_remote_not_ready)
     }
 
     pub(super) fn refresh_board(&self, s: &mut StreamControlState) {

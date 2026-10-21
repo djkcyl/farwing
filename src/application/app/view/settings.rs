@@ -1,10 +1,12 @@
 //! Settings: one page, categories on its left.
 use super::*;
+use crate::i18n::t;
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) enum SettingsTab {
     #[default]
     Account,
+    Language,
     Host,
     Controller,
     Network,
@@ -17,31 +19,44 @@ pub(super) enum SettingsTab {
 }
 
 impl SettingsTab {
-    const GROUPS: [(&'static str, &'static [Self]); 4] = [
-        ("常规", &[Self::Account]),
-        ("远程控制", &[Self::Host, Self::Controller, Self::Network]),
-        ("扩展", &[Self::Shortcuts, Self::Plugins]),
-        ("系统", &[Self::Service, Self::Diagnostics, Self::Logs, Self::About]),
-    ];
+    /// The navigation groups, titled in the current language.
+    fn groups() -> [(&'static str, &'static [Self]); 4] {
+        let text = &t().settings;
+        [
+            (text.group_general, &[Self::Account, Self::Language]),
+            (
+                text.group_remote,
+                &[Self::Host, Self::Controller, Self::Network],
+            ),
+            (text.group_extensions, &[Self::Shortcuts, Self::Plugins]),
+            (
+                text.group_system,
+                &[Self::Service, Self::Diagnostics, Self::Logs, Self::About],
+            ),
+        ]
+    }
 
     fn label(self) -> &'static str {
+        let text = &t().settings;
         match self {
-            Self::Account => "账号与服务器",
-            Self::Host => "被控设置",
-            Self::Controller => "连接其他设备",
-            Self::Network => "网络",
-            Self::Shortcuts => "快捷键",
-            Self::Plugins => "插件",
-            Self::Service => "后台服务与驱动",
-            Self::Diagnostics => "本机诊断",
-            Self::Logs => "日志",
-            Self::About => "关于",
+            Self::Account => text.tab_account,
+            Self::Language => text.tab_language,
+            Self::Host => text.tab_host,
+            Self::Controller => text.tab_controller,
+            Self::Network => text.tab_network,
+            Self::Shortcuts => text.tab_shortcuts,
+            Self::Plugins => text.tab_plugins,
+            Self::Service => text.tab_service,
+            Self::Diagnostics => text.tab_diagnostics,
+            Self::Logs => text.tab_logs,
+            Self::About => text.tab_about,
         }
     }
 
     fn icon(self) -> Icon {
         match self {
             Self::Account => Icon::Friends,
+            Self::Language => Icon::Settings,
             Self::Host => Icon::Monitor,
             Self::Controller => Icon::Assist,
             Self::Network => Icon::Refresh,
@@ -70,10 +85,10 @@ impl DeviceCenterApp {
                 .max_rect(nav)
                 .layout(egui::Layout::top_down(Align::Min)),
             |ui| {
-                ui.label(RichText::new("设置").size(theme::TITLE).strong());
+                ui.label(RichText::new(t().common.settings).size(theme::TITLE).strong());
                 ui.add_space(14.0);
                 ui.spacing_mut().item_spacing.y = 4.0;
-                for (group, tabs) in SettingsTab::GROUPS {
+                for (group, tabs) in SettingsTab::groups() {
                     ui.label(RichText::new(group).small().color(MUTED));
                     for tab in tabs {
                         if nav_item(ui, tab.icon(), tab.label(), None, false, current == *tab) {
@@ -95,7 +110,7 @@ impl DeviceCenterApp {
         let tab = self.center_ui.settings_tab;
         ui.scope_builder(
             egui::UiBuilder::new()
-                .id_salt(("settings-content", tab.label()))
+                .id_salt(("settings-content", tab))
                 .max_rect(content)
                 .layout(egui::Layout::top_down(Align::Min)),
             |ui| {
@@ -107,6 +122,7 @@ impl DeviceCenterApp {
                         crate::ui::controls::page_scroll("settings-account")
                             .show(ui, |ui| self.account_settings(ui));
                     }
+                    SettingsTab::Language => self.language_settings(ui),
                     SettingsTab::Host => {
                         crate::ui::controls::page_scroll("settings-host").show(ui, |ui| {
                             self.host_settings(ui);
@@ -146,32 +162,33 @@ impl DeviceCenterApp {
             self.signed_out_settings(ui);
             return;
         }
-        section(ui, "账号");
+        let text = &t().settings;
+        section(ui, text.section_account);
         let account = if self.account_name.trim().is_empty() {
-            "已登录".to_owned()
+            text.signed_in.to_owned()
         } else {
             self.account_name.clone()
         };
         let mut logout = false;
         form_row(ui, &account, "", |ui| {
             logout = ui
-                .add_enabled(!self.logout_pending, crate::ui::controls::secondary("退出登录"))
+                .add_enabled(!self.logout_pending, crate::ui::controls::secondary(t().common.sign_out))
                 .clicked();
         });
         if logout {
             self.logout();
         }
 
-        section(ui, "服务器");
+        section(ui, text.section_server);
         let server = crate::account::server::ServerConfig::load().ok().flatten();
         let mut change = false;
         form_row(
             ui,
-            server.as_ref().map_or("未设置", |server| server.origin()),
+            server.as_ref().map_or(text.not_set, |server| server.origin()),
             "",
             |ui| {
                 change = ui
-                    .add_enabled(!self.logout_pending, crate::ui::controls::secondary("更换服务器…"))
+                    .add_enabled(!self.logout_pending, crate::ui::controls::secondary(text.change_server))
                     .clicked();
             },
         );
@@ -180,15 +197,15 @@ impl DeviceCenterApp {
         }
         let certificate = match &server {
             Some(server) => match server.pinned_fingerprint() {
-                Some(pin) => format!("已固定证书指纹 {pin}"),
-                None if server.has_custom_ca() => "使用自定义 CA 验证".to_owned(),
-                None => "由 Windows 信任的证书验证".to_owned(),
+                Some(pin) => (text.certificate_pinned)(&pin),
+                None if server.has_custom_ca() => text.certificate_custom_ca.to_owned(),
+                None => text.certificate_windows.to_owned(),
             },
             None => "—".to_owned(),
         };
-        form_row(ui, "证书", &certificate, |_| {});
+        form_row(ui, text.certificate, &certificate, |_| {});
 
-        section(ui, "本机");
+        section(ui, text.section_this_device);
         let current = self.devices.as_ref().map(|list| list.current_device.clone());
         match current {
             Some(device) => {
@@ -201,14 +218,14 @@ impl DeviceCenterApp {
                         crate::account::api::device_id_text(&device.device_id)
                     ),
                     |ui| {
-                        details = ui.add(crate::ui::controls::secondary("设备详情")).clicked();
+                        details = ui.add(crate::ui::controls::secondary(text.device_details)).clicked();
                     },
                 );
                 if details {
                     self.open_details(device.device_id.clone());
                 }
             }
-            None => form_row(ui, "正在读取本机信息…", "", |_| {}),
+            None => form_row(ui, text.reading_this_device, "", |_| {}),
         }
     }
 
@@ -216,29 +233,30 @@ impl DeviceCenterApp {
     /// server, and this device.
     fn signed_out_settings(&mut self, ui: &mut egui::Ui) {
         use super::super::login_form::LoginStep;
-        section(ui, "账号");
+        let text = &t().settings;
+        section(ui, text.section_account);
         let label = self.sign_in_label();
         let mut sign_in = false;
-        form_row(ui, "未登录", "", |ui| {
+        form_row(ui, t().common.signed_out, "", |ui| {
             sign_in = ui.add(primary(label)).clicked();
         });
         if sign_in {
             self.sign_in();
         }
 
-        section(ui, "服务器");
+        section(ui, text.section_server);
         let server = self.saved_server();
         let mut change = false;
         form_row(
             ui,
-            server.as_deref().unwrap_or("未设置"),
+            server.as_deref().unwrap_or(text.not_set),
             "",
             |ui| {
                 change = ui
                     .add(crate::ui::controls::secondary(if server.is_some() {
-                        "更换服务器…"
+                        text.change_server
                     } else {
-                        "设置服务器…"
+                        text.set_server
                     }))
                     .clicked();
             },
@@ -247,20 +265,21 @@ impl DeviceCenterApp {
             self.open_sign_in(LoginStep::Server);
         }
 
-        section(ui, "本机");
+        section(ui, text.section_this_device);
         match self.local_identity() {
             Some((name, id)) => form_row(ui, &name, &format!("ID {id}"), |_| {}),
-            None => form_row(ui, "本机身份暂不可用", "", |_| {}),
+            None => form_row(ui, text.identity_unavailable, "", |_| {}),
         }
     }
 
     /// How this device connects to others.
     fn controller_settings(&mut self, ui: &mut egui::Ui) {
         let original_media = self.media;
+        let text = &t().settings;
         crate::ui::controls::page_scroll("settings-controller").show(ui, |ui| {
             form_row(
                 ui,
-                "我的光标颜色",
+                text.cursor_color,
                 "",
                 |ui| {
                     let swatch = |ui: &mut egui::Ui, color: u32, selected: bool| {
@@ -283,7 +302,7 @@ impl DeviceCenterApp {
                     };
                     ui.horizontal(|ui| {
                         if ui
-                            .selectable_label(self.media.pointer_color == 0, "自动")
+                            .selectable_label(self.media.pointer_color == 0, text.automatic)
                             .clicked()
                         {
                             self.media.pointer_color = 0;
@@ -296,7 +315,7 @@ impl DeviceCenterApp {
                     });
                 },
             );
-            form_row(ui, "串流帧率", "", |ui| {
+            form_row(ui, text.frame_rate, "", |ui| {
                 egui::ComboBox::from_id_salt("center-fps")
                     .width(238.0)
                     .selected_text(self.media.frame_rate.label(self.local_display))
@@ -312,7 +331,7 @@ impl DeviceCenterApp {
             });
             form_row(
                 ui,
-                "编码格式",
+                text.codec,
                 "",
                 |ui| {
                     if self.media.codec.restricted() {
@@ -331,7 +350,7 @@ impl DeviceCenterApp {
             );
             form_row(
                 ui,
-                "解码器",
+                text.decoder,
                 "",
                 |ui| {
                     if self.media.decoder.mode.hardware() {
@@ -342,7 +361,7 @@ impl DeviceCenterApp {
                             false,
                         );
                     } else {
-                        ui.label("仅软件解码");
+                        ui.label(text.software_decoding_only);
                     }
                 },
             );
@@ -356,7 +375,7 @@ impl DeviceCenterApp {
             egui::CollapsingHeader::new(restriction)
                 .id_salt("controller-codec-limits")
                 .show(ui, |ui| {
-                    form_row(ui, "解码方式", "", |ui| {
+                    form_row(ui, text.decoding_mode, "", |ui| {
                         egui::ComboBox::from_id_salt("center-decoder")
                             .width(238.)
                             .selected_text(self.media.decoder.mode.label())
@@ -370,17 +389,17 @@ impl DeviceCenterApp {
                                 }
                             });
                     });
-                    form_row(ui, "格式限制", "", |ui| {
+                    form_row(ui, text.codec_restriction, "", |ui| {
                         egui::ComboBox::from_id_salt("center-codec-only")
                             .width(238.)
                             .selected_text(if self.media.codec.restricted() {
                                 self.media.codec.label()
                             } else {
-                                "不限制"
+                                text.unrestricted
                             })
                             .show_ui(ui, |ui| {
                                 if ui
-                                    .selectable_label(!self.media.codec.restricted(), "不限制")
+                                    .selectable_label(!self.media.codec.restricted(), text.unrestricted)
                                     .clicked()
                                 {
                                     self.media.codec = CodecPreference::Auto;
@@ -397,7 +416,7 @@ impl DeviceCenterApp {
                 });
             form_row(
                 ui,
-                "连接线路",
+                text.route,
                 "",
                 |ui| {
                     egui::ComboBox::from_id_salt("center-route")
@@ -422,20 +441,21 @@ impl DeviceCenterApp {
         if self.media != original_media {
             if let Err(error) = crate::media::preferences::save(self.media) {
                 self.media = original_media;
-                self.status = StatusMessage::error(format!("保存编解码设置失败：{error:#}"));
+                self.status =
+                    StatusMessage::error((text.media_save_failed)(&format!("{error:#}")));
             }
         }
     }
 
     /// NAT traversal, for both roles.
     fn network_settings(&mut self, ui: &mut egui::Ui) {
-        section(ui, "打洞与端口映射");
+        section(ui, t().settings.section_traversal);
         self.edit_network(ui, Self::traversal_rows);
     }
 
-    /// How others reach this device directly (Settings → 被控设置).
+    /// How others reach this device directly (Settings → Host settings).
     pub(super) fn direct_settings(&mut self, ui: &mut egui::Ui) {
-        section(ui, "直连与局域网");
+        section(ui, t().settings.section_direct);
         self.edit_network(ui, Self::direct_rows);
     }
 
@@ -471,14 +491,14 @@ impl DeviceCenterApp {
                         ui.ctx(),
                         host.as_ref(),
                         crate::transport::direct::managed::Action::Network(edited),
-                        "已保存",
+                        t().common.saved,
                     );
                 }
                 Ok(()) => {
                     if (edited.serverless, edited.direct, edited.direct_port, edited.lan_discovery)
                         != (network.serverless, network.direct, network.direct_port, network.lan_discovery)
                     {
-                        self.status = StatusMessage::info("已生效");
+                        self.status = StatusMessage::info(t().settings.applied);
                     }
                 }
                 Err(error) => self.status = StatusMessage::error(format!("{error:#}")),
@@ -487,9 +507,10 @@ impl DeviceCenterApp {
     }
 
     fn traversal_rows(&mut self, ui: &mut egui::Ui, edited: &mut crate::transport::nat::settings::Settings) {
+        let text = &t().settings;
         form_row(
             ui,
-            "激进打洞（对称型 NAT）",
+            text.aggressive_punching,
             "",
             |ui| {
                 crate::ui::controls::switch(ui, &mut edited.aggressive_punching);
@@ -497,7 +518,7 @@ impl DeviceCenterApp {
         );
         form_row(
             ui,
-            "允许 UPnP / NAT-PMP / PCP 端口映射",
+            text.allow_port_mapping,
             "",
             |ui| {
                 crate::ui::controls::switch(ui, &mut edited.port_mapping);
@@ -506,9 +527,10 @@ impl DeviceCenterApp {
     }
 
     fn direct_rows(&mut self, ui: &mut egui::Ui, edited: &mut crate::transport::nat::settings::Settings) {
+        let text = &t().settings;
         form_row(
             ui,
-            "允许直连",
+            text.allow_direct,
             "",
             |ui| {
                 crate::ui::controls::switch(ui, &mut edited.direct);
@@ -516,7 +538,7 @@ impl DeviceCenterApp {
         );
         form_row(
             ui,
-            "直连端口",
+            text.direct_port,
             "TCP / UDP",
             |ui| {
                 ui.add_enabled(
@@ -527,7 +549,7 @@ impl DeviceCenterApp {
         );
         form_row(
             ui,
-            "局域网发现",
+            text.lan_discovery,
             "",
             |ui| {
                 ui.add_enabled_ui(edited.direct, |ui| {
@@ -541,11 +563,54 @@ impl DeviceCenterApp {
         }
         form_row(
             ui,
-            "仅直连（不连接服务器）",
+            text.direct_only,
             "",
             |ui| {
                 crate::ui::controls::switch(ui, &mut edited.serverless);
             },
         );
+    }
+
+    /// The interface language: Windows' or a chosen one. Applies at once.
+    fn language_settings(&mut self, ui: &mut egui::Ui) {
+        use crate::i18n::{Choice, Language};
+        let label = |choice: Choice| match choice {
+            Choice::System => t().settings.language_system,
+            Choice::ZhCn => Language::ZhCn.name(),
+            Choice::En => Language::En.name(),
+        };
+        // The saved choice, read from disk once rather than every frame.
+        let id = egui::Id::new("settings-language-choice");
+        let current = ui
+            .data(|data| data.get_temp::<Choice>(id))
+            .unwrap_or_else(crate::i18n::choice);
+        ui.data_mut(|data| data.insert_temp(id, current));
+        let mut chosen = current;
+        form_row(ui, t().settings.interface_language, "", |ui| {
+            egui::ComboBox::from_id_salt("settings-language")
+                .width(238.0)
+                .selected_text(label(chosen))
+                .show_ui(ui, |ui| {
+                    for choice in [Choice::System, Choice::ZhCn, Choice::En] {
+                        ui.selectable_value(&mut chosen, choice, label(choice));
+                    }
+                });
+        });
+        if chosen == current {
+            return;
+        }
+        match crate::i18n::choose(chosen) {
+            Ok(()) => {
+                ui.data_mut(|data| data.insert_temp(id, chosen));
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(
+                    super::super::window_title(),
+                ));
+                ui.ctx().request_repaint();
+            }
+            Err(error) => {
+                self.status =
+                    StatusMessage::error((t().settings.language_failed)(&format!("{error:#}")));
+            }
+        }
     }
 }

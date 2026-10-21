@@ -1,10 +1,12 @@
 // One account: role, status, password, two-step verification, devices,
 // logins, friends and what they share.
 import { useState } from 'react';
+import type { Messages } from '../../i18n';
+import { useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
 import { byName } from '../../lib/devices';
 import { useAuth } from '../../lib/auth';
-import { ago, capText, connectIdText, dateTime, deviceIdText, platformText } from '../../lib/format';
+import { ago, capText, connectIdText, dateTime, deviceIdText, listText, platformText } from '../../lib/format';
 import { Link, navigate } from '../../lib/router';
 import type { AdminFriend, Grants, UserDetail as Detail } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
@@ -28,36 +30,38 @@ import {
 import { Dialog, useOverlay } from '../../ui/overlay';
 import { OnceDialog } from './Users';
 
-function grantsText(g: Grants, devices: Map<string, string>): string {
+function grantsText(g: Grants, devices: Map<string, string>, m: Messages['admin']['userDetail']): string {
   const parts: string[] = [];
-  parts.push(g.default.length ? `默认：${g.default.map(capText).join('、')}` : '默认不共享');
+  parts.push(g.default.length ? m.defaultCaps(listText(g.default.map(capText))) : m.defaultNone);
   const specific = Object.entries(g.devices);
   if (specific.length) {
     parts.push(
-      ...specific.map(
-        ([id, caps]) =>
-          `${devices.get(id) ?? deviceIdText(id)}：${caps.length ? caps.map(capText).join('、') : '不共享'}`,
+      ...specific.map(([id, caps]) =>
+        m.deviceCaps(devices.get(id) ?? deviceIdText(id), caps.length ? listText(caps.map(capText)) : m.notShared),
       ),
     );
   }
-  return parts.join('；');
+  return parts.join(m.grantsSeparator);
 }
 
 function FriendRow({ f, devices }: { f: AdminFriend; devices: Map<string, string> }) {
+  const m = useT().admin.userDetail;
   return (
     <tr>
       <td>
         <div className="cell-main">{f.nickname || f.username}</div>
         <div className="cell-sub">{f.username}</div>
       </td>
-      <td className="small">{grantsText(f.grants_given, devices)}</td>
-      <td className="small">{grantsText(f.grants_received, new Map())}</td>
+      <td className="small">{grantsText(f.grants_given, devices, m)}</td>
+      <td className="small">{grantsText(f.grants_received, new Map(), m)}</td>
       <td className="nowrap muted">{dateTime(f.since)}</td>
     </tr>
   );
 }
 
 export default function UserDetail({ params }: { params: Record<string, string> }) {
+  const t = useT();
+  const m = t.admin.userDetail;
   const { me } = useAuth();
   const { confirm, toast } = useOverlay();
   const { data, error, reload } = useApi<Detail>(`/api/v2/admin/users/${params.id}`);
@@ -87,14 +91,14 @@ export default function UserDetail({ params }: { params: Record<string, string> 
       <PageHeader
         back={
           <Link to="/admin/users" className="back">
-            <Icon name="back" size={14} /> 账号
+            <Icon name="back" size={14} /> {t.nav.users}
           </Link>
         }
         title={
           <span className="row gap-sm">
             {a.nickname || a.username}
-            {a.role === 'admin' && <Badge tone="blue">管理员</Badge>}
-            {a.disabled && <Badge tone="red">已禁用</Badge>}
+            {a.role === 'admin' && <Badge tone="blue">{t.common.admin}</Badge>}
+            {a.disabled && <Badge tone="red">{m.disabled}</Badge>}
           </span>
         }
         subtitle={a.username}
@@ -107,16 +111,16 @@ export default function UserDetail({ params }: { params: Record<string, string> 
                 setRenaming(true);
               }}
             >
-              修改昵称
+              {m.editNickname}
             </Button>
             <Button
               icon="key"
               onClick={async () => {
                 if (
                   await confirm({
-                    title: '重置密码',
-                    message: `${a.username} 的所有登录将被注销${self ? '，包括当前登录' : ''}。`,
-                    confirm: '重置',
+                    title: m.resetPasswordTitle,
+                    message: m.resetPasswordMessage(a.username, self),
+                    confirm: m.reset,
                     danger: true,
                   })
                 ) {
@@ -134,7 +138,7 @@ export default function UserDetail({ params }: { params: Record<string, string> 
                 }
               }}
             >
-              重置密码
+              {m.resetPassword}
             </Button>
             {!self && (
               <Button
@@ -142,15 +146,15 @@ export default function UserDetail({ params }: { params: Record<string, string> 
                   const make = a.role !== 'admin';
                   if (
                     await confirm({
-                      title: make ? '设为管理员' : '取消管理员',
-                      message: make ? `${a.username} 将成为管理员。` : `${a.username} 将不再是管理员。`,
-                      confirm: make ? '设为管理员' : '取消管理员',
+                      title: make ? m.makeAdminTitle : m.removeAdminTitle,
+                      message: make ? m.makeAdminMessage(a.username) : m.removeAdminMessage(a.username),
+                      confirm: make ? m.makeAdmin : m.removeAdmin,
                     })
                   )
-                    await act(() => patch({ admin: make }), make ? '已设为管理员' : '已取消管理员');
+                    await act(() => patch({ admin: make }), make ? m.madeAdmin : m.removedAdmin);
                 }}
               >
-                {a.role === 'admin' ? '取消管理员' : '设为管理员'}
+                {a.role === 'admin' ? m.removeAdmin : m.makeAdmin}
               </Button>
             )}
             {!self && (
@@ -158,20 +162,20 @@ export default function UserDetail({ params }: { params: Record<string, string> 
                 variant={a.disabled ? 'default' : 'danger'}
                 onClick={async () => {
                   if (a.disabled) {
-                    await act(() => patch({ disabled: false }), '已启用');
+                    await act(() => patch({ disabled: false }), m.enabled);
                   } else if (
                     await confirm({
-                      title: '禁用账号',
-                      message: `${a.username} 的登录与连接将立即结束。`,
-                      confirm: '禁用',
+                      title: m.disableTitle,
+                      message: m.disableMessage(a.username),
+                      confirm: m.disable,
                       danger: true,
                     })
                   ) {
-                    await act(() => patch({ disabled: true }), '已禁用');
+                    await act(() => patch({ disabled: true }), m.disabled);
                   }
                 }}
               >
-                {a.disabled ? '启用' : '禁用'}
+                {a.disabled ? m.enable : m.disable}
               </Button>
             )}
           </>
@@ -179,45 +183,45 @@ export default function UserDetail({ params }: { params: Record<string, string> 
       />
 
       <div className="grid grid-2">
-        <Card title="账号">
+        <Card title={m.account}>
           <Rows>
-            <Row label="用户名">{a.username}</Row>
-            <Row label="昵称">{a.nickname || <span className="muted">未设置</span>}</Row>
-            <Row label="用户 ID">
+            <Row label={m.username}>{a.username}</Row>
+            <Row label={m.nickname}>{a.nickname || <span className="muted">{t.common.notSet}</span>}</Row>
+            <Row label={m.userId}>
               <Copy text={a.id} display={<span className="small">{a.id}</span>} />
             </Row>
-            <Row label="创建时间">{dateTime(a.created_at)}</Row>
-            <Row label="最近在线">{a.last_seen_at ? ago(a.last_seen_at) : '从未'}</Row>
-            <Row label="二次验证">
+            <Row label={m.createdAt}>{dateTime(a.created_at)}</Row>
+            <Row label={t.admin.col.lastSeen}>{a.last_seen_at ? ago(a.last_seen_at) : t.format.never}</Row>
+            <Row label={m.totp}>
               {a.totp ? (
                 <span className="row gap-sm">
-                  <Badge tone="green">已开启</Badge>
+                  <Badge tone="green">{t.common.enabled}</Badge>
                   <Button
                     size="sm"
                     onClick={async () => {
                       if (
                         await confirm({
-                          title: '重置二次验证',
-                          message: `${a.username} 的二次验证将被关闭。`,
-                          confirm: '重置',
+                          title: m.resetTotpTitle,
+                          message: m.resetTotpMessage(a.username),
+                          confirm: m.reset,
                           danger: true,
                         })
                       )
-                        await act(() => call('POST', `/api/v2/admin/users/${a.id}/totp/reset`, {}), '已重置二次验证');
+                        await act(() => call('POST', `/api/v2/admin/users/${a.id}/totp/reset`, {}), m.totpReset);
                     }}
                   >
-                    重置
+                    {m.reset}
                   </Button>
                 </span>
               ) : (
-                <span className="muted">未开启</span>
+                <span className="muted">{t.common.notEnabled}</span>
               )}
             </Row>
           </Rows>
         </Card>
-        <Card title={`登录（${data.logins.length}）`} pad={false}>
+        <Card title={m.logins(data.logins.length)} pad={false}>
           {data.logins.length === 0 ? (
-            <Empty icon="lock" title="暂无登录" />
+            <Empty icon="lock" title={m.noLogins} />
           ) : (
             <div className="list">
               {data.logins.map((l) => (
@@ -225,10 +229,10 @@ export default function UserDetail({ params }: { params: Record<string, string> 
                   <div className="grow">
                     <div className="ellipsis">{l.alias}</div>
                     <div className="small muted">
-                      {platformText(l.platform)} · 登录于 {dateTime(l.created_at)}
+                      {platformText(l.platform)} · {m.signedInAt(dateTime(l.created_at))}
                     </div>
                   </div>
-                  <span className="small faint nowrap">{ago(l.last_used_at)}使用</span>
+                  <span className="small faint nowrap">{m.lastUsed(ago(l.last_used_at))}</span>
                 </div>
               ))}
             </div>
@@ -236,19 +240,19 @@ export default function UserDetail({ params }: { params: Record<string, string> 
         </Card>
       </div>
 
-      <Card title={`设备（${data.devices.length}）`} pad={false}>
+      <Card title={m.devices(data.devices.length)} pad={false}>
         {data.devices.length === 0 ? (
-          <Empty icon="monitor" title="暂无设备" />
+          <Empty icon="monitor" title={m.noDevices} />
         ) : (
           <div className="table-wrap">
             <table className="table">
               <thead>
                 <tr>
-                  <th>设备</th>
-                  <th>平台</th>
-                  <th>短号</th>
-                  <th>状态</th>
-                  <th>最近在线</th>
+                  <th>{t.admin.col.device}</th>
+                  <th>{t.admin.col.platform}</th>
+                  <th>{t.admin.col.connectId}</th>
+                  <th>{t.admin.col.status}</th>
+                  <th>{t.admin.col.lastSeen}</th>
                   <th />
                 </tr>
               </thead>
@@ -270,18 +274,21 @@ export default function UserDetail({ params }: { params: Record<string, string> 
                     <td className="actions">
                       <IconButton
                         icon="unlink"
-                        label="解绑并注销"
+                        label={t.admin.unbind.label}
                         variant="danger"
                         onClick={async () => {
                           if (
                             await confirm({
-                              title: '解绑设备',
-                              message: `${d.alias} 将从 ${a.username} 的账号移除并退出登录。`,
-                              confirm: '解绑',
+                              title: t.admin.unbind.title,
+                              message: t.admin.unbind.message(d.alias, a.username),
+                              confirm: t.admin.unbind.confirm,
                               danger: true,
                             })
                           )
-                            await act(() => call('DELETE', `/api/v2/admin/devices/${d.device_id}`), '已解绑');
+                            await act(
+                              () => call('DELETE', `/api/v2/admin/devices/${d.device_id}`),
+                              t.admin.unbind.done,
+                            );
                         }}
                       />
                     </td>
@@ -293,18 +300,18 @@ export default function UserDetail({ params }: { params: Record<string, string> 
         )}
       </Card>
 
-      <Card title={`好友与授权（${data.friends.length}）`} pad={false}>
+      <Card title={m.friends(data.friends.length)} pad={false}>
         {data.friends.length === 0 ? (
-          <Empty icon="users" title="暂无好友" />
+          <Empty icon="users" title={m.noFriends} />
         ) : (
           <div className="table-wrap">
             <table className="table">
               <thead>
                 <tr>
-                  <th>好友</th>
-                  <th>共享给对方</th>
-                  <th>对方共享</th>
-                  <th>成为好友</th>
+                  <th>{m.friend}</th>
+                  <th>{m.sharedWith}</th>
+                  <th>{m.sharedBy}</th>
+                  <th>{m.since}</th>
                 </tr>
               </thead>
               <tbody>
@@ -318,7 +325,7 @@ export default function UserDetail({ params }: { params: Record<string, string> 
       </Card>
 
       {!self && (
-        <Card title="删除账号">
+        <Card title={m.deleteAccount}>
           <div className="row gap wrap">
             <Button
               variant="danger"
@@ -326,16 +333,16 @@ export default function UserDetail({ params }: { params: Record<string, string> 
               onClick={async () => {
                 if (
                   await confirm({
-                    title: '删除账号',
-                    message: `将永久删除 ${a.username}。`,
-                    confirm: '删除',
+                    title: m.deleteTitle,
+                    message: m.deleteMessage(a.username),
+                    confirm: t.common.delete,
                     danger: true,
                     typeToConfirm: a.username,
                   })
                 ) {
                   try {
                     await call('DELETE', `/api/v2/admin/users/${a.id}`);
-                    toast(`已删除 ${a.username}`);
+                    toast(m.deleted(a.username));
                     navigate('/admin/users');
                   } catch (err) {
                     toast(errorText(err), 'red');
@@ -343,38 +350,38 @@ export default function UserDetail({ params }: { params: Record<string, string> 
                 }
               }}
             >
-              删除账号
+              {m.deleteAccount}
             </Button>
           </div>
         </Card>
       )}
 
-      <OnceDialog title="密码已重置" open={!!password} onClose={() => setPassword(undefined)}>
-        <p>{a.username} 的新密码：</p>
+      <OnceDialog title={m.passwordReset} open={!!password} onClose={() => setPassword(undefined)}>
+        <p>{m.newPasswordOf(a.username)}</p>
         <div className="secret">
           <Copy text={password ?? ''} />
         </div>
       </OnceDialog>
       <Dialog
         open={renaming}
-        title="修改昵称"
+        title={m.editNickname}
         onClose={() => setRenaming(false)}
         footer={
           <>
-            <Button onClick={() => setRenaming(false)}>取消</Button>
+            <Button onClick={() => setRenaming(false)}>{t.common.cancel}</Button>
             <Button
               variant="primary"
               onClick={async () => {
                 setRenaming(false);
-                await act(() => patch({ nickname }), '已修改昵称');
+                await act(() => patch({ nickname }), m.nicknameChanged);
               }}
             >
-              保存
+              {t.common.save}
             </Button>
           </>
         }
       >
-        <Field label="昵称">
+        <Field label={m.nickname}>
           <Input value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={64} />
         </Field>
       </Dialog>

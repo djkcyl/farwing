@@ -1,5 +1,6 @@
 use super::process::{Runtime, Shared, lock};
 use super::*;
+use crate::i18n::t;
 use std::{
     collections::BTreeMap,
     sync::{Arc, atomic::Ordering},
@@ -56,7 +57,7 @@ impl AnalysisController {
         self.layers.clear();
         self.shared.generation.fetch_add(1, Ordering::AcqRel);
         self.shared.enabled.store(true, Ordering::Release);
-        lock(&self.shared.display).status = "正在加载…".into();
+        lock(&self.shared.display).status = t().common.loading.into();
         match Runtime::start(self.spec.clone(), self.shared.clone()) {
             Ok(runtime) => self.runtime = Some(runtime),
             Err(error) => self.shared.fail(format!("{error:#}")),
@@ -78,7 +79,7 @@ impl AnalysisController {
             if enabled {
                 ui.label(status);
             } else {
-                ui.label("插件已停止").on_hover_text(status);
+                ui.label(t().features.plugin_stopped).on_hover_text(status);
             }
         }
     }
@@ -191,7 +192,10 @@ impl AnalysisController {
                     .collect(),
             );
             if let Some(position) = upload.position {
-                let texture = self.textures.get_mut(&upload.id).context("未知插件纹理")?;
+                let texture = self
+                    .textures
+                    .get_mut(&upload.id)
+                    .context(t().features.plugin_texture_unknown)?;
                 let size = texture.size();
                 ensure!(
                     position[0]
@@ -200,13 +204,18 @@ impl AnalysisController {
                         && position[1]
                             .checked_add(upload.size[1])
                             .is_some_and(|v| v <= size[1]),
-                    "纹理更新越界"
+                    "{}",
+                    t().features.plugin_texture_out_of_bounds
                 );
                 texture.set_partial(position, image, egui::TextureOptions::LINEAR);
             } else if let Some(texture) = self.textures.get_mut(&upload.id) {
                 texture.set(image, egui::TextureOptions::LINEAR);
             } else {
-                ensure!(self.textures.len() < 64, "插件纹理数量超限");
+                ensure!(
+                    self.textures.len() < 64,
+                    "{}",
+                    t().features.plugin_textures_limit
+                );
                 self.textures.insert(
                     upload.id,
                     ctx.load_texture(
@@ -223,7 +232,8 @@ impl AnalysisController {
                 .map(|t| t.size()[0] * t.size()[1])
                 .sum::<usize>()
                 <= 4 * 1024 * 1024,
-            "插件纹理内存超限"
+            "{}",
+            t().features.plugin_texture_memory_limit
         );
         Ok(())
     }

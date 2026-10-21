@@ -77,7 +77,8 @@ pub(crate) async fn send(
             wake.as_mut().enable();
             ensure!(
                 alive() && channel.ready_state() == RTCDataChannelState::Open,
-                "数据通道已断开或传输已取消"
+                "{}",
+                crate::i18n::t().session.data_channel_closed
             );
             if channel.buffered_amount().await + frame.len() <= QUEUE {
                 break;
@@ -91,5 +92,5 @@ pub(crate) async fn send(
         Ok::<_, anyhow::Error>(())
     })
     .await
-    .context("数据通道发送超时")?
+    .context(crate::i18n::t().session.data_channel_send_timeout)?
 }

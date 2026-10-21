@@ -30,13 +30,13 @@ impl StreamControlHandle {
             if !state.features.as_ref().is_some_and(|p| {
                 p.is_windows() && p.supports(crate::account::feature_ability::Feature::Microphone)
             }) {
-                bail!("对端未开放麦克风功能");
+                bail!("{}", t().features.stream_microphone_unavailable);
             }
             if !state.viewing_enabled {
-                bail!("画面未打开");
+                bail!("{}", t().features.stream_viewing_off);
             }
             if !self.microphone.configured() {
-                bail!("对端不接收麦克风音频");
+                bail!("{}", t().features.stream_microphone_not_accepted);
             }
             self.microphone.start()?;
         }
@@ -54,7 +54,7 @@ impl StreamControlHandle {
         if !state.pb_connected || !state.text_channel_open {
             self.microphone.disconnect();
             if enabled {
-                bail!("麦克风控制通道未就绪");
+                bail!("{}", t().features.stream_microphone_channel_not_ready);
             }
             return Ok(());
         }
@@ -75,8 +75,9 @@ impl StreamControlHandle {
             })
             .is_err()
         {
-            self.microphone.send_failed(sequence, "会话已结束");
-            bail!("会话已结束");
+            self.microphone
+                .send_failed(sequence, t().features.stream_session_ended);
+            bail!("{}", t().features.stream_session_ended);
         }
         Ok(())
     }

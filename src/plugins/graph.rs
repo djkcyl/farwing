@@ -1,5 +1,6 @@
 //! Typed persistent graph and compiler. No runtime is started while editing.
 use super::*;
+use crate::i18n::t;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const RAW: &str = "host.video_source.v1";
@@ -137,25 +138,37 @@ impl Catalog {
                 .collect(),
             ..Self::default()
         };
+        // Built-in labels are in the language current when the catalog loads.
+        let text = &t().features;
         for (id, name, inputs, outputs) in [
             (
                 RAW,
-                "原始画面",
+                text.plugin_node_source,
                 vec![],
-                vec![port("frames", "画面", sdk::PortType::Frame, false)],
+                vec![port(
+                    "frames",
+                    text.plugin_port_frames,
+                    sdk::PortType::Frame,
+                    false,
+                )],
             ),
             (
                 VIDEO,
-                "视频输出",
-                vec![port("video", "画面", sdk::PortType::Frame, false)],
+                text.plugin_node_video_output,
+                vec![port(
+                    "video",
+                    text.plugin_port_frames,
+                    sdk::PortType::Frame,
+                    false,
+                )],
                 vec![],
             ),
             (
                 INPUT,
-                "远端输入",
+                text.plugin_node_remote_input,
                 vec![port(
                     "commands",
-                    "输入指令",
+                    text.plugin_port_input_commands,
                     sdk::PortType::InputCommands,
                     true,
                 )],
@@ -163,8 +176,13 @@ impl Catalog {
             ),
             (
                 OVERLAY,
-                "叠加输出",
-                vec![port("layers", "图层", sdk::PortType::Layer, true)],
+                text.plugin_node_overlay_output,
+                vec![port(
+                    "layers",
+                    text.plugin_port_layers,
+                    sdk::PortType::Layer,
+                    true,
+                )],
                 vec![],
             ),
         ] {
@@ -176,13 +194,18 @@ impl Catalog {
                         schema_version: 1,
                         name: name.into(),
                         description: match id {
-                            RAW => "远端解码后的画面",
-                            VIDEO => "输出到观看窗口",
-                            INPUT => "输出到远端，需开启控制",
-                            _ => "叠加到观看画面",
+                            RAW => text.plugin_node_source_description,
+                            VIDEO => text.plugin_node_video_output_description,
+                            INPUT => text.plugin_node_remote_input_description,
+                            _ => text.plugin_node_overlay_output_description,
                         }
                         .into(),
-                        category: if id == RAW { "输入源" } else { "输出端" }.into(),
+                        category: if id == RAW {
+                            text.plugin_category_sources
+                        } else {
+                            text.plugin_category_outputs
+                        }
+                        .into(),
                         layer_renderer: None,
                         dependencies: Vec::new(),
                         config: serde_json::json!({}),
@@ -201,14 +224,22 @@ impl Catalog {
             for definition in &manifest.nodes {
                 let mut definition = definition.clone();
                 let (category, description) = match definition.implementation {
-                    sdk::NodeImplementation::VideoShader => ("图像处理", "处理画面"),
-                    sdk::NodeImplementation::FrameAnalysis => ("画面分析", "分析画面"),
-                    sdk::NodeImplementation::Overlay | sdk::NodeImplementation::SceneSource => {
-                        ("绘制", "生成叠加图层")
-                    }
-                    sdk::NodeImplementation::DetectionControl => {
-                        ("输入控制", "检测结果转为输入指令")
-                    }
+                    sdk::NodeImplementation::VideoShader => (
+                        text.plugin_category_image_processing,
+                        text.plugin_description_image_processing,
+                    ),
+                    sdk::NodeImplementation::FrameAnalysis => (
+                        text.plugin_category_video_analysis,
+                        text.plugin_description_video_analysis,
+                    ),
+                    sdk::NodeImplementation::Overlay | sdk::NodeImplementation::SceneSource => (
+                        text.plugin_category_drawing,
+                        text.plugin_description_drawing,
+                    ),
+                    sdk::NodeImplementation::DetectionControl => (
+                        text.plugin_category_input_control,
+                        text.plugin_description_input_control,
+                    ),
                 };
                 if definition.description.is_empty() {
                     definition.description = description.into();
@@ -222,13 +253,15 @@ impl Catalog {
                         && definition.name.len() <= 128
                         && definition.description.len() <= 1024
                         && definition.category.len() <= 128,
-                    "节点命名空间或版本无效"
+                    "{}",
+                    text.plugin_node_namespace_invalid
                 );
                 ensure!(
                     definition.config.is_object()
                         && definition.dependencies.len() <= 8
                         && definition.dependencies.iter().all(|id| valid_id(id)),
-                    "节点配置或依赖无效"
+                    "{}",
+                    text.plugin_node_config_invalid
                 );
                 let selected = manifest.for_node(&definition.type_id)?;
                 let fields = super::parameters::Fields::new(&selected);
@@ -268,7 +301,8 @@ impl Catalog {
                                 && definition.outputs.len() == 2
                                 && definition.outputs[1].data_type == sdk::PortType::Detections))
                         && definition.outputs[0].data_type == expected.2,
-                    "节点执行契约不受支持"
+                    "{}",
+                    text.plugin_node_contract_unsupported
                 );
                 ensure!(
                     definition
@@ -285,7 +319,8 @@ impl Catalog {
                             .collect::<BTreeSet<_>>()
                             .len()
                             == definition.outputs.len(),
-                    "节点端口ID重复"
+                    "{}",
+                    text.plugin_node_port_id_duplicate
                 );
                 ensure!(
                     definition
@@ -293,11 +328,13 @@ impl Catalog {
                         .iter()
                         .chain(&definition.outputs)
                         .all(|p| valid_id(&p.id) && p.name.len() <= 128),
-                    "无效端口"
+                    "{}",
+                    text.plugin_port_invalid
                 );
                 ensure!(
                     !result.types.contains_key(&definition.type_id),
-                    "节点类型重复"
+                    "{}",
+                    text.plugin_node_type_duplicate
                 );
                 result.types.insert(
                     definition.type_id.clone(),
@@ -312,7 +349,10 @@ impl Catalog {
         Ok(result)
     }
     pub fn instantiate(&self, type_id: &str, position: [f32; 2]) -> Result<Node> {
-        let ty = self.types.get(type_id).context("节点类型不存在")?;
+        let ty = self
+            .types
+            .get(type_id)
+            .context(t().features.plugin_node_type_missing)?;
         Ok(Node {
             id: uuid::Uuid::new_v4().to_string(),
             type_id: type_id.into(),
@@ -365,40 +405,44 @@ impl Document {
         Ok(Self {
             graph_format_version: 1,
             graph_id: uuid::Uuid::new_v4().to_string(),
-            name: "新节点图".into(),
+            name: t().features.plugin_graph_default_name.into(),
             nodes: vec![source, output, overlay],
             edges: vec![edge],
         })
     }
     pub fn connect(&mut self, catalog: &Catalog, from: Endpoint, to: Endpoint) -> Result<()> {
-        ensure!(from.node != to.node, "不能连接到自身");
+        ensure!(from.node != to.node, "{}", t().features.plugin_connect_self);
         let source = self
             .nodes
             .iter()
             .find(|n| n.id == from.node)
-            .context("输出节点不存在")?;
+            .context(t().features.plugin_output_node_missing)?;
         let destination = self
             .nodes
             .iter()
             .find(|n| n.id == to.node)
-            .context("输入节点不存在")?;
+            .context(t().features.plugin_input_node_missing)?;
         let a = catalog
             .ports(source, true)
             .iter()
             .find(|p| p.id == from.port)
-            .context("输出端口不存在")?;
+            .context(t().features.plugin_output_port_missing)?;
         let b = catalog
             .ports(destination, false)
             .iter()
             .find(|p| p.id == to.port)
-            .context("输入端口不存在")?;
-        ensure!(a.data_type == b.data_type, "端口类型不匹配");
+            .context(t().features.plugin_input_port_missing)?;
+        ensure!(
+            a.data_type == b.data_type,
+            "{}",
+            t().features.plugin_port_type_mismatch
+        );
         let many = b.many;
         // Reject a cycle before replacing any existing input connection.
         let mut pending = vec![to.node.clone()];
         let mut seen = BTreeSet::new();
         while let Some(id) = pending.pop() {
-            ensure!(id != from.node, "连线会形成环路");
+            ensure!(id != from.node, "{}", t().features.plugin_connect_cycle);
             if seen.insert(id.clone()) {
                 pending.extend(
                     self.edges
@@ -414,7 +458,7 @@ impl Document {
         if !many {
             self.edges.retain(|e| e.to != to);
         }
-        ensure!(self.edges.len() < 256, "连线数量超限");
+        ensure!(self.edges.len() < 256, "{}", t().features.plugin_edge_limit);
         let order = self
             .edges
             .iter()
@@ -440,23 +484,27 @@ pub(crate) fn compile(
     let run = || -> Result<Compiled> {
         ensure!(
             document.graph_format_version == 1 && uuid::Uuid::parse_str(&document.graph_id).is_ok(),
-            "节点图版本或ID无效"
+            "{}",
+            t().features.plugin_graph_version_invalid
         );
         ensure!(
             document.nodes.len() <= 64 && document.edges.len() <= 256 && document.name.len() <= 128,
-            "节点图规模超限"
+            "{}",
+            t().features.plugin_graph_too_large
         );
         let mut nodes = BTreeMap::new();
         for node in &document.nodes {
             ensure!(
                 uuid::Uuid::parse_str(&node.id).is_ok()
                     && nodes.insert(node.id.clone(), node).is_none(),
-                "重复或无效节点ID"
+                "{}",
+                t().features.plugin_node_id_invalid
             );
             ensure!(
                 node.position.iter().all(|p| p.is_finite())
                     && serde_json::to_vec(&node.parameters)?.len() <= 65536,
-                "节点参数或布局无效"
+                "{}",
+                t().features.plugin_node_layout_invalid
             );
         }
         let mut edge_ids = BTreeSet::new();
@@ -465,9 +513,14 @@ pub(crate) fn compile(
         for edge in &document.edges {
             ensure!(
                 edge.reroutes.len() <= 32 && edge.reroutes.iter().flatten().all(|p| p.is_finite()),
-                "中继点数量或坐标无效"
+                "{}",
+                t().features.plugin_reroute_invalid
             );
-            ensure!(edge_ids.insert(&edge.id), "重复连线ID");
+            ensure!(
+                edge_ids.insert(&edge.id),
+                "{}",
+                t().features.plugin_edge_id_duplicate
+            );
             ensure!(
                 connections.insert((
                     &edge.from.node,
@@ -475,33 +528,50 @@ pub(crate) fn compile(
                     &edge.to.node,
                     &edge.to.port
                 )),
-                "重复连线"
+                "{}",
+                t().features.plugin_edge_duplicate
             );
-            let source = nodes.get(&edge.from.node).context("连线来源节点不存在")?;
-            let target = nodes.get(&edge.to.node).context("连线目标节点不存在")?;
+            let source = nodes
+                .get(&edge.from.node)
+                .context(t().features.plugin_edge_source_missing)?;
+            let target = nodes
+                .get(&edge.to.node)
+                .context(t().features.plugin_edge_target_missing)?;
             let a = catalog
                 .ports(source, true)
                 .iter()
                 .find(|p| p.id == edge.from.port)
-                .context("连线输出端口不存在")?;
+                .context(t().features.plugin_edge_output_port_missing)?;
             let b = catalog
                 .ports(target, false)
                 .iter()
                 .find(|p| p.id == edge.to.port)
-                .context("连线输入端口不存在")?;
-            ensure!(a.data_type == b.data_type, "端口类型不兼容");
+                .context(t().features.plugin_edge_input_port_missing)?;
+            ensure!(
+                a.data_type == b.data_type,
+                "{}",
+                t().features.plugin_port_type_mismatch
+            );
             let list = incoming
                 .entry((edge.to.node.clone(), edge.to.port.clone()))
                 .or_default();
             list.push(edge);
-            ensure!(b.many || list.len() == 1, "单输入端口连接了多个来源");
+            ensure!(
+                b.many || list.len() == 1,
+                "{}",
+                t().features.plugin_input_port_many_sources
+            );
         }
         let video_sinks = document
             .nodes
             .iter()
             .filter(|n| n.enabled && n.type_id == VIDEO)
             .collect::<Vec<_>>();
-        ensure!(video_sinks.len() <= 1, "每个观看窗口只允许一个视频输出");
+        ensure!(
+            video_sinks.len() <= 1,
+            "{}",
+            t().features.plugin_video_output_limit
+        );
         let mut roots = video_sinks.clone();
         roots.extend(
             document
@@ -524,15 +594,20 @@ pub(crate) fn compile(
             if visited.contains(id) {
                 return Ok(());
             }
-            ensure!(visiting.insert(id.into()), "节点图存在环路");
-            let node = nodes.get(id).context("节点不存在")?;
+            ensure!(
+                visiting.insert(id.into()),
+                "{}",
+                t().features.plugin_graph_cycle
+            );
+            let node = nodes.get(id).context(t().features.plugin_node_missing)?;
             let ty = catalog
                 .types
                 .get(&node.type_id)
-                .with_context(|| format!("缺少节点类型：{}", node.type_id))?;
+                .with_context(|| (t().features.plugin_node_type_unavailable)(&node.type_id))?;
             ensure!(
                 node.type_version == ty.definition.schema_version,
-                "节点版本不兼容"
+                "{}",
+                t().features.plugin_node_version_incompatible
             );
             if node.enabled
                 && let Some(manifest) = &ty.manifest
@@ -542,8 +617,8 @@ pub(crate) fn compile(
                         .dependencies
                         .iter()
                         .all(|id| catalog.providers.contains(id)),
-                    "{} 缺少推理依赖",
-                    ty.definition.name
+                    "{}",
+                    (t().features.plugin_inference_missing)(&ty.definition.name)
                 );
             }
             let follows = node.enabled
@@ -554,9 +629,8 @@ pub(crate) fn compile(
                     if ![VIDEO, OVERLAY, INPUT].contains(&node.type_id.as_str()) && !port.optional {
                         ensure!(
                             edges.is_some_and(|e| !e.is_empty()),
-                            "{} 的 {} 尚未连接",
-                            node.name,
-                            port.name
+                            "{}",
+                            (t().features.plugin_port_not_connected)(&node.name, &port.name)
                         );
                     }
                     if let Some(edges) = edges {
@@ -630,7 +704,7 @@ pub(crate) fn compile(
                     let source = upstream(node)
                         .and_then(|id| frames.get(id))
                         .copied()
-                        .context("视频输入没有可用帧")?;
+                        .context(t().features.plugin_video_input_no_frames)?;
                     if node.enabled {
                         let spec = instance(node, manifest);
                         videos.push(super::video::VideoRequest {
@@ -653,7 +727,7 @@ pub(crate) fn compile(
                             upstream(node)
                                 .and_then(|id| frames.get(id))
                                 .copied()
-                                .context("分析输入没有可用帧")?
+                                .context(t().features.plugin_analysis_input_no_frames)?
                         } else {
                             0
                         };
@@ -705,7 +779,11 @@ pub(crate) fn compile(
             .iter()
             .filter(|e| nodes[&e.to.node].enabled && nodes[&e.to.node].type_id == INPUT)
             .collect::<Vec<_>>();
-        ensure!(input_edges.len() <= 4, "每个窗口最多允许四个输入来源");
+        ensure!(
+            input_edges.len() <= 4,
+            "{}",
+            t().features.plugin_input_sources_limit
+        );
         let control_gates = |node_id: &str| -> Result<Vec<ActivationSpec>> {
             let node = nodes[node_id];
             catalog.types[&node.type_id]
@@ -718,7 +796,7 @@ pub(crate) fn compile(
             if send_input || drawn {
                 analyses
                     .get_mut(analysis)
-                    .context("控制来源不存在")?
+                    .context(t().features.plugin_control_source_missing)?
                     .controls
                     .push(ControlSpec {
                         instance: instance.clone(),
@@ -731,7 +809,7 @@ pub(crate) fn compile(
             if let Some((analysis, renderer)) = layer_sources.get(&edge.from.node) {
                 analyses
                     .get_mut(analysis)
-                    .context("分析来源不存在")?
+                    .context(t().features.plugin_analysis_source_missing)?
                     .renderers
                     .push(RenderSpec {
                         instance: renderer.clone(),
@@ -743,26 +821,31 @@ pub(crate) fn compile(
                 let renderer_type = definition
                     .layer_renderer
                     .as_ref()
-                    .context("图层输出缺少外置绘制节点")?;
+                    .context(t().features.plugin_layer_renderer_missing)?;
                 let renderer = catalog
                     .types
                     .get(renderer_type)
-                    .context("未安装所需绘制节点")?;
+                    .context(t().features.plugin_renderer_not_installed)?;
                 ensure!(
                     renderer.definition.implementation == sdk::NodeImplementation::Overlay,
-                    "图层绘制依赖类型错误"
+                    "{}",
+                    t().features.plugin_renderer_type_invalid
                 );
-                let manifest = renderer.manifest.as_ref().context("图层绘制依赖必须外置")?;
+                let manifest = renderer
+                    .manifest
+                    .as_ref()
+                    .context(t().features.plugin_renderer_not_external)?;
                 ensure!(
                     manifest
                         .dependencies
                         .iter()
                         .all(|id| catalog.providers.contains(id)),
-                    "绘制节点缺少推理依赖"
+                    "{}",
+                    t().features.plugin_renderer_inference_missing
                 );
                 analyses
                     .get_mut(analysis)
-                    .context("分析来源不存在")?
+                    .context(t().features.plugin_analysis_source_missing)?
                     .renderers
                     .push(RenderSpec {
                         instance: InstanceSpec {
@@ -778,7 +861,8 @@ pub(crate) fn compile(
         }
         ensure!(
             analyses.values().all(|a| a.renderers.len() <= 4),
-            "每个分析支路最多4个绘制节点"
+            "{}",
+            t().features.plugin_renderers_limit
         );
         let analyses = analyses
             .into_values()
@@ -786,13 +870,14 @@ pub(crate) fn compile(
             .collect::<Vec<_>>();
         ensure!(
             analyses.len() <= 4 && videos.len() <= 8,
-            "当前后端最多4个分析实例、8个GPU节点"
+            "{}",
+            t().features.plugin_backend_limit
         );
         let warnings = document
             .nodes
             .iter()
             .filter(|n| !visited.contains(&n.id))
-            .map(|n| format!("{} 未连接到输出", n.name))
+            .map(|n| (t().features.plugin_node_unconnected)(&n.name))
             .collect();
         Ok(Compiled {
             document: document.clone(),
@@ -845,16 +930,22 @@ pub fn list() -> Result<Vec<Document>> {
 pub fn load(path: &Path) -> Result<Document> {
     ensure!(
         std::fs::metadata(path)?.len() <= MAX_FILE as u64,
-        "图文件过大"
+        "{}",
+        t().features.plugin_graph_file_too_large
     );
     let bytes = std::fs::read(path)?;
-    ensure!(bytes.len() <= MAX_FILE, "图文件过大");
+    ensure!(
+        bytes.len() <= MAX_FILE,
+        "{}",
+        t().features.plugin_graph_file_too_large
+    );
     let document: Document = serde_json::from_slice(&bytes)?;
     ensure!(
         document.graph_format_version == 1
             && document.nodes.len() <= 64
             && document.edges.len() <= 256,
-        "图文件版本或规模不受支持"
+        "{}",
+        t().features.plugin_graph_file_unsupported
     );
     ensure!(
         document.nodes.iter().all(|n| n.inputs.len() <= 16
@@ -863,12 +954,17 @@ pub fn load(path: &Path) -> Result<Document> {
                 .iter()
                 .all(|x| x.is_finite() && x.abs() <= 1_000_000.0)
             && n.name.len() <= 128),
-        "节点布局或端口规模无效"
+        "{}",
+        t().features.plugin_graph_layout_invalid
     );
     Ok(document)
 }
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    ensure!(bytes.len() <= MAX_FILE, "图文件过大");
+    ensure!(
+        bytes.len() <= MAX_FILE,
+        "{}",
+        t().features.plugin_graph_file_too_large
+    );
     std::fs::create_dir_all(path.parent().context("graph directory")?)?;
     let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| -> Result<()> {

@@ -1,4 +1,5 @@
 //! Local-only, bounded and cancellable transport for the privileged input owner.
+use crate::i18n::t;
 use anyhow::{Result, ensure};
 use std::time::{Duration, Instant};
 use windows::{
@@ -147,7 +148,7 @@ impl Pipe {
                     let mut count = 0;
                     let _ = GetOverlappedResult(self.handle.0, op, &mut count, true);
                 }
-                anyhow::bail!("被控服务通信已取消或超时");
+                anyhow::bail!("{}", t().system.service_pipe_cancelled);
             }
         }
     }
@@ -256,14 +257,18 @@ impl Pipe {
             if wait == WAIT_TIMEOUT {
                 return Ok(false);
             }
-            ensure!(wait == WAIT_OBJECT_0, "被控服务等待失败");
+            ensure!(
+                wait == WAIT_OBJECT_0,
+                "{}",
+                t().system.service_pipe_wait_failed
+            );
             // The kernel has completed the buffer before this state is cleared.
             prefix.pending = false;
             unsafe {
                 GetOverlappedResult(self.handle.0, &prefix.op, &mut count, false)?;
             }
         }
-        ensure!(count > 0, "被控服务已断开");
+        ensure!(count > 0, "{}", t().system.service_disconnected);
         prefix.offset += count as usize;
         Ok(prefix.offset == 4)
     }
@@ -284,7 +289,11 @@ impl Pipe {
     ) -> Result<()> {
         let mut offset = 0;
         while offset < bytes.len() {
-            ensure!(permitted(), "输入许可已撤销");
+            ensure!(
+                permitted(),
+                "{}",
+                t().system.service_input_permission_revoked
+            );
             let event = Handle(unsafe { CreateEventW(None, true, false, None)? });
             let mut op = OVERLAPPED {
                 hEvent: event.0,
@@ -315,7 +324,7 @@ impl Pipe {
                 }
                 Err(e) => return Err(e.into()),
             }
-            ensure!(count > 0, "被控服务已断开");
+            ensure!(count > 0, "{}", t().system.service_disconnected);
             offset += count as usize;
         }
         Ok(())
@@ -328,7 +337,11 @@ impl Pipe {
         self.send_raw(serde_json::to_vec(message)?, permitted)
     }
     pub(crate) fn send_raw(&self, mut bytes: Vec<u8>, permitted: impl Fn() -> bool) -> Result<()> {
-        ensure!(bytes.len() <= MAX_FRAME, "被控服务消息过长");
+        ensure!(
+            bytes.len() <= MAX_FRAME,
+            "{}",
+            t().system.service_message_too_long
+        );
         self.transfer(&mut (bytes.len() as u32).to_le_bytes(), true, &permitted)?;
         self.transfer(&mut bytes, true, &permitted)
     }
@@ -344,7 +357,8 @@ impl Pipe {
         permitted: impl Fn() -> bool,
     ) -> Result<T> {
         let bytes = self.receive_raw(timeout, permitted)?;
-        serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("被控服务消息无效"))
+        serde_json::from_slice(&bytes)
+            .map_err(|_| anyhow::anyhow!("{}", t().system.service_message_invalid))
     }
     pub(crate) fn receive_raw(
         &self,
@@ -357,7 +371,8 @@ impl Pipe {
             while !self.available()? {
                 ensure!(
                     permitted() && Instant::now() < deadline,
-                    "被控服务通信已取消或超时"
+                    "{}",
+                    t().system.service_pipe_cancelled
                 );
             }
             let mut reader = self.reader.borrow_mut();
@@ -368,7 +383,7 @@ impl Pipe {
             self.transfer_until(&mut size, false, &permitted, deadline)?;
         }
         let size = u32::from_le_bytes(size) as usize;
-        ensure!(size <= MAX_FRAME, "被控服务消息过长");
+        ensure!(size <= MAX_FRAME, "{}", t().system.service_message_too_long);
         let mut bytes = vec![0; size];
         self.transfer_until(&mut bytes, false, &permitted, deadline)?;
         Ok(bytes)

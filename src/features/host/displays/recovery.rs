@@ -1,5 +1,6 @@
 //! Restore our changes without overwriting later changes by other owners.
 use super::*;
+use crate::i18n::t;
 use crate::platform::display::recovery as native;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -212,7 +213,7 @@ impl State {
             .targets
             .iter_mut()
             .find(|t| t.identity == identity)
-            .context("显示目标已断开")?;
+            .context(t().features.screen_target_disconnected)?;
         target.width = width;
         target.height = height;
         // Compare one snapshot with its one-target edit. A second inventory
@@ -264,7 +265,8 @@ fn recover(path: &std::path::Path) -> Result<()> {
     };
     ensure!(
         journal.retired || !native::owner_alive(journal.owner_pid, journal.owner_birth)?,
-        "显示拥有者仍在运行"
+        "{}",
+        t().features.screen_owner_running
     );
     let mut state = State {
         journal,

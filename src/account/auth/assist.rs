@@ -16,7 +16,7 @@ pub(crate) struct SavedCode {
 impl AssistCodeStore {
     pub(crate) fn new(user_id: &str) -> Result<Self> {
         if user_id.is_empty() {
-            bail!("无法确定访问码所属账号");
+            bail!("{}", crate::i18n::t().session.code_account_unknown);
         }
         Ok(Self {
             service: crate::product::keyring_service(&format!(
@@ -28,17 +28,17 @@ impl AssistCodeStore {
 
     fn entry(&self, id: &str) -> Result<Entry> {
         let id = normalize_connect_id(id)?;
-        Entry::new(&self.service, &id).map_err(|_| anyhow::anyhow!("系统凭据库不可用"))
+        Entry::new(&self.service, &id).map_err(|_| anyhow::anyhow!("{}", crate::i18n::t().session.credential_store_unavailable))
     }
 
     fn read(entry: &Entry) -> Result<Option<SavedCode>> {
         let bytes = match entry.get_secret() {
             Ok(bytes) => bytes,
             Err(KeyringError::NoEntry) => return Ok(None),
-            Err(_) => bail!("无法读取已保存的访问码"),
+            Err(_) => bail!("{}", crate::i18n::t().session.saved_code_unreadable),
         };
         let value: SavedCode = serde_json::from_slice(&bytes)
-            .map_err(|_| anyhow::anyhow!("已保存的访问码格式无效"))?;
+            .map_err(|_| anyhow::anyhow!("{}", crate::i18n::t().session.saved_code_invalid))?;
         crate::account::api::validate_device_id(&value.publisher_id)?;
         validate_connect_code(&value.code)?;
         Ok(Some(value))
@@ -47,7 +47,7 @@ impl AssistCodeStore {
     fn delete(entry: &Entry) -> Result<()> {
         match entry.delete_credential() {
             Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
-            Err(_) => bail!("无法清除已保存的访问码"),
+            Err(_) => bail!("{}", crate::i18n::t().session.saved_code_clear_failed),
         }
     }
 
@@ -73,7 +73,7 @@ impl AssistCodeStore {
         })?;
         entry
             .set_secret(&bytes)
-            .map_err(|_| anyhow::anyhow!("无法保存访问码"))
+            .map_err(|_| anyhow::anyhow!("{}", crate::i18n::t().session.code_save_failed))
     }
 
     pub(crate) fn remove_device(&self, device: &SavedDevice) -> Result<()> {

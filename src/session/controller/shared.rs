@@ -123,7 +123,8 @@ impl Session {
                 self.viewing
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok(),
-                "该设备的观看窗口已打开"
+                "{}",
+                crate::i18n::t().session.error_viewer_already_open
             );
             lock(&self.forwarder).take()
         } else {
@@ -154,7 +155,7 @@ impl Session {
                     };
                 }
                 if rx.changed().await.is_err() {
-                    bail!("设备连接已结束");
+                    bail!("{}", crate::i18n::t().session.error_connection_ended);
                 }
             }
         }

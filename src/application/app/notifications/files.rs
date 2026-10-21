@@ -1,30 +1,32 @@
 use super::{Card, TransferCard, clean};
 use crate::features::file_transfer::host::notices::*;
+use crate::i18n::t;
 pub(super) fn cards(notices: Vec<Notice>, now: i64) -> Vec<(String, Card)> {
+    let text = &t().app;
     notices
         .into_iter()
         .filter(|n| n.state == RUNNING || n.updated.saturating_add(25) > now)
         .map(|n| {
             let title = match (n.receiving, n.state) {
-                (true, RUNNING) => "正在接收文件",
-                (false, RUNNING) => "正在发送文件",
-                (true, COMPLETE) => "文件接收完成",
-                (false, COMPLETE) => "文件发送完成",
-                (_, FAILED) => "文件传输失败",
-                (_, PAUSED) => "文件传输已暂停",
-                (_, CANCELLED) => "文件传输已取消",
-                _ => "文件传输已中断",
+                (true, RUNNING) => text.receiving_files,
+                (false, RUNNING) => text.sending_files,
+                (true, COMPLETE) => text.files_received,
+                (false, COMPLETE) => text.files_sent,
+                (_, FAILED) => text.transfer_failed,
+                (_, PAUSED) => text.transfer_paused,
+                (_, CANCELLED) => text.transfer_cancelled_title,
+                _ => text.transfer_interrupted,
             };
             let detail = if !n.error.is_empty() {
                 clean(&n.error)
             } else {
                 match n.state {
                     RUNNING => format!("{} / {}", bytes(n.done), bytes(n.total)),
-                    COMPLETE if n.saved == 0 => "未新增文件".into(),
-                    COMPLETE => format!("{} · {} 个文件", bytes(n.done), n.saved),
+                    COMPLETE if n.saved == 0 => text.no_new_files.into(),
+                    COMPLETE => (text.files_saved)(&bytes(n.done), n.saved),
                     PAUSED => String::new(),
-                    CANCELLED => "传输已取消".into(),
-                    _ => "连接或接收权限已中断".into(),
+                    CANCELLED => text.transfer_cancelled.into(),
+                    _ => text.transfer_access_lost.into(),
                 }
             };
             let progress = if n.state == RUNNING {

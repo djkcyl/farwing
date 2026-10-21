@@ -1,5 +1,6 @@
 use super::*;
 use crate::diagnostics::logging::{self, Level, Settings};
+use crate::i18n::t;
 
 #[derive(Default)]
 pub(super) struct LogUi {
@@ -24,8 +25,9 @@ fn level_picker(ui: &mut egui::Ui, id: &str, level: &mut Level) {
 
 impl DeviceCenterApp {
     pub(super) fn logs_page(&mut self, ui: &mut egui::Ui) {
+        let text = &t().settings;
         let Some(snapshot) = logging::snapshot() else {
-            ui.label("日志系统尚未初始化");
+            ui.label(text.logging_not_ready);
             return;
         };
         ui.ctx().request_repaint_after(Duration::from_secs(1));
@@ -39,7 +41,7 @@ impl DeviceCenterApp {
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                 if ui
-                    .button("打开日志文件夹")
+                    .button(text.open_log_folder)
                     .on_hover_text(snapshot.directory.display().to_string())
                     .clicked()
                     && let Err(e) = logging::open_directory()
@@ -53,23 +55,23 @@ impl DeviceCenterApp {
         ui.add_space(8.0);
         let state = &mut self.center_ui.logs;
         ui.horizontal(|ui| {
-            if ui.add(primary("保存")).clicked() {
+            if ui.add(primary(t().common.save)).clicked() {
                 match logging::apply(state.draft.as_ref().unwrap().clone()) {
                     Ok(()) => {
                         let saved = logging::snapshot().unwrap().settings;
                         state.baseline = Some(saved.clone());
                         state.draft = Some(saved);
-                        state.message = Some((true, "已保存".into()));
+                        state.message = Some((true, t().common.saved.into()));
                     }
-                    Err(e) => state.message = Some((false, format!("保存失败：{e:#}"))),
+                    Err(e) => state.message = Some((false, (text.save_failed)(&format!("{e:#}")))),
                 }
             }
-            if ui.button("恢复默认").clicked() {
+            if ui.button(text.restore_defaults).clicked() {
                 state.draft = Some(Settings::default());
                 state.message = None;
             }
             if ui
-                .add_enabled(state.draft != state.baseline, egui::Button::new("撤销修改"))
+                .add_enabled(state.draft != state.baseline, egui::Button::new(text.discard_changes))
                 .clicked()
             {
                 state.draft = Some(snapshot.settings.clone());
@@ -77,14 +79,14 @@ impl DeviceCenterApp {
                 state.message = None;
             }
             if state.draft != state.baseline {
-                ui.label(RichText::new("未保存").small().color(AMBER));
+                ui.label(RichText::new(text.unsaved).small().color(AMBER));
             }
         });
         if let Some((ok, message)) = state.message.take() {
             crate::ui::controls::notice(
                 ui.ctx(),
                 "log-settings-result",
-                "日志设置",
+                text.log_settings,
                 if ok {
                     crate::ui::controls::DialogIcon::Ready
                 } else {
@@ -96,32 +98,32 @@ impl DeviceCenterApp {
         crate::ui::controls::observe_notice(
             ui.ctx(),
             "log-settings-error",
-            "日志设置",
+            text.log_settings,
             crate::ui::controls::DialogIcon::Error,
             snapshot.error.as_deref(),
         );
         if let Some(filter) = &snapshot.override_filter {
-            ui.label(RichText::new("命令行级别生效中").color(AMBER))
+            ui.label(RichText::new(text.command_line_level).color(AMBER))
                 .on_hover_text(filter);
         }
         if snapshot.dropped != 0 {
-            ui.label(RichText::new(format!("日志丢弃：{} 条", snapshot.dropped)).color(AMBER));
+            ui.label(RichText::new((text.logs_dropped)(snapshot.dropped)).color(AMBER));
         }
         ui.add_space(8.0);
         ui.separator();
         crate::ui::controls::page_scroll("log-settings-scroll").show(ui, |ui| {
             let draft = state.draft.as_mut().unwrap();
             ui.horizontal(|ui| {
-                ui.label("客户端默认");
+                ui.label(text.client_default);
                 level_picker(ui, "application-level", &mut draft.application);
                 ui.add_space(12.0);
-                ui.label("第三方默认");
+                ui.label(text.third_party_default);
                 level_picker(ui, "dependency-level", &mut draft.dependencies);
             });
             ui.add_space(12.0);
             ui.add(
                 singleline_input(&mut state.search)
-                    .hint_text("搜索模块")
+                    .hint_text(text.search_modules)
                     .desired_width(ui.available_width()),
             );
             let search = state.search.trim().to_lowercase();
@@ -129,9 +131,9 @@ impl DeviceCenterApp {
                 ui.add_space(12.0);
                 ui.label(
                     RichText::new(if external {
-                        "第三方组件"
+                        text.third_party_components
                     } else {
-                        "客户端模块"
+                        text.client_modules
                     })
                     .strong(),
                 );
@@ -174,9 +176,9 @@ impl DeviceCenterApp {
                             egui::ComboBox::from_id_salt("level")
                                 .width(148.0)
                                 .height(320.0)
-                                .selected_text(value.map_or("继承上级", Level::label))
+                                .selected_text(value.map_or(text.inherit, Level::label))
                                 .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut value, None, "继承上级");
+                                    ui.selectable_value(&mut value, None, text.inherit);
                                     for level in Level::ALL {
                                         ui.selectable_value(&mut value, Some(level), level.label());
                                     }

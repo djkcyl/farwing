@@ -1,3 +1,4 @@
+use crate::i18n::t;
 use anyhow::{Context, Result};
 use windows::Win32::Graphics::{
     Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, Direct3D11::*, Dxgi::Common::*,
@@ -50,10 +51,10 @@ impl Converter {
             )?;
             Ok(Self {
                 timing: super::gpu_diagnostics::Timing::new(device, "capture preprocess"),
-                vertex: vertex.context("采集vertex shader")?,
-                pixel: pixel.context("采集pixel shader")?,
-                sampler: sampler.context("采集sampler")?,
-                params: params.context("采集参数buffer")?,
+                vertex: vertex.context(t().system.capture_create_vertex_shader)?,
+                pixel: pixel.context(t().system.capture_create_pixel_shader)?,
+                sampler: sampler.context(t().system.capture_create_sampler)?,
+                params: params.context(t().system.capture_create_params_buffer)?,
                 input: None,
                 output: None,
                 source: (0, 0, DXGI_FORMAT_UNKNOWN),
@@ -89,9 +90,9 @@ impl Converter {
                     None,
                     Some(&mut copy),
                 )?;
-                let copy = copy.context("采集shader纹理")?;
+                let copy = copy.context(t().system.capture_create_shader_texture)?;
                 device.CreateShaderResourceView(&copy, None, Some(&mut view))?;
-                self.input = Some((copy, view.context("采集shader视图")?));
+                self.input = Some((copy, view.context(t().system.capture_create_shader_view)?));
                 self.source = (desc.Width, desc.Height, desc.Format);
             }
             let rotated = if matches!(
@@ -105,7 +106,10 @@ impl Converter {
             let size = super::output_size(rotated.0, rotated.1, request.quality);
             let size = super::fit_size(size.0, size.1, request.maximum);
             let hdr = request.hdr;
-            let input = self.input.as_ref().context("采集转换输入缺失")?;
+            let input = self
+                .input
+                .as_ref()
+                .context(t().system.capture_missing_conversion_input)?;
             if input.0 != *texture {
                 context.CopyResource(&input.0, texture);
             }
@@ -148,13 +152,22 @@ impl Converter {
                     None,
                     Some(&mut output),
                 )?;
-                let output = output.context("采集转换输出")?;
+                let output = output.context(t().system.capture_create_conversion_output)?;
                 device.CreateRenderTargetView(&output, None, Some(&mut target))?;
-                self.output = Some((output, target.context("采集转换目标")?));
+                self.output = Some((
+                    output,
+                    target.context(t().system.capture_create_conversion_target)?,
+                ));
                 self.destination = (size.0, size.1, hdr);
             }
-            let input = self.input.as_ref().context("采集转换输入缺失")?;
-            let output = self.output.as_ref().context("采集转换输出缺失")?;
+            let input = self
+                .input
+                .as_ref()
+                .context(t().system.capture_missing_conversion_input)?;
+            let output = self
+                .output
+                .as_ref()
+                .context(t().system.capture_missing_conversion_output)?;
             let mut values = [0f32; 12];
             values[..4].copy_from_slice(&[
                 rotation.0 as f32,

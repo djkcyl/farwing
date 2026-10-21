@@ -3,6 +3,7 @@
 mod local;
 use super::capture::Frame;
 use anyhow::{Context, Result, ensure};
+use crate::i18n::t;
 use std::{
     mem::ManuallyDrop,
     sync::{
@@ -133,7 +134,7 @@ impl Transfer {
             && self.size == (desc.Width, desc.Height, desc.Format)
     }
     pub fn copy(&mut self, frame: &Frame, active: impl Fn() -> bool) -> Result<Option<Delivery>> {
-        ensure!(active(), "GPU交付已取消");
+        ensure!(active(), "{}", t().system.transfer_cancelled);
         match &mut self.engine {
             Engine::Local(gpu) => match gpu.copy(frame) {
                 Ok(frame) => return Ok(frame),
@@ -196,8 +197,8 @@ impl Staging {
             Ok(Self {
                 source: source.GetImmediateContext()?,
                 destination: destination.GetImmediateContext()?,
-                read: read.context("跨卡读回纹理")?,
-                write: write.context("跨卡上传纹理")?,
+                read: read.context(t().system.transfer_readback_texture)?,
+                write: write.context(t().system.transfer_upload_texture)?,
             })
         }
     }
@@ -207,7 +208,7 @@ impl Staging {
             let mapped = super::gpu_readback::map(&self.source, &self.read, active)?;
             if mapped.pData.is_null() {
                 self.source.Unmap(&self.read, 0);
-                anyhow::bail!("跨卡读回未返回像素");
+                anyhow::bail!("{}", t().system.transfer_readback_empty);
             }
             self.destination.UpdateSubresource(
                 &self.write,
@@ -239,7 +240,7 @@ impl Endpoint {
             let adapter = device.cast::<IDXGIDevice>()?.GetAdapter()?;
             let mut twelve = None;
             D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut twelve)?;
-            let twelve: ID3D12Device = twelve.context("跨卡D3D12设备")?;
+            let twelve: ID3D12Device = twelve.context(t().system.transfer_d3d12_device)?;
             let queue = twelve.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
                 Type: D3D12_COMMAND_LIST_TYPE_COPY,
                 ..Default::default()
@@ -323,7 +324,8 @@ impl Gpu {
                     )?;
                     ensure!(
                         options.CrossAdapterRowMajorTextureSupported.as_bool(),
-                        "适配器不支持跨卡row-major纹理"
+                        "{}",
+                        t().system.transfer_row_major_unsupported
                     );
                 }
             }
@@ -408,7 +410,8 @@ impl Gpu {
             let size = local_info.SizeInBytes.max(remote_info.SizeInBytes);
             ensure!(
                 alignment > 0 && size > 0 && size < u64::MAX - alignment,
-                "跨卡共享内存尺寸无效"
+                "{}",
+                t().system.transfer_shared_size_invalid
             );
             let mut heap = None;
             source.device.CreateHeap(
@@ -426,7 +429,7 @@ impl Gpu {
                 },
                 &mut heap,
             )?;
-            let heap: ID3D12Heap = heap.context("创建跨卡heap")?;
+            let heap: ID3D12Heap = heap.context(t().system.transfer_heap_create)?;
             let shared = Handle(source.device.CreateSharedHandle(
                 &heap,
                 None,
@@ -437,7 +440,7 @@ impl Gpu {
             destination
                 .device
                 .OpenSharedHandle(shared.0, &mut remote_heap)?;
-            let remote_heap: ID3D12Heap = remote_heap.context("导入跨卡heap")?;
+            let remote_heap: ID3D12Heap = remote_heap.context(t().system.transfer_heap_import)?;
             let (mut local_resource, mut remote_resource) = (None, None);
             source.device.CreatePlacedResource(
                 &heap,
@@ -455,9 +458,10 @@ impl Gpu {
                 None,
                 &mut remote_resource,
             )?;
-            let local_resource: ID3D12Resource = local_resource.context("创建跨卡源resource")?;
+            let local_resource: ID3D12Resource =
+                local_resource.context(t().system.transfer_source_resource)?;
             let remote_resource: ID3D12Resource =
-                remote_resource.context("创建跨卡目标resource")?;
+                remote_resource.context(t().system.transfer_destination_resource)?;
             let (source_commands, source_allocator) = commands(
                 &source.device,
                 &source_resource,
@@ -503,10 +507,11 @@ impl Gpu {
                 source_fence,
                 source_fence11,
                 cross_fence,
-                remote_cross_fence: remote_cross_fence.context("导入跨卡fence")?,
+                remote_cross_fence: remote_cross_fence
+                    .context(t().system.transfer_fence_import)?,
                 destination_fence,
                 destination_fence11,
-                consumed: consumed.context("创建编码读取fence")?,
+                consumed: consumed.context(t().system.transfer_read_fence)?,
                 source_commands,
                 destination_commands,
                 _allocators: [source_allocator, destination_allocator],
@@ -531,7 +536,8 @@ impl Gpu {
         unsafe {
             ensure!(
                 !self.slots.iter().any(|s| s.failed.load(Ordering::Acquire)),
-                "跨卡读取完成fence失效"
+                "{}",
+                t().system.transfer_fence_lost
             );
             let Some(index) = (0..self.slots.len())
                 .map(|i| (self.next + i) % self.slots.len())
@@ -621,7 +627,7 @@ unsafe fn interop(
             None,
             &mut resource,
         )?;
-        let resource: ID3D12Resource = resource.context("创建D3D11/12互操作纹理")?;
+        let resource: ID3D12Resource = resource.context(t().system.transfer_interop_texture)?;
         let handle =
             Handle(twelve.CreateSharedHandle(&resource, None, 0x10000000, PCWSTR::null())?);
         let texture = eleven
@@ -641,7 +647,7 @@ unsafe fn fence(
         eleven
             .cast::<ID3D11Device5>()?
             .OpenSharedFence(handle.0, &mut other)?;
-        Ok((fence, other.context("导入D3D11/12 fence")?))
+        Ok((fence, other.context(t().system.transfer_interop_fence)?))
     }
 }
 unsafe fn commands(

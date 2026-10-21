@@ -3,6 +3,7 @@ pub(crate) use crate::media::encoding::{
     Backend, Capability, Codec, Color, Format, QualityTarget, Rate,
 };
 use crate::media::video_color::VideoColorSpace;
+use crate::i18n::t;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 #[derive(Clone, Debug)]
@@ -161,7 +162,7 @@ impl Negotiated {
         if choices.is_empty() {
             tracing::warn!(local=?local_wire.video_codec_capability,remote=?remote.video_codec_capability,
                 decoders=?decoders,intersection=?dual.frame_quality_capability,"host media capability intersection empty");
-            anyhow::bail!("没有共同的画面编码/解码能力");
+            anyhow::bail!("{}", t().features.host_no_common_format);
         }
         Ok(Self {
             choices,
@@ -376,7 +377,7 @@ impl Negotiated {
             }
         }
         let (choice, fps, row_maximum, color) =
-            selected.ok_or_else(|| anyhow::anyhow!("请求的画面格式没有共同能力"))?;
+            selected.ok_or_else(|| anyhow::anyhow!(t().features.host_requested_format_unsupported))?;
         config.color = color;
         config.format = choice.capability.format;
         let maximum = choice.maximum_for(config.requested_maximum);

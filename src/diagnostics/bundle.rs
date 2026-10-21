@@ -37,7 +37,7 @@ pub(crate) struct Progress {
 impl Default for Progress {
     fn default() -> Self {
         Self {
-            stage: "正在收集诊断信息".into(),
+            stage: crate::i18n::t().session.diag_collecting.into(),
             completed: 0,
             total: 0,
         }
@@ -104,7 +104,7 @@ impl Task {
         let activity = crate::platform::windows::host_service::activity::Work::new();
         let progress = Arc::new(Mutex::new(Progress::default()));
         let worker_progress = progress.clone();
-        let snapshot = super::logging::snapshot().context("日志系统尚未初始化")?;
+        let snapshot = super::logging::snapshot().context(crate::i18n::t().session.logging_not_ready)?;
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = cancel.clone();
         let (tx, receiver) = std::sync::mpsc::channel();
@@ -116,7 +116,7 @@ impl Task {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     export(input, snapshot, &worker_cancel, &worker_progress, ephemeral)
                 }))
-                .map_err(|_| "诊断导出任务异常结束".to_owned())
+                .map_err(|_| crate::i18n::t().session.diag_export_crashed.to_owned())
                 .and_then(|r| r.map_err(|e| format!("{e:#}")));
                 let _ = tx.send(result);
                 if let Some(ctx) = ctx {
@@ -134,7 +134,7 @@ impl Task {
     }
 }
 fn cancelled(cancel: &AtomicBool) -> Result<()> {
-    ensure!(!cancel.load(Ordering::Acquire), "已取消导出");
+    ensure!(!cancel.load(Ordering::Acquire), "{}", crate::i18n::t().session.diag_export_cancelled);
     Ok(())
 }
 fn regular(path: &Path) -> bool {
@@ -172,7 +172,8 @@ impl Archive {
     fn required(&mut self, name: &str, data: &[u8]) -> Result<()> {
         ensure!(
             self.append(compressed_entry(name, data)?, 0)?,
-            "诊断元数据超过压缩包容量"
+            "{}",
+            crate::i18n::t().session.diag_metadata_too_large
         );
         Ok(())
     }
@@ -250,7 +251,7 @@ fn export(
     }
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
     candidates.dedup_by(|a, b| a.1 == b.1);
-    progress.lock().unwrap_or_else(|e| e.into_inner()).stage = "正在读取硬件摘要".into();
+    progress.lock().unwrap_or_else(|e| e.into_inner()).stage = crate::i18n::t().session.diag_reading_hardware.into();
     // Hardware collection is read-only and does not enumerate windows or capture content.
     if let Ok(h) = crate::platform::windows::device_profile::Hardware::read() {
         input.private_values.push(h.name);
@@ -270,7 +271,7 @@ fn export(
     ] {
         cancelled(cancel)?;
         *progress.lock().unwrap_or_else(|e| e.into_inner()) = Progress {
-            stage: "正在检查组件状态".into(),
+            stage: crate::i18n::t().session.diag_checking_components.into(),
             completed: components.len() as u64,
             total: 4,
         };
@@ -329,7 +330,7 @@ fn export(
         for (index, (stamp, _source, size, mut file)) in candidates.into_iter().enumerate() {
             cancelled(cancel)?;
             *progress.lock().unwrap_or_else(|e| e.into_inner()) = Progress {
-                stage: format!("正在打包日志 {}/{}", index + 1, source_count),
+                stage: (crate::i18n::t().session.diag_packing_logs)(index + 1, source_count),
                 completed,
                 total,
             };
@@ -415,7 +416,7 @@ fn export(
         }
         cancelled(cancel)?;
         *progress.lock().unwrap_or_else(|e| e.into_inner()) = Progress {
-            stage: "正在完成诊断包".into(),
+            stage: crate::i18n::t().session.diag_finishing.into(),
             completed: 0,
             total: 0,
         };
@@ -423,7 +424,8 @@ fn export(
         let file = archive.zip.finish()?;
         ensure!(
             file.metadata()?.len() <= ARCHIVE_LIMIT,
-            "诊断包超过压缩后容量限制"
+            "{}",
+            crate::i18n::t().session.diag_archive_too_large
         );
 
         file.sync_all()?;
@@ -440,15 +442,15 @@ fn export(
     result
 }
 pub(crate) fn open_folder(path: &Path) -> Result<()> {
-    let parent = path.parent().context("诊断包路径无效")?;
+    let parent = path.parent().context(crate::i18n::t().session.diag_path_invalid)?;
     super::logging::open_folder(parent)
 }
 
 pub(crate) fn output_directory() -> Result<PathBuf> {
-    let snapshot = super::logging::snapshot().context("日志系统尚未初始化")?;
+    let snapshot = super::logging::snapshot().context(crate::i18n::t().session.logging_not_ready)?;
     Ok(snapshot
         .directory
         .parent()
-        .context("诊断输出目录无效")?
+        .context(crate::i18n::t().session.diag_output_folder_invalid)?
         .join("diagnostics"))
 }

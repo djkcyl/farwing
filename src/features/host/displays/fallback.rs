@@ -1,5 +1,6 @@
 //! Machine-owned headless display. It is deliberately absent from session
 //! journals/preferences: closing a connection must not unplug the only screen.
+use crate::i18n::t;
 use super::*;
 use crate::platform::display::{
     topology::VirtualProvider,
@@ -98,7 +99,8 @@ pub(super) fn ensure(
     }
     ensure!(
         driver.persistent_supported(),
-        "无可用显示器：需要更新虚拟显示驱动"
+        "{}",
+        t().features.screen_none_driver_outdated
     );
     let saved = store::read::<Record>(&path()?)?;
     let record = saved.unwrap_or(Record {
@@ -107,7 +109,11 @@ pub(super) fn ensure(
         hz: 144,
     });
     validate_modes(&[(record.width, record.height)])?;
-    ensure!((1..=144).contains(&record.hz), "无效兜底屏刷新率");
+    ensure!(
+        (1..=144).contains(&record.hz),
+        "{}",
+        t().features.screen_fallback_refresh_invalid
+    );
     store::write(&path()?, &record)?; // Intent survives an owner/driver restart.
     if let Some(screen) = screen(driver)? {
         return Ok(Some(screen));
@@ -121,7 +127,7 @@ pub(super) fn ensure(
         let gpu = capture::encoding_adapters()?
             .first()
             .cloned()
-            .context("未找到虚拟显示渲染适配器")?;
+            .context(t().features.screen_render_adapter_missing)?;
         driver.render_adapter(gpu.luid)?;
     }
     let output = driver.add_fallback(record.width, record.height, record.hz)?;
@@ -135,7 +141,11 @@ pub(super) fn ensure(
         {
             break identity;
         }
-        ensure!(Instant::now() < deadline, "常驻虚拟屏创建后未出现");
+        ensure!(
+            Instant::now() < deadline,
+            "{}",
+            t().features.screen_persistent_not_appeared
+        );
         std::thread::sleep(Duration::from_millis(25));
     };
     // Re-read after arrival: keep newly connected physical monitors and do not
@@ -167,7 +177,11 @@ pub(super) fn ensure(
         if let Some(screen) = screen(driver)? {
             break screen;
         }
-        ensure!(Instant::now() < deadline, "常驻虚拟屏不可采集");
+        ensure!(
+            Instant::now() < deadline,
+            "{}",
+            t().features.screen_persistent_not_capturable
+        );
         std::thread::sleep(Duration::from_millis(25));
     };
     if !verify_frame {
@@ -185,7 +199,7 @@ pub(super) fn ensure(
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    anyhow::bail!("常驻虚拟屏暂无桌面画面")
+    anyhow::bail!("{}", t().features.screen_persistent_no_frame)
 }
 
 pub(super) fn retire(driver: &Driver, replacement_identity: Option<&str>) -> Result<bool> {

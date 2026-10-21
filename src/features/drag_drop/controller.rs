@@ -76,7 +76,7 @@ impl Controller {
             while let Some(packet) = output.recv().await {
                 let sender = if packet.bulk { &bulk_tx } else { &control_tx };
                 if sender.send(packet.data).await.is_err() {
-                    fail(&state, &active, "拖放发送通道已关闭".into());
+                    fail(&state, &active, t().features.drag_send_channel_closed.into());
                     break;
                 }
             }
@@ -128,14 +128,15 @@ impl Controller {
             ensure!(
                 crate::transport::transfer::kind_of(bytes)
                     == Some(crate::transport::transfer::kind::DRAG),
-                "数据通道只承载拖放文件数据"
+                "{}",
+                t().features.drag_bulk_only
             );
             if let Some(endpoint) = &binding.endpoint {
                 endpoint.receive(bytes)?;
             }
             return Ok(());
         }
-        let packet = wire::decode(bytes)?.ok_or_else(|| anyhow::anyhow!("拖放消息标记缺失"))?;
+        let packet = wire::decode(bytes)?.ok_or_else(|| anyhow::anyhow!("{}", t().features.drag_marker_missing))?;
         if matches!(&packet.payload, Some(Payload::Hello(1))) {
             if !binding.seen_native {
                 tracing::info!("native file drag capability negotiated");
@@ -156,13 +157,13 @@ impl Controller {
         point: Point,
         input: crate::features::remote_input::RemoteInput,
     ) -> Result<()> {
-        ensure!(self.available(), "当前连接没有原生拖出能力");
+        ensure!(self.available(), "{}", t().features.drag_out_unsupported);
         let mut binding = lock(&self.0);
-        ensure!(binding.reverse.len() < 4, "正在处理的拖出过多");
+        ensure!(binding.reverse.len() < 4, "{}", t().features.drag_out_too_many);
         let endpoint = binding
             .endpoint
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("拖放连接已关闭"))?;
+            .ok_or_else(|| anyhow::anyhow!("{}", t().features.drag_connection_closed))?;
         let hold = if endpoint.shared.return_capable.load(Ordering::Acquire) {
             Some(input.hold_drag(owner)?)
         } else {
@@ -256,12 +257,12 @@ impl Controller {
             })
     }
     pub fn begin(&self, paths: Vec<PathBuf>, point: Point) -> Result<Arc<Ticket>> {
-        ensure!(self.available(), "原生拖放尚未就绪");
+        ensure!(self.available(), "{}", t().features.drag_native_not_ready);
         let mut binding = lock(&self.0);
         let ticket = binding
             .endpoint
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("拖放连接已关闭"))?
+            .ok_or_else(|| anyhow::anyhow!("{}", t().features.drag_connection_closed))?
             .begin(paths, point)?;
         binding.reverse_owner = None;
         binding.active = Arc::downgrade(&ticket);
@@ -290,17 +291,17 @@ async fn write(
         } else {
             tokio::time::timeout(Duration::from_secs(30), async {
                 while channel.buffered_amount().await + data.len() > 2 * 1024 * 1024 {
-                    tokio::select! { _=stop.cancelled()=>anyhow::bail!("拖放已结束"), _=tokio::time::sleep(Duration::from_millis(5))=>{} }
+                    tokio::select! { _=stop.cancelled()=>anyhow::bail!("{}", t().features.drag_ended), _=tokio::time::sleep(Duration::from_millis(5))=>{} }
                 }
-                ensure!(channel.ready_state() == RTCDataChannelState::Open, "拖放数据通道已关闭");
+                ensure!(channel.ready_state() == RTCDataChannelState::Open, "{}", t().features.drag_data_channel_closed);
                 channel.send(&bytes::Bytes::from(data)).await?;
                 Ok::<_, anyhow::Error>(())
             })
             .await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("拖放发送超时")))
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("{}", t().features.drag_send_timeout)))
         };
         if result.is_err() {
-            fail(&state, &endpoint, "拖放发送失败".into());
+            fail(&state, &endpoint, t().features.drag_send_failed.into());
             break;
         }
     }

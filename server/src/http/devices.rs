@@ -1,6 +1,6 @@
 //! Device registration, device lists (own and shared) and device pushes.
 
-use super::auth::{AccountAuth, AnyAuth, timestamp_fresh};
+use super::auth::{AccountAuth, AnyAuth, clock_skew, timestamp_fresh};
 use super::{App, ClientIp, JsonBody};
 use crate::crypto::sha256_hex;
 use crate::db::{self, DeviceRow, UserRow};
@@ -16,7 +16,8 @@ use farwing_protocol::api::{
     WallpaperResponse,
 };
 use farwing_protocol::realtime::{DeviceChangeKind, DeviceChanged, Envelope, types};
-use farwing_protocol::{caps, crypto, ids, limits};
+use farwing_protocol::error::reason;
+use farwing_protocol::{ErrorCode, caps, crypto, ids, limits};
 use std::time::Duration;
 
 /// Server-relative wallpaper URL with a cache-busting `v`.
@@ -218,10 +219,7 @@ fn validate_init(req: &DeviceInitRequest) -> ApiResult<()> {
         return Err(ApiError::bad_request("installation_id too long"));
     }
     if !timestamp_fresh(req.timestamp) {
-        return Err(ApiError::new(
-            farwing_protocol::ErrorCode::DeviceUnauthorized,
-            "请求时间与服务器相差过大，请校准系统时间",
-        ));
+        return Err(clock_skew());
     }
     let proof = crypto::init_proof_message(&req.public_key, req.timestamp);
     if req.proof.len() > 128 || crypto::verify(&req.public_key, &proof, &req.proof).is_err() {
@@ -383,7 +381,11 @@ pub async fn visible_device(app: &App, auth: &AccountAuth, id: &str) -> ApiResul
 pub async fn owned_device(app: &App, auth: &AccountAuth, id: &str) -> ApiResult<DeviceRow> {
     let v = visible_device(app, auth, id).await?;
     if v.relation != Relation::Own {
-        return Err(ApiError::forbidden("只能管理自己账号的设备"));
+        return Err(ApiError::reason(
+            ErrorCode::Forbidden,
+            reason::NOT_OWN_DEVICE,
+            "only devices of this account can be managed",
+        ));
     }
     Ok(v.row)
 }
@@ -422,9 +424,12 @@ pub async fn rename(
     let row = owned_device(&app, &auth, &id).await?;
     let alias = req.alias.trim().to_owned();
     if alias.is_empty() || alias.chars().count() > 64 || alias.chars().any(char::is_control) {
-        return Err(ApiError::bad_request(
-            "名称应为 1–64 个可打印字符",
-        ));
+        return Err(ApiError::reason(
+            ErrorCode::BadRequest,
+            reason::DEVICE_NAME_INVALID,
+            "name must be 1-64 printable characters",
+        )
+        .with_detail("max", 64));
     }
     let (id2, a2) = (row.id.clone(), alias.clone());
     app.db

@@ -2,6 +2,7 @@
 //! ordinary-user executor. Frames pass through unchanged in both directions.
 use super::{Lease, lock};
 use crate::features::file_transfer::host::{self as executor, agent::Backend};
+use crate::i18n::t;
 use anyhow::{Result, ensure};
 use std::{
     collections::HashMap,
@@ -82,7 +83,7 @@ impl Receiver {
         };
         if let Some((tx, generation)) = delivery {
             tx.try_send((generation, bytes.to_vec()))
-                .map_err(|_| anyhow::anyhow!("文件接收队列已满或关闭"))?;
+                .map_err(|_| anyhow::anyhow!(t().features.host_file_queue_full))?;
         }
         Ok(true)
     }
@@ -104,7 +105,7 @@ impl Receiver {
         if let Some((tx, generation)) = delivery {
             tx.send((generation, bytes.to_vec()))
                 .await
-                .map_err(|_| anyhow::anyhow!("文件接收队列已关闭"))?;
+                .map_err(|_| anyhow::anyhow!(t().features.host_file_queue_closed))?;
         }
         Ok(true)
     }
@@ -210,7 +211,7 @@ async fn send(
     }
     let channel = {
         let s = lock(&receiver.0);
-        ensure!(s.generation == generation, "文件通道已替换");
+        ensure!(s.generation == generation, "{}", t().features.host_file_channel_replaced);
         s.channels
             .get(if packet.bulk {
                 crate::protocol::peer::channel::BULK
@@ -218,7 +219,7 @@ async fn send(
                 crate::protocol::peer::channel::SESSION
             })
             .and_then(Weak::upgrade)
-            .ok_or_else(|| anyhow::anyhow!("文件通道已关闭"))?
+            .ok_or_else(|| anyhow::anyhow!(t().features.host_file_channel_closed))?
     };
     let permitted = || lease.requested() && (lease.file_access() || rejection);
     if packet.bulk {
@@ -245,18 +246,18 @@ async fn send(
             !cancel.is_cancelled()
                 && channel.ready_state() == RTCDataChannelState::Open
                 && tokio::time::Instant::now() < deadline,
-            "文件发送队列已取消或超时"
+            "{}", t().features.host_file_send_timeout
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     ensure!(
         !cancel.is_cancelled() && channel.ready_state() == RTCDataChannelState::Open,
-        "文件通道未就绪"
+        "{}", t().features.host_file_channel_not_ready
     );
     if !permitted() {
         return Ok(());
     }
-    ensure!(lock(&receiver.0).generation == generation, "文件通道已替换");
+    ensure!(lock(&receiver.0).generation == generation, "{}", t().features.host_file_channel_replaced);
     let bytes = bytes::Bytes::from(packet.data);
     tokio::time::timeout_at(deadline, channel.send(&bytes)).await??;
     Ok(())

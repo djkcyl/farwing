@@ -116,7 +116,7 @@ pub const AUDIO_MENU_WIDTH: f32 = 320.0;
 pub const AUDIO_WINDOW_SIZE: [f32; 2] = [480.0, 464.0];
 pub const AUDIO_COMPACT_SIZE: [f32; 2] = [420.0, 140.0];
 pub const SHORTCUT_ROW_HEIGHT: f32 = 56.0;
-pub const SHORTCUT_LABEL_WIDTH: f32 = 184.0;
+pub const SHORTCUT_LABEL_WIDTH: f32 = 212.0;
 pub const PERFORMANCE_WIDTH: f32 = 540.0;
 pub const PERFORMANCE_LABEL_WIDTH: f32 = 102.0;
 pub const PERFORMANCE_ROW_HEIGHT: f32 = 44.0;
@@ -228,11 +228,8 @@ pub const ANNOTATION_BRAND_ON_LIGHT: [[u8; 3]; 2] = [[45, 58, 76], [104, 119, 13
 pub const ANNOTATION_BRAND_ON_DARK: [[u8; 3]; 2] = [[223, 231, 241], [153, 174, 191]];
 pub const ANNOTATION_COLOR_PLANE_HEIGHT: f32 = 148.0;
 pub const ANNOTATION_COLOR_BAR_HEIGHT: f32 = 14.0;
-pub const ANNOTATION_BOARD_COLORS: [(&str, [u8; 3]); 3] = [
-    ("白色", [255, 255, 255]),
-    ("深色", [24, 28, 32]),
-    ("绿色", [20, 74, 58]),
-];
+/// White, dark and green; the names are `i18n::controls` `board_*`.
+pub const ANNOTATION_BOARD_COLORS: [[u8; 3]; 3] = [[255, 255, 255], [24, 28, 32], [20, 74, 58]];
 pub const ANNOTATION_COLORS: [[u8; 3]; 6] = [
     [255, 68, 68],
     [255, 190, 64],

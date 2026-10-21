@@ -1,5 +1,6 @@
 //! Validated remote input messages (peer `INPUT` frames, Input v2).
 //! Never retain or log the original payload.
+use crate::i18n::t;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
@@ -130,31 +131,46 @@ impl Event {
     pub(crate) fn validate(&self) -> Result<()> {
         match self {
             Self::Key { usage, .. } => {
-                ensure!(keyboard::scan(*usage).is_some(), "无效键码");
+                ensure!(
+                    keyboard::scan(*usage).is_some(),
+                    "{}",
+                    t().features.input_key_invalid
+                );
             }
             Self::Button { button: b, .. } => {
                 button(i32::from(*b))?;
             }
             Self::Relative { x, y } => ensure!(
                 x.unsigned_abs() <= 1_000_000 && y.unsigned_abs() <= 1_000_000,
-                "相对位移过大"
+                "{}",
+                t().features.input_relative_too_large
             ),
             Self::Absolute { x, y, .. } => ensure!(
                 x.is_finite()
                     && y.is_finite()
                     && (0.0..=1.0).contains(x)
                     && (0.0..=1.0).contains(y),
-                "绝对坐标越界"
+                "{}",
+                t().features.input_absolute_out_of_range
             ),
             Self::Wheel { x, y } => ensure!(
                 x.unsigned_abs() <= WHEEL_LIMIT && y.unsigned_abs() <= WHEEL_LIMIT,
-                "滚轮幅度过大"
+                "{}",
+                t().features.input_wheel_too_large
             ),
             Self::Touch { contacts, .. } => {
-                ensure!(contacts.len() <= MAX_CONTACTS, "触点过多");
+                ensure!(
+                    contacts.len() <= MAX_CONTACTS,
+                    "{}",
+                    t().features.input_too_many_contacts
+                );
                 let mut ids = std::collections::BTreeSet::new();
                 for c in contacts {
-                    ensure!(c.id != 0 && ids.insert(c.id), "触点编号无效");
+                    ensure!(
+                        c.id != 0 && ids.insert(c.id),
+                        "{}",
+                        t().features.input_contact_id_invalid
+                    );
                     ensure!(
                         unit(c.x)
                             && unit(c.y)
@@ -162,14 +178,16 @@ impl Event {
                             && unit32(c.width)
                             && unit32(c.height)
                             && c.orientation < 360,
-                        "触点数据越界"
+                        "{}",
+                        t().features.input_contact_out_of_range
                     );
                 }
             }
             Self::Pen { samples, .. } => {
                 ensure!(
                     !samples.is_empty() && samples.len() <= MAX_PEN_SAMPLES,
-                    "笔样本数量无效"
+                    "{}",
+                    t().features.input_pen_sample_count_invalid
                 );
                 for p in samples {
                     ensure!(
@@ -179,7 +197,8 @@ impl Event {
                             && (-90..=90).contains(&p.tilt_x)
                             && (-90..=90).contains(&p.tilt_y)
                             && p.twist < 360,
-                        "笔数据越界"
+                        "{}",
+                        t().features.input_pen_out_of_range
                     );
                 }
             }
@@ -194,20 +213,24 @@ impl Event {
 pub(crate) fn pointer(message: crate::protocol::pointer::Message) -> Result<Event> {
     use crate::protocol::pointer::{Message, PenPhase as WirePen, TouchPhase as WireTouch};
     let event = match message {
-        Message::Touch(t) => Event::Touch {
-            screen: t.screen_id.ok_or_else(|| anyhow::anyhow!("触摸缺少屏幕"))?,
-            contacts: t
+        Message::Touch(touch) => Event::Touch {
+            screen: touch
+                .screen_id
+                .ok_or_else(|| anyhow::anyhow!("{}", t().features.input_touch_screen_missing))?,
+            contacts: touch
                 .contacts
                 .into_iter()
                 .map(|c| {
                     Ok(TouchContact {
-                        id: u8::try_from(c.id).map_err(|_| anyhow::anyhow!("触点编号无效"))?,
+                        id: u8::try_from(c.id).map_err(|_| {
+                            anyhow::anyhow!("{}", t().features.input_contact_id_invalid)
+                        })?,
                         phase: match WireTouch::try_from(c.phase) {
                             Ok(WireTouch::Down) => TouchPhase::Down,
                             Ok(WireTouch::Move) => TouchPhase::Move,
                             Ok(WireTouch::Up) => TouchPhase::Up,
                             Ok(WireTouch::Cancel) => TouchPhase::Cancel,
-                            _ => anyhow::bail!("触点阶段无效"),
+                            _ => anyhow::bail!("{}", t().features.input_contact_phase_invalid),
                         },
                         x: f64::from(c.x),
                         y: f64::from(c.y),
@@ -220,12 +243,18 @@ pub(crate) fn pointer(message: crate::protocol::pointer::Message) -> Result<Even
                 .collect::<Result<_>>()?,
         },
         Message::Pen(p) => Event::Pen {
-            screen: p.screen_id.ok_or_else(|| anyhow::anyhow!("笔缺少屏幕"))?,
+            screen: p
+                .screen_id
+                .ok_or_else(|| anyhow::anyhow!("{}", t().features.input_pen_screen_missing))?,
             samples: p
                 .samples
                 .into_iter()
                 .map(|s| {
-                    ensure!(s.buttons & !3 == 0, "笔按键无效");
+                    ensure!(
+                        s.buttons & !3 == 0,
+                        "{}",
+                        t().features.input_pen_button_invalid
+                    );
                     Ok(PenSample {
                         phase: match WirePen::try_from(s.phase) {
                             Ok(WirePen::Hover) => PenPhase::Hover,
@@ -234,7 +263,7 @@ pub(crate) fn pointer(message: crate::protocol::pointer::Message) -> Result<Even
                             Ok(WirePen::Up) => PenPhase::Up,
                             Ok(WirePen::Leave) => PenPhase::Leave,
                             Ok(WirePen::Cancel) => PenPhase::Cancel,
-                            _ => anyhow::bail!("笔阶段无效"),
+                            _ => anyhow::bail!("{}", t().features.input_pen_phase_invalid),
                         },
                         x: f64::from(s.x),
                         y: f64::from(s.y),
@@ -257,7 +286,11 @@ pub(crate) fn pointer(message: crate::protocol::pointer::Message) -> Result<Even
 const WHEEL_LIMIT: u32 = 120_000;
 
 fn button(v: i32) -> Result<u8> {
-    ensure!(matches!(v, 1 | 2 | 16 | 32 | 64), "无效鼠标按键");
+    ensure!(
+        matches!(v, 1 | 2 | 16 | 32 | 64),
+        "{}",
+        t().features.input_mouse_button_invalid
+    );
     Ok(v as u8)
 }
 
@@ -265,14 +298,17 @@ fn button(v: i32) -> Result<u8> {
 /// (including a key this build cannot inject); callers still consume the frame.
 pub(crate) fn input(message: crate::protocol::input::InputMessage) -> Result<Option<Event>> {
     use crate::protocol::input::{InputKind, SystemCommand};
-    let code = |value: u32| i32::try_from(value).map_err(|_| anyhow::anyhow!("输入编码无效"));
+    let code = |value: u32| {
+        i32::try_from(value).map_err(|_| anyhow::anyhow!("{}", t().features.input_code_invalid))
+    };
     Ok(Some(match message.kind {
         None => return Ok(None),
         Some(InputKind::Heartbeat(_)) => Event::Heartbeat,
         Some(InputKind::Key(k)) => {
             ensure!(
                 matches!(k.usage >> 16, 0x07 | 0x0c) && k.usage & 0xffff != 0,
-                "无效键码"
+                "{}",
+                t().features.input_key_invalid
             );
             if keyboard::scan(k.usage).is_none() {
                 return Ok(None);
@@ -290,14 +326,17 @@ pub(crate) fn input(message: crate::protocol::input::InputMessage) -> Result<Opt
             seq: l.seq,
         },
         Some(InputKind::SystemCommand(value)) => Event::Command(
-            match SystemCommand::try_from(value).map_err(|_| anyhow::anyhow!("未知系统命令"))?
+            match SystemCommand::try_from(value)
+                .map_err(|_| anyhow::anyhow!("{}", t().features.input_command_unknown))?
             {
                 SystemCommand::Sas => Command::SecureAttention,
                 SystemCommand::Lock => Command::Lock,
                 SystemCommand::TaskManager => Command::TaskManager,
                 SystemCommand::ShowDesktop => Command::Desktop,
                 SystemCommand::TaskView => Command::TaskView,
-                SystemCommand::Unspecified => anyhow::bail!("未知系统命令"),
+                SystemCommand::Unspecified => {
+                    anyhow::bail!("{}", t().features.input_command_unknown)
+                }
             },
         ),
         Some(InputKind::MouseButton(b)) => Event::Button {
@@ -310,7 +349,8 @@ pub(crate) fn input(message: crate::protocol::input::InputMessage) -> Result<Opt
                     && m.y.is_finite()
                     && (0.0..=1.0).contains(&m.x)
                     && (0.0..=1.0).contains(&m.y),
-                "绝对坐标越界"
+                "{}",
+                t().features.input_absolute_out_of_range
             );
             Event::Absolute {
                 screen: m.screen_id,

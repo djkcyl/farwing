@@ -1,5 +1,6 @@
 use super::{model::FileEntry, service::*};
 use crate::ui::{controls, theme, window_manager};
+use crate::i18n::t;
 use anyhow::Result;
 use egui::{RichText, vec2};
 use std::sync::Arc;
@@ -17,7 +18,7 @@ pub(crate) fn open(
     let runtime = tokio::runtime::Handle::current();
     let key = format!("files:{}:{}", client.device_id(), device.device_id);
     let viewport = egui::ViewportBuilder::default()
-        .with_title(format!("{} · {} · 文件传输", crate::APP_NAME, device.alias))
+        .with_title(format!("{} · {} · {}", crate::APP_NAME, device.alias, t().features.transfer_title))
         .with_icon(crate::ui::branding::icon())
         .with_inner_size(theme::FILES_WINDOW_SIZE)
         .with_min_inner_size(theme::FILES_WINDOW_MIN);
@@ -134,11 +135,11 @@ impl crate::ui::App for Window {
                     ui.add_space(8.);
                     ui.label(
                         RichText::new(if s.connected {
-                            "● 已连接"
+                            format!("● {}", t().features.transfer_connected)
                         } else if s.connecting {
-                            "正在连接…"
+                            t().features.transfer_connecting.to_owned()
                         } else {
-                            "未连接"
+                            t().features.transfer_not_connected.to_owned()
                         })
                         .size(theme::SMALL)
                         .color(if s.connected {
@@ -152,9 +153,9 @@ impl crate::ui::App for Window {
                             .add_enabled(
                                 !s.connecting,
                                 controls::quiet_button(if s.connected {
-                                    "刷新两侧"
+                                    t().features.transfer_refresh_both
                                 } else {
-                                    "重新连接"
+                                    t().features.transfer_reconnect
                                 }),
                             )
                             .clicked()
@@ -171,7 +172,7 @@ impl crate::ui::App for Window {
                     crate::ui::controls::notice(
                         ui.ctx(),
                         "file-operation-error",
-                        "文件传输",
+                        t().features.transfer_title,
                         crate::ui::controls::DialogIcon::Error,
                         error,
                     );
@@ -179,7 +180,7 @@ impl crate::ui::App for Window {
                 crate::ui::controls::observe_notice(
                     ui.ctx(),
                     "file-service-error",
-                    "文件传输",
+                    t().features.transfer_title,
                     crate::ui::controls::DialogIcon::Error,
                     s.error.as_deref(),
                 );
@@ -325,11 +326,11 @@ impl Window {
                 };
                 let destination = if remote { &s.local } else { &s.remote };
                 if destination.busy || destination.error.is_some() || destination.path.is_empty() {
-                    self.error = Some("目标文件夹不可用".into());
+                    self.error = Some(t().features.transfer_destination_unavailable.into());
                     return;
                 }
                 if target == ":/" {
-                    self.error = Some("未打开目标文件夹".into());
+                    self.error = Some(t().features.transfer_destination_not_open.into());
                     return;
                 }
                 let records = entries
@@ -385,18 +386,19 @@ fn operation_prompt(ctx: &egui::Context, d: &mut Dialog, policy: &mut i32) -> (b
         .frame(controls::dialog_frame())
         .show(ctx, |ui| {
             ui.set_width(theme::FILES_DIALOG_WIDTH);
+            let text = &t().features;
             let title = match d {
                 Dialog::Transfer(r) => {
                     if r.first().is_some_and(|r| r.direction == Direction::Upload) {
-                        "发送文件"
+                        text.transfer_send_files
                     } else {
-                        "接收文件"
+                        text.transfer_receive_files
                     }
                 }
-                Dialog::Create(..) => "新建文件夹",
-                Dialog::Rename(..) => "重命名",
-                Dialog::Delete(..) => "删除文件？",
-                Dialog::Cancel(..) => "取消传输？",
+                Dialog::Create(..) => text.transfer_new_folder,
+                Dialog::Rename(..) => text.transfer_rename,
+                Dialog::Delete(..) => text.transfer_delete_title,
+                Dialog::Cancel(..) => text.transfer_cancel_title,
             };
             no = crate::ui::controls::dialog_header(
                 ui,
@@ -410,7 +412,7 @@ fn operation_prompt(ctx: &egui::Context, d: &mut Dialog, policy: &mut i32) -> (b
             );
             match d {
                 Dialog::Transfer(records) => {
-                    ui.label(format!("{} 个项目", records.len()));
+                    ui.label((text.transfer_items)(records.len()));
                     egui::ScrollArea::vertical()
                         .id_salt("file-transfer-confirm-items")
                         .max_height(120.)
@@ -420,19 +422,19 @@ fn operation_prompt(ctx: &egui::Context, d: &mut Dialog, policy: &mut i32) -> (b
                             }
                         });
                     if let Some(r) = records.first() {
-                        ui.label(format!("目标：{}", r.destination));
+                        ui.label((text.transfer_destination)(&r.destination));
                     }
                     ui.add_space(12.);
                     egui::ComboBox::from_id_salt("file-conflict")
                         .selected_text(match *policy {
-                            1 => "同名时覆盖",
-                            3 => "同名时跳过",
-                            _ => "同名时保留两份",
+                            1 => text.transfer_conflict_overwrite,
+                            3 => text.transfer_conflict_skip,
+                            _ => text.transfer_conflict_keep_both,
                         })
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(policy, 2, "同名时保留两份");
-                            ui.selectable_value(policy, 1, "同名时覆盖");
-                            ui.selectable_value(policy, 3, "同名时跳过");
+                            ui.selectable_value(policy, 2, text.transfer_conflict_keep_both);
+                            ui.selectable_value(policy, 1, text.transfer_conflict_overwrite);
+                            ui.selectable_value(policy, 3, text.transfer_conflict_skip);
                         });
                 }
                 Dialog::Create(_, path, name) => {
@@ -450,28 +452,27 @@ fn operation_prompt(ctx: &egui::Context, d: &mut Dialog, policy: &mut i32) -> (b
                     );
                 }
                 Dialog::Delete(remote, e) => {
-                    ui.label(format!(
-                        "{}：{}",
-                        if *remote { "远端" } else { "本机" },
-                        e.full_path
+                    ui.label((text.transfer_side_path)(
+                        if *remote { text.transfer_remote } else { text.transfer_local },
+                        &e.full_path,
                     ));
                     ui.label(if e.entry_type < 4 {
-                        "文件夹及其内容将永久删除"
+                        text.transfer_delete_folder_body
                     } else {
-                        "文件将永久删除"
+                        text.transfer_delete_file_body
                     });
                 }
                 Dialog::Cancel(_) => {
-                    ui.label("已完成的文件会保留");
+                    ui.label(text.transfer_cancel_keeps_completed);
                 }
             }
             let (accept, dismiss) = crate::ui::controls::dialog_actions(
                 ui,
                 Some(
-                    crate::ui::controls::DialogAction::new("确认")
+                    crate::ui::controls::DialogAction::new(text.transfer_confirm)
                         .danger(matches!(d, Dialog::Delete(..))),
                 ),
-                Some("取消"),
+                Some(t().common.cancel),
             );
             yes = accept;
             no |= dismiss;

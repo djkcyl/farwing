@@ -25,6 +25,7 @@ use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use webrtc::data_channel::{RTCDataChannel, data_channel_state::RTCDataChannelState};
 
+use crate::i18n::t;
 use crate::transport::transfer::{Chunk, Credit, INITIAL_WINDOW, Window};
 use wire::{Body, Frame};
 
@@ -81,7 +82,7 @@ impl Registration {
     pub(crate) fn failure(&self) -> String {
         lock(&self.stream.fault)
             .clone()
-            .unwrap_or_else(|| "任务已暂停".into())
+            .unwrap_or_else(|| t().features.transfer_task_paused.into())
     }
     pub(crate) fn stopped(&self) -> bool {
         self.stream.stop.is_cancelled()
@@ -127,7 +128,7 @@ impl Transport {
             .store(if allowed { 2 } else { 1 }, Ordering::Release);
         if !allowed {
             for stream in lock(&self.streams).values() {
-                stream.fail("被控端已撤销文件传输权限");
+                stream.fail(t().features.transfer_permission_revoked);
             }
         }
         self.wake();
@@ -160,13 +161,13 @@ impl Transport {
         lock(&self.pending).clear();
         *lock(&self.fragments) = Default::default();
         for (_, stream) in lock(&self.streams).drain() {
-            stream.fail("设备连接已断开，任务已暂停");
+            stream.fail(t().features.transfer_disconnected_paused);
         }
         self.wake();
     }
     fn ready(&self) -> Result<()> {
-        ensure!(self.supported(), "被控端未就绪或不支持文件传输");
-        ensure!(self.allowed(), "被控端已关闭文件传输权限");
+        ensure!(self.supported(), "{}", t().features.transfer_host_not_ready);
+        ensure!(self.allowed(), "{}", t().features.transfer_permission_off);
         Ok(())
     }
 
@@ -186,15 +187,15 @@ impl Transport {
         let _waiting = Waiting(self, id);
         tokio::select! {
             biased;
-            _ = stop.cancelled() => anyhow::bail!("任务已暂停"),
+            _ = stop.cancelled() => anyhow::bail!("{}", t().features.transfer_task_paused),
             sent = self.send_session(wire::request(id, body)) => sent?,
         }
         let reply = tokio::select! {
             biased;
-            _ = stop.cancelled() => anyhow::bail!("任务已暂停"),
+            _ = stop.cancelled() => anyhow::bail!("{}", t().features.transfer_task_paused),
             reply = tokio::time::timeout(TIMEOUT, rx) => reply
-                .with_context(|| format!("远端未响应文件请求 {name}"))?
-                .context("文件连接已结束")?,
+                .with_context(|| (t().features.transfer_request_timed_out)(name))?
+                .context(t().features.transfer_connection_ended)?,
         };
         match reply {
             Body::Failed(failed) => Err(wire::Failure::from(failed).into()),
@@ -203,11 +204,11 @@ impl Transport {
     }
 
     async fn send_session(&self, frames: Vec<Vec<u8>>) -> Result<()> {
-        let channel = lock(&self.session).upgrade().context("文件通道未连接")?;
+        let channel = lock(&self.session).upgrade().context(t().features.transfer_channel_not_connected)?;
         // Fragments of one message go out back to back.
         let _gate = tokio::time::timeout(Duration::from_secs(30), self.session_lock.lock())
             .await
-            .context("文件发送队列等待超时")?;
+            .context(t().features.transfer_send_queue_timeout)?;
         for frame in frames {
             let frame = Bytes::from(frame);
             tokio::time::timeout(Duration::from_secs(30), async {
@@ -215,19 +216,19 @@ impl Transport {
                 while channel.buffered_amount().await + frame.len() > SESSION_QUEUE {
                     ensure!(
                         channel.ready_state() == RTCDataChannelState::Open,
-                        "文件通道已断开"
+                        "{}", t().features.transfer_channel_closed
                     );
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
                 ensure!(
                     channel.ready_state() == RTCDataChannelState::Open,
-                    "文件通道已断开"
+                    "{}", t().features.transfer_channel_closed
                 );
                 channel.send(&frame).await?;
                 Ok::<_, anyhow::Error>(())
             })
             .await
-            .context("文件发送超时")??;
+            .context(t().features.transfer_send_timeout)??;
         }
         Ok(())
     }
@@ -235,10 +236,10 @@ impl Transport {
     /// Send one frame on the bulk channel through its shared writer gate
     /// (at most [`crate::transport::bulk::QUEUE`] bytes queued in SCTP).
     async fn send_bulk(&self, frame: Vec<u8>) -> Result<()> {
-        let channel = lock(&self.bulk).upgrade().context("文件数据通道未连接")?;
+        let channel = lock(&self.bulk).upgrade().context(t().features.transfer_data_channel_not_connected)?;
         crate::transport::bulk::send(&channel, Bytes::from(frame), || self.supported())
             .await
-            .context("文件数据发送失败")
+            .context(t().features.transfer_data_send_failed)
     }
 
     /// Register a new transfer stream of this connection.
@@ -254,7 +255,7 @@ impl Transport {
             fault: Mutex::new(None),
         });
         let mut streams = lock(&self.streams);
-        ensure!(streams.len() < 64, "文件任务过多");
+        ensure!(streams.len() < 64, "{}", t().features.transfer_too_many_tasks);
         let id = loop {
             let id = self.transfers.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
             if id != 0 && !streams.contains_key(&id) {
@@ -287,7 +288,7 @@ impl Transport {
                 _ = changed => {},
                 // A FLOW never got lost on a reliable channel; this only
                 // bounds a host that stopped granting.
-                _ = tokio::time::sleep(TIMEOUT) => anyhow::bail!("被控端长时间未接收文件数据"),
+                _ = tokio::time::sleep(TIMEOUT) => anyhow::bail!("{}", t().features.transfer_host_not_receiving),
             }
         }
     }
@@ -334,7 +335,7 @@ impl Transport {
                     Ok(()) => {
                         let _ = stream.inbound.send(Inbound::Chunk(chunk));
                     }
-                    Err(error) => stream.fail(format!("被控端发送的数据不符合流控：{error}")),
+                    Err(error) => stream.fail((t().features.transfer_host_flow_violation)(&error.to_string())),
                 }
             }
             Frame::Flow(flow) => {

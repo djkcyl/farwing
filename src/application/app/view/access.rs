@@ -76,9 +76,9 @@ impl DeviceCenterApp {
     /// The label of the action that starts signing in.
     pub(super) fn sign_in_label(&mut self) -> &'static str {
         if self.saved_server().is_some() {
-            "登录"
+            t().common.sign_in
         } else {
-            "设置服务器并登录"
+            t().center.set_up_server_and_sign_in
         }
     }
 
@@ -92,12 +92,12 @@ impl DeviceCenterApp {
     pub(super) fn locked_page(&mut self, ui: &mut egui::Ui) {
         let page = self.center_ui.page;
         let title = match page {
-            Page::Friends => "登录后使用好友",
-            _ => "登录后使用",
+            Page::Friends => t().center.sign_in_for_friends,
+            _ => t().center.sign_in_to_use,
         };
         cards::page_header(ui, page.title(), "", |_| {});
         let primary = self.sign_in_label();
-        match cards::locked(ui, title, &[primary, "附近的设备"]) {
+        match cards::locked(ui, title, &[primary, t().center.nearby_devices]) {
             Some(0) => self.sign_in(),
             Some(_) => {
                 self.center_ui.page = Page::Devices;
@@ -117,7 +117,7 @@ impl DeviceCenterApp {
         ui.painter().text(
             egui::pos2(left, bounds.top() + 30.0),
             egui::Align2::LEFT_CENTER,
-            "未登录",
+            t().common.signed_out,
             FontId::proportional(theme::BODY),
             TEXT,
         );
@@ -128,7 +128,10 @@ impl DeviceCenterApp {
         let mut sign_in = false;
         ui.scope_builder(egui::UiBuilder::new().max_rect(button), |ui| {
             sign_in = ui
-                .add_sized(button.size(), primary("登录").min_size(vec2(0.0, 0.0)))
+                .add_sized(
+                    button.size(),
+                    primary(t().common.sign_in).min_size(vec2(0.0, 0.0)),
+                )
                 .clicked();
         });
         if sign_in {
@@ -137,10 +140,10 @@ impl DeviceCenterApp {
         let baseline = bounds.top() + 62.0;
         let (text, color) = match &server {
             Some(origin) => (
-                format!("服务器 {}", origin.trim_start_matches("https://")),
+                (t().center.server_origin)(origin.trim_start_matches("https://")),
                 MUTED,
             ),
-            None => ("未设置服务器".to_owned(), MUTED),
+            None => (t().center.no_server.to_owned(), MUTED),
         };
         ui.painter()
             .circle_filled(egui::pos2(left + 3.0, baseline), 3.0, color);

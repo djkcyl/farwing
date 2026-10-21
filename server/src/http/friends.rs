@@ -15,6 +15,7 @@ use farwing_protocol::api::{
 use farwing_protocol::realtime::{
     DeviceChangeKind, Envelope, FriendChangeKind, FriendChanged, types,
 };
+use farwing_protocol::error::reason;
 use farwing_protocol::{ErrorCode, caps, ids};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -25,11 +26,11 @@ const FRIEND_REQUESTS_PER_HOUR: u32 = 20;
 const MAX_GRANT_DEVICES: usize = 256;
 
 fn user_not_found() -> ApiError {
-    ApiError::new(ErrorCode::UserNotFound, "用户不存在")
+    ApiError::new(ErrorCode::UserNotFound, "user not found")
 }
 
 fn not_friends() -> ApiError {
-    ApiError::new(ErrorCode::NotFound, "对方不是好友")
+    ApiError::reason(ErrorCode::NotFound, reason::NOT_FRIENDS, "not friends")
 }
 
 /// Push `friend.changed{kind, user: about}` to the online devices of `to`.
@@ -189,7 +190,11 @@ pub async fn send_request(
         .filter(|u| !u.disabled)
         .ok_or_else(user_not_found)?;
     if other.id == auth.user.id {
-        return Err(ApiError::bad_request("不能添加自己为好友"));
+        return Err(ApiError::reason(
+            ErrorCode::BadRequest,
+            reason::SELF_FRIEND,
+            "cannot befriend yourself",
+        ));
     }
     let (me, them) = (auth.user.id.clone(), other.id.clone());
     let outcome = app
@@ -212,7 +217,7 @@ pub async fn send_request(
             )?)))
         })
         .await?
-        .ok_or_else(|| ApiError::new(ErrorCode::AlreadyFriends, "已经是好友"))?;
+        .ok_or_else(|| ApiError::new(ErrorCode::AlreadyFriends, "already friends"))?;
     let request = |r: db::FriendRequestRow| FriendRequest {
         id: r.id,
         user: user_summary(&other),

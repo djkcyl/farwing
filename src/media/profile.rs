@@ -54,7 +54,7 @@ impl FrameRateChoice {
     pub fn label(self, display: LocalDisplayInfo) -> String {
         let value = self.value(display);
         if self == Self::Auto {
-            format!("自动 {value} FPS")
+            (crate::i18n::t().session.fps_auto)(value)
         } else {
             format!("{value} FPS")
         }
@@ -105,13 +105,13 @@ impl CodecPreference {
     }
     pub fn label(self) -> &'static str {
         match self {
-            Self::Auto => "自动",
-            Self::PreferH264 => "优先 H.264",
-            Self::PreferH265 => "优先 HEVC",
-            Self::PreferAv1 => "优先 AV1",
-            Self::H264 => "仅 H.264",
-            Self::H265 => "仅 HEVC",
-            Self::Av1 => "仅 AV1",
+            Self::Auto => crate::i18n::t().session.auto,
+            Self::PreferH264 => crate::i18n::t().session.codec_prefer_h264,
+            Self::PreferH265 => crate::i18n::t().session.codec_prefer_hevc,
+            Self::PreferAv1 => crate::i18n::t().session.codec_prefer_av1,
+            Self::H264 => crate::i18n::t().session.codec_only_h264,
+            Self::H265 => crate::i18n::t().session.codec_only_hevc,
+            Self::Av1 => crate::i18n::t().session.codec_only_av1,
         }
     }
 
@@ -168,11 +168,11 @@ pub enum TransportChoice {
 }
 
 impl TransportChoice {
-    pub const fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
-            Self::Auto => "自动（LAN/P2P/relay）",
-            Self::P2p => "仅 LAN/P2P",
-            Self::Relay => "仅 relay",
+            Self::Auto => crate::i18n::t().session.transport_auto,
+            Self::P2p => crate::i18n::t().session.transport_p2p,
+            Self::Relay => crate::i18n::t().session.transport_relay,
         }
     }
 }
@@ -247,7 +247,8 @@ impl ConnectionMediaOptions {
         anyhow::ensure!(
             self.decoder.mode != super::selection::ProcessingMode::Software
                 || self.codec != CodecPreference::H265,
-            "软件解码不支持 HEVC"
+            "{}",
+            crate::i18n::t().session.software_no_hevc
         );
         Ok(())
     }

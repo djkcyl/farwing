@@ -5,6 +5,7 @@ use crate::account::{
     client::AuthenticatedClient,
 };
 use crate::features::host;
+use crate::i18n::t;
 use anyhow::{Result, bail};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -127,7 +128,7 @@ impl HostClient {
                 c.list_devices().await?;
                 c.refresh_friend_access().await
             }
-            _ => bail!("没有账号连接"),
+            _ => bail!("{}", t().session.error_no_account_connection),
         }
     }
     /// This device as a direct peer (its ID derived from its key).
@@ -220,7 +221,7 @@ impl HostClient {
     {
         let Identity::Guest(guest) = &self.identity else {
             let Identity::Account(account) = &self.identity else {
-                bail!("仅直连模式不连接服务器");
+                bail!("{}", t().session.error_direct_only_no_server);
             };
             // The host waits for an unreachable server and carries on.
             return account.request_waiting(request).await;
@@ -249,26 +250,27 @@ impl HostClient {
             }
             response
         };
-        tokio::select! { biased; _ = guest.ended.cancelled() => bail!("未登录的被控身份已结束"), result = operation => result }
+        tokio::select! { biased; _ = guest.ended.cancelled() => bail!("{}", t().session.error_guest_host_ended), result = operation => result }
     }
     pub(crate) async fn wol_info(
         &self,
         info: crate::features::host::wol::packet::LanInfo,
     ) -> Result<bool> {
         if self.is_guest() {
-            bail!("游客不支持局域网唤醒协助");
+            bail!("{}", t().session.error_guest_no_wol);
         }
         self.request(|api| async move { api.wol_info(info).await })
             .await
     }
     pub(crate) async fn wol_enabled(&self) -> Result<bool> {
-        anyhow::ensure!(!self.is_guest(), "未登录");
+        anyhow::ensure!(!self.is_guest(), "{}", t().common.signed_out);
         let devices = self
             .request(|api| async move { api.list_devices().await })
             .await?;
         anyhow::ensure!(
             devices.current_device.device_id == self.device_id(),
-            "本机设备身份已改变"
+            "{}",
+            t().session.error_local_identity_changed
         );
         Ok(devices.current_device.support_wol)
     }
@@ -279,7 +281,7 @@ impl HostClient {
         message: String,
     ) -> Result<()> {
         if self.is_guest() {
-            bail!("游客不支持电源操作");
+            bail!("{}", t().session.error_guest_no_power);
         }
         self.request(|api| async move { api.host_power_response(&request_id, code, message).await })
             .await
@@ -335,7 +337,7 @@ impl HostClient {
     }
     /// Remote boot of this device (`policy.wol`).
     pub(crate) async fn set_wol_enabled(&self, enabled: bool) -> Result<()> {
-        anyhow::ensure!(!self.is_guest(), "未登录");
+        anyhow::ensure!(!self.is_guest(), "{}", t().common.signed_out);
         self.publish(crate::account::api::DevicePolicy {
             wol: enabled,
             ..self.desired_policy()

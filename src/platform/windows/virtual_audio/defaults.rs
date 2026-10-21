@@ -5,6 +5,7 @@ use super::super::{
     host_service::{pipe::Handle, process, vault},
 };
 use anyhow::{Context, Result, ensure};
+use crate::i18n::t;
 use std::{marker::PhantomData, path::PathBuf, rc::Rc};
 use windows::{
     Win32::{
@@ -92,13 +93,13 @@ impl User {
         let token = if system {
             let mut raw = HANDLE::default();
             unsafe { WTSQueryUserToken(process::active_session(), &mut raw) }
-                .context("当前没有可设置默认麦克风的登录用户")?;
+                .context(t().system.audio_no_signed_in_user)?;
             let token = Handle(raw);
             let mut needed = 0;
             unsafe {
                 let _ = GetTokenInformation(raw, TokenUser, None, 0, &mut needed);
             }
-            ensure!(needed > 0 && needed < 65536, "音频用户身份无效");
+            ensure!(needed > 0 && needed < 65536, "{}", t().system.audio_user_identity_invalid);
             let mut buffer = vec![0usize; (needed as usize).div_ceil(size_of::<usize>())];
             unsafe {
                 GetTokenInformation(
@@ -190,14 +191,15 @@ impl Record {
         std::fs::File::open(path)?
             .take(32768)
             .read_to_end(&mut bytes)?;
-        ensure!(bytes.len() < 32768, "音频恢复记录过大");
+        ensure!(bytes.len() < 32768, "{}", t().system.audio_recovery_record_too_large);
         let record: Self = serde_json::from_slice(&bytes)?;
         ensure!(
             record.roles.len() <= 6
                 && record.roles.iter().all(|r| (0..=1).contains(&r.flow)
                     && (0..=2).contains(&r.role)
                     && r.original.len() < 4096),
-            "音频恢复记录无效"
+            "{}",
+            t().system.audio_recovery_record_invalid
         );
         Ok(record)
     }
@@ -226,7 +228,7 @@ impl Defaults {
         Self::recover("install")?;
         let directory = vault::root()?
             .parent()
-            .context("音频恢复目录无效")?
+            .context(t().system.audio_recovery_directory_invalid)?
             .join("audio-defaults");
         files::reject_reparse(&directory)?;
         if !directory.exists() {
@@ -241,7 +243,8 @@ impl Defaults {
             {
                 ensure!(
                     Record::load(&path)?.roles.is_empty(),
-                    "其他 Windows 用户的音频设备尚未恢复"
+                    "{}",
+                    t().system.audio_other_users_pending
                 );
             }
         }
@@ -251,7 +254,7 @@ impl Defaults {
         let user = Rc::new(User::current()?);
         let path = vault::root()?
             .parent()
-            .context("音频恢复目录无效")?
+            .context(t().system.audio_recovery_directory_invalid)?
             .join("audio-defaults")
             .join(format!("{purpose}-{}.json", user.sid));
         files::reject_reparse(path.parent().unwrap())?;
@@ -311,7 +314,8 @@ impl Defaults {
                 }
                 ensure!(
                     std::time::Instant::now() < deadline,
-                    "虚拟音频端点初始化超时"
+                    "{}",
+                    t().system.audio_endpoint_init_timeout
                 );
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
@@ -321,7 +325,7 @@ impl Defaults {
         let user = Rc::new(User::current()?);
         let directory = vault::root()?
             .parent()
-            .context("音频恢复目录无效")?
+            .context(t().system.audio_recovery_directory_invalid)?
             .join("audio-defaults");
         files::reject_reparse(directory.parent().unwrap())?;
         files::reject_reparse(&directory)?;
@@ -373,7 +377,8 @@ impl Defaults {
         if let Some((speakers, microphone)) = selection {
             ensure!(
                 roles.len() == 3 * (usize::from(speakers) + usize::from(microphone)),
-                "当前用户的默认音频设备不完整"
+                "{}",
+                t().system.audio_defaults_incomplete
             );
         }
         let record = Record { roles };
@@ -410,11 +415,11 @@ impl Defaults {
                 for index in 0..unsafe { devices.GetCount()? } {
                     let device = unsafe { devices.Item(index)? };
                     if ours(&device).unwrap_or(false) {
-                        ensure!(target.is_none(), "本程序虚拟音频端点不唯一");
+                        ensure!(target.is_none(), "{}", t().system.audio_endpoint_not_unique);
                         target = Some(id(&device)?);
                     }
                 }
-                let target = target.context("未找到本程序虚拟音频设备")?;
+                let target = target.context(t().system.audio_endpoint_missing)?;
                 targets.push((flow, target));
             }
             Ok(targets)

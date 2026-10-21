@@ -1,6 +1,7 @@
 //! Publisher business-channel routing and observed source reporting.
 use super::super::lock;
 use super::{ReportRoutes, ReportTarget};
+use crate::i18n::t;
 use anyhow::Result;
 use bytes::Bytes;
 use std::sync::Arc;
@@ -690,22 +691,22 @@ fn control_turn(
 ) -> (bool, String) {
     use crate::features::host::participants::{self, Refusal};
     let Some(key) = lease.participant() else {
-        return (false, "本次连接不能控制被控端".into());
+        return (false, t().features.peer_control_not_available.into());
     };
     if !take {
         participants::release_control(key);
         return (false, String::new());
     }
     if !lease.requested() || !lease.granted(farwing_protocol::caps::CONTROL) {
-        return (false, "没有键鼠控制权限".into());
+        return (false, t().features.peer_no_control_permission.into());
     }
     match participants::take_control(key, automatic) {
         Ok(()) => (true, String::new()),
-        Err(Refusal::NotAllowed) => (false, "没有键鼠控制权限".into()),
+        Err(Refusal::NotAllowed) => (false, t().features.peer_no_control_permission.into()),
         Err(Refusal::HeldBy(holder)) => {
             (false, crate::features::stream_control::control_turn::held_by(&holder))
         }
-        Err(Refusal::Shared) => (false, "多人连接时不自动开启键鼠控制".into()),
+        Err(Refusal::Shared) => (false, t().features.peer_control_not_automatic_shared.into()),
     }
 }
 

@@ -8,6 +8,7 @@
 //! the GUI or CLI process hosts and applies actions itself ([`perform`]).
 use super::store::{self, TrustedDevice};
 use crate::transport::nat::settings::Settings;
+use crate::i18n::t;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
@@ -68,18 +69,18 @@ pub(crate) struct Applied {
 }
 
 fn checked_caps(grants: &[String]) -> Result<Vec<String>> {
-    ensure!(grants.len() <= 64, "能力列表过长");
+    ensure!(grants.len() <= 64, "{}", t().session.caps_too_many);
     if let Some(unknown) = grants
         .iter()
         .find(|cap| !farwing_protocol::caps::is_known(cap))
     {
-        bail!("未知能力 `{unknown}`");
+        bail!("{}", (t().session.caps_unknown)(unknown));
     }
     Ok(farwing_protocol::caps::normalize(grants))
 }
 
 fn checked_device(device_id: &str) -> Result<()> {
-    crate::account::api::validate_device_id(device_id).context("设备 ID 无效")
+    crate::account::api::validate_device_id(device_id).context(t().session.device_id_invalid)
 }
 
 /// Check an action before applying it (resident side).
@@ -95,9 +96,10 @@ pub(crate) fn validate(action: &Action) -> Result<()> {
             checked_device(device_id)?;
             ensure!(
                 store::device_id_of(public_key).as_deref() == Some(device_id.as_str()),
-                "设备密钥与设备 ID 不符"
+                "{}",
+                t().session.device_key_mismatch
             );
-            ensure!(name.chars().count() <= 128, "设备名称过长");
+            ensure!(name.chars().count() <= 128, "{}", t().session.device_name_too_long);
             checked_caps(grants).map(drop)
         }
         Action::SetGrants { device_id, grants } => {
@@ -137,7 +139,8 @@ pub(crate) fn apply(action: Action) -> Result<Applied> {
         Action::SetGrants { device_id, grants } => {
             ensure!(
                 store::set_trusted_grants(&device_id, checked_caps(&grants)?)?,
-                "本机没有信任设备 {device_id}"
+                "{}",
+                (t().session.device_not_trusted)(&device_id)
             );
             Ok(Applied::default())
         }
@@ -269,7 +272,7 @@ pub(crate) fn hand_over() -> Result<()> {
         trusted: store::trusted(),
     };
     let path = crate::platform::windows::host_service::vault::root()?.join(HANDOVER);
-    std::fs::write(path, serde_json::to_vec(&state)?).context("保存交给后台服务的直连记录失败")
+    std::fs::write(path, serde_json::to_vec(&state)?).context(t().session.handover_save_failed)
 }
 
 /// The resident adopts handed-over records once, replacing its own (which
@@ -286,7 +289,7 @@ pub(crate) fn take_over() -> Result<bool> {
         Err(error) => {
             // Never retried: kept beside for a look, out of the way.
             let _ = std::fs::rename(&path, path.with_extension("json.invalid"));
-            return Err(error).context("交给后台服务的直连记录无效");
+            return Err(error).context(t().session.handover_invalid);
         }
     };
     apply(Action::Network(state.settings))?;
@@ -343,7 +346,7 @@ pub(crate) fn query() -> Result<(String, HostDirect)> {
     use crate::platform::windows::host_service::resident::{Reply, Request, call};
     match call(Request::DirectState)? {
         Reply::DirectState { account, state } => Ok((account, *state)),
-        _ => bail!("后台服务返回了无效响应"),
+        _ => bail!("{}", t().session.error_background_reply_invalid),
     }
 }
 
@@ -359,7 +362,7 @@ pub(crate) fn request(account: String, action: Action) -> Result<()> {
             assume(&action);
             Ok(())
         }
-        _ => bail!("后台服务返回了无效响应"),
+        _ => bail!("{}", t().session.error_background_reply_invalid),
     }
 }
 

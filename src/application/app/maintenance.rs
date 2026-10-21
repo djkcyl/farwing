@@ -3,6 +3,7 @@ use crate::platform::windows::{
     components::{self, Kind, Operation, application as deployment},
     host_service,
 };
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use std::{
     path::PathBuf,
@@ -99,7 +100,7 @@ fn is_downgrade(installed: Option<&str>) -> bool {
 pub(crate) fn uninstall(parent: Option<u32>) -> Result<()> {
     if let Some(parent) = parent {
         use windows::Win32::{Foundation::*, System::Threading::*};
-        ensure!(parent != std::process::id(), "无效卸载交接");
+        ensure!(parent != std::process::id(), t().app.invalid_uninstall_handoff);
         match unsafe {
             OpenProcess(
                 PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
@@ -114,7 +115,7 @@ pub(crate) fn uninstall(parent: Option<u32>) -> Result<()> {
                     ensure!(
                         host_service::vault::sid(parent)?
                             == host_service::vault::sid(std::process::id())?,
-                        "卸载交接用户不匹配"
+                        t().app.uninstall_user_mismatch
                     );
                     Ok(())
                 })();
@@ -123,7 +124,7 @@ pub(crate) fn uninstall(parent: Option<u32>) -> Result<()> {
                 }
                 ensure!(
                     unsafe { WaitForSingleObject(handle.0, 30_000) } == WAIT_OBJECT_0,
-                    "等待原程序退出超时"
+                    t().app.program_exit_timeout
                 );
             }
             Err(error) if error.code() == ERROR_INVALID_PARAMETER.to_hresult() => (),
@@ -134,7 +135,9 @@ pub(crate) fn uninstall(parent: Option<u32>) -> Result<()> {
     {
         use std::os::windows::process::CommandExt;
         let directory = helpers()?;
-        components::files::reject_reparse(directory.parent().context("卸载工作目录无效")?)?;
+        components::files::reject_reparse(
+            directory.parent().context(t().app.invalid_uninstall_folder)?,
+        )?;
         components::files::reject_reparse(&directory)?;
         std::fs::create_dir_all(&directory)?;
         let helper = directory.join(format!("uninstall-{}.exe", uuid::Uuid::new_v4().simple()));
@@ -143,7 +146,7 @@ pub(crate) fn uninstall(parent: Option<u32>) -> Result<()> {
             .args(["uninstall", "--parent", &std::process::id().to_string()])
             .creation_flags(0x08000000)
             .spawn()
-            .context("启动卸载程序失败")?;
+            .context(t().app.uninstaller_start_failed)?;
         return Ok(());
     }
     run(true, Vec::new())?;
@@ -198,9 +201,9 @@ fn run(uninstall: bool, launch_arguments: Vec<std::ffi::OsString>) -> Result<()>
         crate::ui::WindowConfig {
             viewport: egui::ViewportBuilder::default()
                 .with_title(if uninstall {
-                    "卸载 Farwing"
+                    t().app.uninstall_title
                 } else {
-                    "更新 Farwing"
+                    t().app.update_title
                 })
                 .with_icon(crate::ui::branding::icon())
                 .with_inner_size(crate::ui::theme::MAINTENANCE_WINDOW_SIZE)
@@ -251,18 +254,19 @@ impl crate::ui::App for Maintenance {
                                 self.open_installed(ui.ctx());
                             }
                         }
-                        Ok(true) => self.error = Some("需要重启 Windows 后完成".into()),
+                        Ok(true) => self.error = Some(t().app.restart_required.into()),
                         Err(error) => self.error = Some(error),
                     }
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.pending = None;
-                    self.error = Some("操作任务中断".into());
+                    self.error = Some(t().app.operation_interrupted.into());
                 }
                 Err(mpsc::TryRecvError::Empty) => (),
             }
         }
         use crate::ui::{controls, theme};
+        let text = &t().app;
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -272,24 +276,24 @@ impl crate::ui::App for Maintenance {
             .show(ui, |ui| {
                 ui.label(
                     egui::RichText::new(if self.uninstall {
-                        "卸载 Farwing"
+                        text.uninstall_title
                     } else {
-                        "更新 Farwing"
+                        text.update_title
                     })
                     .size(theme::DIALOG_TITLE),
                 );
                 ui.add_space(theme::DIALOG_HEADER_GAP);
                 if !self.uninstall {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("当前版本").color(theme::MUTED));
+                        ui.label(egui::RichText::new(text.current_version).color(theme::MUTED));
                         ui.label(
                             self.installed_version
                                 .as_ref()
                                 .map(|v| format!("v{v}"))
-                                .unwrap_or_else(|| "未知".into()),
+                                .unwrap_or_else(|| t().common.unknown.into()),
                         );
                         ui.label(egui::RichText::new("→").color(theme::MUTED));
-                        ui.label(egui::RichText::new("本次版本").color(theme::MUTED));
+                        ui.label(egui::RichText::new(text.this_version).color(theme::MUTED));
                         ui.label(
                             egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
                                 .color(theme::ACCENT),
@@ -298,25 +302,25 @@ impl crate::ui::App for Maintenance {
                     ui.add_space(12.);
                 }
                 ui.label(if self.finished {
-                    "卸载完成"
+                    text.uninstalled
                 } else if self.uninstall {
-                    "将断开所有连接并移除 Farwing"
+                    text.uninstall_notice
                 } else if is_downgrade(self.installed_version.as_deref()) {
-                    "将断开所有连接并降级到此版本"
+                    text.downgrade_notice
                 } else {
-                    "将断开所有连接并更新"
+                    text.update_notice
                 });
                 ui.add_space(12.);
                 if !self.finished {
                     ui.add_enabled_ui(self.pending.is_none(), |ui| {
                         if self.uninstall {
-                            ui.checkbox(&mut self.removal.remove_display_driver, "同时卸载 Farwing 虚拟显示驱动");
-                            ui.checkbox(&mut self.removal.remove_audio_driver, "同时卸载 Farwing 虚拟声卡" );
-                            ui.checkbox(&mut self.removal.remove_data, "同时删除本机 Farwing 数据");
+                            ui.checkbox(&mut self.removal.remove_display_driver, text.remove_display_driver);
+                            ui.checkbox(&mut self.removal.remove_audio_driver, text.remove_audio_driver);
+                            ui.checkbox(&mut self.removal.remove_data, text.remove_data);
                             if self.removal.remove_data {
-                                ui.label(egui::RichText::new("登录信息、设置、插件和日志将被删除").color(theme::AMBER));
+                                ui.label(egui::RichText::new(text.remove_data_notice).color(theme::AMBER));
                             }
-                        } else if ui.link("打开已安装版本").clicked() {
+                        } else if ui.link(text.open_installed).clicked() {
                             self.open_installed(ui.ctx());
                         }
                     });
@@ -339,12 +343,16 @@ impl crate::ui::App for Maintenance {
                     } else if self.pending.is_some() {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("正在处理…");
+                            ui.label(text.processing);
                         });
                     }
                 });
                 if self.finished {
-                    if controls::dialog_actions(ui, Some(controls::DialogAction::new("关闭")), None)
+                    if controls::dialog_actions(
+                        ui,
+                        Some(controls::DialogAction::new(t().common.close)),
+                        None,
+                    )
                         .0
                     {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -355,13 +363,13 @@ impl crate::ui::App for Maintenance {
                             controls::dialog_actions(
                                 ui,
                                 Some(controls::DialogAction::new(if self.uninstall {
-                                    "卸载程序"
+                                    text.uninstall
                                 } else if is_downgrade(self.installed_version.as_deref()) {
-                                    "降级并打开"
+                                    text.downgrade_and_open
                                 } else {
-                                    "更新并打开"
+                                    text.update_and_open
                                 })),
-                                Some("取消"),
+                                Some(t().common.cancel),
                             )
                         })
                         .inner;
@@ -387,7 +395,7 @@ impl Maintenance {
             Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Err(error) => {
                 self.finished = false;
-                self.error = Some(format!("打开已安装版本失败：{error:#}"));
+                self.error = Some((t().app.open_installed_failed)(&format!("{error:#}")));
             }
         }
     }
@@ -454,7 +462,7 @@ fn maintain_running(
                     }
                     std::thread::sleep(Duration::from_millis(50))
                 }
-                None => anyhow::bail!("旧版本未能退出"),
+                None => anyhow::bail!(t().app.old_version_not_exited),
             }
         };
         match removal {
@@ -488,17 +496,19 @@ fn maintain_running(
             Ok(())
         };
         let restored = match (resumed, reopened) {
-            (Err(a), Err(b)) => Err(anyhow::anyhow!(
-                "恢复被控失败：{a:#}；打开原版本失败：{b:#}"
-            )),
+            (Err(a), Err(b)) => Err(anyhow::anyhow!((t().app.restore_both_failed)(
+                &format!("{a:#}"),
+                &format!("{b:#}")
+            ))),
             (Err(e), _) | (_, Err(e)) => Err(e),
             _ => Ok(()),
         };
         return match restored {
             Ok(()) => Err(error),
-            Err(recovery) => Err(anyhow::anyhow!(
-                "{error:#}；恢复原运行状态失败：{recovery:#}"
-            )),
+            Err(recovery) => Err(anyhow::anyhow!((t().app.restore_state_failed)(
+                &format!("{error:#}"),
+                &format!("{recovery:#}")
+            ))),
         };
     }
     result
@@ -510,7 +520,7 @@ fn prepare_resident_update(
     use host_service::resident::{Reply, Request};
     let error = match request(Request::PrepareUpdate) {
         Ok(Reply::Done) => return Ok(()),
-        Ok(_) => anyhow::bail!("更新准备返回了无效响应"),
+        Ok(_) => anyhow::bail!(t().app.invalid_prepare_reply),
         Err(error) => error,
     };
     // Without the notice, stop the host: the protected Pause closes admission
@@ -520,9 +530,10 @@ fn prepare_resident_update(
     tracing::warn!(error=%format!("{error:#}"), "update preparation could not notify remote; stopping old host");
     match request(Request::Pause) {
         Ok(Reply::Done) => Ok(()),
-        Ok(_) => anyhow::bail!("停止被控返回无效响应"),
-        Err(shutdown) => Err(anyhow::anyhow!(
-            "更新通知失败：{error:#}；停止被控失败：{shutdown:#}"
-        )),
+        Ok(_) => anyhow::bail!(t().app.invalid_stop_reply),
+        Err(shutdown) => Err(anyhow::anyhow!((t().app.notify_and_stop_failed)(
+            &format!("{error:#}"),
+            &format!("{shutdown:#}")
+        ))),
     }
 }

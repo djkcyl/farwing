@@ -1,4 +1,5 @@
 //! Window connection lifecycle and event-loop integration.
+use crate::i18n::t;
 use super::chrome::borderless_resize;
 use super::player::ThreadedWindowsApp;
 use super::screen_windows::ScreenWindows;
@@ -440,7 +441,7 @@ impl ConnectingWindowsRunner {
             match event {
                 ViewerWindowEvent::Close => self.close_requested = true,
                 ViewerWindowEvent::Listening(audio) => {
-                    let window = self.window.as_ref().context("音频窗口已关闭")?;
+                    let window = self.window.as_ref().context(t().viewer.audio_window_closed)?;
                     self.audio_restore_geometry.get_or_insert_with(|| {
                         (
                             window.inner_size(),
@@ -449,7 +450,10 @@ impl ConnectingWindowsRunner {
                         )
                     });
                     configure_audio_window(window, false);
-                    self.connecting.as_mut().context("音频界面尚未准备")?.audio = Some(audio);
+                    self.connecting
+                        .as_mut()
+                        .context(t().viewer.audio_view_not_ready)?
+                        .audio = Some(audio);
                     window.request_redraw();
                 }
                 ViewerWindowEvent::Playing(session) => self.start_playing(*session)?,

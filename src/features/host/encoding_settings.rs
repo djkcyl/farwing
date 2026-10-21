@@ -1,6 +1,7 @@
 //! Local encoder constraints applied once when admitting a new connection.
 use super::format::{Backend, Capability, Codec};
 use serde::{Deserialize, Serialize};
+use crate::i18n::t;
 
 pub(crate) use crate::media::selection::ProcessingMode as EncoderMode;
 
@@ -16,10 +17,10 @@ impl EncoderCodec {
     pub const ALL: [Self; 4] = [Self::Automatic, Self::Av1, Self::H265, Self::H264];
     pub fn label(self) -> &'static str {
         match self {
-            Self::Automatic => "自动协商 AV1 / H.265 / H.264",
-            Self::H264 => "仅 H.264",
-            Self::H265 => "仅 H.265",
-            Self::Av1 => "仅 AV1",
+            Self::Automatic => t().features.host_codec_automatic,
+            Self::H264 => t().features.host_codec_h264_only,
+            Self::H265 => t().features.host_codec_h265_only,
+            Self::Av1 => t().features.host_codec_av1_only,
         }
     }
 }
@@ -68,12 +69,12 @@ impl EncodingSettings {
     pub fn validate(self) -> anyhow::Result<()> {
         anyhow::ensure!(
             !self.preferred_codec.restricted(),
-            "格式首选不能包含强制限制"
+            "{}", t().features.host_preferred_codec_restricted
         );
         anyhow::ensure!(
             self.mode != EncoderMode::Software
                 || matches!(self.codec, EncoderCodec::Automatic | EncoderCodec::H264),
-            "软件编码仅支持 H.264"
+            "{}", t().features.host_software_h264_only
         );
         Ok(())
     }
@@ -84,7 +85,7 @@ impl EncodingSettings {
             .filter(|capability| self.accepts(capability))
             .cloned()
             .collect();
-        anyhow::ensure!(!selected.is_empty(), "没有符合编码设置的可用编码器");
+        anyhow::ensure!(!selected.is_empty(), "{}", t().features.host_no_matching_encoder);
         Ok(selected)
     }
 }

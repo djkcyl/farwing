@@ -139,7 +139,7 @@ fn responder_socket() -> Result<UdpSocket> {
         Ipv4Addr::UNSPECIFIED,
         wire::DISCOVERY_PORT,
     )))
-    .with_context(|| format!("无法监听局域网发现端口 {}", wire::DISCOVERY_PORT))?;
+    .with_context(|| (crate::i18n::t().session.lan_discovery_port_failed)(wire::DISCOVERY_PORT))?;
     socket.join_multicast_v4(&group(), &Ipv4Addr::UNSPECIFIED)?;
     socket.set_multicast_loop_v4(true)?;
     socket.set_multicast_ttl_v4(1)?;

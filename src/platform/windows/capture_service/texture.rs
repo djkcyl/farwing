@@ -1,4 +1,5 @@
 use super::Layout;
+use crate::i18n::t;
 use crate::platform::windows::host_service::pipe::Handle;
 use anyhow::{Context, Result, ensure};
 use windows::{
@@ -21,7 +22,8 @@ pub(super) struct Surface {
 pub(super) fn descriptor(layout: Layout) -> Result<D3D11_TEXTURE2D_DESC> {
     ensure!(
         layout.width > 0 && layout.height > 0 && layout.width <= 16384 && layout.height <= 16384,
-        "共享采集尺寸无效"
+        "{}",
+        t().system.capture_shared_invalid_size
     );
     let format = DXGI_FORMAT(layout.format);
     ensure!(
@@ -29,7 +31,8 @@ pub(super) fn descriptor(layout: Layout) -> Result<D3D11_TEXTURE2D_DESC> {
             format,
             DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_R16G16B16A16_FLOAT
         ),
-        "共享采集格式无效"
+        "{}",
+        t().system.capture_shared_invalid_format
     );
     Ok(D3D11_TEXTURE2D_DESC {
         Width: layout.width,
@@ -54,7 +57,7 @@ pub(super) fn texture(
     unsafe {
         device.CreateTexture2D(desc, None, Some(&mut value))?;
     }
-    value.context("未创建共享采集纹理")
+    value.context(t().system.capture_shared_texture_not_created)
 }
 impl Surface {
     pub fn new(device: &ID3D11Device, layout: Layout) -> Result<Self> {
@@ -79,7 +82,11 @@ impl Surface {
     }
     pub fn open(device: &ID3D11Device, client: u32, value: u64, layout: Layout) -> Result<Self> {
         descriptor(layout)?;
-        ensure!(value != 0 && value <= isize::MAX as u64, "采集共享句柄无效");
+        ensure!(
+            value != 0 && value <= isize::MAX as u64,
+            "{}",
+            t().system.capture_shared_invalid_handle
+        );
         let process = Handle(unsafe { OpenProcess(PROCESS_DUP_HANDLE, false, client)? });
         let mut duplicated = HANDLE::default();
         unsafe {
@@ -111,7 +118,8 @@ impl Surface {
                 && desc.MipLevels == 1
                 && desc.SampleDesc.Count == 1
                 && desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX.0 as u32 != 0,
-            "共享采集纹理不匹配"
+            "{}",
+            t().system.capture_shared_texture_mismatch
         );
         Ok(Self {
             sync: texture.cast()?,
@@ -131,7 +139,8 @@ impl Surface {
         }
         ensure!(
             status == windows::core::HRESULT(0),
-            "共享采集同步失败：{status:?}"
+            "{}",
+            (t().system.capture_shared_sync_failed)(&format!("{status:?}"))
         );
         Ok(Some(Guard {
             sync: &self.sync,

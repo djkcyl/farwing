@@ -1,5 +1,6 @@
 //! Local feedback for a submitted physical resolution change; never sends a command.
 use crate::features::stream_control::StreamControlHandle;
+use crate::i18n::t;
 use crate::ui::theme;
 
 pub(super) fn show(
@@ -42,7 +43,7 @@ pub(super) fn show(
             let heading = if topology_visible {
                 topology.message.as_str()
             } else {
-                "正在切换分辨率…"
+                t().viewer.changing_resolution
             };
             content.label(egui::RichText::new(heading).size(theme::SECTION));
             if !topology_visible && let Some(mode) = mode {
@@ -52,7 +53,7 @@ pub(super) fn show(
             if content
                 .add_sized(
                     [120.0, theme::CONTROL_HEIGHT],
-                    crate::ui::controls::secondary("继续观看"),
+                    crate::ui::controls::secondary(t().viewer.keep_watching),
                 )
                 .clicked()
             {

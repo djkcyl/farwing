@@ -46,12 +46,12 @@ pub(crate) enum SelectionReason {
 impl SelectionReason {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Automatic => "自动选择",
-            Self::Preferred => "已采用首选",
-            Self::MissingGpu => "首选显卡不可用，已回退",
-            Self::GpuFormat => "首选显卡不支持本次格式，已回退",
-            Self::CodecFormat => "首选格式不可用，已回退",
-            Self::FailedCandidate => "原候选失败，已切换",
+            Self::Automatic => crate::i18n::t().session.selection_automatic,
+            Self::Preferred => crate::i18n::t().session.selection_preferred,
+            Self::MissingGpu => crate::i18n::t().session.selection_missing_gpu,
+            Self::GpuFormat => crate::i18n::t().session.selection_gpu_format,
+            Self::CodecFormat => crate::i18n::t().session.selection_codec_format,
+            Self::FailedCandidate => crate::i18n::t().session.selection_failed_candidate,
         }
     }
 }
@@ -76,9 +76,9 @@ impl ProcessingMode {
     pub const ALL: [Self; 3] = [Self::Automatic, Self::Hardware, Self::Software];
     pub fn label(self) -> &'static str {
         match self {
-            Self::Automatic => "硬件优先（自动回退）",
-            Self::Hardware => "仅硬件",
-            Self::Software => "仅软件",
+            Self::Automatic => crate::i18n::t().session.processing_automatic,
+            Self::Hardware => crate::i18n::t().session.processing_hardware,
+            Self::Software => crate::i18n::t().session.processing_software,
         }
     }
     pub fn hardware(self) -> bool {

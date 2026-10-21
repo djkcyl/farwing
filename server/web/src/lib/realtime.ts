@@ -3,6 +3,9 @@
 // cannot set request headers, so the ticket (or resume token) travels as a
 // WebSocket subprotocol next to `farwing.v2`.
 
+import { currentLang, t } from '../i18n';
+import { errorMessage } from '../i18n/errors';
+import { errorReason } from './api';
 import { sitePath } from './base';
 
 export const SUBPROTOCOL = 'farwing.v2';
@@ -32,13 +35,43 @@ export interface ErrorBody {
   code: string;
   message: string;
   retryable?: boolean;
+  details?: unknown;
 }
 
+/// A failed realtime request or connection: a server error (`server`, with
+/// the error body's details) or the connection's own (`timeout`,
+/// `protocol`, `closed`, `identity_mismatch`). The message is in the
+/// language of the moment; `text()` gives it in the current one.
 export class RealtimeError extends Error {
   code: string;
-  constructor(code: string, message: string) {
-    super(message);
+  details?: unknown;
+  server: boolean;
+  /// The WebSocket close code when the connection could not be opened.
+  closeCode?: number;
+  constructor(code: string, options: { server?: boolean; details?: unknown; closeCode?: number } = {}) {
+    super(code);
     this.code = code;
+    this.server = !!options.server;
+    this.details = options.details;
+    this.closeCode = options.closeCode;
+    this.message = this.text();
+  }
+
+  text(): string {
+    if (this.server) return errorMessage(currentLang(), this.code, errorReason(this.details), this.details);
+    const m = t().viewer;
+    switch (this.code) {
+      case 'timeout':
+        return m.realtime.timeout;
+      case 'protocol':
+        return m.realtime.protocol;
+      case 'closed':
+        return this.closeCode === undefined ? m.realtime.closed : m.realtime.cannotConnect(this.closeCode);
+      case 'identity_mismatch':
+        return m.ended.reasons.identity_mismatch;
+      default:
+        return this.code;
+    }
   }
 }
 
@@ -100,7 +133,7 @@ export class Realtime {
       const helloTimer = window.setTimeout(() => {
         if (!ready) {
           ws.close();
-          reject(new RealtimeError('timeout', '服务器没有响应'));
+          reject(new RealtimeError('timeout'));
         }
       }, 10000);
       ws.onmessage = (event) => {
@@ -119,7 +152,7 @@ export class Realtime {
           this.hello = envelope.data as ServerHello;
           if (ws.protocol !== SUBPROTOCOL) {
             ws.close();
-            reject(new RealtimeError('protocol', '服务器不支持网页连接'));
+            reject(new RealtimeError('protocol'));
             return;
           }
           resolve();
@@ -132,11 +165,11 @@ export class Realtime {
         window.clearTimeout(this.watchdog);
         for (const [, p] of this.pending) {
           window.clearTimeout(p.timer);
-          p.reject(new RealtimeError('closed', '连接已断开'));
+          p.reject(new RealtimeError('closed'));
         }
         this.pending.clear();
         if (!ready) {
-          reject(new RealtimeError('closed', `无法连接服务器（${event.code}）`));
+          reject(new RealtimeError('closed', { closeCode: event.code }));
           return;
         }
         if (ws === this.ws && !this.closedByUs) this.events.closed(event.code, event.reason);
@@ -165,7 +198,7 @@ export class Realtime {
         if (envelope.type === 'ack') pending.resolve(envelope.data);
         else {
           const body = envelope.data as ErrorBody;
-          pending.reject(new RealtimeError(body.code, body.message));
+          pending.reject(new RealtimeError(body.code, { server: true, details: body.details }));
         }
         return;
       }
@@ -186,7 +219,7 @@ export class Realtime {
     return new Promise<T>((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.pending.delete(id);
-        reject(new RealtimeError('timeout', '服务器没有响应'));
+        reject(new RealtimeError('timeout'));
       }, timeoutMs);
       this.pending.set(id, { resolve: resolve as (d: unknown) => void, reject, timer });
       this.raw({ v: 2, type, id, ...extra, data });

@@ -1,3 +1,4 @@
+use crate::i18n::t;
 use super::*;
 use egui::{FontId, Rect, Sense};
 
@@ -128,8 +129,8 @@ pub(crate) fn dialog_header(
             close_rect,
             if response.hovered() { TEXT } else { MUTED },
         );
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "关闭"));
-        response.on_hover_text("关闭").clicked()
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, t().common.close));
+        response.on_hover_text(t().common.close).clicked()
     } else {
         false
     };

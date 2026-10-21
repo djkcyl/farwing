@@ -18,28 +18,30 @@ struct CardAction {
 
 /// An invitation to connect to this device, with what the other side needs.
 fn share_text(device_id: &str, short: &str, settings: &Settings) -> String {
-    let mut text = String::from("我正在使用 Farwing，邀请你连接我的电脑。\n\n");
-    text.push_str(&format!(
-        "设备 ID：{}\n",
-        crate::account::api::device_id_text(device_id)
-    ));
+    let words = &t().center;
+    let mut lines = vec![
+        words.share_intro.to_owned(),
+        String::new(),
+        (words.share_device_id)(&crate::account::api::device_id_text(device_id)),
+    ];
     if !short.is_empty() {
-        text.push_str(&format!("短号：{}\n", assist_components::grouped_id(short)));
+        lines.push((words.share_short_number)(&assist_components::grouped_id(short)));
     }
     if !settings.mode.needs_password() {
-        text.push_str("无需访问码，连接时由我在本机确认。\n");
+        lines.push(words.share_no_code.to_owned());
     } else {
-        if settings.passwords == Passwords::Custom {
-            text.push_str("访问码请单独向我获取。\n");
+        lines.push(if settings.passwords == Passwords::Custom {
+            words.share_code_separately.to_owned()
         } else {
-            text.push_str(&format!("访问码：{}\n", settings.code));
-        }
+            (words.share_code)(&settings.code)
+        });
         if settings.mode.needs_confirmation() {
-            text.push_str("连接时还需要我在本机确认。\n");
+            lines.push(words.share_also_approve.to_owned());
         }
     }
-    text.push_str("\n打开 Farwing，在“设备”页输入设备 ID 或短号（同一局域网时也可以在“附近”中选择）连接。");
-    text
+    lines.push(String::new());
+    lines.push(words.share_how_to.to_owned());
+    lines.join("\n")
 }
 
 /// The access code: on or off, the code to tell others, how it is checked.
@@ -60,15 +62,17 @@ fn access_code_card(
         retry: false,
     };
     let settings = &snapshot.settings;
+    let text = &t().center;
     super::cards::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            ui.label(RichText::new("用访问码连接本机").strong());
+            ui.label(RichText::new(text.connect_with_code).strong());
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                 ui.add_enabled_ui(!saving, |ui| {
                     crate::ui::controls::service_switch(ui, &mut action.enabled);
                 });
-                action.settings = glyph(ui, Icon::Settings, "访问码设置", MUTED).clicked();
+                action.settings =
+                    glyph(ui, Icon::Settings, text.access_code_settings, MUTED).clicked();
             });
         });
         let enabled = allowed && action.enabled;
@@ -84,13 +88,13 @@ fn access_code_card(
                     &settings.code
                 };
                 let label = if !settings.mode.needs_password() {
-                    "访问码"
+                    text.access_code
                 } else {
                     settings.passwords.label()
                 };
                 ui.label(RichText::new(label).color(MUTED));
                 let code = if !settings.mode.needs_password() {
-                    "不需要访问码"
+                    text.no_access_code_needed
                 } else if *show_code && enabled {
                     password.as_str()
                 } else {
@@ -106,7 +110,8 @@ fn access_code_card(
                         .color(if enabled { TEXT } else { MUTED }),
                     (enabled && settings.mode.needs_password() && !password.is_empty())
                         .then_some(password.as_str()),
-                    "已复制访问码",
+                    text.copy_access_code,
+                    text.access_code_copied,
                 );
                 if settings.mode.needs_password() {
                     ui.add_enabled_ui(enabled, |ui| {
@@ -115,7 +120,7 @@ fn access_code_card(
                     if settings.passwords.random() {
                         action.refresh = ui
                             .add_enabled_ui(enabled && !saving, |ui| {
-                                glyph(ui, Icon::Refresh, "换一个临时访问码", MUTED)
+                                glyph(ui, Icon::Refresh, text.new_temporary_code, MUTED)
                             })
                             .inner
                             .clicked();
@@ -130,7 +135,11 @@ fn access_code_card(
                     if ui
                         .add_enabled(
                             enabled,
-                            login_button(if copied.is_some() { "已复制" } else { "复制邀请" })
+                            login_button(if copied.is_some() {
+                                t().common.copied
+                            } else {
+                                text.copy_invitation
+                            })
                                 .min_size(vec2(theme::ASSIST_SHARE_WIDTH, theme::CONTROL_HEIGHT)),
                         )
                         .clicked()
@@ -144,23 +153,23 @@ fn access_code_card(
             });
             ui.horizontal_wrapped(|ui| {
                 ui.label(
-                    RichText::new(format!("{} · 访客可以：", settings.mode.label()))
+                    RichText::new((text.guests_can_in_mode)(settings.mode.label()))
                         .size(theme::SMALL)
                         .color(MUTED),
                 );
-                super::cards::caps_icons(ui, &settings.grants(), "无权限");
+                super::cards::caps_icons(ui, &settings.grants(), text.no_permissions);
             });
         }
         if action.enabled && !allowed {
-            ui.colored_label(AMBER, "“允许连接本机”已关闭");
+            ui.colored_label(AMBER, text.allow_connections_off);
         }
         if let Some(error) = save_error {
-            ui.colored_label(AMBER, format!("设置未保存：{error}"));
+            ui.colored_label(AMBER, (text.settings_not_saved)(error));
         }
         if let Some(error) = &snapshot.error {
             ui.horizontal(|ui| {
                 ui.colored_label(AMBER, error);
-                action.retry = ui.add(crate::ui::controls::secondary("重试")).clicked();
+                action.retry = ui.add(crate::ui::controls::secondary(t().common.retry)).clicked();
             });
         }
     });
@@ -188,7 +197,7 @@ impl DeviceCenterApp {
             })
             .is_err()
         {
-            self.status = StatusMessage::error("访问码后台已停止");
+            self.status = StatusMessage::error(t().center.access_code_service_stopped);
         }
     }
 
@@ -248,45 +257,46 @@ impl DeviceCenterApp {
         };
         let mut save = false;
         let mut cancel = false;
+        let text = &t().center;
         let response = egui::Modal::new(egui::Id::new("host-assist-password-editor"))
             .frame(dialog_frame())
             .show(ctx, |ui| {
                 ui.set_width(theme::MESSAGE_DIALOG_WIDTH);
                 cancel = crate::ui::controls::dialog_header(
                     ui,
-                    "固定访问码",
+                    text.fixed_access_code,
                     crate::ui::controls::DialogIcon::Edit,
                     true,
                 );
-                ui.label("新的固定访问码");
+                ui.label(text.new_fixed_access_code);
                 ui.add_sized(
                     [ui.available_width(), theme::CONTROL_HEIGHT],
                     singleline_input(&mut editor.code)
                         .password(!editor.visible)
                         .char_limit(128),
                 );
-                ui.label("再次输入");
+                ui.label(text.enter_again);
                 ui.add_sized(
                     [ui.available_width(), theme::CONTROL_HEIGHT],
                     singleline_input(&mut editor.confirmation)
                         .password(!editor.visible)
                         .char_limit(128),
                 );
-                ui.checkbox(&mut editor.visible, "显示访问码");
+                ui.checkbox(&mut editor.visible, text.show_access_code);
                 let valid = Settings::valid_custom_code(&editor.code);
                 let matching = editor.code == editor.confirmation;
                 if !editor.code.is_empty() && !valid {
-                    ui.colored_label(AMBER, "需 8 至 16 位，同时包含字母和数字");
+                    ui.colored_label(AMBER, text.code_rule);
                 } else if !editor.confirmation.is_empty() && !matching {
-                    ui.colored_label(AMBER, "两次输入的访问码不一致");
+                    ui.colored_label(AMBER, text.codes_dont_match);
                 }
                 let (accept, dismiss) = crate::ui::controls::dialog_actions(
                     ui,
                     Some(
-                        crate::ui::controls::DialogAction::new("保存并应用")
+                        crate::ui::controls::DialogAction::new(text.save_and_apply)
                             .enabled(valid && matching && !host.status().saving),
                     ),
-                    Some("取消"),
+                    Some(t().common.cancel),
                 );
                 save = accept;
                 cancel |= dismiss;
@@ -322,18 +332,19 @@ impl DeviceCenterApp {
         let original = host.assistance.settings();
         let mut settings = original.clone();
         let mut close = false;
+        let text = &t().center;
         let modal = egui::Modal::new(egui::Id::new("host-assist-settings"))
             .frame(dialog_frame())
             .show(ctx, |ui| {
                 ui.set_width(theme::MESSAGE_DIALOG_WIDTH);
                 close = crate::ui::controls::dialog_header(
                     ui,
-                    "访问码设置",
+                    text.access_code_settings,
                     crate::ui::controls::DialogIcon::Info,
                     true,
                 );
                 ui.add_enabled_ui(!host.status().saving, |ui| {
-                    ui.label(RichText::new("访客连接方式").color(MUTED));
+                    ui.label(RichText::new(text.guest_connection_method).color(MUTED));
                     egui::ComboBox::from_id_salt("host-assist-mode")
                         .width(ui.available_width())
                         .selected_text(settings.mode.label())
@@ -344,7 +355,7 @@ impl DeviceCenterApp {
                         });
                     if settings.mode.needs_password() {
                         ui.add_space(12.0);
-                        ui.label(RichText::new("访问码类型").color(MUTED));
+                        ui.label(RichText::new(text.access_code_type).color(MUTED));
                         let mut selected = settings.passwords;
                         egui::ComboBox::from_id_salt("host-assist-passwords")
                             .width(ui.available_width())
@@ -363,12 +374,12 @@ impl DeviceCenterApp {
                         }
                         ui.add_space(12.0);
                         ui.horizontal(|ui| {
-                            ui.label("固定访问码");
+                            ui.label(text.fixed_access_code);
                             ui.label(
                                 RichText::new(if settings.custom_code.is_empty() {
-                                    "未设置"
+                                    text.not_set
                                 } else {
-                                    "已设置"
+                                    text.set
                                 })
                                 .color(MUTED),
                             );
@@ -376,9 +387,9 @@ impl DeviceCenterApp {
                                 if ui
                                     .add(crate::ui::controls::secondary(
                                         if settings.custom_code.is_empty() {
-                                            "设置"
+                                            text.set_action
                                         } else {
-                                            "修改"
+                                            text.change
                                         },
                                     ))
                                     .clicked()
@@ -395,7 +406,7 @@ impl DeviceCenterApp {
                         });
                     }
                     ui.add_space(12.0);
-                    ui.label(RichText::new("访客可以").color(MUTED));
+                    ui.label(RichText::new(text.guests_can).color(MUTED));
                     let current = settings.grants();
                     let mut chosen = current.clone();
                     ui.horizontal_wrapped(|ui| {
@@ -428,7 +439,7 @@ impl DeviceCenterApp {
                 });
                 close |= crate::ui::controls::dialog_actions(
                     ui,
-                    Some(crate::ui::controls::DialogAction::new("完成")),
+                    Some(crate::ui::controls::DialogAction::new(t().common.done)),
                     None,
                 )
                 .0;

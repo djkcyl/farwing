@@ -3,12 +3,17 @@
 // carries the device ID, a timestamp and an Ed25519 signature over method,
 // path, timestamp and the SHA-256 of the body; account requests add the
 // access token bound to this device.
+import { currentLang, t } from '../i18n';
+import { errorMessage } from '../i18n/errors';
 import { deviceKey, browserName } from './device';
 import { sitePath } from './base';
 import { hex, sha256, utf8 } from './encoding';
 
 export const PROTOCOL_VERSION = 2;
 
+/// A failed request: the server's error code and details (the server's
+/// `message` is for logs; the console shows `errorText`). `http`: an answer
+/// without an API error body; `bad_response`: an answer that is not JSON.
 export class ApiError extends Error {
   status: number;
   code: string;
@@ -115,7 +120,7 @@ function failed(
     setToken(null);
     onUnauthorized?.();
   }
-  return new ApiError(response.status, error.code ?? 'error', error.message ?? response.statusText, error.details);
+  return new ApiError(response.status, error.code ?? 'http', error.message ?? response.statusText, error.details);
 }
 
 export async function call<T>(method: string, path: string, body?: unknown, options: CallOptions = {}): Promise<T> {
@@ -136,8 +141,8 @@ export async function call<T>(method: string, path: string, body?: unknown, opti
   try {
     value = raw ? JSON.parse(raw) : {};
   } catch {
-    if (!response.ok) throw new ApiError(response.status, 'error', `服务器错误（${response.status}）`);
-    throw new ApiError(response.status, 'bad_response', '服务器返回了无法识别的内容');
+    if (!response.ok) throw new ApiError(response.status, 'http', response.statusText);
+    throw new ApiError(response.status, 'bad_response', 'unrecognized response');
   }
   if (!response.ok) throw failed(response, value, auth && !options.bearer && !options.quiet);
   return value as T;
@@ -152,13 +157,20 @@ export async function fetchBlob(path: string): Promise<Blob> {
   return response.blob();
 }
 
-/// A short message for a failed request.
+/// The `reason` in an API error's details, if any.
+export function errorReason(details: unknown): string | undefined {
+  const reason = (details as { reason?: unknown } | null | undefined)?.reason;
+  return typeof reason === 'string' ? reason : undefined;
+}
+
+/// A short message for a failed request, in the current language.
 export function errorText(error: unknown): string {
   if (error instanceof ApiError) {
-    if (error.code === 'rate_limited') return error.message || '操作太频繁';
-    return error.message || `请求失败（${error.status}）`;
+    if (error.code === 'http') return t().common.serverError(error.status);
+    if (error.code === 'bad_response') return t().common.badResponse;
+    return errorMessage(currentLang(), error.code, errorReason(error.details), error.details);
   }
-  if (error instanceof TypeError) return '无法连接服务器';
+  if (error instanceof TypeError) return t().common.cannotConnect;
   return (error as Error)?.message ?? String(error);
 }
 

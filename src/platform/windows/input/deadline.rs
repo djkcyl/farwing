@@ -1,5 +1,6 @@
 //! On-demand high-resolution wakeup; no polling thread or global timer period.
 use anyhow::{Context as _, Result};
+use crate::i18n::t;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -46,7 +47,7 @@ impl Timer {
                 TIMER_MODIFY_STATE.0 | SYNCHRONIZATION_SYNCHRONIZE.0,
             )
         }
-        .context("创建鼠标高精度定时器失败")?;
+        .context(t().system.input_timer_create_failed)?;
         let callback = Box::new(Callback {
             wake,
             fired: AtomicBool::new(false),
@@ -58,7 +59,7 @@ impl Timer {
                 unsafe {
                     let _ = CloseHandle(timer);
                 }
-                return Err(error).context("创建鼠标定时通知失败");
+                return Err(error).context(t().system.input_timer_notify_failed);
             }
         };
         Ok(Self {
@@ -85,7 +86,7 @@ impl Timer {
         unsafe {
             SetThreadpoolWait(self.wait, Some(self.timer), None);
             SetWaitableTimerEx(self.timer, &due, 0, None, None, None, 0)
-                .context("设置鼠标发送定时器失败")?;
+                .context(t().system.input_timer_set_failed)?;
         }
         Ok(())
     }

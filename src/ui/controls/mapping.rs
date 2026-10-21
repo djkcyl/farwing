@@ -1,4 +1,5 @@
 use super::{switch, theme};
+use crate::i18n::t;
 use egui::{
     Align, Align2, FontId, Layout, Rect, RichText, Sense, Stroke, Ui, UiBuilder, pos2, vec2,
 };
@@ -52,11 +53,16 @@ pub(crate) fn mapping_table_header(ui: &mut Ui) {
         vec2(ui.available_width(), theme::MAPPING_TABLE_HEADER),
         Sense::hover(),
     );
-    for (rect, label) in
-        columns(rect)
-            .into_iter()
-            .zip(["", "规则", "地址", "连通状态", "网速", "累计流量", "操作"])
-    {
+    let t = &t().controls;
+    for (rect, label) in columns(rect).into_iter().zip([
+        "",
+        t.mapping_rule,
+        t.mapping_address,
+        t.mapping_reachability,
+        t.mapping_speed,
+        t.mapping_traffic,
+        t.mapping_actions,
+    ]) {
         ui.painter().text(
             pos2(rect.left(), rect.center().y),
             Align2::LEFT_CENTER,
@@ -108,11 +114,11 @@ pub(crate) fn mapping_row(ui: &mut Ui, row: MappingRow<'_>, last: bool) -> Mappi
     }
     ui.interact(cells[0], ui.id().with("service-type"), Sense::hover())
         .on_hover_text(if row.url.is_some() {
-            "HTTP 服务"
+            t().controls.http_service
         } else if row.reachable == Some(true) {
-            "TCP 服务"
+            t().controls.tcp_service
         } else {
-            "类型未知"
+            t().controls.unknown_type
         });
     line(
         ui,
@@ -121,9 +127,12 @@ pub(crate) fn mapping_row(ui: &mut Ui, row: MappingRow<'_>, last: bool) -> Mappi
         false,
     )
     .on_hover_text(row.name);
-    for (index, (label, value)) in [("本地", row.local), ("目标", row.target)]
-        .into_iter()
-        .enumerate()
+    for (index, (label, value)) in [
+        (t().controls.mapping_local, row.local),
+        (t().controls.mapping_target, row.target),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let rect = pair_line(cells[2], index);
         let mut cell = cell_ui(ui, rect);
@@ -162,9 +171,9 @@ pub(crate) fn mapping_row(ui: &mut Ui, row: MappingRow<'_>, last: bool) -> Mappi
             response.on_hover_text(format!(
                 "{value}\n{}",
                 if row.url.is_some() {
-                    "打开 HTTP 服务"
+                    t().controls.open_http_service
                 } else {
-                    "复制本地地址"
+                    t().controls.copy_local_address
                 }
             ));
         } else {
@@ -172,7 +181,7 @@ pub(crate) fn mapping_row(ui: &mut Ui, row: MappingRow<'_>, last: bool) -> Mappi
         }
     }
     let detail = if row.probing {
-        "探测中…"
+        t().controls.probing
     } else {
         row.detail
     };
@@ -193,8 +202,8 @@ pub(crate) fn mapping_row(ui: &mut Ui, row: MappingRow<'_>, last: bool) -> Mappi
         MappingRowAction::None
     };
     let hint = match (row.hint.is_empty(), row.can_probe) {
-        (true, true) => "重新探测".to_owned(),
-        (false, true) => format!("{}\n重新探测", row.hint),
+        (true, true) => t().controls.probe_again.to_owned(),
+        (false, true) => format!("{}\n{}", row.hint, t().controls.probe_again),
         _ => row.hint.to_owned(),
     };
     if !hint.is_empty() {
@@ -237,18 +246,24 @@ pub(crate) fn mapping_row(ui: &mut Ui, row: MappingRow<'_>, last: bool) -> Mappi
     let mut enabled = row.enabled;
     if switch(&mut actions, &mut enabled)
         .on_hover_text(if row.enabled {
-            "停用规则"
+            t().controls.disable_rule
         } else {
-            "启用规则"
+            t().controls.enable_rule
         })
         .changed()
     {
         action = MappingRowAction::Enable(enabled);
     }
-    if super::edit_button(&mut actions, "编辑规则", theme::COMPACT_HEIGHT).clicked() {
+    if super::edit_button(&mut actions, t().controls.edit_rule, theme::COMPACT_HEIGHT).clicked() {
         action = MappingRowAction::Edit;
     }
-    if super::close_button(&mut actions, "删除规则", theme::COMPACT_HEIGHT).clicked() {
+    if super::close_button(
+        &mut actions,
+        t().controls.delete_rule,
+        theme::COMPACT_HEIGHT,
+    )
+    .clicked()
+    {
         action = MappingRowAction::Delete;
     }
     if !last {
@@ -304,8 +319,8 @@ pub(crate) fn mapping_empty(ui: &mut Ui, alias: &str, height: f32) -> bool {
     ui.vertical_centered(|ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(320.0, 58.0), Sense::hover());
         for (x, title, subtitle) in [
-            (rect.left(), "本机", "127.0.0.1"),
-            (rect.right() - 128.0, alias, "目标服务"),
+            (rect.left(), t().controls.this_device, "127.0.0.1"),
+            (rect.right() - 128.0, alias, t().controls.target_service),
         ] {
             let node = Rect::from_min_size(pos2(x, rect.top()), vec2(128.0, 58.0));
             ui.painter()
@@ -331,7 +346,7 @@ pub(crate) fn mapping_empty(ui: &mut Ui, alias: &str, height: f32) -> bool {
         p.line_segment([c + vec2(13.0, 5.0), c + vec2(19.0, 0.0)], stroke);
         ui.add_space(20.0);
         ui.label(
-            RichText::new("连接你的远端服务")
+            RichText::new(t().controls.no_rules)
                 .size(theme::SECTION)
                 .strong(),
         );
@@ -339,7 +354,7 @@ pub(crate) fn mapping_empty(ui: &mut Ui, alias: &str, height: f32) -> bool {
         add = ui
             .add_sized(
                 vec2(132.0, theme::CONTROL_HEIGHT),
-                super::primary("添加规则"),
+                super::primary(t().controls.add_rule),
             )
             .clicked();
     });

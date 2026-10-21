@@ -1,5 +1,6 @@
 //! Process-bound recovery guard primitives. No display policy lives here.
 use anyhow::{Context, Result, ensure};
+use crate::i18n::t;
 use windows::{
     Win32::{Foundation::*, System::Threading::*},
     core::PCWSTR,
@@ -19,7 +20,8 @@ impl Serial {
         let result = unsafe { WaitForSingleObject(handle.0, INFINITE) };
         ensure!(
             result == WAIT_OBJECT_0 || result == WAIT_ABANDONED,
-            "无法取得显示操作锁"
+            "{}",
+            t().system.display_lock_unavailable
         );
         Ok(Self(handle))
     }
@@ -67,16 +69,17 @@ pub(crate) fn parent(pid: u32, created: u64) -> Result<Handle> {
                 pid,
             )
         }
-        .context("无法打开显示拥有者进程")?,
+        .context(t().system.display_owner_open_failed)?,
     );
-    ensure!(birth(handle.0)? == created, "显示拥有者进程已更换");
+    ensure!(birth(handle.0)? == created, "{}", t().system.display_owner_replaced);
     Ok(handle)
 }
 pub(crate) fn exited(handle: &Handle, timeout: u32) -> Result<bool> {
     let result = unsafe { WaitForSingleObject(handle.0, timeout) };
     ensure!(
         result == WAIT_OBJECT_0 || result == WAIT_TIMEOUT,
-        "无法等待显示拥有者进程"
+        "{}",
+        t().system.display_owner_wait_failed
     );
     Ok(result == WAIT_OBJECT_0)
 }
@@ -99,7 +102,7 @@ pub(crate) fn start_guard(token: &str) -> Result<()> {
     let result = unsafe { WaitForSingleObject(ready.0, 10000) };
     if result != WAIT_OBJECT_0 {
         let status = child.try_wait()?;
-        anyhow::bail!("显示恢复守护未就绪：{status:?}");
+        anyhow::bail!("{}", (t().system.display_guard_not_ready)(&format!("{status:?}")));
     }
     Ok(())
 }

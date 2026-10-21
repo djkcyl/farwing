@@ -1,5 +1,6 @@
 //! Task-owned progress snapshots; no GUI or notification I/O in transfer loops.
 use super::*;
+use crate::i18n::t;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -61,7 +62,7 @@ impl Journal {
         let notice = Notice {
             id: uuid::Uuid::new_v4().simple().to_string(),
             receiving,
-            name: "文件".into(),
+            name: t().features.transfer_notice_files.into(),
             updated: chrono::Utc::now().timestamp(),
             ..Default::default()
         };
@@ -91,9 +92,9 @@ impl Progress {
                     .to_string_lossy()
                     .into_owned()
             })
-            .unwrap_or_else(|| "空文件夹".into());
+            .unwrap_or_else(|| t().features.transfer_empty_folder.into());
         if files.len() > 1 {
-            self.notice.name = format!("{} 等 {} 个文件", self.notice.name, files.len());
+            self.notice.name = (t().features.transfer_files_and_more)(&self.notice.name, files.len());
         }
         self.notice.folder = folder.to_string_lossy().into_owned();
         self.emit();

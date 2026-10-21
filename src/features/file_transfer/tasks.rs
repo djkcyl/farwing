@@ -7,6 +7,7 @@ use super::{
     wire::{self, Body, code, conflict},
     *,
 };
+use crate::i18n::t;
 use crate::transport::transfer::{CHUNK, kind};
 use std::{path::PathBuf, time::Instant};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -32,11 +33,11 @@ pub(super) async fn directory(
         path: if roots { String::new() } else { path.clone() },
     };
     let Body::Listing(listing) = wire.request(Body::List(request), &stop).await? else {
-        anyhow::bail!("目录响应类型不匹配");
+        anyhow::bail!("{}", t().features.transfer_unexpected_listing_reply);
     };
     ensure!(
         listing.entries.len() <= storage::MAX_FILES,
-        "远端目录项目过多"
+        "{}", t().features.transfer_remote_too_many_entries
     );
     let base = if listing.path.is_empty() {
         path
@@ -53,13 +54,13 @@ pub(super) async fn directory(
                     && e.path.len() < 65536
                     && !e.name.contains('\0')
                     && !e.path.contains('\0'),
-                "远端目录路径无效"
+                "{}", t().features.transfer_remote_path_invalid
             );
             let full_path = if roots {
-                ensure!(!e.path.is_empty(), "远端目录路径无效");
+                ensure!(!e.path.is_empty(), "{}", t().features.transfer_remote_path_invalid);
                 e.path
             } else {
-                ensure!(!e.name.contains(['\\', '/']), "远端目录路径无效");
+                ensure!(!e.name.contains(['\\', '/']), "{}", t().features.transfer_remote_path_invalid);
                 service::join_remote(&base, &e.name)
             };
             let entry_type = match e.kind {
@@ -101,14 +102,14 @@ pub(super) async fn make_dir(
 ) -> Result<String> {
     ensure!(
         storage::safe_relative(&name)?.components().count() == 1,
-        "文件夹名称无效"
+        "{}", t().features.transfer_folder_name_invalid
     );
     match wire
         .request(Body::MakeDir(wire::MakeDir { parent, name }), &stop)
         .await?
     {
         Body::Done(done) => Ok(done.path),
-        _ => anyhow::bail!("文件操作响应类型不匹配"),
+        _ => anyhow::bail!("{}", t().features.transfer_unexpected_operation_reply),
     }
 }
 
@@ -123,7 +124,7 @@ pub(super) async fn rename(
         .await?
     {
         Body::Done(done) => Ok(done.path),
-        _ => anyhow::bail!("文件操作响应类型不匹配"),
+        _ => anyhow::bail!("{}", t().features.transfer_unexpected_operation_reply),
     }
 }
 
@@ -138,7 +139,7 @@ pub(super) async fn remove(
         .await?
     {
         Body::Done(_) => Ok(()),
-        _ => anyhow::bail!("文件操作响应类型不匹配"),
+        _ => anyhow::bail!("{}", t().features.transfer_unexpected_operation_reply),
     }
 }
 
@@ -151,7 +152,7 @@ pub(super) async fn discard(wire: Arc<Transport>, key: String, stop: Cancellatio
     };
     match wire.request(Body::Cancel(cancel), &stop).await? {
         Body::Done(_) => Ok(()),
-        _ => anyhow::bail!("文件操作响应类型不匹配"),
+        _ => anyhow::bail!("{}", t().features.transfer_unexpected_operation_reply),
     }
 }
 
@@ -167,7 +168,7 @@ async fn exists(
     };
     match wire.request(Body::Exists(request), stop).await? {
         Body::Existing(v) => Ok((v.present.contains(&name), v.writing.contains(&name))),
-        _ => anyhow::bail!("同名检查响应类型不符"),
+        _ => anyhow::bail!("{}", t().features.transfer_unexpected_exists_reply),
     }
 }
 
@@ -222,7 +223,7 @@ pub(super) async fn run(
         .max(repo.transferred(&record.key))
         .max(record.completed_bytes());
     if let Err(e) = repo.save(&record) {
-        repo.report(format!("无法保存续传记录：{e:#}"));
+        repo.report((t().features.transfer_resume_save_failed)(&format!("{e:#}")));
     }
     tracing::info!(
         key = %record.key,
@@ -277,15 +278,15 @@ async fn next(transfer: &mut Registration) -> Result<Inbound> {
     };
     message
         .with_context(|| transfer.failure())?
-        .context("被控端长时间没有传输数据")?
-        .context("文件连接已结束")
+        .context(t().features.transfer_host_idle)?
+        .context(t().features.transfer_connection_ended)
 }
 
 /// A failed `ItemDone` as an error naming the item.
 fn item_failure(done: &wire::ItemDone, items: &[FileInfo]) -> anyhow::Error {
     let failure = wire::Failure::new(done.error_code, done.message.clone());
     match items.get(done.entry as usize) {
-        Some(item) => anyhow::Error::new(failure).context(format!("{} 传输失败", item.rel_path)),
+        Some(item) => anyhow::Error::new(failure).context((t().features.transfer_item_failed)(&item.rel_path)),
         None => failure.into(),
     }
 }
@@ -308,19 +309,19 @@ async fn upload(
         r.total = storage::validate_manifest(&r.files)?;
         repo.save(r)?;
     }
-    let root = r.local_root.clone().context("本地源目录无效")?;
+    let root = r.local_root.clone().context(t().features.transfer_local_source_invalid)?;
     if !r.started {
         let name = if r.folder.is_empty() {
             r.files
                 .first()
-                .context("没有要发送的文件")?
+                .context(t().features.transfer_nothing_to_send)?
                 .rel_path
                 .clone()
         } else {
             r.folder.clone()
         };
         let (present, writing) = exists(wire, r.destination.clone(), name, stop).await?;
-        ensure!(!writing, "另一个任务正在写入同名文件");
+        ensure!(!writing, "{}", t().features.transfer_name_being_written);
         if present && r.policy == conflict::SKIP {
             r.state = TaskState::Skipped;
             return Ok(());
@@ -345,7 +346,7 @@ async fn upload(
         key: r.key.clone(),
     };
     let Body::Plan(plan) = wire.request(Body::Upload(request), stop).await? else {
-        anyhow::bail!("上传计划响应类型不匹配");
+        anyhow::bail!("{}", t().features.transfer_unexpected_plan_reply);
     };
     r.started = true;
     repo.save(r)?;
@@ -369,7 +370,7 @@ async fn send_items(
 ) -> Result<()> {
     ensure!(
         plan.transfer == transfer.id && plan.items.len() == pending.len(),
-        "上传计划与清单不符"
+        "{}", t().features.transfer_upload_plan_mismatch
     );
     // The host's partial files count only when their tails match ours.
     let offsets = {
@@ -410,21 +411,21 @@ async fn send_items(
         offsets: offsets.clone(),
     };
     let Body::Done(_) = wire.request(Body::UploadStart(start), stop).await? else {
-        anyhow::bail!("上传开始响应类型不匹配");
+        anyhow::bail!("{}", t().features.transfer_unexpected_upload_start_reply);
     };
     let mut saver = Saver::new();
     let mut sent = r.completed_bytes();
     let mut unconfirmed = 0usize;
     let confirm = |message: Inbound, r: &mut Record, unconfirmed: &mut usize| -> Result<()> {
         let Inbound::ItemDone(done) = message else {
-            anyhow::bail!("上传任务收到了意外的数据");
+            anyhow::bail!("{}", t().features.transfer_upload_unexpected_data);
         };
         if done.error_code != code::OK {
             return Err(item_failure(&done, pending));
         }
         let item = pending
             .get(done.entry as usize)
-            .context("被控端确认了未知的文件")?;
+            .context(t().features.transfer_host_confirmed_unknown)?;
         upsert(
             r,
             PartialFile {
@@ -434,7 +435,7 @@ async fn send_items(
                 skipped: false,
             },
         );
-        *unconfirmed = unconfirmed.checked_sub(1).context("被控端重复确认文件")?;
+        *unconfirmed = unconfirmed.checked_sub(1).context(t().features.transfer_host_confirmed_twice)?;
         Ok(())
     };
     for (index, item) in pending.iter().enumerate() {
@@ -474,7 +475,7 @@ async fn send_items(
                 tokio::select! {
                     biased;
                     _ = transfer.cancelled() => anyhow::bail!(transfer.failure()),
-                    read = file.read_exact(&mut data) => { read.context("源文件读取失败")?; }
+                    read = file.read_exact(&mut data) => { read.context(t().features.transfer_source_read_failed)?; }
                 }
             }
             let last = position + len as u64 == item.size;
@@ -498,7 +499,7 @@ async fn send_items(
     }
     // Every byte is out; the host confirms each saved item.
     while unconfirmed > 0 {
-        let message = next(transfer).await.context("等待被控端保存文件")?;
+        let message = next(transfer).await.context(t().features.transfer_waiting_host_save)?;
         confirm(message, r, &mut unconfirmed)?;
         saver.save(repo, r)?;
     }
@@ -517,7 +518,7 @@ async fn download(
             .trim_end_matches(['\\', '/'])
             .rsplit(['\\', '/'])
             .next()
-            .context("远端源文件无效")?;
+            .context(t().features.transfer_remote_source_invalid)?;
         let relative = storage::safe_relative(name)?;
         if r.policy == conflict::SKIP && PathBuf::from(&r.destination).join(relative).exists() {
             r.state = TaskState::Skipped;
@@ -531,7 +532,7 @@ async fn download(
         key: r.key.clone(),
     };
     let Body::Manifest(manifest) = wire.request(Body::Download(request), stop).await? else {
-        anyhow::bail!("下载清单响应类型不匹配");
+        anyhow::bail!("{}", t().features.transfer_unexpected_manifest_reply);
     };
     let result = receive_items(wire, stop, &mut transfer, r, repo, manifest).await;
     if result.is_err() {
@@ -548,7 +549,7 @@ async fn receive_items(
     repo: &Repository,
     manifest: wire::Manifest,
 ) -> Result<()> {
-    ensure!(manifest.transfer == transfer.id, "下载清单与任务不符");
+    ensure!(manifest.transfer == transfer.id, "{}", t().features.transfer_manifest_task_mismatch);
     let files = manifest.items.iter().map(FileInfo::from).collect::<Vec<_>>();
     let total = storage::validate_manifest(&files)?;
     if r.initialized {
@@ -556,7 +557,7 @@ async fn receive_items(
             r.folder == manifest.folder
                 && r.files.len() == files.len()
                 && r.files.iter().zip(&files).all(|(a, b)| a.same(b)),
-            wire::Failure::new(code::CHANGED, "源文件已变化，无法续传")
+            wire::Failure::new(code::CHANGED, t().features.transfer_source_changed)
         );
     } else {
         r.files = files;
@@ -575,7 +576,7 @@ async fn receive_items(
                     return Ok(root);
                 }
                 let relative = storage::safe_relative(&folder)?;
-                ensure!(relative.components().count() == 1, "远端文件夹名包含路径");
+                ensure!(relative.components().count() == 1, "{}", t().features.transfer_remote_folder_has_path);
                 let mut target = root.join(&relative);
                 if target.exists() && policy == conflict::RENAME {
                     for i in 1..10000 {
@@ -584,7 +585,7 @@ async fn receive_items(
                             break;
                         }
                     }
-                    ensure!(!target.exists(), "无法分配目标目录");
+                    ensure!(!target.exists(), "{}", t().features.transfer_target_folder_unavailable);
                 }
                 if !target.exists() {
                     std::fs::create_dir(&target)?;
@@ -594,7 +595,7 @@ async fn receive_items(
             .await??,
         );
     }
-    let root = r.local_root.clone().context("下载目录无效")?;
+    let root = r.local_root.clone().context(t().features.transfer_download_folder_invalid)?;
     r.started = true;
     repo.save(r)?;
     // Offer what is already here: partial files with their tail digests.
@@ -621,7 +622,7 @@ async fn receive_items(
         items: holdings.iter().map(|h| h.plan.clone()).collect(),
     };
     let Body::Accepted(accepted) = wire.request(Body::DownloadStart(start), stop).await? else {
-        anyhow::bail!("下载开始响应类型不匹配");
+        anyhow::bail!("{}", t().features.transfer_unexpected_download_start_reply);
     };
     ensure!(
         accepted.offsets.len() == holdings.len()
@@ -629,7 +630,7 @@ async fn receive_items(
                 .iter()
                 .zip(&accepted.offsets)
                 .all(|(h, &offset)| h.plan.skip || offset == 0 || offset == h.plan.offset),
-        "被控端续传位置无效"
+        "{}", t().features.transfer_host_resume_offset_invalid
     );
     let expected = (0..holdings.len())
         .filter(|&i| !holdings[i].plan.skip)
@@ -655,20 +656,20 @@ async fn receive_items(
         let chunk = match next(transfer).await? {
             Inbound::Chunk(chunk) => chunk,
             Inbound::ItemDone(done) => {
-                ensure!(done.error_code != code::OK, "下载任务收到了意外的确认");
+                ensure!(done.error_code != code::OK, "{}", t().features.transfer_download_unexpected_confirmation);
                 return Err(item_failure(&done, &r.files));
             }
         };
         let index = expected[next_item];
         ensure!(
             chunk.entry as usize == index,
-            "被控端发送的文件顺序不符"
+            "{}", t().features.transfer_host_entry_order
         );
         let item = r.files[index].clone();
         if item.directory {
             ensure!(
                 chunk.data.is_empty() && chunk.last,
-                "被控端发送了目录内容"
+                "{}", t().features.transfer_host_sent_directory_data
             );
             let (root, directory) = (root.clone(), item.clone());
             tokio::task::spawn_blocking(move || storage::make_directory(&root, &directory))
@@ -697,19 +698,19 @@ async fn receive_items(
         let receiving = open.as_mut().expect("opened above");
         ensure!(
             chunk.offset == receiving.position,
-            "被控端文件数据不连续"
+            "{}", t().features.transfer_host_data_not_contiguous
         );
         let len = chunk.data.len();
         let end = receiving
             .position
             .checked_add(len as u64)
             .filter(|end| *end <= item.size)
-            .context("文件块超过声明长度")?;
+            .context(t().features.transfer_chunk_exceeds_size)?;
         receiving
             .file
             .write_all(&chunk.data)
             .await
-            .context("写入本地文件失败")?;
+            .context(t().features.transfer_local_write_failed)?;
         receiving.position = end;
         wire.delivered(transfer, len).await?;
         received += len as u64;

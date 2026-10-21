@@ -12,18 +12,24 @@ use crate::webdb::{self, AuditEntry};
 use axum::Json;
 use axum::extract::State;
 use farwing_protocol::api::{Empty, LoginResponse};
+use farwing_protocol::error::reason;
 use farwing_protocol::{ErrorCode, ids};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::net::IpAddr;
 use std::time::Duration;
 
 /// Record an audit entry; failures are logged, never returned.
+///
+/// `detail` is language-neutral: a JSON object with stable keys that the
+/// web console shows in its language (`{"reason": "login_failed"}`,
+/// `{"admin": true}`, `{"guests": false}`), or `Null` for none.
 pub async fn audit(
     app: &App,
     actor: Option<(&str, &str)>,
     kind: &str,
     target: &str,
-    detail: &str,
+    detail: Value,
     ok: bool,
     ip: IpAddr,
 ) {
@@ -32,7 +38,7 @@ pub async fn audit(
         actor_name: actor.map(|(_, name)| name.to_owned()).unwrap_or_default(),
         kind: kind.to_owned(),
         target: target.to_owned(),
-        detail: detail.to_owned(),
+        detail: if detail.is_null() { String::new() } else { detail.to_string() },
         ok,
         ip: ip.to_string(),
         ..Default::default()
@@ -60,21 +66,35 @@ pub async fn new_hash(password: String) -> ApiResult<String> {
         .map_err(|_| ApiError::internal())
 }
 
-/// The command line's username rule, with the web console's wording.
-pub fn username_rule(name: &str) -> ApiResult<()> {
-    crate::admin::validate_username(name)
-        .map_err(|_| ApiError::bad_request("用户名须为 1–64 位字母、数字或 . _ - @"))
+/// The detail of a failed attempt in the audit log.
+pub fn failure(reason: &'static str) -> Value {
+    json!({ "reason": reason })
 }
 
-/// The command line's password rule, with the web console's wording.
+/// The command line's username rule.
+pub fn username_rule(name: &str) -> ApiResult<()> {
+    crate::admin::validate_username(name).map_err(|e| {
+        ApiError::reason(ErrorCode::BadRequest, reason::USERNAME_INVALID, e.to_string())
+            .with_detail("max", crate::admin::MAX_USERNAME_LEN)
+    })
+}
+
+/// The command line's password rule.
 pub fn password_rule(password: &str) -> ApiResult<()> {
-    crate::admin::check_password(password).map_err(|_| {
-        if password.chars().count() > 1024 {
-            ApiError::bad_request("密码太长")
+    crate::admin::check_password(password).map_err(|e| {
+        if password.chars().count() > crate::admin::MAX_PASSWORD_LEN {
+            ApiError::reason(ErrorCode::BadRequest, reason::PASSWORD_TOO_LONG, e.to_string())
+                .with_detail("max", crate::admin::MAX_PASSWORD_LEN)
         } else {
-            ApiError::bad_request(format!("密码至少 {} 位", crate::admin::MIN_PASSWORD_LEN))
+            ApiError::reason(ErrorCode::BadRequest, reason::PASSWORD_TOO_SHORT, e.to_string())
+                .with_detail("min", crate::admin::MIN_PASSWORD_LEN)
         }
     })
+}
+
+/// The username belongs to another account.
+pub fn username_taken() -> ApiError {
+    ApiError::reason(ErrorCode::Conflict, reason::USERNAME_TAKEN, "username is already taken")
 }
 
 // ===================================================================== info
@@ -128,7 +148,11 @@ pub async fn set_profile(
 ) -> ApiResult<Json<Empty>> {
     let nickname = db::clip(req.nickname.trim(), 64);
     if nickname.chars().any(char::is_control) {
-        return Err(ApiError::bad_request("昵称不能包含控制字符"));
+        return Err(ApiError::reason(
+            ErrorCode::BadRequest,
+            reason::NICKNAME_INVALID,
+            "nickname contains control characters",
+        ));
     }
     let uid = auth.user.id.clone();
     app.db
@@ -183,8 +207,9 @@ pub async fn set_password(
     password_rule(&req.new_password)?;
     let actor = Some((auth.user.id.as_str(), auth.user.username.as_str()));
     if !check_password(&app, req.old_password, auth.user.password_hash.clone()).await? {
-        audit(&app, actor, "password.change", &auth.user.username, "当前密码不正确", false, ip).await;
-        return Err(ApiError::new(ErrorCode::Forbidden, "当前密码不正确"));
+        let why = reason::CURRENT_PASSWORD_INCORRECT;
+        audit(&app, actor, "password.change", &auth.user.username, failure(why), false, ip).await;
+        return Err(ApiError::reason(ErrorCode::Forbidden, why, "current password is incorrect"));
     }
     let hash = new_hash(req.new_password).await?;
     let (uid, keep) = (auth.user.id.clone(), auth.token_hash.clone());
@@ -211,7 +236,7 @@ pub async fn set_password(
             app.hub.revoke_device(&device);
         }
     }
-    audit(&app, actor, "password.change", &auth.user.username, "", true, ip).await;
+    audit(&app, actor, "password.change", &auth.user.username, Value::Null, true, ip).await;
     Ok(Json(Empty {}))
 }
 
@@ -236,7 +261,7 @@ pub async fn totp_setup(
     JsonBody(req): JsonBody<PasswordOnly>,
 ) -> ApiResult<Json<TotpSetup>> {
     if !check_password(&app, req.password, auth.user.password_hash.clone()).await? {
-        return Err(ApiError::new(ErrorCode::Forbidden, "密码不正确"));
+        return Err(password_incorrect());
     }
     let secret = crate::totp::new_secret();
     let (uid, s2) = (auth.user.id.clone(), secret.clone());
@@ -254,10 +279,18 @@ pub async fn totp_setup(
         })
         .await?;
     if enabled {
-        return Err(ApiError::new(ErrorCode::Conflict, "已经开启了二次验证"));
+        return Err(ApiError::reason(
+            ErrorCode::Conflict,
+            reason::TOTP_ALREADY_ENABLED,
+            "two-step verification is already enabled",
+        ));
     }
     if !admin {
-        return Err(ApiError::forbidden("二次验证只用于管理员账号"));
+        return Err(ApiError::reason(
+            ErrorCode::Forbidden,
+            reason::TOTP_ADMIN_ONLY,
+            "two-step verification is for administrators",
+        ));
     }
     let issuer = format!("Farwing {}", app.settings.read().instance_name);
     Ok(Json(TotpSetup {
@@ -287,10 +320,14 @@ pub async fn totp_enable(
     let uid = auth.user.id.clone();
     let (secret, enabled, _) = app.db.call(move |c| webdb::totp(c, &uid)).await?;
     let Some(secret) = secret.filter(|_| enabled.is_none()) else {
-        return Err(ApiError::new(ErrorCode::Conflict, "请先开始设置二次验证"));
+        return Err(ApiError::reason(
+            ErrorCode::Conflict,
+            reason::TOTP_SETUP_REQUIRED,
+            "start the two-step verification setup first",
+        ));
     };
     if !crate::totp::verify(&secret, &req.code, db::now_s()) {
-        return Err(ApiError::new(ErrorCode::Forbidden, "验证码不正确"));
+        return Err(code_incorrect());
     }
     let codes = crate::totp::new_recovery_codes();
     let hashes: Vec<String> = codes.iter().map(|c| sha256_hex(c.as_bytes())).collect();
@@ -306,7 +343,7 @@ pub async fn totp_enable(
         Some((&auth.user.id, &auth.user.username)),
         "totp.enable",
         &auth.user.username,
-        "",
+        Value::Null,
         true,
         ip,
     )
@@ -330,10 +367,10 @@ pub async fn totp_disable(
     JsonBody(req): JsonBody<DisableRequest>,
 ) -> ApiResult<Json<Empty>> {
     if !check_password(&app, req.password, auth.user.password_hash.clone()).await? {
-        return Err(ApiError::new(ErrorCode::Forbidden, "密码不正确"));
+        return Err(password_incorrect());
     }
     if !second_factor(&app, &auth.user.id, &req.code).await? {
-        return Err(ApiError::new(ErrorCode::Forbidden, "验证码不正确"));
+        return Err(code_incorrect());
     }
     let uid = auth.user.id.clone();
     app.db.call(move |c| webdb::clear_totp(c, &uid)).await?;
@@ -342,12 +379,24 @@ pub async fn totp_disable(
         Some((&auth.user.id, &auth.user.username)),
         "totp.disable",
         &auth.user.username,
-        "",
+        Value::Null,
         true,
         ip,
     )
     .await;
     Ok(Json(Empty {}))
+}
+
+fn password_incorrect() -> ApiError {
+    ApiError::reason(ErrorCode::Forbidden, reason::PASSWORD_INCORRECT, "password is incorrect")
+}
+
+fn code_incorrect() -> ApiError {
+    ApiError::reason(
+        ErrorCode::Forbidden,
+        reason::TOTP_CODE_INCORRECT,
+        "verification code is incorrect",
+    )
 }
 
 /// Check a TOTP code or consume a recovery code.
@@ -389,13 +438,14 @@ pub async fn verify_login(
         .map_err(ApiError::rate_limited)?;
     let actor = Some((auth.user.id.as_str(), auth.user.username.as_str()));
     if !second_factor(&app, &auth.user.id, &req.code).await? {
-        audit(&app, actor, "login.totp", &auth.user.username, "验证码不正确", false, ip).await;
-        return Err(ApiError::new(ErrorCode::Forbidden, "验证码不正确"));
+        let failed = failure(reason::TOTP_CODE_INCORRECT);
+        audit(&app, actor, "login.totp", &auth.user.username, failed, false, ip).await;
+        return Err(code_incorrect());
     }
     app.limiter.clear(&key);
     let hash = auth.token_hash.clone();
     app.db.call(move |c| webdb::set_token_mfa(c, &hash)).await?;
-    audit(&app, actor, "login.totp", &auth.user.username, "", true, ip).await;
+    audit(&app, actor, "login.totp", &auth.user.username, Value::Null, true, ip).await;
     Ok(Json(Empty {}))
 }
 
@@ -419,7 +469,10 @@ pub async fn register(
     JsonBody(req): JsonBody<RegisterRequest>,
 ) -> ApiResult<Json<LoginResponse>> {
     if !app.settings.read().registration {
-        return Err(ApiError::forbidden("本服务器没有开放注册"));
+        return Err(ApiError::new(
+            ErrorCode::RegistrationDisabled,
+            "registration is closed on this server",
+        ));
     }
     app.limiter
         .take(&format!("register-ip:{ip}"), 10, Duration::from_secs(3600))
@@ -440,17 +493,17 @@ pub async fn register(
         .call(move |c| {
             let tx = c.transaction()?;
             let Some(invite) = webdb::invite_by_hash(&tx, &code_hash)? else {
-                return Ok(Err("邀请码无效"));
+                return Ok(Err(reason::INVITE_INVALID));
             };
             if !invite.usable(db::now_s()) {
-                return Ok(Err("邀请码已失效"));
+                return Ok(Err(reason::INVITE_EXPIRED));
             }
             if db::get_user_by_name(&tx, &name)?.is_some() {
-                return Ok(Err("用户名已被使用"));
+                return Ok(Err(reason::USERNAME_TAKEN));
             }
             db::create_user(&tx, &uid, &name, &nickname, &hash)?;
             if !webdb::use_invite(&tx, &invite.id, &uid, &ip_text)? {
-                return Ok(Err("邀请码已失效"));
+                return Ok(Err(reason::INVITE_EXPIRED));
             }
             db::revoke_device_logins(&tx, &did, &uid, "replaced_by_login")?;
             db::insert_access_token(&tx, &tok_hash, &uid, &did)?;
@@ -461,9 +514,15 @@ pub async fn register(
         .await?;
     let invite = match outcome {
         Ok(invite) => invite,
-        Err(message) => {
-            audit(&app, None, "register", &username, message, false, ip).await;
-            return Err(ApiError::bad_request(message));
+        Err(why) => {
+            audit(&app, None, "register", &username, failure(why), false, ip).await;
+            return Err(match why {
+                reason::USERNAME_TAKEN => username_taken(),
+                reason::INVITE_INVALID => {
+                    ApiError::reason(ErrorCode::BadRequest, why, "unknown invitation code")
+                }
+                _ => ApiError::reason(ErrorCode::BadRequest, why, "invitation code is no longer valid"),
+            });
         }
     };
     if invite.auto_friend {
@@ -478,7 +537,7 @@ pub async fn register(
         Some((&user_id, &username)),
         "register",
         &username,
-        &format!("邀请码 {}", invite.note),
+        json!({ "invite": invite.note }),
         true,
         ip,
     )

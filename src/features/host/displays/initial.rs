@@ -1,6 +1,7 @@
 //! Initial layout policy, before capabilities are probed or media tracks start.
 use super::*;
 use crate::features::stream_control::publisher::{ConnectOptions, Resolution};
+use crate::i18n::t;
 
 fn size(value: Option<&Resolution>) -> Option<(u32, u32)> {
     let value = value?;
@@ -15,7 +16,8 @@ impl Session {
     pub(crate) async fn prepare(&self, options: ConnectOptions) -> Result<capture::Screen> {
         ensure!(
             options.kind == 1 && matches!(options.connect_type, 1 | 2),
-            "不支持的被控连接类型"
+            "{}",
+            t().features.screen_connection_type_unsupported
         );
         // Changing this host's resolution needs the `display` capability,
         // also when the session starts: without it the screens are viewed
@@ -39,15 +41,23 @@ impl Session {
         }
         ensure!(
             !options.force_virtual || self.lease.display_expansion_allowed(),
-            "本次会话不允许强制创建虚拟屏"
+            "{}",
+            t().features.screen_force_virtual_not_allowed
         );
-        ensure!(options.virtual_modes.len() <= 64, "虚拟屏模式数量过多");
+        ensure!(
+            options.virtual_modes.len() <= 64,
+            "{}",
+            t().features.screen_too_many_virtual_modes
+        );
         if let Some(params) = &options.params {
-            ensure!((0..=4).contains(&params.resolution_type), "无效分辨率策略");
+            ensure!(
+                (0..=4).contains(&params.resolution_type),
+                "{}",
+                t().features.screen_resolution_policy_invalid
+            );
             if params.resolution_type == 4 {
-                validate_modes(&[
-                    size(params.chosen_resolution.as_ref()).context("缺少指定分辨率")?
-                ])?;
+                validate_modes(&[size(params.chosen_resolution.as_ref())
+                    .context(t().features.screen_resolution_missing)?])?;
             }
         }
         let modes: Vec<_> = options
@@ -71,7 +81,7 @@ impl Session {
     async fn select(&self, previous: &capture::Screen, requested: i32) -> Result<capture::Screen> {
         let screens = tokio::task::spawn_blocking(capture::screens)
             .await
-            .context("显示器读取任务中断")??;
+            .context(t().features.screen_read_interrupted)??;
         screens
             .iter()
             .find(|s| requested >= 0 && s.id == requested)
@@ -83,7 +93,7 @@ impl Session {
             .or_else(|| screens.iter().find(|s| s.primary))
             .or(screens.first())
             .cloned()
-            .context("没有可用显示器")
+            .context(t().features.screen_none_available)
     }
     pub(crate) fn initial_screen(&self, screen: &capture::Screen) -> capture::Screen {
         let state = lock(&self.state);
@@ -127,7 +137,11 @@ impl State {
                     .downcast_ref::<display::topology::ModeTestRejected>()
                     .is_some() =>
             {
-                ensure!(lease.requested(), "显示操作已取消");
+                ensure!(
+                    lease.requested(),
+                    "{}",
+                    t().features.screen_operation_cancelled
+                );
                 // Preflight did not modify Windows. Do not leave a fictitious
                 // desired mode for cleanup, or persist it as successfully applied.
                 self.journal.desired = None;
@@ -222,7 +236,8 @@ impl State {
         let saved = self.preferences.manual.clone();
         ensure!(
             saved.len() <= 3 && saved.len() + screens.len() <= 5,
-            "已保存布局超出屏幕数量上限"
+            "{}",
+            t().features.screen_saved_layout_too_many
         );
         self.restoring = true;
         let restore = (|| -> Result<()> {
@@ -257,7 +272,7 @@ impl State {
             screens.iter().find(|s| s.id == options.screen_id)
         }
         .cloned()
-        .context("请求的显示器不可用")?;
+        .context(t().features.screen_requested_unavailable)?;
         // The saved controller layout owns initial physical/virtual modes.
         // Incoming resolution choices apply only when no layout was saved.
         if self.has_saved_preferences {
@@ -279,7 +294,10 @@ impl State {
                 // Preserve the explicit preference without starting a recovery
                 // guard or writing mutation intent for an unchanged mode.
                 self.remember_physical(
-                    selected.identity.as_deref().context("缺少初始显示目标")?,
+                    selected
+                        .identity
+                        .as_deref()
+                        .context(t().features.screen_initial_target_missing)?,
                     Some(choice),
                 )?;
                 return Ok(selected);
@@ -288,7 +306,7 @@ impl State {
                 .targets()?
                 .into_iter()
                 .find(|t| selected.identity.as_deref() == Some(t.identity.as_str()))
-                .context("缺少初始显示目标")?;
+                .context(t().features.screen_initial_target_missing)?;
             if !target
                 .modes
                 .iter()

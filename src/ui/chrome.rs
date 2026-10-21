@@ -1,6 +1,7 @@
 //! Shared borderless window chrome and native fallback background.
 use super::controls::{ViewerCaptionIcon as TitleIcon, viewer_caption_button as title_icon_button};
 use super::d3d11::window_hwnd;
+use crate::i18n::t;
 use anyhow::Result;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -267,7 +268,7 @@ fn window_buttons_impl(ui: &mut egui::Ui, window: &Window, tooltips: bool) -> bo
         ui,
         TitleIcon::Minimize,
         false,
-        if tooltips { "最小化" } else { "" },
+        if tooltips { t().controls.minimize } else { "" },
     );
     if minimize.clicked() {
         window.set_minimized(true);
@@ -287,9 +288,9 @@ fn window_buttons_impl(ui: &mut egui::Ui, window: &Window, tooltips: bool) -> bo
             if !tooltips {
                 ""
             } else if expanded {
-                "还原"
+                t().controls.restore
             } else {
-                "最大化"
+                t().controls.maximize
             },
         );
         if maximize.clicked() {
@@ -310,7 +311,7 @@ fn window_buttons_impl(ui: &mut egui::Ui, window: &Window, tooltips: bool) -> bo
         ui,
         TitleIcon::Close,
         false,
-        if tooltips { "关闭" } else { "" },
+        if tooltips { t().common.close } else { "" },
     )
     .clicked()
 }

@@ -1,6 +1,7 @@
 //! Read display inventory away from the capture deadline. One outstanding read;
 //! the capture owner consumes changes and owns both cancellation and joining.
 use super::Screen;
+use crate::i18n::t;
 use anyhow::{Context, Result};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 
@@ -24,7 +25,7 @@ impl Refresh {
                     }
                 }
             })
-            .context("启动显示器状态读取线程")?;
+            .context(t().system.capture_start_status_thread)?;
         Ok(Self {
             requests: Some(requests),
             results,
@@ -36,9 +37,9 @@ impl Refresh {
         if !self.pending {
             self.requests
                 .as_ref()
-                .context("显示器状态读取已停止")?
+                .context(t().system.capture_status_reader_stopped)?
                 .try_send(screen.clone())
-                .context("提交显示器状态读取")?;
+                .context(t().system.capture_submit_status_read)?;
             self.pending = true;
         }
         Ok(())
@@ -50,7 +51,9 @@ impl Refresh {
                 Ok(Some(result))
             }
             Err(TryRecvError::Empty) => Ok(None),
-            Err(TryRecvError::Disconnected) => anyhow::bail!("显示器状态读取线程已结束"),
+            Err(TryRecvError::Disconnected) => {
+                anyhow::bail!("{}", t().system.capture_status_thread_ended)
+            }
         }
     }
 }

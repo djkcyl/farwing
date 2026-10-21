@@ -5,6 +5,7 @@ use super::{
     format::{Backend, Codec, Format, Rate},
     gpu_conversion::Conversion,
 };
+use crate::i18n::t;
 use anyhow::{Context, Result, bail, ensure};
 use farwing_nvenc_sys as nv;
 use std::{
@@ -26,21 +27,21 @@ impl Api {
             // Driver installation is the only DLL source; never search the working directory.
             let library =
                 libloading::os::windows::Library::load_with_flags("nvEncodeAPI64.dll", 0x00000800)
-                    .context("未找到 NVIDIA NVENC 驱动")?;
+                    .context(t().system.nvenc_driver_not_found)?;
             let maximum = library.get::<unsafe extern "C" fn(*mut u32) -> nv::NVENCSTATUS>(
                 b"NvEncodeAPIGetMaxSupportedVersion\0",
             )?;
             let mut supported = 0;
             ensure!(
                 maximum(&mut supported) == nv::NVENCSTATUS::NV_ENC_SUCCESS,
-                "查询 NVENC API 失败"
+                "{}",
+                t().system.nvenc_query_api_failed
             );
             // `supported` is (major << 4) | minor.
             ensure!(
                 supported >= 0xd0,
-                "NVENC 需要 NVIDIA 驱动 570 或更新（当前 API {}.{}）",
-                supported >> 4,
-                supported & 15
+                "{}",
+                (t().system.nvenc_driver_too_old)(supported >> 4, supported & 15)
             );
             let create = library.get::<unsafe extern "C" fn(
                 *mut nv::NV_ENCODE_API_FUNCTION_LIST,
@@ -49,7 +50,8 @@ impl Api {
             functions.version = nv::NV_ENCODE_API_FUNCTION_LIST_VER;
             ensure!(
                 create(&mut functions) == nv::NVENCSTATUS::NV_ENC_SUCCESS,
-                "创建 NVENC API 失败"
+                "{}",
+                t().system.nvenc_create_api_failed
             );
             ensure!(
                 functions.nvEncOpenEncodeSessionEx.is_some()
@@ -67,7 +69,8 @@ impl Api {
                     && functions.nvEncUnlockBitstream.is_some()
                     && functions.nvEncReconfigureEncoder.is_some()
                     && functions.nvEncDestroyEncoder.is_some(),
-                "NVENC 驱动接口不完整"
+                "{}",
+                t().system.nvenc_incomplete_driver
             );
             Ok(Self {
                 functions,
@@ -102,7 +105,10 @@ impl Api {
                 })
                 .unwrap_or_default()
         };
-        bail!("NVENC {operation} 失败（{}）：{detail}", status.0)
+        bail!(
+            "{}",
+            (t().system.nvenc_call_failed)(operation, &status.0.to_string(), &detail)
+        )
     }
 }
 
@@ -201,8 +207,12 @@ fn bit_depth(depth: u8) -> nv::NV_ENC_BIT_DEPTH {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("NVENC输入候选被拒绝：{0}")]
+#[error("{}", input_rejected(.0))]
 struct InputRejected(String);
+
+fn input_rejected(error: &str) -> String {
+    (t().system.nvenc_input_rejected)(error)
+}
 
 impl Encoder {
     pub(crate) fn new_format(
@@ -275,15 +285,18 @@ impl Encoder {
         } = rate;
         ensure!(
             Backend::Nvidia.accepts(format),
-            "NVENC当前D3D输入路径不支持该格式"
+            "{}",
+            t().system.nvenc_format_unsupported
         );
         ensure!(
             width > 0 && height > 0 && width % 2 == 0 && height % 2 == 0,
-            "NVENC 尺寸必须为正偶数"
+            "{}",
+            t().system.nvenc_size_not_even
         );
         ensure!(
             (1..=144).contains(&fps) && bitrate > 0,
-            "NVENC 编码参数无效"
+            "{}",
+            t().system.nvenc_invalid_parameters
         );
         let api = Api::load()?;
         // Query the actual codec-specific preset; changing only its GUID on
@@ -335,7 +348,11 @@ impl Encoder {
             encoder
                 .api
                 .check(encoder.session, status, "OpenEncodeSessionEx")?;
-            ensure!(!encoder.session.is_null(), "NVENC 未返回会话");
+            ensure!(
+                !encoder.session.is_null(),
+                "{}",
+                t().system.nvenc_no_session
+            );
             let dimension = |cap| -> Result<u32> {
                 let mut query = nv::NV_ENC_CAPS_PARAM::default();
                 query.version = nv::NV_ENC_CAPS_PARAM_VER;
@@ -351,7 +368,11 @@ impl Encoder {
                     ),
                     "GetEncodeCaps",
                 )?;
-                ensure!(value > 0 && value <= 16384, "NVENC 返回无效尺寸能力");
+                ensure!(
+                    value > 0 && value <= 16384,
+                    "{}",
+                    t().system.nvenc_invalid_size_caps
+                );
                 Ok(value as u32)
             };
             encoder.maximum = (
@@ -379,7 +400,8 @@ impl Encoder {
             }
             ensure!(
                 width <= encoder.maximum.0 && height <= encoder.maximum.1,
-                "所选画面超出 NVENC 尺寸能力"
+                "{}",
+                t().system.nvenc_size_exceeds_capability
             );
             let mut preset = nv::NV_ENC_PRESET_CONFIG::default();
             preset.version = nv::NV_ENC_PRESET_CONFIG_VER;
@@ -526,7 +548,11 @@ impl Encoder {
                 "CreateBitstreamBuffer",
             )?;
             encoder.bitstream = buffer.bitstreamBuffer;
-            ensure!(!encoder.bitstream.is_null(), "NVENC未返回码流缓冲");
+            ensure!(
+                !encoder.bitstream.is_null(),
+                "{}",
+                t().system.nvenc_no_bitstream_buffer
+            );
             let mut resource = nv::NV_ENC_REGISTER_RESOURCE::default();
             resource.version = nv::NV_ENC_REGISTER_RESOURCE_VER;
             resource.resourceType =
@@ -557,7 +583,7 @@ impl Encoder {
                 .map_err(|error| InputRejected(format!("{error:#}")))?;
             encoder.registered = resource.registeredResource;
             if encoder.registered.is_null() {
-                return Err(InputRejected("驱动未返回注册资源".into()).into());
+                return Err(InputRejected(t().system.nvenc_no_registered_resource.into()).into());
             }
         }
         Ok(encoder)
@@ -570,7 +596,8 @@ impl Encoder {
         let _current = self.cuda.as_ref().map(|input| input.enter()).transpose()?;
         ensure!(
             (1..=144).contains(&rate.fps) && rate.target > 0,
-            "NVENC 重配参数无效"
+            "{}",
+            t().system.nvenc_invalid_reconfigure
         );
         let Some(update) = self.frame_rate.decide(rate) else {
             return Ok(false);
@@ -739,7 +766,8 @@ impl Encoder {
                 !bitstream.bitstreamBufferPtr.is_null()
                     && bitstream.bitstreamSizeInBytes > 0
                     && bitstream.bitstreamSizeInBytes <= 64 * 1024 * 1024,
-                "NVENC 输出码流无效"
+                "{}",
+                t().system.nvenc_invalid_bitstream
             );
             let bytes = std::slice::from_raw_parts(
                 bitstream.bitstreamBufferPtr.cast::<u8>(),
@@ -769,7 +797,7 @@ impl Encoder {
                 timestamp_100ns: bitstream
                     .outputTimeStamp
                     .try_into()
-                    .context("NVENC 时间戳溢出")?,
+                    .context(t().system.nvenc_timestamp_overflow)?,
             }])
         }
     }

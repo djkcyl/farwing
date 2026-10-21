@@ -3,6 +3,7 @@ use super::{
     pointers::Pointers,
     wire::{Command, Event, PenPhase, PenSample, TouchContact, TouchPhase},
 };
+use crate::i18n::t;
 use crate::platform::windows::input::{hid, keyboard, system};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -27,19 +28,18 @@ impl Screen {
     pub fn rect(&self) -> Result<RECT> {
         ensure!(
             self.width > 0 && self.height > 0 && self.width <= 65536 && self.height <= 65536,
-            "屏幕尺寸无效"
+            "{}",
+            t().features.input_screen_size_invalid
         );
         Ok(RECT {
             left: self.left,
             top: self.top,
-            right: self
-                .left
-                .checked_add(self.width as i32)
-                .ok_or_else(|| anyhow::anyhow!("屏幕坐标溢出"))?,
-            bottom: self
-                .top
-                .checked_add(self.height as i32)
-                .ok_or_else(|| anyhow::anyhow!("屏幕坐标溢出"))?,
+            right: self.left.checked_add(self.width as i32).ok_or_else(|| {
+                anyhow::anyhow!("{}", t().features.input_screen_coordinates_overflow)
+            })?,
+            bottom: self.top.checked_add(self.height as i32).ok_or_else(|| {
+                anyhow::anyhow!("{}", t().features.input_screen_coordinates_overflow)
+            })?,
         })
     }
 }
@@ -50,11 +50,19 @@ pub(crate) struct Geometry {
 }
 impl Geometry {
     pub fn validate(&self) -> Result<()> {
-        ensure!(self.screens.len() <= 32, "输入屏幕数量无效");
+        ensure!(
+            self.screens.len() <= 32,
+            "{}",
+            t().features.input_screen_count_invalid
+        );
         let mut ids = std::collections::BTreeSet::new();
         for screen in &self.screens {
             screen.rect()?;
-            ensure!(ids.insert(screen.id), "重复输入屏幕");
+            ensure!(
+                ids.insert(screen.id),
+                "{}",
+                t().features.input_screen_duplicate
+            );
         }
         Ok(())
     }
@@ -62,7 +70,7 @@ impl Geometry {
         self.screens
             .iter()
             .find(|s| s.id == id.unwrap_or(self.current))
-            .ok_or_else(|| anyhow::anyhow!("输入目标屏幕已失效"))
+            .ok_or_else(|| anyhow::anyhow!("{}", t().features.input_screen_gone))
     }
 }
 #[derive(Clone, Copy)]
@@ -173,9 +181,9 @@ impl Engine {
         if self.device.is_some() {
             "Farwing HID"
         } else if self.privileged {
-            "Windows · 系统服务"
+            t().features.input_backend_service
         } else {
-            "Windows · 当前用户"
+            t().features.input_backend_user
         }
     }
     pub fn take_sas(&mut self) -> bool {
@@ -331,11 +339,16 @@ impl Engine {
                 return Ok(KeyRoute::Hid(id));
             }
         }
-        ensure!(keyboard::scan(usage).is_some(), "无效键码");
+        ensure!(
+            keyboard::scan(usage).is_some(),
+            "{}",
+            t().features.input_key_invalid
+        );
         Ok(KeyRoute::System)
     }
     fn system_key(usage: u32, down: bool) -> Result<()> {
-        let scan = keyboard::scan(usage).ok_or_else(|| anyhow::anyhow!("无效键码"))?;
+        let scan = keyboard::scan(usage)
+            .ok_or_else(|| anyhow::anyhow!("{}", t().features.input_key_invalid))?;
         system::key(scan, down)
     }
     fn key(&mut self, usage: u32, down: bool) -> Result<()> {
@@ -411,7 +424,7 @@ impl Engine {
             locks::Due::Now => self.lock_target = None,
         }
         for usage in target.corrections(system::locks()) {
-            ensure!(permitted(), "被控输入许可已撤销");
+            ensure!(permitted(), "{}", t().features.input_permission_revoked);
             self.key(usage, true)?;
             self.key(usage, false)?;
         }
@@ -421,7 +434,7 @@ impl Engine {
     fn shortcut(keys: &[u16], permitted: &impl Fn() -> bool) -> Result<()> {
         let mut pressed = 0;
         let result = keys.iter().try_for_each(|&key| {
-            ensure!(permitted(), "快捷输入已撤销");
+            ensure!(permitted(), "{}", t().features.input_shortcut_revoked);
             system::virtual_key(key, true)?;
             pressed += 1;
             Ok(())
@@ -443,7 +456,7 @@ impl Engine {
         let result = self
             .device
             .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("HID设备已失效"))?
+            .ok_or_else(|| anyhow::anyhow!("{}", t().features.input_hid_gone))?
             .report(report);
         self.hid_failed |= result.is_err();
         result
@@ -472,7 +485,7 @@ impl Engine {
             16 => 4,
             32 => 8,
             64 => 16,
-            _ => anyhow::bail!("无效鼠标按键"),
+            _ => anyhow::bail!("{}", t().features.input_mouse_button_invalid),
         };
         if !down && self.buttons & bit == 0 {
             return Ok(());
@@ -533,7 +546,8 @@ impl Engine {
     fn relative(&mut self, mut x: i32, mut y: i32, permitted: &impl Fn() -> bool) -> Result<()> {
         ensure!(
             x.unsigned_abs() <= 1_000_000 && y.unsigned_abs() <= 1_000_000,
-            "相对位移过大"
+            "{}",
+            t().features.input_relative_too_large
         );
         if self.buttons == 0 {
             self.mouse_mode = MouseMode::Relative;
@@ -545,7 +559,7 @@ impl Engine {
             return system::mouse(x, y, 0, MOUSEEVENTF_MOVE);
         }
         while x != 0 || y != 0 {
-            ensure!(permitted(), "输入已取消");
+            ensure!(permitted(), "{}", t().features.input_cancelled);
             let dx = x.clamp(-32767, 32767) as i16;
             let dy = y.clamp(-32767, 32767) as i16;
             self.mouse_report(dx, dy, 0, 0)?;
@@ -564,7 +578,11 @@ impl Engine {
                 GetSystemMetrics(SM_CYVIRTUALSCREEN),
             )
         };
-        ensure!(w > 1 && h > 1, "桌面范围无效");
+        ensure!(
+            w > 1 && h > 1,
+            "{}",
+            t().features.input_desktop_bounds_invalid
+        );
         let (px, py) = super::pointers::pixel(r, x, y);
         system::mouse(
             ((f64::from(px) - left as f64) * 65535.0 / (w - 1) as f64).round() as i32,
@@ -687,9 +705,9 @@ impl Engine {
         geometry: Geometry,
         permitted: &impl Fn() -> bool,
     ) -> Result<()> {
-        ensure!(permitted(), "被控输入许可已撤销");
+        ensure!(permitted(), "{}", t().features.input_permission_revoked);
         self.synchronize(geometry)?;
-        ensure!(permitted(), "被控输入许可已撤销");
+        ensure!(permitted(), "{}", t().features.input_permission_revoked);
         if matches!(event, Event::Heartbeat) {
             self.last_heartbeat = Instant::now();
             return Ok(());
@@ -698,7 +716,7 @@ impl Engine {
         match event {
             Event::Command(command) => {
                 self.release()?;
-                ensure!(permitted(), "被控输入许可已撤销");
+                ensure!(permitted(), "{}", t().features.input_permission_revoked);
                 match command {
                     // The service performs the sequence after this request.
                     Command::SecureAttention => self.sas = true,

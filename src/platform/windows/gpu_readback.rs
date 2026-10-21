@@ -1,4 +1,5 @@
 //! Readback waits remain cancellable without adding queued frames.
+use crate::i18n::t;
 use anyhow::{Context, Result};
 use std::time::{Duration, Instant};
 use windows::Win32::Graphics::{Direct3D11::*, Dxgi::DXGI_ERROR_WAS_STILL_DRAWING};
@@ -13,7 +14,7 @@ pub(super) fn map(
     // poll without repeatedly flushing or overwriting the pending copy.
     unsafe { context.Flush() };
     loop {
-        anyhow::ensure!(active(), "GPU读回已取消");
+        anyhow::ensure!(active(), "{}", t().system.gpu_readback_cancelled);
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         match unsafe {
             context.Map(
@@ -28,11 +29,12 @@ pub(super) fn map(
             Err(error) if error.code() == DXGI_ERROR_WAS_STILL_DRAWING => {
                 anyhow::ensure!(
                     started.elapsed() < Duration::from_secs(8),
-                    "GPU读回等待超时"
+                    "{}",
+                    t().system.gpu_readback_timeout
                 );
                 std::thread::sleep(Duration::from_millis(1));
             }
-            Err(error) => return Err(error).context("GPU读回失败"),
+            Err(error) => return Err(error).context(t().system.gpu_readback_failed),
         }
     }
 }

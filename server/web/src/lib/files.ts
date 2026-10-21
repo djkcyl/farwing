@@ -2,6 +2,7 @@
 // FILE requests on the session channel, data as TRANSFER streams (kind 1)
 // on the bulk channel paced by FLOW credits. Browsing, uploading files and
 // folders into a host folder, and downloading files and folders.
+import { t } from '../i18n';
 import * as fpp from './fpp';
 import { Fields, Writer } from './pb';
 import { PeerRequestError, type PeerIo } from './peerio';
@@ -33,22 +34,13 @@ const DOWNLOAD_WINDOW = 16 * 1024 * 1024;
 const READ_BLOCK = 2 * 1024 * 1024;
 const WHOLE_TRANSFER = 0xffffffff;
 
-const ERRORS: Record<number, string> = {
-  1: '传输协议出错',
-  2: '对方不允许文件传输',
-  3: '文件或文件夹不存在',
-  4: '目标已存在',
-  5: '对方磁盘空间不足',
-  6: '读写文件失败',
-  7: '对方暂时无法处理',
-  8: '文件在传输过程中被修改',
-  9: '已取消',
-};
-
+/// A host file error (`FileErrorCode`): the host's own words when it gives
+/// them, else ours for the code.
 export class FileError extends Error {
   code: number;
   constructor(code: number, message?: string) {
-    super(message || ERRORS[code] || `文件传输失败（${code}）`);
+    const m = t().viewer.files;
+    super(message || (m.errors as Record<number, string>)[code] || m.failed(code));
     this.code = code;
   }
 }
@@ -159,7 +151,7 @@ function reply(body: Uint8Array, tag: number): Fields {
   const failed = f.message(26);
   if (failed) throw new FileError(failed.int32(1), failed.string(2));
   const m = f.message(tag);
-  if (!m) throw new FileError(1, '对方的回复格式不正确');
+  if (!m) throw new FileError(1, t().viewer.files.badReply);
   return m;
 }
 
@@ -266,7 +258,10 @@ export class FileTransfer {
       return await this.io.request(fpp.Type.FILE, body, REQUEST_TIMEOUT_MS);
     } catch (error) {
       if (error instanceof PeerRequestError) {
-        throw new FileError(error.code === 'forbidden' ? 2 : 1, error.code === 'timeout' ? '对方没有响应' : undefined);
+        throw new FileError(
+          error.code === 'forbidden' ? 2 : 1,
+          error.code === 'timeout' ? t().viewer.peer.noResponse : undefined,
+        );
       }
       throw error;
     }
@@ -308,7 +303,7 @@ export class FileTransfer {
       info: {
         id,
         direction: 'up',
-        name: top || (files === 1 ? paths[0] : `${paths[0]} 等 ${files} 个文件`),
+        name: top || (files === 1 ? paths[0] : t().viewer.files.manyFiles(paths[0], files)),
         total,
         done: 0,
         state: 'running',
@@ -510,7 +505,7 @@ export class FileTransfer {
       if (down.failed || down.cancelled) return;
       const item = down.items[c.entry];
       try {
-        if (!item || c.entry < down.current) throw new FileError(1, '文件条目顺序不符');
+        if (!item || c.entry < down.current) throw new FileError(1, t().viewer.files.outOfOrder);
         if (c.entry !== down.current) {
           down.current = c.entry;
           await down.target.entry(item);
@@ -518,7 +513,8 @@ export class FileTransfer {
         if (data.length) await down.target.write(data);
         if (c.last) await down.target.finish();
       } catch (error) {
-        down.failed = error instanceof FileError ? error : new FileError(6, `保存失败：${(error as Error).message}`);
+        down.failed =
+          error instanceof FileError ? error : new FileError(6, t().viewer.files.saveFailed((error as Error).message));
         down.settle?.(down.failed);
         void this.cancel(c.stream);
         return;
@@ -549,7 +545,7 @@ export class FileTransfer {
 
   /// The connection is gone: fail everything in flight.
   reset() {
-    const error = new FileError(1, '连接已断开');
+    const error = new FileError(1, t().viewer.peer.closed);
     for (const up of this.uploads.values()) {
       up.failed = error;
       up.wake?.();
@@ -629,7 +625,7 @@ export async function saveTarget(name: string, size: number): Promise<DownloadSi
       // Not allowed here: fall back to memory.
     }
   }
-  if (size > MEMORY_LIMIT) throw new FileError(6, '这个浏览器只能下载 1 GB 以内的文件');
+  if (size > MEMORY_LIMIT) throw new FileError(6, t().viewer.files.fileTooLarge);
   const parts: Uint8Array[] = [];
   return {
     write: async (data) => {
@@ -687,7 +683,7 @@ export function zipTarget(folder: string): DownloadTarget {
     },
     write: async (data) => {
       size += data.length;
-      if (size > MEMORY_LIMIT) throw new Error('这个浏览器只能下载 1 GB 以内的文件夹');
+      if (size > MEMORY_LIMIT) throw new Error(t().viewer.files.folderTooLarge);
       zip.write(data);
     },
     finish: async () => zip.end(),
@@ -720,7 +716,7 @@ export async function saveFolderTarget(folder: string, size: number): Promise<Do
       // Not allowed here: fall back to a ZIP.
     }
   }
-  if (size > MEMORY_LIMIT) throw new FileError(6, '这个浏览器只能下载 1 GB 以内的文件夹');
+  if (size > MEMORY_LIMIT) throw new FileError(6, t().viewer.files.folderTooLarge);
   return zipTarget(safeName(folder));
 }
 

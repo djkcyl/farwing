@@ -170,7 +170,7 @@ impl NativePeer {
             let _ = local_candidate_tx_for_handler.send(candidate);
             Box::pin(async {})
         }));
-        let performance = PerformanceMonitor::new("自动");
+        let performance = PerformanceMonitor::new(crate::i18n::t().session.auto);
         let nack_rtt_micros = Arc::new(AtomicU64::new(
             RTP_DEFAULT_RTT.as_micros().min(u128::from(u64::MAX)) as u64,
         ));

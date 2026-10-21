@@ -20,7 +20,7 @@ enum Target {
 fn parse_target(text: &str) -> Result<Target, String> {
     let text = text.trim();
     if text.is_empty() {
-        return Err("请输入设备 ID、短号或地址".into());
+        return Err(t().center.enter_target.into());
     }
     if let Ok(number) = crate::account::assist::normalize_connect_id(text) {
         return Ok(Target::ShortNumber(number));
@@ -30,7 +30,7 @@ fn parse_target(text: &str) -> Result<Target, String> {
     }
     crate::transport::direct::Target::parse(text)
         .map(|target| Target::Address(target.to_string()))
-        .map_err(|_| "无法识别的设备 ID、短号或地址".into())
+        .map_err(|_| t().center.unrecognized_target.into())
 }
 
 fn detail(ui: &mut egui::Ui, text: &str) {
@@ -76,7 +76,7 @@ pub(super) fn device_card_with(
                             cards::chip(ui, text, *color);
                         }
                         if let Some(grants) = grants {
-                            cards::caps_icons(ui, grants, "无权限");
+                            cards::caps_icons(ui, grants, t().center.no_permissions);
                         }
                     });
                     for line in lines {
@@ -135,7 +135,7 @@ impl DeviceCenterApp {
         let mut refresh = false;
         cards::page_header(
             ui,
-            "设备",
+            Page::Devices.title(),
             "",
             |ui| {
                 self.active_view(ui);
@@ -158,7 +158,8 @@ impl DeviceCenterApp {
                         egui::Spinner::new().size(18.0),
                     );
                 } else if enabled
-                    && assist_components::glyph(ui, Icon::Refresh, "刷新", MUTED).clicked()
+                    && assist_components::glyph(ui, Icon::Refresh, t().common.refresh, MUTED)
+                        .clicked()
                 {
                     refresh = true;
                 }
@@ -174,14 +175,14 @@ impl DeviceCenterApp {
         self.connect_bar(ui);
         if self.server_unreachable {
             let text = match self.next_reconnect(ui.ctx()) {
-                Some(seconds) => format!("无法连接服务器 · {seconds} 秒后重连"),
-                None => "无法连接服务器 · 正在重连".to_owned(),
+                Some(seconds) => (t().center.banner_unreachable_in)(seconds),
+                None => t().center.banner_unreachable.to_owned(),
             };
-            if cards::banner_action(ui, &text, Tone::Warning, "立即重连") {
+            if cards::banner_action(ui, &text, Tone::Warning, t().center.reconnect_now) {
                 self.reconnect();
             }
         } else if self.cached_devices {
-            cards::banner(ui, "正在连接服务器", Tone::Warning);
+            cards::banner(ui, t().center.connecting_server, Tone::Warning);
         }
         if let Some((message, _)) = &self.direct.message {
             cards::banner(ui, message, Tone::Success);
@@ -197,11 +198,12 @@ impl DeviceCenterApp {
             Some(count) => format!("{name}  {count}"),
             None => name.to_owned(),
         };
+        let text = &t().center;
         let labels = [
-            label("我的设备", counts[0]),
-            label("好友共享", counts[1]),
-            label("附近", counts[2]),
-            label("最近与收藏", counts[3]),
+            label(text.tab_mine, counts[0]),
+            label(text.tab_friends, counts[1]),
+            label(text.tab_nearby, counts[2]),
+            label(text.tab_recent, counts[3]),
         ];
         let before = self.direct.tab;
         if cards::tabs(
@@ -230,8 +232,12 @@ impl DeviceCenterApp {
                 let friends = self.direct.tab == DeviceTab::Friends;
                 match cards::locked(
                     ui,
-                    if friends { "登录后查看好友共享的设备" } else { "登录后查看你的设备" },
-                    &[self.sign_in_label(), "附近的设备"],
+                    if friends {
+                        text.sign_in_for_shared
+                    } else {
+                        text.sign_in_for_own
+                    },
+                    &[self.sign_in_label(), text.nearby_devices],
                 ) {
                     Some(0) => self.sign_in(),
                     Some(_) => {
@@ -284,6 +290,7 @@ impl DeviceCenterApp {
     fn connect_bar(&mut self, ui: &mut egui::Ui) {
         let mut connect = false;
         let parsed = parse_target(&self.direct.target);
+        let text = &t().center;
         cards::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -291,7 +298,7 @@ impl DeviceCenterApp {
                 let response = ui.add_sized(
                     [width, crate::ui::controls::HEIGHT],
                     singleline_input(&mut self.direct.target)
-                        .hint_text("设备 ID、短号或地址"),
+                        .hint_text(text.target_hint),
                 );
                 if response.changed() {
                     self.direct.error = None;
@@ -300,7 +307,7 @@ impl DeviceCenterApp {
                     connect = true;
                 }
                 if ui
-                    .add_enabled(!self.direct.target.trim().is_empty(), primary("连接"))
+                    .add_enabled(!self.direct.target.trim().is_empty(), primary(t().common.connect))
                     .clicked()
                 {
                     connect = true;
@@ -308,14 +315,14 @@ impl DeviceCenterApp {
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("访问码").size(theme::SMALL).color(MUTED));
+                ui.label(RichText::new(text.access_code).size(theme::SMALL).color(MUTED));
                 let response = ui
                     .add_enabled_ui(!self.direct.ask, |ui| {
                         ui.add_sized(
                             [220.0, crate::ui::controls::HEIGHT],
                             singleline_input(&mut self.direct.code)
                                 .password(true)
-                                .hint_text("可选"),
+                                .hint_text(t().common.optional),
                         )
                     })
                     .inner;
@@ -326,7 +333,7 @@ impl DeviceCenterApp {
                     connect = true;
                 }
                 ui.add_space(8.0);
-                ui.checkbox(&mut self.direct.ask, "不用访问码，请对方确认");
+                ui.checkbox(&mut self.direct.ask, text.ask_for_approval);
             });
             if let Err(error) = &parsed
                 && !self.direct.target.trim().is_empty()
@@ -362,7 +369,7 @@ impl DeviceCenterApp {
             }
             Ok(Target::ShortNumber(number)) => {
                 if self.access() == Access::NoServer {
-                    self.direct.error = Some("没有服务器，不能用短号连接".into());
+                    self.direct.error = Some(t().center.short_number_needs_server.into());
                 } else {
                     self.direct.error = None;
                     self.request_assist_connect(number, code.to_owned());
@@ -402,9 +409,8 @@ impl DeviceCenterApp {
         match store::known_host(id).filter(|h| !h.address.is_empty()) {
             Some(host) => self.connect_address(&host.address, code, ask, Some(&host.name)),
             None => {
-                self.direct.error = Some(format!(
-                    "找不到设备 {}",
-                    crate::account::api::device_id_text(id)
+                self.direct.error = Some((t().center.device_not_found)(
+                    &crate::account::api::device_id_text(id),
                 ))
             }
         }
@@ -435,7 +441,7 @@ impl DeviceCenterApp {
         self.direct.code.clear();
         self.direct.ask = false;
         self.direct.focus_code = true;
-        self.direct.note(format!("{name} 需要访问码"));
+        self.direct.note((t().center.needs_access_code)(name));
     }
 
     fn friend_devices_tab(&mut self, ui: &mut egui::Ui) {
@@ -445,7 +451,7 @@ impl DeviceCenterApp {
             .map(|list| list.shared.clone())
             .unwrap_or_default();
         if shared.is_empty() {
-            empty_card(ui, "暂无好友共享的设备", "");
+            empty_card(ui, t().center.no_shared_devices, "");
             return;
         }
         // Grouped by owner; owners and their devices by name, then ID.
@@ -456,7 +462,7 @@ impl DeviceCenterApp {
             let owner = device
                 .owner
                 .as_ref()
-                .map_or_else(|| "好友".to_owned(), |o| o.display_name().to_owned());
+                .map_or_else(|| t().center.friend.to_owned(), |o| o.display_name().to_owned());
             match owners.iter_mut().find(|(name, _)| *name == owner) {
                 Some((_, list)) => list.push(device),
                 None => owners.push((owner, vec![device])),
@@ -466,10 +472,10 @@ impl DeviceCenterApp {
         let nearby = self.direct.nearby();
         let mut picked = None;
         for (owner, devices) in owners {
-            cards::section_heading(ui, &format!("{owner} 共享"), Some(devices.len()), |_| {});
+            cards::section_heading(ui, &(t().center.shared_by)(&owner), Some(devices.len()), |_| {});
             for device in &devices {
                 if nearby.iter().any(|h| h.announce.device_id == device.device_id) {
-                    cards::chip(ui, "在局域网中", GREEN);
+                    cards::chip(ui, t().center.on_lan, GREEN);
                 }
                 if let Some(action) = self.friend_device_row(ui, device) {
                     picked = Some((device.device_id.clone(), action));
@@ -495,7 +501,7 @@ impl DeviceCenterApp {
         if first_scan {
             ui.horizontal(|ui| {
                 ui.spinner();
-                detail(ui, "正在查找局域网中的设备…");
+                detail(ui, t().center.searching_lan);
             });
             ui.add_space(6.0);
         }
@@ -504,7 +510,7 @@ impl DeviceCenterApp {
         }
         if found.is_empty() {
             if !first_scan {
-                empty_card(ui, "附近没有发现设备", "");
+                empty_card(ui, t().center.no_nearby_devices, "");
             }
             return;
         }
@@ -523,6 +529,7 @@ impl DeviceCenterApp {
             .map(|state| state.trusted)
             .unwrap_or_default();
         let pairing = self.direct.pairing_active();
+        let text = &t().center;
         enum Pick {
             Key(String, String),
             Server(String),
@@ -543,26 +550,25 @@ impl DeviceCenterApp {
             let paired = trusted.is_some_and(|d| d.paired) || (admits && trusted.is_some());
             let own_device = own.iter().any(|d| d.device_id == announce.device_id);
             if own_device {
-                chips.push(("本账号", GREEN));
+                chips.push((text.this_account, GREEN));
             } else if let Some(device) = friend {
-                owner_chip = format!(
-                    "{} 共享",
+                owner_chip = (text.shared_by)(
                     device
                         .owner
                         .as_ref()
-                        .map_or("好友", |o| o.display_name())
+                        .map_or(text.friend, |o| o.display_name()),
                 );
                 chips.push((owner_chip.as_str(), AMBER));
             } else if paired {
-                chips.push(("已配对", GREEN));
+                chips.push((text.paired, GREEN));
             } else if admits {
-                chips.push(("对方信任本机", BLUE));
+                chips.push((text.trusts_this_device, BLUE));
             } else {
                 chips.push((
                     if methods(farwing_protocol::direct::method::ASSIST) {
-                        "需要访问码或确认"
+                        text.code_or_approval
                     } else {
-                        "未开启访问码"
+                        text.access_code_off
                     },
                     MUTED,
                 ));
@@ -579,38 +585,37 @@ impl DeviceCenterApp {
                 ],
                 |ui| {
                     if own_device || admits {
-                        if ui.add(primary("连接")).clicked() {
+                        if ui.add(primary(t().common.connect)).clicked() {
                             picked = Some(Pick::Key(target.clone(), announce.name.clone()));
                         }
                     } else if let Some(device) = friend {
                         // It takes friends' keys directly (also while the
                         // server cannot be reached); otherwise through it.
                         let direct = methods(farwing_protocol::direct::method::FRIEND);
-                        if ui.add(primary("连接")).clicked() {
+                        if ui.add(primary(t().common.connect)).clicked() {
                             picked = Some(if direct {
                                 Pick::Key(target.clone(), announce.name.clone())
                             } else {
                                 Pick::Server(device.device_id.clone())
                             });
                         }
-                    } else if ui.add_enabled(accepts_code, primary("连接")).clicked() {
+                    } else if ui.add_enabled(accepts_code, primary(t().common.connect)).clicked() {
                         picked = Some(Pick::Code(target.clone(), announce.name.clone()));
                     }
                     if !own_device
                         && friend.is_none()
                         && !paired
                         && ui
-                            .add_enabled(!pairing, crate::ui::controls::secondary("配对"))
+                            .add_enabled(!pairing, crate::ui::controls::secondary(text.pair))
                             .clicked()
                     {
                         // Two devices may share a name: show which one.
                         picked = Some(Pick::Pair(
                             target.clone(),
                             announce.device_id.clone(),
-                            format!(
-                                "{}（{}）",
-                                announce.name,
-                                crate::account::api::device_id_text(&announce.device_id)
+                            (text.name_with_id)(
+                                &announce.name,
+                                &crate::account::api::device_id_text(&announce.device_id),
                             ),
                         ));
                     }
@@ -650,7 +655,7 @@ impl DeviceCenterApp {
         };
         match outcome {
             Ok(host) => {
-                let done = format!("已与 {} 配对", host.name);
+                let done = (t().center.paired_with)(&host.name);
                 self.direct.perform(
                     ctx,
                     self.host.as_ref(),
@@ -664,8 +669,10 @@ impl DeviceCenterApp {
                     done,
                 );
             }
-            Err(_) if cancel.is_cancelled() => self.direct.note("已取消配对"),
-            Err(error) => self.direct.error = Some(format!("与 {name} 配对失败：{error}")),
+            Err(_) if cancel.is_cancelled() => self.direct.note(t().center.pairing_canceled),
+            Err(error) => {
+                self.direct.error = Some((t().center.pairing_failed)(&name, &error.to_string()))
+            }
         }
     }
 
@@ -681,11 +688,12 @@ impl DeviceCenterApp {
         };
         let mut stop = false;
         let mut agree = false;
+        let text = &t().center;
         cards::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(format!("正在与 {name} 配对")).strong());
+                    ui.label(RichText::new((text.pairing_with)(&name)).strong());
                     match &code {
                         Some(code) => {
                             let split = code.len().min(3);
@@ -698,19 +706,19 @@ impl DeviceCenterApp {
                             detail(
                                 ui,
                                 if agreed {
-                                    "等待对方确认…"
+                                    text.waiting_for_confirmation
                                 } else {
-                                    "确认对方显示相同的配对码"
+                                    text.compare_pairing_code
                                 },
                             );
                         }
-                        None => detail(ui, "正在连接对方…"),
+                        None => detail(ui, text.connecting_to_peer),
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    stop = ui.add(crate::ui::controls::secondary("取消")).clicked();
+                    stop = ui.add(crate::ui::controls::secondary(t().common.cancel)).clicked();
                     if code.is_some() && !agreed {
-                        agree = ui.add(primary("配对")).clicked();
+                        agree = ui.add(primary(text.pair)).clicked();
                     }
                 });
             });
@@ -735,11 +743,12 @@ impl DeviceCenterApp {
             .unwrap_or_default();
         let available = !self.assist.busy && !self.logout_pending && !self.mutation_pending;
         let lists = self.assist.lists.clone().unwrap_or_default();
+        let text = &t().center;
         if account {
             let mut add = false;
-            cards::section_heading(ui, "收藏", Some(lists.favorites.len()), |ui| {
+            cards::section_heading(ui, text.favorites, Some(lists.favorites.len()), |ui| {
                 add = ui
-                    .add_enabled(available, crate::ui::controls::secondary("添加收藏"))
+                    .add_enabled(available, crate::ui::controls::secondary(text.add_favorite))
                     .clicked();
             });
             if add {
@@ -755,9 +764,9 @@ impl DeviceCenterApp {
                 empty_card(
                     ui,
                     if self.assist.loading && self.assist.lists.is_none() {
-                        "正在读取收藏…"
+                        text.loading_favorites
                     } else {
-                        "暂无收藏"
+                        text.no_favorites
                     },
                     "",
                 );
@@ -781,20 +790,23 @@ impl DeviceCenterApp {
                     ui,
                     &item.publisher_device_id,
                     item.title(),
-                    &[("收藏", AMBER)],
-                    &[format!(
-                        "短号 {} · ID {id}",
-                        assist_components::grouped_id(&item.connect_id)
+                    &[(text.favorite, AMBER)],
+                    &[(text.favorite_line)(
+                        &assist_components::grouped_id(&item.connect_id),
+                        &id,
                     )],
                     |ui| {
-                        if ui.add_enabled(available, primary("连接")).clicked() {
+                        if ui.add_enabled(available, primary(t().common.connect)).clicked() {
                             connect = Some(item.connect_id.clone());
                         }
                         remove = ui
-                            .add_enabled(available, crate::ui::controls::secondary("取消收藏"))
+                            .add_enabled(
+                                available,
+                                crate::ui::controls::secondary(text.remove_favorite),
+                            )
                             .clicked();
                         edit = ui
-                            .add_enabled(available, crate::ui::controls::secondary("编辑"))
+                            .add_enabled(available, crate::ui::controls::secondary(text.edit))
                             .clicked();
                     },
                 );
@@ -862,10 +874,13 @@ impl DeviceCenterApp {
             .then_with(|| a.address.cmp(&b.address))
         });
         let mut clear = false;
-        cards::section_heading(ui, "最近连接", Some(rows.len()), |ui| {
+        cards::section_heading(ui, text.recent_connections, Some(rows.len()), |ui| {
             if account && !lists.recent.is_empty() {
                 clear = ui
-                    .add_enabled(available, crate::ui::controls::secondary("清空服务器记录"))
+                    .add_enabled(
+                        available,
+                        crate::ui::controls::secondary(text.clear_server_history),
+                    )
                     .clicked();
             }
         });
@@ -873,7 +888,7 @@ impl DeviceCenterApp {
             self.assist.delete_prompt = Some(DeletePrompt::Recent);
         }
         if rows.is_empty() {
-            empty_card(ui, "暂无连接记录", "");
+            empty_card(ui, text.no_history, "");
             return;
         }
         enum Pick {
@@ -886,19 +901,23 @@ impl DeviceCenterApp {
             let mut chips: Vec<(&str, Color32)> = Vec::new();
             if row.trusted {
                 let paired = row.device_id.as_ref().is_some_and(|id| trusting.contains(id));
-                chips.push(if paired { ("已配对", GREEN) } else { ("对方信任本机", BLUE) });
+                chips.push(if paired {
+                    (text.paired, GREEN)
+                } else {
+                    (text.trusts_this_device, BLUE)
+                });
             }
             if row.saved.as_ref().is_some_and(|s| s.is_favorite) {
-                chips.push(("收藏", AMBER));
+                chips.push((text.favorite, AMBER));
             }
             let mut first = Vec::new();
             if let Some(address) = &row.address {
-                first.push(format!("地址 {address}"));
+                first.push((text.address_line)(address));
             }
             if let Some(number) = &row.short_number {
-                first.push(format!("短号 {}", assist_components::grouped_id(number)));
+                first.push((text.short_number_line)(&assist_components::grouped_id(number)));
             }
-            first.push(format!("最近 {}", cards::when(row.last)));
+            first.push((text.last_connected)(&cards::when(row.last)));
             let mut lines = vec![first.join(" · ")];
             if let Some(id) = &row.device_id {
                 lines.push(format!("ID {}", crate::account::api::device_id_text(id)));
@@ -909,17 +928,17 @@ impl DeviceCenterApp {
                 .or_else(|| row.short_number.clone())
                 .unwrap_or_default();
             let title = if row.title.is_empty() {
-                row.short_number.clone().unwrap_or_else(|| "未命名设备".into())
+                row.short_number.clone().unwrap_or_else(|| text.unnamed_device.into())
             } else {
                 row.title.clone()
             };
             let mut action = None;
             device_card(ui, &key, &title, &chips, &lines, |ui| {
-                if ui.add_enabled(available, primary("连接")).clicked() {
+                if ui.add_enabled(available, primary(t().common.connect)).clicked() {
                     action = Some(0);
                 }
                 if ui
-                    .add_enabled(available, crate::ui::controls::secondary("删除"))
+                    .add_enabled(available, crate::ui::controls::secondary(t().common.delete))
                     .clicked()
                 {
                     action = Some(1);
@@ -928,7 +947,7 @@ impl DeviceCenterApp {
                     && account
                     && !saved.is_favorite
                     && ui
-                        .add_enabled(available, crate::ui::controls::secondary("收藏"))
+                        .add_enabled(available, crate::ui::controls::secondary(text.add_to_favorites))
                         .clicked()
                 {
                     action = Some(2);
@@ -971,12 +990,12 @@ impl DeviceCenterApp {
             }
             Some(Pick::Forget(key, saved)) => {
                 if let Err(error) = store::forget_host(&key) {
-                    self.direct.error = Some(format!("删除失败：{error:#}"));
+                    self.direct.error = Some((t().center.delete_failed)(&format!("{error:#}")));
                 }
                 if let Some(item) = saved {
                     self.assist.delete_prompt = Some(DeletePrompt::Device(SavedKind::Recent, item));
                 } else {
-                    self.direct.note("已删除这条记录");
+                    self.direct.note(t().center.record_deleted);
                 }
             }
             None => {}

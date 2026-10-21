@@ -13,10 +13,13 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use farwing_protocol::ErrorCode;
 use farwing_protocol::api::Empty;
+use farwing_protocol::error::reason;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 
-async fn log(app: &App, admin: &AdminAuth, kind: &str, target: &str, detail: &str) {
+/// Record an administrator's change; `detail` as in [`audit`].
+async fn log(app: &App, admin: &AdminAuth, kind: &str, target: &str, detail: Value) {
     audit(
         app,
         Some((&admin.user().id, &admin.user().username)),
@@ -187,16 +190,10 @@ pub async fn create_user(
         })
         .await?;
     if !created {
-        return Err(ApiError::new(ErrorCode::Conflict, "用户名已被使用"));
+        return Err(super::me::username_taken());
     }
-    log(
-        &app,
-        &admin,
-        "user.create",
-        &username,
-        if req.admin { "管理员" } else { "" },
-    )
-    .await;
+    let detail = if req.admin { json!({ "admin": true }) } else { Value::Null };
+    log(&app, &admin, "user.create", &username, detail).await;
     Ok(Json(CreatedUser {
         id,
         password: generated,
@@ -356,16 +353,20 @@ pub async fn update_user(
         .db
         .call(move |c| {
             let Some(account) = webdb::account(c, &uid)? else {
-                return Ok(Err("没有这个账号"));
+                return Ok(Err(ApiError::not_found()));
             };
             let is_admin = account.role == webdb::ROLE_ADMIN && !account.disabled;
             let losing_admin = is_admin
                 && (req.admin == Some(false) || req.disabled == Some(true));
             if losing_admin && webdb::admin_count(c)? <= 1 {
-                return Ok(Err("不能移除最后一个管理员"));
+                return Ok(Err(last_admin()));
             }
             if uid == me && (req.admin == Some(false) || req.disabled == Some(true)) {
-                return Ok(Err("不能降级或禁用自己"));
+                return Ok(Err(ApiError::reason(
+                    ErrorCode::BadRequest,
+                    reason::SELF_DEMOTE,
+                    "cannot demote or disable your own account",
+                )));
             }
             if let Some(nickname) = &req.nickname {
                 webdb::set_nickname(c, &uid, &db::clip(nickname.trim(), 64))?;
@@ -386,18 +387,18 @@ pub async fn update_user(
             Ok(Ok((account.username, req.admin, req.disabled)))
         })
         .await?;
-    let (username, role, disabled) = outcome.map_err(ApiError::bad_request)?;
+    let (username, role, disabled) = outcome?;
     if disabled == Some(true) {
         app.hub.revoke_user(&id);
     }
-    let mut changes = Vec::new();
+    let mut changes = Map::new();
     if let Some(r) = role {
-        changes.push(if r { "设为管理员" } else { "取消管理员" });
+        changes.insert("admin".into(), r.into());
     }
     if let Some(d) = disabled {
-        changes.push(if d { "禁用" } else { "启用" });
+        changes.insert("disabled".into(), d.into());
     }
-    log(&app, &admin, "user.update", &username, &changes.join("、")).await;
+    log(&app, &admin, "user.update", &username, changes_detail(changes)).await;
     Ok(Json(Empty {}))
 }
 
@@ -438,7 +439,7 @@ pub async fn reset_password(
         .await?
         .ok_or_else(ApiError::not_found)?;
     app.hub.revoke_user(&id);
-    log(&app, &admin, "user.password", &username, "").await;
+    log(&app, &admin, "user.password", &username, Value::Null).await;
     Ok(Json(NewPassword {
         password: generated,
     }))
@@ -462,7 +463,7 @@ pub async fn reset_totp(
         })
         .await?
         .ok_or_else(ApiError::not_found)?;
-    log(&app, &admin, "user.totp_reset", &username, "").await;
+    log(&app, &admin, "user.totp_reset", &username, Value::Null).await;
     Ok(Json(Empty {}))
 }
 
@@ -473,28 +474,32 @@ pub async fn delete_user(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Empty>> {
     if id == admin.user().id {
-        return Err(ApiError::bad_request("不能删除自己"));
+        return Err(ApiError::reason(
+            ErrorCode::BadRequest,
+            reason::SELF_DELETE,
+            "cannot delete your own account",
+        ));
     }
     let uid = id.clone();
     let outcome = app
         .db
         .call(move |c| {
             let Some(account) = webdb::account(c, &uid)? else {
-                return Ok(Err("没有这个账号"));
+                return Ok(Err(ApiError::not_found()));
             };
             if account.role == webdb::ROLE_ADMIN
                 && !account.disabled
                 && webdb::admin_count(c)? <= 1
             {
-                return Ok(Err("不能删除最后一个管理员"));
+                return Ok(Err(last_admin()));
             }
             db::delete_user(c, &uid)?;
             Ok(Ok(account.username))
         })
         .await?;
-    let username = outcome.map_err(ApiError::bad_request)?;
+    let username = outcome?;
     app.hub.revoke_user(&id);
-    log(&app, &admin, "user.delete", &username, "").await;
+    log(&app, &admin, "user.delete", &username, Value::Null).await;
     Ok(Json(Empty {}))
 }
 
@@ -529,11 +534,22 @@ pub async fn create_invite(
     admin: AdminAuth,
     JsonBody(req): JsonBody<CreateInvite>,
 ) -> ApiResult<Json<CreatedInvite>> {
-    if req.max_uses.is_some_and(|n| !(1..=1000).contains(&n)) {
-        return Err(ApiError::bad_request("可用次数应为 1–1000"));
+    const USES: std::ops::RangeInclusive<i64> = 1..=1000;
+    if req.max_uses.is_some_and(|n| !USES.contains(&n)) {
+        return Err(ApiError::reason(
+            ErrorCode::BadRequest,
+            reason::INVITE_USES_INVALID,
+            "max_uses must be 1-1000",
+        )
+        .with_detail("min", *USES.start())
+        .with_detail("max", *USES.end()));
     }
     if req.valid_hours.is_some_and(|h| !(1..=24 * 365).contains(&h)) {
-        return Err(ApiError::bad_request("有效期应为 1 小时到 1 年"));
+        return Err(ApiError::reason(
+            ErrorCode::BadRequest,
+            reason::INVITE_VALIDITY_INVALID,
+            "valid_hours must be 1 hour to 1 year",
+        ));
     }
     let code = {
         const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -557,7 +573,7 @@ pub async fn create_invite(
     app.db
         .call(move |c| webdb::create_invite(c, &iid, &hash, &by, &note2, max, expires, auto))
         .await?;
-    log(&app, &admin, "invite.create", &note, "").await;
+    log(&app, &admin, "invite.create", &note, Value::Null).await;
     Ok(Json(CreatedInvite { id, code }))
 }
 
@@ -569,7 +585,7 @@ pub async fn revoke_invite(
 ) -> ApiResult<Json<Empty>> {
     let iid = id.clone();
     app.db.call(move |c| webdb::revoke_invite(c, &iid)).await?;
-    log(&app, &admin, "invite.revoke", &id, "").await;
+    log(&app, &admin, "invite.revoke", &id, Value::Null).await;
     Ok(Json(Empty {}))
 }
 
@@ -637,7 +653,7 @@ pub async fn unbind_device(
         .await?
         .ok_or_else(ApiError::not_found)?;
     app.hub.revoke_device(&id);
-    log(&app, &admin, "device.unbind", &format!("{alias} [{id}]"), "").await;
+    log(&app, &admin, "device.unbind", &format!("{alias} [{id}]"), Value::Null).await;
     Ok(Json(Empty {}))
 }
 
@@ -649,7 +665,7 @@ pub async fn disconnect_device(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Empty>> {
     app.hub.disconnect_device(&id);
-    log(&app, &admin, "device.disconnect", &id, "").await;
+    log(&app, &admin, "device.disconnect", &id, Value::Null).await;
     Ok(Json(Empty {}))
 }
 
@@ -703,7 +719,7 @@ pub async fn end_session(
     if !app.hub.end_session(&id) {
         return Err(ApiError::not_found());
     }
-    log(&app, &admin, "session.end", &id, "").await;
+    log(&app, &admin, "session.end", &id, Value::Null).await;
     Ok(Json(Empty {}))
 }
 
@@ -715,20 +731,21 @@ pub async fn updates(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Jso
 }
 
 fn check_announcement(a: &Announcement) -> ApiResult<()> {
+    let invalid = |why, message| Err(ApiError::reason(ErrorCode::BadRequest, why, message));
     if crate::config::normalize_platform(&a.platform).is_none() {
-        return Err(ApiError::bad_request("平台无效"));
+        return invalid(reason::UPDATE_PLATFORM_INVALID, "unknown platform");
     }
     if a.channel != "stable" && a.channel != "beta" {
-        return Err(ApiError::bad_request("渠道应为 stable 或 beta"));
+        return invalid(reason::UPDATE_CHANNEL_INVALID, "channel must be stable or beta");
     }
     if a.version.trim().is_empty() || a.version.len() > 64 {
-        return Err(ApiError::bad_request("版本号无效"));
+        return invalid(reason::UPDATE_VERSION_INVALID, "invalid version");
     }
     if !(a.url.starts_with("https://") || a.url.starts_with("http://")) || a.url.len() > 2048 {
-        return Err(ApiError::bad_request("下载地址应为 http(s) 链接"));
+        return invalid(reason::UPDATE_URL_INVALID, "url must be an http(s) link");
     }
     if a.notes.len() > 16 * 1024 {
-        return Err(ApiError::bad_request("说明过长"));
+        return invalid(reason::UPDATE_NOTES_TOO_LONG, "notes too long");
     }
     Ok(())
 }
@@ -757,7 +774,7 @@ pub async fn save_update(
         &admin,
         "update.save",
         &format!("{} {} {}", req.platform, req.channel, req.version),
-        "",
+        Value::Null,
     )
     .await;
     Ok(Json(req))
@@ -773,7 +790,7 @@ pub async fn delete_update(
     app.db
         .call(move |c| webdb::delete_announcement(c, &uid))
         .await?;
-    log(&app, &admin, "update.delete", &id, "").await;
+    log(&app, &admin, "update.delete", &id, Value::Null).await;
     Ok(Json(Empty {}))
 }
 
@@ -806,7 +823,8 @@ fn config_view(app: &App) -> serde_json::Value {
         "turn": {
             "mode": format!("{:?}", c.turn.mode).to_lowercase(),
             "urls": c.turn.urls,
-            "shared_secret": if c.turn.shared_secret.is_empty() { "" } else { "（已设置，已隐藏）" },
+            // Whether one is set; the secret itself is never shown.
+            "shared_secret": !c.turn.shared_secret.is_empty(),
             "credential_ttl_s": c.turn.credential_ttl.as_secs(),
             "force_relay": c.turn.force_relay,
             "listen_udp": c.turn.listen_udp.map(|a| a.to_string()),
@@ -854,7 +872,7 @@ pub async fn set_settings(
         .map(|c| (*c).to_owned())
         .chain(req.web_caps.iter().filter(|w| !farwing_protocol::caps::WEB.contains(&w.as_str())).cloned())
         .collect();
-    req.validate().map_err(ApiError::bad_request)?;
+    req.validate()?;
     let pairs = req.pairs();
     app.db
         .call(move |c| {
@@ -865,29 +883,38 @@ pub async fn set_settings(
         })
         .await?;
     let before = std::mem::replace(&mut *app.settings.write(), req.clone());
-    let mut changes = Vec::new();
+    // The changed settings with their new values (`null` bitrate: no limit).
+    let mut changes = Map::new();
     if before.instance_name != req.instance_name {
-        changes.push(format!("实例名称：{}", req.instance_name));
+        changes.insert("instance_name".into(), req.instance_name.clone().into());
     }
     if before.guests != req.guests {
-        changes.push(format!("游客：{}", if req.guests { "开" } else { "关" }));
+        changes.insert("guests".into(), req.guests.into());
     }
     if before.registration != req.registration {
-        changes.push(format!("邀请码注册：{}", if req.registration { "开" } else { "关" }));
+        changes.insert("registration".into(), req.registration.into());
     }
     if before.bitrate_limit_mbps != req.bitrate_limit_mbps {
-        changes.push(format!(
-            "码率上限：{}",
-            req.bitrate_limit_mbps
-                .map(|n| format!("{n} Mbit/s"))
-                .unwrap_or_else(|| "不限".into())
-        ));
+        changes.insert("bitrate_limit_mbps".into(), json!(req.bitrate_limit_mbps));
     }
     if before.web_caps != req.web_caps {
-        changes.push(format!("网页端能力：{}", req.web_caps.join(",")));
+        changes.insert("web_caps".into(), json!(req.web_caps));
     }
-    log(&app, &admin, "settings.save", "", &changes.join("；")).await;
+    log(&app, &admin, "settings.save", "", changes_detail(changes)).await;
     Ok(Json(req))
+}
+
+fn last_admin() -> ApiError {
+    ApiError::reason(
+        ErrorCode::BadRequest,
+        reason::LAST_ADMIN,
+        "the last administrator must stay",
+    )
+}
+
+/// An audit detail of changed fields; none: no detail.
+fn changes_detail(changes: Map<String, Value>) -> Value {
+    if changes.is_empty() { Value::Null } else { Value::Object(changes) }
 }
 
 // =================================================================== audit

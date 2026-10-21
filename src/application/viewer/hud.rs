@@ -1,4 +1,5 @@
 //! Performance overlay formatting and presentation modes.
+use crate::i18n::t;
 use super::{COMPACT_COLUMN_GAP, COMPACT_HUD_WIDTH, COMPACT_METER_WIDTH, performance_panel};
 use crate::diagnostics::performance::health::{Level, Metric};
 use crate::diagnostics::performance::{PerformanceMonitor, PerformanceSnapshot};
@@ -35,7 +36,7 @@ pub(super) fn show_compact_performance(
     stats: &PerformanceSnapshot,
     audio: &crate::media::audio::AudioPlayback,
 ) {
-    egui::Window::new("性能简报")
+    egui::Window::new(t().viewer.performance_summary)
         .id(egui::Id::new("performance-compact"))
         // This HUD has no controls. In particular, it must not become the
         // foreground layer used by the raw-mouse and annotation hit tests.

@@ -14,6 +14,7 @@ use farwing_protocol::api::{
 use farwing_protocol::realtime::{
     DeviceChangeKind, Envelope, PowerRequestPush, WolTarget, WolWake, types,
 };
+use farwing_protocol::error::reason;
 use farwing_protocol::{ErrorCode, caps, capability};
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -77,7 +78,11 @@ pub async fn request(
 ) -> ApiResult<Json<PowerReceipt>> {
     let visible = visible_device(&app, &auth, &id).await?;
     if !visible.granted.iter().any(|c| c == caps::POWER) {
-        return Err(ApiError::forbidden("没有该设备的电源权限"));
+        return Err(ApiError::reason(
+            ErrorCode::Forbidden,
+            reason::POWER_NOT_GRANTED,
+            "the grants do not include power",
+        ));
     }
     let target = visible.row;
     let rid = new_uuid();
@@ -99,7 +104,11 @@ pub async fn request(
                 return Err(ApiError::device_offline());
             }
             if !target.has_capability(capability::POWER) || !target.policy.power {
-                return Err(ErrorCode::HostDisabled.into());
+                return Err(ApiError::reason(
+                    ErrorCode::HostDisabled,
+                    reason::POWER_DISABLED,
+                    "host does not allow shutdown and restart",
+                ));
             }
             app.db.call(record).await?;
             let pushed = app.hub.push(
@@ -125,10 +134,18 @@ pub async fn request(
         }
         PowerAction::Wake => {
             if app.hub.is_online(&target.id) {
-                return Err(ApiError::new(ErrorCode::Conflict, "目标设备在线"));
+                return Err(ApiError::reason(
+                    ErrorCode::Conflict,
+                    reason::DEVICE_ONLINE,
+                    "target device is online",
+                ));
             }
             if !target.wol_supported() {
-                return Err(ApiError::forbidden("目标设备未启用网络唤醒"));
+                return Err(ApiError::reason(
+                    ErrorCode::Forbidden,
+                    reason::WOL_UNAVAILABLE,
+                    "target device has no Wake-on-LAN set up",
+                ));
             }
             app.db.call(record).await?;
             // Helpers: the owner's online devices behind the same public address.
@@ -186,7 +203,7 @@ pub async fn result(
         .await?
         .ok_or_else(ApiError::not_found)?;
     if row.device_id != auth.device.id {
-        return Err(ApiError::forbidden("只有目标设备可以报告结果"));
+        return Err(ApiError::forbidden("only the target device reports the result"));
     }
     let (id, msg, state) = (row.id.clone(), res.message.clone(), res.state.clone());
     let code = res.code;

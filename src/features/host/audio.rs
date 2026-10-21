@@ -5,6 +5,7 @@ use crate::media::audio::{
     sender::{Frame, RATE, Source, Transmitter},
 };
 use crossbeam_queue::ArrayQueue;
+use crate::i18n::t;
 use std::{
     sync::{
         Arc, Mutex,
@@ -28,10 +29,10 @@ impl DefaultDevices {
     pub const ALL: [Self; 4] = [Self::Keep, Self::Microphone, Self::Speakers, Self::Both];
     pub fn label(self) -> &'static str {
         match self {
-            Self::Keep => "全部保持原有",
-            Self::Microphone => "仅调整麦克风",
-            Self::Speakers => "仅调整扬声器",
-            Self::Both => "都调整",
+            Self::Keep => t().features.audio_defaults_keep,
+            Self::Microphone => t().features.audio_defaults_microphone,
+            Self::Speakers => t().features.audio_defaults_speakers,
+            Self::Both => t().features.audio_defaults_both,
         }
     }
     pub fn microphone(self) -> bool {
@@ -55,7 +56,7 @@ impl Device {
                 && !self.id.contains('\0')
                 && self.name.len() <= 4096
                 && !self.name.contains('\0'),
-            "播放设备标识无效"
+            "{}", t().features.audio_device_id_invalid
         );
         Ok(())
     }
@@ -179,11 +180,11 @@ impl Audio {
         };
         let result = (|| -> anyhow::Result<_> {
             crate::media::audio::encoder::Quality { kbps }.validate()?;
-            anyhow::ensure!(self.allowed(), "当前会话未开放桌面声音");
+            anyhow::ensure!(self.allowed(), "{}", t().features.audio_not_allowed);
             self.0.remote_quality.store(kbps, Ordering::Relaxed);
             self.0.wake.notify_one();
             self.quality_status()
-                .ok_or_else(|| anyhow::anyhow!("音频轨道未协商"))
+                .ok_or_else(|| anyhow::anyhow!(t().features.audio_track_not_negotiated))
         })();
         Ok(Some(audio_control::encode(match result {
             Ok((revision, quality, config)) => Message::Applied {
@@ -374,8 +375,8 @@ impl Audio {
                         status.device.clear();
                         status.capturing = false;
                         status.error = Some(selected_device.as_ref().map_or_else(
-                            || "没有可用的默认播放设备".into(),
-                            |device| format!("所选播放设备未连接：{}", device.name),
+                            || t().features.audio_no_default_device.into(),
+                            |device| (t().features.audio_device_disconnected)(&device.name),
                         ));
                         retry.failed(now);
                     }
@@ -400,7 +401,7 @@ impl Audio {
                 generation = self.0.generation.load(Ordering::Acquire);
                 retry.failed(now);
                 next_device_check = now;
-                let message = format!("桌面声音暂不可用：{error:#}");
+                let message = (t().features.audio_unavailable)(&format!("{error:#}"));
                 let mut status = lock(&self.0.status);
                 if status.error.as_ref() != Some(&message) {
                     tracing::warn!(%error,"host desktop audio rebuilding; video retained");

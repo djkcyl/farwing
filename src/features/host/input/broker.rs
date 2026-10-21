@@ -3,6 +3,7 @@ use super::{
     engine::{Engine, Geometry},
     wire::Event,
 };
+use crate::i18n::t;
 use crate::platform::windows::host_service::{
     pipe::{NAME, Pipe},
     process,
@@ -55,7 +56,7 @@ fn exchange(pipe: &Pipe, request: &Request, permitted: impl Fn() -> bool) -> Res
         }
         failure.borrow().is_none()
     };
-    ensure!(poll(), "输入取消请求发送失败");
+    ensure!(poll(), "{}", t().features.input_cancel_send_failed);
     let reply = pipe.receive(&poll);
     let _ = poll();
     if let Some(error) = failure.into_inner() {
@@ -66,7 +67,7 @@ fn exchange(pipe: &Pipe, request: &Request, permitted: impl Fn() -> bool) -> Res
         reply = pipe.receive(|| true)?;
         reply.sas = false;
         if reply.error.is_none() {
-            reply.error = Some("本次输入已取消".into());
+            reply.error = Some(t().features.input_cancelled.into());
         }
     }
     Ok(reply)
@@ -117,8 +118,12 @@ impl Remote {
         !self.failed
     }
     fn request(&mut self, request: Request, permitted: impl Fn() -> bool) -> Result<()> {
-        ensure!(!self.failed, "被控服务连接已失效");
-        ensure!(permitted(), "本次输入已取消");
+        ensure!(
+            !self.failed,
+            "{}",
+            t().features.input_service_connection_lost
+        );
+        ensure!(permitted(), "{}", t().features.input_cancelled);
         let result = exchange(&self.pipe, &request, permitted);
         // A lost response does not authorize replaying the command through another
         // backend. Disconnect is the only recovery for this input generation.
@@ -202,7 +207,11 @@ fn service_pid() -> Result<u32> {
             QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, Some(bytes), &mut needed);
         let _ = CloseServiceHandle(service);
         result?;
-        ensure!(state.dwCurrentState == SERVICE_RUNNING, "被控服务未运行");
+        ensure!(
+            state.dwCurrentState == SERVICE_RUNNING,
+            "{}",
+            t().features.input_service_not_running
+        );
         Ok(state.dwProcessId)
     }
 }
@@ -216,7 +225,8 @@ pub(crate) fn agent(name: &str, parent: u32) -> Result<()> {
     );
     ensure!(service_pid()? == parent, "输入会话父进程无效");
     process::verify_image(parent)?;
-    let pipe = Pipe::client(name)?.ok_or_else(|| anyhow::anyhow!("输入会话已结束"))?;
+    let pipe = Pipe::client(name)?
+        .ok_or_else(|| anyhow::anyhow!("{}", t().features.input_session_ended))?;
     ensure!(pipe.peer_pid(false)? == parent, "输入会话服务身份无效");
     let session = process::session(std::process::id())?;
     let hardware =
@@ -332,12 +342,13 @@ pub(crate) fn serve(pipe: Pipe, permitted: impl Fn() -> bool) -> Result<()> {
         ensure!(origin == pid, "输入来源进程不匹配");
         ensure!(
             permitted() && pipe.queued_bytes()? == 0,
-            "安全注意序列请求已撤销"
+            "{}",
+            t().features.input_sas_revoked
         );
         let result = crate::platform::windows::host_service::service::secure_attention();
         return pipe.send(
             &Reply {
-                backend: "Windows · 系统服务".into(),
+                backend: t().features.input_backend_service.into(),
                 error: result.err().map(|error| error.to_string()),
                 sas: false,
                 mouse_policy: Default::default(),
@@ -375,7 +386,7 @@ pub(crate) fn serve(pipe: Pipe, permitted: impl Fn() -> bool) -> Result<()> {
             })?;
             if reply.sas {
                 reply.sas = false;
-                ensure!(permitted(), "安全注意序列请求已撤销");
+                ensure!(permitted(), "{}", t().features.input_sas_revoked);
                 if let Err(error) =
                     crate::platform::windows::host_service::service::secure_attention()
                 {
@@ -400,8 +411,9 @@ pub(crate) fn serve(pipe: Pipe, permitted: impl Fn() -> bool) -> Result<()> {
 /// The resident already owns native input, but SAS remains an explicit service
 /// operation. No second HID owner or input-agent is created for this command.
 pub(super) fn secure_attention(permitted: impl Fn() -> bool) -> Result<()> {
-    ensure!(permitted(), "安全注意序列请求已撤销");
-    let pipe = Pipe::client(&NAME)?.ok_or_else(|| anyhow::anyhow!("被控服务未运行"))?;
+    ensure!(permitted(), "{}", t().features.input_sas_revoked);
+    let pipe = Pipe::client(&NAME)?
+        .ok_or_else(|| anyhow::anyhow!("{}", t().features.input_service_not_running))?;
     crate::platform::windows::host_service::install::verify_running(pipe.peer_pid(false)?)?;
     pipe.send(
         &Request::SecureAttention {

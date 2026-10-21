@@ -33,10 +33,18 @@ pub enum DisplayTopologyAction {
 impl DisplayTopologyAction {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Create { .. } => "添加虚拟屏",
-            Self::Remove { .. } => "删除虚拟屏",
-            Self::Exit => "退出超级屏",
-            _ => "切换超级屏",
+            Self::Create { .. } => t().features.stream_add_virtual_screen,
+            Self::Remove { .. } => t().features.stream_remove_virtual_screen,
+            Self::Exit => t().features.stream_exit_super_screen,
+            _ => t().features.stream_switch_super_screen,
+        }
+    }
+    fn progress(self) -> &'static str {
+        match self {
+            Self::Create { .. } => t().features.stream_adding_virtual_screen,
+            Self::Remove { .. } => t().features.stream_removing_virtual_screen,
+            Self::Exit => t().features.stream_exiting_super_screen,
+            _ => t().features.stream_switching_super_screen,
         }
     }
     pub fn global(self) -> bool {
@@ -104,7 +112,7 @@ impl DisplayTopology {
         if self.status.pending {
             self.status.pending = false;
             self.status.error = true;
-            self.status.message = "连接已断开".into();
+            self.status.message = t().features.stream_disconnected.into();
         }
     }
 
@@ -190,9 +198,9 @@ impl DisplayTopology {
             if !self.status.error {
                 self.status.message =
                     if matches!(pending.action, DisplayTopologyAction::Remove { .. }) {
-                        "显示器已删除"
+                        t().features.stream_display_removed
                     } else {
-                        "正在恢复画面…"
+                        t().features.stream_restoring_video
                     }
                     .into();
             }
@@ -206,13 +214,13 @@ pub(super) fn support(state: &StreamControlState) -> DisplayTopologySupport {
         && state.peer.has(crate::protocol::peer::feature::DISPLAY_VIRTUAL);
     let super_screen = state.screens.iter().any(|s| s.display.screen_type == 2);
     let create_unavailable = if !available {
-        Some("对端未开放虚拟屏")
+        Some(t().features.stream_virtual_screens_unavailable)
     } else if super_screen {
-        Some("超级屏中不可用")
+        Some(t().features.stream_unavailable_in_super_screen)
     } else if state.assistance {
-        Some("访客不能添加虚拟屏")
+        Some(t().features.stream_guest_cannot_add_virtual_screen)
     } else if state.screens.len() >= 5 {
-        Some("最多支持5个显示器")
+        Some(t().features.stream_display_limit)
     } else if state
         .screens
         .iter()
@@ -220,15 +228,15 @@ pub(super) fn support(state: &StreamControlState) -> DisplayTopologySupport {
         .count()
         >= 3
     {
-        Some("最多支持 3 个虚拟屏")
+        Some(t().features.stream_virtual_screen_limit)
     } else if state.registered_video_tracks.is_empty() {
-        Some("正在登记视频轨道")
+        Some(t().features.stream_registering_tracks)
     } else if state
         .registered_video_tracks
         .iter()
         .all(|t| state.screens.iter().any(|s| s.video_track_index == *t))
     {
-        Some("没有可用视频轨道")
+        Some(t().features.stream_no_video_track)
     } else {
         None
     };
@@ -276,7 +284,7 @@ impl StreamControlHandle {
                 .is_some_and(|at| received_at >= at)
         {
             state.topology.status.pending = false;
-            state.topology.status.message = "画面已恢复".into();
+            state.topology.status.message = t().features.stream_video_restored.into();
             tracing::info!(screen_id, sequence = ?state.topology.status.sequence, "display topology presentation resumed");
             drop(state);
             self.mouse.repaint();
@@ -325,14 +333,20 @@ impl StreamControlHandle {
         let mut state = lock(&self.shared);
         ensure_ready(&state)?;
         let capabilities = support(&state);
-        anyhow::ensure!(capabilities.resolution_conversion, "对端未开放虚拟显示功能");
+        anyhow::ensure!(
+            capabilities.resolution_conversion,
+            "{}",
+            t().features.stream_virtual_displays_unavailable
+        );
         anyhow::ensure!(
             !state.topology.status.pending || state.topology.status.dismissed,
-            "正在处理显示器操作"
+            "{}",
+            t().features.stream_display_operation_pending
         );
         anyhow::ensure!(
             state.screens.iter().any(|s| s.id == origin),
-            "发起操作的显示器已断开"
+            "{}",
+            t().features.stream_origin_display_disconnected
         );
         let request;
         let mut rollback = None;
@@ -341,7 +355,9 @@ impl StreamControlHandle {
                 anyhow::ensure!(
                     capabilities.create,
                     "{}",
-                    capabilities.create_unavailable.unwrap_or("无法添加虚拟屏")
+                    capabilities
+                        .create_unavailable
+                        .unwrap_or(t().features.stream_cannot_add_virtual_screen)
                 );
                 request = SessionBody::CreateVirtualDisplay(PbCreateVirtualDisplay {
                     local_resolution: vec![resolution(width, height)?],
@@ -354,15 +370,24 @@ impl StreamControlHandle {
                         .screens
                         .iter()
                         .any(|s| s.id == screen_id && s.display.screen_type == 1),
-                    "只能删除当前 Farwing 虚拟屏"
+                    "{}",
+                    t().features.stream_only_farwing_virtual_screens
                 );
-                anyhow::ensure!(state.screens.len() > 1, "不能删除最后一个显示器");
+                anyhow::ensure!(
+                    state.screens.len() > 1,
+                    "{}",
+                    t().features.stream_cannot_remove_last_display
+                );
                 request = SessionBody::RemoveVirtualDisplay(PbRemoveVirtualDisplay {
                     screen_id: vec![screen_id],
                 });
             }
             DisplayTopologyAction::Enter { width, height, dpi } => {
-                anyhow::ensure!(capabilities.enter, "当前会话不能手动进入超级屏");
+                anyhow::ensure!(
+                    capabilities.enter,
+                    "{}",
+                    t().features.stream_cannot_enter_super_screen
+                );
                 request = SessionBody::EnterExclusive(PbEnterSuperScreen {
                     reason: 1,
                     resolution: Some(resolution(width, height)?),
@@ -371,7 +396,11 @@ impl StreamControlHandle {
                 });
             }
             DisplayTopologyAction::Exit => {
-                anyhow::ensure!(capabilities.exit, "当前未处于超级屏");
+                anyhow::ensure!(
+                    capabilities.exit,
+                    "{}",
+                    t().features.stream_not_in_super_screen
+                );
                 request = SessionBody::QuitExclusive(PbQuitSuperScreen {});
             }
             DisplayTopologyAction::Resolution { screen_id, choice } => {
@@ -379,7 +408,7 @@ impl StreamControlHandle {
                     .screens
                     .iter()
                     .find(|s| s.id == screen_id)
-                    .ok_or_else(|| anyhow!("显示器已断开"))?;
+                    .ok_or_else(|| anyhow!("{}", t().features.stream_display_disconnected))?;
                 let (mode, kind) = display_settings::expand_resolution(&screen.display, choice)?;
                 resolution(mode.width, mode.height)?;
                 let mut capture = capture_setting_request(state.baseline)?;
@@ -399,7 +428,8 @@ impl StreamControlHandle {
             } => {
                 anyhow::ensure!(
                     capabilities.fps_conversion,
-                    "当前会话不能通过帧率切换超级屏"
+                    "{}",
+                    t().features.stream_cannot_switch_super_screen_by_fps
                 );
                 let target = resolution(width, height)?;
                 let dpi = i32::try_from(dpi)?;
@@ -440,7 +470,7 @@ impl StreamControlHandle {
                 origin_screen: origin,
                 action: Some(action),
                 pending: true,
-                message: format!("正在{}…", action.label()),
+                message: action.progress().into(),
                 ..Default::default()
             },
         };
@@ -452,8 +482,12 @@ impl StreamControlHandle {
             completion: None,
         });
         if sent.is_err() {
-            self.topology_send_failed(&mut state, sequence, "显示操作发送任务已停止");
-            bail!("显示操作发送任务已停止");
+            self.topology_send_failed(
+                &mut state,
+                sequence,
+                t().features.stream_display_operation_sender_stopped,
+            );
+            bail!("{}", t().features.stream_display_operation_sender_stopped);
         }
         tracing::info!(
             sequence,
@@ -536,8 +570,12 @@ impl StreamControlHandle {
                             .and_then(|v| v.get("error_code").and_then(|x| x.as_i64()))
                         {
                             Some(0) => {}
-                            Some(code) => error = Some(format!("超级屏转换未完成（{code}）")),
-                            None => error = Some("超级屏转换回应缺少有效结果".into()),
+                            Some(code) => {
+                                error = Some((t().features.stream_super_screen_failed_code)(code))
+                            }
+                            None => {
+                                error = Some(t().features.stream_super_screen_no_result.into())
+                            }
                         }
                     } else if item.error_code == -6 {
                         tracing::info!(sequence, detail = %item.error_detail, "super-screen conversion chroma result");
@@ -567,12 +605,13 @@ impl StreamControlHandle {
                     pending.rollback = None;
                 }
                 if !state.topology.status.reported {
-                    state.topology.status.message = "等待显示状态更新…".into();
+                    state.topology.status.message =
+                        t().features.stream_waiting_display_state.into();
                 }
             }
             error => {
                 let message = match error {
-                    Ok(code) => format!("显示操作未完成（{code}）"),
+                    Ok(code) => (t().features.stream_display_operation_failed_code)(code),
                     Err(message) => message,
                 };
                 self.topology_send_failed(state, sequence, &message);
@@ -583,7 +622,11 @@ impl StreamControlHandle {
 }
 
 fn resolution(width: u32, height: u32) -> Result<PbScreenResolution> {
-    anyhow::ensure!(width > 0 && height > 0, "显示尺寸无效");
+    anyhow::ensure!(
+        width > 0 && height > 0,
+        "{}",
+        t().features.stream_invalid_display_size
+    );
     Ok(PbScreenResolution {
         width: i32::try_from(width)?,
         height: i32::try_from(height)?,

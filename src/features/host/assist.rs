@@ -7,6 +7,7 @@
 //! over the direct TLS channel. A trusted device is admitted by its key.
 
 use crate::session::host_client::HostClient;
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use farwing_protocol::api::{AssistDecision, AssistPakeReply, AssistRefusal};
 use farwing_protocol::crypto;
@@ -35,9 +36,9 @@ impl Mode {
     ];
     pub fn label(self) -> &'static str {
         match self {
-            Self::Password => "访问码",
-            Self::Confirmation => "仅本机确认",
-            Self::PasswordConfirmation => "访问码 + 本机确认",
+            Self::Password => t().features.assist_mode_code,
+            Self::Confirmation => t().features.assist_mode_approval,
+            Self::PasswordConfirmation => t().features.assist_mode_code_and_approval,
         }
     }
     pub fn wire(self) -> crate::account::api::AssistMode {
@@ -67,9 +68,9 @@ impl Passwords {
     pub const ALL: [Self; 3] = [Self::Random, Self::Custom, Self::Both];
     pub fn label(self) -> &'static str {
         match self {
-            Self::Random => "临时访问码",
-            Self::Custom => "固定访问码",
-            Self::Both => "两种都接受",
+            Self::Random => t().features.assist_code_temporary,
+            Self::Custom => t().features.assist_code_fixed,
+            Self::Both => t().features.assist_code_either,
         }
     }
     pub fn random(self) -> bool {
@@ -136,26 +137,26 @@ impl Settings {
                     && self.code.bytes().all(|b| b.is_ascii_alphanumeric())
                     && self.code.bytes().any(|b| b.is_ascii_alphabetic())
                     && self.code.bytes().any(|b| b.is_ascii_digit())),
-            "临时访问码应为 8–32 位字母和数字组合"
+            "{}", t().features.assist_temporary_code_invalid
         );
         ensure!(
             self.custom_code.is_empty() || Self::valid_custom_code(&self.custom_code),
-            "固定访问码应为 8–16 位字母和数字组合"
+            "{}", t().features.assist_fixed_code_invalid
         );
         ensure!(
             self.grants.as_ref().is_none_or(|grants| grants
                 .iter()
                 .all(|cap| cap == farwing_protocol::caps::VIEW || Self::OFFERED.contains(&cap.as_str()))),
-            "访客权限无效"
+            "{}", t().features.assist_grants_invalid
         );
         if self.enabled && self.mode.needs_password() {
             ensure!(
                 !self.passwords.random() || !self.code.is_empty(),
-                "未生成临时访问码"
+                "{}", t().features.assist_no_temporary_code
             );
             ensure!(
                 !self.passwords.custom() || !self.custom_code.is_empty(),
-                "未设置固定访问码"
+                "{}", t().features.assist_no_fixed_code
             );
         }
         Ok(())
@@ -366,13 +367,13 @@ fn check_lock(state: &mut State) -> bool {
     state.failures.retain(|at| at.elapsed() < FAILURE_WINDOW);
     if state.failures.len() >= FAILURE_LIMIT && state.locked_until.is_none() {
         state.locked_until = Some(Instant::now() + LOCKOUT);
-        state.snapshot.error = Some(LOCKED_MESSAGE.into());
+        state.snapshot.error = Some(t().features.assist_locked_out.into());
         tracing::warn!("assistance and pairing locked after repeated wrong codes");
     }
     let locked = state.locked_until.is_some_and(|until| Instant::now() < until);
     if !locked && state.locked_until.take().is_some() {
         state.failures.clear();
-        if state.snapshot.error.as_deref() == Some(LOCKED_MESSAGE) {
+        if state.snapshot.error.as_deref().is_some_and(locked_message) {
             state.snapshot.error = None;
         }
     }
@@ -433,16 +434,16 @@ impl Handle {
         {
             let mut state = self.lock();
             if state.snapshot.pending.is_some() {
-                return Decision::Unavailable("对方正在处理另一个连接请求");
+                return Decision::Unavailable(t().features.assist_other_request_pending);
             }
             if crate::platform::capture::session_locked() != Some(false) {
-                return Decision::Unavailable("对方的电脑已锁定");
+                return Decision::Unavailable(t().features.assist_other_locked);
             }
             if !state
                 .ui_seen
                 .is_some_and(|at| at.elapsed() < Duration::from_secs(3))
             {
-                return Decision::Unavailable("对方未打开 Farwing 设备中心");
+                return Decision::Unavailable(t().features.assist_other_not_open);
             }
             state.snapshot.pending = Some(Confirmation {
                 id: id.clone(),
@@ -526,7 +527,7 @@ impl Handle {
         let state = self.lock();
         ensure!(
             state.snapshot.settings.enabled && state.snapshot.ready,
-            "本机没有开启访问码"
+            "{}", t().features.assist_code_off
         );
         Ok(state.admission.clone())
     }
@@ -553,7 +554,7 @@ impl Handle {
                     .pending
                     .as_ref()
                     .is_some_and(|p| p.id == id && p.token == token),
-                "连接请求已结束"
+                "{}", t().features.assist_request_ended
             );
             let pending = state.snapshot.pending.take();
             let pairing = pending.as_ref().is_some_and(|p| p.pairing.is_some());
@@ -583,22 +584,22 @@ impl Handle {
                 .pending
                 .as_ref()
                 .is_some_and(|p| p.id == id && p.token == token && !p.responding),
-            "连接请求已结束"
+            "{}", t().features.assist_request_ended
         );
         state
             .requests
             .as_ref()
-            .context("访问码后台未就绪")?
+            .context(t().features.assist_service_not_ready)?
             .try_send(Push::Answer { id, token, allow, trust })
-            .map_err(|_| anyhow::anyhow!("访问码后台忙"))
+            .map_err(|_| anyhow::anyhow!(t().features.assist_service_busy))
     }
     pub fn refresh(&self) -> Result<()> {
         self.lock()
             .requests
             .as_ref()
-            .context("访问码后台未就绪")?
+            .context(t().features.assist_service_not_ready)?
             .try_send(Push::Refresh)
-            .map_err(|_| anyhow::anyhow!("访问码后台忙"))
+            .map_err(|_| anyhow::anyhow!(t().features.assist_service_busy))
     }
     /// The PAKE key of the assistance request granted to `controller_device`
     /// (at most once, within two minutes of the grant).
@@ -624,7 +625,7 @@ impl Handle {
                         (false, false) => format!("{user} · {alias}"),
                         (false, true) => user,
                         (true, false) => alias,
-                        (true, true) => "远端设备".into(),
+                        (true, true) => t().features.assist_remote_device.into(),
                     },
                     caps_limit: push.controller.effective_caps_limit(),
                     device_id: push.controller.device_id,
@@ -800,8 +801,8 @@ fn report_failure(state: &mut State, error: &anyhow::Error) {
         .map(|e| e.code);
     tracing::warn!(code = ?code, "host assistance request failed");
     state.snapshot.error = Some(match code {
-        Some(code) => format!("连接请求失败（{code}）"),
-        None => "连接请求未完成".into(),
+        Some(code) => (t().features.assist_request_failed)(&code.to_string()),
+        None => t().features.assist_request_incomplete.into(),
     });
 }
 
@@ -846,7 +847,7 @@ async fn run(client: HostClient, mut rx: mpsc::Receiver<Push>, stop: Cancellatio
                     }
                     Err(_) => {
                         handle.unavailable();
-                        handle.lock().snapshot.error = Some("访问码后台已停止".into());
+                        handle.lock().snapshot.error = Some(t().features.assist_service_stopped.into());
                         break;
                     }
                 }
@@ -1266,7 +1267,13 @@ async fn run(client: HostClient, mut rx: mpsc::Receiver<Push>, stop: Cancellatio
     while jobs.join_next().await.is_some() {}
 }
 
-const LOCKED_MESSAGE: &str = "访问码错误次数过多，已暂停 5 分钟";
+/// The lockout notice in any interface language: it may have been set
+/// before the language changed.
+fn locked_message(error: &str) -> bool {
+    crate::i18n::Language::ALL
+        .iter()
+        .any(|&language| crate::i18n::messages(language).features.assist_locked_out == error)
+}
 
 enum Reply {
     Pake(String, AssistPakeReply),

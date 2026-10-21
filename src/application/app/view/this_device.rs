@@ -16,19 +16,41 @@ fn detail(ui: &mut egui::Ui, text: &str) {
 const LABEL_COLUMN: f32 = 72.0;
 const VALUE_COLUMN: f32 = 260.0;
 
+/// The label column's width: at least [`LABEL_COLUMN`], wide enough for
+/// every label in the current language.
+fn label_column(ui: &egui::Ui) -> f32 {
+    let text = &t().center;
+    [
+        text.device_id,
+        text.short_number,
+        text.lan,
+        text.background_service,
+    ]
+    .into_iter()
+    .map(|label| {
+        ui.painter()
+            .layout_no_wrap(label.into(), FontId::proportional(theme::BODY), MUTED)
+            .size()
+            .x
+            + 12.0
+    })
+    .fold(LABEL_COLUMN, f32::max)
+}
+
 /// A row of the identity card, its three columns lined up with the others.
 fn field(
     ui: &mut egui::Ui,
+    label_width: f32,
     label: &str,
     value: impl FnOnce(&mut egui::Ui),
     meaning: impl FnOnce(&mut egui::Ui),
 ) {
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(
-            vec2(LABEL_COLUMN, theme::CONTROL_HEIGHT),
+            vec2(label_width, theme::CONTROL_HEIGHT),
             egui::Layout::left_to_right(Align::Center),
             |ui| {
-                ui.set_min_size(vec2(LABEL_COLUMN, theme::CONTROL_HEIGHT));
+                ui.set_min_size(vec2(label_width, theme::CONTROL_HEIGHT));
                 ui.label(RichText::new(label).color(MUTED));
             },
         );
@@ -54,7 +76,11 @@ fn copy_chip(ui: &mut egui::Ui, salt: &str, text: &str, value: &str, copied: &st
     let response = ui
         .add(egui::Button::new(RichText::new(text).monospace()))
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(if recent.is_some() { copied } else { "点击复制" });
+        .on_hover_text(if recent.is_some() {
+            copied
+        } else {
+            t().common.click_to_copy
+        });
     if response.clicked() {
         ui.ctx().copy_text(value.to_owned());
         ui.ctx().data_mut(|data| data.insert_temp(id, Instant::now()));
@@ -68,7 +94,7 @@ impl DeviceCenterApp {
     pub(super) fn this_device_page(&mut self, ui: &mut egui::Ui) {
         self.direct.poll_messages();
         let access = self.access();
-        cards::page_header(ui, "本机", "", |ui| self.active_view(ui));
+        cards::page_header(ui, Page::ThisDevice.title(), "", |ui| self.active_view(ui));
         if let Some((message, _)) = &self.direct.message {
             cards::banner(ui, message, Tone::Success);
         }
@@ -81,14 +107,14 @@ impl DeviceCenterApp {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        detail(ui, "正在启动本机的被控端…");
+                        detail(ui, t().center.starting_host);
                     });
                 });
                 ui.ctx().request_repaint_after(Duration::from_millis(500));
                 return;
             };
             self.identity_card(ui, &host, access);
-            cards::section_heading(ui, "访问码", None, |_| {});
+            cards::section_heading(ui, t().center.access_code, None, |_| {});
             self.host_assist_controls(ui);
             self.trusted_section(ui);
             self.account_access_section(ui, access);
@@ -124,49 +150,61 @@ impl DeviceCenterApp {
         let mut changed = false;
         let mut open_network = false;
         let mut install_service = false;
+        let text = &t().center;
         cards::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
+            let label_width = label_column(ui);
             ui.horizontal(|ui| {
                 let (dot, _) = ui.allocate_exact_size(vec2(10.0, 20.0), Sense::hover());
                 ui.painter()
                     .circle_filled(dot.center(), 4.5, if allowed { GREEN } else { MUTED });
                 ui.label(
-                    RichText::new(identity.as_ref().map_or("本机", |(name, _)| name.as_str()))
+                    RichText::new(
+                        identity
+                            .as_ref()
+                            .map_or(text.page_this_device, |(name, _)| name.as_str()),
+                    )
                         .size(theme::SECTION)
                         .strong(),
                 );
                 if managed::managed() {
-                    cards::chip(ui, "后台服务", BLUE);
+                    cards::chip(ui, text.background_service, BLUE);
                 }
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                     changed = crate::ui::controls::service_switch(ui, &mut allowed).changed();
-                    ui.label(if allowed { "允许连接本机" } else { "不允许连接本机" });
+                    ui.label(if allowed {
+                        text.connections_allowed
+                    } else {
+                        text.connections_not_allowed
+                    });
                 });
             });
             ui.add_space(8.0);
             field(
                 ui,
-                "设备 ID",
+                label_width,
+                text.device_id,
                 |ui| match identity.as_ref() {
                     Some((_, id)) if !raw_id.is_empty() => {
-                        copy_chip(ui, "this-device-id", id, &raw_id, "已复制设备 ID");
+                        copy_chip(ui, "this-device-id", id, &raw_id, text.device_id_copied);
                     }
-                    _ => detail(ui, "未知"),
+                    _ => detail(ui, t().common.unknown),
                 },
                 |_| {},
             );
             field(
                 ui,
-                "短号",
+                label_width,
+                text.short_number,
                 |ui| {
                     if short.is_empty() {
                         detail(
                             ui,
                             match access {
-                                Access::NoServer => "无",
-                                _ if self.server_unreachable => "无",
-                                _ if !allowed => "未分配",
-                                _ => "正在获取…",
+                                Access::NoServer => t().common.none,
+                                _ if self.server_unreachable => t().common.none,
+                                _ if !allowed => text.not_assigned,
+                                _ => text.fetching,
                             },
                         );
                     } else {
@@ -175,7 +213,7 @@ impl DeviceCenterApp {
                             "this-device-short",
                             &assist_components::grouped_id(&short),
                             &short,
-                            "已复制短号",
+                            text.short_number_copied,
                         );
                     }
                 },
@@ -184,47 +222,46 @@ impl DeviceCenterApp {
             let lan = state.as_ref().map(|s| (s.listening_port, s.settings));
             field(
                 ui,
-                "局域网",
+                label_width,
+                text.lan,
                 |ui| match lan {
                     // The endpoint listens but refuses everyone, and the
                     // device is not announced.
                     Some((_, settings)) if !allowed && settings.direct => {
-                        detail(ui, "不接受连接");
+                        detail(ui, text.not_accepting_connections);
                     }
                     Some((Some(port), _)) => {
                         if addresses.is_empty() {
-                            detail(ui, "未找到局域网地址");
+                            detail(ui, text.no_lan_address);
                         }
                         let default = port == farwing_protocol::direct::DEFAULT_PORT;
                         for (index, address) in addresses.iter().enumerate() {
-                            let text = if default {
+                            let address_text = if default {
                                 address.to_string()
                             } else {
                                 format!("{address}:{port}")
                             };
-                            copy_chip(ui, &format!("this-device-lan-{index}"), &text, &text, "已复制地址");
+                            copy_chip(
+                                ui,
+                                &format!("this-device-lan-{index}"),
+                                &address_text,
+                                &address_text,
+                                text.address_copied,
+                            );
                         }
                     }
-                    Some((None, settings)) if !settings.direct => detail(ui, "直连已关闭"),
-                    Some((None, _)) => detail(ui, "正在开启直连…"),
-                    None => detail(ui, "正在读取…"),
+                    Some((None, settings)) if !settings.direct => detail(ui, text.direct_off),
+                    Some((None, _)) => detail(ui, text.turning_on_direct),
+                    None => detail(ui, text.reading),
                 },
                 |ui| match lan {
                     Some((Some(port), settings)) if allowed || !settings.direct => {
-                        detail(
-                            ui,
-                            &format!(
-                                "直连端口 {port}{}",
-                                if settings.lan_discovery {
-                                    " · 局域网可发现"
-                                } else {
-                                    " · 局域网发现已关闭"
-                                }
-                            ),
-                        );
+                        detail(ui, &(text.direct_port)(port, settings.lan_discovery));
                     }
                     Some((None, settings)) if !settings.direct => {
-                        open_network = ui.add(crate::ui::controls::secondary("直连设置")).clicked();
+                        open_network = ui
+                            .add(crate::ui::controls::secondary(text.direct_settings))
+                            .clicked();
                     }
                     _ => {}
                 },
@@ -232,7 +269,8 @@ impl DeviceCenterApp {
             if let Some(reach) = self.center_ui.components.reach() {
                 field(
                     ui,
-                    "后台服务",
+                    label_width,
+                    text.background_service,
                     |ui| {
                         cards::chip(ui, reach.state, reach.color);
                     },
@@ -265,9 +303,10 @@ impl DeviceCenterApp {
         trusted.sort_by(|a, b| {
             crate::account::api::list_order(&a.name, &a.device_id, &b.name, &b.device_id)
         });
-        cards::section_heading(ui, "受信任设备", Some(trusted.len()), |_| {});
+        let text = &t().center;
+        cards::section_heading(ui, text.trusted_devices, Some(trusted.len()), |_| {});
         if trusted.is_empty() {
-            empty_card(ui, "暂无受信任设备", "");
+            empty_card(ui, text.no_trusted_devices, "");
             return;
         }
         for device in trusted {
@@ -277,30 +316,33 @@ impl DeviceCenterApp {
                     .is_some_and(|h| h.trusted);
             let mut edit = false;
             let mut remove = false;
+            let paired_chip = [(text.paired, GREEN)];
             device_card_with(
                 ui,
                 &device.device_id,
                 &device.name,
-                if paired { &[("已配对", GREEN)][..] } else { &[] },
+                if paired { &paired_chip[..] } else { &[] },
                 Some(&device.grants),
                 &[
                     format!("ID {}", crate::account::api::device_id_text(&device.device_id)),
-                    format!(
-                        "信任于 {} · 最近连接 {}",
-                        cards::when(device.trusted_at),
-                        if device.last_seen > 0 {
+                    (text.trusted_since)(
+                        &cards::when(device.trusted_at),
+                        &if device.last_seen > 0 {
                             cards::when(device.last_seen)
                         } else {
-                            "从未".into()
-                        }
+                            text.never.into()
+                        },
                     ),
                 ],
                 |ui| {
                     remove = ui
-                        .add_enabled(!self.direct.sending, crate::ui::controls::secondary("移除"))
+                        .add_enabled(
+                            !self.direct.sending,
+                            crate::ui::controls::secondary(t().common.remove),
+                        )
                         .clicked();
                     edit = ui
-                        .add_enabled(!self.direct.sending, primary("权限"))
+                        .add_enabled(!self.direct.sending, primary(text.permissions))
                         .clicked();
                 },
             );
@@ -315,27 +357,30 @@ impl DeviceCenterApp {
     }
 
     fn account_access_section(&mut self, ui: &mut egui::Ui, access: Access) {
-        cards::section_heading(ui, "本账号的设备与好友", None, |_| {});
+        let text = &t().center;
+        cards::section_heading(ui, text.account_devices_and_friends, None, |_| {});
         let mut friends = false;
         let mut sign_in = false;
         cards::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             if access == Access::Account {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("本账号的其他设备").strong());
-                    cards::chip(ui, "完全控制", GREEN);
+                    ui.label(RichText::new(text.other_account_devices).strong());
+                    cards::chip(ui, text.full_control, GREEN);
                 });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("好友").strong());
-                    cards::chip(ui, "按你给的权限", AMBER);
+                    ui.label(RichText::new(text.friends).strong());
+                    cards::chip(ui, text.as_granted, AMBER);
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                        friends = ui.add(crate::ui::controls::secondary("管理好友")).clicked();
+                        friends = ui
+                            .add(crate::ui::controls::secondary(text.manage_friends))
+                            .clicked();
                     });
                 });
             } else {
                 ui.horizontal(|ui| {
-                    detail(ui, "未登录");
+                    detail(ui, t().common.signed_out);
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         sign_in = ui
                             .add(crate::ui::controls::secondary(self.sign_in_label()))
@@ -360,12 +405,12 @@ impl DeviceCenterApp {
             self.devices.as_ref(),
             self.catalog.as_ref(),
         );
-        cards::section_heading(ui, "正在连接", Some(participants.len()), |_| {});
+        cards::section_heading(ui, t().center.current_connections, Some(participants.len()), |_| {});
         let mut action = None;
         cards::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             if participants.is_empty() {
-                detail(ui, "没有人连接本机");
+                detail(ui, t().center.no_connections);
             } else {
                 action = super::super::controlled_caption::participants_list(ui, &participants);
             }
@@ -379,13 +424,15 @@ impl DeviceCenterApp {
     }
 
     fn limits_card(&mut self, ui: &mut egui::Ui) {
-        cards::section_heading(ui, "上限", None, |_| {});
+        cards::section_heading(ui, t().center.limits, None, |_| {});
         let mut open = false;
         cards::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    open = ui.add(crate::ui::controls::secondary("被控设置")).clicked();
+                    open = ui
+                        .add(crate::ui::controls::secondary(t().center.host_settings))
+                        .clicked();
                 });
             });
         });
@@ -418,7 +465,7 @@ impl DeviceCenterApp {
                         name: name.clone(),
                         grants,
                     },
-                    format!("已信任 {name}"),
+                    (t().center.now_trusted)(&name),
                 );
             }
             other => {
@@ -440,15 +487,15 @@ impl DeviceCenterApp {
                     ui.set_width(560.0);
                     close |= crate::ui::controls::dialog_header(
                         ui,
-                        &format!("{name} 可以做什么"),
+                        &(t().center.permissions_of)(&name),
                         crate::ui::controls::DialogIcon::Edit,
                         true,
                     );
                     cards::caps_editor(ui, "trusted-grants", &mut grants);
                     let (accept, dismiss) = crate::ui::controls::dialog_actions(
                         ui,
-                        Some(crate::ui::controls::DialogAction::new("保存")),
-                        Some("取消"),
+                        Some(crate::ui::controls::DialogAction::new(t().common.save)),
+                        Some(t().common.cancel),
                     );
                     save = accept;
                     close |= dismiss;
@@ -459,7 +506,7 @@ impl DeviceCenterApp {
                     ctx,
                     host.as_ref(),
                     Action::SetGrants { device_id, grants },
-                    "权限已保存",
+                    t().center.permissions_saved,
                 );
             } else if !close && !response.should_close() {
                 self.direct.editing = Some((device_id, name, grants));
@@ -471,9 +518,9 @@ impl DeviceCenterApp {
         match cards::confirm(
             ctx,
             "trusted-remove",
-            "不再信任这台设备？",
-            &format!("{name} 正在进行的连接会结束"),
-            "不再信任",
+            t().center.stop_trusting_title,
+            &(t().center.stop_trusting_body)(&name),
+            t().center.stop_trusting,
         ) {
             Some(true) => {
                 self.direct.confirm_remove = None;
@@ -482,7 +529,7 @@ impl DeviceCenterApp {
                     ctx,
                     host.as_ref(),
                     Action::Remove { device_id: id },
-                    format!("已不再信任 {name}"),
+                    (t().center.no_longer_trusted)(&name),
                 );
             }
             Some(false) => self.direct.confirm_remove = None,

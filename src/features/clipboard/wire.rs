@@ -8,6 +8,7 @@
 //! The same messages describe the private file exchange of a native drag
 //! (§8.3); its data uses `TRANSFER{kind: DRAG}`.
 use crate::protocol::peer::{self, FrameType, Header, flags};
+use crate::i18n::t;
 use anyhow::{Context, Result};
 use prost::Message;
 
@@ -193,13 +194,13 @@ pub(crate) enum Received {
 pub(crate) fn decode(header: &Header, body: &[u8]) -> Result<Received> {
     if header.is_response() && header.is_error() {
         let error = farwing_protocol::peer::PeerError::decode(body)
-            .context("无效的剪贴板错误回复")?;
+            .context(t().features.clipboard_invalid_error_reply)?;
         return Ok(Received::Failure(header.request_id, error.code, error.message));
     }
     let message = ClipboardMessage::decode(body)
-        .context("无效的剪贴板消息")?
+        .context(t().features.clipboard_invalid_message)?
         .body
-        .context("剪贴板消息没有受支持的内容")?;
+        .context(t().features.clipboard_unsupported_message)?;
     Ok(match (header.request_id, header.is_response()) {
         (0, _) => Received::Push(message),
         (id, false) => Received::Request(id, message),

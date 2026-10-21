@@ -56,7 +56,7 @@ pub(crate) struct IdentityFailure(pub String);
 
 impl std::fmt::Display for IdentityFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "对端身份校验失败：{}", self.0)
+        f.write_str(&(crate::i18n::t().session.error_peer_identity_failed)(&self.0))
     }
 }
 

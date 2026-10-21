@@ -1,5 +1,6 @@
 //! Display-specific ownership and occupancy; package mechanics are shared.
 use super::virtual_driver::Driver;
+use crate::i18n::t;
 use crate::platform::windows::components::{
     Kind, Operation, Status,
     driver::{Package, Removal},
@@ -19,7 +20,7 @@ const PACKAGE: Package = Package {
     repair: true,
 };
 #[derive(Debug, thiserror::Error)]
-#[error("虚拟显示驱动仍有显示器在使用")]
+#[error("{}", crate::i18n::t().system.driver_display_in_use)]
 pub(crate) struct DriverInUse;
 pub(crate) fn bundled() -> bool {
     PACKAGE.bundled()
@@ -27,7 +28,7 @@ pub(crate) fn bundled() -> bool {
 pub(crate) fn status() -> Result<Status> {
     let mut status = PACKAGE.status()?;
     if status.ready && Driver::device_instance().is_err() {
-        status.label = "已安装，显示接口未就绪".into();
+        status.label = t().system.driver_display_interface_not_ready.into();
         status.ready = false;
     }
     Ok(status)
@@ -70,7 +71,7 @@ fn removal_plan() -> Result<Removal> {
             }
         }
         if Driver::device_instance().is_ok() {
-            drop(Driver::open().context("虚拟显示驱动正在使用中，无法卸载")?);
+            drop(Driver::open().context(t().system.driver_display_busy)?);
         }
     }
     Ok(plan)
@@ -79,7 +80,11 @@ pub(crate) fn uninstall() -> Result<bool> {
     let _serial = super::recovery::Serial::acquire()?;
     let reboot = removal_plan()?.execute()?;
     if !reboot {
-        ensure!(!status()?.removable, "卸载尚未完成");
+        ensure!(
+            !status()?.removable,
+            "{}",
+            t().system.driver_uninstall_incomplete
+        );
     }
     Ok(reboot)
 }

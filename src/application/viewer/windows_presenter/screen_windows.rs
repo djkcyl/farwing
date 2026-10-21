@@ -1,6 +1,7 @@
 use super::*;
 use crate::application::viewer::screens::ScreenPlayback;
 use crate::features::stream_control::RemoteScreen;
+use crate::i18n::t;
 use std::collections::HashMap;
 use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
@@ -107,13 +108,13 @@ impl ScreenTabBar {
                             ui.separator();
                             if crate::ui::controls::menu_row(
                                 ui,
-                                "在独立窗口打开",
+                                t().viewer.open_in_window,
                                 "",
                                 None,
                                 !self.software_only,
                                 false,
                             )
-                            .on_disabled_hover_text("软解仅支持一个播放窗口")
+                            .on_disabled_hover_text(t().viewer.software_single_window)
                             .clicked()
                             {
                                 if let Ok(origin) = window.outer_position() {
@@ -152,12 +153,12 @@ impl ScreenTabBar {
                                 && snapshot.topology_support.create
                                 && (!snapshot.topology.pending || snapshot.topology.dismissed),
                         )
-                        .on_hover_text("添加虚拟屏")
+                        .on_hover_text(t().controls.add_virtual_screen)
                         .on_disabled_hover_text(
                             snapshot
                                 .topology_support
                                 .create_unavailable
-                                .unwrap_or("正在处理显示器操作"),
+                                .unwrap_or(t().viewer.display_action_busy),
                         )
                         .clicked()
                     {
@@ -188,14 +189,14 @@ impl ScreenTabBar {
                     ui.set_width(300.0);
                     let close = crate::ui::controls::dialog_header(
                         ui,
-                        "显示器操作失败",
+                        t().viewer.display_action_failed,
                         crate::ui::controls::DialogIcon::Error,
                         true,
                     );
                     ui.label(error);
                     let accept = crate::ui::controls::dialog_actions(
                         ui,
-                        Some(crate::ui::controls::DialogAction::new("确定")),
+                        Some(crate::ui::controls::DialogAction::new(t().common.ok)),
                         None,
                     )
                     .0;
@@ -422,8 +423,11 @@ impl ScreenWindows {
             .catalog
             .iter()
             .find(|screen| screen.id == screen_id)
-            .context("显示器已断开")?;
-        let slot = self.windows.get_mut(&window).context("窗口已关闭")?;
+            .context(t().viewer.display_disconnected)?;
+        let slot = self
+            .windows
+            .get_mut(&window)
+            .context(t().viewer.window_closed)?;
         slot.failed_screen = None;
         if slot.selected == Some(screen_id) && slot.app.is_some() {
             slot.pending.take();
@@ -450,7 +454,7 @@ impl ScreenWindows {
         let (progress, receiver) = std_mpsc::channel();
         let _ = progress.send(ConnectionProgress::working(
             10,
-            "正在打开显示器",
+            t().viewer.opening_display,
             screen.label(&self.catalog),
         ));
         let (connecting, display) = if slot.app.is_some() {
@@ -463,7 +467,7 @@ impl ScreenWindows {
         } else {
             let (mut connecting, display) = WindowsConnectionApp::new(
                 &slot.window,
-                "显示器".into(),
+                t().viewer.display.into(),
                 receiver,
                 self.proxy.clone(),
                 self.generation,
@@ -531,7 +535,10 @@ impl ScreenWindows {
         screen: i32,
         at: PhysicalPosition<i32>,
     ) -> Result<()> {
-        let source = self.windows.get(&from).context("原窗口已关闭")?;
+        let source = self
+            .windows
+            .get(&from)
+            .context(t().viewer.source_window_closed)?;
         if !source.tabs.contains(&screen) {
             return Ok(());
         }
@@ -556,7 +563,7 @@ impl ScreenWindows {
             .as_ref()
             .is_some_and(|app| app._session.is_software())
         {
-            bail!("软解仅支持一个播放窗口");
+            bail!(t().viewer.software_single_window);
         }
         let target = {
             let window = event_loop.create_window(
@@ -859,7 +866,7 @@ impl ScreenWindows {
                 .and_then(|pending| match pending.result.try_recv() {
                     Ok(result) => Some(result),
                     Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                        Some(Err(anyhow!("屏幕加载已取消")))
+                        Some(Err(anyhow!(t().viewer.screen_load_cancelled)))
                     }
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
                 });

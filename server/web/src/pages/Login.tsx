@@ -1,16 +1,19 @@
 // Sign in (password, then the second step for accounts with two-step
 // verification) and invitation registration.
 import { useState, type FormEvent, type ReactNode } from 'react';
+import { useT } from '../i18n/react';
 import { ApiError, errorText } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { Link, navigate, useLocation } from '../lib/router';
 import { Alert, Button, Field, Input } from '../ui/kit';
+import { LangSwitch } from '../ui/LangSwitch';
 import { BrandMark } from '../ui/Shell';
 
 export function AuthFrame({ title, children, foot }: { title: string; children: ReactNode; foot?: ReactNode }) {
   const { info } = useAuth();
   return (
     <div className="auth-page">
+      <LangSwitch className="lang-corner" />
       <div className="auth-card">
         <div className="auth-brand">
           <BrandMark size={40} />
@@ -30,6 +33,7 @@ export function AuthFrame({ title, children, foot }: { title: string; children: 
 }
 
 export function LoginPage() {
+  const t = useT();
   const auth = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -43,9 +47,7 @@ export function LoginPage() {
     try {
       await auth.login(username.trim(), password);
     } catch (err) {
-      setError(
-        err instanceof ApiError && err.code === 'unauthorized' ? '用户名或密码不正确，或账号已停用' : errorText(err),
-      );
+      setError(err instanceof ApiError && err.code === 'unauthorized' ? t.auth.login.badCredentials : errorText(err));
     } finally {
       setBusy(false);
     }
@@ -53,18 +55,18 @@ export function LoginPage() {
 
   return (
     <AuthFrame
-      title="登录"
+      title={t.auth.login.title}
       foot={
         <>
-          {auth.info?.registration ? <Link to="/register">用邀请码注册</Link> : <span />}
-          {auth.info?.guests && <Link to="/visit">用短号与访问码观看</Link>}
+          {auth.info?.registration ? <Link to="/register">{t.auth.login.registerLink}</Link> : <span />}
+          {auth.info?.guests && <Link to="/visit">{t.auth.login.visitLink}</Link>}
         </>
       }
     >
       <form className="stack" onSubmit={submit}>
-        {auth.notice && !error && <Alert tone="amber">{auth.notice}</Alert>}
+        {auth.notice === 'expired' && !error && <Alert tone="amber">{t.auth.sessionExpired}</Alert>}
         {error && <Alert>{error}</Alert>}
-        <Field label="用户名">
+        <Field label={t.auth.login.username}>
           <Input
             id="username"
             autoComplete="username"
@@ -74,7 +76,7 @@ export function LoginPage() {
             required
           />
         </Field>
-        <Field label="密码">
+        <Field label={t.auth.login.password}>
           <Input
             id="password"
             type="password"
@@ -85,7 +87,7 @@ export function LoginPage() {
           />
         </Field>
         <Button id="login" type="submit" variant="primary" className="btn-block" loading={busy}>
-          登录
+          {t.auth.login.title}
         </Button>
       </form>
     </AuthFrame>
@@ -93,6 +95,7 @@ export function LoginPage() {
 }
 
 export function SecondFactorPage() {
+  const t = useT();
   const auth = useAuth();
   const [code, setCode] = useState('');
   const [error, setError] = useState<string>();
@@ -115,7 +118,7 @@ export function SecondFactorPage() {
 
   return (
     <AuthFrame
-      title="二次验证"
+      title={t.auth.secondFactor.title}
       foot={
         <>
           <a
@@ -127,7 +130,7 @@ export function SecondFactorPage() {
               setError(undefined);
             }}
           >
-            {recovery ? '使用验证码' : '使用恢复码'}
+            {recovery ? t.auth.secondFactor.useCode : t.auth.secondFactor.useRecoveryCode}
           </a>
           <a
             href="#"
@@ -136,14 +139,14 @@ export function SecondFactorPage() {
               void auth.logout();
             }}
           >
-            换个账号
+            {t.auth.secondFactor.otherAccount}
           </a>
         </>
       }
     >
       <form className="stack" onSubmit={submit}>
         {error && <Alert>{error}</Alert>}
-        <Field label={recovery ? '恢复码' : '验证码'}>
+        <Field label={recovery ? t.auth.secondFactor.recoveryCode : t.auth.secondFactor.code}>
           <Input
             id="totp"
             className={recovery ? 'mono' : 'code'}
@@ -165,7 +168,7 @@ export function SecondFactorPage() {
           loading={busy}
           disabled={!recovery && code.length !== 6}
         >
-          验证
+          {t.auth.secondFactor.verify}
         </Button>
       </form>
     </AuthFrame>
@@ -173,6 +176,8 @@ export function SecondFactorPage() {
 }
 
 export function RegisterPage() {
+  const t = useT();
+  const r = t.auth.register;
   const auth = useAuth();
   const { query } = useLocation();
   const [invite, setInvite] = useState(query.get('code') ?? '');
@@ -185,8 +190,8 @@ export function RegisterPage() {
 
   if (auth.info && !auth.info.registration) {
     return (
-      <AuthFrame title="注册" foot={<Link to="/login">返回登录</Link>}>
-        <Alert tone="amber">本服务器未开放注册</Alert>
+      <AuthFrame title={r.title} foot={<Link to="/login">{r.backToLogin}</Link>}>
+        <Alert tone="amber">{r.disabled}</Alert>
       </AuthFrame>
     );
   }
@@ -194,7 +199,7 @@ export function RegisterPage() {
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (password !== password2) {
-      setError('两次输入的密码不一致');
+      setError(r.passwordMismatch);
       return;
     }
     setBusy(true);
@@ -210,10 +215,10 @@ export function RegisterPage() {
   }
 
   return (
-    <AuthFrame title="用邀请码注册" foot={<Link to="/login">已有账号？登录</Link>}>
+    <AuthFrame title={r.titleInvite} foot={<Link to="/login">{r.haveAccount}</Link>}>
       <form className="stack" onSubmit={submit}>
         {error && <Alert>{error}</Alert>}
-        <Field label="邀请码">
+        <Field label={r.invite}>
           <Input
             className="mono"
             value={invite}
@@ -223,7 +228,7 @@ export function RegisterPage() {
             autoFocus={!invite}
           />
         </Field>
-        <Field label="用户名" hint="1–64 位字母、数字或 . _ - @">
+        <Field label={r.username} hint={r.usernameHint}>
           <Input
             autoComplete="username"
             value={username}
@@ -232,10 +237,10 @@ export function RegisterPage() {
             autoFocus={!!invite}
           />
         </Field>
-        <Field label="昵称" hint="可选">
+        <Field label={r.nickname} hint={t.common.optional}>
           <Input value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={64} />
         </Field>
-        <Field label="密码" hint="至少 8 位">
+        <Field label={r.password} hint={r.passwordHint}>
           <Input
             type="password"
             autoComplete="new-password"
@@ -245,7 +250,7 @@ export function RegisterPage() {
             required
           />
         </Field>
-        <Field label="确认密码">
+        <Field label={r.confirmPassword}>
           <Input
             type="password"
             autoComplete="new-password"
@@ -255,7 +260,7 @@ export function RegisterPage() {
           />
         </Field>
         <Button type="submit" variant="primary" className="btn-block" loading={busy}>
-          注册并登录
+          {r.submit}
         </Button>
       </form>
     </AuthFrame>

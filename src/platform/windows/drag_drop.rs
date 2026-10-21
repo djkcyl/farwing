@@ -6,6 +6,7 @@ pub(crate) mod original;
 pub(crate) mod portal;
 pub(crate) mod target;
 use anyhow::{Result, ensure};
+use crate::i18n::t;
 use std::{
     cell::RefCell,
     sync::{
@@ -119,7 +120,8 @@ impl Session {
         }
         ensure!(
             unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0,
-            "鼠标已松开，拖出已取消"
+            "{}",
+            t().system.drag_released
         );
         Self::start_mode(
             Position {
@@ -153,7 +155,7 @@ impl Session {
             released: AtomicBool::new(false),
             feedback: AtomicU32::new(u32::MAX),
         });
-        ensure!(shared.allowed(), "拖放未获许可");
+        ensure!(shared.allowed(), "{}", t().system.drag_not_allowed);
         let running = shared.clone();
         std::thread::Builder::new()
             .name("OLE remote drag".into())
@@ -176,7 +178,7 @@ impl Session {
                     Err(_) => running.emit(Event::Finished {
                         accepted: false,
                         effect: 0,
-                        error: Some("拖放执行线程已停止".into()),
+                        error: Some(t().system.drag_thread_stopped.into()),
                     }),
                 }
             })?;
@@ -193,7 +195,8 @@ impl Session {
         let mut desired = super::lock(&self.shared.desired);
         ensure!(
             desired.phase == Phase::Dragging && !self.shared.finished.load(Ordering::Acquire),
-            "拖放已结束"
+            "{}",
+            t().system.drag_ended
         );
         desired.point = point;
         desired.phase = Phase::Drop;
@@ -357,7 +360,8 @@ fn run(shared: Arc<Shared>, object: impl FnOnce() -> Result<IDataObject>) -> Res
     loop {
         ensure!(
             shared.allowed() && super::lock(&shared.desired).phase != Phase::Cancel,
-            "拖放已取消"
+            "{}",
+            t().system.drag_cancelled
         );
         let result = unsafe { WaitForSingleObject(desktop.handle, 10) };
         if result == WAIT_OBJECT_0 || result == WAIT_ABANDONED {
@@ -366,7 +370,8 @@ fn run(shared: Arc<Shared>, object: impl FnOnce() -> Result<IDataObject>) -> Res
         }
         ensure!(
             result == WAIT_TIMEOUT && std::time::Instant::now() < deadline,
-            "桌面正在处理另一个拖放"
+            "{}",
+            t().system.drag_desktop_busy
         );
     }
     let previous_dpi =
@@ -393,7 +398,7 @@ fn run(shared: Arc<Shared>, object: impl FnOnce() -> Result<IDataObject>) -> Res
     }
     let _ole = Ole;
     let object = object()?;
-    ensure!(shared.allowed(), "拖放许可已撤销");
+    ensure!(shared.allowed(), "{}", t().system.drag_permission_revoked);
     let class = windows::core::w!("Farwing.DragSource");
     let module = unsafe { GetModuleHandleW(None)? };
     let wc = WNDCLASSW {
@@ -440,7 +445,8 @@ fn run(shared: Arc<Shared>, object: impl FnOnce() -> Result<IDataObject>) -> Res
     });
     ensure!(
         unsafe { SetTimer(Some(hwnd), TICK, 8, None) } != 0,
-        "无法启动拖放消息泵"
+        "{}",
+        t().system.drag_pump_failed
     );
     let source: IDropSource = Source { shared }.into();
     // OLE obtains its initial mouse position/state from a mouse message in the
@@ -459,7 +465,8 @@ fn run(shared: Arc<Shared>, object: impl FnOnce() -> Result<IDataObject>) -> Res
         } else {
             ensure!(
                 GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0,
-                "鼠标已松开，拖出已取消"
+                "{}",
+                t().system.drag_released
             );
         }
         let mut point = POINT {
@@ -468,7 +475,8 @@ fn run(shared: Arc<Shared>, object: impl FnOnce() -> Result<IDataObject>) -> Res
         };
         ensure!(
             ScreenToClient(hwnd, &mut point).as_bool(),
-            "无法转换拖放起点"
+            "{}",
+            t().system.drag_origin_failed
         );
         let xy = LPARAM(((point.x as u16 as u32) | ((point.y as u16 as u32) << 16)) as isize);
         PostMessageW(Some(hwnd), WM_MOUSEMOVE, WPARAM(1), xy)?;

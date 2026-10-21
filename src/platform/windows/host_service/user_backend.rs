@@ -3,6 +3,7 @@ use super::{
     pipe::{Handle, Pipe},
     process, vault,
 };
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -147,7 +148,8 @@ impl Server {
     pub fn start() -> Result<Self> {
         ensure!(
             vault::sid(std::process::id())? != "S-1-5-18",
-            "用户后台不能使用SYSTEM身份"
+            "{}",
+            t().system.service_user_backend_system_identity
         );
         let session = process::session(std::process::id())?;
         let listener = Pipe::listener(&name(session), true, 16, true)?;
@@ -305,26 +307,30 @@ impl Lease {
         let control = loop {
             ensure!(
                 allowed() && session == process::active_session(),
-                "用户工作已取消"
+                "{}",
+                t().system.service_user_task_cancelled
             );
             if let Some(pipe) = Pipe::client(&name(session))? {
                 break pipe;
             }
             ensure!(
                 started.elapsed() < Duration::from_secs(5),
-                "普通用户后台尚未就绪"
+                "{}",
+                t().system.service_user_backend_not_ready
             );
             std::thread::sleep(Duration::from_millis(20));
         };
         let pid = control.peer_pid(false)?;
         ensure!(
             control.peer_session(false)? == session,
-            "用户后台会话不匹配"
+            "{}",
+            t().system.service_user_backend_session_mismatch
         );
         process::verify_image(pid)?;
         ensure!(
             process_identity(pid)? == user_identity(session)?,
-            "用户后台Windows身份不匹配"
+            "{}",
+            t().system.service_user_backend_identity_mismatch
         );
         control.send(
             &Request::Open {
@@ -335,7 +341,8 @@ impl Lease {
         )?;
         ensure!(
             matches!(control.receive::<Reply>(&allowed)?, Reply::Ready { .. }),
-            "用户后台拒绝工作"
+            "{}",
+            t().system.service_user_backend_refused
         );
         remember(pid)?;
         Ok(Self { control, pid })
@@ -350,7 +357,7 @@ impl Lease {
         {
             Reply::Finished(None) => Ok(()),
             Reply::Finished(Some(error)) => anyhow::bail!(error),
-            _ => anyhow::bail!("用户工作尚未清理"),
+            _ => anyhow::bail!("{}", t().system.service_user_task_not_cleaned),
         }
     }
 }
@@ -419,14 +426,20 @@ pub(crate) fn idle() -> Result<bool> {
     if alive {
         ensure!(
             seen.as_ref().is_some_and(|s| s.pid == pid),
-            "旧用户后台尚未结束"
+            "{}",
+            t().system.service_user_backend_still_running
         );
     } else {
-        ensure!(pipe.peer_session(false)? == session, "用户后台会话不匹配");
+        ensure!(
+            pipe.peer_session(false)? == session,
+            "{}",
+            t().system.service_user_backend_session_mismatch
+        );
         process::verify_image(pid)?;
         ensure!(
             process_identity(pid)? == user_identity(session)?,
-            "用户后台Windows身份不匹配"
+            "{}",
+            t().system.service_user_backend_identity_mismatch
         );
         drop(seen);
         remember(pid)?;
@@ -437,7 +450,7 @@ pub(crate) fn idle() -> Result<bool> {
     drop(seen);
     match reply {
         Reply::Ready { active } => Ok(active == 0),
-        _ => anyhow::bail!("用户后台未确认空闲"),
+        _ => anyhow::bail!("{}", t().system.service_user_backend_not_idle),
     }
 }
 

@@ -1,5 +1,6 @@
 // Dialogs, confirmations and toasts.
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useT } from '../i18n/react';
 import { Icon } from './icons';
 import { Button, IconButton, Input } from './kit';
 
@@ -18,6 +19,7 @@ export function Dialog({
   footer?: ReactNode;
   wide?: boolean;
 }) {
+  const t = useT();
   const panel = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -35,7 +37,7 @@ export function Dialog({
       <div className={`dialog ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" ref={panel}>
         <header className="dialog-head">
           <h2>{title}</h2>
-          <IconButton icon="close" label="关闭" onClick={onClose} />
+          <IconButton icon="close" label={t.common.close} onClick={onClose} />
         </header>
         <div className="dialog-body">{children}</div>
         {footer && <footer className="dialog-foot">{footer}</footer>}
@@ -67,6 +69,7 @@ interface OverlayContextValue {
 const OverlayContext = createContext<OverlayContextValue | null>(null);
 
 export function OverlayProvider({ children }: { children: ReactNode }) {
+  const t = useT();
   const [pending, setPending] = useState<(ConfirmOptions & { resolve(v: boolean): void }) | null>(null);
   const [typed, setTyped] = useState('');
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -83,8 +86,8 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
 
   const toast = useCallback((text: string, tone: Toast['tone'] = 'green') => {
     const id = nextToast.current++;
-    setToasts((t) => [...t.slice(-3), { id, text, tone }]);
-    window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), tone === 'red' ? 6000 : 3000);
+    setToasts((list) => [...list.slice(-3), { id, text, tone }]);
+    window.setTimeout(() => setToasts((list) => list.filter((x) => x.id !== id)), tone === 'red' ? 6000 : 3000);
   }, []);
 
   const close = (value: boolean) => {
@@ -103,9 +106,9 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
         onClose={() => close(false)}
         footer={
           <>
-            <Button onClick={() => close(false)}>取消</Button>
+            <Button onClick={() => close(false)}>{t.common.cancel}</Button>
             <Button variant={pending?.danger ? 'danger' : 'primary'} disabled={blocked} onClick={() => close(true)}>
-              {pending?.confirm ?? '确定'}
+              {pending?.confirm ?? t.common.ok}
             </Button>
           </>
         }
@@ -114,7 +117,7 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
         {pending?.typeToConfirm && (
           <div className="stack-sm">
             <span className="muted small">
-              输入 <b className="mono">{pending.typeToConfirm}</b> 确认
+              {t.common.typeToConfirm[0]} <b className="mono">{pending.typeToConfirm}</b> {t.common.typeToConfirm[1]}
             </span>
             <Input
               value={typed}
@@ -125,10 +128,10 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
         )}
       </Dialog>
       <div className="toasts" aria-live="polite">
-        {toasts.map((t) => (
-          <div key={t.id} className={`toast toast-${t.tone}`}>
-            <Icon name={t.tone === 'red' ? 'alert' : t.tone === 'green' ? 'check' : 'info'} size={16} />
-            <span>{t.text}</span>
+        {toasts.map((toast) => (
+          <div key={toast.id} className={`toast toast-${toast.tone}`}>
+            <Icon name={toast.tone === 'red' ? 'alert' : toast.tone === 'green' ? 'check' : 'info'} size={16} />
+            <span>{toast.text}</span>
           </div>
         ))}
       </div>

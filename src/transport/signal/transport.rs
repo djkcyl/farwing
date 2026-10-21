@@ -63,21 +63,22 @@ pub(crate) enum SignalFailure {
 
 impl std::fmt::Display for SignalFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = &crate::i18n::t().session;
         match self {
-            Self::Socket(reason) => write!(f, "实时连接中断：{reason}"),
-            Self::Closed(reason) => write!(f, "服务器结束了实时连接：{reason}"),
-            Self::Rejected(reason) => write!(f, "服务器拒绝了实时连接：{reason}"),
+            Self::Socket(reason) => f.write_str(&(text.signal_connection_lost)(reason)),
+            Self::Closed(reason) => f.write_str(&(text.signal_server_closed)(reason)),
+            Self::Rejected(reason) => f.write_str(&(text.signal_server_rejected)(reason)),
             Self::Kicked(reason) => f.write_str(match reason.as_str() {
-                realtime::reason::PERMISSION_REVOKED => "设备主人撤销了你的访问权限",
-                realtime::reason::KICKED => "被控端结束了你的连接",
-                realtime::reason::REPLACED => "本机已在另一个窗口重新连接该设备",
-                realtime::reason::IDENTITY_MISMATCH => "对端设备身份校验失败，连接已终止",
-                realtime::reason::REVOKED => "被控端已关闭远程访问",
-                realtime::reason::HOST_CLOSED => "被控端结束了会话",
-                _ => "会话已结束",
+                realtime::reason::PERMISSION_REVOKED => text.ended_permission_revoked,
+                realtime::reason::KICKED => text.ended_kicked,
+                realtime::reason::REPLACED => text.ended_replaced,
+                realtime::reason::IDENTITY_MISMATCH => text.ended_identity_mismatch,
+                realtime::reason::REVOKED => text.ended_access_turned_off,
+                realtime::reason::HOST_CLOSED => text.ended_by_host,
+                _ => text.ended_session,
             }),
-            Self::PublisherDisconnected => f.write_str("被控端已离线"),
-            Self::Peer(reason) => write!(f, "媒体连接失败：{reason}"),
+            Self::PublisherDisconnected => f.write_str(text.host_went_offline),
+            Self::Peer(reason) => f.write_str(&(text.media_connection_failed)(reason)),
         }
     }
 }
@@ -205,8 +206,8 @@ impl SignalTransport {
             let result = worker.run().await;
             if let Some(carried) = &worker.carried {
                 carried.close_all(&match &result {
-                    Err(error) => format!("在线连接中断：{error:#}"),
-                    Ok(()) => "在线连接已关闭".to_owned(),
+                    Err(error) => (crate::i18n::t().session.warning_presence_lost)(&format!("{error:#}")),
+                    Ok(()) => crate::i18n::t().session.online_connection_closed.to_owned(),
                 });
             }
             if let Err(error) = result {
@@ -237,7 +238,7 @@ impl SignalTransport {
     /// server's frames for `sid` come back here. Closing it leaves the
     /// session (`session.leave`); the presence connection stays.
     pub(super) fn carried(carrier: &Carrier, sid: &str) -> Result<Self> {
-        anyhow::ensure!(carrier.is_connected(), "在线连接未就绪");
+        anyhow::ensure!(carrier.is_connected(), "{}", crate::i18n::t().session.online_connection_not_ready);
         let (route_tx, mut route) = mpsc::unbounded_channel();
         carrier.carried.sessions().insert(sid.to_owned(), route_tx);
         let (commands, mut commands_rx) = mpsc::unbounded_channel::<Command>();
@@ -263,7 +264,7 @@ impl SignalTransport {
                             if let Err(mpsc::error::SendError(Command::SendConnected(_, done))) =
                                 presence.send(Command::SendConnected(envelope, done))
                             {
-                                let _ = done.send(Err(anyhow!("在线连接已关闭")));
+                                let _ = done.send(Err(anyhow!("{}", crate::i18n::t().session.online_connection_closed)));
                             }
                         }
                         Some(Command::Close) | None => {
@@ -293,7 +294,7 @@ impl SignalTransport {
                             let _ = packets_tx.send(incoming);
                         }
                         None => {
-                            let _ = packets_tx.send(Err(SignalFailure::Socket("在线连接已关闭".into()).into()));
+                            let _ = packets_tx.send(Err(SignalFailure::Socket(crate::i18n::t().session.online_connection_closed.into()).into()));
                             break;
                         }
                     },
@@ -366,7 +367,7 @@ impl SignalTransport {
                 match command {
                     Command::Send(_) => {}
                     Command::SendConnected(_, done) => {
-                        let _ = done.send(Err(anyhow!("没有服务器连接")));
+                        let _ = done.send(Err(anyhow!("{}", crate::i18n::t().session.no_server_connection)));
                     }
                     Command::Close => break,
                 }
@@ -423,7 +424,7 @@ impl SignalTransport {
                     command = commands_rx.recv() => match command {
                         Some(Command::Send(envelope)) => { let _ = out_tx.send(envelope); }
                         Some(Command::SendConnected(envelope, done)) => {
-                            let _ = done.send(out_tx.send(envelope).map_err(|_| anyhow!("直连已断开")));
+                            let _ = done.send(out_tx.send(envelope).map_err(|_| anyhow!("{}", crate::i18n::t().session.direct_connection_lost)));
                         }
                         Some(Command::Close) | None => break None,
                     },
@@ -460,7 +461,7 @@ impl SignalTransport {
                         let _ = out_tx.send(Envelope::new(types::PING, realtime::Ping { t: chrono::Utc::now().timestamp_millis() }));
                     }
                     _ = tokio::time::sleep_until(idle_deadline) => {
-                        break Some(SignalFailure::Socket("直连心跳超时".into()));
+                        break Some(SignalFailure::Socket(crate::i18n::t().session.direct_connection_not_responding.into()));
                     }
                 }
             };
@@ -610,10 +611,11 @@ impl Worker {
     async fn run(&mut self) -> Result<()> {
         let tls = self.server.tls(false)?;
         for endpoint in &self.endpoints {
-            let url = url::Url::parse(&endpoint.url).context("服务器返回的实时连接地址无效")?;
+            let url = url::Url::parse(&endpoint.url).context(crate::i18n::t().session.realtime_address_invalid)?;
             anyhow::ensure!(
                 self.server.accepts_endpoint(&url),
-                "服务器返回的实时连接地址不属于当前服务器"
+                "{}",
+                crate::i18n::t().session.realtime_address_foreign
             );
         }
         let max_retries = self.endpoints.len().saturating_mul(2).max(2) as u32;

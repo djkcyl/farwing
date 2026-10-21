@@ -6,6 +6,7 @@ mod frame;
 mod wake;
 
 use crate::features::clipboard::Clipboard;
+use crate::i18n::t;
 use crate::protocol::peer_platform::PeerPlatform;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -82,7 +83,7 @@ impl Receiver {
         {
             sender
                 .try_send(bytes.to_vec())
-                .map_err(|_| anyhow::anyhow!("剪贴板数据接收队列已满"))?;
+                .map_err(|_| anyhow::anyhow!("{}", t().features.clipboard_data_queue_full))?;
         }
         Ok(true)
     }
@@ -110,7 +111,7 @@ impl Receiver {
         if let Some(sender) = state.sender.as_ref() {
             sender
                 .try_send(bytes.to_vec())
-                .map_err(|_| anyhow::anyhow!("剪贴板接收队列已满或关闭"))?;
+                .map_err(|_| anyhow::anyhow!("{}", t().features.clipboard_receive_queue_full))?;
         }
         Ok(true)
     }
@@ -189,13 +190,13 @@ async fn binding(
 ) -> Result<()> {
     let (generation, mut rx) = {
         let mut state = super::lock(&receiver.0);
-        ensure!(state.channel == Some(channel.id()), "剪贴板通道已被替换");
+        ensure!(state.channel == Some(channel.id()), "{}", t().features.clipboard_channel_replaced);
         (
             state.generation,
             state
                 .receiver
                 .take()
-                .ok_or_else(|| anyhow::anyhow!("剪贴板通道已关闭"))?,
+                .ok_or_else(|| anyhow::anyhow!("{}", t().features.clipboard_channel_closed))?,
         )
     };
     let stop = cancel.child_token();
@@ -268,7 +269,7 @@ async fn binding(
                     backend.receive(message)?;
                 },
                 packet=backend.next()=>{
-                    let Some(packet)=packet else { anyhow::bail!(backend.status().error.unwrap_or_else(|| "剪贴板用户会话已结束".into())); };
+                    let Some(packet)=packet else { anyhow::bail!(backend.status().error.unwrap_or_else(|| t().features.clipboard_user_session_ended.into())); };
                     // The user agent publishes pointer ownership before its
                     // handoff reply. Apply it before the peer can resume input.
                     input.drag_pointer(backend.status().dragging);

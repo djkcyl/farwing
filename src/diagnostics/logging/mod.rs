@@ -57,43 +57,91 @@ impl Level {
 }
 pub struct Module {
     pub id: &'static str,
-    pub name: &'static str,
+    pub name: ModuleName,
     pub targets: &'static [&'static str],
     pub external: bool,
 }
+/// A module's name in the current interface language (read when shown).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModuleName(&'static str);
+impl ModuleName {
+    pub fn text(self) -> &'static str {
+        let t = &crate::i18n::t().session;
+        match self.0 {
+            "app" => t.log_module_app,
+            "auth" => t.log_module_auth,
+            "api" => t.log_module_api,
+            "presence" => t.log_module_presence,
+            "host" => t.log_module_host,
+            "signal" => t.log_module_signal,
+            "rtc" => t.log_module_rtc,
+            "recovery" => t.log_module_recovery,
+            "decoder" => t.log_module_decoder,
+            "viewer" => t.log_module_viewer,
+            "audio" => t.log_module_audio,
+            "control" => t.log_module_control,
+            "keyboard" => t.log_module_keyboard,
+            "mouse" => t.log_module_mouse,
+            "input" => t.log_module_input,
+            "performance" => t.log_module_performance,
+            "plugins" => t.log_module_plugins,
+            "ui" => t.log_module_ui,
+            "webrtc" => "WebRTC",
+            "kcp" => "KCP",
+            "ice" => t.log_module_ice,
+            "sctp" => "SCTP / DTLS / SRTP",
+            "http" => "HTTP / TLS / WebSocket",
+            "credentials" => t.log_module_credentials,
+            "runtime" => t.log_module_runtime,
+            "graphics" => t.log_module_graphics,
+            "native" => t.log_module_native,
+            other => other,
+        }
+    }
+}
+impl std::fmt::Display for ModuleName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.text())
+    }
+}
+impl From<ModuleName> for egui::WidgetText {
+    fn from(name: ModuleName) -> Self {
+        name.text().into()
+    }
+}
 macro_rules! modules {
-    ($(($id:literal, $name:literal, $external:literal, [$($target:literal),+])),+ $(,)?) => {
-        pub const MODULES: &[Module] = &[$(Module {id: $id, name: $name, external: $external, targets: &[$($target),+] }),+];
+    ($(($id:literal, $external:literal, [$($target:literal),+])),+ $(,)?) => {
+        pub const MODULES: &[Module] = &[$(Module {id: $id, name: ModuleName($id), external: $external, targets: &[$($target),+] }),+];
     };
 }
 modules! {
-    ("app", "界面与设备管理", false, ["farwing::application::app", "farwing::session::controller"]),
-    ("auth", "登录与凭据", false, ["farwing::account::auth", "farwing::account::login", "farwing::account::session_restore"]),
-    ("api", "账号接口", false, ["farwing::account::api", "farwing::account::client", "farwing::account::nrd_http", "farwing::account::assist"]),
-    ("presence", "在线状态", false, ["farwing::session::presence", "farwing::session::device_session"]),
-    ("host", "本机被控", false, ["farwing::features::host", "farwing_codec::encoder", "farwing::platform::windows::software_encoder", "farwing::media::encoding", "farwing::platform::windows::capture", "farwing::platform::windows::encoder", "farwing::platform::windows::nvenc", "farwing::platform::windows::amf", "farwing::platform::windows::qsv", "farwing::platform::windows::gdi", "farwing::platform::windows::preprocess", "farwing::platform::windows::transfer", "farwing::platform::windows::gpu_conversion", "farwing::platform::windows::cursor", "farwing::platform::windows::wol"]),
-    ("signal", "信令与协商", false, ["farwing::transport::signal"]),
-    ("rtc", "实时传输", false, ["farwing::transport::rtc", "farwing::transport::fct"]),
-    ("recovery", "丢包恢复", false, ["farwing::transport::video_receiver", "farwing::nack_audit", "farwing::transport::rsfec", "farwing::transport::ulpfec", "farwing::transport::flexfec", "farwing::transport::xor_fec"]),
-    ("decoder", "视频解码", false, ["farwing::media::decoder", "farwing::media::decoder_pool", "farwing::media::decoder_result", "farwing::media::codec_parameters", "farwing_codec::decoder", "farwing_h264", "farwing_av1::bitstream", "farwing_av1::decoder", "farwing::platform::windows::decoder", "farwing::platform::windows::surface"]),
-    ("viewer", "播放窗口", false, ["farwing::application::viewer", "farwing::session::controller::windows", "farwing::media::video_color", "farwing::media::video_format", "farwing::platform::windows::video_shader", "farwing::platform::windows::swapchain"]),
-    ("audio", "音频", false, ["farwing::media::audio", "farwing::media::microphone"]),
-    ("control", "串流设置", false, ["farwing::features::stream_control", "farwing::features::viewing_settings"]),
-    ("keyboard", "键盘输入", false, ["farwing::application::viewer::windows_keyboard"]),
-    ("mouse", "鼠标与光标", false, ["farwing::application::viewer::windows_mouse", "farwing::application::viewer::windows_cursor", "farwing::features::remote_cursor"]),
-    ("input", "控制发送", false, ["farwing::features::remote_input", "farwing::transport::rtc::input"]),
-    ("performance", "性能与网络统计", false, ["farwing::diagnostics::performance", "farwing::features::network_control", "farwing::transport::timing", "farwing::transport::rtcp_timing", "farwing::transport::rtc::clock"]),
-    ("plugins", "插件宿主", false, ["farwing::plugins"]),
-    ("ui", "界面渲染", false, ["farwing::ui", "farwing::ui_timing", "farwing::platform::windows::graphics"]),
-    ("webrtc", "WebRTC", true, ["webrtc", "webrtc_data", "webrtc_util", "interceptor"]),
-    ("kcp", "KCP", true, ["kcp"]),
-    ("ice", "ICE 直连与中转", true, ["webrtc_ice", "stun", "turn", "webrtc_mdns"]),
-    ("sctp", "SCTP / DTLS / SRTP", true, ["webrtc_sctp", "dtls", "webrtc_srtp"]),
-    ("http", "HTTP / TLS / WebSocket", true, ["reqwest", "hyper", "hyper_util", "rustls", "tokio_tungstenite", "tungstenite", "tower"]),
-    ("credentials", "系统凭据库", true, ["keyring_core"]),
-    ("runtime", "异步运行时", true, ["tokio", "mio"]),
-    ("graphics", "图像与字体", true, ["epaint", "glifo", "vello_common", "zune_core", "zune_jpeg", "fax"]),
-    ("native", "窗口与音频后端", true, ["winit", "egui", "cpal", "display_info", "arboard", "webbrowser"]),
+    ("app", false, ["farwing::application::app", "farwing::session::controller"]),
+    ("auth", false, ["farwing::account::auth", "farwing::account::login", "farwing::account::session_restore"]),
+    ("api", false, ["farwing::account::api", "farwing::account::client", "farwing::account::nrd_http", "farwing::account::assist"]),
+    ("presence", false, ["farwing::session::presence", "farwing::session::device_session"]),
+    ("host", false, ["farwing::features::host", "farwing_codec::encoder", "farwing::platform::windows::software_encoder", "farwing::media::encoding", "farwing::platform::windows::capture", "farwing::platform::windows::encoder", "farwing::platform::windows::nvenc", "farwing::platform::windows::amf", "farwing::platform::windows::qsv", "farwing::platform::windows::gdi", "farwing::platform::windows::preprocess", "farwing::platform::windows::transfer", "farwing::platform::windows::gpu_conversion", "farwing::platform::windows::cursor", "farwing::platform::windows::wol"]),
+    ("signal", false, ["farwing::transport::signal"]),
+    ("rtc", false, ["farwing::transport::rtc", "farwing::transport::fct"]),
+    ("recovery", false, ["farwing::transport::video_receiver", "farwing::nack_audit", "farwing::transport::rsfec", "farwing::transport::ulpfec", "farwing::transport::flexfec", "farwing::transport::xor_fec"]),
+    ("decoder", false, ["farwing::media::decoder", "farwing::media::decoder_pool", "farwing::media::decoder_result", "farwing::media::codec_parameters", "farwing_codec::decoder", "farwing_h264", "farwing_av1::bitstream", "farwing_av1::decoder", "farwing::platform::windows::decoder", "farwing::platform::windows::surface"]),
+    ("viewer", false, ["farwing::application::viewer", "farwing::session::controller::windows", "farwing::media::video_color", "farwing::media::video_format", "farwing::platform::windows::video_shader", "farwing::platform::windows::swapchain"]),
+    ("audio", false, ["farwing::media::audio", "farwing::media::microphone"]),
+    ("control", false, ["farwing::features::stream_control", "farwing::features::viewing_settings"]),
+    ("keyboard", false, ["farwing::application::viewer::windows_keyboard"]),
+    ("mouse", false, ["farwing::application::viewer::windows_mouse", "farwing::application::viewer::windows_cursor", "farwing::features::remote_cursor"]),
+    ("input", false, ["farwing::features::remote_input", "farwing::transport::rtc::input"]),
+    ("performance", false, ["farwing::diagnostics::performance", "farwing::features::network_control", "farwing::transport::timing", "farwing::transport::rtcp_timing", "farwing::transport::rtc::clock"]),
+    ("plugins", false, ["farwing::plugins"]),
+    ("ui", false, ["farwing::ui", "farwing::ui_timing", "farwing::platform::windows::graphics"]),
+    ("webrtc", true, ["webrtc", "webrtc_data", "webrtc_util", "interceptor"]),
+    ("kcp", true, ["kcp"]),
+    ("ice", true, ["webrtc_ice", "stun", "turn", "webrtc_mdns"]),
+    ("sctp", true, ["webrtc_sctp", "dtls", "webrtc_srtp"]),
+    ("http", true, ["reqwest", "hyper", "hyper_util", "rustls", "tokio_tungstenite", "tungstenite", "tower"]),
+    ("credentials", true, ["keyring_core"]),
+    ("runtime", true, ["tokio", "mio"]),
+    ("graphics", true, ["epaint", "glifo", "vello_common", "zune_core", "zune_jpeg", "fax"]),
+    ("native", true, ["winit", "egui", "cpal", "display_info", "arboard", "webbrowser"]),
 }
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -118,7 +166,7 @@ impl Settings {
     fn filter(&self) -> Result<EnvFilter> {
         for id in self.modules.keys() {
             if !MODULES.iter().any(|m| m.id == id) {
-                bail!("未知日志模块：{id}");
+                bail!("{}", (crate::i18n::t().session.log_module_unknown)(id));
             }
         }
         let mut directives = format!(
@@ -133,7 +181,7 @@ impl Settings {
                 }
             }
         }
-        EnvFilter::try_new(directives).context("解析日志级别")
+        EnvFilter::try_new(directives).context(crate::i18n::t().session.log_levels_invalid)
     }
 }
 type FilterHandle = tracing_subscriber::reload::Handle<EnvFilter, tracing_subscriber::Registry>;
@@ -196,13 +244,13 @@ pub fn snapshot() -> Option<Snapshot> {
     })
 }
 pub fn apply(mut settings: Settings) -> Result<()> {
-    let r = RUNTIME.get().context("日志系统尚未初始化")?;
+    let r = RUNTIME.get().context(crate::i18n::t().session.logging_not_ready)?;
     let filter = settings.filter()?;
     settings.revision = uuid::Uuid::new_v4().to_string();
     let bytes = serde_json::to_vec_pretty(&settings)?;
     let mut state = r.state.lock().unwrap_or_else(|e| e.into_inner());
     files::save_config(&r.config, &bytes)?;
-    r.filter.reload(filter).context("更新日志过滤器")?;
+    r.filter.reload(filter).context(crate::i18n::t().session.log_filter_update_failed)?;
     state.settings = settings;
     state.observed = Some(bytes);
     state.override_filter = None;
@@ -224,18 +272,18 @@ pub fn configure_child(command: &mut std::process::Command) {
     }
 }
 pub fn open_directory() -> Result<()> {
-    files::open_directory(&RUNTIME.get().context("日志系统尚未初始化")?.directory)
+    files::open_directory(&RUNTIME.get().context(crate::i18n::t().session.logging_not_ready)?.directory)
 }
 fn read_settings(path: &Path) -> Result<Option<Vec<u8>>> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).context("读取日志设置"),
+        Err(e) => return Err(e).context(crate::i18n::t().session.log_settings_unreadable),
     };
     let mut bytes = Vec::new();
     file.take(65537).read_to_end(&mut bytes)?;
     if bytes.len() > 65536 {
-        bail!("日志设置文件过大");
+        bail!("{}", crate::i18n::t().session.log_settings_too_large);
     }
     Ok(Some(bytes))
 }
@@ -249,7 +297,7 @@ fn decode_settings(bytes: Option<&[u8]>) -> Result<Settings> {
 }
 pub fn init(level: Option<&str>, path: Option<&Path>) -> Result<LoggingGuard> {
     let (config_directory, default_directory) = files::directories()?;
-    std::fs::create_dir_all(&config_directory).context("创建日志设置目录")?;
+    std::fs::create_dir_all(&config_directory).context(crate::i18n::t().session.log_settings_folder_failed)?;
     let config = dunce::canonicalize(&config_directory)?.join("logging.json");
     let (observed, settings, error) = match read_settings(&config) {
         Ok(bytes) => match decode_settings(bytes.as_deref()) {
@@ -257,13 +305,13 @@ pub fn init(level: Option<&str>, path: Option<&Path>) -> Result<LoggingGuard> {
             Err(e) => (
                 bytes,
                 Settings::default(),
-                Some(format!("日志设置无效，暂用默认级别：{e:#}")),
+                Some((crate::i18n::t().session.log_settings_invalid_default)(&format!("{e:#}"))),
             ),
         },
         Err(e) => (
             None,
             Settings::default(),
-            Some(format!("日志设置读取失败：{e:#}")),
+            Some((crate::i18n::t().session.log_settings_read_failed)(&format!("{e:#}"))),
         ),
     };
     let filter = if let Some(level) = level {
@@ -283,9 +331,9 @@ pub fn init(level: Option<&str>, path: Option<&Path>) -> Result<LoggingGuard> {
         .and_then(|p| p.parent())
         .map(Path::to_owned)
         .unwrap_or(default_directory);
-    std::fs::create_dir_all(&directory).context("创建日志目录")?;
+    std::fs::create_dir_all(&directory).context(crate::i18n::t().session.log_folder_failed)?;
     // Resolve MSIX/AppData virtualization and shell-incompatible verbatim prefixes.
-    let directory = dunce::canonicalize(&directory).context("解析实际日志目录")?;
+    let directory = dunce::canonicalize(&directory).context(crate::i18n::t().session.log_folder_unresolved)?;
     let explicit_file = explicit_file.map(|path| directory.join(path.file_name().unwrap()));
     let session = std::env::var("FARWING_LOG_SESSION")
         .ok()
@@ -329,7 +377,7 @@ pub fn init(level: Option<&str>, path: Option<&Path>) -> Result<LoggingGuard> {
                 .with_filter(filter_layer),
         )
         .try_init()
-        .context("初始化日志系统")?;
+        .context(crate::i18n::t().session.logging_init_failed)?;
     let runtime = Arc::new(Runtime {
         state: Mutex::new(State {
             settings,
@@ -348,7 +396,7 @@ pub fn init(level: Option<&str>, path: Option<&Path>) -> Result<LoggingGuard> {
     });
     RUNTIME
         .set(runtime.clone())
-        .map_err(|_| anyhow::anyhow!("日志系统已初始化"))?;
+        .map_err(|_| anyhow::anyhow!("{}", crate::i18n::t().session.logging_already_initialized))?;
     let (stop, rx) = mpsc::channel();
     let watcher = std::thread::Builder::new()
         .name("log-settings".into())
@@ -369,16 +417,16 @@ pub fn init(level: Option<&str>, path: Option<&Path>) -> Result<LoggingGuard> {
                             Ok(())
                         });
                         state.error = result.err().map(|e: anyhow::Error| {
-                            format!("更新日志设置失败，保留当前级别：{e:#}")
+                            (crate::i18n::t().session.log_settings_update_failed)(&format!("{e:#}"))
                         });
                         state.observed = bytes;
                     }
-                    Err(e) => state.error = Some(format!("读取日志设置失败：{e:#}")),
+                    Err(e) => state.error = Some((crate::i18n::t().session.log_settings_read_failed)(&format!("{e:#}"))),
                     _ => {}
                 }
             }
         })
-        .context("启动日志设置同步")?;
+        .context(crate::i18n::t().session.log_settings_sync_failed)?;
     Ok(LoggingGuard {
         stop,
         watcher: Some(watcher),

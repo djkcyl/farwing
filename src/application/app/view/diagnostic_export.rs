@@ -1,5 +1,6 @@
 use super::*;
 use crate::diagnostics::bundle::{Exported, Input, Task};
+use crate::i18n::t;
 #[derive(Default)]
 pub(super) struct ExportUi {
     task: Option<Task>,
@@ -8,6 +9,7 @@ pub(super) struct ExportUi {
 }
 impl DeviceCenterApp {
     pub(super) fn diagnostic_export(&mut self, ui: &mut egui::Ui) {
+        let text = &t().settings;
         let state = &mut self.center_ui.logs.export;
         if let Some(task) = &state.task {
             match task.receiver.try_recv() {
@@ -20,7 +22,7 @@ impl DeviceCenterApp {
                     state.task = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    state.error = Some("导出任务中断".into());
+                    state.error = Some(text.export_interrupted.into());
                     state.task = None;
                 }
                 Err(_) => {
@@ -34,28 +36,20 @@ impl DeviceCenterApp {
                     .add_enabled(
                         state.task.is_none(),
                         egui::Button::new(if state.task.is_some() {
-                            "正在导出…"
+                            text.exporting
                         } else {
-                            "导出诊断包"
+                            text.export_diagnostics
                         }),
                     )
                     .clicked();
                 if let Some(task) = &state.task {
-                    if ui.button("取消").clicked() {
+                    if ui.button(t().common.cancel).clicked() {
                         task.cancel();
                     }
                 }
                 if let Some(result) = &state.result {
-                    ui.label(format!(
-                        "已导出 · {} 个日志{}",
-                        result.logs,
-                        if result.warnings > 0 {
-                            "（部分内容未包含）"
-                        } else {
-                            ""
-                        }
-                    ));
-                    if ui.link("打开文件夹").clicked() {
+                    ui.label((text.exported)(result.logs, result.warnings > 0));
+                    if ui.link(t().app.open_folder).clicked() {
                         if let Err(e) = crate::diagnostics::bundle::open_folder(&result.path) {
                             state.error = Some(format!("{e:#}"));
                         }
@@ -86,7 +80,7 @@ impl DeviceCenterApp {
             state.result = None;
             match Task::start(input, ui.ctx().clone()) {
                 Ok(task) => state.task = Some(task),
-                Err(e) => state.error = Some(format!("无法导出：{e:#}")),
+                Err(e) => state.error = Some((text.export_failed)(&format!("{e:#}"))),
             }
         }
     }
@@ -99,8 +93,8 @@ impl DeviceCenterApp {
                 private_values.extend([device.device_id.clone(), display_alias(device).to_owned()]);
             }
         }
-        for (label, value) in &self.diagnostics.rows {
-            if label == "设备名称" {
+        for (row, value) in &self.diagnostics.rows {
+            if *row == super::super::diagnostics::Row::DeviceName {
                 private_values.push(value.clone());
             }
         }

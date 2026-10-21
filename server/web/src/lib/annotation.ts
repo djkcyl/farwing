@@ -3,6 +3,7 @@
 // session channel; commands carry that token and a strictly increasing
 // request number, and each gets a result. Pen strokes (sent in pieces while
 // drawing), the laser pointer, undo, clear and a whiteboard.
+import { t } from '../i18n';
 import * as fpp from './fpp';
 import { Fields, Writer } from './pb';
 
@@ -19,15 +20,16 @@ export interface Point {
 
 /// Results: 0 done, 2 the host has no user signed in, 3 locked, 4 refused.
 export function resultText(code: number): string {
+  const m = t().viewer.annotation;
   switch (code) {
     case 2:
-      return '对方没有登录的用户，批注已关闭';
+      return m.noUser;
     case 3:
-      return '对方已锁定，批注没有完成';
+      return m.locked;
     case 4:
-      return '对方拒绝了批注操作';
+      return m.refused;
     default:
-      return `批注操作没有完成（${code}）`;
+      return m.failed(code);
   }
 }
 
@@ -179,7 +181,7 @@ export class Annotation {
         this.boards.clear();
       }
     } else if (code === -1) {
-      this.error = '对方没有响应';
+      this.error = t().viewer.peer.noResponse;
     }
     this.emit();
     return code === 0;

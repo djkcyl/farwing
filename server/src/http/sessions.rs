@@ -13,6 +13,7 @@ use farwing_protocol::api::{
 };
 use farwing_protocol::realtime::ControllerInfo;
 use farwing_protocol::session::ConnectType;
+use farwing_protocol::error::reason;
 use farwing_protocol::{ErrorCode, Platform, timing};
 
 /// `POST /api/v2/presence/ticket` (empty body).
@@ -107,27 +108,49 @@ pub async fn create(
 ) -> ApiResult<Json<SessionTicket>> {
     let target = visible_device(&app, &auth, &req.target_device_id).await?;
     if target.row.id == auth.device.id {
-        return Err(ApiError::bad_request("a device cannot control itself"));
+        return Err(ApiError::reason(
+            ErrorCode::BadRequest,
+            reason::SELF_CONNECT,
+            "a device cannot control itself",
+        ));
     }
     if !target
         .granted
         .iter()
         .any(|c| c == req.purpose.required_cap())
     {
-        return Err(ApiError::forbidden("没有该设备的此项权限"));
+        return Err(ApiError::reason(
+            ErrorCode::Forbidden,
+            reason::NOT_GRANTED,
+            "the grants do not include this purpose",
+        ));
     }
     if !app.hub.is_online(&target.row.id) {
         return Err(ApiError::device_offline());
     }
     if !policy_allows(&target.row, req.purpose) {
-        return Err(ErrorCode::HostDisabled.into());
+        let e = ApiError::from(ErrorCode::HostDisabled);
+        let p = &target.row.policy;
+        return Err(match req.purpose {
+            Purpose::Files if target.row.host_supported() && p.control => {
+                ApiError::reason(e.code, reason::FILES_DISABLED, "host does not allow file transfer")
+            }
+            Purpose::Ports if target.row.host_supported() && p.control => {
+                ApiError::reason(e.code, reason::PORTS_DISABLED, "host does not allow port forwarding")
+            }
+            _ => e,
+        });
     }
     // A browser gets no more than the server allows browsers.
     let controller = controller_info(&app, &auth);
     let mut target = target;
     target.granted = controller.limit_grants(std::mem::take(&mut target.granted));
     if !target.granted.iter().any(|c| c == req.purpose.required_cap()) {
-        return Err(ApiError::forbidden("服务器未允许网页端使用该功能"));
+        return Err(ApiError::reason(
+            ErrorCode::Forbidden,
+            reason::WEB_NOT_ALLOWED,
+            "the server does not allow this to browsers",
+        ));
     }
     let (sid, ticket) = app.hub.create_session(SessionSpec {
         host_device_id: target.row.id.clone(),

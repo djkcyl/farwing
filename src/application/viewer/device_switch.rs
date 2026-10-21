@@ -1,4 +1,5 @@
 //! Local player navigation. Device selection never changes the control contract.
+use crate::i18n::t;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -72,7 +73,7 @@ impl DeviceSwitcher {
             .is_err()
         {
             state.switching = false;
-            state.error = Some("连接已结束".into());
+            state.error = Some(t().viewer.connection_ended.into());
         }
     }
 
@@ -112,8 +113,10 @@ impl DeviceSwitcher {
                     });
                     state.devices.dedup_by(|a, b| a.device_id == b.device_id);
                 }
-                Ok(Err(error)) => state.error = Some(format!("获取设备失败：{error}")),
-                Err(_) => state.error = Some("获取设备超时".into()),
+                Ok(Err(error)) => {
+                    state.error = Some((t().viewer.list_devices_failed)(&error.to_string()))
+                }
+                Err(_) => state.error = Some(t().viewer.list_devices_timeout.into()),
             }
             ctx.request_repaint();
         });
@@ -138,18 +141,18 @@ impl DeviceSwitcher {
                 crate::ui::controls::observe_notice(
                     ui.ctx(),
                     "viewer-device-switch",
-                    "切换设备失败",
+                    t().viewer.switch_device_failed,
                     crate::ui::controls::DialogIcon::Error,
                     state.error.as_deref(),
                 );
                 crate::ui::controls::progress_notice(
                     ui.ctx(),
                     "switch-device-progress",
-                    "切换设备",
-                    state.switching.then_some("正在检查目标设备…"),
+                    t().controls.switch_device,
+                    state.switching.then_some(t().viewer.checking_target_device),
                 );
                 if state.devices.is_empty() && !state.loading {
-                    ui.weak("没有其他在线电脑");
+                    ui.weak(t().viewer.no_other_online_devices);
                 }
                 // Reserve the actual row height after an asynchronous refresh.
                 // Otherwise the popup's previous loading size constrains the scroll
@@ -170,11 +173,7 @@ impl DeviceSwitcher {
                             for device in &state.devices {
                                 let selected = device.device_id == self.current;
                                 let unavailable =
-                                    if !device.controlled_support || !device.controllable {
-                                        Some("暂不可连接")
-                                    } else {
-                                        None
-                                    };
+                                    !device.controlled_support || !device.controllable;
                                 let alias = if device.alias.is_empty() {
                                     &device.device_id
                                 } else {
@@ -213,7 +212,7 @@ impl DeviceSwitcher {
                                             device_status.color(),
                                             selected,
                                             !selected
-                                                && unavailable.is_none()
+                                                && !unavailable
                                                 && !state.loading
                                                 && !state.switching,
                                         )

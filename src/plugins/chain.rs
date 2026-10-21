@@ -2,6 +2,7 @@ use super::graph::{Compiled, Document};
 use super::process::lock;
 use super::video::{ChainShared, Loader, Tap, VideoNode};
 use super::*;
+use crate::i18n::t;
 use std::sync::{Arc, atomic::Ordering};
 
 struct Analysis {
@@ -96,7 +97,9 @@ impl Controller {
                 .document
                 .nodes
                 .get((spec.instance.id - 1) as usize)
-                .map_or("分析", |n| n.name.as_str())
+                .map_or(t().features.plugin_analysis_default_name, |n| {
+                    n.name.as_str()
+                })
                 .to_owned();
             let mut controller =
                 super::ui::AnalysisController::new(self.context.clone(), spec.clone());
@@ -140,7 +143,7 @@ impl Controller {
             match Loader::start(plan.videos.clone(), self.context.clone()) {
                 Ok(loader) => Some(loader),
                 Err(e) => {
-                    self.error = Some(format!("准备失败，当前图保持运行：{e:#}"));
+                    self.error = Some((t().features.plugin_prepare_failed)(&format!("{e:#}")));
                     return;
                 }
             }
@@ -166,15 +169,18 @@ impl Controller {
                 pending.loader = None;
                 match result {
                     Ok(programs) => pending.programs = Some(programs),
-                    Err(e) => failure = Some(format!("视频节点准备失败：{e:#}")),
+                    Err(e) => {
+                        failure = Some((t().features.plugin_video_prepare_failed)(&format!(
+                            "{e:#}"
+                        )))
+                    }
                 }
             }
             for analysis in &pending.analyses {
                 if !analysis.controller.shared.enabled.load(Ordering::Acquire) {
-                    failure = Some(format!(
-                        "{}：{}",
-                        analysis.name,
-                        lock(&analysis.controller.shared.display).status
+                    failure = Some((t().features.plugin_named_status)(
+                        &analysis.name,
+                        &lock(&analysis.controller.shared.display).status,
                     ));
                     break;
                 }
@@ -184,7 +190,7 @@ impl Controller {
                     failure = Some(
                         lock(&self.shared.error)
                             .clone()
-                            .unwrap_or_else(|| "GPU准备失败".into()),
+                            .unwrap_or_else(|| t().features.plugin_gpu_prepare_failed.into()),
                     );
                 } else if self.shared.applied_revision.load(Ordering::Acquire) == revision {
                     commit = true;
@@ -204,7 +210,7 @@ impl Controller {
         }
         if let Some(error) = failure {
             self.pending = None;
-            self.error = Some(format!("应用失败，当前图未替换：{error}"));
+            self.error = Some((t().features.plugin_apply_failed)(&error));
         } else if commit {
             let pending = self.pending.take().expect("pending graph");
             let revision = pending.revision.expect("submitted graph");
@@ -304,7 +310,7 @@ impl Controller {
             return;
         }
         let mut close = false;
-        egui::Window::new("节点图")
+        egui::Window::new(t().features.plugin_graph)
             .id(egui::Id::new("viewer-plugin-menu"))
             .open(open)
             .title_bar(false)
@@ -322,11 +328,11 @@ impl Controller {
                 style(ui);
                 ui.set_width(320.0);
                 ui.horizontal(|ui| {
-                    ui.strong("节点图");
+                    ui.strong(t().features.plugin_graph);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         close = crate::ui::controls::close_button(
                             ui,
-                            "关闭",
+                            t().common.close,
                             crate::ui::controls::COMPACT_HEIGHT,
                         )
                         .clicked();
@@ -348,7 +354,7 @@ impl Controller {
                 self.saved
                     .iter()
                     .find(|d| Some(&d.graph_id) == self.selected.as_ref())
-                    .map_or("选择节点图", |d| d.name.as_str()),
+                    .map_or(t().features.plugin_select_graph, |d| d.name.as_str()),
             )
             .show_ui(ui, |ui| {
                 for doc in &self.saved {
@@ -363,7 +369,7 @@ impl Controller {
         if ui
             .add_enabled(
                 self.selected.is_some(),
-                egui::Checkbox::new(&mut enabled, "启用节点图"),
+                egui::Checkbox::new(&mut enabled, t().features.plugin_enable_graph),
             )
             .changed()
         {
@@ -374,7 +380,9 @@ impl Controller {
             }
         }
         if let Some(active) = &mut self.active {
-            ui.weak(format!("运行：{}", active.plan.document.name));
+            ui.weak((t().features.plugin_running_graph)(
+                &active.plan.document.name,
+            ));
             for analysis in &mut active.analyses {
                 ui.push_id(analysis.id, |ui| {
                     egui::CollapsingHeader::new(&analysis.name)
@@ -385,34 +393,36 @@ impl Controller {
             crate::ui::controls::observe_notice(
                 ui.ctx(),
                 "plugin-video-bypass",
-                "视频节点异常",
+                t().features.plugin_video_node_error,
                 crate::ui::controls::DialogIcon::Error,
                 (self.shared.video_failed.load(Ordering::Acquire) == active.revision)
-                    .then_some("视频节点已旁路"),
+                    .then_some(t().features.plugin_video_node_bypassed),
             );
             let generated = self.shared.generated.load(Ordering::Relaxed);
             if generated > 0 {
-                ui.weak(format!(
-                    "生成帧 {generated} · 跳过 {}",
-                    self.shared.skipped.load(Ordering::Relaxed)
+                ui.weak((t().features.plugin_generated_frames)(
+                    generated,
+                    self.shared.skipped.load(Ordering::Relaxed),
                 ));
             }
         }
         crate::ui::controls::progress_notice(
             ui.ctx(),
             "plugin-prepare",
-            "准备节点图",
-            self.pending.is_some().then_some("正在准备新图…"),
+            t().features.plugin_prepare_title,
+            self.pending
+                .is_some()
+                .then_some(t().features.plugin_preparing),
         );
         crate::ui::controls::observe_notice(
             ui.ctx(),
             "plugin-runtime",
-            "节点图运行失败",
+            t().features.plugin_run_failed,
             crate::ui::controls::DialogIcon::Error,
             self.error.as_deref(),
         );
         ui.horizontal(|ui| {
-            if ui.button("刷新列表").clicked() {
+            if ui.button(t().features.plugin_refresh_list).clicked() {
                 match super::graph::list() {
                     Ok(saved) => self.saved = saved,
                     Err(e) => self.error = Some(e.to_string()),
@@ -421,21 +431,21 @@ impl Controller {
             if ui
                 .add_enabled(
                     self.enabled && self.latest.is_some(),
-                    egui::Button::new("重新应用"),
+                    egui::Button::new(t().features.plugin_reapply),
                 )
                 .clicked()
                 && let Some(plan) = self.latest.clone()
             {
                 self.prepare(plan);
             }
-            if ui.button("图文件夹").clicked()
+            if ui.button(t().features.plugin_graph_folder).clicked()
                 && let Err(e) = super::graph::directory().and_then(|p| open_folder(&p))
             {
                 self.error = Some(e.to_string());
             }
         });
         if self.saved.is_empty() {
-            ui.weak("暂无节点图");
+            ui.weak(t().features.plugin_no_graphs);
         }
     }
     pub fn paint(&mut self, ctx: &egui::Context, width: f32, height: f32, video: [f32; 4]) {
@@ -555,24 +565,27 @@ impl Controller {
                             .cloned()
                     });
                 let on = gate.as_ref().is_some_and(|g| g.snapshot().0) && self.input_allowed;
-                let key = gate
-                    .as_ref()
-                    .map_or_else(|| "未绑定快捷键".into(), |g| g.binding_text());
+                let key = gate.as_ref().map_or_else(
+                    || t().features.plugin_shortcut_unbound.into(),
+                    |g| g.binding_text(),
+                );
                 let status = if on {
-                    "生效中"
+                    t().features.plugin_control_active
                 } else if self.input_allowed && gate.as_ref().is_some_and(|g| g.suspended()) {
-                    "已暂停"
+                    t().features.plugin_control_paused
                 } else if self.input_allowed && gate.as_ref().is_some_and(|g| g.master_enabled()) {
-                    "已开启 · 待触发"
+                    t().features.plugin_control_armed
                 } else {
-                    "已关闭"
+                    t().features.plugin_control_off
                 };
                 let name = active
                     .plan
                     .document
                     .nodes
                     .get((c.instance.id - 1) as usize)
-                    .map_or("控制节点", |n| n.name.as_str());
+                    .map_or(t().features.plugin_control_default_name, |n| {
+                        n.name.as_str()
+                    });
                 rows.push((name.to_owned(), key, on, status));
             }
         }
@@ -603,7 +616,7 @@ impl Controller {
                                 ui.weak(key);
                             });
                             if !self.input_allowed {
-                                ui.small("等待前台相对鼠标控制");
+                                ui.small(t().features.plugin_waiting_relative_mouse);
                             }
                         }
                     });

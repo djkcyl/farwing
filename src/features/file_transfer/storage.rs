@@ -3,6 +3,7 @@ use super::{
     service::{PartialFile, Record},
     wire::{self, conflict},
 };
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use std::{
@@ -40,7 +41,7 @@ pub(super) fn known_folder(id: &windows::core::GUID) -> Option<PathBuf> {
 pub(super) fn safe_relative(name: &str) -> Result<PathBuf> {
     ensure!(
         !name.is_empty() && name.encode_utf16().count() < 30_000,
-        "文件名为空或过长"
+        "{}", t().features.transfer_name_empty_or_long
     );
     let mut result = PathBuf::new();
     for part in name.split(['\\', '/']) {
@@ -49,7 +50,7 @@ pub(super) fn safe_relative(name: &str) -> Result<PathBuf> {
                 && !matches!(part, "." | "..")
                 && !part.ends_with(['.', ' '])
                 && !part.chars().any(|c| c < ' ' || ":<>\"|?*".contains(c)),
-            "远端返回了不安全的文件路径"
+            "{}", t().features.transfer_unsafe_path
         );
         let stem = part.split('.').next().unwrap_or("").to_uppercase();
         ensure!(
@@ -62,25 +63,25 @@ pub(super) fn safe_relative(name: &str) -> Result<PathBuf> {
                     n,
                     "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
                 )),
-            "不能使用设备名作为文件名"
+            "{}", t().features.transfer_reserved_name
         );
         result.push(part);
     }
     Ok(result)
 }
 pub(super) fn validate_manifest(files: &[FileInfo]) -> Result<u64> {
-    ensure!(files.len() <= MAX_FILES, "文件清单过大");
+    ensure!(files.len() <= MAX_FILES, "{}", t().features.transfer_manifest_too_large);
     let mut names = std::collections::HashSet::new();
     let mut total = 0u64;
     for f in files {
         safe_relative(&f.rel_path)?;
         ensure!(
             names.insert(f.rel_path.replace('/', "\\").to_lowercase()),
-            "文件清单包含重复路径"
+            "{}", t().features.transfer_manifest_duplicate
         );
-        ensure!(!f.directory || f.size == 0, "文件清单中的目录带有数据");
-        total = total.checked_add(f.size).context("文件大小溢出")?;
-        ensure!(f.size <= i64::MAX as u64, "文件大小超出可寻址范围");
+        ensure!(!f.directory || f.size == 0, "{}", t().features.transfer_manifest_directory_data);
+        total = total.checked_add(f.size).context(t().features.transfer_size_overflow)?;
+        ensure!(f.size <= i64::MAX as u64, "{}", t().features.transfer_size_out_of_range);
     }
     Ok(total)
 }
@@ -95,15 +96,15 @@ fn not_link(p: &Path) -> Result<std::fs::Metadata> {
     let m = std::fs::symlink_metadata(p)?;
     ensure!(
         m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
-        "不允许通过链接或重解析点传输：{}",
-        p.display()
+        "{}",
+        (t().features.transfer_link_not_allowed)(&p.display().to_string())
     );
     Ok(m)
 }
 pub(super) fn local_path(value: &str) -> Result<PathBuf> {
     let path = if value == ":/Default" {
         known_folder(&windows::Win32::UI::Shell::FOLDERID_Downloads)
-            .context("用户下载目录不可用")?
+            .context(t().features.transfer_downloads_unavailable)?
     } else if value.len() == 2
         && value.as_bytes()[0].is_ascii_alphabetic()
         && value.as_bytes()[1] == b':'
@@ -113,14 +114,14 @@ pub(super) fn local_path(value: &str) -> Result<PathBuf> {
     } else {
         PathBuf::from(value)
     };
-    let text = path.to_str().context("文件路径无效")?;
+    let text = path.to_str().context(t().features.transfer_file_path_invalid)?;
     let bytes = text.as_bytes();
     ensure!(
         bytes.len() >= 3
             && bytes[0].is_ascii_alphabetic()
             && bytes[1] == b':'
             && matches!(bytes[2], b'/' | b'\\'),
-        "仅支持本地磁盘的绝对路径"
+        "{}", t().features.transfer_local_absolute_only
     );
     let mut result = PathBuf::from(format!("{}:\\", bytes[0] as char));
     let tail = text[3..].trim_end_matches(['\\', '/']);
@@ -137,7 +138,7 @@ pub(super) fn local_path(value: &str) -> Result<PathBuf> {
         match std::fs::symlink_metadata(&current) {
             Ok(m) => ensure!(
                 m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
-                "不允许通过重解析点访问文件"
+                "{}", t().features.transfer_reparse_access_denied
             ),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
             Err(e) => return Err(e.into()),
@@ -146,8 +147,8 @@ pub(super) fn local_path(value: &str) -> Result<PathBuf> {
     Ok(result)
 }
 pub(super) fn canonical_dir(p: &Path) -> Result<PathBuf> {
-    ensure!(p.is_absolute(), "本地目录不是绝对路径");
-    ensure!(not_link(p)?.is_dir(), "本地路径不是目录");
+    ensure!(p.is_absolute(), "{}", t().features.transfer_local_dir_not_absolute);
+    ensure!(not_link(p)?.is_dir(), "{}", t().features.transfer_local_path_not_directory);
     Ok(dunce::canonicalize(p)?)
 }
 fn underneath(path: &Path, root: &Path) -> bool {
@@ -164,7 +165,7 @@ fn underneath(path: &Path, root: &Path) -> bool {
 fn check_handle(f: &File, root: &Path) -> Result<()> {
     ensure!(
         f.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
-        "打开的文件已变为链接"
+        "{}", t().features.transfer_opened_file_became_link
     );
     let mut path = vec![0u16; 32768];
     let n = unsafe {
@@ -174,11 +175,11 @@ fn check_handle(f: &File, root: &Path) -> Result<()> {
             windows::Win32::Storage::FileSystem::FILE_NAME_NORMALIZED,
         )
     } as usize;
-    ensure!(n > 0 && n < path.len(), "无法核对文件实际位置");
+    ensure!(n > 0 && n < path.len(), "{}", t().features.transfer_location_unverifiable);
     let actual = PathBuf::from(String::from_utf16(&path[..n])?);
     ensure!(
         underneath(dunce::simplified(&actual), root),
-        "文件实际位置超出已选择目录"
+        "{}", t().features.transfer_location_outside
     );
     Ok(())
 }
@@ -193,9 +194,9 @@ pub(super) fn scan(
     let folder = if m.is_dir() {
         source
             .file_name()
-            .context("不能传输整个磁盘")?
+            .context(t().features.transfer_cannot_transfer_drive)?
             .to_str()
-            .context("文件夹名称无效")?
+            .context(t().features.transfer_folder_name_invalid)?
             .to_owned()
     } else {
         String::new()
@@ -203,22 +204,22 @@ pub(super) fn scan(
     let root = if m.is_dir() {
         source.clone()
     } else {
-        source.parent().context("文件没有父目录")?.to_owned()
+        source.parent().context(t().features.transfer_no_parent_folder)?.to_owned()
     };
     let relative = |path: &Path| -> Result<String> {
         Ok(path
             .strip_prefix(&root)?
             .to_str()
-            .context("文件名称无效")?
+            .context(t().features.transfer_file_name_invalid)?
             .replace('\\', "/"))
     };
     let mut files = Vec::new();
     let mut pending = vec![source];
     let mut visited = 0usize;
     while let Some(path) = pending.pop() {
-        ensure!(!cancel.is_cancelled(), "已取消扫描");
+        ensure!(!cancel.is_cancelled(), "{}", t().features.transfer_scan_cancelled);
         visited += 1;
-        ensure!(visited <= MAX_FILES * 2, "目录包含过多项目");
+        ensure!(visited <= MAX_FILES * 2, "{}", t().features.transfer_folder_too_many_items);
         let m = not_link(&path)?;
         if m.is_dir() {
             let before = pending.len();
@@ -232,14 +233,14 @@ pub(super) fn scan(
         } else if m.is_file() {
             files.push(FileInfo::file(relative(&path)?, m.len(), modified_ns(&m)));
         }
-        ensure!(files.len() <= MAX_FILES, "文件数量过多");
+        ensure!(files.len() <= MAX_FILES, "{}", t().features.transfer_too_many_files);
     }
     files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     validate_manifest(&files)?;
     Ok((root, folder, files))
 }
 pub(super) fn open_source(root: &Path, item: &FileInfo) -> Result<File> {
-    ensure!(!item.directory, "目录没有文件内容");
+    ensure!(!item.directory, "{}", t().features.transfer_directory_has_no_content);
     let path = root.join(safe_relative(&item.rel_path)?);
     let f = OpenOptions::new()
         .read(true)
@@ -250,7 +251,7 @@ pub(super) fn open_source(root: &Path, item: &FileInfo) -> Result<File> {
     let m = f.metadata()?;
     ensure!(
         m.is_file() && m.len() == item.size && item.same_time(modified_ns(&m)),
-        wire::Failure::new(wire::code::CHANGED, "源文件已变化，无法续传")
+        wire::Failure::new(wire::code::CHANGED, t().features.transfer_source_changed)
     );
     Ok(f)
 }
@@ -278,7 +279,7 @@ pub(super) fn confirm(root: &Path, item: &FileInfo, plan: &wire::ItemPlan) -> Re
     if plan.skip || plan.offset == 0 || item.directory {
         return Ok(0);
     }
-    ensure!(plan.offset <= item.size, "对端续传位置超过源文件");
+    ensure!(plan.offset <= item.size, "{}", t().features.transfer_resume_offset_beyond_source);
     let mut file = open_source(root, item)?;
     Ok(if tail_sha256(&mut file, plan.offset)? == plan.tail_sha256 {
         plan.offset
@@ -292,7 +293,7 @@ pub(super) fn parents(root: &Path, relative: &Path, create: bool) -> Result<Vec<
     let mut locks = Vec::new();
     let mut p = root.to_path_buf();
     let lock_dir = |p: &Path| -> Result<File> {
-        ensure!(not_link(p)?.is_dir(), "目标父路径不是目录");
+        ensure!(not_link(p)?.is_dir(), "{}", t().features.transfer_target_parent_not_directory);
         let f = OpenOptions::new()
             .read(true)
             .share_mode(3)
@@ -334,7 +335,7 @@ pub(super) fn plan(
     policy: i32,
     old: Option<&PartialFile>,
 ) -> Result<Holding> {
-    ensure!(uuid::Uuid::parse_str(key).is_ok(), "续传任务身份无效");
+    ensure!(uuid::Uuid::parse_str(key).is_ok(), "{}", t().features.transfer_resume_task_invalid);
     let relative = safe_relative(&item.rel_path)?;
     let skip = |partial: PartialFile| Holding {
         plan: wire::ItemPlan {
@@ -346,7 +347,7 @@ pub(super) fn plan(
     if let Some(old) = old {
         ensure!(
             old.info.same(item),
-            wire::Failure::new(wire::code::CHANGED, "源文件已变化，无法续传")
+            wire::Failure::new(wire::code::CHANGED, t().features.transfer_source_changed)
         );
         if old.done || old.skipped {
             return Ok(skip(old.clone()));
@@ -375,7 +376,7 @@ pub(super) fn plan(
                         });
                     }
                 }
-                Ok(_) => anyhow::bail!("续传临时路径已被替换"),
+                Ok(_) => anyhow::bail!("{}", t().features.transfer_resume_temp_replaced),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     // Saved just before its record was: the target carries the
                     // item's size and time from finalization.
@@ -422,8 +423,8 @@ fn finalized(path: &Path, item: &FileInfo) -> bool {
 /// Open the partial file of `partial` positioned at `offset`; the bytes
 /// after `offset` are discarded.
 pub(super) fn open(root: &Path, key: &str, partial: &PartialFile, offset: u64) -> Result<Receiving> {
-    ensure!(uuid::Uuid::parse_str(key).is_ok(), "续传任务身份无效");
-    ensure!(!partial.info.directory, "目录没有文件内容");
+    ensure!(uuid::Uuid::parse_str(key).is_ok(), "{}", t().features.transfer_resume_task_invalid);
+    ensure!(!partial.info.directory, "{}", t().features.transfer_directory_has_no_content);
     let target = safe_relative(&partial.target)?;
     let locks = parents(root, &target, true)?;
     let mut file = OpenOptions::new()
@@ -438,7 +439,7 @@ pub(super) fn open(root: &Path, key: &str, partial: &PartialFile, offset: u64) -
     let length = file.metadata()?.len();
     ensure!(
         offset <= length && offset <= partial.info.size,
-        wire::Failure::new(wire::code::CHANGED, "续传位置超出已接收的数据")
+        wire::Failure::new(wire::code::CHANGED, t().features.transfer_resume_offset_beyond_received)
     );
     if length != offset {
         file.set_len(offset)?;
@@ -461,7 +462,7 @@ pub(super) fn make_directory(root: &Path, item: &FileInfo) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(e.into()),
     }
-    ensure!(not_link(&path)?.is_dir(), "目标已存在且不是目录");
+    ensure!(not_link(&path)?.is_dir(), "{}", t().features.transfer_target_not_directory);
     Ok(())
 }
 pub(super) fn temp_path(root: &Path, relative: &Path, key: &str) -> PathBuf {
@@ -501,7 +502,7 @@ fn unique_name(root: &Path, relative: &Path) -> Result<PathBuf> {
     let stem = relative
         .file_stem()
         .and_then(|s| s.to_str())
-        .context("文件名无效")?
+        .context(t().features.transfer_file_name_invalid)?
         .to_owned();
     let ext = relative
         .extension()
@@ -515,7 +516,7 @@ fn unique_name(root: &Path, relative: &Path) -> Result<PathBuf> {
             return Ok(target);
         }
     }
-    anyhow::bail!("无法分配不重名的文件名")
+    anyhow::bail!("{}", t().features.transfer_unique_name_unavailable)
 }
 /// Save a complete partial file under its final name per `policy`: replace
 /// (overwrite), pick a free "name (n)" (rename) or drop it (skip) when the
@@ -528,7 +529,7 @@ pub(super) async fn finish(
 ) -> Result<PartialFile> {
     ensure!(
         v.position == v.partial.info.size,
-        "收到的文件长度与清单不一致"
+        "{}", t().features.transfer_received_size_mismatch
     );
     let Receiving {
         file,
@@ -551,7 +552,7 @@ pub(super) async fn finish(
         if std::fs::symlink_metadata(root.join(&target)).is_ok() {
             ensure!(
                 not_link(&root.join(&target))?.is_file(),
-                "目标已经变成目录或链接"
+                "{}", t().features.transfer_target_became_directory
             );
             match policy {
                 conflict::OVERWRITE => replace = true,
@@ -581,15 +582,15 @@ pub(super) async fn finish(
                 flags,
             )
         }
-        .context("无法完成目标文件保存")?;
-        partial.target = target.to_str().context("目标文件名无效")?.replace('\\', "/");
+        .context(t().features.transfer_save_failed)?;
+        partial.target = target.to_str().context(t().features.transfer_target_name_invalid)?.replace('\\', "/");
         partial.done = true;
         Ok(partial)
     })
     .await?
 }
 pub(super) fn cleanup(root: &Path, key: &str, items: &[PartialFile]) -> Result<()> {
-    ensure!(uuid::Uuid::parse_str(key).is_ok(), "续传任务身份无效");
+    ensure!(uuid::Uuid::parse_str(key).is_ok(), "{}", t().features.transfer_resume_task_invalid);
     for item in items
         .iter()
         .filter(|i| !i.done && !i.skipped && !i.info.directory)
@@ -612,7 +613,7 @@ pub(super) fn cleanup(root: &Path, key: &str, items: &[PartialFile]) -> Result<(
             Ok(m) => {
                 ensure!(
                     m.is_file() && m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
-                    "临时路径已被替换"
+                    "{}", t().features.transfer_temp_replaced
                 );
                 std::fs::remove_file(p)?;
             }
@@ -627,10 +628,10 @@ pub(crate) struct Store(PathBuf);
 impl Store {
     pub(crate) fn new(account: &str, device: &str) -> Result<Self> {
         crate::account::api::validate_device_id(device)?;
-        ensure!(!account.is_empty(), "无法确认当前账号");
+        ensure!(!account.is_empty(), "{}", t().features.transfer_account_unknown);
         Ok(Self(
             crate::product::local_data_dir()
-                .context("本地配置目录不可用")?
+                .context(t().features.transfer_config_dir_unavailable)?
                 .join("file-transfer")
                 .join(format!("{:x}", Sha256::digest(account)))
                 .join(format!("{device}.json")),
@@ -644,11 +645,11 @@ impl Store {
         };
         let mut b = Vec::new();
         f.take(64 * 1024 * 1024 + 1).read_to_end(&mut b)?;
-        ensure!(b.len() <= 64 * 1024 * 1024, "传输历史过大");
+        ensure!(b.len() <= 64 * 1024 * 1024, "{}", t().features.transfer_history_too_large);
         let records: Vec<Record> = serde_json::from_slice(&b)?;
-        ensure!(records.len() <= 256, "传输历史过多");
+        ensure!(records.len() <= 256, "{}", t().features.transfer_history_too_long);
         for r in &records {
-            ensure!(uuid::Uuid::parse_str(&r.key).is_ok(), "传输记录身份无效");
+            ensure!(uuid::Uuid::parse_str(&r.key).is_ok(), "{}", t().features.transfer_record_id_invalid);
             validate_manifest(&r.files)?;
             for f in &r.partial {
                 safe_relative(&f.target)?;
@@ -657,10 +658,10 @@ impl Store {
         Ok(records)
     }
     pub(super) fn save(&self, r: &[Record]) -> Result<()> {
-        ensure!(r.len() <= 256, "传输记录已满");
+        ensure!(r.len() <= 256, "{}", t().features.transfer_records_full);
         let b = serde_json::to_vec(r)?;
-        ensure!(b.len() <= 64 * 1024 * 1024, "传输记录过大");
-        std::fs::create_dir_all(self.0.parent().context("历史路径无效")?)?;
+        ensure!(b.len() <= 64 * 1024 * 1024, "{}", t().features.transfer_records_too_large);
+        std::fs::create_dir_all(self.0.parent().context(t().features.transfer_history_path_invalid)?)?;
         let temp = self
             .0
             .with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));

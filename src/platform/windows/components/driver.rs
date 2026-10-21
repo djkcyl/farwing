@@ -1,5 +1,6 @@
 //! Common PnP package lifecycle. Backends supply identity and occupancy checks.
 use super::{Kind, Status, files::Staging};
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use std::{
     mem::size_of,
@@ -39,7 +40,7 @@ impl NotStarted {
 }
 impl std::fmt::Display for NotStarted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "驱动已安装但未启动：{}", self.reason)
+        f.write_str(&(t().system.driver_not_started)(&self.reason))
     }
 }
 impl std::error::Error for NotStarted {}
@@ -77,7 +78,8 @@ fn property(
     }
     ensure!(
         needed as usize <= bytes.len() && needed % 2 == 0,
-        "设备属性长度无效"
+        "{}",
+        t().system.driver_invalid_device_property
     );
     let chars: Vec<_> = bytes[..needed as usize]
         .chunks_exact(2)
@@ -90,7 +92,10 @@ fn property(
         .collect())
 }
 fn inf_directory() -> Result<PathBuf> {
-    Ok(PathBuf::from(std::env::var_os("SystemRoot").context("Windows目录不可用")?).join("INF"))
+    Ok(PathBuf::from(
+        std::env::var_os("SystemRoot").context(t().system.driver_windows_directory_unavailable)?,
+    )
+    .join("INF"))
 }
 fn oem_inf(name: &str) -> bool {
     name.to_ascii_lowercase()
@@ -127,13 +132,13 @@ fn bound_package(set: &DeviceSet, device: &SP_DEVINFO_DATA) -> Result<String> {
     let end = name
         .iter()
         .position(|c| *c == 0)
-        .context("无效驱动包名称")?;
+        .context(t().system.driver_invalid_package_name)?;
     let name = String::from_utf16_lossy(&name[..end]);
-    ensure!(oem_inf(&name), "驱动不是OEM包");
+    ensure!(oem_inf(&name), "{}", t().system.driver_not_oem_package);
     Ok(name)
 }
 fn store_inf(name: &str) -> Result<PathBuf> {
-    ensure!(oem_inf(name), "驱动包名称无效");
+    ensure!(oem_inf(name), "{}", t().system.driver_invalid_package_name);
     let mut path = [0u16; 32768];
     unsafe {
         SetupGetInfDriverStoreLocationW(
@@ -147,7 +152,7 @@ fn store_inf(name: &str) -> Result<PathBuf> {
     let end = path
         .iter()
         .position(|c| *c == 0)
-        .context("驱动存储路径无效")?;
+        .context(t().system.driver_invalid_store_path)?;
     Ok(PathBuf::from(String::from_utf16_lossy(&path[..end])))
 }
 fn verify_catalog(path: &Path) -> Result<()> {
@@ -182,20 +187,24 @@ fn verify_catalog(path: &Path) -> Result<()> {
             (&mut data as *mut WINTRUST_DATA).cast(),
         );
     }
-    ensure!(status == 0, "驱动包签名校验失败（{status:#x}）");
+    ensure!(
+        status == 0,
+        "{}",
+        (t().system.driver_signature_check_failed)(&format!("{status:#x}"))
+    );
     Ok(())
 }
 fn unavailable_reason(flags: CM_DEVNODE_STATUS_FLAGS, problem: CM_PROB) -> Option<String> {
     if problem == CM_PROB_UNSIGNED_DRIVER {
-        Some("Windows 无法验证驱动数字签名（代码 52）".into())
+        Some(t().system.driver_unsigned.into())
     } else if problem == CM_PROB_DISABLED {
-        Some("设备已禁用（代码 22）".into())
+        Some(t().system.driver_device_disabled.into())
     } else if problem == CM_PROB_NEED_RESTART {
-        Some("需要重启 Windows（代码 14）".into())
+        Some(t().system.driver_restart_required.into())
     } else if problem.0 != 0 {
-        Some(format!("驱动未就绪（代码 {}）", problem.0))
+        Some((t().system.driver_not_ready)(problem.0))
     } else if !flags.contains(DN_STARTED) {
-        Some("已安装，未启动".into())
+        Some(t().system.driver_installed_not_started.into())
     } else {
         None
     }
@@ -229,7 +238,7 @@ impl Package {
                 nodes.push(info);
             }
         }
-        anyhow::bail!("设备清单过长")
+        anyhow::bail!("{}", t().system.driver_device_list_too_long)
     }
     /// Whether this build embeds the signed package (see build.rs).
     pub fn bundled(&self) -> bool {
@@ -243,7 +252,7 @@ impl Package {
             .files
             .iter()
             .find(|(name, _)| *name == self.inf)
-            .context("组件包缺少INF")?
+            .context(t().system.driver_package_missing_inf)?
             .1;
         let bytes = std::fs::read(path)?;
         // Ownership survives a driver version change; all other INF contents
@@ -291,7 +300,9 @@ impl Package {
         {
             return Ok(false);
         }
-        let directory = inf.parent().context("驱动存储目录无效")?;
+        let directory = inf
+            .parent()
+            .context(t().system.driver_invalid_store_directory)?;
         for (name, expected) in self.files {
             if std::fs::read(directory.join(name))? != *expected {
                 return Ok(false);
@@ -314,7 +325,11 @@ impl Package {
     /// current package rejected by this Windows boot is not a package update.
     pub fn needs_package_update(&self) -> Result<bool> {
         let (set, nodes) = self.nodes()?;
-        ensure!(nodes.len() <= 1, "存在多个{}设备", self.kind.label());
+        ensure!(
+            nodes.len() <= 1,
+            "{}",
+            (t().system.driver_multiple_devices)(self.kind.label())
+        );
         let Some(device) = nodes.first() else {
             return Ok(false);
         };
@@ -329,27 +344,39 @@ impl Package {
     /// on an audio request, and do not infer installation state from CreateFile.
     pub fn unavailable_reason(&self) -> Result<Option<String>> {
         let (_set, nodes) = self.nodes()?;
-        ensure!(nodes.len() <= 1, "存在多个{}设备", self.kind.label());
+        ensure!(
+            nodes.len() <= 1,
+            "{}",
+            (t().system.driver_multiple_devices)(self.kind.label())
+        );
         let Some(device) = nodes.first() else {
-            return Ok(Some("未安装设备".into()));
+            return Ok(Some(t().system.driver_device_not_installed.into()));
         };
         let (mut flags, mut problem) = (CM_DEVNODE_STATUS_FLAGS(0), CM_PROB(0));
         let result = unsafe { CM_Get_DevNode_Status(&mut flags, &mut problem, device.DevInst, 0) };
-        ensure!(result == CR_SUCCESS, "无法读取驱动启动状态：{result:?}");
+        ensure!(
+            result == CR_SUCCESS,
+            "{}",
+            (t().system.driver_status_read_failed)(&format!("{result:?}"))
+        );
         Ok(unavailable_reason(flags, problem))
     }
     pub fn status(&self) -> Result<Status> {
         let (set, nodes) = self.nodes()?;
-        ensure!(nodes.len() <= 1, "存在多个{}设备", self.kind.label());
+        ensure!(
+            nodes.len() <= 1,
+            "{}",
+            (t().system.driver_multiple_devices)(self.kind.label())
+        );
         let packages = self.matching_packages()?;
         let Some(device) = nodes.first() else {
             return Ok(Status {
                 label: if !self.bundled() {
-                    "此构建未包含驱动包"
+                    t().system.driver_not_bundled
                 } else if packages.is_empty() {
-                    "未安装"
+                    t().system.install_not_installed
                 } else {
-                    "设备未安装，驱动包仍在"
+                    t().system.driver_package_left
                 }
                 .into(),
                 installed: false,
@@ -367,14 +394,19 @@ impl Package {
                 .is_some_and(|name| self.current_package(name).unwrap_or(false));
         let (mut flags, mut problem) = (CM_DEVNODE_STATUS_FLAGS(0), CM_PROB(0));
         let result = unsafe { CM_Get_DevNode_Status(&mut flags, &mut problem, device.DevInst, 0) };
-        ensure!(result == CR_SUCCESS, "无法读取驱动启动状态：{result:?}");
+        ensure!(
+            result == CR_SUCCESS,
+            "{}",
+            (t().system.driver_status_read_failed)(&format!("{result:?}"))
+        );
         Ok(Status {
             label: if !owned {
-                "已安装其他版本，保留现有驱动".into()
+                t().system.driver_other_version.into()
             } else if !current {
-                "需要更新".into()
+                t().system.install_needs_update.into()
             } else {
-                unavailable_reason(flags, problem).unwrap_or_else(|| "已就绪".into())
+                unavailable_reason(flags, problem)
+                    .unwrap_or_else(|| t().system.install_ready.into())
             },
             installed: true,
             removable: owned,
@@ -384,22 +416,32 @@ impl Package {
     pub fn install(&self) -> Result<bool> {
         ensure!(
             self.bundled(),
-            "此构建未包含 Farwing {}包",
-            self.kind.label()
+            "{}",
+            (t().system.driver_package_not_bundled)(self.kind.label())
         );
         let (set, nodes) = self.nodes()?;
-        ensure!(nodes.len() <= 1, "存在多个{}设备", self.kind.label());
+        ensure!(
+            nodes.len() <= 1,
+            "{}",
+            (t().system.driver_multiple_devices)(self.kind.label())
+        );
         let created = nodes.is_empty();
         if let Some(device) = nodes.first() {
-            ensure!(self.repair, "已有{}设备，保留现有安装", self.kind.label());
+            ensure!(
+                self.repair,
+                "{}",
+                (t().system.driver_device_exists)(self.kind.label())
+            );
             ensure!(
                 self.matches_inf(&inf_directory()?.join(bound_package(&set, device)?))?,
-                "现有驱动不属于本程序，已保留"
+                "{}",
+                t().system.driver_not_owned
             );
         }
-        let stage = Staging::new(self.files).context("准备驱动安装文件失败")?;
-        super::trust_certificate(self.kind).context("注册驱动签名证书失败")?;
-        verify_catalog(&stage.path.join(self.catalog)).context("验证驱动目录签名失败")?;
+        let stage = Staging::new(self.files).context(t().system.driver_stage_failed)?;
+        super::trust_certificate(self.kind).context(t().system.driver_trust_certificate_failed)?;
+        verify_catalog(&stage.path.join(self.catalog))
+            .context(t().system.driver_catalog_check_failed)?;
         let mut info = nodes.first().copied().unwrap_or(SP_DEVINFO_DATA {
             cbSize: size_of::<SP_DEVINFO_DATA>() as u32,
             ..Default::default()
@@ -453,7 +495,11 @@ impl Package {
             let (mut flags, mut problem) = (CM_DEVNODE_STATUS_FLAGS(0), CM_PROB(0));
             let result =
                 unsafe { CM_Get_DevNode_Status(&mut flags, &mut problem, info.DevInst, 0) };
-            ensure!(result == CR_SUCCESS, "无法读取驱动启动状态：{result:?}");
+            ensure!(
+                result == CR_SUCCESS,
+                "{}",
+                (t().system.driver_status_read_failed)(&format!("{result:?}"))
+            );
             if let Some(reason) = unavailable_reason(flags, problem) {
                 return Err(NotStarted {
                     problem: problem.0,
@@ -463,20 +509,26 @@ impl Package {
             }
             ensure!(
                 self.current_package(&bound_package(&set, &info)?)?,
-                "Windows 仍在使用旧驱动包"
+                "{}",
+                t().system.driver_old_package_in_use
             );
         }
         Ok(reboot.as_bool())
     }
     pub fn removal(&self) -> Result<Removal> {
         let (set, nodes) = self.nodes()?;
-        ensure!(nodes.len() <= 1, "存在多个{}设备", self.kind.label());
+        ensure!(
+            nodes.len() <= 1,
+            "{}",
+            (t().system.driver_multiple_devices)(self.kind.label())
+        );
         let packages = self.matching_packages()?;
         if let Some(device) = nodes.first() {
             let bound = bound_package(&set, device)?;
             ensure!(
                 packages.iter().any(|p| p.eq_ignore_ascii_case(&bound)),
-                "现有驱动不属于本程序，已保留"
+                "{}",
+                t().system.driver_not_owned
             );
         }
         Ok(Removal {
@@ -500,7 +552,10 @@ impl Removal {
         unsafe {
             SetupDiGetDeviceInstanceIdW(self.set.0, device, Some(&mut id), None)?;
         }
-        let end = id.iter().position(|c| *c == 0).context("设备标识无效")?;
+        let end = id
+            .iter()
+            .position(|c| *c == 0)
+            .context(t().system.driver_invalid_device_id)?;
         Ok(Some(String::from_utf16_lossy(&id[..end])))
     }
     pub fn execute(self) -> Result<bool> {
@@ -522,7 +577,7 @@ impl Removal {
         for name in &packages {
             unsafe { SetupUninstallOEMInfW(PCWSTR(wide(name).as_ptr()), 0, None) }
                 .ok()
-                .with_context(|| format!("设备已移除，但驱动包{name}仍被占用"))?;
+                .with_context(|| (t().system.driver_package_in_use)(name))?;
         }
         Ok(false)
     }

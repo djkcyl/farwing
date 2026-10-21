@@ -1,5 +1,6 @@
 //! Authenticated host-room power requests. Never accepts peer DATA channel commands.
 use crate::session::host_client::HostClient;
+use crate::i18n::t;
 use anyhow::{Result, ensure};
 use std::{
     collections::VecDeque,
@@ -140,7 +141,7 @@ impl Request {
         let mut s = super::lock(&self.owner.0);
         ensure!(
             s.binding == self.binding && s.epoch == self.epoch && s.busy && !s.committed,
-            "电源请求已取消"
+            "{}", t().features.power_request_cancelled
         );
         s.committed = true;
         Ok(())
@@ -148,7 +149,7 @@ impl Request {
     pub fn execute(&self, client: &HostClient) -> Result<()> {
         ensure!(
             client.is_active() && client.host.power_permitted(),
-            "远程电源许可已撤销"
+            "{}", t().features.power_permission_revoked
         );
         self.claim()?;
         let result = crate::platform::windows::system_power::execute(self.command.action);
@@ -184,7 +185,7 @@ impl Inbox {
         tokio::select! {
             request=self.receiver.recv()=>match request{Some(request)=>Event::Prepare(request),None=>std::future::pending().await},
             result=async {match &mut self.preparing{Some(task)=>task.await,None=>std::future::pending().await}}=>{
-                self.preparing=None;Event::Ready(result.map_err(|e|anyhow::anyhow!("电源准备任务中断：{e}")).and_then(|r|r))
+                self.preparing=None;Event::Ready(result.map_err(|e|anyhow::anyhow!((t().features.power_prepare_interrupted)(&e.to_string()))).and_then(|r|r))
             }
         }
     }
@@ -194,8 +195,8 @@ impl Inbox {
         }
         self.preparing = Some(tokio::spawn(async move {
             let ended = client.ended();
-            tokio::select! {biased; _=ended.cancelled()=>anyhow::bail!("账号已退出"),
-                result=tokio::time::timeout(Duration::from_secs(15),prepare(request,&client))=>result.map_err(|_|anyhow::anyhow!("电源准备超时，未执行"))?
+            tokio::select! {biased; _=ended.cancelled()=>anyhow::bail!("{}", t().features.power_signed_out),
+                result=tokio::time::timeout(Duration::from_secs(15),prepare(request,&client))=>result.map_err(|_|anyhow::anyhow!(t().features.power_prepare_timeout))?
             }
         }));
     }
@@ -221,10 +222,10 @@ async fn prepare(request: Request, client: &HostClient) -> Result<Request> {
     let ready = if permitted {
         tokio::task::spawn_blocking(crate::platform::windows::system_power::probe)
             .await
-            .map_err(|_| anyhow::anyhow!("读取关机权限失败"))
+            .map_err(|_| anyhow::anyhow!(t().features.power_privilege_read_failed))
             .and_then(|r| r)
     } else {
-        Err(anyhow::anyhow!("本机未允许远程关机和重启"))
+        Err(anyhow::anyhow!(t().features.power_not_allowed_here))
     };
     if request.command.need_response && request.valid() && client.is_active() {
         client
@@ -242,7 +243,7 @@ async fn prepare(request: Request, client: &HostClient) -> Result<Request> {
     ready?;
     ensure!(
         request.valid() && client.is_active() && client.host.power_permitted(),
-        "远程电源许可已撤销"
+        "{}", t().features.power_permission_revoked
     );
     Ok(request)
 }

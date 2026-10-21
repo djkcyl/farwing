@@ -47,7 +47,7 @@ impl State {
             return;
         };
         let failure = if pending.at.elapsed() > Duration::from_secs(8) {
-            Some("被控端未确认音质设置".into())
+            Some(t().features.stream_audio_quality_unconfirmed.into())
         } else if let Some(sent) = &mut pending.sent {
             match sent.try_recv() {
                 Ok(Ok(())) => {
@@ -56,7 +56,7 @@ impl State {
                 }
                 Ok(Err(error)) => Some(error),
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    Some("音质请求发送已取消".into())
+                    Some(t().features.stream_audio_quality_cancelled.into())
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
             }
@@ -91,8 +91,16 @@ impl StreamControlHandle {
         quality.validate()?;
         let mut state = lock(&self.audio_quality);
         state.poll();
-        anyhow::ensure!(state.available, "被控端不支持远程音质切换");
-        anyhow::ensure!(state.pending.is_none(), "正在等待音质设置确认");
+        anyhow::ensure!(
+            state.available,
+            "{}",
+            t().features.stream_audio_quality_unsupported
+        );
+        anyhow::ensure!(
+            state.pending.is_none(),
+            "{}",
+            t().features.stream_audio_quality_pending
+        );
         state.desired = Some(quality);
         if let Err(error) = self.send_audio_quality(&mut state) {
             state.desired = state.confirmed;
@@ -131,7 +139,7 @@ impl StreamControlHandle {
                 protocol: StreamControlProtocol::CaptureSetting,
                 completion: Some(done),
             })
-            .map_err(|_| anyhow!("会话已结束"))?;
+            .map_err(|_| anyhow!("{}", t().features.stream_session_ended))?;
         state.pending = Some(Pending {
             id,
             quality,

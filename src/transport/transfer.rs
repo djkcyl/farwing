@@ -108,7 +108,7 @@ impl Credit {
     }
     /// Account `len` sent bytes, which must fit the credit.
     pub(crate) fn spend(&mut self, len: usize) -> Result<()> {
-        ensure!(len as u64 <= self.available(), "传输超出对端授予的窗口");
+        ensure!(len as u64 <= self.available(), "{}", crate::i18n::t().session.transfer_window_exceeded);
         self.sent += len as u64;
         Ok(())
     }
@@ -149,9 +149,9 @@ impl Window {
     /// A chunk arrived at `offset` with `len` bytes; it must continue the
     /// stream and stay within the credit.
     pub(crate) fn receive(&mut self, offset: u64, len: usize) -> Result<()> {
-        ensure!(offset == self.received, "传输数据不连续");
+        ensure!(offset == self.received, "{}", crate::i18n::t().session.transfer_not_contiguous);
         let end = self.received + len as u64;
-        ensure!(end <= self.granted, "对端超出传输窗口");
+        ensure!(end <= self.granted, "{}", crate::i18n::t().session.transfer_peer_exceeded_window);
         self.received = end;
         Ok(())
     }

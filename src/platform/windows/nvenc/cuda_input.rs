@@ -1,5 +1,6 @@
 //! Same-adapter D3D11/CUDA input bridge for planar HEVC 4:4:4 10-bit.
 //! Only the display driver's public API is loaded; no CUDA runtime/toolkit.
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use std::{ffi::c_void, ptr, rc::Rc};
 use windows::{
@@ -43,7 +44,11 @@ struct Copy2d {
     height: usize,
 }
 fn check(status: Status, operation: &str) -> Result<()> {
-    ensure!(status == 0, "CUDA 编码输入 {operation} 失败（{status}）");
+    ensure!(
+        status == 0,
+        "{}",
+        (t().system.nvenc_cuda_call_failed)(operation, &status.to_string())
+    );
     Ok(())
 }
 pub(super) struct Input {
@@ -67,7 +72,7 @@ impl Input {
     pub fn new(device: &ID3D11Device, texture: &ID3D11Texture2D, size: (u32, u32)) -> Result<Self> {
         unsafe {
             let library = libloading::os::windows::Library::load_with_flags("nvcuda.dll", 0x800)
-                .context("未找到 NVIDIA CUDA 驱动接口")?;
+                .context(t().system.nvenc_cuda_driver_not_found)?;
             let init = *library.get::<unsafe extern "system" fn(u32) -> Status>(b"cuInit\0")?;
             let get_device = *library
                 .get::<unsafe extern "system" fn(*mut i32, Handle) -> Status>(

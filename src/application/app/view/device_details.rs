@@ -25,9 +25,55 @@ enum ButtonTone {
     Danger,
 }
 
-fn hardware_summary(label: &str, value: &str) -> String {
-    match label {
-        "主板" => {
+/// The hardware rows of a device's details.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hardware {
+    Board,
+    Processor,
+    Memory,
+    Graphics,
+}
+
+impl Hardware {
+    const ALL: [Self; 4] = [Self::Board, Self::Processor, Self::Memory, Self::Graphics];
+
+    /// The row's key in `crate::account::api::DeviceDetail::details`: an
+    /// identifier set there, not shown.
+    fn key(self) -> &'static str {
+        match self {
+            Self::Board => "主板",
+            Self::Processor => "处理器",
+            Self::Memory => "总内存",
+            Self::Graphics => "显卡",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        let text = &t().center;
+        match self {
+            Self::Board => text.motherboard,
+            Self::Processor => text.processor,
+            Self::Memory => text.memory,
+            Self::Graphics => text.graphics,
+        }
+    }
+
+    fn glyph(self) -> Glyph {
+        match self {
+            Self::Board => Glyph::Board,
+            Self::Processor => Glyph::Chip,
+            Self::Memory => Glyph::Memory,
+            Self::Graphics => Glyph::Gpu,
+        }
+    }
+}
+
+/// The key of the operating system row in `DeviceDetail::details`.
+const SYSTEM_KEY: &str = "系统";
+
+fn hardware_summary(hardware: Option<Hardware>, value: &str) -> String {
+    match hardware {
+        Some(Hardware::Board) => {
             if let Some((maker, model)) = value.split_once("Product:") {
                 let maker = maker.trim().trim_start_matches("Manufacturer:").trim();
                 let maker = if maker.eq_ignore_ascii_case("ASUSTeK COMPUTER INC.") {
@@ -38,12 +84,12 @@ fn hardware_summary(label: &str, value: &str) -> String {
                 return format!("{} {}", maker, model.trim());
             }
         }
-        "处理器" => {
+        Some(Hardware::Processor) => {
             let clean = value.replace("(R)", "").replace("(TM)", "");
             let clean = clean.split_once(" Gen ").map_or(clean.as_str(), |(_, v)| v);
             return clean.split(" @ ").next().unwrap_or(clean).trim().to_owned();
         }
-        "内存" => {
+        Some(Hardware::Memory) => {
             if let Some(mb) = value
                 .trim()
                 .strip_suffix(" MB")
@@ -54,7 +100,7 @@ fn hardware_summary(label: &str, value: &str) -> String {
                 return format!("{:.1} GB", mb / 1024.0);
             }
         }
-        "显卡" => {
+        Some(Hardware::Graphics) => {
             let parts = value.split('|').map(str::trim).collect::<Vec<_>>();
             let primary = parts
                 .iter()
@@ -68,11 +114,12 @@ fn hardware_summary(label: &str, value: &str) -> String {
                 .trim()
                 .to_owned();
         }
-        _ => {}
+        None => {}
     }
     value.trim().to_owned()
 }
 
+/// One row of the information tables; `hardware` tidies hardware values.
 fn specification(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -80,6 +127,7 @@ fn specification(
     value: &str,
     glyph: Glyph,
     copy: bool,
+    hardware: Option<Hardware>,
 ) {
     let font = theme::BODY;
     let icon = egui::Rect::from_center_size(
@@ -94,7 +142,8 @@ fn specification(
         FontId::proportional(font),
         MUTED,
     );
-    let value_x = rect.left() + 144.0;
+    // Room for the longest label in either language.
+    let value_x = rect.left() + 156.0;
     let value_rect = egui::Rect::from_min_max(
         egui::pos2(value_x, rect.top()),
         egui::pos2(rect.right() - if copy { 24.0 } else { 0.0 }, rect.bottom()),
@@ -106,9 +155,9 @@ fn specification(
     );
     cell.set_clip_rect(value_rect.intersect(ui.clip_rect()));
     let display = if value.trim().is_empty() {
-        "未提供".into()
+        t().center.not_provided.into()
     } else {
-        hardware_summary(label, value)
+        hardware_summary(hardware, value)
     };
     cell.add(egui::Label::new(RichText::new(display).size(font)).truncate())
         .on_hover_text(value);
@@ -120,9 +169,9 @@ fn specification(
         let mut copy_ui = ui.new_child(egui::UiBuilder::new().max_rect(button_rect));
         let response = copy_ui
             .add_sized(button_rect.size(), egui::Button::new("").frame(false))
-            .on_hover_text("复制设备 ID");
+            .on_hover_text(t().center.copy_device_id);
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "复制设备 ID")
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, t().center.copy_device_id)
         });
         paint_glyph(ui.painter(), button_rect.shrink(4.0), Glyph::Copy, MUTED);
         let feedback_id = ui.id().with(("copied-device-id", value));
@@ -134,7 +183,7 @@ fn specification(
         if let Some(at) = ui.ctx().data(|data| data.get_temp::<Instant>(feedback_id))
             && at.elapsed() < Duration::from_secs(2)
         {
-            response.show_tooltip_text("已复制设备 ID");
+            response.show_tooltip_text(t().center.device_id_copied);
             ui.ctx().request_repaint_after(
                 Duration::from_secs(2) - at.elapsed().min(Duration::from_secs(2)),
             );
@@ -175,6 +224,16 @@ fn diagnostics_button(
     let start = super::remote_diagnostics::popup(&button, controller_id, id, state, can_start);
     ui.ctx().request_repaint_after(Duration::from_millis(200));
     start
+}
+
+/// A footer button's width: at least 144, enough for its glyph and label.
+fn footer_width(ui: &egui::Ui, label: &str) -> f32 {
+    let label = ui
+        .painter()
+        .layout_no_wrap(label.into(), FontId::proportional(crate::ui::theme::BODY), TEXT)
+        .size()
+        .x;
+    (label + 29.0 + 24.0).max(144.0)
 }
 
 fn detail_button(
@@ -447,7 +506,7 @@ impl DeviceCenterApp {
         header_ui.horizontal(|ui| {
             back = crate::ui::controls::back_button(
                 ui,
-                &format!("返回{}", self.center_ui.detail_parent.title()),
+                &(t().center.back_to)(self.center_ui.detail_parent.title()),
             )
             .clicked();
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
@@ -455,9 +514,9 @@ impl DeviceCenterApp {
                     .add_enabled(
                         self.detail_pending.as_deref() != Some(&id),
                         egui::Button::new(if self.detail_pending.as_deref() == Some(&id) {
-                            "刷新中…"
+                            t().center.refreshing
                         } else {
-                            "刷新详情"
+                            t().center.refresh_details
                         }),
                     )
                     .clicked();
@@ -515,25 +574,26 @@ impl DeviceCenterApp {
             .center_ui
             .wallpapers
             .texture(ui.ctx(), &id, &device.wallpaper_url);
+        let text = &t().center;
         let wallpaper_note = if device.wallpaper_url.is_empty() {
-            "未提供桌面壁纸"
+            text.no_wallpaper
         } else if self.center_ui.wallpapers.failed(&id) {
-            "壁纸加载失败"
+            text.wallpaper_failed
         } else {
-            "正在加载桌面壁纸…"
+            text.loading_wallpaper
         };
         let fields = detail.as_ref().and_then(|r| r.as_ref().ok());
         let os = fields
             .and_then(|d| {
                 d.details
                     .iter()
-                    .find(|(k, _)| matches!(k.as_str(), "系统版本" | "系统"))
+                    .find(|(k, _)| k == SYSTEM_KEY)
             })
             .map(|(_, v)| v.clone())
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| device.platform_label());
         let version = if device.version_name.is_empty() {
-            "未提供"
+            text.not_provided
         } else {
             &device.version_name
         };
@@ -546,7 +606,7 @@ impl DeviceCenterApp {
         crate::ui::controls::observe_notice(
             ui.ctx(),
             ("device-detail-error", &id),
-            "硬件信息读取失败",
+            text.hardware_read_failed,
             crate::ui::controls::DialogIcon::Warning,
             detail
                 .as_ref()
@@ -556,7 +616,7 @@ impl DeviceCenterApp {
         crate::ui::controls::observe_notice(
             ui.ctx(),
             ("device-detail-refresh", &id),
-            "硬件信息刷新失败",
+            text.hardware_refresh_failed,
             crate::ui::controls::DialogIcon::Warning,
             self.catalog
                 .as_ref()
@@ -666,7 +726,7 @@ impl DeviceCenterApp {
                     egui::pos2(title_x, card.top() + 88.0),
                     card.max - vec2(15.0, 5.0),
                 )));
-            let summary_text = format!("{os}   |   设备 ID: {id}   |   客户端版本: {version}");
+            let summary_text = (text.detail_summary)(&os, &id, version);
             summary
                 .add(
                     egui::Label::new(
@@ -688,9 +748,9 @@ impl DeviceCenterApp {
                 let button = detail_button(
                     &mut button_ui,
                     if own_session {
-                        "打开观看窗口"
+                        text.open_viewer
                     } else {
-                        "连接设备"
+                        text.connect_device
                     },
                     Glyph::Monitor,
                     !self.mutation_pending && !self.logout_pending && issue.is_none(),
@@ -762,7 +822,7 @@ impl DeviceCenterApp {
                 let mut file_ui = ui.new_child(egui::UiBuilder::new().max_rect(file_rect));
                 files = detail_button(
                     &mut file_ui,
-                    "文件传输",
+                    text.file_transfer,
                     Glyph::Files,
                     !self.logout_pending
                         && device.is_connected()
@@ -813,7 +873,7 @@ impl DeviceCenterApp {
                             && device.controlled_support));
                 ports = detail_button(
                     &mut button_ui,
-                    "端口转发",
+                    text.port_forwarding,
                     Glyph::PortMapping,
                     available,
                     rect.size(),
@@ -823,7 +883,7 @@ impl DeviceCenterApp {
                         ButtonTone::Normal
                     },
                 )
-                .on_disabled_hover_text("设备离线或不允许连接")
+                .on_disabled_hover_text(text.offline_or_not_allowed)
                 .clicked();
             }
             if viewing {
@@ -835,7 +895,7 @@ impl DeviceCenterApp {
                 let issue = self.viewer_action_issue(&device);
                 let button = detail_button(
                     &mut button_ui,
-                    "仅音频",
+                    text.audio_only,
                     Glyph::Headphones,
                     !self.mutation_pending && !self.logout_pending && issue.is_none(),
                     rect.size(),
@@ -854,31 +914,25 @@ impl DeviceCenterApp {
             ui.painter().text(
                 egui::pos2(left, canvas.top() + info_y),
                 egui::Align2::LEFT_TOP,
-                "硬件信息",
+                text.hardware_info,
                 FontId::proportional(crate::ui::theme::SECTION),
                 TEXT,
             );
             ui.painter().text(
                 egui::pos2(right, canvas.top() + info_y),
                 egui::Align2::LEFT_TOP,
-                "设备信息",
+                text.device_info,
                 FontId::proportional(crate::ui::theme::SECTION),
                 TEXT,
             );
-            let hardware = [
-                ("主板", Glyph::Board),
-                ("处理器", Glyph::Chip),
-                ("总内存", Glyph::Memory),
-                ("显卡", Glyph::Gpu),
-            ];
-            for (i, (key, glyph)) in hardware.into_iter().enumerate() {
+            for (i, hardware) in Hardware::ALL.into_iter().enumerate() {
                 let value = fields
-                    .and_then(|d| d.details.iter().find(|(k, _)| k == key))
+                    .and_then(|d| d.details.iter().find(|(k, _)| k == hardware.key()))
                     .map(|(_, v)| v.as_str())
                     .unwrap_or(if detail.is_none() {
-                        "正在读取…"
+                        text.reading
                     } else {
-                        "未提供"
+                        text.not_provided
                     });
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(left, canvas.top() + info_y + 28.0 + i as f32 * row_h),
@@ -887,16 +941,17 @@ impl DeviceCenterApp {
                 specification(
                     ui,
                     rect,
-                    if key == "总内存" { "内存" } else { key },
+                    hardware.label(),
                     value,
-                    glyph,
+                    hardware.glyph(),
                     false,
+                    Some(hardware),
                 );
             }
             for (i, (label, value, glyph, copy)) in [
-                ("操作系统", os.as_str(), Glyph::System, false),
-                ("设备 ID", id.as_str(), Glyph::Monitor, true),
-                ("客户端版本", version, Glyph::Version, false),
+                (text.operating_system, os.as_str(), Glyph::System, false),
+                (text.device_id, id.as_str(), Glyph::Monitor, true),
+                (text.client_version, version, Glyph::Version, false),
             ]
             .into_iter()
             .enumerate()
@@ -905,7 +960,7 @@ impl DeviceCenterApp {
                     egui::pos2(right, canvas.top() + info_y + 28.0 + i as f32 * row_h),
                     vec2(right_w, row_h),
                 );
-                specification(ui, rect, label, value, glyph, copy);
+                specification(ui, rect, label, value, glyph, copy, None);
             }
             ui.painter().line_segment(
                 [
@@ -920,32 +975,36 @@ impl DeviceCenterApp {
                     canvas.top() + divider_y,
                     Stroke::new(1.0, LINE),
                 );
-                ui.painter().text(
+                let heading = ui.painter().text(
                     egui::pos2(
                         card.left() + 8.0,
                         canvas.top() + footer_y + theme::CONTROL_HEIGHT / 2.0,
                     ),
                     egui::Align2::LEFT_CENTER,
-                    "设备管理",
+                    text.device_management,
                     FontId::proportional(crate::ui::theme::SECTION),
                     TEXT,
                 );
+                // The buttons start after the heading, however long it is.
+                let inset = (heading.right() - card.left() + 16.0).max(108.0);
                 let mut footer = ui.new_child(
                     egui::UiBuilder::new()
                         .max_rect(egui::Rect::from_min_size(
-                            at(pad + 108.0, footer_y),
-                            vec2(card.width() - 116.0, theme::CONTROL_HEIGHT),
+                            at(pad + inset, footer_y),
+                            vec2(card.width() - inset - 8.0, theme::CONTROL_HEIGHT),
                         ))
                         .layout(egui::Layout::left_to_right(Align::Center)),
                 );
+                let diagnostics_label =
+                    super::remote_diagnostics::button_label(diagnostic_state.as_ref());
                 footer.spacing_mut().item_spacing.x = 16.0;
                 footer.add_enabled_ui(!self.mutation_pending && !self.logout_pending, |ui| {
                     if detail_button(
                         ui,
-                        "重命名设备",
+                        text.rename_device,
                         Glyph::Edit,
                         true,
-                        vec2(144.0, theme::CONTROL_HEIGHT),
+                        vec2(footer_width(ui, text.rename_device), theme::CONTROL_HEIGHT),
                         ButtonTone::Normal,
                     )
                     .clicked()
@@ -955,7 +1014,7 @@ impl DeviceCenterApp {
                     if has_diagnostics {
                         diagnostics |= diagnostics_button(
                             ui,
-                            vec2(144.0, theme::CONTROL_HEIGHT),
+                            vec2(footer_width(ui, &diagnostics_label), theme::CONTROL_HEIGHT),
                             &controller_id,
                             &id,
                             diagnostic_state.as_ref(),
@@ -965,10 +1024,10 @@ impl DeviceCenterApp {
                     if current {
                         if detail_button(
                             ui,
-                            "退出本机账号",
+                            t().common.sign_out,
                             Glyph::Trash,
                             true,
-                            vec2(144.0, theme::CONTROL_HEIGHT),
+                            vec2(footer_width(ui, t().common.sign_out), theme::CONTROL_HEIGHT),
                             ButtonTone::Danger,
                         )
                         .clicked()
@@ -977,10 +1036,10 @@ impl DeviceCenterApp {
                         }
                     } else if detail_button(
                         ui,
-                        "从账号移除",
+                        text.remove_from_account,
                         Glyph::Trash,
                         true,
-                        vec2(144.0, theme::CONTROL_HEIGHT),
+                        vec2(footer_width(ui, text.remove_from_account), theme::CONTROL_HEIGHT),
                         ButtonTone::Danger,
                     )
                     .clicked()
@@ -992,8 +1051,8 @@ impl DeviceCenterApp {
             crate::ui::controls::progress_notice(
                 ui.ctx(),
                 "device-operation-progress",
-                "设备操作",
-                self.mutation_pending.then_some("正在处理设备操作…"),
+                text.device_operation,
+                self.mutation_pending.then_some(text.processing_device_operation),
             );
         });
         if diagnostics {

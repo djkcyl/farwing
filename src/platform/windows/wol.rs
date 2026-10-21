@@ -2,6 +2,7 @@
 pub(crate) mod setup;
 use crate::features::host::wol::packet::{LanInfo, mask, valid_ip};
 use anyhow::{Context, Result, ensure};
+use crate::i18n::t;
 use std::{
     net::{Ipv4Addr, SocketAddrV4, UdpSocket},
     os::windows::io::AsRawSocket,
@@ -52,7 +53,7 @@ pub(crate) fn inventory() -> Result<Vec<Interface>> {
             }
         }
         let _table = Table(routes);
-        ensure!(!routes.is_null(), "无法读取路由表");
+        ensure!(!routes.is_null(), "{}", t().system.wol_routes_unreadable);
         let routes =
             std::slice::from_raw_parts((*routes).Table.as_ptr(), (*routes).NumEntries as usize);
         let mut size = 16384;
@@ -67,7 +68,7 @@ pub(crate) fn inventory() -> Result<Vec<Interface>> {
                 &mut size,
             );
             if code == ERROR_BUFFER_OVERFLOW.0 {
-                ensure!(size <= 1024 * 1024, "网卡列表过大");
+                ensure!(size <= 1024 * 1024, "{}", t().system.profile_adapter_list_too_large);
                 continue;
             }
             WIN32_ERROR(code).ok()?;
@@ -106,7 +107,9 @@ pub(crate) fn inventory() -> Result<Vec<Interface>> {
                 let name = a
                     .FriendlyName
                     .to_string()
-                    .unwrap_or_else(|_| format!("网卡 {index}"));
+                    .unwrap_or_else(|_| {
+                        (t().system.wol_adapter_fallback_name)(&index.to_string())
+                    });
                 let mut address = a.FirstUnicastAddress;
                 while !address.is_null() {
                     let u = &*address;
@@ -140,7 +143,7 @@ pub(crate) fn inventory() -> Result<Vec<Interface>> {
             return Ok(result);
         }
     }
-    anyhow::bail!("网卡列表持续变化")
+    anyhow::bail!("{}", t().system.profile_adapter_list_changing)
 }
 #[derive(Default)]
 pub(crate) struct Changes {
@@ -258,8 +261,9 @@ pub(crate) fn send(
     destinations: &[SocketAddrV4],
     valid: impl Fn() -> bool,
 ) -> Result<Sent> {
-    ensure!(valid(), "唤醒请求已失效");
-    let socket = UdpSocket::bind(SocketAddrV4::new(interface.ip, 0)).context("绑定唤醒源网卡")?;
+    ensure!(valid(), "{}", t().system.wol_request_expired);
+    let socket = UdpSocket::bind(SocketAddrV4::new(interface.ip, 0))
+        .context(t().system.wol_bind_failed)?;
     socket.set_broadcast(true)?;
     socket.set_write_timeout(Some(std::time::Duration::from_millis(500)))?;
     let index = interface.index.to_be().to_ne_bytes();
@@ -276,7 +280,7 @@ pub(crate) fn send(
     }
     let mut result = Sent::default();
     for destination in destinations {
-        ensure!(valid(), "唤醒请求已取消或网络已改变");
+        ensure!(valid(), "{}", t().system.wol_request_cancelled);
         result.attempted += 1;
         match socket.send_to(packet, *destination) {
             Ok(n) if n == packet.len() => result.sent += 1,
@@ -288,6 +292,6 @@ pub(crate) fn send(
             ),
         }
     }
-    ensure!(result.sent > 0, "所有唤醒端口均发送失败");
+    ensure!(result.sent > 0, "{}", t().system.wol_send_failed);
     Ok(result)
 }

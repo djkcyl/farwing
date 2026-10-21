@@ -5,16 +5,19 @@
 // keyboard and mouse control (special keys, pointer lock, touch), the text
 // clipboard, files and the microphone.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { t as messagesNow, type Messages } from '../i18n';
+import { useT } from '../i18n/react';
 import { argbCss, type AnnotationState } from '../lib/annotation';
 import { ApiError, call, errorText, hasToken } from '../lib/api';
 import { DEFAULT_DIR, droppedEntries, type TransferInfo } from '../lib/files';
-import { bitrate, capText, displayName } from '../lib/format';
+import { bitrate, capText, displayName, listText, num } from '../lib/format';
 import type { CursorShape, HostEvent, Participant, ParticipantPointer, Quality, Screens } from '../lib/fpp';
 import { HostEventKind } from '../lib/fpp';
 import { SystemCommand, Usage } from '../lib/input';
 import { VideoCodec, type VideoCodecId } from '../lib/sdp';
-import { PATHS, StatsSampler, type ViewStats } from '../lib/stats';
+import { pathText, StatsSampler, type ViewStats } from '../lib/stats';
 import {
+  failureText,
   Viewer,
   type Admission,
   type ControlState,
@@ -69,11 +72,13 @@ const RETRY_WINDOW_MS = 5 * 60 * 1000;
 /// Start failures worth retrying (the device may come back).
 const RETRY_CODES = new Set(['device_offline', 'timeout', 'busy', 'unavailable', 'closed', 'error', 'network']);
 
-const QUALITIES: { id: number; label: string; hint?: string }[] = [
-  { id: 5, label: '自动' },
-  { id: 4, label: '原画', hint: '30M' },
-  { id: 3, label: '超清', hint: '14M' },
-  { id: 2, label: '高清', hint: '8M' },
+type ViewerMessages = Messages['viewer'];
+
+const QUALITIES: { id: number; key: keyof ViewerMessages['screen']['qualities']; hint?: string }[] = [
+  { id: 5, key: 'auto' },
+  { id: 4, key: 'original', hint: '30M' },
+  { id: 3, key: 'ultra', hint: '14M' },
+  { id: 2, key: 'high', hint: '8M' },
 ];
 
 const CODECS: { id: VideoCodecId; label: string; mime: string }[] = [
@@ -90,18 +95,18 @@ function storedCodec(): number {
   return CODECS.some((c) => c.id === value) ? value : 0;
 }
 
-const INK_COLORS: { argb: number; label: string }[] = [
-  { argb: 0xffff4444, label: '红' },
-  { argb: 0xffffc83d, label: '黄' },
-  { argb: 0xff3ccf7a, label: '绿' },
-  { argb: 0xff4b88eb, label: '蓝' },
-  { argb: 0xffffffff, label: '白' },
-  { argb: 0xff202020, label: '黑' },
+const INK_COLORS: { argb: number; key: keyof ViewerMessages['annotation']['colors'] }[] = [
+  { argb: 0xffff4444, key: 'red' },
+  { argb: 0xffffc83d, key: 'yellow' },
+  { argb: 0xff3ccf7a, key: 'green' },
+  { argb: 0xff4b88eb, key: 'blue' },
+  { argb: 0xffffffff, key: 'white' },
+  { argb: 0xff202020, key: 'black' },
 ];
-const INK_WIDTHS: { width: number; label: string }[] = [
-  { width: 2, label: '细' },
-  { width: 4, label: '中' },
-  { width: 8, label: '粗' },
+const INK_WIDTHS: { width: number; key: keyof ViewerMessages['annotation']['widths'] }[] = [
+  { width: 2, key: 'thin' },
+  { width: 4, key: 'medium' },
+  { width: 8, key: 'thick' },
 ];
 
 const PALETTE = [0x4b88eb, 0x66cf9c, 0xeebe6f, 0xbe84f0, 0xf17d84, 0x5cc4d6];
@@ -111,33 +116,26 @@ function colorOf(p: Participant | undefined, id: string): string {
   return `#${value.toString(16).padStart(6, '0')}`;
 }
 
+/// A host event as a banner (the host's own words when it gives them).
 function hostEventText(e: HostEvent): string {
+  const m = messagesNow().viewer.hostEvents;
   switch (e.kind) {
     case HostEventKind.UPDATING:
-      return '对方正在更新 Farwing';
+      return m.updating;
     case HostEventKind.RESTARTING:
-      return '对方设备正在重启';
+      return m.restarting;
     case HostEventKind.SLEEPING:
-      return '对方设备正在进入睡眠';
+      return m.sleeping;
     case HostEventKind.SHUTTING_DOWN:
-      return '对方设备正在关机';
+      return m.shuttingDown;
     case HostEventKind.SESSION_SWITCH:
-      return '对方切换了 Windows 用户';
+      return m.sessionSwitch;
     case HostEventKind.DISPLAY_CHANGING:
-      return e.message || '对方正在修改显示设置';
+      return e.message || m.displayChanging;
     default:
-      return e.message || '对方设备状态变化';
+      return e.message || m.changed;
   }
 }
-
-const STATE_TEXT: Record<ViewerState, string> = {
-  connecting: '正在连接',
-  negotiating: '正在建立连接',
-  waiting_media: '等待画面',
-  playing: '',
-  reconnecting: '网络中断，正在恢复',
-  ended: '已断开',
-};
 
 /// The picture's box inside the <video> element.
 function contentBox(video: HTMLVideoElement, scale: Scale) {
@@ -251,6 +249,7 @@ function sendCapture(v: Viewer, quality: number, fps: number, codec: number, cur
 }
 
 export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true }: ViewerScreenProps) {
+  const t = useT();
   const { toast } = useOverlay();
   const root = useRef<HTMLDivElement>(null);
   const stage = useRef<HTMLDivElement>(null);
@@ -261,7 +260,6 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
   const sampler = useRef(new StatsSampler());
   const [generation, setGeneration] = useState(0);
   const [state, setState] = useState<ViewerState>('connecting');
-  const [detail, setDetail] = useState<string>();
   const [ending, setEnding] = useState<Ending>();
   const [retryAt, setRetryAt] = useState<number>();
   const [now, setNow] = useState(() => Date.now());
@@ -325,9 +323,8 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
       const v = new Viewer(
         { admit, codec: () => capture.current.codec },
         {
-          state: (s, d) => {
+          state: (s) => {
             setState(s);
-            setDetail(d);
             if (s === 'playing') {
               firstFailure.current = 0;
               retries.current = 0;
@@ -344,7 +341,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
           pointers: setPointers,
           hostEvent: (e) => setBanner(hostEventText(e)),
           audio: (a) => {
-            if (a.kind === 'rejected') toast(a.message ?? '对方没有接受音质设置', 'red');
+            if (a.kind === 'rejected') toast(a.message ?? messagesNow().viewer.screen.audioRejected, 'red');
             if (a.kbps) setAudioKbps(a.kbps);
           },
           codecs: (common, hostPreferred) => {
@@ -355,7 +352,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
             }
           },
           captureResult: (errors) => {
-            if (errors.some((c) => c === -1 || c === -2)) toast('对方没有接受画面设置', 'red');
+            if (errors.some((c) => c === -1 || c === -2)) toast(messagesNow().viewer.screen.captureRejected, 'red');
           },
           control: (c) => {
             setControl(c);
@@ -373,10 +370,10 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
           },
           hostFeatures: setHostFeatures,
           transfer: (info) => {
-            setTransfers((list) => [...list.filter((t) => t.id !== info.id || t.direction !== info.direction), info]);
+            setTransfers((list) => [...list.filter((x) => x.id !== info.id || x.direction !== info.direction), info]);
             if (info.state !== 'running') {
               window.setTimeout(
-                () => setTransfers((list) => list.filter((t) => t.id !== info.id || t.direction !== info.direction)),
+                () => setTransfers((list) => list.filter((x) => x.id !== info.id || x.direction !== info.direction)),
                 5000,
               );
             }
@@ -392,7 +389,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
         const code = error instanceof ApiError ? error.code : ((error as { code?: string })?.code ?? 'error');
         onEnded({
           reason: code,
-          message: errorText(error),
+          message: () => failureText(error),
           recoverable: RETRY_CODES.has(code) || error instanceof TypeError,
         });
       });
@@ -421,12 +418,12 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
     setState('ended');
     setEnding(e);
     if (!autoRetry || !e.recoverable) return;
-    const t = Date.now();
-    if (!firstFailure.current) firstFailure.current = t;
-    if (t - firstFailure.current > RETRY_WINDOW_MS) return;
+    const at = Date.now();
+    if (!firstFailure.current) firstFailure.current = at;
+    if (at - firstFailure.current > RETRY_WINDOW_MS) return;
     const delay = RETRY_DELAYS[Math.min(retries.current, RETRY_DELAYS.length - 1)] * 1000;
     retries.current += 1;
-    setRetryAt(t + delay);
+    setRetryAt(at + delay);
   }
 
   // Retry timer and countdown.
@@ -510,7 +507,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
       a.download = `${title}-${stamp}.png`.replace(/[\\/:*?"<>|]/g, '_');
       a.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      toast('截图已保存');
+      toast(messagesNow().viewer.screen.screenshotSaved);
     }, 'image/png');
   }, [title, toast]);
 
@@ -518,7 +515,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
     const v = video.current;
     if (!v) return;
     if (document.pictureInPictureElement) void document.exitPictureInPicture();
-    else void v.requestPictureInPicture?.().catch(() => toast('浏览器不支持画中画', 'red'));
+    else void v.requestPictureInPicture?.().catch(() => toast(messagesNow().viewer.screen.pipUnsupported, 'red'));
   }, [toast]);
 
   // Keyboard: F full screen, M sound, S screenshot (not while the keys go
@@ -664,23 +661,23 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
   const sendClipboard = async () => {
     try {
       const text = await navigator.clipboard.readText();
-      if (!text) toast('本机剪贴板里没有文字', 'red');
+      if (!text) toast(t.viewer.screen.localClipboardEmpty, 'red');
       else {
         viewer.current?.clipboard.offer(text);
-        toast('已发送到对方剪贴板');
+        toast(t.viewer.screen.sentToHost);
       }
     } catch {
-      toast('浏览器不允许读取剪贴板', 'red');
+      toast(t.viewer.screen.clipboardDenied, 'red');
     }
   };
 
   const pullClipboard = async () => {
     try {
       const text = await viewer.current?.clipboard.pull();
-      if (!text) toast('对方剪贴板里没有文字', 'red');
+      if (!text) toast(t.viewer.screen.hostClipboardEmpty, 'red');
       else {
         copyLocally(text);
-        toast('已复制到本机剪贴板');
+        toast(t.viewer.screen.copiedLocally);
       }
     } catch (error) {
       toast(errorText(error), 'red');
@@ -700,7 +697,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
   const toggleInk = async () => {
     const a = viewer.current?.annotation;
     if (!a) return;
-    if (!(await a.setEnabled(!a.active)) && !ink.error) toast('对方没有开启批注', 'red');
+    if (!(await a.setEnabled(!a.active)) && !ink.error) toast(t.viewer.annotation.notOn, 'red');
     setInkRevision((n) => n + 1);
   };
   const inkAction = (run: () => void) => {
@@ -725,7 +722,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
       const { files, folders } = await droppedEntries(data);
       if (files.length) await v.files.uploadFiles(files, DEFAULT_DIR);
       for (const group of folders) await v.files.upload(group.entries, DEFAULT_DIR, group.folder);
-      if (files.length || folders.length) toast('已上传到对方的“下载”文件夹');
+      if (files.length || folders.length) toast(t.viewer.screen.uploadedToDownloads);
     } catch (error) {
       toast(errorText(error), 'red');
     }
@@ -751,7 +748,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
   );
   const box = video.current && videoSize[0] ? contentBox(video.current, scale) : undefined;
   const playing = state === 'playing';
-  const overlayText = ending ? ending.message : detail || STATE_TEXT[state];
+  const overlayText = ending ? ending.message() : state === 'playing' ? '' : t.viewer.states[state];
   const others = (people?.participants ?? []).filter((p) => !p.you);
   const controller = people?.participants.find((p) => p.id === people.controlling);
 
@@ -759,9 +756,9 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
   const onPointer = (e: React.PointerEvent<HTMLDivElement>, visible: boolean) => {
     showBar();
     if (control.held || !sharePointer || !video.current || !current || !box) return;
-    const t = performance.now();
-    if (visible && t - pointerSent.current < 30) return;
-    pointerSent.current = t;
+    const stamp = performance.now();
+    if (visible && stamp - pointerSent.current < 30) return;
+    pointerSent.current = stamp;
     const rect = video.current.getBoundingClientRect();
     const x = (e.clientX - rect.left - box.x) / box.w;
     const y = (e.clientY - rect.top - box.y) / box.h;
@@ -777,20 +774,24 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
   return (
     <div ref={root} className={`viewer ${fullscreen && !barVisible ? 'bar-hidden' : ''}`} onMouseMove={showBar}>
       <header className="viewer-bar">
-        <button type="button" className="tool" title="返回" onClick={onLeave}>
+        <button type="button" className="tool" title={t.viewer.back} onClick={onLeave}>
           <Icon name="back" size={18} />
         </button>
         <div className="viewer-title">
           <div className="ellipsis">{title}</div>
           <div className="small muted ellipsis">
             {playing && stats
-              ? `${stats.width}×${stats.height} · ${Math.round(stats.fps)} fps · ${Math.round(stats.rttMs)} ms · ${PATHS[stats.path]}`
+              ? `${stats.width}×${stats.height} · ${num(stats.fps)} fps · ${num(stats.rttMs)} ms · ${pathText(stats.path)}`
               : subtitle}
           </div>
         </div>
         <div className="viewer-tools">
           {screens && screens.screens.length > 1 && (
-            <Menu label="显示器" icon="monitor" text={current?.name || `显示器 ${screens.current + 1}`}>
+            <Menu
+              label={t.viewer.screen.display}
+              icon="monitor"
+              text={current?.name || t.viewer.screen.displayN(screens.current + 1)}
+            >
               {screens.screens.map((s, i) => (
                 <MenuItem
                   key={s.id}
@@ -798,8 +799,8 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                   hint={`${s.current.width}×${s.current.height}`}
                   onClick={() => viewer.current?.switchScreen(s.id)}
                 >
-                  {s.name || `显示器 ${i + 1}`}
-                  {s.primary ? '（主屏）' : ''}
+                  {s.name || t.viewer.screen.displayN(i + 1)}
+                  {s.primary ? t.viewer.screen.primary : ''}
                 </MenuItem>
               ))}
             </Menu>
@@ -809,12 +810,12 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
               icon="mouse"
               label={
                 control.held
-                  ? '停止键鼠控制'
+                  ? t.viewer.control.stop
                   : control.pending
-                    ? '正在获取键鼠控制权'
+                    ? t.viewer.control.pending
                     : controller && !controller.you
-                      ? `${controller.nickname || '其他参与者'} 正在控制`
-                      : '开启键鼠控制'
+                      ? t.viewer.control.otherControlling(controller.nickname || t.viewer.control.otherParticipant)
+                      : t.viewer.control.start
               }
               active={control.held}
               disabled={!playing || control.pending}
@@ -822,10 +823,10 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
             />
           )}
           {control.held && (
-            <Menu label="特殊键与鼠标" icon="keyboard">
-              <div className="menu-label">鼠标</div>
+            <Menu label={t.viewer.screen.keys} icon="keyboard">
+              <div className="menu-label">{t.viewer.screen.mouse}</div>
               <MenuItem selected={!relative} onClick={() => setRelative(false)}>
-                绝对定位
+                {t.viewer.screen.absolute}
               </MenuItem>
               <MenuItem
                 selected={relative}
@@ -834,11 +835,11 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                   void stage.current?.requestPointerLock?.();
                 }}
               >
-                相对移动
+                {t.viewer.screen.relative}
               </MenuItem>
               {!!hostFeatures.touch && (
                 <>
-                  <div className="menu-label">触屏</div>
+                  <div className="menu-label">{t.viewer.screen.touch}</div>
                   <MenuItem
                     selected={!touchMouse}
                     onClick={() => {
@@ -846,7 +847,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                       setTouchMouse(false);
                     }}
                   >
-                    原生触摸
+                    {t.viewer.screen.nativeTouch}
                   </MenuItem>
                   <MenuItem
                     selected={touchMouse}
@@ -855,53 +856,62 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                       setTouchMouse(true);
                     }}
                   >
-                    模拟鼠标
+                    {t.viewer.screen.emulateMouse}
                   </MenuItem>
                 </>
               )}
-              <div className="menu-label">组合键</div>
+              <div className="menu-label">{t.viewer.screen.shortcuts}</div>
               <MenuItem onClick={() => special((v) => v.input.command(SystemCommand.SAS))}>Ctrl+Alt+Del</MenuItem>
               <MenuItem onClick={() => special((v) => v.input.chord([Usage.WIN]))}>Win</MenuItem>
-              <MenuItem hint="运行" onClick={() => special((v) => v.input.chord([Usage.WIN, Usage.R]))}>
+              <MenuItem hint={t.viewer.screen.run} onClick={() => special((v) => v.input.chord([Usage.WIN, Usage.R]))}>
                 Win+R
               </MenuItem>
-              <MenuItem hint="资源管理器" onClick={() => special((v) => v.input.chord([Usage.WIN, Usage.E]))}>
+              <MenuItem
+                hint={t.viewer.screen.explorer}
+                onClick={() => special((v) => v.input.chord([Usage.WIN, Usage.E]))}
+              >
                 Win+E
               </MenuItem>
               <MenuItem onClick={() => special((v) => v.input.chord([Usage.ALT, Usage.TAB]))}>Alt+Tab</MenuItem>
               <MenuItem onClick={() => special((v) => v.input.chord([Usage.ALT, Usage.F4]))}>Alt+F4</MenuItem>
               <MenuItem onClick={() => special((v) => v.input.chord([Usage.ESC]))}>Esc</MenuItem>
               <MenuItem onClick={() => special((v) => v.input.chord([Usage.PRINT_SCREEN]))}>PrintScreen</MenuItem>
-              <div className="menu-label">系统</div>
-              <MenuItem onClick={() => special((v) => v.input.command(SystemCommand.LOCK))}>锁定</MenuItem>
-              <MenuItem onClick={() => special((v) => v.input.command(SystemCommand.TASK_MANAGER))}>
-                任务管理器
+              <div className="menu-label">{t.viewer.screen.system}</div>
+              <MenuItem onClick={() => special((v) => v.input.command(SystemCommand.LOCK))}>
+                {t.viewer.screen.lock}
               </MenuItem>
-              <MenuItem onClick={() => special((v) => v.input.command(SystemCommand.SHOW_DESKTOP))}>显示桌面</MenuItem>
-              <MenuItem onClick={() => special((v) => v.input.command(SystemCommand.TASK_VIEW))}>任务视图</MenuItem>
+              <MenuItem onClick={() => special((v) => v.input.command(SystemCommand.TASK_MANAGER))}>
+                {t.viewer.screen.taskManager}
+              </MenuItem>
+              <MenuItem onClick={() => special((v) => v.input.command(SystemCommand.SHOW_DESKTOP))}>
+                {t.viewer.screen.showDesktop}
+              </MenuItem>
+              <MenuItem onClick={() => special((v) => v.input.command(SystemCommand.TASK_VIEW))}>
+                {t.viewer.screen.taskView}
+              </MenuItem>
               {clipboardAllowed && (
                 <>
-                  <div className="menu-label">文字</div>
-                  <MenuItem onClick={() => setTyping('')}>输入文字…</MenuItem>
+                  <div className="menu-label">{t.viewer.screen.text}</div>
+                  <MenuItem onClick={() => setTyping('')}>{t.viewer.screen.typeText}</MenuItem>
                 </>
               )}
             </Menu>
           )}
           {inkAllowed && ink.available && (
-            <Menu label="批注" icon="edit">
+            <Menu label={t.viewer.annotation.title} icon="edit">
               <MenuItem selected={ink.enabled} onClick={() => void toggleInk()}>
-                {ink.enabled ? '关闭批注' : '开启批注'}
+                {ink.enabled ? t.viewer.annotation.turnOff : t.viewer.annotation.turnOn}
               </MenuItem>
               {ink.enabled && shown && (
                 <>
-                  <div className="menu-label">工具</div>
+                  <div className="menu-label">{t.viewer.annotation.tools}</div>
                   <MenuItem selected={inkTool === 'pen'} onClick={() => setInkTool('pen')}>
-                    画笔
+                    {t.viewer.annotation.pen}
                   </MenuItem>
                   <MenuItem selected={inkTool === 'laser'} onClick={() => setInkTool('laser')}>
-                    激光笔
+                    {t.viewer.annotation.laser}
                   </MenuItem>
-                  <div className="menu-label">颜色与粗细</div>
+                  <div className="menu-label">{t.viewer.annotation.colorWidth}</div>
                   <div className="ink-swatches" onClick={(e) => e.stopPropagation()}>
                     {INK_COLORS.map((c) => (
                       <button
@@ -909,8 +919,8 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                         type="button"
                         className={`ink-swatch ${inkColor === c.argb ? 'selected' : ''}`}
                         style={{ background: argbCss(c.argb) }}
-                        title={c.label}
-                        aria-label={c.label}
+                        title={t.viewer.annotation.colors[c.key]}
+                        aria-label={t.viewer.annotation.colors[c.key]}
                         onClick={() => setInkColor(c.argb)}
                       />
                     ))}
@@ -923,18 +933,22 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                         className={`ink-width ${inkWidth === w.width ? 'selected' : ''}`}
                         onClick={() => setInkWidth(w.width)}
                       >
-                        {w.label}
+                        {t.viewer.annotation.widths[w.key]}
                       </button>
                     ))}
                   </div>
-                  <div className="menu-label">编辑</div>
+                  <div className="menu-label">{t.viewer.annotation.edit}</div>
                   <MenuItem
                     onClick={() => inkAction(() => viewer.current?.annotation.undo())}
-                    hint={inkRevision >= 0 && viewer.current?.annotation.canUndo ? undefined : '没有笔迹'}
+                    hint={
+                      inkRevision >= 0 && viewer.current?.annotation.canUndo ? undefined : t.viewer.annotation.noStrokes
+                    }
                   >
-                    撤销上一笔
+                    {t.viewer.annotation.undo}
                   </MenuItem>
-                  <MenuItem onClick={() => inkAction(() => viewer.current?.annotation.clear())}>清空笔迹</MenuItem>
+                  <MenuItem onClick={() => inkAction(() => viewer.current?.annotation.clear())}>
+                    {t.viewer.annotation.clear}
+                  </MenuItem>
                   <MenuItem
                     selected={!!viewer.current?.annotation.hasBoard(shown.id)}
                     onClick={() =>
@@ -944,14 +958,14 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                       })
                     }
                   >
-                    白板
+                    {t.viewer.annotation.whiteboard}
                   </MenuItem>
                 </>
               )}
             </Menu>
           )}
           {clipboardAllowed && (
-            <Menu label="剪贴板" icon="clipboard">
+            <Menu label={t.viewer.screen.clipboard} icon="clipboard">
               <MenuItem
                 selected={clipboardAuto}
                 onClick={() => {
@@ -959,16 +973,16 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                   setClipboardAuto(!clipboardAuto);
                 }}
               >
-                自动同步文字
+                {t.viewer.screen.autoSync}
               </MenuItem>
-              <MenuItem onClick={() => void sendClipboard()}>发送本机剪贴板到对方</MenuItem>
-              <MenuItem onClick={() => void pullClipboard()}>获取对方剪贴板</MenuItem>
+              <MenuItem onClick={() => void sendClipboard()}>{t.viewer.screen.sendClipboard}</MenuItem>
+              <MenuItem onClick={() => void pullClipboard()}>{t.viewer.screen.pullClipboard}</MenuItem>
             </Menu>
           )}
           {filesAllowed && (
             <ToolButton
               icon="folder"
-              label="文件"
+              label={t.viewer.screen.files}
               active={panel === 'files'}
               disabled={!playing}
               onClick={() => setPanel(panel === 'files' ? 'none' : 'files')}
@@ -979,31 +993,31 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
               icon={mic.state === 'off' ? 'micOff' : 'mic'}
               label={
                 mic.state === 'off'
-                  ? '开启麦克风'
+                  ? t.viewer.microphone.turnOn
                   : mic.state === 'starting'
-                    ? '正在开启麦克风'
+                    ? t.viewer.microphone.starting
                     : mic.state === 'waiting'
-                      ? '麦克风已开启，等待对方使用'
-                      : '关闭麦克风'
+                      ? t.viewer.microphone.waiting
+                      : t.viewer.microphone.turnOff
               }
               active={mic.state === 'on'}
               disabled={!playing}
               onClick={toggleMic}
             />
           )}
-          <Menu label="缩放" icon="fit">
+          <Menu label={t.viewer.screen.scale} icon="fit">
             <MenuItem selected={scale === 'fit'} onClick={() => setScale('fit')}>
-              适应窗口
+              {t.viewer.screen.fit}
             </MenuItem>
             <MenuItem selected={scale === 'fill'} onClick={() => setScale('fill')}>
-              填满窗口
+              {t.viewer.screen.fill}
             </MenuItem>
             <MenuItem selected={scale === 'original'} onClick={() => setScale('original')}>
-              原始大小（1:1）
+              {t.viewer.screen.original}
             </MenuItem>
           </Menu>
-          <Menu label="画质" icon="settings">
-            <div className="menu-label">画质</div>
+          <Menu label={t.viewer.screen.quality} icon="settings">
+            <div className="menu-label">{t.viewer.screen.quality}</div>
             {QUALITIES.map((q) => (
               <MenuItem
                 key={q.id}
@@ -1011,10 +1025,10 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                 hint={q.hint}
                 onClick={() => applyCapture(q.id, fps)}
               >
-                {q.label}
+                {t.viewer.screen.qualities[q.key]}
               </MenuItem>
             ))}
-            <div className="menu-label">帧率</div>
+            <div className="menu-label">{t.viewer.screen.frameRate}</div>
             {[30, 60].map((f) => (
               <MenuItem key={f} selected={fps === f} onClick={() => applyCapture(frameQuality, f)}>
                 {f} FPS
@@ -1022,10 +1036,10 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
             ))}
             {codecs && codecs.common.length > 1 && (
               <>
-                <div className="menu-label">编码格式</div>
+                <div className="menu-label">{t.viewer.screen.codec}</div>
                 {codecs.hostPreferred ? (
                   <div className="menu-note small faint">
-                    对方指定 {CODECS.find((c) => c.id === codecs.hostPreferred)?.label}
+                    {t.viewer.screen.hostCodec(CODECS.find((c) => c.id === codecs.hostPreferred)?.label ?? '')}
                   </div>
                 ) : (
                   <>
@@ -1034,7 +1048,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                       hint={!chosenCodec && usedCodec ? usedCodec.label : undefined}
                       onClick={() => applyCapture(frameQuality, fps, 0)}
                     >
-                      自动
+                      {t.viewer.screen.auto}
                     </MenuItem>
                     {CODECS.filter((c) => codecs.common.includes(c.id)).map((c) => (
                       <MenuItem
@@ -1051,7 +1065,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
             )}
             {audioAllowed && (
               <>
-                <div className="menu-label">音质</div>
+                <div className="menu-label">{t.viewer.screen.audioQuality}</div>
                 {[64, 128, 192, 256].map((k) => (
                   <MenuItem key={k} selected={audioKbps === k} onClick={() => viewer.current?.setAudioKbps(k)}>
                     {k} kbps
@@ -1059,15 +1073,15 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                 ))}
               </>
             )}
-            <div className="menu-label">其他</div>
+            <div className="menu-label">{t.viewer.screen.other}</div>
             <MenuItem selected={sharePointer} onClick={() => setSharePointer(!sharePointer)}>
-              向其他参与者显示我的指针
+              {t.viewer.screen.sharePointer}
             </MenuItem>
           </Menu>
           <div className="volume">
             <ToolButton
               icon={muted || !audioAllowed ? 'mute' : 'volume'}
-              label={audioAllowed ? (muted ? '开启声音（M）' : '静音（M）') : '没有声音权限'}
+              label={audioAllowed ? (muted ? t.viewer.screen.unmute : t.viewer.screen.mute) : t.viewer.screen.noAudio}
               onClick={toggleMute}
               disabled={!audioAllowed}
             />
@@ -1080,27 +1094,27 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                 step={0.05}
                 value={volume}
                 onChange={(e) => setVolume(Number(e.target.value))}
-                aria-label="音量"
+                aria-label={t.viewer.screen.volume}
               />
             )}
           </div>
-          <ToolButton icon="camera" label="截图（S）" onClick={screenshot} disabled={!playing} />
-          <ToolButton icon="pip" label="画中画" onClick={pip} disabled={!playing} />
+          <ToolButton icon="camera" label={t.viewer.screen.screenshot} onClick={screenshot} disabled={!playing} />
+          <ToolButton icon="pip" label={t.viewer.screen.pip} onClick={pip} disabled={!playing} />
           <ToolButton
             icon="chart"
-            label="连接统计"
+            label={t.viewer.screen.stats}
             active={panel === 'stats'}
             onClick={() => setPanel(panel === 'stats' ? 'none' : 'stats')}
           />
           <ToolButton
             icon="users"
-            label="参与者"
+            label={t.viewer.screen.people}
             active={panel === 'people'}
             onClick={() => setPanel(panel === 'people' ? 'none' : 'people')}
           />
           <ToolButton
             icon={fullscreen ? 'exitFullscreen' : 'fullscreen'}
-            label={fullscreen ? '退出全屏（F）' : '全屏（F）'}
+            label={fullscreen ? t.viewer.screen.exitFullscreen : t.viewer.screen.fullscreen}
             onClick={toggleFullscreen}
           />
         </div>
@@ -1162,7 +1176,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                       <path d="M4 2l16 9-7 2-3 7z" fill={color} stroke="#000" strokeWidth="1.5" />
                     </svg>
                     <span style={{ background: color }}>
-                      {who ? displayName({ nickname: who.nickname }) : '参与者'}
+                      {who ? displayName({ nickname: who.nickname }) : t.viewer.screen.participant}
                     </span>
                   </div>
                 );
@@ -1178,17 +1192,17 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                 <Icon name={ending.recoverable ? 'refresh' : 'alert'} size={30} />
                 <div className="overlay-title">{overlayText}</div>
                 {retryAt ? (
-                  <div className="muted">{Math.max(0, Math.ceil((retryAt - now) / 1000))} 秒后自动重连</div>
+                  <div className="muted">{t.viewer.ended.retryIn(Math.max(0, Math.ceil((retryAt - now) / 1000)))}</div>
                 ) : ending.recoverable && autoRetry ? (
-                  <div className="muted">已尝试 5 分钟，没有恢复</div>
+                  <div className="muted">{t.viewer.ended.gaveUp}</div>
                 ) : null}
                 <div className="row gap-sm">
                   {(ending.recoverable || !autoRetry) && (
                     <Button variant="primary" icon="refresh" onClick={retryNow}>
-                      立即重试
+                      {t.viewer.ended.retryNow}
                     </Button>
                   )}
-                  <Button onClick={onLeave}>返回</Button>
+                  <Button onClick={onLeave}>{t.viewer.back}</Button>
                 </div>
               </div>
             ) : (
@@ -1202,17 +1216,17 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
 
         {playing && audioAllowed && muted && (
           <button type="button" className="unmute-hint" onClick={toggleMute}>
-            <Icon name="volume" size={16} /> 点击开启声音
+            <Icon name="volume" size={16} /> {t.viewer.screen.clickToUnmute}
           </button>
         )}
         {banner && <div className="viewer-banner">{banner}</div>}
-        {keyboardLocked && barVisible && <div className="viewer-hint">键盘已交给对方</div>}
+        {keyboardLocked && barVisible && <div className="viewer-hint">{t.viewer.screen.keyboardLocked}</div>}
         {pendingCopy !== undefined && (
           <button type="button" className="unmute-hint copy-hint" onClick={() => copyLocally(pendingCopy)}>
-            <Icon name="clipboard" size={16} /> 复制对方的文字到本机
+            <Icon name="clipboard" size={16} /> {t.viewer.screen.copyHostText}
           </button>
         )}
-        {dragOver && <div className="drop-hint">上传到对方的“下载”文件夹</div>}
+        {dragOver && <div className="drop-hint">{t.viewer.screen.dropHint}</div>}
         {panel !== 'files' && transfers.length > 0 && (
           <div className="transfers-float">
             <TransferList transfers={transfers} files={viewer.current?.files} />
@@ -1222,11 +1236,11 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
 
       <Dialog
         open={typing !== undefined}
-        title="输入文字"
+        title={t.viewer.screen.typeTitle}
         onClose={() => setTyping(undefined)}
         footer={
           <>
-            <Button onClick={() => setTyping(undefined)}>取消</Button>
+            <Button onClick={() => setTyping(undefined)}>{t.common.cancel}</Button>
             <Button
               variant="primary"
               disabled={!typing}
@@ -1236,7 +1250,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                 typeText(text);
               }}
             >
-              发送
+              {t.viewer.screen.send}
             </Button>
           </>
         }
@@ -1249,12 +1263,12 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
           <header className="row">
             <h2 className="grow">
               {panel === 'stats'
-                ? '连接统计'
+                ? t.viewer.screen.stats
                 : panel === 'files'
-                  ? '对方的文件'
-                  : `参与者（${people?.participants.length ?? 1}）`}
+                  ? t.viewer.screen.hostFiles
+                  : t.viewer.screen.peopleCount(people?.participants.length ?? 1)}
             </h2>
-            <button type="button" className="tool" onClick={() => setPanel('none')} aria-label="关闭">
+            <button type="button" className="tool" onClick={() => setPanel('none')} aria-label={t.common.close}>
               <Icon name="close" size={16} />
             </button>
           </header>
@@ -1262,45 +1276,45 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
             <FilesPanel files={viewer.current?.files} transfers={transfers} toast={toast} />
           ) : panel === 'stats' ? (
             <dl className="stats">
-              <dt>分辨率</dt>
+              <dt>{t.viewer.stats.resolution}</dt>
               <dd>{stats?.width ? `${stats.width} × ${stats.height}` : '—'}</dd>
-              <dt>帧率</dt>
-              <dd>{stats ? `${Math.round(stats.fps)} fps` : '—'}</dd>
-              <dt>码率</dt>
+              <dt>{t.viewer.stats.frameRate}</dt>
+              <dd>{stats ? `${num(stats.fps)} fps` : '—'}</dd>
+              <dt>{t.viewer.stats.bitrate}</dt>
               <dd>{stats ? bitrate(stats.bitrate) : '—'}</dd>
-              <dt>丢包</dt>
-              <dd>{stats ? `${(stats.loss * 100).toFixed(1)}%` : '—'}</dd>
-              <dt>往返时间</dt>
-              <dd>{stats ? `${Math.round(stats.rttMs)} ms` : '—'}</dd>
-              <dt>抖动</dt>
-              <dd>{stats ? `${Math.round(stats.jitterMs)} ms` : '—'}</dd>
-              <dt>解码耗时</dt>
-              <dd>{stats?.decodeMs ? `${stats.decodeMs.toFixed(1)} ms` : '—'}</dd>
-              <dt>丢弃帧</dt>
+              <dt>{t.viewer.stats.loss}</dt>
+              <dd>{stats ? `${num(stats.loss * 100, 1)}%` : '—'}</dd>
+              <dt>{t.viewer.stats.rtt}</dt>
+              <dd>{stats ? `${num(stats.rttMs)} ms` : '—'}</dd>
+              <dt>{t.viewer.stats.jitter}</dt>
+              <dd>{stats ? `${num(stats.jitterMs)} ms` : '—'}</dd>
+              <dt>{t.viewer.stats.decodeTime}</dt>
+              <dd>{stats?.decodeMs ? `${num(stats.decodeMs, 1)} ms` : '—'}</dd>
+              <dt>{t.viewer.stats.dropped}</dt>
               <dd>{stats?.framesDropped ?? '—'}</dd>
-              <dt>编码格式</dt>
+              <dt>{t.viewer.stats.codec}</dt>
               <dd>{stats?.codec || '—'}</dd>
-              <dt>解码</dt>
+              <dt>{t.viewer.stats.decoder}</dt>
               <dd>
                 {stats?.decoder || '—'}
-                {stats?.hardware !== undefined && (stats.hardware ? '（硬件）' : '（软件）')}
+                {stats?.hardware !== undefined && (stats.hardware ? t.viewer.stats.hardware : t.viewer.stats.software)}
               </dd>
-              <dt>对方编码</dt>
+              <dt>{t.viewer.stats.hostEncoder}</dt>
               <dd>{quality ? `${quality.encoder || '—'} · ${quality.capture || '—'}` : '—'}</dd>
-              <dt>路径</dt>
+              <dt>{t.viewer.stats.path}</dt>
               <dd>
-                {stats ? PATHS[stats.path] : '—'}
+                {stats ? pathText(stats.path) : '—'}
                 {stats?.protocol && ` · ${stats.protocol.toUpperCase()}`}
               </dd>
-              <dt>对方地址</dt>
+              <dt>{t.viewer.stats.remote}</dt>
               <dd className="mono small">{stats?.remote || '—'}</dd>
-              <dt>声音</dt>
+              <dt>{t.viewer.stats.audio}</dt>
               <dd>
-                {!audioAllowed ? '没有权限' : stats ? bitrate(stats.audioBitrate) : '—'}
-                {audioAllowed && audioKbps ? ` · 设定 ${audioKbps} kbps` : ''}
+                {!audioAllowed ? t.viewer.stats.noPermission : stats ? bitrate(stats.audioBitrate) : '—'}
+                {audioAllowed && audioKbps ? t.viewer.stats.audioSet(audioKbps) : ''}
               </dd>
-              <dt>我的权限</dt>
-              <dd>{grants.length ? grants.map(capText).join('、') : '—'}</dd>
+              <dt>{t.viewer.stats.grants}</dt>
+              <dd>{grants.length ? listText(grants.map(capText)) : '—'}</dd>
             </dl>
           ) : (
             <div className="list">
@@ -1309,18 +1323,20 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                   <span className="dot-color" style={{ background: colorOf(p, p.id) }} />
                   <div className="grow">
                     <div>
-                      {p.nickname || '访客'}
-                      {p.you && <span className="muted">（我）</span>}
+                      {p.nickname || t.common.guest}
+                      {p.you && <span className="muted">{t.viewer.screen.me}</span>}
                     </div>
                     <div className="small muted">{p.deviceName}</div>
                   </div>
-                  {p.id === people?.controlling && <span className="badge badge-amber">控制中</span>}
+                  {p.id === people?.controlling && (
+                    <span className="badge badge-amber">{t.viewer.screen.controlling}</span>
+                  )}
                 </div>
               ))}
-              {!people && <div className="muted small">暂无参与者</div>}
+              {!people && <div className="muted small">{t.viewer.screen.noParticipants}</div>}
               {people && others.length === 0 && (
                 <div className="muted small" style={{ padding: 12 }}>
-                  只有你在观看
+                  {t.viewer.screen.noOthers}
                 </div>
               )}
             </div>

@@ -1,6 +1,7 @@
 //! Windows display inventory. Protocol screen IDs and virtual-device ownership
 //! belong to the host; Windows source/target IDs never stand in for either.
 use anyhow::{Context, Result, bail, ensure};
+use crate::i18n::t;
 use serde::{Deserialize, Serialize};
 use std::mem::size_of;
 use windows::{
@@ -14,9 +15,14 @@ use windows::{
 
 /// CDS_TEST rejected the requested mode before any change was applied. Initial
 /// preferences may retain the current mode; explicit runtime requests still fail.
-#[derive(Debug, thiserror::Error)]
-#[error("显示驱动拒绝分辨率：{0}")]
+#[derive(Debug)]
 pub(crate) struct ModeTestRejected(pub i32);
+impl std::fmt::Display for ModeTestRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&(t().system.display_mode_rejected)(self.0))
+    }
+}
+impl std::error::Error for ModeTestRejected {}
 
 pub(crate) const DPI_VALUES: [u32; 12] =
     [100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500];
@@ -214,10 +220,11 @@ impl Topology {
             let mode = self
                 .modes
                 .get(unsafe { path.sourceInfo.Anonymous.modeInfoIdx } as usize)
-                .context("活动显示路径缺少源模式")?;
+                .context(t().system.display_source_mode_missing)?;
             ensure!(
                 mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE,
-                "无效源模式类型"
+                "{}",
+                t().system.display_source_mode_invalid
             );
             let source = unsafe { mode.Anonymous.sourceMode };
             let scan = self
@@ -231,7 +238,7 @@ impl Topology {
                         .scanLineOrdering
                         .0
                 });
-            ensure!((1..=3).contains(&scan), "活动显示模式缺少有效扫描方式");
+            ensure!((1..=3).contains(&scan), "{}", t().system.display_scan_order_missing);
             result.targets.push(SavedTarget {
                 identity,
                 source_group: format!(
@@ -262,10 +269,14 @@ impl Topology {
             let status = unsafe { GetDisplayConfigBufferSizes(flags, &mut paths, &mut modes) };
             ensure!(
                 status == ERROR_SUCCESS,
-                "读取显示拓扑大小失败：{}",
-                status.0
+                "{}",
+                (t().system.display_topology_size_failed)(&status.0.to_string())
             );
-            ensure!(paths <= 4096 && modes <= 16384, "显示拓扑规模异常");
+            ensure!(
+                paths <= 4096 && modes <= 16384,
+                "{}",
+                t().system.display_topology_too_large
+            );
             let mut result = Self {
                 paths: vec![DISPLAYCONFIG_PATH_INFO::default(); paths as usize],
                 modes: vec![DISPLAYCONFIG_MODE_INFO::default(); modes as usize],
@@ -283,12 +294,16 @@ impl Topology {
             if status == ERROR_INSUFFICIENT_BUFFER {
                 continue;
             }
-            ensure!(status == ERROR_SUCCESS, "读取显示拓扑失败：{}", status.0);
+            ensure!(
+                status == ERROR_SUCCESS,
+                "{}",
+                (t().system.display_topology_failed)(&status.0.to_string())
+            );
             result.paths.truncate(paths as usize);
             result.modes.truncate(modes as usize);
             return Ok(result);
         }
-        bail!("显示拓扑正在变化")
+        bail!("{}", t().system.display_topology_changing)
     }
 
     /// Identifies this display configuration: paths, sources, targets, their
@@ -391,7 +406,8 @@ impl Topology {
                 // Inactive QDC_ALL_PATHS candidates can have no monitor attached.
                 ensure!(
                     path.flags & DISPLAYCONFIG_PATH_ACTIVE == 0,
-                    "读取活动显示器身份失败：{status}"
+                    "{}",
+                    (t().system.display_monitor_identity_failed)(&status.to_string())
                 );
                 continue;
             }
@@ -517,9 +533,13 @@ fn target_identity(path: &DISPLAYCONFIG_PATH_INFO) -> Result<String> {
         ..Default::default()
     };
     let status = unsafe { DisplayConfigGetDeviceInfo(&mut target.header) };
-    ensure!(status == 0, "读取显示目标身份失败：{status}");
+    ensure!(
+        status == 0,
+        "{}",
+        (t().system.display_target_identity_failed)(&status.to_string())
+    );
     let identity = text(&target.monitorDevicePath).to_ascii_lowercase();
-    ensure!(!identity.is_empty(), "显示目标身份为空");
+    ensure!(!identity.is_empty(), "{}", t().system.display_target_identity_empty);
     Ok(identity)
 }
 
@@ -530,7 +550,8 @@ impl SavedTopology {
         use std::collections::{HashMap, HashSet};
         ensure!(
             !self.targets.is_empty() && self.targets.len() <= 64,
-            "无效的目标显示布局"
+            "{}",
+            t().system.display_layout_invalid
         );
         let inventory = Topology::query(false)?;
         let current = Topology::query(true)?;
@@ -549,14 +570,19 @@ impl SavedTopology {
         let mut seen_targets = HashSet::new();
         let mut missing = Vec::new();
         for saved in &self.targets {
-            ensure!(seen_targets.insert(&saved.identity), "布局包含重复显示目标");
+            ensure!(
+                seen_targets.insert(&saved.identity),
+                "{}",
+                t().system.display_layout_duplicate_target
+            );
             ensure!(
                 (1..=16384).contains(&saved.width)
                     && (1..=16384).contains(&saved.height)
                     && (1..=4).contains(&saved.rotation)
                     && (1..=3).contains(&saved.scan_line_ordering)
                     && saved.refresh_denominator != 0,
-                "无效的保存显示模式"
+                "{}",
+                t().system.display_saved_mode_invalid
             );
             let group = groups.get(&saved.source_group).copied();
             let candidate = candidates
@@ -649,10 +675,14 @@ impl SavedTopology {
                 DISPLAYCONFIG_SCANLINE_ORDERING(saved.scan_line_ordering);
             paths.push(path);
         }
-        ensure!(!paths.is_empty(), "原显示目标均不可用，保留当前布局");
+        ensure!(!paths.is_empty(), "{}", t().system.display_targets_unavailable);
         let flags = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES;
         let status = unsafe { SetDisplayConfig(Some(&paths), Some(&modes), flags | SDC_VALIDATE) };
-        ensure!(status == 0, "显示驱动拒绝目标布局：{}", status);
+        ensure!(
+            status == 0,
+            "{}",
+            (t().system.display_layout_rejected)(&status.to_string())
+        );
         let status = unsafe {
             SetDisplayConfig(
                 Some(&paths),
@@ -660,7 +690,11 @@ impl SavedTopology {
                 flags | SDC_APPLY | SDC_SAVE_TO_DATABASE,
             )
         };
-        ensure!(status == 0, "应用显示布局失败：{}", status);
+        ensure!(
+            status == 0,
+            "{}",
+            (t().system.display_layout_apply_failed)(&status.to_string())
+        );
         Ok(missing)
     }
 }
@@ -697,7 +731,7 @@ pub(crate) fn modes(source: &str) -> Result<Vec<Mode>> {
             result.push(mode);
         }
     }
-    bail!("显示模式列表过大")
+    bail!("{}", t().system.display_mode_list_too_large)
 }
 
 #[repr(C)]
@@ -726,23 +760,39 @@ fn dpi_raw(adapter: LUID, id: u32) -> Result<GetDpi> {
         ..Default::default()
     };
     let status = unsafe { DisplayConfigGetDeviceInfo(&mut value.header) };
-    ensure!(status == 0, "读取DPI范围失败：{status}");
+    ensure!(
+        status == 0,
+        "{}",
+        (t().system.display_dpi_range_failed)(&status.to_string())
+    );
     ensure!(
         value.minimum <= 0
             && value.maximum >= 0
             && (value.minimum..=value.maximum).contains(&value.current),
-        "无效DPI范围"
+        "{}",
+        t().system.display_dpi_range_invalid
     );
     Ok(value)
 }
 fn dpi(adapter: LUID, id: u32) -> Result<Dpi> {
     let value = dpi_raw(adapter, id)?;
-    let base = value.minimum.checked_neg().context("无效推荐DPI索引")?;
-    let current = base.checked_add(value.current).context("无效当前DPI索引")?;
-    let last = base.checked_add(value.maximum).context("无效最大DPI索引")?;
-    let recommended = *DPI_VALUES.get(base as usize).context("未知推荐DPI")?;
-    let current = *DPI_VALUES.get(current as usize).context("未知当前DPI")?;
-    ensure!(last >= 0, "无效DPI上限");
+    let base = value
+        .minimum
+        .checked_neg()
+        .context(t().system.display_dpi_recommended_index_invalid)?;
+    let current = base
+        .checked_add(value.current)
+        .context(t().system.display_dpi_current_index_invalid)?;
+    let last = base
+        .checked_add(value.maximum)
+        .context(t().system.display_dpi_maximum_index_invalid)?;
+    let recommended = *DPI_VALUES
+        .get(base as usize)
+        .context(t().system.display_dpi_recommended_unknown)?;
+    let current = *DPI_VALUES
+        .get(current as usize)
+        .context(t().system.display_dpi_current_unknown)?;
+    ensure!(last >= 0, "{}", t().system.display_dpi_maximum_invalid);
     Ok(Dpi {
         current,
         recommended,
@@ -756,21 +806,24 @@ impl Target {
             .metadata()?
             .into_iter()
             .find(|t| t.identity == self.identity && t.available)
-            .context("目标显示器已断开")
+            .context(t().system.display_target_disconnected)
     }
     pub(crate) fn set_dpi(&self, requested: u32, active: impl Fn() -> bool) -> Result<()> {
         let target = self.revalidate()?;
-        ensure!(target.active, "目标显示器未启用");
+        ensure!(target.active, "{}", t().system.display_target_inactive);
         let adapter = native_luid(target.source_adapter);
         let value = dpi_raw(adapter, target.source_id)?;
         let index = DPI_VALUES
             .iter()
             .position(|v| *v == requested)
-            .context("不支持的DPI比例")? as i32;
-        let relative = index.checked_add(value.minimum).context("无效DPI偏移")?;
+            .context(t().system.display_dpi_unsupported)? as i32;
+        let relative = index
+            .checked_add(value.minimum)
+            .context(t().system.display_dpi_offset_invalid)?;
         ensure!(
             (value.minimum..=value.maximum).contains(&relative),
-            "DPI超出显示器支持范围"
+            "{}",
+            t().system.display_dpi_out_of_range
         );
         if value.current == relative {
             return Ok(());
@@ -784,9 +837,13 @@ impl Target {
             },
             relative,
         };
-        ensure!(active(), "显示操作已取消");
+        ensure!(active(), "{}", t().system.display_operation_cancelled);
         let status = unsafe { DisplayConfigSetDeviceInfo(&value.header) };
-        ensure!(status == 0, "应用DPI失败：{status}");
+        ensure!(
+            status == 0,
+            "{}",
+            (t().system.display_dpi_apply_failed)(&status.to_string())
+        );
         Ok(())
     }
     pub(crate) fn set_resolution(
@@ -796,7 +853,7 @@ impl Target {
         active: impl Fn() -> bool,
     ) -> Result<()> {
         let target = self.revalidate()?;
-        ensure!(target.active, "目标显示器未启用");
+        ensure!(target.active, "{}", t().system.display_target_inactive);
         let source = wide(&target.source);
         let mut mode = DEVMODEW {
             dmSize: size_of::<DEVMODEW>() as u16,
@@ -812,7 +869,8 @@ impl Target {
                 )
             }
             .as_bool(),
-            "读取当前显示模式失败"
+            "{}",
+            t().system.display_current_mode_failed
         );
         if (mode.dmPelsWidth, mode.dmPelsHeight) == (width, height) {
             return Ok(());
@@ -821,7 +879,8 @@ impl Target {
             modes(&target.source)?
                 .iter()
                 .any(|m| m.width == width && m.height == height),
-            "不支持的物理分辨率"
+            "{}",
+            t().system.display_resolution_unsupported
         );
         mode.dmPelsWidth = width;
         mode.dmPelsHeight = height;
@@ -833,7 +892,7 @@ impl Target {
             return Err(ModeTestRejected(status.0).into());
         }
         // Apply once; an ambiguous failure is never automatically replayed.
-        ensure!(active(), "显示操作已取消");
+        ensure!(active(), "{}", t().system.display_operation_cancelled);
         let status = unsafe {
             ChangeDisplaySettingsExW(
                 PCWSTR(source.as_ptr()),
@@ -845,8 +904,8 @@ impl Target {
         };
         ensure!(
             status == DISP_CHANGE_SUCCESSFUL,
-            "应用分辨率失败：{}",
-            status.0
+            "{}",
+            (t().system.display_resolution_apply_failed)(&status.0.to_string())
         );
         Ok(())
     }

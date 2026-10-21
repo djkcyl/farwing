@@ -37,10 +37,10 @@ impl Credentials {
     pub fn new(username: &str, password: String) -> Result<Self> {
         let username = username.trim();
         if username.is_empty() || username.chars().any(char::is_control) || username.len() > 128 {
-            bail!("请输入有效的用户名");
+            bail!("{}", crate::i18n::t().session.username_invalid);
         }
         if password.is_empty() || password.len() > 1024 {
-            bail!("请输入密码");
+            bail!("{}", crate::i18n::t().session.password_required);
         }
         Ok(Self {
             username: username.to_owned(),
@@ -164,7 +164,7 @@ impl LoginCommitGate {
     pub(crate) async fn enter(&self) -> Result<tokio::sync::OwnedMutexGuard<bool>> {
         let permit = self.0.clone().lock_owned().await;
         if *permit {
-            bail!("登录已完成");
+            bail!("{}", crate::i18n::t().session.login_already_done);
         }
         Ok(permit)
     }
@@ -180,7 +180,7 @@ impl PreparedLogin {
                 mut permit,
             } => {
                 if !KeyringSessionStore::new()?.save_if_matches(expected.as_ref(), &session)? {
-                    bail!("登录状态已在其他进程中改变");
+                    bail!("{}", crate::i18n::t().session.login_changed_elsewhere);
                 }
                 *permit = true;
                 Ok(LoginOutcome::New)
@@ -220,7 +220,7 @@ where
             }
             Err(error) => {
                 return Err(Error::new(error))
-                    .context("无法验证保存的登录态");
+                    .context(crate::i18n::t().session.saved_login_unverified);
             }
         }
     }
@@ -254,9 +254,9 @@ where
 
 fn login_error(error: Error) -> Error {
     match error.downcast_ref::<ApiFailure>().map(|failure| failure.code) {
-        Some(ErrorCode::Unauthorized) => anyhow::anyhow!("用户名或密码不正确，或账号已停用"),
-        Some(ErrorCode::RateLimited) => anyhow::anyhow!("登录尝试过于频繁"),
-        Some(ErrorCode::Network) => error.context("无法连接 Farwing 服务器"),
+        Some(ErrorCode::Unauthorized) => anyhow::anyhow!("{}", crate::i18n::t().session.login_invalid),
+        Some(ErrorCode::RateLimited) => anyhow::anyhow!("{}", crate::i18n::t().session.login_too_frequent),
+        Some(ErrorCode::Network) => error.context(crate::i18n::t().session.cannot_reach_server),
         _ => error,
     }
 }

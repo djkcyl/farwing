@@ -1,6 +1,7 @@
 //! Private IOCTL contract of the Farwing Display driver. This adapter never installs drivers,
 //! changes certificate trust, or removes devices by a display-name heuristic.
 use super::topology::{luid, native_luid};
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use std::{mem::size_of, ptr};
 use uuid::Uuid;
@@ -88,20 +89,20 @@ impl Driver {
                     DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
                 )
             }
-            .context("未找到虚拟显示驱动")?,
+            .context(t().system.driver_display_not_found)?,
         );
         let mut interface = SP_DEVICE_INTERFACE_DATA {
             cbSize: size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
             ..Default::default()
         };
         unsafe { SetupDiEnumDeviceInterfaces(devices.0, None, &INTERFACE, 0, &mut interface) }
-            .context("Farwing虚拟显示驱动尚未安装或未启动")?;
+            .context(t().system.driver_display_not_running)?;
         let mut other = SP_DEVICE_INTERFACE_DATA {
             cbSize: size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
             ..Default::default()
         };
         match unsafe { SetupDiEnumDeviceInterfaces(devices.0, None, &INTERFACE, 1, &mut other) } {
-            Ok(()) => anyhow::bail!("存在多个 Farwing 虚拟显示设备"),
+            Ok(()) => anyhow::bail!("{}", t().system.driver_display_multiple),
             Err(error)
                 if error.code()
                     == windows::core::HRESULT::from_win32(
@@ -123,7 +124,11 @@ impl Driver {
                 None,
             )
         };
-        ensure!((8..=65536).contains(&length), "无效驱动接口长度");
+        ensure!(
+            (8..=65536).contains(&length),
+            "{}",
+            t().system.driver_invalid_interface_length
+        );
         // u64 storage provides the alignment required by the platform detail structure.
         let mut storage = vec![0u64; (length as usize).div_ceil(8)];
         let detail = storage
@@ -150,14 +155,14 @@ impl Driver {
         let end = path
             .iter()
             .position(|c| *c == 0)
-            .context("驱动接口路径无效")?;
+            .context(t().system.driver_invalid_interface_path)?;
         let path = path[..=end].to_vec();
         let mut instance = [0u16; 512];
         unsafe { SetupDiGetDeviceInstanceIdW(devices.0, &info, Some(&mut instance), None) }?;
         let end = instance
             .iter()
             .position(|c| *c == 0)
-            .context("驱动设备标识无效")?;
+            .context(t().system.driver_invalid_device_instance)?;
         Ok((
             path,
             String::from_utf16_lossy(&instance[..end]).to_ascii_lowercase(),
@@ -183,14 +188,14 @@ impl Driver {
                 None,
             )
         }
-        .context("打开虚拟显示驱动失败")?;
+        .context(t().system.driver_display_open_failed)?;
         let mut driver = Self(handle, [0; 4], std::cell::Cell::new(false));
         let mut version = [0u8; 4];
         let returned = driver.control(0x8ff, &[], &mut version)?;
         ensure!(
             returned == version.len() && matches!(version, [1, 0, 0, 0] | [1, 1, 0, 0]),
-            "不支持的虚拟显示驱动协议：{:?}",
-            version
+            "{}",
+            (t().system.driver_display_protocol_unsupported)(&format!("{version:?}"))
         );
         driver.1 = version;
         Ok(driver)
@@ -209,8 +214,12 @@ impl Driver {
                 None,
             )
         }
-        .context("虚拟显示驱动请求失败")?;
-        ensure!(returned as usize <= output.len(), "驱动返回长度超出缓冲区");
+        .context(t().system.driver_display_request_failed)?;
+        ensure!(
+            returned as usize <= output.len(),
+            "{}",
+            t().system.driver_reply_too_long
+        );
         Ok(returned as usize)
     }
     pub(crate) fn add(&self, id: Uuid, width: u32, height: u32, hz: u32) -> Result<Output> {
@@ -222,7 +231,8 @@ impl Driver {
     pub(crate) fn add_fallback(&self, width: u32, height: u32, hz: u32) -> Result<Output> {
         ensure!(
             self.persistent_supported(),
-            "常驻虚拟屏需要更新虚拟显示驱动"
+            "{}",
+            t().system.driver_display_update_required
         );
         self.add_command(0x805, FALLBACK_ID, width, height, hz)
     }
@@ -232,7 +242,8 @@ impl Driver {
     pub(crate) fn pin_fallback(&self) -> Result<()> {
         ensure!(
             self.persistent_supported(),
-            "常驻虚拟屏需要更新虚拟显示驱动"
+            "{}",
+            t().system.driver_display_update_required
         );
         self.control(0x806, &1u32.to_le_bytes(), &mut [])?;
         self.2.set(true);
@@ -254,9 +265,14 @@ impl Driver {
         };
         ensure!(
             self.control(0x804, &[], buffer)? == size_of::<Fallback>(),
-            "缺少常驻显示器状态"
+            "{}",
+            t().system.driver_fallback_state_missing
         );
-        ensure!(result.present <= 1, "常驻显示器状态无效");
+        ensure!(
+            result.present <= 1,
+            "{}",
+            t().system.driver_fallback_state_invalid
+        );
         Ok((
             (result.present == 1).then_some(Output {
                 adapter: luid(result.adapter),
@@ -277,7 +293,8 @@ impl Driver {
             (2..=16384).contains(&width)
                 && (2..=16384).contains(&height)
                 && (1..=1000).contains(&hz),
-            "无效虚拟显示模式"
+            "{}",
+            t().system.driver_invalid_display_mode
         );
         let mut request = Add {
             width,
@@ -302,7 +319,8 @@ impl Driver {
         };
         ensure!(
             self.control(command, input, buffer)? == size_of::<Added>(),
-            "缺少虚拟显示目标身份"
+            "{}",
+            t().system.driver_display_target_missing
         );
         Ok(Output {
             adapter: luid(output.adapter),
@@ -335,7 +353,8 @@ impl Driver {
         };
         ensure!(
             self.control(0x803, &[], buffer)? == size_of::<Watchdog>(),
-            "缺少虚拟显示看门狗状态"
+            "{}",
+            t().system.driver_watchdog_state_missing
         );
         Ok(output)
     }

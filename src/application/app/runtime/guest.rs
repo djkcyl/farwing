@@ -48,9 +48,9 @@ impl Guest {
             if let Some(client) = &self.client {
                 client.host.remote_failed(
                     if self.blocked {
-                        "已被服务器断开"
+                        t().app.disconnected_by_server
                     } else {
-                        "正在重新连接服务器"
+                        t().app.reconnecting_to_server
                     }
                     .into(),
                 );
@@ -84,7 +84,9 @@ impl Guest {
                 }
                 Err(error) => {
                     tracing::warn!(error = %format!("{error:#}"), "guest host could not start");
-                    let _ = events.send(GuiEvent::Warning(format!("本机被控准备失败：{error:#}")));
+                    let _ = events.send(GuiEvent::Warning((t().app.guest_host_failed)(&format!(
+                        "{error:#}"
+                    ))));
                     self.retry_at = Instant::now() + std::time::Duration::from_secs(3);
                 }
             }

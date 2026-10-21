@@ -3,6 +3,7 @@
 // non-extractable; browsers without WebCrypto Ed25519 fall back to
 // @noble/curves with the seed stored in IndexedDB.
 import { ed25519 } from '@noble/curves/ed25519.js';
+import { t } from '../i18n';
 import { b64, deviceIdOf, unb64 } from './encoding';
 
 export interface DeviceKey {
@@ -107,7 +108,8 @@ export function verify(publicKey: Uint8Array, message: Uint8Array, signature: Ui
   }
 }
 
-/// A readable name for this browser device, e.g. "网页 · Chrome · Windows".
+/// A readable name for this browser device, e.g. "Web · Chrome · Windows", in
+/// the language of the console when the browser registers.
 export function browserName(): string {
   const ua = navigator.userAgent;
   const browser = /Edg\//.test(ua)
@@ -118,7 +120,7 @@ export function browserName(): string {
         ? 'Chrome'
         : /Safari\//.test(ua)
           ? 'Safari'
-          : '浏览器';
+          : t().common.browser;
   const os = /Windows/.test(ua)
     ? 'Windows'
     : /Mac OS X/.test(ua)
@@ -130,5 +132,5 @@ export function browserName(): string {
           : /Linux/.test(ua)
             ? 'Linux'
             : '';
-  return ['网页', browser, os].filter(Boolean).join(' · ');
+  return [t().format.platforms.web, browser, os].filter(Boolean).join(' · ');
 }

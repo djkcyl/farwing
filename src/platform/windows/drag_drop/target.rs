@@ -99,7 +99,7 @@ impl Target {
                 Some(if effect & DROPEFFECT_COPY.0 != 0 {
                     text.unwrap()
                 } else {
-                    "无法复制到此位置"
+                    crate::i18n::t().system.drag_cannot_copy_here
                 }),
             );
         }

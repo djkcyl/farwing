@@ -15,18 +15,10 @@ import {
   type Listing,
   type TransferInfo,
 } from '../lib/files';
+import { useT } from '../i18n/react';
 import { bytes } from '../lib/format';
 import { Icon, type IconName } from './icons';
 import { Button, Spinner } from './kit';
-
-const FOLDER_ICONS: Record<string, string> = {
-  document: '文档',
-  desktop: '桌面',
-  picture: '图片',
-  video: '视频',
-  music: '音乐',
-  download: '下载',
-};
 
 function iconOf(e: FileEntry): IconName {
   if (e.kind === EntryKind.DISK) return 'disk';
@@ -53,6 +45,7 @@ export function FilesPanel({
   transfers: TransferInfo[];
   toast(text: string, tone?: 'green' | 'red' | 'blue'): void;
 }) {
+  const t = useT();
   const [listing, setListing] = useState<Listing>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
@@ -93,7 +86,7 @@ export function FilesPanel({
       } else {
         await files.uploadFiles(chosen, target);
       }
-      toast(atRoot ? '已上传到对方的“下载”文件夹' : '上传完成');
+      toast(atRoot ? t.viewer.screen.uploadedToDownloads : t.viewer.files.uploaded);
       if (!atRoot) void load(listing.path);
     } catch (e) {
       toast((e as Error).message, 'red');
@@ -110,7 +103,7 @@ export function FilesPanel({
         : await saveTarget(entry.name, Number(entry.size)).then((sink) => sink && fileTarget(sink));
       if (!target) return;
       await files.download(childPath(listing.path, entry), entry.name, target);
-      toast(`已下载 ${entry.name}`);
+      toast(t.viewer.files.downloaded(entry.name));
     } catch (e) {
       toast((e as Error).message, 'red');
     }
@@ -124,29 +117,29 @@ export function FilesPanel({
         <button
           type="button"
           className="tool"
-          title="上一级"
+          title={t.viewer.files.up}
           disabled={atRoot || loading}
           onClick={() => listing && void load(parentOf(listing.path))}
         >
           <Icon name="up" size={16} />
         </button>
         <div className="grow ellipsis small mono" title={listing?.path}>
-          {atRoot ? '此电脑' : listing.path}
+          {atRoot ? t.viewer.files.thisPc : listing.path}
         </div>
-        <button type="button" className="tool" title="刷新" onClick={() => void load(listing?.path ?? '')}>
+        <button type="button" className="tool" title={t.common.refresh} onClick={() => void load(listing?.path ?? '')}>
           <Icon name="refresh" size={16} />
         </button>
       </div>
-      <div className="row gap-sm files-actions">
+      <div className="row gap-sm wrap files-actions">
         <Button icon="upload" onClick={() => picker.current?.click()}>
-          {atRoot ? '上传到“下载”' : '上传文件'}
+          {atRoot ? t.viewer.files.uploadToDownloads : t.viewer.files.uploadFiles}
         </Button>
         <Button icon="folder" onClick={() => folderPicker.current?.click()}>
-          上传文件夹
+          {t.viewer.files.uploadFolder}
         </Button>
         <label className="small muted row gap-sm">
           <input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} />
-          隐藏文件
+          {t.viewer.files.showHidden}
         </label>
         <input
           ref={picker}
@@ -173,19 +166,26 @@ export function FilesPanel({
       <div className="files-list">
         {loading && !listing ? (
           <div className="row gap-sm muted small" style={{ padding: 14 }}>
-            <Spinner size={14} /> 正在读取
+            <Spinner size={14} /> {t.viewer.files.loading}
           </div>
         ) : (
           entries.map((e) => {
             const opens = e.kind === EntryKind.DIR || e.kind === EntryKind.DISK;
-            const label = atRoot && e.kind === EntryKind.DIR ? (FOLDER_ICONS[e.icon] ?? e.name) : e.name;
+            const folders = t.viewer.files.folders as Record<string, string>;
+            const label = atRoot && e.kind === EntryKind.DIR ? (folders[e.icon] ?? e.name) : e.name;
             return (
               <div key={`${e.kind}:${e.name}:${e.path}`} className={`files-row ${e.hidden ? 'faint' : ''}`}>
                 <button
                   type="button"
                   className="files-entry"
                   disabled={e.kind === EntryKind.LINK}
-                  title={opens ? '打开' : e.kind === EntryKind.FILE ? '下载到本机' : '快捷方式不能打开'}
+                  title={
+                    opens
+                      ? t.viewer.files.open
+                      : e.kind === EntryKind.FILE
+                        ? t.viewer.files.download
+                        : t.viewer.files.linkCannotOpen
+                  }
                   onClick={() => (opens ? void load(childPath(listing!.path, e)) : void download(e))}
                 >
                   <Icon name={iconOf(e)} size={16} />
@@ -196,7 +196,7 @@ export function FilesPanel({
                   <button
                     type="button"
                     className="tool"
-                    title={e.kind === EntryKind.DIR ? '下载整个文件夹' : '下载到本机'}
+                    title={e.kind === EntryKind.DIR ? t.viewer.files.downloadFolder : t.viewer.files.download}
                     onClick={() => void download(e)}
                   >
                     <Icon name="download" size={14} />
@@ -206,7 +206,9 @@ export function FilesPanel({
             );
           })
         )}
-        {listing && entries.length === 0 && !loading && <div className="muted small files-empty">空文件夹</div>}
+        {listing && entries.length === 0 && !loading && (
+          <div className="muted small files-empty">{t.viewer.files.empty}</div>
+        )}
       </div>
       {transfers.length > 0 && <TransferList transfers={transfers} files={files} />}
     </div>
@@ -214,24 +216,29 @@ export function FilesPanel({
 }
 
 export function TransferList({ transfers, files }: { transfers: TransferInfo[]; files: FileTransfer | undefined }) {
+  const t = useT();
   return (
     <div className="transfers">
-      {transfers.map((t) => (
-        <div key={`${t.direction}${t.id}`} className="transfer">
+      {transfers.map((x) => (
+        <div key={`${x.direction}${x.id}`} className="transfer">
           <div className="row gap-sm">
-            <Icon name={t.direction === 'up' ? 'upload' : 'download'} size={14} />
-            <span className="grow ellipsis small">{t.name}</span>
+            <Icon name={x.direction === 'up' ? 'upload' : 'download'} size={14} />
+            <span className="grow ellipsis small">{x.name}</span>
             <span className="small muted">
-              {t.state === 'running' ? `${bytes(t.done)} / ${bytes(t.total)}` : t.state === 'done' ? '完成' : t.error}
+              {x.state === 'running'
+                ? `${bytes(x.done)} / ${bytes(x.total)}`
+                : x.state === 'done'
+                  ? t.common.done
+                  : x.error}
             </span>
-            {t.state === 'running' && (
-              <button type="button" className="tool" title="取消" onClick={() => void files?.cancel(t.id)}>
+            {x.state === 'running' && (
+              <button type="button" className="tool" title={t.common.cancel} onClick={() => void files?.cancel(x.id)}>
                 <Icon name="close" size={14} />
               </button>
             )}
           </div>
           <div className="progress">
-            <div style={{ width: `${t.total ? Math.min(100, (t.done / t.total) * 100) : 0}%` }} />
+            <div style={{ width: `${x.total ? Math.min(100, (x.done / x.total) * 100) : 0}%` }} />
           </div>
         </div>
       ))}

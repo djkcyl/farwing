@@ -18,6 +18,7 @@
 //! profile and the user's GUI and CLI reach them through the resident pipe
 //! (`super::managed`); the controller-side records stay with the user.
 use anyhow::{Context, Result};
+use crate::i18n::t;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -35,9 +36,9 @@ fn file(name: &str) -> Result<PathBuf> {
 fn read<T: DeserializeOwned + Default>(path: &Path) -> Result<T> {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
-            .with_context(|| format!("{} 已损坏", path.display())),
+            .with_context(|| (t().session.file_corrupt)(&path.display().to_string())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
-        Err(error) => Err(error).with_context(|| format!("读取 {} 失败", path.display())),
+        Err(error) => Err(error).with_context(|| (t().session.file_read_failed)(&path.display().to_string())),
     }
 }
 
@@ -66,7 +67,7 @@ fn forget_reads() {
 
 fn write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     forget_reads();
-    let parent = path.parent().context("记录目录无效")?;
+    let parent = path.parent().context(t().session.record_folder_invalid)?;
     std::fs::create_dir_all(parent)?;
     let temporary = parent.join(format!(
         ".{}.{}.tmp",
@@ -76,7 +77,7 @@ fn write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     std::fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
     std::fs::rename(&temporary, path).with_context(|| {
         let _ = std::fs::remove_file(&temporary);
-        format!("保存 {} 失败", path.display())
+        (t().session.file_save_failed)(&path.display().to_string())
     })
 }
 
@@ -140,7 +141,8 @@ fn load_trusted_in(dir: &Path) -> Result<(PathBuf, Trusted)> {
 fn save_trusted_in(dir: &Path, device: TrustedDevice) -> Result<()> {
     anyhow::ensure!(
         keyed(&device.device_id, &device.public_key),
-        "设备 ID 与公钥不符"
+        "{}",
+        t().session.device_key_mismatch
     );
     let (path, mut trusted) = load_trusted_in(dir)?;
     trusted.devices.retain(|d| d.device_id != device.device_id);

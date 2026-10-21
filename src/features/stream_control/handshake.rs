@@ -10,6 +10,7 @@ use super::{
     PbHandshakeStatus, PbMessageSource, StreamControlHandle, StreamControlProtocol,
     StreamControlState, VIDEO_QUALITY_AUTO, ViewingPreferenceUpdate, lock, protocol,
 };
+use crate::i18n::t;
 use crate::protocol::peer::{self, FrameType};
 use crate::protocol::peer::feature;
 use crate::media::VideoCodec;
@@ -63,7 +64,7 @@ impl StreamControlHandle {
             state.topology.disconnect();
             state
                 .display_changes
-                .cancel_all("连接已断开，显示设置未确认");
+                .cancel_all(t().features.stream_display_disconnected_unconfirmed);
             state.peer_mouse_relative = None;
             state.cursor_sync_needed = false;
             state.cursor_desired_capture = true;
@@ -71,7 +72,11 @@ impl StreamControlHandle {
             state.baseline.cursor_capture = true;
             state.mouse.set_ready(false);
             if let Some((sequence, _, _)) = state.cursor_pending {
-                fail_cursor_request(&mut state, sequence, "连接已断开，光标设置未确认".into());
+                fail_cursor_request(
+                    &mut state,
+                    sequence,
+                    t().features.stream_cursor_disconnected_unconfirmed.into(),
+                );
             }
             state.registered_video_tracks.clear();
             state.track_registration = None;
@@ -79,7 +84,7 @@ impl StreamControlHandle {
             if let Some(sequence) = state.pending_sequences.back().copied() {
                 state
                     .performance
-                    .fail_stream_switch(sequence, format!("{label} 通道已关闭"));
+                    .fail_stream_switch(sequence, (t().features.stream_channel_closed)(label));
             }
             state.pending_sequences.clear();
             state.pending_capture_preferences.clear();
@@ -158,7 +163,8 @@ impl StreamControlHandle {
             .is_some_and(|(seq, _)| *seq == sequence)
         {
             state.track_registration = None;
-            state.track_registration_error = Some(format!("视频轨道注册发送失败：{error}"));
+            state.track_registration_error =
+                Some((t().features.stream_track_registration_send_failed)(error));
             return;
         }
         state
@@ -207,7 +213,7 @@ impl StreamControlHandle {
         if !state.pb_connected {
             // Stop retrying only. Without a HELLO response no feature level is
             // negotiated, so no stream-control protocol is selected.
-            state.last_error = Some("对端握手超时".to_owned());
+            state.last_error = Some(t().features.stream_handshake_timeout.to_owned());
         }
     }
 
@@ -257,7 +263,7 @@ impl StreamControlHandle {
             tracing::warn!(code = %error.code, message = %error.message, "host rejected a session request");
             self.mark_send_failed(
                 received.sequence(),
-                &format!("被控端拒绝了请求：{}", error.message),
+                &(t().features.stream_host_refused_request)(&error.message),
             );
             return Ok(());
         }
@@ -325,9 +331,10 @@ impl StreamControlHandle {
                                 );
                                 state.registered_video_tracks = tracks;
                             } else {
-                                state.track_registration_error = Some(format!(
-                                    "视频轨道注册被拒绝（{}）",
-                                    result.error_code
+                                state.track_registration_error = Some((t()
+                                    .features
+                                    .stream_track_registration_refused)(
+                                    result.error_code,
                                 ));
                             }
                         }
@@ -387,17 +394,19 @@ impl StreamControlHandle {
                 state.annotation.disconnect();
             }
             kind::SESSION_SWITCH => {
-                state.remote_notice = Some((Instant::now(), "被控端系统会话已切换".into()));
+                state.remote_notice =
+                    Some((Instant::now(), t().features.stream_host_session_switched.into()));
             }
             kind::RESTARTING | kind::SLEEPING | kind::SHUTTING_DOWN => {
-                state.remote_notice = Some((Instant::now(), "被控端即将离线".into()));
+                state.remote_notice =
+                    Some((Instant::now(), t().features.stream_host_going_offline.into()));
             }
             kind::DISPLAY_CHANGING => {
                 let message = event.message.trim();
                 state.remote_notice = Some((
                     Instant::now(),
                     if message.is_empty() {
-                        "被控端的显示设置正在变化".into()
+                        t().features.stream_host_display_changing.into()
                     } else {
                         message.chars().take(80).collect()
                     },
@@ -452,7 +461,7 @@ impl StreamControlHandle {
             );
             handshake_changed = true;
             state.last_error = (protocol(&state) == StreamControlProtocol::Unsupported)
-                .then(|| "对端不支持当前串流协议".into());
+                .then(|| t().features.stream_protocol_unsupported.into());
             tracing::info!(
                 features = hello.features.len(),
                 protocol = protocol(&state).label(),
@@ -484,7 +493,9 @@ impl StreamControlHandle {
             Ok(Some(outgoing)) => outgoing,
             Ok(None) => return,
             Err(error) => {
-                state.last_error = Some(format!("初始串流设置未发送：{error}"));
+                state.last_error = Some((t().features.stream_initial_settings_send_failed)(
+                    &error.to_string(),
+                ));
                 tracing::warn!(%error, "failed to prepare the initial capture-setting sync");
                 return;
             }

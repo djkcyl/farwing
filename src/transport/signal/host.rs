@@ -62,8 +62,9 @@ async fn publish(
         .unwrap_or_else(|_| {
             Err(crate::account::api::ApiFailure::new(
                 crate::account::api::ErrorCode::Network,
-                "连接 Farwing 服务器超时",
+                "timed out",
             )
+            .with_reason(farwing_protocol::error::reason::TIMED_OUT)
             .into())
         })
 }

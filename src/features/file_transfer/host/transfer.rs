@@ -3,6 +3,7 @@
 use super::super::{TIMEOUT, service::PartialFile};
 use super::filesystem::{self, Record, Reservation, Store};
 use super::*;
+use crate::i18n::t;
 use crate::transport::transfer::{CHUNK, kind};
 use std::{
     path::PathBuf,
@@ -25,7 +26,7 @@ pub(super) struct Run {
 struct Stopped;
 impl std::fmt::Display for Stopped {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("文件传输已停止")
+        f.write_str(t().features.transfer_stopped)
     }
 }
 impl std::error::Error for Stopped {}
@@ -36,8 +37,8 @@ impl Run {
             biased;
             _ = self.shared.stop.cancelled() => Err(Stopped.into()),
             event = tokio::time::timeout(TIMEOUT, self.events.recv()) => event
-                .context("主控端长时间没有传输数据")?
-                .context("文件连接已结束"),
+                .context(t().features.transfer_controller_idle)?
+                .context(t().features.transfer_connection_ended),
         }
     }
     /// Wait until the download may send at least one byte.
@@ -56,7 +57,7 @@ impl Run {
             tokio::select! {
                 _ = self.shared.stop.cancelled() => {},
                 _ = changed => {},
-                _ = tokio::time::sleep(TIMEOUT) => anyhow::bail!("主控端长时间未接收文件数据"),
+                _ = tokio::time::sleep(TIMEOUT) => anyhow::bail!("{}", t().features.transfer_controller_not_receiving),
             }
         }
     }
@@ -167,7 +168,7 @@ struct Prepared {
 fn prepare_upload(store: &Arc<Store>, upload: &wire::Upload) -> Result<Prepared> {
     ensure!(
         matches!(upload.conflict, 1..=3),
-        Failure::new(code::PROTOCOL, "未知的同名策略")
+        Failure::new(code::PROTOCOL, t().features.transfer_unknown_conflict_policy)
     );
     let items = upload.items.iter().map(FileInfo::from).collect::<Vec<_>>();
     storage::validate_manifest(&items)?;
@@ -178,7 +179,7 @@ fn prepare_upload(store: &Arc<Store>, upload: &wire::Upload) -> Result<Prepared>
         Some(old) => {
             ensure!(
                 old.destination == destination && old.folder == upload.folder,
-                Failure::new(code::CHANGED, "续传任务的目标已变化")
+                Failure::new(code::CHANGED, t().features.transfer_resume_target_changed)
             );
             Record {
                 policy: upload.conflict,
@@ -200,7 +201,7 @@ fn prepare_upload(store: &Arc<Store>, upload: &wire::Upload) -> Result<Prepared>
         match record.files.iter().find(|f| f.rel_path == item.rel_path) {
             Some(known) => ensure!(
                 known.same(item),
-                Failure::new(code::CHANGED, "源文件已变化，无法续传")
+                Failure::new(code::CHANGED, t().features.transfer_source_changed)
             ),
             None => record.files.push(item.clone()),
         }
@@ -322,12 +323,12 @@ async fn receive_items(
     let (start, offsets) = match run.next().await? {
         Event::Start(id, Body::UploadStart(start)) => (id, start.offsets),
         Event::Start(id, _) => {
-            let error = Failure::new(code::PROTOCOL, "上传任务收到了下载开始请求").into();
+            let error = Failure::new(code::PROTOCOL, t().features.transfer_upload_got_download_start).into();
             output.fail(id, &error).await?;
             return Err(error);
         }
         Event::Chunk(_) => {
-            return Err(Failure::new(code::PROTOCOL, "上传尚未开始就收到了数据").into());
+            return Err(Failure::new(code::PROTOCOL, t().features.transfer_upload_data_before_start).into());
         }
     };
     let holdings = &prepared.holdings;
@@ -337,7 +338,7 @@ async fn receive_items(
             .zip(&offsets)
             .any(|(h, &offset)| !h.plan.skip && offset != 0 && offset != h.plan.offset)
     {
-        let error = Failure::new(code::PROTOCOL, "上传起点与续传计划不符").into();
+        let error = Failure::new(code::PROTOCOL, t().features.transfer_upload_offsets_mismatch).into();
         output.fail(start, &error).await?;
         return Err(error);
     }
@@ -374,21 +375,21 @@ async fn receive_items(
             Event::Chunk(chunk) => chunk,
             Event::Start(id, _) => {
                 let _ = output
-                    .fail(id, &Failure::new(code::PROTOCOL, "传输已经开始").into())
+                    .fail(id, &Failure::new(code::PROTOCOL, t().features.transfer_already_started).into())
                     .await;
                 continue;
             }
         };
         ensure!(
             chunk.entry as usize == index,
-            Failure::new(code::PROTOCOL, "文件条目顺序不符")
+            Failure::new(code::PROTOCOL, t().features.transfer_entry_order_mismatch)
         );
         let item = &items[index];
         let record = &mut prepared.record;
         if item.directory {
             ensure!(
                 chunk.data.is_empty() && chunk.last,
-                Failure::new(code::PROTOCOL, "目录条目不能带有数据")
+                Failure::new(code::PROTOCOL, t().features.transfer_directory_entry_has_data)
             );
             let (root, directory) = (record.root.clone(), item.clone());
             tokio::task::spawn_blocking(move || storage::make_directory(&root, &directory))
@@ -414,14 +415,14 @@ async fn receive_items(
             let receiving = open.as_mut().expect("opened above");
             ensure!(
                 chunk.offset == receiving.position,
-                Failure::new(code::PROTOCOL, "文件数据不连续")
+                Failure::new(code::PROTOCOL, t().features.transfer_data_not_contiguous)
             );
             let len = chunk.data.len();
             let end = receiving
                 .position
                 .checked_add(len as u64)
                 .filter(|end| *end <= item.size)
-                .ok_or_else(|| Failure::new(code::PROTOCOL, "文件数据超过声明长度"))?;
+                .ok_or_else(|| Failure::new(code::PROTOCOL, t().features.transfer_data_exceeds_size))?;
             receiving.file.write_all(&chunk.data).await?;
             receiving.position = end;
             progress.advance(len as u64);
@@ -464,7 +465,7 @@ fn scan_sources(
 ) -> Result<(PathBuf, String, Vec<FileInfo>)> {
     ensure!(
         !paths.is_empty() && paths.len() <= storage::MAX_FILES,
-        Failure::new(code::PROTOCOL, "下载路径无效")
+        Failure::new(code::PROTOCOL, t().features.transfer_download_path_invalid)
     );
     if let [path] = paths {
         return storage::scan(&filesystem::local_path(path)?, stop);
@@ -476,11 +477,11 @@ fn scan_sources(
         let parent = if folder.is_empty() {
             base
         } else {
-            base.parent().context("不能下载整个磁盘")?.to_owned()
+            base.parent().context(t().features.transfer_cannot_download_drive)?.to_owned()
         };
         ensure!(
             *root.get_or_insert_with(|| parent.clone()) == parent,
-            Failure::new(code::PROTOCOL, "下载的项目必须位于同一目录")
+            Failure::new(code::PROTOCOL, t().features.transfer_download_items_same_folder)
         );
         if folder.is_empty() {
             files.extend(items);
@@ -495,7 +496,7 @@ fn scan_sources(
     }
     files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     storage::validate_manifest(&files)?;
-    Ok((root.context("下载路径无效")?, String::new(), files))
+    Ok((root.context(t().features.transfer_download_path_invalid)?, String::new(), files))
 }
 
 pub(super) async fn download(
@@ -545,12 +546,12 @@ async fn send_items(
     let (start, plans) = match run.next().await? {
         Event::Start(id, Body::DownloadStart(start)) => (id, start.items),
         Event::Start(id, _) => {
-            let error = Failure::new(code::PROTOCOL, "下载任务收到了上传开始请求").into();
+            let error = Failure::new(code::PROTOCOL, t().features.transfer_download_got_upload_start).into();
             output.fail(id, &error).await?;
             return Err(error);
         }
         Event::Chunk(_) => {
-            return Err(Failure::new(code::PROTOCOL, "下载任务收到了文件数据").into());
+            return Err(Failure::new(code::PROTOCOL, t().features.transfer_download_got_data).into());
         }
     };
     // Resume where the controller's tail matches our bytes, else from 0.
@@ -566,7 +567,7 @@ async fn send_items(
         .await
         .unwrap_or_else(|e| Err(e.into()))
     } else {
-        Err(Failure::new(code::PROTOCOL, "下载计划与清单不符").into())
+        Err(Failure::new(code::PROTOCOL, t().features.transfer_download_plan_mismatch).into())
     };
     let offsets = match offsets {
         Ok(offsets) => offsets,
@@ -625,7 +626,7 @@ async fn send_items(
                 tokio::select! {
                     biased;
                     _ = run.shared.stop.cancelled() => return Err(Stopped.into()),
-                    read = file.read_exact(&mut data) => { read.context("源文件读取失败")?; }
+                    read = file.read_exact(&mut data) => { read.context(t().features.transfer_source_read_failed)?; }
                 }
             }
             let last = position + len as u64 == item.size;

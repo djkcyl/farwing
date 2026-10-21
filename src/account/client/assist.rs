@@ -1,5 +1,6 @@
 use super::*;
 use crate::account::api::AssistJoined;
+use crate::i18n::t;
 use crate::account::assist::{SavedDevice, SavedKind, SavedLists, normalize_connect_id};
 use farwing_protocol::api::{AssistPending, FavoriteItem};
 
@@ -26,7 +27,7 @@ impl AuthenticatedClient {
         let code = code.to_owned();
         tokio::task::spawn_blocking(move || store.reject_code(&id, &code))
             .await
-            .context("清除访问码任务中断")?
+            .context(t().session.code_clear_interrupted)?
     }
     /// A fresh ticket for an assistance session after its socket was lost.
     pub(crate) async fn assist_refetch(&self, session_id: &str) -> Result<RealtimeTicket> {
@@ -62,14 +63,14 @@ impl AuthenticatedClient {
                     Ok(Some(saved)) => device.saved_code = saved.code,
                     Ok(None) => {}
                     Err(_) => {
-                        lists.code_error = Some("无法读取本机保存的访问码".into())
+                        lists.code_error = Some(t().session.saved_codes_unreadable.into())
                     }
                 }
             }
             lists
         })
         .await
-        .context("读取本机访问码任务中断")
+        .context(t().session.code_read_interrupted)
     }
 
     pub(crate) async fn resolve_assist_code(
@@ -88,7 +89,7 @@ impl AuthenticatedClient {
             None => Ok((String::new(), publisher_id)),
         })
         .await
-        .context("读取本机访问码任务中断")?
+        .context(t().session.code_read_interrupted)?
     }
 
     pub(crate) async fn remember_assist_code(
@@ -98,18 +99,18 @@ impl AuthenticatedClient {
         code: String,
     ) -> Result<()> {
         if !self.is_active() {
-            bail!("账号会话已结束");
+            bail!("{}", t().session.account_session_ended);
         }
         let store = crate::account::auth::AssistCodeStore::new(self.session.user_id())?;
         let ended = self.ended();
         tokio::task::spawn_blocking(move || {
             if ended.is_cancelled() {
-                bail!("账号会话已结束");
+                bail!("{}", t().session.account_session_ended);
             }
             store.save(&id, &publisher_id, code)
         })
         .await
-        .context("保存本机访问码任务中断")?
+        .context(t().session.code_save_interrupted)?
     }
 
     pub(crate) async fn save_assist_favorite(
@@ -125,7 +126,7 @@ impl AuthenticatedClient {
         if let Some(code) = code {
             self.remember_assist_code(saved.connect_id, saved.publisher_device_id, code)
                 .await
-                .context("收藏已更新，但本机访问码未保存")?;
+                .context(t().session.favorite_code_not_saved)?;
         }
         Ok(())
     }
@@ -134,7 +135,7 @@ impl AuthenticatedClient {
         let id = normalize_connect_id(id)?;
         let remark = remark.trim();
         if remark.chars().any(char::is_control) {
-            bail!("备注不能包含控制字符");
+            bail!("{}", t().session.note_control_characters);
         }
         let current = self.assist_saved(SavedKind::Favorites).await?;
         let time = current
@@ -169,7 +170,7 @@ impl AuthenticatedClient {
         {
             return Ok(saved);
         }
-        bail!("收藏未确认保存")
+        bail!("{}", t().session.favorite_unconfirmed)
     }
     pub(crate) async fn delete_assist_saved(
         &self,
@@ -201,7 +202,7 @@ impl AuthenticatedClient {
                 .iter()
                 .any(|d| d.publisher_device_id == publisher_id)
             {
-                bail!("删除结果未确认");
+                bail!("{}", t().session.delete_unconfirmed);
             }
         }
         self.remove_unused_assist_codes(removed).await
@@ -216,7 +217,7 @@ impl AuthenticatedClient {
                 return Err(error);
             }
             if !self.assist_saved(SavedKind::Recent).await?.is_empty() {
-                bail!("清空结果未确认");
+                bail!("{}", t().session.clear_unconfirmed);
             }
         }
         self.remove_unused_assist_codes(previous).await
@@ -230,7 +231,7 @@ impl AuthenticatedClient {
             self.assist_saved(SavedKind::Recent),
             self.assist_saved(SavedKind::Favorites),
         )
-        .context("记录已移除，但访问码清理尚未确认")?;
+        .context(t().session.removed_code_clear_unconfirmed)?;
         let store = crate::account::auth::AssistCodeStore::new(self.session.user_id())?;
         tokio::task::spawn_blocking(move || {
             for device in candidates {
@@ -245,6 +246,6 @@ impl AuthenticatedClient {
             Ok(())
         })
         .await
-        .context("访问码清理任务中断")?
+        .context(t().session.code_cleanup_interrupted)?
     }
 }

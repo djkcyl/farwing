@@ -1,4 +1,5 @@
 //! Protected staging and shared filesystem checks for component deployment.
+use crate::i18n::t;
 use anyhow::{Result, ensure};
 use std::path::{Path, PathBuf};
 use windows::{
@@ -55,7 +56,8 @@ pub(crate) fn reject_reparse(path: &Path) -> Result<()> {
         ensure!(
             std::fs::symlink_metadata(path)?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0
                 == 0,
-            "组件目录不可为重解析点"
+            "{}",
+            t().system.component_directory_reparse
         );
     }
     Ok(())
@@ -86,7 +88,8 @@ impl Staging {
         for &(name, bytes) in entries {
             ensure!(
                 Path::new(name).file_name().is_some_and(|n| n == name),
-                "无效组件包文件名"
+                "{}",
+                t().system.component_invalid_package_file_name
             );
             let path = stage.path.join(name);
             use std::io::Write;

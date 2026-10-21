@@ -18,12 +18,12 @@ impl Quality {
     pub const RATES: [u32; 4] = [64, 128, 192, 256];
 
     pub fn validate(self) -> Result<()> {
-        ensure!(Self::RATES.contains(&self.kbps), "请选择音质档位");
+        ensure!(Self::RATES.contains(&self.kbps), "{}", crate::i18n::t().session.audio_quality_required);
         Ok(())
     }
 
     pub fn restore(self) -> Result<Self> {
-        ensure!((6..=320).contains(&self.kbps), "已保存的音质设置无效");
+        ensure!((6..=320).contains(&self.kbps), "{}", crate::i18n::t().session.audio_quality_saved_invalid);
         Ok(Self {
             kbps: Self::RATES
                 .into_iter()

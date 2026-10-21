@@ -3,6 +3,7 @@
 // frame header and fragments, HELLO, SESSION (screens, quality, capture,
 // control turn, microphone), CURSOR, PARTICIPANTS, PERMISSIONS, HOST_EVENT,
 // AUDIO, and the TRANSFER / FLOW data plane of the clipboard and files.
+import { t } from '../i18n';
 import { Fields, Writer } from './pb';
 
 export const MAX_FRAME = 524288;
@@ -319,11 +320,11 @@ export const MicrophoneState = { ACTIVE: 1, INACTIVE: 2, RESTART: 3 } as const;
 export function microphoneError(code: number): string {
   switch (code >>> 0) {
     case 0x0e003001:
-      return '对方没有安装 Farwing 虚拟声卡';
+      return t().viewer.microphone.noDriver;
     case 0x0e003006:
-      return '没有麦克风权限';
+      return t().viewer.microphone.noPermission;
     default:
-      return '对方的虚拟麦克风启动失败';
+      return t().viewer.microphone.startFailed;
   }
 }
 

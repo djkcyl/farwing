@@ -1,5 +1,6 @@
 //! Thread-owned capture in the verified SYSTEM session executor.
 use super::{Desktop, Frame, Screen};
+use crate::i18n::t;
 use crate::platform::windows::{host_service::process, input::system};
 use anyhow::{Result, ensure};
 
@@ -23,7 +24,8 @@ impl Session {
         let session = process::session(std::process::id())?;
         ensure!(
             session == process::active_session(),
-            "采集Windows会话已结束"
+            "{}",
+            t().system.capture_session_ended
         );
         let mut context = system::Desktop::new()?;
         if let Some((desktop, name)) = context.changed()? {
@@ -61,7 +63,8 @@ impl Session {
     ) -> Result<Option<Frame>> {
         ensure!(
             self.session == process::active_session(),
-            "采集Windows会话已结束"
+            "{}",
+            t().system.capture_session_ended
         );
         match self.acquire(timeout, quality, cursor, hdr, maximum) {
             Ok(frame) => Ok(frame),

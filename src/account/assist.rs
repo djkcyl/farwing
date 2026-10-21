@@ -13,7 +13,7 @@ pub fn normalize_connect_id(value: &str) -> Result<String> {
         .filter(|c| !c.is_ascii_whitespace() && *c != '-')
         .collect();
     if id.len() != 9 || !id.bytes().all(|c| c.is_ascii_digit()) {
-        bail!("请输入 9 位短号");
+        bail!("{}", crate::i18n::t().session.short_number_required);
     }
     Ok(id)
 }
@@ -24,7 +24,7 @@ pub fn normalize_target(value: &str) -> Result<String> {
         return Ok(id);
     }
     crate::account::api::parse_device_id(value)
-        .ok_or_else(|| anyhow::anyhow!("请输入 9 位短号或 16 位设备 ID"))
+        .ok_or_else(|| anyhow::anyhow!("{}", crate::i18n::t().session.assist_target_required))
 }
 
 /// Whether a normalised target is a short number (else a device ID).
@@ -34,7 +34,7 @@ pub fn is_short_number(target: &str) -> bool {
 
 pub(crate) fn validate_connect_code(code: &str) -> Result<()> {
     if code.len() > 256 || code.chars().any(char::is_control) {
-        bail!("访问码格式不正确");
+        bail!("{}", crate::i18n::t().session.code_format_invalid);
     }
     Ok(())
 }

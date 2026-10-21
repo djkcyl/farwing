@@ -2,6 +2,7 @@ use super::*;
 use crate::account::api::{ApiFailure, AssistJoined, ErrorCode};
 use farwing_protocol::crypto;
 use crate::account::assist::AssistRequest;
+use crate::i18n::t;
 
 pub(super) struct AssistConnection {
     request: AssistRequest,
@@ -18,14 +19,14 @@ impl AssistConnection {
         cancel: &CancellationToken,
     ) -> Result<AssistJoined> {
         let mut reply = if let Some(previous) = &self.room {
-            report_progress(reporter, 3, "正在恢复会话", "");
+            report_progress(reporter, 3, t().session.progress_resuming, "");
             // Rebuilding keeps the verified target; only the single-use
             // realtime ticket of the same server session is renewed.
             let session_id = previous
                 .ticket
                 .session_id
                 .clone()
-                .context("无法恢复会话")?;
+                .context(t().session.error_cannot_resume)?;
             match cancellable(cancel, client.assist_refetch(&session_id)).await {
                 Ok(ticket) => AssistJoined {
                     ticket,
@@ -53,7 +54,7 @@ impl AssistConnection {
             .as_ref()
             .is_some_and(|id| id != &reply.host.device_id)
         {
-            bail!("该记录对应的设备身份已变化");
+            bail!("{}", t().session.error_entry_identity_changed);
         }
         if reply.host.alias.trim().is_empty() {
             reply.host.alias = target_label(&self.request.target);
@@ -61,7 +62,7 @@ impl AssistConnection {
         report_progress(
             reporter,
             3,
-            "对方已允许连接",
+            t().session.progress_allowed,
             format!("{} · {}", reply.host.alias, reply.host.version),
         );
         self.room = Some(reply.clone());
@@ -73,7 +74,7 @@ impl AssistConnection {
         if self.remembered || !self.request.has_code() {
             return Ok(());
         }
-        let room = self.room.as_ref().context("没有已连接的会话")?;
+        let room = self.room.as_ref().context(t().session.error_no_connected_session)?;
         client
             .remember_assist_code(
                 self.request.target.clone(),
@@ -89,9 +90,9 @@ impl AssistConnection {
 /// How a host reached through the server is called before its name is known.
 pub(crate) fn target_label(target: &str) -> String {
     if crate::account::assist::is_short_number(target) {
-        format!("短号 {target}")
+        (t().session.target_short_number)(target)
     } else {
-        format!("设备 {}", crate::account::api::device_id_text(target))
+        (t().session.target_device)(&crate::account::api::device_id_text(target))
     }
 }
 
@@ -112,7 +113,7 @@ pub(super) async fn resolve(
     reporter: Option<&ConnectionProgressReporter>,
 ) -> Result<ResolvedConnection> {
     request.validate()?;
-    report_progress(reporter, 1, "正在读取本机信息", "");
+    report_progress(reporter, 1, t().session.progress_reading_local, "");
     if !client.is_guest() {
         client.account_info().await?;
     }
@@ -122,7 +123,7 @@ pub(super) async fn resolve(
         Ok(display) => (display, None),
         Err(error) => (
             LocalDisplayInfo::FALLBACK,
-            Some(format!("本机显示器探测失败：{error}")),
+            Some((t().session.display_detection_failed)(&error.to_string())),
         ),
     };
     let profile = options.resolve(display)?;
@@ -167,7 +168,7 @@ async fn authorize(
         let (pending, states) = match &request.pending {
             Some(pending) => (pending.clone(), Vec::new()),
             None => {
-                report_progress(reporter, 2, "正在请求连接", "");
+                report_progress(reporter, 2, t().session.progress_requesting, "");
                 let (states, messages): (Vec<_>, Vec<_>) = if request.has_code() {
                     (0..crypto::ASSIST_PAKE_SLOTS)
                         .map(|_| crypto::pake_start(&request.connect_code))
@@ -188,7 +189,7 @@ async fn authorize(
             None
         } else if pending.mode.needs_password() {
             if states.is_empty() {
-                bail!(ApiFailure::new(ErrorCode::AssistCodeRequired, "对方要求输入访问码"));
+                bail!(ApiFailure::new(ErrorCode::AssistCodeRequired, "access code required"));
             }
             let key = states
                 .into_iter()
@@ -208,7 +209,7 @@ async fn authorize(
                 {
                     tracing::warn!(%error, "could not clear rejected access code");
                 }
-                bail!(ApiFailure::new(ErrorCode::AssistCodeInvalid, "访问码不正确"));
+                bail!(ApiFailure::new(ErrorCode::AssistCodeInvalid, "wrong access code"));
             };
             Some(key)
         } else {
@@ -219,11 +220,11 @@ async fn authorize(
             reporter,
             3,
             if pending.trusted {
-                "对方信任本机"
+                t().session.progress_trusted
             } else if confirming {
-                "等待对方确认"
+                t().session.progress_waiting_confirmation
             } else {
-                "访问码正确"
+                t().session.progress_code_accepted
             },
             "",
         );
@@ -235,7 +236,8 @@ async fn authorize(
         anyhow::ensure!(
             joined.host.device_id == pending.host.device_id
                 && joined.host.public_key == pending.host.public_key,
-            "对方设备身份已变化"
+            "{}",
+            t().session.error_peer_identity_changed
         );
         crate::transport::signal::identity::check_key(&joined.host.device_id, &joined.host.public_key)?;
         joined.pake_key = key;
@@ -258,11 +260,11 @@ async fn authorize(
     }
     .await
     .map_err(|error| match crate::account::api::failure_code(&error) {
-        Some(ErrorCode::AssistCodeInvalid) => anyhow!("访问码不正确"),
-        Some(ErrorCode::AssistCodeRequired) => anyhow!("对方要求输入访问码"),
-        Some(ErrorCode::AssistRejected) => anyhow!("对方拒绝了本次连接"),
-        Some(ErrorCode::AssistUnavailable) => anyhow!("对方没有开启访问码，也没有信任这台设备"),
-        Some(ErrorCode::Timeout) => anyhow!("等待对方确认超时"),
+        Some(ErrorCode::AssistCodeInvalid) => anyhow!("{}", t().session.error_code_invalid),
+        Some(ErrorCode::AssistCodeRequired) => anyhow!("{}", t().session.error_code_required),
+        Some(ErrorCode::AssistRejected) => anyhow!("{}", t().session.error_connection_declined),
+        Some(ErrorCode::AssistUnavailable) => anyhow!("{}", t().session.error_assist_unavailable),
+        Some(ErrorCode::Timeout) => anyhow!("{}", t().session.error_confirmation_timeout),
         _ => error,
     });
     if dispatched && !pending_request.is_empty() && (cancel.is_cancelled() || result.is_err()) {

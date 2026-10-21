@@ -1,4 +1,6 @@
 use super::*;
+use crate::i18n::t;
+
 impl DeviceCenterApp {
     pub(in crate::application::app) fn open_file_transfer(&mut self, id: String) {
         if self.logout_pending {
@@ -22,7 +24,7 @@ impl DeviceCenterApp {
             })
             .is_err()
         {
-            self.status = StatusMessage::error("无法打开文件传输");
+            self.status = StatusMessage::error(t().settings.cant_open_file_transfer);
         }
     }
     pub(in crate::application::app) fn open_port_mapping(&mut self, id: String) {
@@ -47,7 +49,7 @@ impl DeviceCenterApp {
             })
             .is_err()
         {
-            self.status = StatusMessage::error("无法打开端口转发");
+            self.status = StatusMessage::error(t().settings.cant_open_port_forwarding);
         }
     }
 }

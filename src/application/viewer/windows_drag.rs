@@ -1,5 +1,6 @@
 //! One viewer drop target, bound to its current video geometry and peer.
 use super::windows_mouse::Target;
+use crate::i18n::t;
 use crate::{
     features::{
         drag_drop::{Stage, Ticket, controller::Controller},
@@ -90,11 +91,12 @@ impl WindowDrag {
                     ui.set_max_width(360.);
                     if let Some(ticket) = &state.preview {
                         let snapshot = ticket.snapshot();
+                        let t = &t().viewer;
                         ui.label(match snapshot.stage {
-                            Stage::Preparing => "正在准备文件…",
-                            Stage::Dragging if snapshot.effect == COPY => "复制到此处",
-                            Stage::Dragging => "此处不能接收文件",
-                            _ => "拖放已停止",
+                            Stage::Preparing => t.drag_preparing,
+                            Stage::Dragging if snapshot.effect == COPY => t.drag_copy_here,
+                            Stage::Dragging => t.drag_not_accepted,
+                            _ => t.drag_stopped,
                         });
                     }
                     let mut dismiss = Vec::new();
@@ -102,25 +104,25 @@ impl WindowDrag {
                         let snapshot = ticket.snapshot();
                         ui.horizontal(|ui| {
                             if snapshot.stage == Stage::Failed {
-                                ui.label(snapshot.error.as_deref().unwrap_or("文件拖放失败"));
-                                if ui.button("关闭").clicked() {
+                                ui.label(
+                                    snapshot.error.as_deref().unwrap_or(t().viewer.drag_failed),
+                                );
+                                if ui.button(t().common.close).clicked() {
                                     dismiss.push(index);
                                 }
                             } else {
+                                let t = &t().viewer;
                                 ui.label(match snapshot.stage {
-                                    Stage::Preparing => "正在准备文件…".to_owned(),
+                                    Stage::Preparing => t.drag_preparing.to_owned(),
                                     Stage::Dragging if snapshot.effect == COPY => {
-                                        "复制到此处".to_owned()
+                                        t.drag_copy_here.to_owned()
                                     }
-                                    Stage::Dragging => "此处不能接收文件".to_owned(),
-                                    Stage::Returning => "正在交还原拖动…".to_owned(),
-                                    Stage::Submitted => "等待目标接收…".to_owned(),
-                                    _ => format!(
-                                        "正在复制文件 · {:.1} MiB",
-                                        snapshot.bytes_read as f64 / 1048576.
-                                    ),
+                                    Stage::Dragging => t.drag_not_accepted.to_owned(),
+                                    Stage::Returning => t.drag_returning.to_owned(),
+                                    Stage::Submitted => t.drag_waiting_target.to_owned(),
+                                    _ => (t.drag_copying)(snapshot.bytes_read as f64 / 1048576.),
                                 });
-                                if ui.button("取消").clicked() {
+                                if ui.button(crate::i18n::t().common.cancel).clicked() {
                                     ticket.cancel();
                                 }
                             }
@@ -132,7 +134,7 @@ impl WindowDrag {
                     if let Some(error) = state.error.clone() {
                         ui.horizontal(|ui| {
                             ui.label(error);
-                            if ui.button("关闭").clicked() {
+                            if ui.button(t().common.close).clicked() {
                                 state.error = None;
                             }
                         });
@@ -168,7 +170,7 @@ impl State {
 }
 impl Handler for State {
     fn description(&self) -> Option<&'static str> {
-        Some("复制到远端")
+        Some(t().viewer.copy_to_remote)
     }
     fn reenter(
         &mut self,
@@ -271,7 +273,7 @@ impl Handler for State {
         if let Some(ticket) = self.returning.take() {
             return match self
                 .point(point)
-                .ok_or_else(|| anyhow::anyhow!("拖回位置已失效"))
+                .ok_or_else(|| anyhow::anyhow!(t().viewer.drag_position_invalid))
                 .and_then(|point| ticket.return_commit(point))
             {
                 Ok(()) => 0,

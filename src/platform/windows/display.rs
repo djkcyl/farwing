@@ -143,7 +143,7 @@ pub(crate) fn source_id(identity: &str) -> Result<i32> {
     if let Some(id) = ids.get(identity) {
         return Ok(*id);
     }
-    let id = i32::try_from(ids.len()).context("显示器标识已耗尽")?;
+    let id = i32::try_from(ids.len()).context(crate::i18n::t().system.display_ids_exhausted)?;
     ids.insert(identity.to_owned(), id);
     Ok(id)
 }

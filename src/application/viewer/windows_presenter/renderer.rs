@@ -1,4 +1,5 @@
 //! Video presentation resources, output mode and device recovery.
+use crate::i18n::t;
 use super::plugin_video;
 use super::shader::{SHARED_TEXTURE_CACHE_SIZE, VideoShaderRenderer, VideoTextureView};
 use super::swapchain::{
@@ -287,7 +288,10 @@ impl D3D11Presenter {
     /// The drawn backbuffer as an sRGB image no wider than 1280 pixels.
     /// Called after drawing and before `Present`.
     pub(super) fn capture_backbuffer(&self) -> Result<egui::ColorImage> {
-        let backbuffer = self.backbuffer.as_ref().context("没有可截取的画面")?;
+        let backbuffer = self
+            .backbuffer
+            .as_ref()
+            .context(t().viewer.no_picture_to_capture)?;
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         unsafe { backbuffer.GetDesc(&mut desc) };
         let format = desc.Format;
@@ -652,7 +656,8 @@ impl D3D11Presenter {
                             .store(graph.revision, Ordering::Release);
                     }
                     Err(error) => {
-                        *mutex_lock(&state.error) = Some(format!("GPU节点准备失败：{error}"));
+                        *mutex_lock(&state.error) =
+                            Some((t().viewer.gpu_node_failed)(&error.to_string()));
                         state
                             .failed_revision
                             .store(graph.revision, Ordering::Release);
@@ -704,7 +709,7 @@ impl D3D11Presenter {
             };
             if let Err(error) = result {
                 if let Some(state) = &state {
-                    state.fail(format!("视频链已停止：{error}"));
+                    state.fail((t().viewer.video_chain_stopped)(&error.to_string()));
                 }
                 self.effects = None;
                 self.video_renderer.reset_input_cache();

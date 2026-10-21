@@ -1,4 +1,5 @@
 use super::{graph::*, *};
+use crate::i18n::t;
 use std::{
     sync::{
         Arc,
@@ -34,10 +35,18 @@ impl Watcher {
                         let stamp = (metadata.modified().ok(), metadata.len());
                         if previous != Some(stamp) {
                             let result = (|| -> Result<(String, Compiled)> {
-                                ensure!(metadata.len() <= 1024 * 1024, "节点图文件过大");
+                                ensure!(
+                                    metadata.len() <= 1024 * 1024,
+                                    "{}",
+                                    t().features.plugin_graph_file_too_large
+                                );
                                 let publication: Publication =
                                     serde_json::from_slice(&std::fs::read(&source)?)?;
-                                ensure!(publication.document.graph_id == id, "节点图身份不匹配");
+                                ensure!(
+                                    publication.document.graph_id == id,
+                                    "{}",
+                                    t().features.plugin_graph_id_mismatch
+                                );
                                 let catalog = Catalog::load()?;
                                 let plan =
                                     compile(&publication.document, &catalog).map_err(|d| {
@@ -73,7 +82,7 @@ impl Watcher {
                         && sender
                             .try_send(Update {
                                 revision: String::new(),
-                                result: Err("此图尚未应用".into()),
+                                result: Err(t().features.plugin_graph_not_applied.into()),
                             })
                             .is_ok()
                     {

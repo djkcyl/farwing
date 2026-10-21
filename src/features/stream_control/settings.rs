@@ -12,6 +12,7 @@ use super::{
     VIDEO_QUALITY_HD, ViewingPreferenceUpdate, custom_bitrate_supported, ensure_ready,
     feature_supported, lock, protocol,
 };
+use crate::i18n::t;
 use crate::media::FrameRateChoice;
 use crate::protocol::capability::FrameQualityCapability;
 use anyhow::{Result, anyhow, bail};
@@ -88,7 +89,7 @@ impl StreamControlHandle {
     pub(crate) fn restore_preferences(&self, preferences: StreamControlPreferences) -> Result<()> {
         let mut state = lock(&self.shared);
         if state.initial_capture_sync_sent || state.baseline.codec_type != 0 {
-            bail!("串流偏好必须在新房间选择视频轨道之前恢复");
+            bail!("{}", t().features.stream_preferences_restore_too_late);
         }
         state.custom_bitrate_limit = preferences
             .custom_bitrate_limit
@@ -129,10 +130,15 @@ impl StreamControlHandle {
     ) -> Result<i64> {
         let mut state = lock(&self.shared);
         ensure_ready(&state)?;
-        anyhow::ensure!(color_supported(&state), "当前会话不支持色彩切换");
+        anyhow::ensure!(
+            color_supported(&state),
+            "{}",
+            t().features.stream_color_unsupported
+        );
         anyhow::ensure!(
             state.screens.iter().any(|screen| screen.id == screen_id),
-            "显示器已断开"
+            "{}",
+            t().features.stream_display_disconnected
         );
         let mut settings = state.settings;
         settings.true_color = enabled;
@@ -179,15 +185,15 @@ impl StreamControlHandle {
             if matches!(settings.quality, StreamQuality::Custom)
                 && !custom_bitrate_supported(&state)
             {
-                bail!("被控端不支持自定义码率");
+                bail!("{}", t().features.stream_custom_bitrate_unsupported);
             }
             anyhow::ensure!(
                 settings.quality != StreamQuality::Custom
                     || settings.custom_bitrate_mbps <= state.custom_bitrate_limit
                     || (state.settings.quality == StreamQuality::Custom
                         && settings.custom_bitrate_mbps == state.settings.custom_bitrate_mbps),
-                "当前连接自定义码率最高为 {} Mbps",
-                state.custom_bitrate_limit
+                "{}",
+                (t().features.stream_custom_bitrate_limit)(state.custom_bitrate_limit)
             );
             let quality_changed = settings.quality != state.settings.quality;
             let color_changed = settings.true_color != state.settings.true_color;
@@ -195,14 +201,19 @@ impl StreamControlHandle {
             if hdr_changed {
                 anyhow::ensure!(
                     state.peer.has(crate::protocol::peer::feature::VIDEO_HDR),
-                    "当前会话不支持 HDR 切换"
+                    "{}",
+                    t().features.stream_hdr_switch_unsupported
                 );
                 if settings.hdr {
                     ensure_hdr_displays(&state)?;
                 }
             }
             if color_changed {
-                anyhow::ensure!(color_supported(&state), "当前会话不支持色彩切换");
+                anyhow::ensure!(
+                    color_supported(&state),
+                    "{}",
+                    t().features.stream_color_unsupported
+                );
             }
             let selected = if color_changed
                 || hdr_changed
@@ -250,7 +261,9 @@ impl StreamControlHandle {
                             .screens
                             .iter()
                             .find(|s| s.id == id)
-                            .ok_or_else(|| anyhow!("显示器已断开"))?;
+                            .ok_or_else(|| {
+                                anyhow!("{}", t().features.stream_display_disconnected)
+                            })?;
                         request.screen_id = id;
                         // Format/quality changes do not own the physical mode.
                         // A cached ScreenSources size may predate a game's mode switch.
@@ -258,9 +271,11 @@ impl StreamControlHandle {
                     encode_capture_request(sequence, request)
                 }
 
-                StreamControlProtocol::Negotiating => bail!("PB 特性协商尚未完成"),
+                StreamControlProtocol::Negotiating => {
+                    bail!("{}", t().features.stream_negotiation_pending)
+                }
                 StreamControlProtocol::Unsupported => {
-                    bail!("对端不支持当前串流协议")
+                    bail!("{}", t().features.stream_protocol_unsupported)
                 }
             };
             state.next_sequence = state.next_sequence.wrapping_add(1);
@@ -297,7 +312,10 @@ pub(super) fn set_requested_settings(
     if settings.quality == StreamQuality::Custom
         && !(1..=MAX_CUSTOM_BITRATE_MBPS).contains(&settings.custom_bitrate_mbps)
     {
-        bail!("自定义码率必须在 1..={MAX_CUSTOM_BITRATE_MBPS} Mbps 之间");
+        bail!(
+            "{}",
+            (t().features.stream_custom_bitrate_range)(MAX_CUSTOM_BITRATE_MBPS)
+        );
     }
     let requested_fps = settings.frame_rate.value(state.local_display);
     state.baseline.requested_fps = requested_fps;
@@ -345,7 +363,7 @@ pub(super) fn prepare_initial_capture_sync(
     let active_protocol = protocol(state);
     if matches!(state.settings.quality, StreamQuality::Custom) && !custom_bitrate_supported(&state)
     {
-        bail!("被控端不支持自定义码率");
+        bail!("{}", t().features.stream_custom_bitrate_unsupported);
     }
     if (state.settings.hdr || state.settings.true_color) && state.capability.is_none() {
         return Ok(None);
@@ -370,7 +388,7 @@ pub(super) fn prepare_initial_capture_sync(
                 settings.true_color = color;
                 settings.hdr = hdr;
                 set_requested_settings(state, settings)?;
-                state.last_notice = Some("无法恢复原色彩/HDR 设置".into());
+                state.last_notice = Some(t().features.stream_color_restore_failed.into());
             }
         }
     }
@@ -382,7 +400,10 @@ pub(super) fn prepare_initial_capture_sync(
             requested,
         );
         if selected.result != 0 {
-            bail!("双方设备不支持所选色彩格式（{}）", selected.result);
+            bail!(
+                "{}",
+                (t().features.stream_color_format_unsupported)(selected.result)
+            );
         }
         if !matches!(requested, 0 | 5) && selected.max_frame_quality < requested {
             let mut settings = state.settings;
@@ -391,7 +412,8 @@ pub(super) fn prepare_initial_capture_sync(
                     anyhow!("invalid negotiated quality {}", selected.max_frame_quality)
                 })?;
             set_requested_settings(state, settings)?;
-            state.last_notice = Some(format!("画质已调整为{}", settings.quality.label()));
+            state.last_notice =
+                Some((t().features.stream_quality_adjusted)(settings.quality.label()));
         }
         apply_codec_limits(state, selected);
     }
@@ -458,7 +480,11 @@ pub(super) fn color_supported(state: &StreamControlState) -> bool {
 }
 
 pub(super) fn validate_color(state: &StreamControlState, enabled: bool) -> Result<()> {
-    anyhow::ensure!(color_supported(state), "当前会话未开放色彩切换");
+    anyhow::ensure!(
+        color_supported(state),
+        "{}",
+        t().features.stream_color_unsupported
+    );
     validate_format(state, state.settings.quality, enabled, state.settings.hdr)?;
     Ok(())
 }
@@ -478,10 +504,12 @@ pub(super) fn validate_format(
         || (!matches!(requested, 0 | 5) && selected.max_frame_quality < requested)
     {
         bail!(
-            "双方设备不支持此色彩下的{}（最高档位{}，结果{}）",
-            quality.label(),
-            selected.max_frame_quality,
-            selected.result
+            "{}",
+            (t().features.stream_quality_unsupported_with_color)(
+                quality.label(),
+                selected.max_frame_quality,
+                selected.result
+            )
         );
     }
     Ok(Some(selected))
@@ -490,23 +518,26 @@ pub(super) fn validate_format(
 pub(super) fn ensure_hdr_displays(state: &StreamControlState) -> Result<()> {
     anyhow::ensure!(
         state.peer.has(crate::protocol::peer::feature::VIDEO_HDR),
-        "当前会话不支持 HDR"
+        "{}",
+        t().features.stream_hdr_unsupported
     );
     let cap = state
         .capability
         .as_ref()
-        .ok_or_else(|| anyhow!("正在等待 HDR 能力"))?;
+        .ok_or_else(|| anyhow!("{}", t().features.stream_waiting_hdr_capability))?;
     anyhow::ensure!(
         cap.remote_display_info
             .iter()
             .any(|display| display.hdr == 0),
-        "被控端未开启 Windows HDR"
+        "{}",
+        t().features.stream_host_hdr_off
     );
     anyhow::ensure!(
         cap.local_display_info
             .iter()
             .any(|display| display.hdr == 0),
-        "本机未开启 Windows HDR"
+        "{}",
+        t().features.stream_local_hdr_off
     );
     Ok(())
 }
@@ -518,13 +549,18 @@ pub(super) fn format_proposal(
 ) -> Result<StreamControlSettings> {
     let mut settings = state.settings;
     if let Some(enabled) = color {
-        anyhow::ensure!(color_supported(state), "当前会话不支持色彩切换");
+        anyhow::ensure!(
+            color_supported(state),
+            "{}",
+            t().features.stream_color_unsupported
+        );
         settings.true_color = enabled;
     }
     if let Some(enabled) = hdr {
         anyhow::ensure!(
         state.peer.has(crate::protocol::peer::feature::VIDEO_HDR),
-        "当前会话不支持 HDR"
+        "{}",
+        t().features.stream_hdr_unsupported
     );
         settings.hdr = enabled;
     }
@@ -534,7 +570,7 @@ pub(super) fn format_proposal(
     let cap = state
         .capability
         .as_ref()
-        .ok_or_else(|| anyhow!("正在等待串流能力"))?;
+        .ok_or_else(|| anyhow!("{}", t().features.stream_waiting_capability))?;
     let mut selected = cap.select(
         if settings.true_color { 3 } else { 1 },
         settings.hdr,
@@ -553,11 +589,15 @@ pub(super) fn format_proposal(
             }
         }
     }
-    anyhow::ensure!(selected.result == 0, "双方设备不支持所选色彩与 HDR 组合");
+    anyhow::ensure!(
+        selected.result == 0,
+        "{}",
+        t().features.stream_color_hdr_unsupported
+    );
     let requested = settings.quality.capability_quality();
     if !matches!(requested, 0 | 5) && selected.max_frame_quality < requested {
         settings.quality = quality_from_capability(selected.max_frame_quality)
-            .ok_or_else(|| anyhow!("无可用画质档位"))?;
+            .ok_or_else(|| anyhow!("{}", t().features.stream_no_quality_tier))?;
     }
     Ok(settings)
 }
@@ -706,18 +746,17 @@ pub(super) fn apply_capture_setting_response(
                     Some(code @ (0 | 1 | 2 | 3 | 4 | 5)) => {
                         reported_color = Some(matches!(code, 0 | 3 | 4));
                         if matches!(code, 1 | 2) {
-                            notices.push("远端未能启用 YUV 4:4:4，已使用 YUV 4:2:0".into());
+                            notices.push(t().features.stream_yuv444_fallback.into());
                         }
                         if matches!(code, 3 | 4) {
-                            notices.push("远端已保留 YUV 4:4:4，其他显示操作未完全生效".into());
+                            notices.push(t().features.stream_yuv444_kept.into());
                         }
                     }
                     _ => failures.push(format_pb_error(error)),
                 }
             }
-            CAPTURE_RESULT_FPS_ADJUSTED => notices.push(format!(
-                "远端屏幕刷新率较低，帧率已降档（{}）",
-                format_pb_error(error)
+            CAPTURE_RESULT_FPS_ADJUSTED => notices.push((t().features.stream_fps_reduced)(
+                &format_pb_error(error),
             )),
             _ => failures.push(format_pb_error(error)),
         }
@@ -783,11 +822,11 @@ pub(super) fn reported_auto_quality(quality: i32) -> Option<i32> {
 
 pub(super) fn quality_name(quality: i32) -> &'static str {
     match quality {
-        VIDEO_QUALITY_BLURAY => "原画",
-        VIDEO_QUALITY_HD => "超清",
-        VIDEO_QUALITY_GENERAL => "高清",
-        VIDEO_QUALITY_FAST => "低码率",
-        _ => "高清",
+        VIDEO_QUALITY_BLURAY => t().features.stream_quality_original,
+        VIDEO_QUALITY_HD => t().features.stream_quality_ultra,
+        VIDEO_QUALITY_GENERAL => t().features.stream_quality_high,
+        VIDEO_QUALITY_FAST => t().features.stream_quality_low_bitrate,
+        _ => t().features.stream_quality_high,
     }
 }
 
@@ -796,11 +835,13 @@ pub(super) fn baseline_quality_label(baseline: &CaptureSettingBaseline) -> Strin
         VIDEO_QUALITY_FAST..=VIDEO_QUALITY_BLURAY => {
             quality_name(baseline.frame_quality).to_owned()
         }
-        VIDEO_QUALITY_AUTO => format!("自动（{}）", quality_name(baseline.auto_frame_quality)),
+        VIDEO_QUALITY_AUTO => {
+            (t().features.stream_quality_auto_with)(quality_name(baseline.auto_frame_quality))
+        }
         VIDEO_QUALITY_CUSTOM if baseline.max_custom_bitrate >= 1_000_000 => {
             format!("{} Mbps", baseline.max_custom_bitrate / 1_000_000)
         }
-        VIDEO_QUALITY_CUSTOM => "自定义".to_owned(),
+        VIDEO_QUALITY_CUSTOM => t().features.stream_quality_custom.to_owned(),
         _ => "auto".to_owned(),
     }
 }

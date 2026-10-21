@@ -1,5 +1,6 @@
 use super::{Action, FileEntry, Listing, controls, theme};
 use crate::ui::controls::files::{self, Icon};
+use crate::i18n::t;
 use egui::{Key, Rect, Ui, UiBuilder, pos2, vec2};
 use std::{collections::HashSet, sync::Arc};
 
@@ -19,7 +20,8 @@ pub(super) struct Pane {
     anchor: Option<String>,
     cursor: Option<String>,
     scroll_to: Option<usize>,
-    places: Vec<(String, String)>,
+    /// Common locations: [`Place`] and path.
+    places: Vec<(Place, String)>,
     cache: Arc<Vec<FileEntry>>,
     visible: Vec<usize>,
     filter: String,
@@ -37,14 +39,14 @@ impl Pane {
                 FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads,
             };
             [
-                ("桌面", FOLDERID_Desktop),
-                ("下载", FOLDERID_Downloads),
-                ("文档", FOLDERID_Documents),
+                (Place::Desktop, FOLDERID_Desktop),
+                (Place::Downloads, FOLDERID_Downloads),
+                (Place::Documents, FOLDERID_Documents),
             ]
             .into_iter()
-            .filter_map(|(name, id)| {
+            .filter_map(|(place, id)| {
                 crate::features::file_transfer::storage::known_folder(&id)
-                    .map(|p| (name.into(), p.to_string_lossy().into_owned()))
+                    .map(|p| (place, p.to_string_lossy().into_owned()))
             })
             .collect()
         };
@@ -112,19 +114,20 @@ impl Pane {
                 self.history_index = self.history.len() - 1;
             }
             if remote && list.path == ":/" {
+                // The names a host gives these locations, in either language.
                 self.places = [
-                    ("桌面", ["桌面", "desktop"]),
-                    ("下载", ["下载", "downloads"]),
-                    ("文档", ["文档", "documents"]),
+                    (Place::Desktop, ["桌面", "desktop"]),
+                    (Place::Downloads, ["下载", "downloads"]),
+                    (Place::Documents, ["文档", "documents"]),
                 ]
                 .into_iter()
-                .filter_map(|(label, names)| {
+                .filter_map(|(place, names)| {
                     list.entries
                         .iter()
                         .find(|e| {
                             e.entry_type < 4 && names.iter().any(|n| e.name.eq_ignore_ascii_case(n))
                         })
-                        .map(|e| (label.into(), e.full_path.clone()))
+                        .map(|e| (place, e.full_path.clone()))
                 })
                 .collect();
             }
@@ -225,7 +228,7 @@ pub(super) fn show(
     crate::ui::controls::observe_notice(
         ui.ctx(),
         ("file-directory", remote),
-        "读取目录失败",
+        t().features.transfer_list_failed,
         crate::ui::controls::DialogIcon::Error,
         list.error.as_deref(),
     );
@@ -251,14 +254,14 @@ pub(super) fn show(
     ui.painter().text(
         title.left_center(),
         egui::Align2::LEFT_CENTER,
-        if remote { "远端" } else { "本机" },
+        if remote { t().features.transfer_remote } else { t().features.transfer_local },
         egui::FontId::proportional(theme::SECTION),
         theme::TEXT,
     );
     files::text(
         ui,
         Rect::from_min_max(title.min + vec2(44., 0.), title.max),
-        if remote { alias } else { "此电脑" },
+        if remote { alias } else { t().features.transfer_this_pc },
         theme::MUTED,
         false,
     );
@@ -276,7 +279,7 @@ pub(super) fn show(
         ui,
         slot(0),
         Icon::Back,
-        "后退 · Alt+←",
+        &format!("{} · Alt+←", t().features.transfer_history_back),
         nav_enabled && p.history_index > 0,
     )
     .clicked()
@@ -287,7 +290,7 @@ pub(super) fn show(
         ui,
         slot(1),
         Icon::Forward,
-        "前进 · Alt+→",
+        &format!("{} · Alt+→", t().features.transfer_history_forward),
         nav_enabled && p.history_index + 1 < p.history.len(),
     )
     .clicked()
@@ -298,7 +301,7 @@ pub(super) fn show(
         ui,
         slot(2),
         Icon::Up,
-        "上级目录 · Backspace",
+        &format!("{} · Backspace", t().features.transfer_parent_folder),
         nav_enabled && p.path != ":/",
     )
     .clicked()
@@ -312,14 +315,26 @@ pub(super) fn show(
         nav.min + vec2(3. * step, 0.),
         search_rect.left_bottom() - vec2(theme::FILES_NAV_GAP, 0.),
     );
-    if files::icon_at(ui, search_rect, Icon::Search, "筛选文件 · Ctrl+F", true).clicked() {
+    if files::icon_at(
+        ui,
+        search_rect,
+        Icon::Search,
+        &format!("{} · Ctrl+F", t().features.transfer_filter_files),
+        true,
+    ).clicked() {
         p.searching = !p.searching;
         p.focus_search = p.searching;
         if !p.searching {
             p.search.clear();
         }
     }
-    if files::icon_at(ui, refresh_rect, Icon::Refresh, "刷新 · F5", nav_enabled).clicked() {
+    if files::icon_at(
+        ui,
+        refresh_rect,
+        Icon::Refresh,
+        &format!("{} · F5", t().common.refresh),
+        nav_enabled,
+    ).clicked() {
         action = Some(Action::Browse(p.path.clone()));
     }
     if p.editing {
@@ -346,7 +361,7 @@ pub(super) fn show(
             p.address = p.path.clone();
         }
         edit.on_hover_text(&p.path);
-        let crumbs = breadcrumbs(&p.path, if remote { alias } else { "此电脑" });
+        let crumbs = breadcrumbs(&p.path, if remote { alias } else { t().features.transfer_this_pc });
         let content = address_rect.shrink(theme::FILES_PATH_INSET);
         let widths = crumbs
             .iter()
@@ -416,25 +431,25 @@ pub(super) fn show(
         let input = Rect::from_min_max(places.min, close.left_bottom() - vec2(4., 0.));
         let response = ui.put(
             input,
-            controls::singleline(&mut p.search, theme::COMPACT_HEIGHT).hint_text("筛选当前文件夹"),
+            controls::singleline(&mut p.search, theme::COMPACT_HEIGHT).hint_text(t().features.transfer_filter_hint),
         );
         if p.focus_search {
             response.request_focus();
             p.focus_search = false;
         }
-        if files::icon_at(ui, close, Icon::Close, "关闭筛选", true).clicked()
+        if files::icon_at(ui, close, Icon::Close, t().features.transfer_close_filter, true).clicked()
             || (response.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)))
         {
             p.searching = false;
             p.search.clear();
         }
     } else {
-        for (index, (name, path)) in p.places.iter().enumerate() {
+        for (index, (place, path)) in p.places.iter().enumerate() {
             let r = Rect::from_min_size(
                 places.min + vec2(index as f32 * 60., 0.),
                 vec2(56., places.height()),
             );
-            if files::button_at(ui, r, name, nav_enabled, ButtonStyle::Quiet).clicked() {
+            if files::button_at(ui, r, place.label(), nav_enabled, ButtonStyle::Quiet).clicked() {
                 action = Some(Action::Browse(path.clone()));
             }
         }
@@ -452,7 +467,7 @@ pub(super) fn show(
     if files::button_at(
         ui,
         create,
-        "新建文件夹",
+        t().features.transfer_new_folder,
         enabled && p.path != ":/",
         ButtonStyle::Secondary,
     )
@@ -460,16 +475,20 @@ pub(super) fn show(
     {
         action = Some(Action::Create);
     }
-    if files::button_at(ui, rename, "重命名", single, ButtonStyle::Quiet).clicked() {
+    if files::button_at(ui, rename, t().features.transfer_rename, single, ButtonStyle::Quiet).clicked() {
         action = one.cloned().map(Action::Rename);
     }
-    if files::button_at(ui, delete, "删除", single, ButtonStyle::Quiet).clicked() {
+    if files::button_at(ui, delete, t().common.delete, single, ButtonStyle::Quiet).clicked() {
         action = one.cloned().map(Action::Delete);
     }
     if files::button_at(
         ui,
         transfer,
-        if remote { "← 下载" } else { "上传 →" },
+        &if remote {
+            format!("← {}", t().features.transfer_download)
+        } else {
+            format!("{} →", t().features.transfer_upload)
+        },
         enabled && connected && !p.selection.is_empty(),
         if remote {
             ButtonStyle::Secondary
@@ -488,7 +507,11 @@ pub(super) fn show(
     files::panel(ui, table, *active == remote);
     let header = Rect::from_min_size(table.min + vec2(1., 1.), vec2(table.width() - 2., 30.));
     for (index, col) in files::file_columns(header).iter().enumerate() {
-        let label = ["名称", "修改时间", "大小"][index];
+        let label = match index {
+            0 => t().features.transfer_column_name,
+            1 => t().features.transfer_column_modified,
+            _ => t().features.transfer_column_size,
+        };
         let label = if p.sort == index {
             format!("{label} {}", if p.descending { "↓" } else { "↑" })
         } else {
@@ -634,29 +657,25 @@ pub(super) fn show(
         });
     });
     if list.busy {
-        files::empty(ui, body, "正在读取…");
+        files::empty(ui, body, t().features.transfer_reading);
     } else if list.error.is_some() {
-        files::empty(ui, body, "无法读取目录");
+        files::empty(ui, body, t().features.transfer_cannot_read_folder);
     } else if p.visible.is_empty() {
         files::empty(
             ui,
             body,
             if p.search.is_empty() {
-                "文件夹为空"
+                t().features.transfer_folder_empty
             } else {
-                "没有匹配的文件"
+                t().features.transfer_no_matches
             },
         );
     }
     let footer = Rect::from_min_max(pos2(inner.left(), inner.bottom() - 24.), inner.max);
     let status = if p.selection.is_empty() {
-        format!("{} 个项目", p.visible.len())
+        (t().features.transfer_items)(p.visible.len())
     } else {
-        format!(
-            "{} 个项目 · 已选择 {} 个",
-            p.visible.len(),
-            p.selection.len()
-        )
+        (t().features.transfer_items_selected)(p.visible.len(), p.selection.len())
     };
     files::text(ui, footer, &status, theme::MUTED, false);
     if let Some(index) = history_action {
@@ -664,6 +683,24 @@ pub(super) fn show(
         action = Some(Action::History(p.history[index].clone()));
     }
     action
+}
+
+/// A common location in the place bar.
+#[derive(Clone, Copy)]
+enum Place {
+    Desktop,
+    Downloads,
+    Documents,
+}
+
+impl Place {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Desktop => t().features.transfer_place_desktop,
+            Self::Downloads => t().features.transfer_place_downloads,
+            Self::Documents => t().features.transfer_place_documents,
+        }
+    }
 }
 
 fn parent(path: &str) -> String {

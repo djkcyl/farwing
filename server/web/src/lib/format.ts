@@ -1,77 +1,75 @@
-// Words and numbers as the console shows them (same wording as the client).
+// Words and numbers as the console shows them (same wording as the client),
+// in the current language.
+import { locale, t } from '../i18n';
 
-export const PLATFORMS: Record<string, string> = {
-  windows: 'Windows',
-  macos: 'macOS',
-  linux: 'Linux',
-  android: 'Android',
-  ios: 'iOS',
-  web: '网页',
-};
+const named = (names: Record<string, string>, id: string) => names[id] ?? id;
 
 export function platformText(p: string): string {
-  return PLATFORMS[p] ?? p ?? '';
+  return p ? named(t().format.platforms, p) : '';
 }
 
-export const RELATIONS: Record<string, string> = {
-  own: '本账号',
-  friend: '好友',
-  assist: '访客',
-  trusted: '受信任的访客',
-};
+/// How a controller is related to the host (`relation`).
+export function relationText(relation: string): string {
+  return named(t().format.relations, relation);
+}
 
-export const PURPOSES: Record<string, string> = {
-  desktop: '远程桌面',
-  audio: '声音',
-  files: '文件',
-  ports: '端口转发',
-};
+/// What a session is for (`purpose`).
+export function purposeText(purpose: string): string {
+  return named(t().format.purposes, purpose);
+}
 
-export const CONNECT_TYPES: Record<string, string> = {
-  account: '账号',
-  assist: '短号协助',
-};
-
-/// Session capabilities (`farwing_protocol::caps`), in display order, with
-/// the client's names (`src/application/app/friends.rs` `cap_label`).
-export const CAPS: { id: string; label: string }[] = [
-  { id: 'view', label: '观看画面' },
-  { id: 'control', label: '键鼠控制' },
-  { id: 'clipboard', label: '剪贴板' },
-  { id: 'files', label: '文件传输' },
-  { id: 'ports', label: '端口转发' },
-  { id: 'power', label: '关机重启与唤醒' },
-  { id: 'audio', label: '接收声音' },
-  { id: 'microphone', label: '麦克风' },
-  { id: 'display', label: '显示设置' },
-  { id: 'diagnostics', label: '诊断包' },
-  { id: 'annotation', label: '批注' },
+/// Session capabilities (`farwing_protocol::caps`), in display order.
+export const CAPS = [
+  'view',
+  'control',
+  'clipboard',
+  'files',
+  'ports',
+  'power',
+  'audio',
+  'microphone',
+  'display',
+  'diagnostics',
+  'annotation',
 ];
 
 /// Capabilities a browser can use (`caps::WEB`), in display order.
 export const WEB_CAPS = ['view', 'control', 'clipboard', 'files', 'audio', 'microphone', 'annotation'];
 
-export const CAP_GROUPS: [string, string[]][] = [
-  ['观看', ['view', 'audio', 'annotation']],
-  ['操作', ['control', 'clipboard', 'microphone', 'files']],
-  ['管理', ['display', 'ports', 'power', 'diagnostics']],
-];
+/// Capability groups: label and members.
+export function capGroups(): [string, string[]][] {
+  const g = t().format.capGroups;
+  return [
+    [g.view, ['view', 'audio', 'annotation']],
+    [g.operate, ['control', 'clipboard', 'microphone', 'files']],
+    [g.manage, ['display', 'ports', 'power', 'diagnostics']],
+  ];
+}
 
-export const CAP_PRESETS: [string, string[]][] = [
-  ['仅观看', ['view', 'audio', 'annotation']],
-  ['协作', ['view', 'control', 'clipboard', 'files', 'audio', 'microphone', 'annotation']],
-  ['完全控制', CAPS.map((c) => c.id)],
-];
+/// Capability presets: label and capabilities.
+export function capPresets(): [string, string[]][] {
+  const p = t().format.capPresets;
+  return [
+    [p.viewOnly, ['view', 'audio', 'annotation']],
+    [p.collaborate, ['view', 'control', 'clipboard', 'files', 'audio', 'microphone', 'annotation']],
+    [p.full, CAPS],
+  ];
+}
 
 /// Granted to a new friend (`caps::DEFAULT_FRIEND`).
 export const DEFAULT_FRIEND = ['view', 'annotation'];
 
 export function capText(id: string): string {
-  return CAPS.find((c) => c.id === id)?.label ?? id;
+  return named(t().format.caps, id);
+}
+
+/// Items of a list in one line ("a、b" / "a, b").
+export function listText(items: string[]): string {
+  return items.join(t().format.listSeparator);
 }
 
 export function normalizeCaps(list: string[]): string[] {
-  return CAPS.map((c) => c.id).filter((id) => list.includes(id));
+  return CAPS.filter((id) => list.includes(id));
 }
 
 export function sameCaps(a: string[], b: string[]): boolean {
@@ -81,16 +79,16 @@ export function sameCaps(a: string[], b: string[]): boolean {
 }
 
 export function capsSummary(list: string[]): string {
-  if (!list.length) return '无权限';
-  const preset = CAP_PRESETS.find(([, p]) => sameCaps(list, p));
+  if (!list.length) return t().format.noCaps;
+  const preset = capPresets().find(([, p]) => sameCaps(list, p));
   if (preset) return preset[0];
   const labels = normalizeCaps(list).map(capText);
-  return labels.length <= 3 ? labels.join('、') : `${labels.slice(0, 3).join('、')} 等 ${labels.length} 项`;
+  return labels.length <= 3 ? listText(labels) : t().format.capsMore(listText(labels.slice(0, 3)), labels.length);
 }
 
 /// What a friend sees of one device: nothing at all without capabilities.
 export function shareSummary(list: string[]): string {
-  return list.length ? capsSummary(list) : '不共享 · 不可见';
+  return list.length ? capsSummary(list) : t().format.notShared;
 }
 
 export function deviceIdText(id: string): string {
@@ -102,29 +100,46 @@ export function connectIdText(id: string | null | undefined): string {
   return id.length === 9 ? `${id.slice(0, 3)} ${id.slice(3, 6)} ${id.slice(6)}` : id;
 }
 
-const pad = (n: number) => String(n).padStart(2, '0');
+const DATE: Intl.DateTimeFormatOptions = { year: 'numeric', month: '2-digit', day: '2-digit' };
+const DATE_EN: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'short', day: 'numeric' };
+const TIME: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
 
-/// Seconds since the epoch → "2026-10-17 08:30".
+const formats = new Map<string, Intl.DateTimeFormat | Intl.NumberFormat>();
+
+function cached<T extends Intl.DateTimeFormat | Intl.NumberFormat>(key: string, make: () => T): T {
+  const id = `${locale()} ${key}`;
+  let f = formats.get(id);
+  if (!f) formats.set(id, (f = make()));
+  return f as T;
+}
+
+function dateFormat(withTime: boolean): Intl.DateTimeFormat {
+  return cached(withTime ? 'datetime' : 'date', () => {
+    const day = locale() === 'en' ? DATE_EN : DATE;
+    return new Intl.DateTimeFormat(locale(), withTime ? { ...day, ...TIME } : day);
+  });
+}
+
+/// Seconds since the epoch → "2026/10/17 08:30", "Oct 17, 2026, 08:30".
 export function dateTime(seconds: number | null | undefined): string {
   if (!seconds) return '—';
-  const d = new Date(seconds * 1000);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return dateFormat(true).format(new Date(seconds * 1000));
 }
 
 export function date(seconds: number | null | undefined): string {
   if (!seconds) return '—';
-  const d = new Date(seconds * 1000);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return dateFormat(false).format(new Date(seconds * 1000));
 }
 
-/// "刚刚", "5 分钟前", "3 天前", or the date.
+/// "Just now", "5 minutes ago", "3 days ago", or the date.
 export function ago(seconds: number | null | undefined): string {
-  if (!seconds) return '从未';
+  const f = t().format;
+  if (!seconds) return f.never;
   const delta = Date.now() / 1000 - seconds;
-  if (delta < 60) return '刚刚';
-  if (delta < 3600) return `${Math.floor(delta / 60)} 分钟前`;
-  if (delta < 86400) return `${Math.floor(delta / 3600)} 小时前`;
-  if (delta < 86400 * 30) return `${Math.floor(delta / 86400)} 天前`;
+  if (delta < 60) return f.justNow;
+  if (delta < 3600) return f.minutesAgo(Math.floor(delta / 60));
+  if (delta < 86400) return f.hoursAgo(Math.floor(delta / 3600));
+  if (delta < 86400 * 30) return f.daysAgo(Math.floor(delta / 86400));
   return date(seconds);
 }
 
@@ -133,14 +148,28 @@ export function duration(seconds: number): string {
   const d = Math.floor(s / 86400);
   const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
-  if (d) return `${d} 天 ${h} 小时`;
-  if (h) return `${h} 小时 ${m} 分钟`;
-  if (m) return `${m} 分钟`;
-  return `${s} 秒`;
+  const f = t().format;
+  if (d) return f.daysHours(d, h);
+  if (h) return f.hoursMinutes(h, m);
+  if (m) return f.minutes(m);
+  return f.seconds(s);
+}
+
+/// A number with `digits` decimals.
+export function num(n: number, digits = 0): string {
+  return cached(
+    `num${digits}`,
+    () =>
+      new Intl.NumberFormat(locale(), {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+        useGrouping: false,
+      }),
+  ).format(n);
 }
 
 export function bytes(n: number): string {
-  if (n < 1024) return `${n} B`;
+  if (n < 1024) return `${num(n)} B`;
   const units = ['KB', 'MB', 'GB', 'TB'];
   let v = n / 1024;
   let i = 0;
@@ -148,13 +177,13 @@ export function bytes(n: number): string {
     v /= 1024;
     i++;
   }
-  return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
+  return `${num(v, v < 10 ? 1 : 0)} ${units[i]}`;
 }
 
 export function bitrate(bps: number): string {
-  if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} Mbps`;
-  if (bps >= 1e3) return `${Math.round(bps / 1e3)} kbps`;
-  return `${Math.round(bps)} bps`;
+  if (bps >= 1e6) return `${num(bps / 1e6, 1)} Mbps`;
+  if (bps >= 1e3) return `${num(bps / 1e3)} kbps`;
+  return `${num(bps)} bps`;
 }
 
 export function displayName(u: { nickname?: string; username?: string } | null | undefined): string {
@@ -162,29 +191,11 @@ export function displayName(u: { nickname?: string; username?: string } | null |
   return u.nickname || u.username || '';
 }
 
-/// Audit event kinds.
-export const AUDIT_KINDS: Record<string, string> = {
-  login: '登录',
-  'login.totp': '二次验证',
-  register: '邀请码注册',
-  'password.change': '修改密码',
-  'totp.enable': '开启二次验证',
-  'totp.disable': '关闭二次验证',
-  'user.create': '创建账号',
-  'user.update': '修改账号',
-  'user.delete': '删除账号',
-  'user.password': '重置密码',
-  'user.totp_reset': '重置二次验证',
-  'invite.create': '生成邀请码',
-  'invite.revoke': '作废邀请码',
-  'device.unbind': '解绑设备',
-  'device.disconnect': '强制下线',
-  'session.end': '结束会话',
-  'update.save': '保存更新公告',
-  'update.delete': '删除更新公告',
-  'settings.save': '修改设置',
-};
+/// Audit event kinds, in the filter's order.
+export function auditKinds(): [string, string][] {
+  return Object.entries(t().admin.auditKinds);
+}
 
 export function auditKindText(kind: string): string {
-  return AUDIT_KINDS[kind] ?? kind;
+  return named(t().admin.auditKinds, kind);
 }

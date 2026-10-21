@@ -1,5 +1,6 @@
 //! Read descriptor data from a native library without executing its entry point.
 use super::*;
+use crate::i18n::t;
 use object::{
     Object, ObjectSection,
     read::{ReadCache, ReadRef},
@@ -42,24 +43,33 @@ pub fn read(path: &Path) -> Result<Option<Vec<u8>>> {
         cache: &cache,
         budget: &budget,
     })
-    .context("无法读取动态库结构")?;
+    .context(t().features.plugin_library_unreadable)?;
     let Some(section) = object.section_by_name(".fwmeta") else {
         return Ok(None);
     };
-    ensure!(section.size() <= 128 * 1024, "插件内嵌清单段过大");
-    let data = section.data().context("无法读取插件内嵌清单")?;
+    ensure!(
+        section.size() <= 128 * 1024,
+        "{}",
+        t().features.plugin_manifest_section_too_large
+    );
+    let data = section
+        .data()
+        .context(t().features.plugin_manifest_unreadable_embedded)?;
     ensure!(
         data.len() >= sdk::MANIFEST_HEADER && &data[..8] == sdk::MANIFEST_MAGIC,
-        "插件内嵌清单头无效"
+        "{}",
+        t().features.plugin_manifest_header_invalid
     );
     ensure!(
         u32::from_le_bytes(data[8..12].try_into()?) == 1,
-        "插件内嵌清单版本不受支持"
+        "{}",
+        t().features.plugin_manifest_version_unsupported
     );
     let len = u32::from_le_bytes(data[12..16].try_into()?) as usize;
     ensure!(
         len <= sdk::MAX_MANIFEST_BYTES && len <= data.len() - sdk::MANIFEST_HEADER,
-        "插件内嵌清单长度无效"
+        "{}",
+        t().features.plugin_manifest_length_invalid
     );
     Ok(Some(
         data[sdk::MANIFEST_HEADER..sdk::MANIFEST_HEADER + len].to_vec(),

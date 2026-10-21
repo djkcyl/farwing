@@ -28,7 +28,7 @@ impl DeviceCenterApp {
         crate::ui::controls::observe_notice(
             ui.ctx(),
             "assist-connect-error",
-            "连接",
+            t().center.connection,
             crate::ui::controls::DialogIcon::Warning,
             self.assist
                 .connect_error
@@ -39,10 +39,10 @@ impl DeviceCenterApp {
             if crate::ui::controls::observe_notice_action(
                 ui.ctx(),
                 "assist-query",
-                "正在联系对方",
+                t().center.contacting,
                 crate::ui::controls::DialogIcon::Waiting,
                 Some(&self.assist.message),
-                "取消连接",
+                t().center.cancel_connection,
             )
             .is_some()
             {
@@ -54,7 +54,7 @@ impl DeviceCenterApp {
                 crate::ui::controls::notice(
                     ui.ctx(),
                     "assist-result",
-                    "连接",
+                    t().center.connection,
                     crate::ui::controls::DialogIcon::Info,
                     std::mem::take(&mut self.assist.message),
                 );
@@ -72,14 +72,14 @@ impl DeviceCenterApp {
                     ui.set_width(400.0);
                     close = crate::ui::controls::dialog_header(
                         ui,
-                        "操作未完成",
+                        t().center.not_completed,
                         crate::ui::controls::DialogIcon::Error,
                         true,
                     );
                     ui.add(egui::Label::new(message).wrap());
                     close |= crate::ui::controls::dialog_actions(
                         ui,
-                        Some(crate::ui::controls::DialogAction::new("知道了")),
+                        Some(crate::ui::controls::DialogAction::new(t().common.got_it)),
                         None,
                     )
                     .0;
@@ -98,14 +98,13 @@ impl DeviceCenterApp {
                     ui.set_width(360.0);
                     cancel = crate::ui::controls::dialog_header(
                         ui,
-                        "输入访问码",
+                        t().center.enter_access_code,
                         crate::ui::controls::DialogIcon::Info,
                         true,
                     );
                     ui.label(
-                        RichText::new(format!(
-                            "{} 需要访问码",
-                            crate::session::controller::assist_target_label(&pending.id)
+                        RichText::new((t().center.needs_access_code)(
+                            &crate::session::controller::assist_target_label(&pending.id),
                         ))
                         .color(MUTED),
                     );
@@ -113,7 +112,7 @@ impl DeviceCenterApp {
                     let input = ui.add_sized(
                         [360.0, theme::CONTROL_HEIGHT],
                         singleline_input(&mut self.assist.code)
-                            .hint_text("对方的访问码")
+                            .hint_text(t().center.access_code)
                             .char_limit(256),
                     );
                     if pending.focus {
@@ -129,10 +128,10 @@ impl DeviceCenterApp {
                     let (accept, dismiss) = crate::ui::controls::dialog_actions(
                         ui,
                         Some(
-                            crate::ui::controls::DialogAction::new("连接")
+                            crate::ui::controls::DialogAction::new(t().common.connect)
                                 .enabled(!self.assist.code.is_empty()),
                         ),
-                        Some("取消"),
+                        Some(t().common.cancel),
                     );
                     submit |= accept;
                     cancel |= dismiss;
@@ -156,14 +155,14 @@ impl DeviceCenterApp {
                     cancel = crate::ui::controls::dialog_header(
                         ui,
                         if edit.editing {
-                            "编辑收藏"
+                            t().center.edit_favorite
                         } else {
-                            "添加收藏"
+                            t().center.add_favorite
                         },
                         crate::ui::controls::DialogIcon::Edit,
                         true,
                     );
-                    ui.label(RichText::new("短号").color(MUTED));
+                    ui.label(RichText::new(t().center.short_number).color(MUTED));
                     ui.add_enabled_ui(!edit.editing, |ui| {
                         if ui
                             .add_sized(
@@ -177,30 +176,30 @@ impl DeviceCenterApp {
                         }
                     });
                     ui.add_space(10.0);
-                    ui.label(RichText::new("备注").color(MUTED));
+                    ui.label(RichText::new(t().center.note).color(MUTED));
                     ui.add_sized(
                         [380.0, theme::CONTROL_HEIGHT],
                         singleline_input(&mut edit.remark)
-                            .hint_text("可选")
+                            .hint_text(t().common.optional)
                             .char_limit(128),
                     );
                     ui.add_space(10.0);
-                    ui.label(RichText::new("访问码").color(MUTED));
+                    ui.label(RichText::new(t().center.access_code).color(MUTED));
                     edit.code_changed |= ui
                         .add_sized(
                             [380.0, theme::CONTROL_HEIGHT],
                             singleline_input(&mut edit.code)
-                                .hint_text("可选")
+                                .hint_text(t().common.optional)
                                 .char_limit(256),
                         )
                         .changed();
                     let (accept, dismiss) =
                         crate::ui::controls::dialog_actions(
                             ui,
-                            Some(crate::ui::controls::DialogAction::new("保存").enabled(
+                            Some(crate::ui::controls::DialogAction::new(t().common.save).enabled(
                                 normalize_connect_id(&edit.id).is_ok() && !self.assist.busy,
                             )),
-                            Some("取消"),
+                            Some(t().common.cancel),
                         );
                     submit = accept;
                     cancel |= dismiss;
@@ -223,9 +222,11 @@ impl DeviceCenterApp {
                 .show(ctx, |ui| {
                     ui.set_width(380.0);
                     let title = match &prompt {
-                        DeletePrompt::Recent => "清空最近连接？",
-                        DeletePrompt::Device(SavedKind::Recent, _) => "移除这条记录？",
-                        DeletePrompt::Device(SavedKind::Favorites, _) => "取消收藏？",
+                        DeletePrompt::Recent => t().center.clear_recent_title,
+                        DeletePrompt::Device(SavedKind::Recent, _) => t().center.remove_record_title,
+                        DeletePrompt::Device(SavedKind::Favorites, _) => {
+                            t().center.remove_favorite_title
+                        }
                     };
                     cancel = crate::ui::controls::dialog_header(
                         ui,
@@ -240,11 +241,11 @@ impl DeviceCenterApp {
                     let (accept, dismiss) = crate::ui::controls::dialog_actions(
                         ui,
                         Some(
-                            crate::ui::controls::DialogAction::new("确认")
+                            crate::ui::controls::DialogAction::new(t().common.ok)
                                 .enabled(!self.assist.busy)
                                 .danger(true),
                         ),
-                        Some("取消"),
+                        Some(t().common.cancel),
                     );
                     submit = accept;
                     cancel |= dismiss;

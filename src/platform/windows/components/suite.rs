@@ -1,5 +1,6 @@
 //! Product installation composes independent backends and records its ownership.
 use super::{Kind, Operation, Status};
+use crate::i18n::t;
 use crate::platform::windows::host_service::{self, vault};
 use anyhow::{Context, Result, ensure};
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -12,7 +13,11 @@ fn path() -> Result<std::path::PathBuf> {
 fn receipt() -> Result<Option<Receipt>> {
     match std::fs::read(path()?) {
         Ok(bytes) => {
-            ensure!(bytes.len() < 4096, "服务安装记录无效");
+            ensure!(
+                bytes.len() < 4096,
+                "{}",
+                t().system.service_invalid_install_record
+            );
             Ok(Some(serde_json::from_slice(&bytes)?))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -35,11 +40,11 @@ pub(crate) fn status() -> Result<Status> {
             || super::super::display::install::status()?.ready);
     Ok(Status {
         label: if complete {
-            "服务已安装".into()
+            t().system.service_installed.into()
         } else if installed {
-            "服务需要完成安装或更新".into()
+            t().system.service_incomplete.into()
         } else {
-            "未安装常驻服务".into()
+            t().system.service_resident_not_installed.into()
         },
         installed,
         removable: installed,
@@ -54,11 +59,15 @@ pub(crate) fn execute(
 ) -> Result<bool> {
     match operation {
         Operation::Install => {
-            let owner = owner.context("缺少安装用户")?;
+            let owner = owner.context(t().system.service_missing_owner)?;
             let record = receipt()?.unwrap_or_else(|| Receipt {
                 owner: owner.into(),
             });
-            ensure!(record.owner == owner, "此服务由另一 Windows 用户管理");
+            ensure!(
+                record.owner == owner,
+                "{}",
+                t().system.service_managed_by_other_user
+            );
             host_service::install::preflight()?;
             super::super::display::install::preflight(Operation::Install)?;
             vault::create(owner)?;
@@ -89,27 +98,34 @@ pub(crate) fn execute(
             match (configured, started) {
                 (Ok(reboot), Ok(())) => Ok(reboot),
                 (Err(error), Ok(())) => Err(error),
-                (Ok(_), Err(error)) => Err(error.context("启动已安装被控服务失败")),
+                (Ok(_), Err(error)) => Err(error.context(t().system.service_start_failed)),
                 (Err(error), Err(recovery)) => {
-                    Err(anyhow::anyhow!("{error:#}；恢复被控服务失败：{recovery:#}"))
+                    Err(anyhow::anyhow!((t().system.service_recovery_failed)(
+                        &format!("{error:#}"),
+                        &format!("{recovery:#}")
+                    )))
                 }
             }
         }
         Operation::Uninstall => {
-            let record = receipt()?.context("没有本程序的服务安装记录")?;
+            let record = receipt()?.context(t().system.service_no_install_record)?;
             host_service::install::preflight()?;
             removal.preflight()?;
             // Close admission and agents before removing their driver resources.
             host_service::install::stop_for_maintenance()?;
             super::super::virtual_audio::Defaults::recover_defaults()
-                .context("卸载前恢复默认音频设备失败")?;
+                .context(t().system.component_restore_audio_before_uninstall_failed)?;
             let mut reboot = removal.remove_optional_drivers()?;
             reboot |= super::super::input::install::uninstall()?;
             reboot |= host_service::install::uninstall()?;
             // Only this fixed, explicitly owned vault is removed. Keep unrelated
             // user settings, other drivers and shared signing certificates.
             let root = vault::root()?;
-            ensure!(vault::owner()? == Some(record.owner), "服务数据归属已改变");
+            ensure!(
+                vault::owner()? == Some(record.owner),
+                "{}",
+                t().system.service_data_owner_changed
+            );
             // Switch readers back to the already-restored portable store before
             // deleting any encrypted entry; never expose a half-empty account.
             let enabled = root.join("enabled");

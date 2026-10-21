@@ -73,11 +73,9 @@ pub(crate) struct IdentityMismatch {
 
 impl std::fmt::Display for IdentityMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "对方设备的密钥与设备 ID {} 不符，已拒绝连接",
-            crate::account::api::device_id_text(&self.device_id)
-        )
+        f.write_str(&(crate::i18n::t().session.error_key_id_mismatch)(
+            &crate::account::api::device_id_text(&self.device_id),
+        ))
     }
 }
 
@@ -88,7 +86,8 @@ impl std::error::Error for IdentityMismatch {}
 pub(crate) fn check_key(device_id: &str, public_key: &str) -> Result<()> {
     ensure!(
         crypto::valid_public_key(public_key),
-        "对端设备没有有效的身份公钥"
+        "{}",
+        crate::i18n::t().session.error_peer_key_invalid
     );
     if crypto::local_device_id(public_key).as_deref() != Some(device_id) {
         return Err(IdentityMismatch {
@@ -108,7 +107,7 @@ impl Binding {
     /// Add this side's attributes to a local SDP.
     pub(crate) fn sign(&self, sdp: String) -> Result<String> {
         let fingerprints = fingerprints(&sdp);
-        ensure!(!fingerprints.is_empty(), "本机连接参数缺少证书指纹");
+        ensure!(!fingerprints.is_empty(), "{}", crate::i18n::t().session.error_local_fingerprint_missing);
         let role = self.role.as_str();
         let signature = self.local.identity.sign(&crypto::dtls_identity_message(
             &self.session_id,
@@ -129,23 +128,23 @@ impl Binding {
     /// Verify the peer's attributes on a remote SDP.
     pub(crate) fn verify(&self, sdp: &str) -> Result<()> {
         let fingerprints = fingerprints(sdp);
-        ensure!(!fingerprints.is_empty(), "对方连接参数缺少证书指纹");
+        ensure!(!fingerprints.is_empty(), "{}", crate::i18n::t().session.error_peer_fingerprint_missing);
         let role = match self.role {
             Role::Controller => Role::Host,
             Role::Host => Role::Controller,
         }
         .as_str();
-        let signature = attribute(sdp, IDENTITY_ATTRIBUTE).context("对方未签名证书指纹")?;
+        let signature = attribute(sdp, IDENTITY_ATTRIBUTE).context(crate::i18n::t().session.error_fingerprint_unsigned)?;
         crypto::verify(
             &self.peer_key,
             &crypto::dtls_identity_message(&self.session_id, &self.attempt_id, role, &fingerprints),
             signature,
         )
-        .map_err(|_| anyhow::anyhow!("对方证书指纹签名无效"))?;
+        .map_err(|_| anyhow::anyhow!("{}", crate::i18n::t().session.error_fingerprint_signature_invalid))?;
         if let Some(key) = &self.local.pake {
-            let binding = attribute(sdp, PAKE_ATTRIBUTE).context("对方未用访问码确认证书指纹")?;
+            let binding = attribute(sdp, PAKE_ATTRIBUTE).context(crate::i18n::t().session.error_fingerprint_not_code_bound)?;
             if !crypto::pake_fingerprint_matches(key, &self.session_id, role, &fingerprints, binding) {
-                bail!("对方证书指纹与访问码不符");
+                bail!("{}", crate::i18n::t().session.error_fingerprint_code_mismatch);
             }
         }
         Ok(())

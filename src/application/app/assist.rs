@@ -1,4 +1,5 @@
 use super::*;
+use crate::i18n::t;
 use crate::account::assist::{
     AssistRequest, SavedDevice, SavedKind, SavedLists, normalize_target,
 };
@@ -81,13 +82,9 @@ pub(super) enum AssistResult {
 }
 
 pub(super) fn operation_error(error: anyhow::Error) -> String {
+    // A server failure shows its translated text, never the server's message.
     if let Some(failure) = error.downcast_ref::<crate::account::api::ApiFailure>() {
-        let message = if failure.message.trim().is_empty() {
-            "请求失败"
-        } else {
-            failure.message.trim()
-        };
-        format!("{message}（{}）", failure.code)
+        failure.to_string()
     } else {
         error.to_string()
     }
@@ -158,7 +155,7 @@ pub(super) async fn execute(
                         if crate::account::api::failure_code(&error)
                             == Some(crate::account::api::ErrorCode::AssistUnavailable) =>
                     {
-                        anyhow::bail!("对方没有开启访问码，也没有信任这台设备")
+                        anyhow::bail!(t().app.assist_unavailable)
                     }
                     Err(error) => return Err(error),
                 }
@@ -166,15 +163,15 @@ pub(super) async fn execute(
         }
         AssistOperation::Save { id, remark, code } => {
             client.save_assist_favorite(&id, &remark, code).await?;
-            AssistResult::Updated("收藏已更新")
+            AssistResult::Updated(t().app.favorite_updated)
         }
         AssistOperation::Delete { kind, publisher_id } => {
             client.delete_assist_saved(kind, &publisher_id).await?;
-            AssistResult::Updated("记录已移除")
+            AssistResult::Updated(t().app.record_removed)
         }
         AssistOperation::ClearRecent => {
             client.clear_assist_recent().await?;
-            AssistResult::Updated("最近连接已清空")
+            AssistResult::Updated(t().app.recent_cleared)
         }
     })
 }
@@ -240,9 +237,9 @@ impl DeviceCenterApp {
         self.assist.sequence = self.assist.sequence.wrapping_add(1);
         self.assist.querying = operation.is_query();
         self.assist.message = if self.assist.querying {
-            "正在联系对方…"
+            t().app.contacting
         } else {
-            "正在更新记录…"
+            t().app.updating_records
         }
         .into();
         self.assist.message_until = None;
@@ -257,7 +254,7 @@ impl DeviceCenterApp {
             })
             .is_ok();
         if !self.assist.busy {
-            self.assist.fail("请求发送失败");
+            self.assist.fail(t().app.request_send_failed);
         }
     }
     pub(super) fn cancel_assist_check(&mut self) {

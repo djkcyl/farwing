@@ -3,6 +3,7 @@
 //! while this participant may use port forwarding.
 use super::*;
 use crate::features::host::Lease;
+use crate::i18n::t;
 use std::sync::atomic::AtomicBool;
 
 const MAX_STREAMS: usize = 64;
@@ -94,7 +95,7 @@ impl Receiver {
                     open,
                 })
                 .await
-                .context("端口转发会话已关闭")?;
+                .context(t().features.mapping_session_closed)?;
         }
         Ok(true)
     }
@@ -138,7 +139,7 @@ pub(crate) async fn run(
                 // The owner changed the permission: tell the controller.
                 receiver
                     .transport
-                    .reset_all_remote(wire::code::FORBIDDEN, "被控端已关闭端口转发")
+                    .reset_all_remote(wire::code::FORBIDDEN, t().features.mapping_host_turned_off)
                     .await;
             }
             restart(&mut jobs);
@@ -166,9 +167,9 @@ pub(crate) async fn run(
                 }
                 if request.generation!=generation || request.policy!=policy.1 {continue;}
                 let open=request.open;
-                let denied=if !receiver.permitted(generation,policy.1) {Some((wire::code::FORBIDDEN,"本机未允许端口转发".to_owned()))}
+                let denied=if !receiver.permitted(generation,policy.1) {Some((wire::code::FORBIDDEN,t().features.mapping_not_allowed_here.to_owned()))}
                     else if let Err(error)=open.validate() {Some((wire::code::PROTOCOL,error.to_string()))}
-                    else if receiver.transport.contains(open.stream) {Some((wire::code::PROTOCOL,"重复转发编号".to_owned()))}
+                    else if receiver.transport.contains(open.stream) {Some((wire::code::PROTOCOL,t().features.mapping_duplicate_stream.to_owned()))}
                     else if jobs.len()>=MAX_STREAMS {Some((wire::code::LIMIT,String::new()))}
                     else {None};
                 if let Some((code,message))=denied {
@@ -204,7 +205,7 @@ async fn resolve(open: &wire::Open) -> std::result::Result<Vec<SocketAddr>, (i32
         Ok(ip) => vec![SocketAddr::new(ip, port)],
         Err(_) => tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host((host, port)))
             .await
-            .map_err(|_| (wire::code::DNS_FAILED, "解析超时".to_owned()))?
+            .map_err(|_| (wire::code::DNS_FAILED, t().features.mapping_resolve_timeout.to_owned()))?
             .map_err(|error| (wire::code::DNS_FAILED, error.to_string()))?
             .collect(),
     };
@@ -218,7 +219,7 @@ async fn resolve(open: &wire::Open) -> std::result::Result<Vec<SocketAddr>, (i32
         })
         .collect();
     if targets.is_empty() {
-        return Err((wire::code::FORBIDDEN, "目标必须为单播地址".to_owned()));
+        return Err((wire::code::FORBIDDEN, t().features.mapping_target_not_unicast.to_owned()));
     }
     Ok(targets)
 }
@@ -263,7 +264,7 @@ async fn serve(
                 anyhow::bail!(wire::describe(code, &message));
             }
         };
-        ensure!(receiver.permitted(generation, policy), "端口转发许可已失效");
+        ensure!(receiver.permitted(generation, policy), "{}", t().features.mapping_permission_expired);
         if open.proto == wire::proto::UDP {
             // Datagrams have no handshake to race: the first address is used.
             let target = targets[0];
@@ -289,7 +290,7 @@ async fn serve(
             tracing::debug!(stream = id, %target, "host UDP forwarding opened");
             let mut buffer = vec![0; 65_536];
             loop {
-                ensure!(receiver.permitted(generation, policy), "端口转发许可已失效");
+                ensure!(receiver.permitted(generation, policy), "{}", t().features.mapping_permission_expired);
                 tokio::select! {
                     _ = tokio::time::sleep(super::udp::IDLE) => return Ok(()),
                     _ = stream.stop.cancelled() => return Ok(()),
@@ -306,14 +307,14 @@ async fn serve(
                             lock(&stats).sent += count as u64;
                         }
                     },
-                    message = inbound.recv() => match message.context("UDP 转发已关闭")? {
+                    message = inbound.recv() => match message.context(t().features.mapping_udp_closed)? {
                         Inbound::Datagram(data) => {
                             Transport::datagram_taken(&stream);
                             let _ = socket.send(&data).await;
                             lock(&stats).received += data.len() as u64;
                         }
                         Inbound::Reset(_) => return Ok(()),
-                        _ => anyhow::bail!("UDP 转发收到无效消息"),
+                        _ => anyhow::bail!("{}", t().features.mapping_udp_invalid_message),
                     },
                 }
             }
@@ -325,7 +326,7 @@ async fn serve(
             socket = tokio::time::timeout(CONNECT_TIMEOUT, crate::transport::happy_eyeballs::connect(&targets)) => match socket {
                 Err(_) => {
                     answer(wire::code::TIMEOUT, String::new()).await?;
-                    anyhow::bail!("目标连接超时");
+                    anyhow::bail!("{}", t().features.mapping_target_timeout);
                 }
                 Ok(Err(error)) => {
                     answer(connect_code(&error), error.to_string()).await?;
@@ -335,7 +336,7 @@ async fn serve(
             },
         };
         socket.set_nodelay(true)?;
-        ensure!(receiver.permitted(generation, policy), "端口转发许可已失效");
+        ensure!(receiver.permitted(generation, policy), "{}", t().features.mapping_permission_expired);
         answer(wire::code::OK, String::new()).await?;
         tracing::debug!(stream = id, target = ?socket.peer_addr().ok(), "host TCP forwarding opened");
         let relay = Mutex::new(RuleStatus::default());

@@ -1,4 +1,5 @@
 //! Decoder generation, format changes, completion feedback and frame delivery.
+use crate::i18n::t;
 use super::{
     DecodedVideoFrame, FrameQueue, FrameWake, DECODER_INFLIGHT_LIMIT, mutex_lock,
 };
@@ -681,12 +682,15 @@ pub(super) fn video_format_label(codec: VideoCodec, format: VideoFormatSignature
         1 => "4:2:0",
         2 => "4:2:2",
         3 => "4:4:4",
-        _ => "未知色度",
+        _ => t().viewer.unknown_chroma,
     };
     let coded = if format.coded_width != format.visible_width
         || format.coded_height != format.visible_height
     {
-        format!(" · 编码 {}×{}", format.coded_width, format.coded_height)
+        format!(
+            " · {}",
+            (t().viewer.coded_size)(format.coded_width, format.coded_height)
+        )
     } else {
         String::new()
     };

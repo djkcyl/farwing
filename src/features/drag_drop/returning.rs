@@ -8,14 +8,15 @@ impl Ticket {
     ) -> Result<()> {
         ensure!(
             point.valid() && self.snapshot().stage == Stage::Dragging,
-            "拖出手势已结束"
+            "{}",
+            t().features.drag_gesture_ended
         );
         *lock(&self.point) = point;
         *lock(&self.resume_position) = Some(position);
         lock(&self.snapshot).stage = Stage::Returning;
         self.input.try_send(Command::Resume(self.id)).map_err(|_| {
             self.cancel();
-            anyhow::anyhow!("拖回队列不可用")
+            anyhow::anyhow!("{}", t().features.drag_return_queue_unavailable)
         })
     }
     pub fn return_position(&self, point: Point) -> u32 {
@@ -25,7 +26,7 @@ impl Ticket {
         0
     }
     pub fn return_commit(&self, point: Point) -> Result<()> {
-        ensure!(point.valid(), "拖回位置无效");
+        ensure!(point.valid(), "{}", t().features.drag_return_position_invalid);
         *lock(&self.point) = point;
         Ok(())
     }
@@ -58,7 +59,8 @@ impl Actor {
                     .as_ref()
                     .and_then(|s| s.current.as_ref())
                     .is_some_and(|f| f()),
-            "原按下所有权已结束"
+            "{}",
+            t().features.drag_press_ended
         );
         entry.resuming = true;
         entry.resume_at = Some(Instant::now());
@@ -76,7 +78,8 @@ impl Actor {
             self.role == Role::Host
                 && self.shared.return_capable.load(Ordering::Acquire)
                 && self.shared.enabled.load(Ordering::Acquire),
-            "拖回未获许可"
+            "{}",
+            t().features.drag_return_denied
         );
         let position = self.position(point)?;
         let Some(entry) = self.entries.get_mut(&id).filter(|e| {
@@ -93,7 +96,7 @@ impl Actor {
         let portal = entry
             .portal
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("原拖动接管已结束"))?;
+            .ok_or_else(|| anyhow::anyhow!("{}", t().features.drag_takeover_ended))?;
         entry.resuming = true;
         entry.resume_at = Some(Instant::now());
         portal.resume(position);
@@ -154,7 +157,7 @@ impl Actor {
         let entry = &self.entries[&id];
         let age = entry.resume_at.map_or(Duration::ZERO, |at| at.elapsed());
         if age > Duration::from_secs(5) {
-            self.finish(id, 4, "拖回交接超时，已释放按下".into())
+            self.finish(id, 4, t().features.drag_return_timeout.into())
                 .await?;
             return Ok(());
         }

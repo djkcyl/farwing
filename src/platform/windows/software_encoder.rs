@@ -1,5 +1,6 @@
 //! BGRA readback for the Rust H.264 encoder. No codec algorithms here.
 use super::format::{Encoded, Format, Rate};
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use farwing_codec::encoder::{Config, Encoder as Core};
 use std::sync::{Arc, atomic::AtomicBool};
@@ -50,7 +51,7 @@ impl Encoder {
         }
         Ok(Self {
             core,
-            staging: staging.context("软件编码读回纹理")?,
+            staging: staging.context(t().system.encode_software_readback_texture)?,
             context: unsafe { device.GetImmediateContext()? },
             size,
             format,
@@ -101,13 +102,16 @@ impl Encoder {
         let prepared = (|| {
             let (row, rows) = farwing_codec::PixelFormat::Bgra
                 .layout(self.size.0 as usize, self.size.1 as usize)
-                .context("软件读回大小溢出")?;
+                .context(t().system.encode_software_readback_overflow)?;
             let pitch = mapped.RowPitch as usize;
             ensure!(
                 !mapped.pData.is_null() && pitch >= row,
-                "软件编码读回行跨度无效"
+                "{}",
+                t().system.encode_software_invalid_pitch
             );
-            let len = pitch.checked_mul(rows).context("软件读回大小溢出")?;
+            let len = pitch
+                .checked_mul(rows)
+                .context(t().system.encode_software_readback_overflow)?;
             // SAFETY: Map owns the staging allocation until Unmap below. Pitch
             // and row count are checked against its configured pixel layout.
             let bytes = unsafe { std::slice::from_raw_parts(mapped.pData.cast::<u8>(), len) };

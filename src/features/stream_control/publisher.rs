@@ -78,7 +78,7 @@ pub(crate) fn update_started() -> Vec<u8> {
     crate::protocol::host_event::encode(
         crate::protocol::host_event::kind::UPDATING,
         0,
-        "被控端正在更新 Farwing",
+        t().features.stream_host_updating_farwing,
     )
 }
 
@@ -433,7 +433,7 @@ pub(crate) fn apply_capture_setting(
     {
         errors.push(PbError {
             error_code: -1,
-            error_message: "无效的画面缩放约束".into(),
+            error_message: t().features.stream_invalid_scale_limit.into(),
             ..Default::default()
         });
         return errors;
@@ -479,7 +479,7 @@ pub(crate) fn apply_capture_setting(
             (screen.width, screen.height),
         )
     } else {
-        Err(anyhow!("不支持的编码类型"))
+        Err(anyhow!("{}", t().features.stream_unsupported_codec))
     };
     match selected {
         Ok(()) => {

@@ -1,5 +1,6 @@
 //! Installed application ownership. Services consume this image; they do not own it.
 use super::files::{reject_reparse, secure_directory};
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use std::path::{Path, PathBuf};
 use windows::{
@@ -27,7 +28,7 @@ pub(super) fn folder(id: &GUID) -> Result<PathBuf> {
 /// Windows of other profiles (or viewers) still run the installed image;
 /// the file cannot be removed until they exit.
 #[derive(Debug, thiserror::Error)]
-#[error("仍有 Farwing 程序在运行（进程 {0}）")]
+#[error("{}", (crate::i18n::t().system.component_image_in_use)(.0))]
 pub(crate) struct ImageInUse(pub String);
 
 /// User processes running the installed image. The service, its resident and
@@ -41,7 +42,11 @@ fn ensure_image_unused(image: &Path) -> Result<()> {
         },
     };
     let image = std::fs::canonicalize(image)?;
-    let name = image.file_name().context("安装文件名无效")?.to_string_lossy().to_string();
+    let name = image
+        .file_name()
+        .context(t().system.component_invalid_install_file_name)?
+        .to_string_lossy()
+        .to_string();
     let own = std::process::id();
     let snapshot = crate::platform::windows::host_service::pipe::Handle(unsafe {
         CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)?
@@ -67,12 +72,16 @@ fn ensure_image_unused(image: &Path) -> Result<()> {
         result = unsafe { Process32NextW(snapshot.0, &mut entry) };
     }
     if let Err(e) = result {
-        ensure!(e.code() == ERROR_NO_MORE_FILES.to_hresult(), "无法检查运行中的程序：{e}");
+        ensure!(
+            e.code() == ERROR_NO_MORE_FILES.to_hresult(),
+            "{}",
+            (t().system.component_running_check_failed)(&e.to_string())
+        );
     }
     if busy.is_empty() {
         Ok(())
     } else {
-        Err(ImageInUse(busy.join("、")).into())
+        Err(ImageInUse(busy.join(t().system.component_list_separator)).into())
     }
 }
 /// `%ProgramFiles%\Farwing`. There is no other installation layout.
@@ -83,12 +92,21 @@ pub(crate) fn image() -> Result<PathBuf> {
     Ok(directory()?.join(crate::product::EXECUTABLE_NAME))
 }
 pub(crate) fn verify_directory(directory: &Path) -> Result<()> {
-    ensure!(directory == self::directory()?, "安装目录无效");
-    reject_reparse(directory.parent().context("安装目录无效")?)?;
+    ensure!(
+        directory == self::directory()?,
+        "{}",
+        t().system.component_invalid_install_directory
+    );
+    reject_reparse(
+        directory
+            .parent()
+            .context(t().system.component_invalid_install_directory)?,
+    )?;
     reject_reparse(directory)?;
     ensure!(
         std::fs::read_to_string(directory.join("owner.txt"))? == RECEIPT,
-        "安装目录归属不匹配"
+        "{}",
+        t().system.component_install_directory_not_owned
     );
     Ok(())
 }
@@ -112,12 +130,17 @@ impl Deployment {
     pub(crate) fn prepare() -> Result<Self> {
         let directory = directory()?;
         let created = !directory.join("owner.txt").exists();
-        reject_reparse(directory.parent().context("安装目录无效")?)?;
+        reject_reparse(
+            directory
+                .parent()
+                .context(t().system.component_invalid_install_directory)?,
+        )?;
         reject_reparse(&directory)?;
         if created {
             ensure!(
                 !directory.exists() || std::fs::read_dir(&directory)?.next().is_none(),
-                "安装目录已有未登记文件"
+                "{}",
+                t().system.component_install_directory_not_empty
             );
         } else {
             verify_directory(&directory)?;
@@ -148,7 +171,7 @@ impl Deployment {
             )?
         {
             let _ = std::fs::remove_file(&staged);
-            anyhow::bail!("复制后的程序校验失败");
+            anyhow::bail!("{}", t().system.component_copy_verification_failed);
         }
         if image.exists() {
             let backup = transaction
@@ -224,7 +247,11 @@ pub(crate) fn needs_handoff() -> Result<bool> {
     if !image.is_file() {
         return Ok(false);
     }
-    verify_directory(image.parent().context("安装路径无效")?)?;
+    verify_directory(
+        image
+            .parent()
+            .context(t().system.component_invalid_install_path)?,
+    )?;
     Ok(std::fs::canonicalize(std::env::current_exe()?)? != std::fs::canonicalize(image)?)
 }
 pub(crate) fn installed_version() -> Result<String> {
@@ -235,7 +262,11 @@ pub(crate) fn installed_version() -> Result<String> {
         time::{Duration, Instant},
     };
     let image = image()?;
-    verify_directory(image.parent().context("安装路径无效")?)?;
+    verify_directory(
+        image
+            .parent()
+            .context(t().system.component_invalid_install_path)?,
+    )?;
     // --version exits in clap, before logging, account initialization or GUI.
     let mut child = std::process::Command::new(image)
         .arg("--version")
@@ -251,26 +282,27 @@ pub(crate) fn installed_version() -> Result<String> {
         if started.elapsed() >= Duration::from_secs(3) {
             let _ = child.kill();
             let _ = child.wait();
-            anyhow::bail!("读取已安装版本超时");
+            anyhow::bail!("{}", t().system.component_version_timeout);
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    ensure!(status.success(), "读取已安装版本失败");
+    ensure!(status.success(), "{}", t().system.component_version_failed);
     let mut output = String::new();
     child
         .stdout
         .take()
-        .context("版本输出缺失")?
+        .context(t().system.component_version_output_missing)?
         .take(256)
         .read_to_string(&mut output)?;
     let version = output
         .trim()
         .strip_prefix(crate::product::PRODUCT_NAME)
         .and_then(|rest| rest.strip_prefix(' '))
-        .context("已安装版本信息无效")?;
+        .context(t().system.component_invalid_installed_version)?;
     ensure!(
         !version.is_empty() && version.len() <= 80 && !version.chars().any(char::is_control),
-        "已安装版本信息无效"
+        "{}",
+        t().system.component_invalid_installed_version
     );
     Ok(version.to_owned())
 }
@@ -279,14 +311,22 @@ pub(crate) fn start_installed(
 ) -> Result<()> {
     use std::os::windows::process::CommandExt;
     let image = image()?;
-    verify_directory(image.parent().context("安装路径无效")?)?;
-    ensure!(image.is_file(), "安装程序缺失");
+    verify_directory(
+        image
+            .parent()
+            .context(t().system.component_invalid_install_path)?,
+    )?;
+    ensure!(
+        image.is_file(),
+        "{}",
+        t().system.component_installed_image_missing
+    );
     let child = std::process::Command::new(&image)
         .args(arguments)
         .current_dir(image.parent().unwrap())
         .creation_flags(0x08000000)
         .spawn()
-        .context("启动已安装程序失败")?;
+        .context(t().system.component_start_installed_failed)?;
     // Hand off foreground permission while the launching UI is still alive.
     // Only this child receives it; services and unrelated processes do not.
     if let Err(error) =
@@ -310,7 +350,8 @@ pub(crate) fn request_uninstall(removal: super::RemovalOptions) -> Result<bool> 
     if let Some(owner) = vault::owner()? {
         ensure!(
             owner == vault::sid(std::process::id())?,
-            "只能由安装此程序的 Windows 用户卸载"
+            "{}",
+            t().system.component_uninstall_owner_only
         );
         if !removal.remove_data {
             crate::account::auth::restore_portable()?;
@@ -332,13 +373,14 @@ pub(crate) fn uninstall(removal: super::RemovalOptions) -> Result<bool> {
     let directory = directory()?;
     removal.preflight()?;
     crate::platform::windows::virtual_audio::Defaults::recover_defaults()
-        .context("卸载前恢复默认音频设备失败")?;
+        .context(t().system.component_restore_audio_before_uninstall_failed)?;
     if !directory.exists() {
         // Allow a failed data-cleanup step to be retried after the application
         // image has already been removed. All component removals remain scoped.
         ensure!(
             !host_service::install::status()?.installed,
-            "服务安装目录缺失"
+            "{}",
+            t().system.component_service_directory_missing
         );
         let mut reboot = removal.remove_optional_drivers()?;
         reboot |= input::install::uninstall()?;
@@ -358,7 +400,7 @@ pub(crate) fn uninstall(removal: super::RemovalOptions) -> Result<bool> {
         reboot |= input::install::uninstall()?;
         reboot | host_service::install::uninstall()?
     };
-    ensure!(!reboot, "组件移除需要重启 Windows");
+    ensure!(!reboot, "{}", t().system.component_removal_needs_restart);
     remove_directory(&directory)?;
     integration::register(false)?;
     Ok(false)
@@ -376,7 +418,9 @@ fn remove_directory(directory: &Path) -> Result<()> {
         let file = directory.join(name);
         reject_reparse(&file)?;
         if file.exists() {
-            std::fs::remove_file(&file).with_context(|| format!("无法移除{}", file.display()))?;
+            std::fs::remove_file(&file).with_context(|| {
+                (t().system.component_remove_file_failed)(&file.display().to_string())
+            })?;
         }
     }
     std::fs::remove_file(directory.join("owner.txt"))?;

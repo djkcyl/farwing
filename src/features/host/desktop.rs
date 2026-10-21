@@ -1,6 +1,7 @@
 //! Desktop media preparation within an already authorized controlled connection.
 use super::{VideoConfig, capture, encoder, format};
 use crate::features::stream_control::publisher;
+use crate::i18n::t;
 use crate::protocol::capability::DeviceCapability;
 use anyhow::{Context, Result, ensure};
 use std::sync::Arc;
@@ -37,9 +38,9 @@ impl Cache {
         active: impl Fn() -> bool + Send + 'static,
     ) -> Result<Arc<Capabilities>> {
         let mut cached = self.0.lock().await;
-        ensure!(active(), "媒体准备已取消");
+        ensure!(active(), "{}", t().features.host_media_cancelled);
         let adapters = tokio::task::spawn_blocking(capture::encoding_adapters).await??;
-        ensure!(active(), "媒体准备已取消");
+        ensure!(active(), "{}", t().features.host_media_cancelled);
         if let Some(capabilities) = cached.as_ref()
             && same_probe_source(&capabilities.screen, &screen)
             && capabilities.adapters == adapters
@@ -250,18 +251,18 @@ async fn probe(
 ) -> Result<Capabilities> {
     tokio::task::spawn_blocking(move || {
         let started = std::time::Instant::now();
-        ensure!(active(), "媒体准备已取消");
+        ensure!(active(), "{}", t().features.host_media_cancelled);
         let codecs = match probe_in_child(&screen, gpu_compatibility, &active) {
             Ok(codecs) => codecs,
             Err(error) => {
-                ensure!(active(), "媒体准备已取消");
+                ensure!(active(), "{}", t().features.host_media_cancelled);
                 tracing::warn!(error = %format!("{error:#}"), "encoder probe process failed; probing here");
                 let _runtime = encoder::Runtime::with_gpu_compatibility(gpu_compatibility)?;
                 let mut desktop = capture::Desktop::open_selected(&screen)?;
                 encoder::probe(&mut desktop, &active)?
             }
         };
-        ensure!(active(), "媒体准备已取消");
+        ensure!(active(), "{}", t().features.host_media_cancelled);
         tracing::info!(
             elapsed_ms = started.elapsed().as_millis(),
             screen_id = screen.id,
@@ -275,7 +276,7 @@ async fn probe(
         })
     })
     .await
-    .context("被控能力检查任务中断")?
+    .context(t().features.host_probe_interrupted)?
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

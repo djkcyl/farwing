@@ -1,3 +1,4 @@
+use crate::i18n::t;
 use std::sync::{Arc, Mutex};
 
 use crate::platform::decoder::WindowsGpuVideoFrame;
@@ -104,14 +105,17 @@ impl D3D11SurfaceWriter {
                     break;
                 }
                 Err(error) => {
-                    devices.push((format!("适配器枚举 {}", index + 1), Err(error.into())));
+                    devices.push((
+                        (t().system.gpu_adapter_enumeration)(index + 1),
+                        Err(error.into()),
+                    ));
                     break;
                 }
             };
             let desc = match unsafe { adapter.GetDesc1() } {
                 Ok(desc) => desc,
                 Err(error) => {
-                    devices.push((format!("适配器 {}", index + 1), Err(error.into())));
+                    devices.push(((t().system.gpu_adapter)(index + 1), Err(error.into())));
                     continue;
                 }
             };
@@ -128,7 +132,7 @@ impl D3D11SurfaceWriter {
                     .unwrap_or(desc.Description.len())],
             );
             let label = if devices.iter().any(|(label, _)| label == &name) {
-                format!("{name} · 适配器 {}", index + 1)
+                (t().system.gpu_adapter_named)(&name, index + 1)
             } else {
                 name
             };

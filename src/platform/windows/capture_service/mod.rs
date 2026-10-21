@@ -6,6 +6,7 @@ use super::{
     capture::Screen,
     host_service::{pipe::Pipe, process},
 };
+use crate::i18n::t;
 pub(crate) use agent::run as agent;
 use anyhow::{Result, ensure};
 pub(crate) use client::Client;
@@ -64,7 +65,7 @@ fn counter() -> Result<(i64, i64)> {
         QueryPerformanceCounter(&mut now)?;
         QueryPerformanceFrequency(&mut frequency)?;
     }
-    ensure!(frequency > 0, "采集时钟不可用");
+    ensure!(frequency > 0, "{}", t().system.capture_clock_unavailable);
     Ok((now, frequency))
 }
 pub(crate) fn serve(running: impl Fn() -> bool + Sync) -> Result<()> {

@@ -1,5 +1,6 @@
 use super::model::{FileInfo, entry};
 use super::*;
+use crate::i18n::t;
 use crate::account::client::AuthenticatedClient;
 use crate::session::controller::ControllerConnection;
 use serde::{Deserialize, Serialize};
@@ -23,14 +24,15 @@ pub(crate) enum TaskState {
 }
 impl TaskState {
     pub fn label(self) -> &'static str {
+        let text = &t().features;
         match self {
-            Self::Queued => "等待传输",
-            Self::Running => "传输中",
-            Self::Paused => "已暂停",
-            Self::Failed => "失败",
-            Self::Done => "已完成",
-            Self::Cancelled => "已取消",
-            Self::Skipped => "已跳过",
+            Self::Queued => text.transfer_state_queued,
+            Self::Running => text.transfer_state_running,
+            Self::Paused => text.transfer_state_paused,
+            Self::Failed => text.transfer_state_failed,
+            Self::Done => text.transfer_state_done,
+            Self::Cancelled => text.transfer_cancelled,
+            Self::Skipped => text.transfer_state_skipped,
         }
     }
 }
@@ -168,7 +170,7 @@ impl Handle {
         self.service
             .commands
             .try_send(c)
-            .map_err(|_| anyhow::anyhow!("操作队列已满"))
+            .map_err(|_| anyhow::anyhow!("{}", t().features.transfer_command_queue_full))
     }
 }
 pub(super) struct Repository {
@@ -344,7 +346,7 @@ async fn connect(
     options: crate::media::ConnectionMediaOptions,
     stop: &CancellationToken,
 ) -> Result<ControllerConnection> {
-    let list = tokio::select! {biased;_=stop.cancelled()=>anyhow::bail!("已取消"),v=client.list_devices()=>v?};
+    let list = tokio::select! {biased;_=stop.cancelled()=>anyhow::bail!("{}", t().features.transfer_cancelled),v=client.list_devices()=>v?};
     let d = list.with_capability(&device.device_id, farwing_protocol::caps::FILES)?;
     ensure!(
         d.platform.is_desktop()
@@ -352,7 +354,7 @@ async fn connect(
             && d.is_connected()
             && d.controllable
             && d.controlled_support,
-        "设备当前不允许文件连接"
+        "{}", t().features.transfer_device_not_available
     );
     let policy = client.feature_catalog().policy_for(d);
     ControllerConnection::connect_files(client, d, policy, options, stop).await
@@ -422,14 +424,14 @@ async fn run(
             let attempt_stop = stop.child_token();
             let attempt_future = async {
                 let c = connect(&client, &device, options, &attempt_stop).await?;
-                let ready = tokio::select! {biased;_=attempt_stop.cancelled()=>Err(anyhow::anyhow!("已取消")),v=c.wait_port_mapping_ready()=>v};
+                let ready = tokio::select! {biased;_=attempt_stop.cancelled()=>Err(anyhow::anyhow!("{}", t().features.transfer_cancelled)),v=c.wait_port_mapping_ready()=>v};
                 if let Err(e) = ready {
                     let _ = c.close().await;
                     return Err(e);
                 }
                 if !c.stream_control_handle().file_transfer().supported() {
                     let _ = c.close().await;
-                    anyhow::bail!("被控端不支持文件传输");
+                    anyhow::bail!("{}", t().features.transfer_host_unsupported);
                 }
                 Ok(c)
             };
@@ -480,7 +482,7 @@ async fn run(
             wire = None;
             let mut s = lock(&state);
             s.connected = false;
-            s.error = Some("被控端已关闭连接权限，传输已暂停".into());
+            s.error = Some(t().features.transfer_permission_off_paused.into());
         }
         if alive.as_ref().is_some_and(|a| a.is_finished()) {
             let result = alive.take().unwrap().await;
@@ -497,8 +499,8 @@ async fn run(
             s.connected = false;
             s.remote.busy = false;
             s.error = Some(match result {
-                Ok(Err(e)) => format!("连接已结束：{e}"),
-                _ => "连接已结束，任务已暂停".into(),
+                Ok(Err(e)) => (t().features.transfer_connection_ended_with)(&e.to_string()),
+                _ => t().features.transfer_connection_ended_paused.into(),
             });
         }
         let finished = running
@@ -509,7 +511,7 @@ async fn run(
         for key in finished {
             if let Some((_, t)) = running.remove(&key) {
                 if let Err(e) = t.await {
-                    let message = format!("文件工作线程已停止：{e}");
+                    let message = (crate::i18n::t().features.transfer_worker_stopped)(&e.to_string());
                     if let Some(mut record) = repo.get(&key) {
                         record.state = TaskState::Failed;
                         record.error = Some(message.clone());
@@ -606,7 +608,7 @@ async fn run(
                     lock(&state).records = records.iter().cloned().map(Arc::new).collect();
                 }
                 Command::ResumeAll => {
-                    ensure!(wire.is_some(), "设备未连接");
+                    ensure!(wire.is_some(), "{}", t().features.transfer_device_not_connected);
                     let mut records = lock(&repo.records);
                     let mut next = records.clone();
                     for r in &mut next {
@@ -646,7 +648,7 @@ async fn run(
                     }
                 }
                 Command::Browse(remote, path) => {
-                    ensure!(!path.contains('\0') && path.len() < 65536, "目录路径无效");
+                    ensure!(!path.contains('\0') && path.len() < 65536, "{}", t().features.transfer_directory_path_invalid);
                     let token = if remote {
                         remote_query.cancel();
                         remote_query = stop.child_token();
@@ -672,7 +674,7 @@ async fn run(
                         let result = if remote {
                             match w {
                                 Some(w) => tasks::directory(w, path, token.clone()).await,
-                                None => Err(anyhow::anyhow!("文件连接未就绪")),
+                                None => Err(anyhow::anyhow!("{}", t().features.transfer_connection_not_ready)),
                             }
                         } else {
                             tokio::task::spawn_blocking(move || local_list(&path))
@@ -701,17 +703,17 @@ async fn run(
                     });
                 }
                 Command::Add(records) => {
-                    ensure!(wire.is_some(), "设备未连接");
+                    ensure!(wire.is_some(), "{}", t().features.transfer_device_not_connected);
                     ensure!(
                         lock(&repo.records).len() + records.len() <= 256,
-                        "传输记录已满"
+                        "{}", t().features.transfer_records_full
                     );
                     for r in records {
                         ensure!(
                             matches!(r.policy, 1..=3)
                                 && !r.source.is_empty()
                                 && !r.destination.is_empty(),
-                            "传输参数无效"
+                            "{}", t().features.transfer_parameters_invalid
                         );
                         ensure!(
                             !lock(&repo.records)
@@ -723,7 +725,7 @@ async fn run(
                                         old.state,
                                         TaskState::Queued | TaskState::Running | TaskState::Paused
                                     )),
-                            "相同的传输任务已存在"
+                            "{}", t().features.transfer_duplicate_task
                         );
                         repo.save(&r)?;
                     }
@@ -740,12 +742,12 @@ async fn run(
                     }
                 }
                 Command::Resume(key) => {
-                    ensure!(wire.is_some(), "设备未连接");
-                    ensure!(!running.contains_key(&key), "任务正在停止");
-                    let mut r = repo.get(&key).context("任务不存在")?;
+                    ensure!(wire.is_some(), "{}", t().features.transfer_device_not_connected);
+                    ensure!(!running.contains_key(&key), "{}", t().features.transfer_task_stopping);
+                    let mut r = repo.get(&key).context(t().features.transfer_task_missing)?;
                     ensure!(
                         matches!(r.state, TaskState::Paused | TaskState::Failed),
-                        "任务不可继续"
+                        "{}", t().features.transfer_task_not_resumable
                     );
                     r.state = TaskState::Queued;
                     r.error = None;
@@ -756,7 +758,7 @@ async fn run(
                         c.cancel();
                         t.await?;
                     }
-                    let mut r = repo.get(&key).context("任务不存在")?;
+                    let mut r = repo.get(&key).context(t().features.transfer_task_missing)?;
                     if !matches!(
                         r.state,
                         TaskState::Done | TaskState::Cancelled | TaskState::Skipped
@@ -767,7 +769,7 @@ async fn run(
                                     storage::cleanup(root, &r.key, &r.partial)?;
                                 }
                             } else if r.started {
-                                let w = wire.as_ref().context("设备未连接")?;
+                                let w = wire.as_ref().context(t().features.transfer_device_not_connected)?;
                                 tasks::discard(w.clone(), r.key.clone(), stop.child_token())
                                     .await?;
                             }
@@ -777,7 +779,7 @@ async fn run(
                         r.state = TaskState::Cancelled;
                         r.error = cleanup
                             .err()
-                            .map(|e| format!("已取消，临时文件未清理：{e:#}"));
+                            .map(|e| (t().features.transfer_cancelled_cleanup_failed)(&format!("{e:#}")));
                         repo.save(&r)?;
                     } else {
                         let mut records = lock(&repo.records);
@@ -792,7 +794,7 @@ async fn run(
                     }
                 }
                 c @ (Command::Create(..) | Command::Rename(..) | Command::Delete(..)) => {
-                    ensure!(!lock(&state).operation_busy, "文件操作进行中");
+                    ensure!(!lock(&state).operation_busy, "{}", t().features.transfer_operation_busy);
                     lock(&state).operation_busy = true;
                     let repo = repo.clone();
                     let w = wire.clone();
@@ -912,7 +914,7 @@ pub(super) fn local_list(path: &str) -> Result<Vec<FileEntry>> {
             },
             hidden: m.file_attributes() & 0x2 != 0,
         });
-        ensure!(entries.len() <= storage::MAX_FILES, "目录项目过多");
+        ensure!(entries.len() <= storage::MAX_FILES, "{}", t().features.transfer_too_many_entries);
     }
     entries.sort_by(|a, b| {
         (a.entry_type >= entry::FILE, a.name.to_lowercase())
@@ -929,18 +931,18 @@ async fn manage(c: Command, wire: Option<Arc<Transport>>, stop: CancellationToke
     };
     if kind < 2 {
         let n = storage::safe_relative(&name)?;
-        ensure!(n.components().count() == 1, "名称不能包含路径");
+        ensure!(n.components().count() == 1, "{}", t().features.transfer_name_has_path);
     }
     if kind != 0 {
         ensure!(
             !path.trim_end_matches(['\\', '/']).is_empty()
                 && path.trim_end_matches(['\\', '/']) != ":"
                 && !path.trim_end_matches(['\\', '/']).ends_with(':'),
-            "不能修改或删除磁盘根目录"
+            "{}", t().features.transfer_cannot_change_drive_root
         );
     }
     if remote {
-        let wire = wire.context("文件连接未就绪")?;
+        let wire = wire.context(t().features.transfer_connection_not_ready)?;
         return match kind {
             0 => tasks::make_dir(wire, path, name, stop).await.map(drop),
             1 => tasks::rename(wire, path, name, stop).await.map(drop),
@@ -952,7 +954,7 @@ async fn manage(c: Command, wire: Option<Arc<Transport>>, stop: CancellationToke
         let parent = storage::canonical_dir(if kind == 0 {
             &p
         } else {
-            p.parent().context("不能操作磁盘根目录")?
+            p.parent().context(t().features.transfer_cannot_use_drive_root)?
         })?;
         let relative = if kind == 0 {
             storage::safe_relative(&name)?
@@ -960,7 +962,7 @@ async fn manage(c: Command, wire: Option<Arc<Transport>>, stop: CancellationToke
             storage::safe_relative(
                 p.file_name()
                     .and_then(|n| n.to_str())
-                    .context("文件名无效")?,
+                    .context(t().features.transfer_file_name_invalid)?,
             )?
         };
         let _locks = storage::parents(&parent, &relative, false)?;
@@ -968,13 +970,13 @@ async fn manage(c: Command, wire: Option<Arc<Transport>>, stop: CancellationToke
         match kind {
             0 => std::fs::create_dir(target)?,
             1 => {
-                ensure!(!parent.join(&name).exists(), "目标名称已经存在");
+                ensure!(!parent.join(&name).exists(), "{}", t().features.transfer_name_exists);
                 std::fs::rename(target, parent.join(name))?;
             }
             2 => std::fs::remove_file(target)?,
             _ => {
                 let _ = storage::scan(&target, &stop)?;
-                ensure!(!stop.is_cancelled(), "已取消");
+                ensure!(!stop.is_cancelled(), "{}", t().features.transfer_cancelled);
                 std::fs::remove_dir_all(target)?;
             }
         }

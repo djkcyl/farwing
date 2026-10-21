@@ -1,16 +1,17 @@
 //! RFC 7798 single NAL and FU packets, without DONL (not negotiated).
 use anyhow::{Result, ensure};
 use bytes::Bytes;
+use crate::i18n::t;
 pub(crate) fn payloads(mtu: usize, data: &[u8]) -> Result<Vec<Bytes>> {
-    ensure!(mtu > 3, "HEVC RTP负载预算不足");
+    ensure!(mtu > 3, "{}", t().features.host_hevc_payload_too_small);
     let mut packets = Vec::new();
     for nal in crate::media::video_format::annex_b_units(data) {
         ensure!(
             nal.len() >= 2 && nal[0] & 0x80 == 0 && nal[1] & 7 != 0,
-            "HEVC NAL头无效"
+            "{}", t().features.host_hevc_nal_header_invalid
         );
         let kind = (nal[0] >> 1) & 63;
-        ensure!(kind < 48, "输入HEVC码流包含RTP封包类型");
+        ensure!(kind < 48, "{}", t().features.host_hevc_rtp_packet_type);
         if nal.len() <= mtu {
             packets.push(Bytes::copy_from_slice(nal));
             continue;
@@ -28,6 +29,6 @@ pub(crate) fn payloads(mtu: usize, data: &[u8]) -> Result<Vec<Bytes>> {
             packets.push(Bytes::from(packet));
         }
     }
-    ensure!(!packets.is_empty(), "HEVC码流缺少Annex B NAL");
+    ensure!(!packets.is_empty(), "{}", t().features.host_hevc_no_nal);
     Ok(packets)
 }

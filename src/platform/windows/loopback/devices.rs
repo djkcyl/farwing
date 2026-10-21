@@ -2,6 +2,7 @@
 //! thread enumerates devices, rebuilds streams or unregisters COM callbacks.
 use super::Apartment;
 use anyhow::{Result, ensure};
+use crate::i18n::t;
 use crossbeam_queue::ArrayQueue;
 use std::sync::{
     Arc,
@@ -106,7 +107,7 @@ impl Endpoint {
                 ))
             }
         };
-        read().unwrap_or_else(|_| "系统默认播放设备".into())
+        read().unwrap_or_else(|_| t().system.loopback_default_device.into())
     }
 }
 #[derive(Default)]
@@ -180,7 +181,8 @@ impl Devices {
             };
             ensure!(
                 device.cast::<IMMEndpoint>()?.GetDataFlow()? == eRender,
-                "所选设备不是播放设备"
+                "{}",
+                t().system.loopback_not_playback
             );
             if device.GetState()?.0 & DEVICE_STATE_ACTIVE.0 == 0 {
                 return Ok(None);
@@ -191,7 +193,7 @@ impl Devices {
     fn describe(device: IMMDevice) -> Result<Endpoint> {
         unsafe {
             let id = TaskString(device.GetId()?);
-            ensure!(!id.0.is_null(), "音频端点标识为空");
+            ensure!(!id.0.is_null(), "{}", t().system.loopback_endpoint_id_empty);
             Ok(Endpoint {
                 id: id.0.to_string()?,
                 device,
@@ -294,7 +296,11 @@ impl SessionWatch {
     }
     pub fn check(&self) -> Result<()> {
         let reason = self.disconnected.load(Ordering::Acquire);
-        ensure!(reason < 0, "音频会话已失效（原因 {reason}）");
+        ensure!(
+            reason < 0,
+            "{}",
+            (t().system.loopback_session_invalid)(&reason.to_string())
+        );
         Ok(())
     }
 }

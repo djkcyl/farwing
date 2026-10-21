@@ -1,6 +1,7 @@
 //! State of the "设备" and "本机" pages (`docs/access-model.md` §3): the one
 //! connect bar, the device list's tabs and LAN discovery, and changes to
 //! the devices this one trusts.
+use crate::i18n::t;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -148,7 +149,10 @@ impl DirectUi {
                             lan.found = Some(merged);
                             lan.error = None;
                         }
-                        Err(error) => lan.error = Some(format!("局域网发现失败：{error:#}")),
+                        Err(error) => {
+                            lan.error =
+                                Some((t().app.lan_discovery_failed)(&format!("{error:#}")))
+                        }
                     }
                 }
                 ctx.request_repaint();
@@ -210,9 +214,9 @@ impl DirectUi {
                         })
                     })
                     .map_err(|error| match error.downcast_ref::<crate::account::api::ApiFailure>() {
-                        // The host's own words, without the protocol code.
-                        Some(failure) if !failure.message.is_empty() => failure.message.clone(),
-                        _ => format!("{error:#}"),
+                        // The failure's translated text, not the host's message.
+                        Some(failure) => failure.to_string(),
+                        None => format!("{error:#}"),
                     });
                 if let Some(pairing) = slot.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
                     pairing.outcome = Some(result);
@@ -330,7 +334,7 @@ impl DirectUi {
         done: impl Into<String>,
     ) {
         let Some(account) = host.map(|host| host.account_generation()) else {
-            self.error = Some("后台服务未就绪".into());
+            self.error = Some(t().app.service_not_ready.into());
             return;
         };
         let done = done.into();
@@ -348,7 +352,7 @@ impl DirectUi {
             });
         if spawned.is_err() {
             self.sending = false;
-            self.error = Some("无法联系后台服务".into());
+            self.error = Some(t().app.cant_reach_service.into());
         }
     }
 

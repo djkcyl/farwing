@@ -1,5 +1,6 @@
 //! Explicit Ethernet WoL inspection/configuration. Never restarts an adapter.
 use anyhow::{Context, Result, ensure};
+use crate::i18n::t;
 use serde::{Deserialize, Serialize};
 use std::{
     io::Read,
@@ -16,18 +17,20 @@ pub(crate) struct AdapterKey {
 }
 impl AdapterKey {
     pub fn validate(&self) -> Result<()> {
-        uuid::Uuid::parse_str(&self.guid).context("网卡标识无效")?;
+        uuid::Uuid::parse_str(&self.guid).context(t().system.wol_adapter_id_invalid)?;
         ensure!(
             self.guid.len() == 36
                 && self
                     .guid
                     .bytes()
                     .all(|b| b.is_ascii_hexdigit() || b == b'-'),
-            "网卡标识无效"
+            "{}",
+            t().system.wol_adapter_id_invalid
         );
         ensure!(
             self.mac.len() == 12 && self.mac.bytes().all(|b| b.is_ascii_hexdigit()),
-            "网卡MAC无效"
+            "{}",
+            t().system.wol_adapter_mac_invalid
         );
         Ok(())
     }
@@ -41,13 +44,13 @@ pub(crate) struct Property {
 impl Property {
     pub fn title(&self) -> &str {
         match self.key.as_str() {
-            "WakeOnMagicPacket" => "魔术包唤醒（系统）",
-            "*WakeOnMagicPacket" => "魔术包唤醒（驱动）",
-            "AllowComputerToTurnOffDevice" => "网卡电源管理",
-            "S5WakeOnLan" => "关机后唤醒",
-            "EnablePME" => "电源管理事件（PME）",
-            "DeviceWake" => "允许网卡唤醒电脑",
-            "MagicPacketOnly" => "仅允许魔术包唤醒",
+            "WakeOnMagicPacket" => t().system.wol_property_magic_packet_system,
+            "*WakeOnMagicPacket" => t().system.wol_property_magic_packet_driver,
+            "AllowComputerToTurnOffDevice" => t().system.wol_property_power_management,
+            "S5WakeOnLan" => t().system.wol_property_wake_from_shutdown,
+            "EnablePME" => t().system.wol_property_pme,
+            "DeviceWake" => t().system.wol_property_device_wake,
+            "MagicPacketOnly" => t().system.wol_property_magic_packet_only,
             _ => &self.key,
         }
     }
@@ -80,9 +83,10 @@ pub(crate) fn inspect(
     }
     ensure!(
         !apply || (target.is_some() && crate::platform::windows::components::elevated()?),
-        "配置网卡需要管理员权限"
+        "{}",
+        t().system.wol_admin_required
     );
-    ensure!(!cancel.is_cancelled(), "操作已取消");
+    ensure!(!cancel.is_cancelled(), "{}", t().system.wol_cancelled);
     let init = match target {
         Some(key) => format!("$Target='{}';$ExpectedMac='{}';", key.guid, key.mac),
         None => "$Target=$null;$ExpectedMac=$null;".into(),
@@ -106,7 +110,8 @@ pub(crate) fn inspect(
     } as usize;
     ensure!(
         length > 0 && length < directory.len(),
-        "Windows系统目录不可用"
+        "{}",
+        t().system.wol_system_directory_unavailable
     );
     let exe = std::path::PathBuf::from(String::from_utf16_lossy(&directory[..length]))
         .join("WindowsPowerShell/v1.0/powershell.exe");
@@ -123,7 +128,7 @@ pub(crate) fn inspect(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("无法启动网卡配置检查")?;
+        .context(t().system.wol_check_start_failed)?;
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
     let output = std::thread::spawn(move || {
@@ -142,7 +147,7 @@ pub(crate) fn inspect(
         if cancel.is_cancelled() || start.elapsed() > Duration::from_secs(45) {
             let _ = child.kill();
             let _ = child.wait();
-            break Err(anyhow::anyhow!("网卡检查或配置已取消或超时"));
+            break Err(anyhow::anyhow!("{}", t().system.wol_check_cancelled));
         }
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
@@ -156,11 +161,11 @@ pub(crate) fn inspect(
     };
     let data = output
         .join()
-        .map_err(|_| anyhow::anyhow!("网卡结果读取中断"))??;
+        .map_err(|_| anyhow::anyhow!("{}", t().system.wol_result_interrupted))??;
     let _ = errors.join();
-    ensure!(outcome?.success(), "网卡检查或配置失败");
-    ensure!(data.len() <= 1024 * 1024, "网卡结果过大");
-    serde_json::from_slice(&data).context("网卡检查结果格式错误")
+    ensure!(outcome?.success(), "{}", t().system.wol_check_failed);
+    ensure!(data.len() <= 1024 * 1024, "{}", t().system.wol_result_too_large);
+    serde_json::from_slice(&data).context(t().system.wol_result_invalid)
 }
 
 /// CLI is only a narrowly scoped local elevation helper; cloud authorization
@@ -206,14 +211,14 @@ pub(crate) fn configure(key: &AdapterKey, cancel: &CancellationToken) -> Result<
         nShow: SW_HIDE.0,
         ..Default::default()
     };
-    ensure!(!cancel.is_cancelled(), "操作已取消");
-    unsafe { ShellExecuteExW(&mut info) }.context("网卡配置未启动")?;
+    ensure!(!cancel.is_cancelled(), "{}", t().system.wol_cancelled);
+    unsafe { ShellExecuteExW(&mut info) }.context(t().system.wol_configure_not_started)?;
     let handle = crate::platform::windows::host_service::pipe::Handle(info.hProcess);
-    ensure!(!handle.0.is_invalid(), "网卡配置进程不可用");
+    ensure!(!handle.0.is_invalid(), "{}", t().system.wol_configure_process_unavailable);
     // Once elevated configuration starts, wait for its bounded operation. Do not
     // interrupt an arbitrary successful subset by killing the privileged helper.
     let result = unsafe { WaitForSingleObject(handle.0, 60_000) };
-    ensure!(result == WAIT_OBJECT_0, "网卡配置尚未结束");
+    ensure!(result == WAIT_OBJECT_0, "{}", t().system.wol_configure_unfinished);
     let mut code = 0;
     unsafe {
         GetExitCodeProcess(handle.0, &mut code)?;
@@ -221,7 +226,7 @@ pub(crate) fn configure(key: &AdapterKey, cancel: &CancellationToken) -> Result<
     let mut rows = inspect(Some(key), false, cancel)?;
     if code != 0 {
         for row in &mut rows {
-            row.errors.push("部分设置未完成".into());
+            row.errors.push(t().system.wol_partially_applied.into());
         }
     }
     Ok(rows)

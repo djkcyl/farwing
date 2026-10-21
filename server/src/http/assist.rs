@@ -25,6 +25,7 @@ use farwing_protocol::realtime::{
     AssistAcceptPush, AssistCancelled, AssistJoinPush, Envelope, types,
 };
 use farwing_protocol::session::ConnectType;
+use farwing_protocol::error::reason;
 use farwing_protocol::{ErrorCode, ids};
 use serde_json::json;
 use std::time::Duration;
@@ -62,7 +63,11 @@ async fn assist_host(app: &App, auth: &AnyAuth, target: &str) -> ApiResult<Devic
         .await?
         .ok_or_else(ApiError::device_not_found)?;
     if host.id == auth.device.id {
-        return Err(ApiError::bad_request("a device cannot assist itself"));
+        return Err(ApiError::reason(
+            ErrorCode::BadRequest,
+            reason::SELF_CONNECT,
+            "a device cannot assist itself",
+        ));
     }
     if !app.hub.is_online(&host.id) {
         return Err(ApiError::device_offline());
@@ -102,11 +107,14 @@ fn target_key(connect_id: &str) -> String {
 }
 
 fn unavailable() -> ApiError {
-    ApiError::new(ErrorCode::AssistUnavailable, "对方没有开启访问码，也没有信任这台设备")
+    ApiError::new(
+        ErrorCode::AssistUnavailable,
+        "host has no access code and does not trust this device",
+    )
 }
 
 fn code_required(mode: Option<AssistMode>) -> ApiError {
-    let e = ApiError::new(ErrorCode::AssistCodeRequired, "需要访问码");
+    let e = ApiError::new(ErrorCode::AssistCodeRequired, "access code required");
     match mode {
         Some(m) => e.with_details(json!({ "mode": m.as_str() })),
         None => e,
@@ -116,12 +124,12 @@ fn code_required(mode: Option<AssistMode>) -> ApiError {
 fn refusal_error(refusal: Option<AssistRefusal>, mode: Option<AssistMode>) -> ApiError {
     match refusal {
         Some(AssistRefusal::CodeInvalid) => {
-            ApiError::new(ErrorCode::AssistCodeInvalid, "访问码不正确")
+            ApiError::new(ErrorCode::AssistCodeInvalid, "access code is incorrect")
         }
         Some(AssistRefusal::CodeRequired) => code_required(mode),
         Some(AssistRefusal::Unavailable) => unavailable(),
         Some(AssistRefusal::Rejected) | None => {
-            ApiError::new(ErrorCode::AssistRejected, "对方拒绝了本次连接")
+            ApiError::new(ErrorCode::AssistRejected, "host declined the connection")
         }
     }
 }
@@ -304,7 +312,11 @@ pub async fn accept(
             Err(refusal_error(d.refusal, mode))
         }
         Ok(Ok(DecisionOutcome::Cancelled)) => {
-            Err(ApiError::new(ErrorCode::Conflict, "请求已取消"))
+            Err(ApiError::reason(
+                ErrorCode::Conflict,
+                reason::REQUEST_CANCELLED,
+                "request cancelled",
+            ))
         }
         _ => {
             push_cancelled(&app, &parties.host_device_id, &rid);

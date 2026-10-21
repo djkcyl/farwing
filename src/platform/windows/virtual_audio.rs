@@ -4,6 +4,7 @@ mod defaults_watch;
 pub(crate) mod install;
 use super::host_service::pipe::Handle;
 use anyhow::{Result, ensure};
+use crate::i18n::t;
 pub(crate) use defaults::{Defaults, Routing};
 use windows::{
     Win32::{
@@ -83,7 +84,7 @@ impl Bridge {
             event,
             pcm: bytemuck::Zeroable::zeroed(),
         };
-        ensure!(bridge.state()?.abi == ABI, "虚拟音频驱动接口版本不匹配");
+        ensure!(bridge.state()?.abi == ABI, "{}", t().system.audio_driver_abi_mismatch);
         Ok(bridge)
     }
     fn call(
@@ -141,8 +142,8 @@ impl Bridge {
             bytemuck::bytes_of_mut(&mut state),
             500,
         )?;
-        ensure!(bytes == Some(size_of::<State>()), "虚拟音频状态读取不完整");
-        ensure!(state.abi == ABI, "虚拟音频驱动接口版本不匹配");
+        ensure!(bytes == Some(size_of::<State>()), "{}", t().system.audio_state_incomplete);
+        ensure!(state.abi == ABI, "{}", t().system.audio_driver_abi_mismatch);
         Ok(state)
     }
     pub fn enable(&mut self, speaker: bool, microphone: bool) -> Result<State> {
@@ -157,7 +158,8 @@ impl Bridge {
                 500
             )?
             .is_some(),
-            "虚拟音频设置超时"
+            "{}",
+            t().system.audio_enable_timeout
         );
         self.state()
     }
@@ -175,7 +177,8 @@ impl Bridge {
             Some(bytes) => {
                 ensure!(
                     bytes == size_of::<State>() && next.abi == ABI,
-                    "虚拟音频通知无效"
+                    "{}",
+                    t().system.audio_notification_invalid
                 );
                 Ok(Some(next))
             }
@@ -184,7 +187,8 @@ impl Bridge {
     pub fn write(&mut self, state: &State, samples: &[f32]) -> Result<()> {
         ensure!(
             !samples.is_empty() && samples.len() <= FRAMES * 2 && samples.len().is_multiple_of(2),
-            "虚拟麦克风PCM长度无效"
+            "{}",
+            t().system.audio_microphone_pcm_invalid
         );
         self.pcm.abi = ABI;
         self.pcm.frames = (samples.len() / 2) as u32;
@@ -197,7 +201,8 @@ impl Bridge {
         let input = &bytemuck::bytes_of(&self.pcm)[..16 + samples.len() * 2];
         ensure!(
             Self::call(self.handle.0, self.event.0, 3, input, &mut [], 500)?.is_some(),
-            "虚拟麦克风写入超时"
+            "{}",
+            t().system.audio_microphone_write_timeout
         );
         Ok(())
     }

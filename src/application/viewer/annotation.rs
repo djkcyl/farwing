@@ -2,6 +2,7 @@ use crate::features::stream_control::{
     StreamControlHandle,
     annotation::{LaserOptions, Point, Stroke as InkStroke, Style},
 };
+use crate::i18n::t;
 use crate::ui::{controls, theme};
 use controls::AnnotationIcon as Tool;
 use egui::{Pos2, Rect, Sense, vec2};
@@ -47,7 +48,7 @@ impl AnnotationUi {
             width: 3.,
             laser_width: 5.,
             laser_options: LaserOptions::default(),
-            board_color: theme::ANNOTATION_BOARD_COLORS[0].1,
+            board_color: theme::ANNOTATION_BOARD_COLORS[0],
             gesture: None,
             generation: 0,
             error: None,
@@ -119,7 +120,7 @@ impl AnnotationUi {
         crate::ui::controls::observe_notice(
             ui.ctx(),
             "annotation-error",
-            "批注操作失败",
+            t().viewer.annotation_failed,
             crate::ui::controls::DialogIcon::Error,
             self.error
                 .as_deref()
@@ -128,11 +129,11 @@ impl AnnotationUi {
         crate::ui::controls::progress_notice(
             &ctx,
             "annotation-progress",
-            "批注操作",
+            t().viewer.annotation_operation,
             if snapshot.board_busy {
-                Some("正在更新白板…")
+                Some(t().viewer.updating_whiteboard)
             } else if snapshot.toggling {
-                Some("正在切换批注…")
+                Some(t().viewer.switching_annotation)
             } else {
                 None
             },
@@ -243,14 +244,15 @@ impl AnnotationUi {
                         controls::annotation_tool_frame().show(ui, |ui| {
                             ui.spacing_mut().item_spacing.x = theme::ANNOTATION_TOOL_GAP;
                             ui.horizontal(|ui| {
+                                let t = &t().viewer;
                                 for (tool, name) in [
-                                    (Tool::Pen, "画笔"),
-                                    (Tool::Laser, "激光笔"),
-                                    (Tool::Line, "直线"),
-                                    (Tool::Arrow, "箭头"),
-                                    (Tool::Rectangle, "矩形"),
-                                    (Tool::Ellipse, "椭圆"),
-                                    (Tool::Eraser, "整笔擦除"),
+                                    (Tool::Pen, t.tool_pen),
+                                    (Tool::Laser, t.tool_laser),
+                                    (Tool::Line, t.tool_line),
+                                    (Tool::Arrow, t.tool_arrow),
+                                    (Tool::Rectangle, t.tool_rectangle),
+                                    (Tool::Ellipse, t.tool_ellipse),
+                                    (Tool::Eraser, t.tool_eraser),
                                 ] {
                                     if controls::annotation_tool_button(
                                         ui,
@@ -288,7 +290,7 @@ impl AnnotationUi {
                                                 ui,
                                                 Tool::Clear,
                                                 false,
-                                                "清空批注",
+                                                t().viewer.clear_annotations,
                                             )
                                         })
                                         .inner

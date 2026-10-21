@@ -11,6 +11,8 @@ use rusqlite::Connection;
 use std::io::BufRead;
 
 pub const MIN_PASSWORD_LEN: usize = 8;
+pub const MAX_PASSWORD_LEN: usize = 1024;
+pub const MAX_USERNAME_LEN: usize = 64;
 
 fn open(cfg: &Config) -> Result<Connection> {
     let path = cfg.db_path();
@@ -21,8 +23,8 @@ fn open(cfg: &Config) -> Result<Connection> {
 }
 
 pub fn validate_username(name: &str) -> Result<()> {
-    if name.is_empty() || name.chars().count() > 64 {
-        bail!("username must be 1-64 characters");
+    if name.is_empty() || name.chars().count() > MAX_USERNAME_LEN {
+        bail!("username must be 1-{MAX_USERNAME_LEN} characters");
     }
     if !name
         .chars()
@@ -37,7 +39,7 @@ pub fn check_password(pw: &str) -> Result<()> {
     if pw.chars().count() < MIN_PASSWORD_LEN {
         bail!("password must be at least {MIN_PASSWORD_LEN} characters");
     }
-    if pw.chars().count() > 1024 {
+    if pw.chars().count() > MAX_PASSWORD_LEN {
         bail!("password is too long");
     }
     Ok(())

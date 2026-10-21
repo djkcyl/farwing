@@ -3,6 +3,7 @@
 //! `docs/protocol/touch-pen-brief.md` §2). The three functions are looked up
 //! at run time: linking them would keep older systems from starting.
 use anyhow::{Result, bail, ensure};
+use crate::i18n::t;
 use std::sync::LazyLock;
 use windows::Win32::{
     Foundation::{ERROR_NOT_READY, GetLastError, HANDLE, POINT, RECT},
@@ -79,10 +80,14 @@ unsafe impl Send for Device {}
 impl Device {
     fn new(kind: POINTER_INPUT_TYPE, count: u32) -> Result<Self> {
         let Some(api) = API.as_ref() else {
-            bail!("触摸与笔输入需要 Windows 10 1809 或更新");
+            bail!("{}", t().system.input_pointer_unsupported);
         };
         let handle = unsafe { (api.create)(kind, count, FEEDBACK_DEFAULT) };
-        ensure!(handle != 0, "无法创建合成指针设备：{:?}", unsafe { GetLastError() });
+        ensure!(
+            handle != 0,
+            "{}",
+            (t().system.input_pointer_device_failed)(&format!("{:?}", unsafe { GetLastError() }))
+        );
         Ok(Self { handle, kind })
     }
     pub fn touch() -> Result<Self> {
@@ -100,7 +105,7 @@ impl Device {
             }
             let error = unsafe { GetLastError() };
             if error != ERROR_NOT_READY || attempt == 2 {
-                bail!("注入触摸或笔失败：{error:?}");
+                bail!("{}", (t().system.input_pointer_inject_failed)(&format!("{error:?}")));
             }
             let start = std::time::Instant::now();
             while start.elapsed() < std::time::Duration::from_micros(200) {
@@ -111,7 +116,11 @@ impl Device {
     }
     /// One touch frame: every active contact of the desktop.
     pub fn touch_frame(&self, contacts: &[TouchPoint]) -> Result<()> {
-        ensure!(self.kind == PT_TOUCH && !contacts.is_empty(), "触摸帧无效");
+        ensure!(
+            self.kind == PT_TOUCH && !contacts.is_empty(),
+            "{}",
+            t().system.input_touch_frame_invalid
+        );
         let frames: Vec<_> = contacts
             .iter()
             .map(|c| PointerTypeInfo {
@@ -122,7 +131,7 @@ impl Device {
         self.inject(&frames)
     }
     pub fn pen_frame(&self, pen: &PenPoint) -> Result<()> {
-        ensure!(self.kind == PT_PEN, "笔帧无效");
+        ensure!(self.kind == PT_PEN, "{}", t().system.input_pen_frame_invalid);
         self.inject(&[PointerTypeInfo {
             kind: PT_PEN,
             info: PointerUnion { pen: pen.info() },

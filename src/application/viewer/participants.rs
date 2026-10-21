@@ -5,6 +5,7 @@
 use crate::features::participants::{Member, PointerView};
 use crate::features::remote_input::MouseMode;
 use crate::features::stream_control::StreamControlHandle;
+use crate::i18n::t;
 use crate::protocol::participants::{Click, button, phase};
 use crate::ui::theme;
 use egui::{Color32, FontId, Pos2, Rect, Stroke, Vec2, pos2, vec2};
@@ -167,7 +168,7 @@ pub(super) fn paint_turn_hint(ctx: &egui::Context, control: &StreamControlHandle
         .layer_painter(egui::LayerId::background())
         .with_clip_rect(picture);
     let galley = painter.layout(
-        format!("{} 正在控制", display_name(&holder.nickname)),
+        (t().viewer.participant_in_control)(display_name(&holder.nickname)),
         FontId::proportional(theme::SMALL),
         theme::TEXT,
         (picture.width() - 64.0).max(1.0),
@@ -189,9 +190,9 @@ pub(super) fn paint_turn_hint(ctx: &egui::Context, control: &StreamControlHandle
 /// Toolbar hint for the participants button.
 pub(super) fn button_hint(members: &[Member]) -> String {
     if members.len() > 1 {
-        format!("会话参与者（{} 人）", members.len())
+        (t().viewer.participants_count)(members.len())
     } else {
-        "会话参与者".to_owned()
+        t().viewer.participants.to_owned()
     }
 }
 
@@ -212,7 +213,7 @@ pub(super) fn menu(response: &egui::Response, members: &[Member]) {
             ui.painter().text(
                 header.left_center() + vec2(10.0, 0.0),
                 egui::Align2::LEFT_CENTER,
-                format!("会话参与者 · {} 人", members.len()),
+                (t().viewer.participants_header)(members.len()),
                 FontId::proportional(theme::SMALL),
                 theme::MUTED,
             );
@@ -241,11 +242,11 @@ fn participant_row(ui: &mut egui::Ui, member: &Member) {
     );
 
     let (status, status_color) = if member.controlling {
-        ("正在控制", theme::GREEN)
+        (t().viewer.status_in_control, theme::GREEN)
     } else if member.control {
-        ("可控制", theme::MUTED)
+        (t().viewer.status_can_control, theme::MUTED)
     } else {
-        ("仅观看", theme::MUTED)
+        (t().viewer.status_view_only, theme::MUTED)
     };
     let status = painter.layout_no_wrap(
         status.into(),
@@ -276,7 +277,7 @@ fn participant_row(ui: &mut egui::Ui, member: &Member) {
     );
     if member.you {
         job.append(
-            "(你)",
+            t().viewer.participant_you,
             4.0,
             egui::TextFormat::simple(FontId::proportional(theme::COMPACT_TEXT), theme::MUTED),
         );
@@ -309,7 +310,7 @@ fn participant_row(ui: &mut egui::Ui, member: &Member) {
         )
     });
     if !member.device_name.is_empty() {
-        response.on_hover_text(format!("设备：{}", member.device_name));
+        response.on_hover_text((t().viewer.participant_device)(&member.device_name));
     }
 }
 
@@ -427,18 +428,19 @@ fn wire_button(button: egui::PointerButton) -> Option<i32> {
 }
 
 fn relation_label(relation: &str) -> Option<&'static str> {
+    let t = &t().viewer;
     match relation {
-        "own" => Some("本机账号"),
-        "friend" => Some("好友"),
-        "assist" => Some("访客"),
-        "trusted" => Some("受信任"),
+        "own" => Some(t.relation_own),
+        "friend" => Some(t.relation_friend),
+        "assist" => Some(t.relation_guest),
+        "trusted" => Some(t.relation_trusted),
         _ => None,
     }
 }
 
 fn display_name(nickname: &str) -> &str {
     if nickname.trim().is_empty() {
-        "参与者"
+        t().viewer.participant
     } else {
         nickname
     }
@@ -500,9 +502,10 @@ mod tests {
             Some(button::MIDDLE)
         );
         assert_eq!(wire_button(egui::PointerButton::Extra1), None);
-        assert_eq!(relation_label("assist"), Some("访客"));
+        assert!(relation_label("assist").is_some());
         assert_eq!(relation_label(""), None);
-        assert_eq!(display_name(" "), "参与者");
+        assert_eq!(display_name("Ann"), "Ann");
+        assert!(!display_name(" ").trim().is_empty());
         assert_eq!(
             participant_color(0x3B82F6),
             Color32::from_rgb(0x3B, 0x82, 0xF6)

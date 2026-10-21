@@ -4,6 +4,7 @@ use crate::media::audio::{
     sender::{BLOCK, RATE},
 };
 use anyhow::{Context, Result, ensure};
+use crate::i18n::t;
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -77,28 +78,34 @@ fn open_native(endpoint: &Endpoint, samples: Samples) -> Result<NativeCapture> {
         let endpoint = &endpoint.device;
         let input: IAudioClient = endpoint.Activate(CLSCTX_ALL, None)?;
         let mix = Mix(input.GetMixFormat()?);
-        ensure!(!mix.0.is_null(), "播放设备未提供音频格式");
+        ensure!(!mix.0.is_null(), "{}", t().system.loopback_format_missing);
         let format = *mix.0;
         let channels = usize::from(format.nChannels);
         let rate = format.nSamplesPerSec;
         ensure!(
             (1..=8).contains(&channels) && (8000..=192000).contains(&rate),
-            "播放设备音频格式不受支持"
+            "{}",
+            t().system.loopback_format_unsupported
         );
         let mut mask = 0;
         let float = if format.wFormatTag == 0xfffe {
-            ensure!(format.cbSize >= 22, "播放设备扩展格式不完整");
+            ensure!(format.cbSize >= 22, "{}", t().system.loopback_extension_incomplete);
             let ext = *(mix.0.cast::<WAVEFORMATEXTENSIBLE>());
             mask = ext.dwChannelMask;
             let subformat = ext.SubFormat;
             ensure!(
                 subformat == GUID::from_u128(0x00000001_0000_0010_8000_00aa00389b71)
                     || subformat == GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71),
-                "播放设备子格式不受支持"
+                "{}",
+                t().system.loopback_subformat_unsupported
             );
             subformat.data1 == 3
         } else {
-            ensure!(matches!(format.wFormatTag, 1 | 3), "播放设备格式不受支持");
+            ensure!(
+                matches!(format.wFormatTag, 1 | 3),
+                "{}",
+                t().system.loopback_encoding_unsupported
+            );
             format.wFormatTag == 3
         };
         let bytes = usize::from(format.wBitsPerSample) / 8;
@@ -108,11 +115,13 @@ fn open_native(endpoint: &Endpoint, samples: Samples) -> Result<NativeCapture> {
             } else {
                 matches!(bytes, 2 | 3 | 4)
             },
-            "播放设备位深不受支持"
+            "{}",
+            t().system.loopback_bit_depth_unsupported
         );
         ensure!(
             usize::from(format.nBlockAlign) == channels * bytes,
-            "播放设备帧大小无效"
+            "{}",
+            t().system.loopback_frame_size_invalid
         );
         input
             .Initialize(
@@ -123,7 +132,7 @@ fn open_native(endpoint: &Endpoint, samples: Samples) -> Result<NativeCapture> {
                 mix.0,
                 None,
             )
-            .context("初始化桌面声音采集失败")?;
+            .context(t().system.loopback_init_failed)?;
         let capture: IAudioCaptureClient = input.GetService()?;
         // Keep the engine running through silence, without changing volume or defaults.
         let silence: IAudioClient = endpoint.Activate(CLSCTX_ALL, None)?;
@@ -195,13 +204,21 @@ impl NativeCapture {
                     Some(&mut qpc),
                 )?;
                 let result = (|| -> Result<()> {
-                    ensure!(frames <= self.rate, "异常音频缓冲长度");
+                    ensure!(
+                        frames <= self.rate,
+                        "{}",
+                        t().system.loopback_buffer_length_invalid
+                    );
                     let count = frames as usize * self.channels;
                     self.decoded.resize(count, 0.);
                     if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 {
                         self.decoded.fill(0.);
                     } else {
-                        ensure!(!data.is_null() || count == 0, "音频缓冲为空");
+                        ensure!(
+                            !data.is_null() || count == 0,
+                            "{}",
+                            t().system.loopback_buffer_empty
+                        );
                         if count > 0 {
                             let bytes =
                                 std::slice::from_raw_parts(data, count * self.bytes_per_sample);
@@ -379,7 +396,11 @@ impl Convert {
                         .process(&stereo[consumed * 2..frames * 2], &mut normalized)?;
                     (u / 2, p / 2)
                 };
-                ensure!(used != 0 || produced != 0, "音频重采样未前进");
+                ensure!(
+                    used != 0 || produced != 0,
+                    "{}",
+                    t().system.loopback_resampler_stalled
+                );
                 consumed += used;
                 for sample in &normalized[..produced * 2] {
                     self.frame[self.filled] = *sample;
@@ -474,11 +495,13 @@ impl Progress {
     fn check(&self, now: Instant) -> Result<()> {
         ensure!(
             now.saturating_duration_since(self.clock_at) < Duration::from_secs(1),
-            "音频设备时钟停止推进"
+            "{}",
+            t().system.loopback_clock_stopped
         );
         ensure!(
             now.saturating_duration_since(self.packet_at) < Duration::from_secs(1),
-            "桌面音频缓冲停止交付"
+            "{}",
+            t().system.loopback_delivery_stopped
         );
         Ok(())
     }

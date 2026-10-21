@@ -1,4 +1,5 @@
 //! Controlled desktop connection: session-scoped peer, capture owner and RTP sender.
+use crate::i18n::t;
 use super::{VideoConfig, capture, lock};
 use crate::transport::rtc::ConnectionCore;
 use anyhow::Result;
@@ -560,11 +561,11 @@ impl Peer {
                 true,
                 state == RTCPeerConnectionState::Connected,
                 match state {
-                    RTCPeerConnectionState::Connected => "正在被远程访问",
-                    RTCPeerConnectionState::Disconnected => "连接中断",
-                    RTCPeerConnectionState::Failed => "连接已中断",
-                    RTCPeerConnectionState::Closed => "等待连接",
-                    _ => "正在建立远程连接",
+                    RTCPeerConnectionState::Connected => t().features.peer_state_connected,
+                    RTCPeerConnectionState::Disconnected => t().features.peer_state_interrupted,
+                    RTCPeerConnectionState::Failed => t().features.peer_state_failed,
+                    RTCPeerConnectionState::Closed => t().features.peer_state_waiting,
+                    _ => t().features.peer_state_connecting,
                 },
             );
             if matches!(
@@ -1011,7 +1012,11 @@ impl Peer {
             .filter_map(|l| l.strip_prefix("a=ice-ufrag:"))
             .map(str::to_owned)
             .collect();
-        anyhow::ensure!(!fragments.is_empty(), "主控SDP缺少ICE代次");
+        anyhow::ensure!(
+            !fragments.is_empty(),
+            "{}",
+            t().features.peer_sdp_missing_ice
+        );
         let description = RTCSessionDescription::offer(sdp)?;
         let offer_sdp = description.sdp.clone();
         let audio_config = crate::media::audio::encoder::remote_config(&description)?;
@@ -1058,7 +1063,11 @@ impl Peer {
             .core
             .answer("audio_0 video_0 video_1 video_2 video_3 video_4", mixed_kcp)
             .await?;
-        anyhow::ensure!(!self.ended() && self.handle.requested(), "画面会话已取消");
+        anyhow::ensure!(
+            !self.ended() && self.handle.requested(),
+            "{}",
+            t().features.peer_session_cancelled
+        );
         self.core
             .activate_control(mixed_kcp, self.control_receiver.clone())?;
         self.audio.configure(audio_config);
@@ -1083,7 +1092,11 @@ impl Peer {
                 .as_ref()
                 .is_some_and(|f| !ice.current.contains(f))
         {
-            anyhow::ensure!(ice.pending.len() < 256, "等待SDP的ICE候选过多");
+            anyhow::ensure!(
+                ice.pending.len() < 256,
+                "{}",
+                t().features.peer_too_many_pending_candidates
+            );
             ice.pending.push_back(candidate);
             return Ok(());
         }

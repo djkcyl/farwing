@@ -98,7 +98,7 @@ pub(super) fn save_config(path: &Path, bytes: &[u8]) -> Result<()> {
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
-    result.context("保存日志设置")
+    result.context(crate::i18n::t().session.log_settings_save_failed)
 }
 
 pub(super) fn open_directory(directory: &Path) -> Result<()> {
@@ -121,7 +121,7 @@ pub(super) fn open_directory(directory: &Path) -> Result<()> {
             )
         };
         if result.0 as isize <= 32 {
-            bail!("打开日志文件夹失败（{}）", result.0 as isize);
+            bail!("{}", (crate::i18n::t().session.log_folder_open_failed)(result.0 as isize));
         }
     }
 
@@ -167,7 +167,7 @@ pub(super) fn sync_pending(status: &Arc<Mutex<Status>>) {
             .as_ref()
             .is_some_and(|current| Arc::ptr_eq(current, &pending))
         {
-            state.error = Some(format!("日志刷新失败：{error}"));
+            state.error = Some((crate::i18n::t().session.log_flush_failed)(&error.to_string()));
         }
     }
 }
@@ -210,10 +210,10 @@ impl Writer {
         let path = explicit
             .map(Path::to_owned)
             .unwrap_or_else(|| directory.join(format!("{launch_stem}.{sequence:04}.log")));
-        let file = create(&path, true).context("打开日志文件")?;
+        let file = create(&path, true).context(crate::i18n::t().session.log_file_open_failed)?;
         let lease = if stem.is_some() {
             let lease = open_lease(&directory.join(".state").join(format!("{launch_stem}.lock")))?;
-            lease.lock_shared().context("锁定当前日志租约")?;
+            lease.lock_shared().context(crate::i18n::t().session.log_file_lock_failed)?;
             Some(lease)
         } else {
             None
@@ -253,7 +253,7 @@ impl Writer {
     fn prune(&self) {
         if let Err(e) = prune(&self.directory) {
             self.status.lock().unwrap_or_else(|e| e.into_inner()).error =
-                Some(format!("清理历史日志失败：{e}"));
+                Some((crate::i18n::t().session.log_cleanup_failed)(&e.to_string()));
         }
     }
     fn select_segment(&mut self, sequence: u32) -> io::Result<()> {
@@ -358,7 +358,7 @@ impl Write for Writer {
         let result = self.write_inner(bytes);
         if let Err(e) = &result {
             self.status.lock().unwrap_or_else(|e| e.into_inner()).error =
-                Some(format!("日志写盘失败：{e}"));
+                Some((crate::i18n::t().session.log_write_failed)(&e.to_string()));
         }
         result
     }
@@ -371,7 +371,7 @@ impl Drop for Writer {
     fn drop(&mut self) {
         if let Err(error) = self.pending.flush() {
             self.status.lock().unwrap_or_else(|e| e.into_inner()).error =
-                Some(format!("日志刷新失败：{error}"));
+                Some((crate::i18n::t().session.log_flush_failed)(&error.to_string()));
         }
     }
 }

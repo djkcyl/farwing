@@ -6,6 +6,7 @@
 //! device is multithread protected because each capture encodes on its own
 //! thread.
 use super::{Frame, Screen, outputs};
+use crate::i18n::t;
 use crate::platform::windows::{cursor::Cursor, preprocess};
 use anyhow::{Context, Result, ensure};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -80,7 +81,7 @@ impl Duplication {
                 .into_iter()
                 .find(|(_, _, screen)| screen.device_name == name)
                 .map(|(_, _, screen)| screen)
-                .context("所选屏幕已断开")?;
+                .context(t().system.capture_screen_disconnected)?;
             let mut shared = lock(&source);
             if !shared.failed && shared.screen == current {
                 drop(shared);
@@ -199,7 +200,7 @@ impl Source {
         let (adapter, output, screen) = outputs()?
             .into_iter()
             .find(|(_, _, screen)| screen.device_name == name)
-            .context("所选屏幕已断开")?;
+            .context(t().system.capture_screen_disconnected)?;
         unsafe {
             let mut device = None;
             let mut context = None;
@@ -214,8 +215,8 @@ impl Source {
                 None,
                 Some(&mut context),
             )?;
-            let device = device.context("未创建采集设备")?;
-            let context = context.context("未创建采集上下文")?;
+            let device = device.context(t().system.capture_no_device)?;
+            let context = context.context(t().system.capture_no_context)?;
             // Captures sharing this source convert and encode on their own
             // threads.
             if let Ok(multithread) = context.cast::<ID3D11Multithread>() {
@@ -306,7 +307,7 @@ impl Source {
             } else {
                 output.DuplicateOutput(device)
             }
-            .context("无法采集当前桌面")?;
+            .context(t().system.capture_desktop_unavailable)?;
             Ok(duplication)
         }
     }
@@ -319,7 +320,7 @@ impl Source {
     }
 
     fn acquire(&mut self, timeout_ms: u32) -> Result<()> {
-        ensure!(!self.failed, "共享桌面采集已失效");
+        ensure!(!self.failed, "{}", t().system.capture_shared_failed);
         let result = self.acquire_once(timeout_ms);
         let Err(error) = &result else { return result };
         let code = error
@@ -364,7 +365,7 @@ impl Source {
         let before = unsafe {
             self.duplication
                 .as_ref()
-                .context("DXGI采集对象缺失")?
+                .context(t().system.capture_missing_duplication)?
                 .GetDesc()
         };
         self.frame_acquired = false;
@@ -372,14 +373,15 @@ impl Source {
         let (_, output, screen) = outputs()?
             .into_iter()
             .find(|(_, _, s)| s.device_name == self.screen.device_name)
-            .context("恢复期间所选屏幕已断开")?;
+            .context(t().system.capture_screen_disconnected_recovering)?;
         ensure!(
             screen.identity == self.screen.identity
                 && screen.adapter == self.screen.adapter
                 && screen.width == self.screen.width
                 && screen.height == self.screen.height
                 && screen.hdr == self.screen.hdr,
-            "恢复期间采集源发生变化"
+            "{}",
+            t().system.capture_source_changed_recovering
         );
         let color_space = output
             .cast::<IDXGIOutput6>()
@@ -388,7 +390,8 @@ impl Source {
             .map(|desc| desc.ColorSpace);
         ensure!(
             color_space == self.color_space,
-            "恢复期间采集色彩空间发生变化"
+            "{}",
+            t().system.capture_color_space_changed_recovering
         );
         let duplication = Self::duplicate(
             &output,
@@ -401,7 +404,8 @@ impl Source {
                 && after.ModeDesc.Height == before.ModeDesc.Height
                 && after.ModeDesc.Format == before.ModeDesc.Format
                 && after.Rotation == before.Rotation,
-            "恢复期间采集格式发生变化"
+            "{}",
+            t().system.capture_format_changed_recovering
         );
         self.duplication = Some(duplication);
         Ok(())
@@ -415,11 +419,14 @@ impl Source {
             let mut resource = None;
             // Also covers a frame held by a failed/interrupted prior call.
             self.release_frame()?;
-            let duplication = self.duplication.as_ref().context("DXGI采集对象缺失")?;
+            let duplication = self
+                .duplication
+                .as_ref()
+                .context(t().system.capture_missing_duplication)?;
             match duplication.AcquireNextFrame(timeout_ms.min(50), &mut info, &mut resource) {
                 Ok(()) => self.frame_acquired = true,
                 Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(()),
-                Err(error) => return Err(error).context("桌面采集失效"),
+                Err(error) => return Err(error).context(t().system.capture_desktop_lost),
             }
             let captured = std::time::Instant::now();
             let cursor_update = self.cursor.update(&self.device, duplication, &info);
@@ -434,7 +441,8 @@ impl Source {
                 if info.LastPresentTime == 0 {
                     return Ok(());
                 }
-                let texture: ID3D11Texture2D = resource.context("采集未返回纹理")?.cast()?;
+                let texture: ID3D11Texture2D =
+                    resource.context(t().system.capture_no_texture)?.cast()?;
                 let mut desc = D3D11_TEXTURE2D_DESC::default();
                 texture.GetDesc(&mut desc);
                 ensure!(
@@ -444,15 +452,16 @@ impl Source {
                             | DXGI_FORMAT_R8G8B8A8_UNORM
                             | DXGI_FORMAT_R16G16B16A16_FLOAT
                     ),
-                    "不支持的采集像素格式：{}",
-                    desc.Format.0
+                    "{}",
+                    (t().system.capture_unsupported_pixel_format)(desc.Format.0)
                 );
                 ensure!(
                     desc.Width > 0
                         && desc.Height > 0
                         && desc.Width <= 16384
                         && desc.Height <= 16384,
-                    "采集纹理尺寸无效"
+                    "{}",
+                    t().system.capture_invalid_texture_size
                 );
                 let reuse = self.image.as_ref().is_some_and(|(_, current)| {
                     (current.Width, current.Height, current.Format)
@@ -474,9 +483,12 @@ impl Source {
                     };
                     let mut image = None;
                     self.device.CreateTexture2D(&owned, None, Some(&mut image))?;
-                    self.image = Some((image.context("采集副本纹理")?, owned));
+                    self.image = Some((image.context(t().system.capture_copy_texture)?, owned));
                 }
-                let (image, _) = self.image.as_ref().context("采集副本缺失")?;
+                let (image, _) = self
+                    .image
+                    .as_ref()
+                    .context(t().system.capture_missing_copy)?;
                 self.context.CopyResource(image, &texture);
                 self.captured = captured;
                 self.presented = self.presented.wrapping_add(1);
@@ -499,10 +511,10 @@ impl Source {
             unsafe {
                 self.duplication
                     .as_ref()
-                    .context("DXGI采集对象缺失")?
+                    .context(t().system.capture_missing_duplication)?
                     .ReleaseFrame()
             }
-            .context("释放采集帧失败")?;
+            .context(t().system.capture_release_frame_failed)?;
         }
         Ok(())
     }

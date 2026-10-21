@@ -1,4 +1,5 @@
 use super::*;
+use crate::i18n::t;
 use egui::{Rect, Response, Sense, Ui, pos2};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -107,7 +108,7 @@ pub(crate) fn annotation_header(
         p.text(
             pos2(rect.left() + 22., rect.center().y),
             egui::Align2::LEFT_CENTER,
-            "批注",
+            t().controls.annotation,
             egui::FontId::proportional(theme::COMPACT_TEXT),
             theme::TEXT,
         );
@@ -118,18 +119,37 @@ pub(crate) fn annotation_header(
         ui.spacing_mut().item_spacing.x = 2.;
         undo = ui
             .add_enabled_ui(can_undo, |ui| {
-                ink_button(ui, AnnotationIcon::Undo, false, "撤销 · Ctrl+Z", height)
+                ink_button(
+                    ui,
+                    AnnotationIcon::Undo,
+                    false,
+                    t().controls.annotation_undo,
+                    height,
+                )
             })
             .inner
             .clicked();
         redo = ui
             .add_enabled_ui(can_redo, |ui| {
-                ink_button(ui, AnnotationIcon::Redo, false, "重做 · Ctrl+Y", height)
+                ink_button(
+                    ui,
+                    AnnotationIcon::Redo,
+                    false,
+                    t().controls.annotation_redo,
+                    height,
+                )
             })
             .inner
             .clicked();
-        end = ink_button(ui, AnnotationIcon::Exit, false, "结束批注", height).clicked();
-        close = close_button(ui, "收起面板", height).clicked();
+        end = ink_button(
+            ui,
+            AnnotationIcon::Exit,
+            false,
+            t().controls.annotation_end,
+            height,
+        )
+        .clicked();
+        close = close_button(ui, t().controls.annotation_hide_panel, height).clicked();
         response
     });
     (row.inner, close, undo, redo, end)
@@ -143,15 +163,20 @@ pub(crate) fn annotation_clear_dialog(ctx: &egui::Context, uncertain: bool) -> O
             ui.set_width(
                 theme::ANNOTATION_CLEAR_WIDTH.min((ctx.content_rect().width() - 64.).max(160.)),
             );
-            if dialog_header(ui, "清空批注？", DialogIcon::Warning, true) {
+            if dialog_header(
+                ui,
+                t().controls.annotation_clear_title,
+                DialogIcon::Warning,
+                true,
+            ) {
                 action = Some(false);
             }
             ui.add(
                 egui::Label::new(
                     RichText::new(if uncertain {
-                        "将清除全部批注并恢复桌面"
+                        t().controls.annotation_clear_restores_desktop
                     } else {
-                        "将清除本次连接的全部笔迹"
+                        t().controls.annotation_clear_strokes
                     })
                     .size(theme::BODY)
                     .color(theme::MUTED),
@@ -160,8 +185,8 @@ pub(crate) fn annotation_clear_dialog(ctx: &egui::Context, uncertain: bool) -> O
             );
             let (accept, cancel) = dialog_actions(
                 ui,
-                Some(DialogAction::new("清空").danger(true)),
-                Some("取消"),
+                Some(DialogAction::new(t().controls.annotation_clear).danger(true)),
+                Some(t().common.cancel),
             );
             if accept {
                 action = Some(true);
@@ -217,7 +242,12 @@ pub(crate) fn annotation_board(
     active: Option<[u8; 3]>,
     color: &mut [u8; 3],
 ) -> Option<Option<[u8; 3]>> {
-    let response = annotation_button(ui, AnnotationIcon::Board, active.is_some(), "白板背景");
+    let response = annotation_button(
+        ui,
+        AnnotationIcon::Board,
+        active.is_some(),
+        t().controls.whiteboard_background,
+    );
     let mut action = None;
     egui::Popup::from_toggle_button_response(&response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
@@ -235,13 +265,21 @@ fn annotation_board_content(
     ui.set_width(theme::ANNOTATION_BOARD_PICKER_WIDTH);
     ui.spacing_mut().item_spacing = vec2(8., 8.);
     ui.horizontal(|ui| {
-        ui.label(RichText::new("白板").size(theme::COMPACT_TEXT).strong());
+        ui.label(
+            RichText::new(t().controls.whiteboard)
+                .size(theme::COMPACT_TEXT)
+                .strong(),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .add_sized(
-                    vec2(52., theme::COMPACT_HEIGHT),
-                    egui::Button::new(if active.is_some() { "关闭" } else { "开启" })
-                        .selected(active.is_some()),
+                    vec2(72., theme::COMPACT_HEIGHT),
+                    egui::Button::new(if active.is_some() {
+                        t().controls.turn_off
+                    } else {
+                        t().controls.turn_on
+                    })
+                    .selected(active.is_some()),
                 )
                 .clicked()
             {
@@ -250,7 +288,12 @@ fn annotation_board_content(
         });
     });
     ui.horizontal(|ui| {
-        for (name, rgb) in theme::ANNOTATION_BOARD_COLORS {
+        let names = [
+            t().controls.board_white,
+            t().controls.board_dark,
+            t().controls.board_green,
+        ];
+        for (name, rgb) in names.into_iter().zip(theme::ANNOTATION_BOARD_COLORS) {
             let selected = active.unwrap_or(*color) == rgb;
             let (r, response) =
                 ui.allocate_exact_size(theme::ANNOTATION_BOARD_SWATCH, Sense::click());
@@ -290,9 +333,13 @@ fn annotation_board_content(
 }
 fn annotation_laser_options(ui: &mut Ui, tail_ms: &mut u16) {
     ui.add_space(8.);
-    ui.label(RichText::new("拖尾时长").strong());
+    ui.label(RichText::new(t().controls.trail_length).strong());
     ui.horizontal(|ui| {
-        for (value, label) in [(60, "短"), (100, "中"), (200, "长")] {
+        for (value, label) in [
+            (60, t().controls.trail_short),
+            (100, t().controls.trail_medium),
+            (200, t().controls.trail_long),
+        ] {
             if ui.selectable_label(*tail_ms == value, label).clicked() {
                 *tail_ms = value;
             }
@@ -344,9 +391,9 @@ pub(crate) fn annotation_width(
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.label(
                 RichText::new(if laser {
-                    "光点大小"
+                    t().controls.dot_size
                 } else {
-                    "线条粗细"
+                    t().controls.line_width
                 })
                 .strong(),
             );

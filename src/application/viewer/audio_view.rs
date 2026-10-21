@@ -1,4 +1,5 @@
 //! Live audio player. Visual meters read playback measurements, not synthetic animation.
+use crate::i18n::t;
 use crate::{
     features::stream_control::StreamControlHandle,
     ui::{controls, theme},
@@ -155,16 +156,16 @@ impl AudioView {
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if !self.compact {
-                            close = ui.button("断开").clicked();
+                            close = ui.button(t().common.disconnect).clicked();
                         }
-                        if ui.button("恢复画面").clicked() {
+                        if ui.button(t().viewer.restore_video).clicked() {
                             self.control.request_audio_only(false);
                         }
                         if ui
                             .button(if self.compact {
-                                "完整模式"
+                                t().viewer.full_view
                             } else {
-                                "精简模式"
+                                t().viewer.compact_view
                             })
                             .clicked()
                         {
@@ -198,13 +199,13 @@ impl AudioView {
             .or(output.error.as_ref())
             .or(quality.error.as_ref());
         let text = if error.is_some() {
-            "音频提示"
+            t().viewer.audio_problem
         } else if muted {
-            "已暂停"
+            t().viewer.audio_paused
         } else if status.receiving {
-            "正在播放"
+            t().viewer.audio_playing
         } else {
-            "等待音频"
+            t().viewer.waiting_for_audio
         };
         let color = if error.is_some() {
             theme::AMBER
@@ -227,7 +228,9 @@ impl AudioView {
                             .show(ui, |ui| {
                                 ui.label(error);
                             });
-                        if status.error.is_some() && ui.button("重试音频设备").clicked() {
+                        if status.error.is_some()
+                            && ui.button(t().viewer.retry_audio_device).clicked()
+                        {
                             self.control.audio().retry();
                             ui.close();
                         }
@@ -250,9 +253,9 @@ impl AudioView {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(
                         RichText::new(if status.receiving {
-                            "Opus · 48 kHz · 双声道"
+                            t().viewer.audio_format
                         } else {
-                            "实时音频"
+                            t().viewer.live_audio
                         })
                         .size(theme::TINY)
                         .color(theme::MUTED),
@@ -276,9 +279,9 @@ impl AudioView {
                     egui::WidgetType::Button,
                     true,
                     if settings.muted {
-                        "继续监听"
+                        t().viewer.resume_listening
                     } else {
-                        "暂停监听"
+                        t().viewer.pause_listening
                     },
                 )
             });
@@ -353,7 +356,7 @@ impl AudioView {
                 let name = selected.as_ref().map_or_else(
                     || {
                         if device_name.is_empty() {
-                            "跟随系统默认"
+                            t().viewer.follow_system_default
                         } else {
                             device_name
                         }
@@ -363,16 +366,16 @@ impl AudioView {
                             .devices
                             .iter()
                             .find(|d| &d.id == id)
-                            .map_or("所选设备暂不可用", |d| d.name.as_str())
+                            .map_or(t().viewer.selected_device_unavailable, |d| d.name.as_str())
                     },
                 );
                 let response = controls::menu_row(
                     ui,
                     name,
                     if selected.is_none() {
-                        "系统默认"
+                        t().viewer.output_default
                     } else {
-                        "指定设备"
+                        t().viewer.output_selected
                     },
                     None,
                     true,
@@ -388,7 +391,7 @@ impl AudioView {
                         super::stream_menu::menu_style(ui);
                         if controls::menu_row(
                             ui,
-                            "跟随系统默认",
+                            t().viewer.follow_system_default,
                             "",
                             Some(selected.is_none()),
                             true,
@@ -420,7 +423,10 @@ impl AudioView {
                                     }
                                 }
                                 if outputs.loaded && outputs.devices.is_empty() {
-                                    ui.label(RichText::new("暂无可用播放设备").color(theme::MUTED));
+                                    ui.label(
+                                        RichText::new(t().viewer.no_playback_devices)
+                                            .color(theme::MUTED),
+                                    );
                                 }
                             });
                     });
@@ -575,7 +581,7 @@ impl AudioView {
         }
         ui.horizontal(|ui| {
             ui.label(
-                RichText::new("接收波形 · 最近 8 秒")
+                RichText::new(t().viewer.received_waveform)
                     .size(theme::TINY)
                     .color(theme::MUTED),
             );

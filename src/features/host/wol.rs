@@ -15,6 +15,7 @@ use std::{
 };
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
+use crate::i18n::t;
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Status {
     pub message: String,
@@ -162,13 +163,13 @@ pub(crate) async fn wake_locally(target: &farwing_protocol::api::WolTarget) -> R
         network::send(&interface, &packet, &destinations, || true)
     })
     .await
-    .map_err(|_| anyhow::anyhow!("唤醒发送任务中断"))??;
+    .map_err(|_| anyhow::anyhow!(t().features.wol_send_interrupted))??;
     Ok(sent.sent)
 }
 async fn inventory() -> Result<Vec<network::Interface>> {
     tokio::task::spawn_blocking(network::inventory)
         .await
-        .map_err(|_| anyhow::anyhow!("网络读取任务中断"))?
+        .map_err(|_| anyhow::anyhow!(t().features.wol_network_read_interrupted))?
 }
 struct ReportTask {
     revision: u64,
@@ -207,11 +208,11 @@ async fn run(client: HostClient, mut requests: mpsc::Receiver<Queued>, stop: Can
                 while requests.try_recv().is_ok() {}
                 status = Status {
                     message: if !client.host.wol_allowed() && !client.host.wol_setup.enabled() {
-                        "远程开机与唤醒协助均未开启"
+                        t().features.wol_all_off
                     } else if !client.host.allowed() {
-                        "允许被控未开启"
+                        t().features.wol_connections_off
                     } else {
-                        "等待账号上线"
+                        t().features.wol_waiting_account
                     }
                     .into(),
                     ..Default::default()
@@ -227,12 +228,12 @@ async fn run(client: HostClient, mut requests: mpsc::Receiver<Queued>, stop: Can
                     ensure!(
                         allowed(&client, revision, &stop)
                             && network_revision == changes.revision.load(Ordering::Acquire),
-                        "网络或唤醒许可已变化"
+                        "{}", t().features.wol_permission_changed
                     );
                     let primary = list
                         .iter()
                         .find(|i| i.default_metric.is_some())
-                        .ok_or_else(|| anyhow::anyhow!("没有可登记的物理IPv4默认网络"))?;
+                        .ok_or_else(|| anyhow::anyhow!(t().features.wol_no_default_network))?;
                     let info = primary.registration();
                     status.interface_name = Some(primary.name.clone());
                     status.network = Some(info.clone());
@@ -252,7 +253,7 @@ async fn run(client: HostClient, mut requests: mpsc::Receiver<Queued>, stop: Can
                     }
                     status.reporting = true;
                     status.support_wol = None;
-                    status.message = "正在登记局域网信息…".into();
+                    status.message = t().features.wol_registering.into();
                     status.error = None;
                     client.host.wol_status(revision, status.clone());
                     let reporting_client = client.clone();
@@ -274,7 +275,7 @@ async fn run(client: HostClient, mut requests: mpsc::Receiver<Queued>, stop: Can
                     status.support_wol = None;
                     status.registered_at = None;
                     status.reporting = false;
-                    status.message = "局域网登记未完成".into();
+                    status.message = t().features.wol_registration_incomplete.into();
                     status.error = Some(e.to_string());
                 }
                 client.host.wol_status(revision, status.clone());
@@ -295,9 +296,9 @@ async fn run(client: HostClient, mut requests: mpsc::Receiver<Queued>, stop: Can
                 let completed=report.take().unwrap();
                 if allowed(&client,completed.revision,&stop)&&completed.network_revision==changes.revision.load(Ordering::Acquire) {
                     last_attempt=Some(completed.info.clone());status.reporting=false;
-                    match result.map_err(|_|anyhow::anyhow!("网络登记任务中断")).and_then(|r|r) {
-                        Ok(supported)=>{status.support_wol=Some(supported);status.registered_at=Some(chrono::Utc::now().timestamp());status.message="局域网信息已登记".into();status.error=None;},
-                        Err(error)=>{status.message="局域网登记未完成".into();status.error=Some(error.to_string());}
+                    match result.map_err(|_|anyhow::anyhow!(t().features.wol_registration_interrupted)).and_then(|r|r) {
+                        Ok(supported)=>{status.support_wol=Some(supported);status.registered_at=Some(chrono::Utc::now().timestamp());status.message=t().features.wol_registered.into();status.error=None;},
+                        Err(error)=>{status.message=t().features.wol_registration_incomplete.into();status.error=Some(error.to_string());}
                     }
                     client.host.wol_status(completed.revision,status.clone());
                 } else {dirty=true;}
@@ -305,22 +306,22 @@ async fn run(client: HostClient, mut requests: mpsc::Receiver<Queued>, stop: Can
             request=requests.recv()=>{
                 let Some(request)=request else{break;};
                 if !client.host.wol_permitted() || !allowed(&client,request.revision,&stop)||request.room.is_cancelled()||request.network_revision!=changes.revision.load(Ordering::Acquire){continue;}
-                if request.received.elapsed()>Duration::from_secs(5){status.skipped+=1;status.error=Some("唤醒请求已过期".into());client.host.wol_status(request.revision,status.clone());continue;}
+                if request.received.elapsed()>Duration::from_secs(5){status.skipped+=1;status.error=Some(t().features.wol_request_expired.into());client.host.wol_status(request.revision,status.clone());continue;}
                 recent.retain(|(_,at)|at.elapsed()<Duration::from_secs(2));
                 if recent.iter().any(|(target,_)|*target==request.target){status.skipped+=1;client.host.wol_status(request.revision,status.clone());continue;}
                 if recent.len()==64{recent.pop_front();}recent.push_back((request.target,Instant::now()));
                 let watched=watcher.is_some();
                 let result=async {
-                    ensure!(watched,"网络监听尚未就绪");let network_revision=request.network_revision;
+                    ensure!(watched,"{}",t().features.wol_watch_not_ready);let network_revision=request.network_revision;
                     let interfaces=inventory().await?;
-                    let interface=interfaces.into_iter().find(|i|request.target.matches(i.ip,i.prefix)).ok_or_else(||anyhow::anyhow!("目标网段与本机物理网络不匹配"))?;
+                    let interface=interfaces.into_iter().find(|i|request.target.matches(i.ip,i.prefix)).ok_or_else(||anyhow::anyhow!(t().features.wol_subnet_mismatch))?;
                     let packet=request.target.packet();let destinations=request.target.destinations();
                     let sender=client.clone();let stopped=stop.clone();let network_changes=changes.clone();let room=request.room.clone();let revision=request.revision;
                     tokio::task::spawn_blocking(move||network::send(&interface,&packet,&destinations,||{
                         sender.host.wol_permitted() && allowed(&sender,revision,&stopped)&&!room.is_cancelled()&&network_changes.revision.load(Ordering::Acquire)==network_revision
-                    })).await.map_err(|_|anyhow::anyhow!("唤醒发送任务中断"))?
+                    })).await.map_err(|_|anyhow::anyhow!(t().features.wol_send_interrupted))?
                 }.await;
-                match result {Ok(sent)=>{status.packets_sent+=u64::from(sent.sent);status.last_sent_at=Some(chrono::Utc::now().timestamp());status.message=format!("已发送 {}/{} 个唤醒报文",sent.sent,sent.attempted);status.error=None;tracing::info!(sent=sent.sent,attempted=sent.attempted,"WoL relay packets submitted");},Err(e)=>{status.skipped+=1;status.error=Some(e.to_string());tracing::warn!(%e,"WoL relay request not completed");}}
+                match result {Ok(sent)=>{status.packets_sent+=u64::from(sent.sent);status.last_sent_at=Some(chrono::Utc::now().timestamp());status.message=(t().features.wol_packets_sent)(sent.sent,sent.attempted);status.error=None;tracing::info!(sent=sent.sent,attempted=sent.attempted,"WoL relay packets submitted");},Err(e)=>{status.skipped+=1;status.error=Some(e.to_string());tracing::warn!(%e,"WoL relay request not completed");}}
                 client.host.wol_status(request.revision,status.clone());
             }
         }

@@ -1,3 +1,4 @@
+use crate::i18n::t;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -22,13 +23,15 @@ impl Settings {
     }
     pub(super) fn load_from(path: &Path) -> Result<Self> {
         match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).context("读取更新设置失败"),
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes).context(t().app.read_update_settings_failed)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(error).context("读取更新设置失败"),
+            Err(error) => Err(error).context(t().app.read_update_settings_failed),
         }
     }
     pub(super) fn save_to(self, path: &Path) -> Result<()> {
-        let parent = path.parent().context("更新设置目录无效")?;
+        let parent = path.parent().context(t().app.invalid_update_settings_folder)?;
         std::fs::create_dir_all(parent)?;
         let temporary = parent.join(format!(".updates-{}.tmp", uuid::Uuid::new_v4()));
         let result = (|| -> Result<()> {
@@ -45,6 +48,6 @@ impl Settings {
         if result.is_err() {
             let _ = std::fs::remove_file(&temporary);
         }
-        result.context("保存更新设置失败")
+        result.context(t().app.save_update_settings_failed)
     }
 }

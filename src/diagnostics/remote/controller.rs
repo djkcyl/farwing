@@ -63,11 +63,12 @@ impl Controller {
         let mut s = lock(&self.0);
         ensure!(
             s.view.supported && s.view.allowed,
-            "远端不支持诊断包获取，或未允许文件访问"
+            "{}",
+            crate::i18n::t().session.rdiag_unavailable
         );
-        ensure!(!s.view.busy, "正在获取诊断包");
-        let session = s.session.upgrade().ok_or_else(|| anyhow::anyhow!("诊断通道已关闭"))?;
-        let bulk = s.bulk.upgrade().ok_or_else(|| anyhow::anyhow!("诊断通道已关闭"))?;
+        ensure!(!s.view.busy, "{}", crate::i18n::t().session.rdiag_busy);
+        let session = s.session.upgrade().ok_or_else(|| anyhow::anyhow!("{}", crate::i18n::t().session.rdiag_channel_closed))?;
+        let bulk = s.bulk.upgrade().ok_or_else(|| anyhow::anyhow!("{}", crate::i18n::t().session.rdiag_channel_closed))?;
         s.requests = s.requests.wrapping_add(1).max(1);
         let id = s.requests;
         // Unique per connection; the host sends the bundle on this stream.
@@ -82,7 +83,7 @@ impl Controller {
         s.view.error = None;
         s.view.warnings = 0;
         s.view.progress = bundle::Progress {
-            stage: "等待远端生成诊断包".into(),
+            stage: crate::i18n::t().session.rdiag_waiting_remote.into(),
             completed: 0,
             total: 0,
         };
@@ -92,8 +93,8 @@ impl Controller {
         let owner = self.clone();
         tokio::spawn(async move {
             let result = tokio::select! {
-                _ = stop.cancelled() => Err(anyhow::anyhow!("诊断连接已关闭")),
-                _ = job.cancelled() => Err(anyhow::anyhow!("已取消获取远端诊断包")),
+                _ = stop.cancelled() => Err(anyhow::anyhow!("{}", crate::i18n::t().session.rdiag_connection_closed)),
+                _ = job.cancelled() => Err(anyhow::anyhow!("{}", crate::i18n::t().session.rdiag_cancelled)),
                 result = download(&owner, generation, &session, &bulk, id, stream, rx, &job) => result,
             };
             if result.is_err() && !stop.is_cancelled() && session.ready_state() == RTCDataChannelState::Open {
@@ -108,7 +109,7 @@ impl Controller {
                         v.path = Some(path);
                         v.warnings = warnings;
                         v.progress = bundle::Progress {
-                            stage: "已保存远端诊断包".into(),
+                            stage: crate::i18n::t().session.rdiag_saved.into(),
                             completed: 1,
                             total: 1,
                         }
@@ -133,7 +134,7 @@ impl Controller {
         s.view.supported = false;
         s.view.allowed = false;
         if s.view.busy {
-            s.view.error = Some("连接已关闭，诊断包未完成".into());
+            s.view.error = Some(crate::i18n::t().session.rdiag_closed_incomplete.into());
             s.view.busy = false;
         }
     }
@@ -237,8 +238,8 @@ async fn download(
     while !(last && ready.is_some()) {
         let incoming = tokio::time::timeout(TIMEOUT, inbox.recv())
             .await
-            .map_err(|_| anyhow::anyhow!("远端未响应诊断请求"))?
-            .ok_or_else(|| anyhow::anyhow!("诊断连接已关闭"))?;
+            .map_err(|_| anyhow::anyhow!("{}", crate::i18n::t().session.rdiag_no_response))?
+            .ok_or_else(|| anyhow::anyhow!("{}", crate::i18n::t().session.rdiag_connection_closed))?;
         match incoming {
             Incoming::Message(Received::Push(Body::Progress(progress))) if progress.stream == stream => {
                 if ready.is_none() {
@@ -265,13 +266,14 @@ async fn download(
                         && value.sha256.len() == 64
                         && value.sha256.bytes().all(|b| b.is_ascii_hexdigit())
                         && window.received() <= value.size,
-                    "远端诊断包长度或校验值无效"
+                    "{}",
+                    crate::i18n::t().session.rdiag_ready_invalid
                 );
                 owner.update(generation, |v| {
                     v.phase = Phase::Downloading;
                     v.warnings = value.warnings as usize;
                     v.progress = bundle::Progress {
-                        stage: "正在下载远端诊断包".into(),
+                        stage: crate::i18n::t().session.rdiag_downloading.into(),
                         completed: window.received(),
                         total: value.size,
                     }
@@ -280,11 +282,12 @@ async fn download(
             }
             Incoming::Message(_) => {}
             Incoming::Chunk(chunk) => {
-                ensure!(!last && chunk.entry == 0, "诊断包数据流已结束");
+                ensure!(!last && chunk.entry == 0, "{}", crate::i18n::t().session.rdiag_stream_ended);
                 window.receive(chunk.offset, chunk.data.len())?;
                 ensure!(
                     window.received() <= ready.as_ref().map_or(bundle::ARCHIVE_LIMIT, |r| r.size),
-                    "诊断包数据超过声明的长度"
+                    "{}",
+                    crate::i18n::t().session.rdiag_too_long
                 );
                 file.write_all(&chunk.data).await?;
                 hash.update(&chunk.data);
@@ -311,12 +314,12 @@ async fn download(
         }
     }
     let ready = ready.expect("loop ends with Ready");
-    ensure!(window.received() == ready.size, "诊断包长度不一致");
-    ensure!(format!("{:x}", hash.finalize()) == ready.sha256, "诊断包校验失败");
+    ensure!(window.received() == ready.size, "{}", crate::i18n::t().session.rdiag_size_mismatch);
+    ensure!(format!("{:x}", hash.finalize()) == ready.sha256, "{}", crate::i18n::t().session.rdiag_checksum_failed);
     owner.update(generation, |v| {
         v.phase = Phase::Saving;
         v.progress = bundle::Progress {
-            stage: "正在保存并校验诊断包".into(),
+            stage: crate::i18n::t().session.rdiag_saving.into(),
             completed: 0,
             total: 0,
         }
@@ -324,7 +327,7 @@ async fn download(
     file.flush().await?;
     file.sync_all().await?;
     drop(file);
-    ensure!(!job.is_cancelled(), "诊断获取已取消");
+    ensure!(!job.is_cancelled(), "{}", crate::i18n::t().session.rdiag_fetch_cancelled);
     // No suspension at publication: cancellation cannot leave a renamed
     // result whose completion was discarded by the caller.
     std::fs::rename(&partial.0, &path)?;

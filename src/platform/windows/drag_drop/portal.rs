@@ -2,6 +2,7 @@
 //! file drag can supply paths. It is kept alive for a negotiated return; copies
 //! and cancellations end it at the NONE target rather than at an arbitrary app.
 use super::*;
+use crate::i18n::t;
 use std::{
     cell::Cell,
     path::PathBuf,
@@ -122,7 +123,7 @@ fn run(
     allowed: Arc<dyn Fn() -> bool + Send + Sync>,
     notify: Arc<dyn Fn(Event) + Send + Sync>,
 ) -> Result<Event> {
-    ensure!(allowed(), "拖出未获许可");
+    ensure!(allowed(), "{}", t().system.drag_out_not_allowed);
     let original = preserve
         .then(super::original::Original::foreground)
         .flatten();
@@ -224,12 +225,16 @@ fn run(
                 }
             }
             if let Some(since) = cancelling {
-                ensure!(since.elapsed() < Duration::from_secs(1), "原拖动取消未确认");
+                ensure!(
+                    since.elapsed() < Duration::from_secs(1),
+                    "{}",
+                    t().system.drag_original_cancel_unconfirmed
+                );
             } else if let Some(position) = super::super::lock(&resume).take() {
                 let original = original
                     .filter(|v| v.live())
-                    .ok_or_else(|| anyhow::anyhow!("原拖动已结束"))?;
-                ensure!(held, "原鼠标按下已释放");
+                    .ok_or_else(|| anyhow::anyhow!("{}", t().system.drag_original_ended))?;
+                ensure!(held, "{}", t().system.drag_original_released);
                 unsafe {
                     let _ = ShowWindow(hwnd, SW_HIDE);
                     SetCursorPos(position.x, position.y)?;
@@ -241,13 +246,14 @@ fn run(
                 if dropped.get() {
                     return Ok(Event::Released);
                 }
-                ensure!(!left.get(), "原文件拖动已取消");
+                ensure!(!left.get(), "{}", t().system.drag_original_cancelled);
                 // The hardware UP can precede OLE's cross-thread Drop call.
                 // Keep the NONE target until that call or its bounded timeout.
                 let released = released_at.get_or_insert_with(Instant::now);
                 ensure!(
                     released.elapsed() < Duration::from_millis(500),
-                    "原文件拖动未确认结束"
+                    "{}",
+                    t().system.drag_original_end_unconfirmed
                 );
             } else {
                 released_at = None;

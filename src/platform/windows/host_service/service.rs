@@ -1,3 +1,4 @@
+use crate::i18n::t;
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::{
@@ -21,7 +22,8 @@ pub(crate) fn secure_attention() -> Result<()> {
         );
         anyhow::ensure!(
             result.is_ok() && matches!(policy, 1 | 3),
-            "系统策略未允许服务发送Ctrl+Alt+Del"
+            "{}",
+            t().system.service_sas_not_allowed
         );
         let library = LoadLibraryExW(w!("sas.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32)?;
         let entry = GetProcAddress(library, windows::core::s!("SendSAS"));
@@ -30,7 +32,7 @@ pub(crate) fn secure_attention() -> Result<()> {
             send(false.into());
         }
         let _ = FreeLibrary(library);
-        anyhow::ensure!(entry.is_some(), "Windows不支持安全注意序列");
+        anyhow::ensure!(entry.is_some(), "{}", t().system.service_sas_unsupported);
     }
     Ok(())
 }

@@ -1,5 +1,6 @@
 //! One device-state model for lists and details. Local ownership is session-based.
 use super::*;
+use crate::i18n::t;
 use crate::ui::theme;
 
 #[derive(Clone, Copy)]
@@ -24,19 +25,21 @@ pub(crate) struct DeviceStatus {
 
 impl DeviceStatus {
     pub(crate) fn label(&self) -> &'static str {
+        let t = t();
+        let text = &t.app;
         match self.state {
-            State::Online => "在线",
-            State::Offline => "离线",
-            State::Unknown => "状态未知",
-            State::Restricted => "未开放连接",
-            State::OtherDevice => "其他设备使用",
-            State::Connecting => "本机连接中",
-            State::Connected => "本机已连接",
-            State::Viewing => "本机观看中",
-            State::Controlling => "本机控制中",
-            State::Forwarding => "本机转发中",
-            State::Closing => "正在结束观看",
-            State::PowerPending => "等待电源操作",
+            State::Online => t.common.online,
+            State::Offline => t.common.offline,
+            State::Unknown => text.status_unknown,
+            State::Restricted => text.status_restricted,
+            State::OtherDevice => text.status_other_device,
+            State::Connecting => text.status_connecting,
+            State::Connected => text.status_connected,
+            State::Viewing => text.status_viewing,
+            State::Controlling => text.status_controlling,
+            State::Forwarding => text.status_forwarding,
+            State::Closing => text.status_closing,
+            State::PowerPending => text.status_power_pending,
         }
     }
 

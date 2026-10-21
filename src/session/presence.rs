@@ -83,7 +83,7 @@ impl ActivePresence {
                 _ = ended.cancelled() => {
                     task_cancel.cancel();
                     if let Err(error) = client.clear_saved_generation() {
-                        let _ = events.send(PresenceEvent::Warning(format!("清理旧账号凭据失败：{error:#}")));
+                        let _ = events.send(PresenceEvent::Warning((crate::i18n::t().session.warning_clear_credentials_failed)(&format!("{error:#}"))));
                     }
                     let _ = events.send(PresenceEvent::AccountEnded);
                     run.await
@@ -253,9 +253,7 @@ async fn serve_presence(
                     }
                     Duration::from_millis(500)
                 };
-                let _ = events.send(PresenceEvent::Warning(format!(
-                    "在线连接请求失败：{error:#}"
-                )));
+                let _ = events.send(PresenceEvent::Warning((crate::i18n::t().session.warning_presence_request_failed)(&format!("{error:#}"))));
                 let cancelled = local
                     .run_host(host, async {
                         tokio::select! { _ = task_cancel.cancelled() => true, _ = super::reconnect::wait(delay) => false }
@@ -388,7 +386,7 @@ async fn serve_presence(
         backoff = true;
         initial_requests = 0;
         if let Err(error) = result {
-            let _ = events.send(PresenceEvent::Warning(format!("在线连接中断：{error:#}")));
+            let _ = events.send(PresenceEvent::Warning((crate::i18n::t().session.warning_presence_lost)(&format!("{error:#}"))));
         }
         let _ = events.send(PresenceEvent::State(PresenceState::Reconnecting));
         let cancelled = local
@@ -493,7 +491,7 @@ async fn run_remote(
                 }
             };
             if let Err(e) = resident::request(action).await {
-                let _ = events.send(PresenceEvent::Warning(format!("后台操作失败：{e:#}")));
+                let _ = events.send(PresenceEvent::Warning((crate::i18n::t().session.warning_background_failed)(&format!("{e:#}"))));
             }
         }
         match resident::request(Request::Snapshot {

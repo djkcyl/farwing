@@ -1,9 +1,11 @@
 // Routes of the web console.
 import { lazy, Suspense, useEffect, type ComponentType, type LazyExoticComponent } from 'react';
+import { LangProvider, useT } from './i18n/react';
 import { AuthProvider, useAuth } from './lib/auth';
 import { match, navigate, RouterProvider, useLocation } from './lib/router';
 import { Button, Empty, Loading } from './ui/kit';
 import { OverlayProvider } from './ui/overlay';
+import { LangSwitch } from './ui/LangSwitch';
 import { Shell } from './ui/Shell';
 import { LoginPage, RegisterPage, SecondFactorPage } from './pages/Login';
 
@@ -47,10 +49,12 @@ function find(routes: [string, Page][], path: string): [Page, Record<string, str
 }
 
 function NotFound() {
-  return <Empty icon="alert" title="页面不存在" />;
+  const t = useT();
+  return <Empty icon="alert" title={t.common.notFound} />;
 }
 
 function Routes() {
+  const t = useT();
   const auth = useAuth();
   const { path } = useLocation();
 
@@ -66,16 +70,17 @@ function Routes() {
       </Suspense>
     );
   }
-  if (auth.status === 'loading') return <Loading text="正在连接服务器" />;
+  if (auth.status === 'loading') return <Loading text={t.common.connectingServer} />;
   if (auth.status === 'offline') {
     return (
       <div className="auth-page">
+        <LangSwitch className="lang-corner" />
         <Empty
           icon="alert"
-          title="无法连接服务器"
+          title={t.common.cannotConnect}
           action={
             <Button variant="primary" icon="refresh" onClick={() => void auth.refresh()}>
-              重试
+              {t.common.retry}
             </Button>
           }
         />
@@ -100,7 +105,13 @@ function Routes() {
   return (
     <Shell>
       <Suspense fallback={<Loading />}>
-        {Component ? <Component params={params} /> : forbidden ? <Empty icon="lock" title="没有权限" /> : <NotFound />}
+        {Component ? (
+          <Component params={params} />
+        ) : forbidden ? (
+          <Empty icon="lock" title={t.common.forbidden} />
+        ) : (
+          <NotFound />
+        )}
       </Suspense>
     </Shell>
   );
@@ -108,12 +119,14 @@ function Routes() {
 
 export default function App() {
   return (
-    <RouterProvider>
-      <OverlayProvider>
-        <AuthProvider>
-          <Routes />
-        </AuthProvider>
-      </OverlayProvider>
-    </RouterProvider>
+    <LangProvider>
+      <RouterProvider>
+        <OverlayProvider>
+          <AuthProvider>
+            <Routes />
+          </AuthProvider>
+        </OverlayProvider>
+      </RouterProvider>
+    </LangProvider>
   );
 }

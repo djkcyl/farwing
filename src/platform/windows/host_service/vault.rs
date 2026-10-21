@@ -1,6 +1,7 @@
 //! Machine-available credentials with an explicit installing-user ACL.
 //! DPAPI machine scope is encryption at rest, not an access-control boundary.
 use super::pipe::Handle;
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -34,7 +35,11 @@ pub(crate) fn token_sid(token: HANDLE) -> Result<String> {
     unsafe {
         let _ = GetTokenInformation(token, TokenUser, None, 0, &mut needed);
     }
-    ensure!(needed > 0 && needed < 65536, "用户身份长度无效");
+    ensure!(
+        needed > 0 && needed < 65536,
+        "{}",
+        t().system.vault_invalid_identity_length
+    );
     let mut buffer = vec![0usize; (needed as usize).div_ceil(size_of::<usize>())];
     unsafe {
         GetTokenInformation(
@@ -57,13 +62,17 @@ pub(crate) fn owner() -> Result<Option<String>> {
     // owner's writable credential directory; other users can select portable mode.
     match std::fs::read(super::install::directory()?.join("suite.json")) {
         Ok(bytes) => {
-            ensure!(bytes.len() < 4096, "服务所有者记录无效");
+            ensure!(
+                bytes.len() < 4096,
+                "{}",
+                t().system.vault_invalid_owner_record
+            );
             let record: serde_json::Value = serde_json::from_slice(&bytes)?;
             Ok(Some(
                 record
                     .get("owner")
                     .and_then(|v| v.as_str())
-                    .context("服务所有者缺失")?
+                    .context(t().system.vault_owner_missing)?
                     .to_owned(),
             ))
         }
@@ -95,13 +104,18 @@ pub(crate) fn create(owner: &str) -> Result<()> {
             && owner
                 .bytes()
                 .all(|c| c.is_ascii_digit() || c == b'S' || c == b'-'),
-        "安装服务的 Windows 用户无效"
+        "{}",
+        t().system.vault_invalid_owner
     );
     if let Some(existing) = self::owner()? {
-        ensure!(existing == owner, "服务已由另一 Windows 用户管理");
+        ensure!(
+            existing == owner,
+            "{}",
+            t().system.service_managed_by_other_user
+        );
     }
     let root = root()?;
-    let parent = root.parent().context("服务目录无效")?;
+    let parent = root.parent().context(t().system.vault_invalid_directory)?;
     super::super::components::files::reject_reparse(parent)?;
     super::super::components::files::reject_reparse(&root)?;
     std::fs::create_dir_all(parent)?;
@@ -161,7 +175,11 @@ pub(crate) fn read(key: &str) -> Result<Option<Vec<u8>>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
     };
-    ensure!(bytes.len() <= 1024 * 1024, "服务凭据记录过大");
+    ensure!(
+        bytes.len() <= 1024 * 1024,
+        "{}",
+        t().system.vault_record_too_large
+    );
     protect(&bytes, false).map(Some)
 }
 pub(crate) fn write(key: &str, value: Option<&[u8]>) -> Result<()> {
@@ -175,7 +193,11 @@ pub(crate) fn write(key: &str, value: Option<&[u8]>) -> Result<()> {
         };
         return Ok(());
     };
-    ensure!(value.len() <= 1024 * 1024, "服务凭据记录过大");
+    ensure!(
+        value.len() <= 1024 * 1024,
+        "{}",
+        t().system.vault_record_too_large
+    );
     let bytes = protect(value, true)?;
     let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
     let result = (|| -> Result<()> {

@@ -404,20 +404,20 @@ impl StreamControlHandle {
         }
         let mut s = lock(&self.shared);
         if s.annotation.toggling() {
-            bail!("正在切换批注状态");
+            bail!("{}", t().features.annotation_toggling);
         }
         if s.annotation.enabled == enable && !s.annotation.uncertain {
             return Ok(());
         }
         if enable && s.annotation.uncertain {
-            bail!("批注状态未确认");
+            bail!("{}", t().features.annotation_state_unconfirmed);
         }
         self.annotation_toggle_locked(&mut s, enable)
     }
     fn annotation_toggle_locked(&self, s: &mut StreamControlState, enable: bool) -> Result<()> {
         ensure_ready(s)?;
         if enable && !annotation_supported(s) {
-            bail!("当前设备不支持批注或未就绪");
+            bail!("{}", t().features.annotation_unsupported);
         }
         let native_token = if enable {
             s.annotation_extension
@@ -446,7 +446,7 @@ impl StreamControlHandle {
             if let Pending::Toggle(enable) = p.effect {
                 s.annotation.enabled = !enable;
             }
-            s.annotation.uncertain(format!("批注发送未完成：{error}"));
+            s.annotation.uncertain((t().features.annotation_send_failed)(error));
         }
     }
     pub(crate) fn annotation_begin(
@@ -480,19 +480,19 @@ impl StreamControlHandle {
         let mut s = lock(&self.shared);
         ensure_ready(&s)?;
         if !s.annotation.enabled || s.annotation.toggling() || s.annotation.uncertain {
-            bail!("批注尚未就绪");
+            bail!("{}", t().features.annotation_not_ready);
         }
         if s.annotation.drawing.is_some()
             || s.annotation.live_shape.is_some()
             || s.annotation.editing.is_some()
             || s.annotation.board_edit.is_some()
         {
-            bail!("当前笔迹操作尚未完成");
+            bail!("{}", t().features.annotation_stroke_in_progress);
         }
         if !s.annotation.owners.contains(&owner)
             || !s.screens.iter().any(|v| v.id == screen && screen >= 0)
         {
-            bail!("批注屏幕已变化");
+            bail!("{}", t().features.annotation_screen_changed);
         }
         if points.is_empty()
             || !points.iter().all(|p| p.valid())
@@ -500,7 +500,7 @@ impl StreamControlHandle {
             || style.width <= 0.0
             || style.width > 64.0
         {
-            bail!("批注参数无效");
+            bail!("{}", t().features.annotation_invalid_parameters);
         }
         let a = &mut s.annotation;
         if !transient
@@ -513,13 +513,13 @@ impl StreamControlHandle {
                     + points.len()
                     > MAX_POINTS)
         {
-            bail!("批注已达容量上限");
+            bail!("{}", t().features.annotation_limit_reached);
         }
         let id = a.next_id;
         a.next_id = a
             .next_id
             .checked_add(1)
-            .ok_or_else(|| anyhow!("批注编号已用尽"))?;
+            .ok_or_else(|| anyhow!("{}", t().features.annotation_ids_exhausted))?;
         a.drawing = Some(Drawing {
             owner,
             stroke: Stroke {
@@ -568,7 +568,7 @@ impl StreamControlHandle {
         options: LaserOptions,
     ) -> Result<()> {
         if !(LASER_TAIL_MIN..=LASER_TAIL_MAX).contains(&options.tail_ms) {
-            bail!("激光笔拖尾长度超出范围");
+            bail!("{}", t().features.annotation_laser_tail_out_of_range);
         }
         if !point.valid() {
             return Ok(());
@@ -621,7 +621,7 @@ impl StreamControlHandle {
             || stored + points.len() > MAX_POINTS
             || !points.iter().all(|p| p.valid())
         {
-            bail!("形状坐标或容量超出范围");
+            bail!("{}", t().features.annotation_shape_out_of_range);
         }
         if let Some(shape) = &mut s.annotation.live_shape {
             if shape.owner == owner && shape.finish.is_none() && shape.stroke.points != points {
@@ -652,7 +652,8 @@ impl StreamControlHandle {
             .iter()
             .any(|screen| screen.id == shape.stroke.screen)
         {
-            s.annotation.uncertain("批注屏幕已移除".into());
+            s.annotation
+                .uncertain(t().features.annotation_screen_removed.into());
             return;
         }
         // Refresh the desired laser snapshot even while the previous replace is
@@ -767,7 +768,7 @@ impl StreamControlHandle {
                     d.stroke.points.push(point);
                 } else {
                     d.finished = true;
-                    s.annotation.error = Some("笔迹已达容量上限".into());
+                    s.annotation.error = Some(t().features.annotation_stroke_limit_reached.into());
                 }
             }
         }
@@ -788,7 +789,8 @@ impl StreamControlHandle {
             .as_ref()
             .is_some_and(|d| !s.screens.iter().any(|v| v.id == d.stroke.screen))
         {
-            s.annotation.uncertain("批注屏幕已移除".into());
+            s.annotation
+                .uncertain(t().features.annotation_screen_removed.into());
             return;
         }
         if let Some(d) = &s.annotation.drawing {
@@ -822,7 +824,8 @@ impl StreamControlHandle {
             if let Pending::Toggle(enable) = request.effect {
                 s.annotation.enabled = !enable;
             }
-            s.annotation.uncertain("批注操作未收到确认".into());
+            s.annotation
+                .uncertain(t().features.annotation_unconfirmed.into());
         }
         self.flush_annotation(&mut s);
         self.drive_live_shape(&mut s);
@@ -837,7 +840,7 @@ impl StreamControlHandle {
     fn annotation_history(&self, redo: bool) -> Result<()> {
         let mut s = lock(&self.shared);
         if s.annotation.uncertain {
-            bail!("笔迹状态未确认");
+            bail!("{}", t().features.annotation_strokes_unconfirmed);
         }
         let edit = if redo {
             s.annotation.redo.last()
@@ -861,7 +864,7 @@ impl StreamControlHandle {
     pub(crate) fn annotation_erase(&self, id: u32) -> Result<()> {
         let mut s = lock(&self.shared);
         if s.annotation.uncertain {
-            bail!("笔迹状态未确认");
+            bail!("{}", t().features.annotation_strokes_unconfirmed);
         }
         if let Some(stroke) = s.annotation.strokes.iter().find(|v| v.id == id).cloned() {
             self.edit_annotation(&mut s, Edit::Remove(stroke), Direction::Forward)?;
@@ -885,7 +888,7 @@ impl StreamControlHandle {
     ) -> Result<()> {
         ensure_ready(s)?;
         if !s.annotation.enabled || s.annotation.busy() {
-            bail!("批注尚未就绪");
+            bail!("{}", t().features.annotation_not_ready);
         }
         if s.annotation.native_token.is_some() {
             return self.edit_native(s, edit, direction);
@@ -925,7 +928,7 @@ impl StreamControlHandle {
             return Ok(());
         }
         if requests.len() > MAX_PENDING {
-            bail!("本次操作的笔迹过多");
+            bail!("{}", t().features.annotation_too_many_strokes);
         }
         s.annotation.editing = Some(Editing {
             clears_boards: matches!(&edit, Edit::Clear(_)) && s.annotation.uncertain,

@@ -1,5 +1,6 @@
 //! Same protocol engine in portable mode and in an ordinary-user service child.
 use super::*;
+use crate::i18n::t;
 use crate::platform::windows::host_service::{pipe::Pipe, process, vault};
 use prost::Message as _;
 use std::{
@@ -123,7 +124,8 @@ impl Local {
     fn exchange(&mut self, request: Request) -> Result<Reply> {
         ensure!(
             request.scope == self.scope && request.packets.len() <= BATCH,
-            "文件代理请求无效"
+            "{}",
+            t().features.transfer_agent_request_invalid
         );
         if (!request.enabled || request.close || request.revision != self.revision)
             && self.engine.is_some()
@@ -150,7 +152,7 @@ impl Local {
         }
         let mut packets = Vec::new();
         for packet in request.packets {
-            ensure!(packet.len() <= MAX_FRAME, "文件代理消息过大");
+            ensure!(packet.len() <= MAX_FRAME, "{}", t().features.transfer_agent_message_too_large);
             let rejected = if let Some(engine) = &mut self.engine {
                 match self.runtime.block_on(engine.receive(&packet)) {
                     Ok(()) => None,
@@ -160,7 +162,7 @@ impl Local {
                     }
                 }
             } else {
-                Some(Failure::new(code::DENIED, "被控端已关闭文件传输权限"))
+                Some(Failure::new(code::DENIED, t().features.transfer_permission_off))
             };
             if let Some(failure) = rejected {
                 // A business rejection belongs to this request, not the user
@@ -278,7 +280,7 @@ fn worker(
                 .as_ref()
                 .is_some_and(|r| r.session != process::active_session())
             {
-                anyhow::bail!("文件用户会话已切换");
+                anyhow::bail!("{}", t().features.transfer_user_session_switched);
             }
             if system && remote.is_none() && requested && Instant::now() >= retry {
                 match Remote::new(&stop) {
@@ -302,9 +304,9 @@ fn worker(
                 remote.exchange(&request, &stop)?
             } else {
                 let failure = if requested {
-                    Failure::new(code::BUSY, "被控端没有已登录的用户")
+                    Failure::new(code::BUSY, t().features.transfer_no_signed_in_user)
                 } else {
-                    Failure::new(code::DENIED, "被控端已关闭文件传输权限")
+                    Failure::new(code::DENIED, t().features.transfer_permission_off)
                 };
                 Reply {
                     notices: Vec::new(),

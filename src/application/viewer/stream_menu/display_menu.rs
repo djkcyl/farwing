@@ -3,6 +3,7 @@ use crate::features::stream_control::{
     DisplayChangeRequest, DisplayChangeStatus, DisplayResolution, RemoteDisplayInfo,
     StreamControlSnapshot,
 };
+use crate::i18n::t;
 use crate::ui::{controls, theme};
 
 #[derive(Default)]
@@ -94,10 +95,10 @@ impl DisplayMenu {
     fn resolution_label(choice: DisplayResolution, info: &RemoteDisplayInfo) -> String {
         match choice {
             DisplayResolution::Initial => {
-                format!("初始 · {}", info.initial.unwrap_or(info.current).label())
+                (t().viewer.resolution_initial)(&info.initial.unwrap_or(info.current).label())
             }
             DisplayResolution::FollowLocal { width, height } => {
-                format!("跟随本机 · {width} × {height}")
+                (t().viewer.resolution_follow_local)(width, height)
             }
             DisplayResolution::Mode(mode) => mode.label(),
         }
@@ -119,7 +120,7 @@ impl DisplayMenu {
         local_size: Option<(u32, u32)>,
     ) {
         let Some(screen) = snapshot.screens.iter().find(|s| s.id == screen_id) else {
-            ui.label("显示器已断开");
+            ui.label(t().viewer.display_disconnected);
             return;
         };
         let info = &screen.display;
@@ -142,7 +143,7 @@ impl DisplayMenu {
                 let selected = self.request.resolution.unwrap_or(resolution_base);
                 let (response, apply_resolution, cancel_resolution) = controls::setting_row(
                     ui,
-                    "分辨率",
+                    t().viewer.resolution,
                     &Self::resolution_label(selected, info),
                     self.request.resolution.is_some(),
                     resolution_pending,
@@ -184,10 +185,13 @@ impl DisplayMenu {
                     snapshot.dpi_settings_supported && !info.dpis.is_empty(),
                     |ui| {
                         let selected = self.request.dpi.or(dpi_base);
-                        let label = selected.map_or_else(|| "未提供".into(), |d| format!("{d}%"));
+                        let label = selected.map_or_else(
+                            || t().viewer.dpi_not_reported.into(),
+                            |d| format!("{d}%"),
+                        );
                         let (response, apply_dpi, cancel_dpi) = controls::setting_row(
                             ui,
-                            "DPI 缩放",
+                            t().viewer.dpi_scaling,
                             &label,
                             self.request.dpi.is_some(),
                             dpi_pending,
@@ -199,7 +203,7 @@ impl DisplayMenu {
                                     ui,
                                     &format!("{dpi}%"),
                                     if *dpi == info.recommended_dpi {
-                                        "推荐"
+                                        t().viewer.recommended
                                     } else {
                                         ""
                                     },
@@ -241,7 +245,7 @@ impl DisplayMenu {
             crate::ui::controls::observe_notice(
                 ui.ctx(),
                 ("display-settings-remote", screen_id),
-                "显示设置未确认",
+                t().viewer.display_settings_unconfirmed,
                 crate::ui::controls::DialogIcon::Error,
                 status.error.then_some(status.message.as_str()),
             );
@@ -254,7 +258,7 @@ impl DisplayMenu {
         crate::ui::controls::observe_notice(
             ui.ctx(),
             "display-settings-local",
-            "显示设置失败",
+            t().viewer.display_settings_failed,
             crate::ui::controls::DialogIcon::Error,
             self.error.as_deref(),
         );
@@ -389,7 +393,7 @@ pub(super) fn context_menu(
         let detail = screen
             .map(|s| format!("{} × {}", s.width, s.height))
             .unwrap_or_default();
-        let response = menu_row(ui, "分辨率", &detail, None, enabled, true);
+        let response = menu_row(ui, t().viewer.resolution, &detail, None, enabled, true);
         egui::containers::menu::SubMenu::new().show(ui, &response, |ui| {
             menu_style(ui);
             ui.set_width(WIDTH);
@@ -451,7 +455,7 @@ pub(super) fn context_menu(
         let detail = screen
             .map(|s| format!("{}%", s.display.current_dpi))
             .unwrap_or_default();
-        let response = menu_row(ui, "DPI 缩放", &detail, None, dpi_enabled, true);
+        let response = menu_row(ui, t().viewer.dpi_scaling, &detail, None, dpi_enabled, true);
         egui::containers::menu::SubMenu::new().show(ui, &response, |ui| {
             menu_style(ui);
             ui.set_width(WIDTH);
@@ -467,7 +471,7 @@ pub(super) fn context_menu(
                             ui,
                             &format!("{dpi}%"),
                             if *dpi == info.recommended_dpi {
-                                "推荐"
+                                t().viewer.recommended
                             } else {
                                 ""
                             },

@@ -31,6 +31,7 @@ pub(crate) mod ui;
 pub(crate) mod wire;
 
 use crate::transport::transfer::{Credit, INITIAL_WINDOW, Window};
+use crate::i18n::t;
 use wire::Body;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -185,7 +186,7 @@ impl Transport {
             }
         })
         .await
-        .context("端口转发数据通道未就绪")
+        .context(t().features.mapping_channel_not_ready)
     }
     /// A new stream number for an `Open` (controller side).
     fn next_stream(&self) -> u32 {
@@ -214,8 +215,8 @@ impl Transport {
         });
         {
             let mut streams = lock(&self.streams);
-            ensure!(streams.len() < MAX_STREAMS, "端口转发总连接数已达上限");
-            ensure!(id != 0 && !streams.contains_key(&id), "端口转发编号重复");
+            ensure!(streams.len() < MAX_STREAMS, "{}", t().features.mapping_connection_limit);
+            ensure!(id != 0 && !streams.contains_key(&id), "{}", t().features.mapping_duplicate_stream);
             streams.insert(id, stream.clone());
         }
         Ok((
@@ -297,7 +298,7 @@ impl Transport {
     /// Send a frame on the tunnel once SCTP has room for it.
     async fn send_frame(&self, bytes: Vec<u8>) -> Result<()> {
         let bytes = Bytes::from(bytes);
-        let channel = lock(&self.tunnel).upgrade().context("端口转发连接已关闭")?;
+        let channel = lock(&self.tunnel).upgrade().context(t().features.mapping_connection_closed)?;
         tokio::time::timeout(TIMEOUT, async {
             let _guard = self.send_lock.lock().await;
             loop {
@@ -306,7 +307,8 @@ impl Transport {
                 wake.as_mut().enable();
                 ensure!(
                     channel.ready_state() == RTCDataChannelState::Open,
-                    "端口转发连接已关闭"
+                    "{}",
+                    t().features.mapping_connection_closed
                 );
                 if channel.buffered_amount().await + bytes.len() <= TUNNEL_QUEUE {
                     break;
@@ -320,7 +322,7 @@ impl Transport {
             Ok::<_, anyhow::Error>(())
         })
         .await
-        .context("端口转发发送超时")??;
+        .context(t().features.mapping_send_timeout)??;
         Ok(())
     }
     pub(crate) async fn send(&self, body: Body) -> Result<()> {
@@ -353,13 +355,13 @@ impl Transport {
                 let changed = stream.credit_changed.notified();
                 tokio::pin!(changed);
                 changed.as_mut().enable();
-                ensure!(!stream.stop.is_cancelled(), "转发已关闭");
+                ensure!(!stream.stop.is_cancelled(), "{}", t().features.mapping_closed);
                 let available = lock(&stream.credit).available();
                 if available > 0 {
                     break available;
                 }
                 tokio::select! {
-                    _ = stream.stop.cancelled() => anyhow::bail!("转发已关闭"),
+                    _ = stream.stop.cancelled() => anyhow::bail!("{}", t().features.mapping_closed),
                     _ = changed => {},
                 }
             };
@@ -387,10 +389,11 @@ impl Transport {
     }
     /// Send one UDP datagram, or drop it when the dgram channel is backed up.
     pub(crate) async fn send_datagram(&self, stream: u32, data: Bytes) -> Result<bool> {
-        let channel = lock(&self.datagrams).upgrade().context("UDP 通道未连接")?;
+        let channel = lock(&self.datagrams).upgrade().context(t().features.mapping_udp_not_connected)?;
         ensure!(
             channel.ready_state() == RTCDataChannelState::Open,
-            "UDP 通道已关闭"
+            "{}",
+            t().features.mapping_udp_channel_closed
         );
         if channel.buffered_amount().await + data.len() > DATAGRAM_QUEUE {
             return Ok(false);
@@ -419,13 +422,13 @@ impl Transport {
         .await?;
         let answer = tokio::time::timeout(TIMEOUT, inbound.recv())
             .await
-            .context("目标连接握手超时")?
-            .context("端口转发已关闭")?;
+            .context(t().features.mapping_handshake_timeout)?
+            .context(t().features.mapping_ended)?;
         match answer {
             Inbound::Opened(result) if result.code == wire::code::OK => Ok((stream, inbound)),
             Inbound::Opened(result) => anyhow::bail!(wire::describe(result.code, &result.message)),
             Inbound::Reset(reset) => anyhow::bail!(wire::describe(reset.code, &reset.message)),
-            _ => anyhow::bail!("端口转发握手顺序错误"),
+            _ => anyhow::bail!("{}", t().features.mapping_handshake_out_of_order),
         }
     }
 
@@ -435,11 +438,11 @@ impl Transport {
         let started = std::time::Instant::now();
         let opened = tokio::select! {
             biased;
-            _ = cancel.cancelled() => Err(anyhow::anyhow!("探测已取消")),
+            _ = cancel.cancelled() => Err(anyhow::anyhow!("{}", t().features.mapping_probe_cancelled)),
             result = tokio::time::timeout(
                 Duration::from_secs(5),
                 self.open(wire::proto::TCP, &rule.target, rule.remote_port, cancel.clone()),
-            ) => result.context("TCP 探测超时").and_then(|r| r),
+            ) => result.context(t().features.mapping_probe_timeout).and_then(|r| r),
         };
         let (stream, mut inbound) = match opened {
             Ok(value) => value,
@@ -553,13 +556,13 @@ pub(crate) async fn pump(
                     return Ok(());
                 }
                 Inbound::Reset(reset) if reset.code == wire::code::CLOSED => {
-                    anyhow::bail!("对端已关闭连接")
+                    anyhow::bail!("{}", t().features.mapping_peer_closed)
                 }
                 Inbound::Reset(reset) => anyhow::bail!(wire::describe(reset.code, &reset.message)),
-                Inbound::Opened(_) | Inbound::Datagram(_) => anyhow::bail!("端口转发收到重复握手"),
+                Inbound::Opened(_) | Inbound::Datagram(_) => anyhow::bail!("{}", t().features.mapping_duplicate_handshake),
             }
         }
-        anyhow::bail!("端口转发已关闭")
+        anyhow::bail!("{}", t().features.mapping_ended)
     };
     let (sent, received) = tokio::join!(
         async {
@@ -610,14 +613,16 @@ pub(crate) struct Rule {
 }
 impl Rule {
     pub(crate) fn validate(&self) -> Result<()> {
-        ensure!(self.id != 0, "规则编号无效");
+        ensure!(self.id != 0, "{}", t().features.mapping_invalid_rule_id);
         ensure!(
             !self.name.trim().is_empty() && self.name.encode_utf16().count() <= 32,
-            "名称应为 1–32 个字符"
+            "{}",
+            t().features.mapping_name_length
         );
         ensure!(
             self.local_port != 0 && self.remote_port != 0,
-            "端口应为 1–65535"
+            "{}",
+            t().features.mapping_port_range
         );
         wire::Open {
             stream: 1,
@@ -626,7 +631,7 @@ impl Rule {
             port: u32::from(self.remote_port),
         }
         .validate()
-        .context("目标地址应为 IP 地址或主机名")?;
+        .context(t().features.mapping_target_format)?;
         Ok(())
     }
 }
@@ -670,7 +675,7 @@ pub(crate) async fn run_rule(
         rule.validate()?;
         let endpoint=SocketAddr::new(rule.local_addr,rule.local_port);
         let socket=if rule.local_addr.is_ipv4() {tokio::net::TcpSocket::new_v4()?} else {tokio::net::TcpSocket::new_v6()?};
-        socket.bind(endpoint).with_context(||format!("无法监听 {endpoint}（地址不可用或端口已占用）"))?;
+        socket.bind(endpoint).with_context(||(t().features.mapping_listen_failed)(&endpoint.to_string()))?;
         let listener=socket.listen(128)?;
         lock(&status).listening=true;
         let mut streams=JoinSet::new();

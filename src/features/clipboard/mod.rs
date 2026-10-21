@@ -11,6 +11,7 @@ mod native;
 pub(crate) mod system;
 pub(crate) mod wire;
 use crate::protocol::peer::{self, FrameType};
+use crate::i18n::t;
 use crate::transport::transfer::{self, Chunk, Credit, Flow, Window};
 use anyhow::{Result, anyhow, bail, ensure};
 use bytes::Bytes;
@@ -72,7 +73,7 @@ pub(crate) fn reject_request(bytes: &[u8]) -> Result<Option<Vec<u8>>> {
         wire::failure(
             header.request_id,
             farwing_protocol::peer::error_code::UNAVAILABLE,
-            "剪贴板当前不可用",
+            t().features.clipboard_unavailable,
         )
     }))
 }
@@ -286,11 +287,12 @@ impl Clipboard {
         &self,
         paths: Vec<std::path::PathBuf>,
     ) -> Result<FileSummary> {
-        ensure!(self.0.file_offers.is_some(), "文件发布需要独立会话");
+        ensure!(self.0.file_offers.is_some(), "{}", t().features.clipboard_publish_needs_session);
         let epoch = self.epoch();
         ensure!(
             self.0.valid(epoch) && self.0.file_allowed(),
-            "拖放文件会话不可用"
+            "{}",
+            t().features.clipboard_drag_session_unavailable
         );
         let source = self.0.clone();
         let prepared = tokio::task::spawn_blocking(move || {
@@ -307,7 +309,7 @@ impl Clipboard {
         ))?;
         receiver
             .await
-            .map_err(|_| anyhow!("文件发布已结束"))?
+            .map_err(|_| anyhow!("{}", t().features.clipboard_publish_ended))?
             .map_err(anyhow::Error::msg)?;
         Ok(summary)
     }
@@ -388,13 +390,13 @@ impl Clipboard {
     /// when a local application pastes. Returns the number of formats.
     pub(crate) fn pull(&self) -> Result<usize> {
         let epoch = self.epoch();
-        ensure!(self.0.valid(epoch), "剪贴板通道未就绪");
-        ensure!(!self.0.host_role.load(Ordering::Acquire), "只有主控端可以获取被控剪贴板");
+        ensure!(self.0.valid(epoch), "{}", t().features.clipboard_channel_not_ready);
+        ensure!(!self.0.host_role.load(Ordering::Acquire), "{}", t().features.clipboard_pull_controller_only);
         let (id, waiter) = self.0.begin(epoch, Expect::Offer, Body::Pull(wire::Pull {}))?;
         let Value::Offer(offer, formats) = self.0.wait(epoch, id, waiter)? else {
-            bail!("剪贴板响应类型错误");
+            bail!("{}", t().features.clipboard_wrong_response);
         };
-        ensure!(!formats.is_empty(), "被控剪贴板为空或格式不受支持");
+        ensure!(!formats.is_empty(), "{}", t().features.clipboard_host_empty);
         let count = formats.len();
         self.0.apply_offer(epoch, offer, formats, true)?;
         Ok(count)
@@ -610,7 +612,7 @@ impl Inner {
             if let Expect::Data { stream, .. } = p.expect {
                 self.abort(stream);
             }
-            p.waiter.finish(Err("剪贴板操作已取消".into()));
+            p.waiter.finish(Err(t().features.clipboard_cancelled.into()));
         }
     }
     /// Tell the peer to stop sending `stream`.
@@ -630,19 +632,19 @@ impl Inner {
                 n.checked_add(size)
                     .filter(|n| *n <= MAX_DATA + 4 * 1024 * 1024)
             })
-            .map_err(|_| anyhow!("剪贴板发送超过内存预算"))?;
+            .map_err(|_| anyhow!("{}", t().features.clipboard_send_over_budget))?;
         let queued = Queued {
             item,
             budget: SendBudget(size),
         };
         lock(&self.sender)
             .as_ref()
-            .ok_or_else(|| anyhow!("剪贴板通道未就绪"))?
+            .ok_or_else(|| anyhow!("{}", t().features.clipboard_channel_not_ready))?
             .try_send(queued)
-            .map_err(|_| anyhow!("剪贴板发送队列已满或关闭"))
+            .map_err(|_| anyhow!("{}", t().features.clipboard_send_queue_full))
     }
     fn emit(&self, epoch: u64, frames: Vec<Vec<u8>>) -> Result<()> {
-        ensure!(self.valid(epoch), "剪贴板同步已暂停");
+        ensure!(self.valid(epoch), "{}", t().features.clipboard_paused);
         self.enqueue(Outbound::Frames(epoch, frames))
     }
     /// Announce new local contents; returns the offer number.
@@ -663,7 +665,7 @@ impl Inner {
                 wire::response(request, Body::Data(wire::Data { size, inline: data })),
             );
         }
-        ensure!(stream != 0, "请求没有提供数据流");
+        ensure!(stream != 0, "{}", t().features.clipboard_no_stream);
         lock(&self.credit).insert(stream, Credit::new(transfer::INITIAL_WINDOW));
         self.emit(
             epoch,
@@ -781,7 +783,7 @@ impl Inner {
         let epoch = self.epoch.load(Ordering::Acquire);
         match message {
             Received::Push(Body::Offer(offer)) => {
-                ensure!(valid_formats(&offer.formats), "无效的剪贴板格式列表");
+                ensure!(valid_formats(&offer.formats), "{}", t().features.clipboard_invalid_formats);
                 // Without automatic sync (or while suspended) the peer's
                 // copies are not applied.
                 if self.valid(epoch) && self.auto.load(Ordering::Acquire) {
@@ -798,29 +800,29 @@ impl Inner {
                 lock(&self.credit).remove(&abort.stream);
                 self.credit_changed.notify_waiters();
             }
-            Received::Push(_) => bail!("无效的剪贴板推送"),
+            Received::Push(_) => bail!("{}", t().features.clipboard_invalid_push),
             Received::Request(id, body) => {
                 if !self.valid(epoch) {
                     self.refuse(
                         id,
                         farwing_protocol::peer::error_code::UNAVAILABLE,
-                        "剪贴板同步已暂停",
+                        t().features.clipboard_paused,
                     );
                     return Ok(());
                 }
                 let files = matches!(body, Body::ListFiles(_) | Body::ReadFile(_));
                 if matches!(body, Body::Pull(_)) && !self.host_role.load(Ordering::Acquire) {
-                    self.refuse(id, farwing_protocol::peer::error_code::FORBIDDEN, "主控端不提供剪贴板获取");
+                    self.refuse(id, farwing_protocol::peer::error_code::FORBIDDEN, t().features.clipboard_pull_not_served);
                     return Ok(());
                 }
                 if !matches!(body, Body::Fetch(_) | Body::Pull(_)) && !files {
-                    self.refuse(id, farwing_protocol::peer::error_code::BAD_REQUEST, "无效的剪贴板请求");
+                    self.refuse(id, farwing_protocol::peer::error_code::BAD_REQUEST, t().features.clipboard_invalid_request);
                     return Ok(());
                 }
                 if (files && !self.file_allowed())
                     || (self.file_offers.is_some() && !files)
                 {
-                    self.refuse(id, farwing_protocol::peer::error_code::FORBIDDEN, "文件剪贴板已关闭");
+                    self.refuse(id, farwing_protocol::peer::error_code::FORBIDDEN, t().features.clipboard_files_off);
                     return Ok(());
                 }
                 match &self.backend {
@@ -841,7 +843,7 @@ impl Inner {
                     }
                     tracing::debug!(id, code, %message, "remote clipboard request failed");
                     p.waiter.finish(Err(if message.is_empty() {
-                        "远端无法提供剪贴板内容".into()
+                        t().features.clipboard_remote_failed.into()
                     } else {
                         message
                     }));
@@ -871,7 +873,7 @@ impl Inner {
                     || (data.size as usize > wire::INLINE && !data.inline.is_empty())
                 {
                     let p = pending.remove(&id).unwrap();
-                    p.waiter.finish(Err("剪贴板内容长度无效".into()));
+                    p.waiter.finish(Err(t().features.clipboard_invalid_length.into()));
                     return Ok(());
                 }
                 if data.size as usize <= wire::INLINE {
@@ -886,7 +888,7 @@ impl Inner {
                     let p = pending.remove(&id).unwrap();
                     p.waiter.finish(match (complete, p.expect) {
                         (true, Expect::Data { buffer, .. }) => Ok(Value::Data(buffer)),
-                        _ => Err("剪贴板数据长度不一致".into()),
+                        _ => Err(t().features.clipboard_length_mismatch.into()),
                     });
                 }
             }
@@ -895,7 +897,7 @@ impl Inner {
                 p.waiter.finish(if valid_formats(&offer.formats) {
                     Ok(Value::Offer(offer.offer, offer.formats))
                 } else {
-                    Err("无效的剪贴板格式列表".into())
+                    Err(t().features.clipboard_invalid_formats.into())
                 });
             }
             (Expect::Files, Body::Files(files)) => {
@@ -906,13 +908,13 @@ impl Inner {
                     {
                         Ok(Value::Files(files.items))
                     } else {
-                        Err("无效的剪贴板文件列表".into())
+                        Err(t().features.clipboard_invalid_file_list.into())
                     },
                 );
             }
             _ => {
                 let p = pending.remove(&id).unwrap();
-                p.waiter.finish(Err("剪贴板响应类型错误".into()));
+                p.waiter.finish(Err(t().features.clipboard_wrong_response.into()));
             }
         }
         Ok(())
@@ -944,12 +946,13 @@ impl Inner {
             unreachable!()
         };
         let accepted = (|| -> Result<Option<u64>> {
-            ensure!(!*last && chunk.entry == 0, "剪贴板数据流已结束");
+            ensure!(!*last && chunk.entry == 0, "{}", t().features.clipboard_stream_ended);
             window.receive(chunk.offset, chunk.data.len())?;
             ensure!(
                 buffer.len() + chunk.data.len() <= *maximum
                     && size.is_none_or(|size| (buffer.len() + chunk.data.len()) as u64 <= size),
-                "剪贴板数据超过声明的长度"
+                "{}",
+                t().features.clipboard_data_too_long
             );
             buffer.extend_from_slice(&chunk.data);
             *last = chunk.last;
@@ -977,7 +980,7 @@ impl Inner {
                         size: Some(size),
                         ..
                     } if buffer.len() as u64 == size => Ok(Value::Data(buffer)),
-                    _ => Err("剪贴板数据长度不一致".into()),
+                    _ => Err(t().features.clipboard_length_mismatch.into()),
                 });
             }
             Step::Grant(stream, grant) => {
@@ -1001,7 +1004,7 @@ impl Inner {
         let waiter = Waiter::new();
         {
             let mut p = lock(&self.pending);
-            ensure!(p.len() < MAX_PENDING, "剪贴板请求过多");
+            ensure!(p.len() < MAX_PENDING, "{}", t().features.clipboard_too_many_requests);
             p.insert(
                 id,
                 Pending {
@@ -1034,11 +1037,11 @@ impl Inner {
                 return value.map_err(anyhow::Error::msg);
             }
             if !self.valid(epoch) {
-                return Err(give_up("剪贴板操作已取消"));
+                return Err(give_up(t().features.clipboard_cancelled));
             }
             if lock(&waiter.progress).elapsed() >= REQUEST_STALL_TIMEOUT {
                 tracing::warn!(id, "remote clipboard request stalled; giving up");
-                return Err(give_up("远端剪贴板响应超时"));
+                return Err(give_up(t().features.clipboard_remote_timeout));
             }
             if matches!(self.backend, Backend::Native) {
                 native::pump();
@@ -1077,12 +1080,12 @@ impl Inner {
         )?;
         match self.wait(epoch, id, w)? {
             Value::Data(v) => Ok(v),
-            _ => bail!("剪贴板响应类型错误"),
+            _ => bail!("{}", t().features.clipboard_wrong_response),
         }
     }
     /// The file list of the peer's offer `offer`.
     fn descriptors(&self, epoch: u64, offer: u32) -> Result<Vec<FileItem>> {
-        ensure!(self.file_allowed(), "文件剪贴板已关闭");
+        ensure!(self.file_allowed(), "{}", t().features.clipboard_files_off);
         let (id, w) = self.begin(
             epoch,
             Expect::Files,
@@ -1090,7 +1093,7 @@ impl Inner {
         )?;
         match self.wait(epoch, id, w)? {
             Value::Files(v) => Ok(v),
-            _ => bail!("文件列表响应类型错误"),
+            _ => bail!("{}", t().features.clipboard_wrong_file_list_response),
         }
     }
     fn read_file(
@@ -1101,8 +1104,8 @@ impl Inner {
         offset: u64,
         length: usize,
     ) -> Result<Vec<u8>> {
-        ensure!(self.file_allowed(), "文件剪贴板已关闭");
-        ensure!(length <= FILE_BLOCK, "文件读取过大");
+        ensure!(self.file_allowed(), "{}", t().features.clipboard_files_off);
+        ensure!(length <= FILE_BLOCK, "{}", t().features.clipboard_read_too_large);
         let (stream, expect) = self.data_request(length);
         let (id, w) = self.begin(
             epoch,
@@ -1117,7 +1120,7 @@ impl Inner {
         )?;
         match self.wait(epoch, id, w)? {
             Value::Data(v) => Ok(v),
-            _ => bail!("文件内容响应类型错误"),
+            _ => bail!("{}", t().features.clipboard_wrong_file_response),
         }
     }
     /// Install the peer's offer locally (rendered on demand).

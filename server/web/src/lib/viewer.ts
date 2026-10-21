@@ -5,8 +5,9 @@
 // play. Within the granted capabilities (the server limits browsers to its
 // web setting): the control token and input, the text clipboard, files and
 // the microphone.
+import { t } from '../i18n';
 import { Annotation, type AnnotationState } from './annotation';
-import { call } from './api';
+import { call, errorText } from './api';
 import { ClipboardSync } from './clipboard';
 import { deviceKey, verify } from './device';
 import { deviceIdOf, unb64 } from './encoding';
@@ -73,13 +74,14 @@ export type ViewerState = 'connecting' | 'negotiating' | 'waiting_media' | 'play
 export interface Ending {
   /// `session.ended` reason, or `network`, `identity`, `incompatible`.
   reason: string;
-  message: string;
+  /// Why, in the current language (called when shown).
+  message(): string;
   /// A new session may succeed (the page tries again).
   recoverable: boolean;
 }
 
 export interface ViewerEvents {
-  state?(state: ViewerState, detail?: string): void;
+  state?(state: ViewerState): void;
   ended?(ending: Ending): void;
   stream?(stream: MediaStream): void;
   screens?(screens: fpp.Screens): void;
@@ -133,20 +135,20 @@ const HELLO_VIDEO: Record<VideoCodecId, string> = {
   [VideoCodec.AV1]: 'video.av1',
 };
 
-/// Why a session ended, in words for the page (`realtime.rs` `EndReason`).
-export const END_REASONS: Record<string, string> = {
-  controller_left: '已断开',
-  host_closed: '对方结束了会话',
-  host_offline: '对方设备已离线',
-  revoked: '会话被撤销',
-  kicked: '你被对方移出了会话',
-  identity_mismatch: '对方设备身份校验失败',
-  media_failed: '对方无法开始推流',
-  replaced: '这个浏览器在别处打开了新的会话',
-  permission_revoked: '观看权限已被收回',
-  expired: '会话已过期',
-  server_shutdown: '服务器正在重启',
-};
+/// Why a session ended, in words for the page (`realtime.rs` `EndReason`);
+/// '' when the connection to the server was lost.
+export function endText(reason: string): string {
+  const m = t().viewer.ended;
+  const known = (m.reasons as Record<string, string>)[reason];
+  return known ?? (reason ? m.other(reason) : m.serverLost);
+}
+
+/// A failure to start a session, in the current language (errors with a
+/// `text()`, such as `RealtimeError` and `VisitError`, put it in words again).
+export function failureText(error: unknown): string {
+  const text = (error as { text?: unknown } | null | undefined)?.text;
+  return typeof text === 'function' ? String(text.call(error)) : errorText(error);
+}
 
 /// Sessions that ended for one of these reasons are not re-created.
 const FINAL_REASONS = new Set([
@@ -159,6 +161,8 @@ const FINAL_REASONS = new Set([
   'identity',
   'incompatible',
 ]);
+
+const identityText = () => t().viewer.ended.reasons.identity_mismatch;
 
 /// A session this browser may join: an account session or a visitor
 /// admission (`docs/web-console.md` §7.2, §7.3).
@@ -284,9 +288,9 @@ export class Viewer {
     this.events.log?.(line);
   }
 
-  private setState(state: ViewerState, detail?: string) {
+  private setState(state: ViewerState) {
     this.state = state;
-    this.events.state?.(state, detail);
+    this.events.state?.(state);
   }
 
   /// Open the session; resolves once the offer is out (or throws).
@@ -368,8 +372,8 @@ export class Viewer {
       started.host.device_id !== this.admission!.hostId ||
       (await deviceIdOf(hostKey)) !== started.host.device_id
     ) {
-      this.finish({ reason: 'identity', message: '对方设备身份校验失败', recoverable: false });
-      throw new RealtimeError('identity_mismatch', '对方设备身份校验失败');
+      this.finish({ reason: 'identity', message: identityText, recoverable: false });
+      throw new RealtimeError('identity_mismatch');
     }
     this.started = started;
     this.grants = started.grants;
@@ -483,7 +487,7 @@ export class Viewer {
       if (pc.connectionState !== 'connected') {
         this.finish({
           reason: 'network',
-          message: '无法与对方建立连接',
+          message: () => t().viewer.ended.noConnection,
           recoverable: true,
         });
       }
@@ -511,7 +515,7 @@ export class Viewer {
     }
     if (!ok) {
       this.log('answer identity invalid');
-      this.finish({ reason: 'identity', message: '对方设备身份校验失败', recoverable: false });
+      this.finish({ reason: 'identity', message: identityText, recoverable: false });
       return;
     }
     this.tracks = videoTracks(data.sdp);
@@ -601,11 +605,11 @@ export class Viewer {
   private async restartIce() {
     if (this.stopped || !this.pc || this.pc.connectionState === 'connected') return;
     if (this.iceRestarts >= 3 || !this.rt?.connected) {
-      this.finish({ reason: 'network', message: '与对方的连接已中断', recoverable: true });
+      this.finish({ reason: 'network', message: () => t().viewer.ended.connectionLost, recoverable: true });
       return;
     }
     this.iceRestarts += 1;
-    this.setState('reconnecting', '网络中断，正在恢复');
+    this.setState('reconnecting');
     await this.negotiate(true).catch((error: Error) => this.log(`restart failed: ${error.message}`));
   }
 
@@ -660,13 +664,13 @@ export class Viewer {
   /// A request on the session channel and its response body.
   private request(type: number, body: Uint8Array, timeoutMs = 15_000): Promise<Uint8Array> {
     const dc = this.channels.get('farwing.session.v2');
-    if (dc?.readyState !== 'open') return Promise.reject(new PeerRequestError('unavailable', '连接尚未就绪'));
+    if (dc?.readyState !== 'open') return Promise.reject(new PeerRequestError('unavailable', t().viewer.peer.notReady));
     const rid = this.nextRequest();
     const key = `${type}:${rid}`;
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.requests.delete(key);
-        reject(new PeerRequestError('timeout', '对方没有响应'));
+        reject(new PeerRequestError('timeout', t().viewer.peer.noResponse));
       }, timeoutMs);
       this.requests.set(key, { resolve, reject, timer });
       this.sendSession(type, body, 0, rid);
@@ -676,7 +680,7 @@ export class Viewer {
   /// A frame on the bulk channel once it has room.
   private async sendBulk(type: number, body: Uint8Array) {
     const dc = this.channels.get('farwing.bulk.v2');
-    const closed = () => new PeerRequestError('unavailable', '连接已断开');
+    const closed = () => new PeerRequestError('unavailable', t().viewer.peer.closed);
     if (dc?.readyState !== 'open') throw closed();
     while (dc.bufferedAmount > BULK_HIGH) {
       await new Promise<void>((resolve) => {
@@ -749,7 +753,7 @@ export class Viewer {
       case fpp.Type.HELLO: {
         const hello = fpp.parseHello(frame.body);
         if (!fpp.compatible(hello)) {
-          this.finish({ reason: 'incompatible', message: '对方的 Farwing 版本不兼容', recoverable: false });
+          this.finish({ reason: 'incompatible', message: () => t().viewer.ended.incompatible, recoverable: false });
           return;
         }
         if (response) {
@@ -791,7 +795,7 @@ export class Viewer {
         this.myId = people.participants.find((p) => p.you)?.id ?? this.myId;
         // The host took the token back (another participant, or the owner).
         if (this.controlHeld && !this.turnPending && people.controlling !== this.myId) {
-          this.loseControl('对方收回了键鼠控制权');
+          this.loseControl(t().viewer.control.takenBack);
         }
         this.events.participants?.(people);
         return;
@@ -878,8 +882,8 @@ export class Viewer {
   private setGrants(grants: string[]) {
     this.grants = grants;
     this.events.permissions?.(grants);
-    if (this.controlHeld && !grants.includes('control')) this.loseControl('键鼠控制权限已被收回');
-    if (this.mic && !grants.includes('microphone')) void this.stopMicrophone('麦克风权限已被收回');
+    if (this.controlHeld && !grants.includes('control')) this.loseControl(t().viewer.control.revoked);
+    if (this.mic && !grants.includes('microphone')) void this.stopMicrophone(t().viewer.microphone.revoked);
   }
 
   private emitControl(message?: string) {
@@ -900,7 +904,7 @@ export class Viewer {
   /// Ask for the control token; input is forwarded only once it is held.
   async takeControl(automatic = false): Promise<ControlState> {
     if (!this.grants.includes('control')) {
-      const state = { held: false, pending: false, message: '没有键鼠控制权限' };
+      const state = { held: false, pending: false, message: t().viewer.control.noPermission };
       this.events.control?.(state);
       return state;
     }
@@ -910,7 +914,8 @@ export class Viewer {
     try {
       const m = fpp.parseSession(await this.request(fpp.Type.SESSION, fpp.turnRequest(true, automatic)));
       const held = m.kind === 'turn_result' && m.held;
-      message = m.kind === 'turn_result' && !held ? m.message || '对方没有交出键鼠控制权' : undefined;
+      // The host's own words when it gives them.
+      message = m.kind === 'turn_result' && !held ? m.message || t().viewer.control.refused : undefined;
       this.controlHeld = held;
       this.wantControl = held;
       if (held) this.input.start();
@@ -959,8 +964,8 @@ export class Viewer {
   /// Send the local microphone into the host's virtual microphone.
   async startMicrophone() {
     if (this.mic) return;
-    if (!this.grants.includes('microphone')) throw new Error('没有麦克风权限');
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error('这个浏览器不能使用麦克风');
+    if (!this.grants.includes('microphone')) throw new Error(t().viewer.microphone.noPermission);
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error(t().viewer.microphone.unsupported);
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         // The browser also plays the host's sound: cancel its echo.
@@ -1125,7 +1130,7 @@ export class Viewer {
   private end(reason: string) {
     this.finish({
       reason,
-      message: END_REASONS[reason] ?? (reason ? `会话已结束（${reason}）` : '与服务器的连接已断开'),
+      message: () => endText(reason),
       recoverable: !FINAL_REASONS.has(reason),
     });
   }
@@ -1133,10 +1138,10 @@ export class Viewer {
   /// End this session (once) and tell the page.
   private finish(ending: Ending) {
     if (this.state === 'ended') return;
-    this.log(`ended: ${ending.reason} ${ending.message}`);
+    this.log(`ended: ${ending.reason} ${ending.message()}`);
     this.teardown();
     this.rt?.bye();
-    this.setState('ended', ending.message);
+    this.setState('ended');
     this.events.ended?.(ending);
   }
 
@@ -1150,7 +1155,7 @@ export class Viewer {
     this.mic = undefined;
     for (const pending of this.requests.values()) {
       window.clearTimeout(pending.timer);
-      pending.reject(new PeerRequestError('unavailable', '连接已断开'));
+      pending.reject(new PeerRequestError('unavailable', t().viewer.peer.closed));
     }
     this.requests.clear();
     window.clearInterval(this.helloTimer);
@@ -1172,6 +1177,6 @@ export class Viewer {
     this.stopped = true;
     this.teardown();
     this.rt?.bye();
-    if (this.state !== 'ended') this.setState('ended', '已断开');
+    if (this.state !== 'ended') this.setState('ended');
   }
 }

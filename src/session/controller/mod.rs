@@ -4,6 +4,7 @@ use crate::application::viewer::{
     ConnectionProgress, NativeViewerSession, ViewerDisplayHandle, ViewerLaunchConfig,
 };
 use crate::features::stream_control::StreamControlHandle;
+use crate::i18n::t;
 use crate::media::{
     ConnectionMediaOptions, ConnectionMediaProfile, LocalDisplayInfo, VideoCodec,
     detect_local_display,
@@ -184,7 +185,7 @@ async fn await_media_startup<T>(
 ) -> Result<T> {
     tokio::select! {
         biased;
-        result = ended => Err(result.err().unwrap_or_else(|| anyhow!("设备连接已结束"))),
+        result = ended => Err(result.err().unwrap_or_else(|| anyhow!("{}", t().session.error_connection_ended))),
         result = startup => result,
     }
 }
@@ -324,7 +325,7 @@ impl ControllerConnection {
         let screen = snapshot
             .screens
             .first()
-            .context("被控端尚未提供显示器列表")?;
+            .context(t().session.error_no_display_list)?;
         handle.set_screen_capture(screen.id, true).await?;
         handle.set_viewing_enabled(true);
         Ok(())
@@ -336,7 +337,7 @@ impl ControllerConnection {
         handle.set_video_enabled(false).await?;
         self.forwarder.start_audio();
         handle.audio().start()?;
-        self.performance_monitor().set_decoder("仅音频");
+        self.performance_monitor().set_decoder(t().session.audio_only);
         Ok(())
     }
     pub(crate) fn port_mapping_transport(&self) -> Arc<crate::features::port_mapping::Transport> {
@@ -357,7 +358,7 @@ impl ControllerConnection {
             }
         })
         .await
-        .context("端口转发未就绪")?;
+        .context(t().session.error_port_forwarding_not_ready)?;
         self.port_mapping_transport().wait_ready().await
     }
     pub fn stream_control_handle(&self) -> StreamControlHandle {
@@ -435,17 +436,17 @@ impl ControllerConnection {
         tracing::info!(?profile, ?transport, via_presence = room.via_presence, "establishing controller connection");
         let signal = if room.via_presence {
             // The session rides on this process's presence connection (§11).
-            let sid = room.session_id.as_deref().context("会话缺少标识")?;
-            report_progress(reporter, 4, "正在连接服务器", "");
+            let sid = room.session_id.as_deref().context(t().session.error_session_without_id)?;
+            report_progress(reporter, 4, t().session.progress_connecting_server, "");
             SignalSession::carried(&local.identity.device_id, sid)
                 .context("signal over the presence connection")?
         } else {
-            report_progress(reporter, 4, "正在连接服务器", "");
+            report_progress(reporter, 4, t().session.progress_connecting_server, "");
             SignalSession::connect_cancellable(room, SignalRole::Controller, cancel)
                 .await
                 .context("connect controller signaling")?
         };
-        report_progress(reporter, 4, "已连接服务器", "");
+        report_progress(reporter, 4, t().session.progress_server_connected, "");
         Self::establish_on(
             signal,
             local,
@@ -481,7 +482,7 @@ impl ControllerConnection {
         report_progress(
             reporter,
             5,
-            "正在请求连接",
+            t().session.progress_requesting,
             format!("{} FPS · {}", profile.stream_fps, profile.codec.label()),
         );
         let control = match cancellable(
@@ -505,15 +506,15 @@ impl ControllerConnection {
         report_progress(
             reporter,
             5,
-            "对方已接受连接",
-            if control.force_relay { "仅使用中转" } else { "" },
+            t().session.progress_accepted,
+            if control.force_relay { t().session.progress_relay_only } else { "" },
         );
         let transport = if control.force_relay {
             crate::media::TransportChoice::Relay
         } else {
             transport
         };
-        report_progress(reporter, 6, "正在准备连接", "");
+        report_progress(reporter, 6, t().session.progress_preparing, "");
         let peer = match NativePeer::new_with_profile(
             control
                 .ice_servers
@@ -565,11 +566,11 @@ impl ControllerConnection {
                 return Err(error).context("install decrypted RTP forwarder");
             }
         };
-        report_progress(reporter, 7, "正在协商连接", "");
+        report_progress(reporter, 7, t().session.progress_negotiating, "");
         let answer_installed = AtomicBool::new(false);
         // One line per stage: later candidates add no row of their own.
         let negotiation_progress = |event| match event {
-            NegotiationEvent::OfferSent => report_progress(reporter, 7, "等待对方响应", ""),
+            NegotiationEvent::OfferSent => report_progress(reporter, 7, t().session.progress_waiting_response, ""),
             NegotiationEvent::LocalCandidateSent { count } => {
                 if count == 1 {
                     report_progress(
@@ -579,21 +580,21 @@ impl ControllerConnection {
                         } else {
                             7
                         },
-                        "正在查找线路",
+                        t().session.progress_finding_route,
                         "",
                     );
                 }
             }
             NegotiationEvent::AnswerInstalled => {
                 answer_installed.store(true, Ordering::Release);
-                report_progress(reporter, 8, "对方已响应", "");
+                report_progress(reporter, 8, t().session.progress_responded, "");
             }
             NegotiationEvent::RemoteCandidateInstalled { count } => {
                 if count == 1 {
-                    report_progress(reporter, 8, "正在选择线路", "");
+                    report_progress(reporter, 8, t().session.progress_choosing_route, "");
                 }
             }
-            NegotiationEvent::Connected => report_progress(reporter, 8, "已建立连接", ""),
+            NegotiationEvent::Connected => report_progress(reporter, 8, t().session.progress_connected, ""),
         };
         if let Err(error) = cancellable(
             cancel,
@@ -609,7 +610,7 @@ impl ControllerConnection {
             .selected_route_details()
             .await
             .unwrap_or_default();
-        report_progress(reporter, 8, "已选定线路", route);
+        report_progress(reporter, 8, t().session.progress_route_chosen, route);
         peer.stream_control_handle()
             .network_control()
             .connected(true);
@@ -656,12 +657,12 @@ impl ControllerConnection {
         display: ViewerDisplayHandle,
     ) -> Result<(NativeViewerSession, PlaybackSummary)> {
         let hardware_decode = self.profile.decoder.mode.hardware();
-        report_progress(reporter, 9, "正在准备画面", "");
+        report_progress(reporter, 9, t().session.progress_preparing_picture, "");
         let (video, codec) = self.select_video_track().await?;
         report_progress(
             reporter,
             10,
-            "画面格式已确定",
+            t().session.progress_format_chosen,
             match codec {
                 VideoCodec::H264 => "H.264/AVC",
                 VideoCodec::H265 => "H.265/HEVC",
@@ -689,7 +690,7 @@ impl ControllerConnection {
         report_progress(
             reporter,
             11,
-            "正在准备解码",
+            t().session.progress_preparing_decoder,
             format!(
                 "{} · {}",
                 match codec {
@@ -698,9 +699,9 @@ impl ControllerConnection {
                     VideoCodec::Av1 => "AV1",
                 },
                 if hardware_decode {
-                    "硬件解码优先"
+                    t().session.hardware_decoding_preferred
                 } else {
-                    "软件解码"
+                    t().session.software_decoding
                 },
             ),
         );
@@ -722,7 +723,7 @@ impl ControllerConnection {
         report_progress(
             reporter,
             11,
-            "解码已就绪",
+            t().session.progress_decoder_ready,
             performance.snapshot().decoder.clone(),
         );
         self.forwarder.add_video_sink(viewer.video_sink()).await;
@@ -732,7 +733,7 @@ impl ControllerConnection {
         if let Err(error) = self.peer.stream_control_handle().audio().start() {
             tracing::warn!(%error, "native audio did not start; video remains available");
         }
-        report_progress(reporter, 12, "正在等待画面", "");
+        report_progress(reporter, 12, t().session.progress_waiting_picture, "");
         self.peer.request_keyframe(video.ssrc).await?;
         let keyframe_ready = self
             .forwarder
@@ -741,9 +742,9 @@ impl ControllerConnection {
         viewer.ensure_running()?;
         if !keyframe_ready {
             tracing::warn!("PLI 后 2 秒内未识别到完整参数集和关键帧，已继续等待后续关键帧");
-            report_progress(reporter, 12, "仍在等待画面", "");
+            report_progress(reporter, 12, t().session.progress_still_waiting_picture, "");
         } else {
-            report_progress(reporter, 12, "已收到画面", "");
+            report_progress(reporter, 12, t().session.progress_picture_received, "");
         }
         let summary = PlaybackSummary {
             track_id: video.id,
@@ -754,7 +755,7 @@ impl ControllerConnection {
             },
             payload_type: video.payload_type,
             requested_keyframe: true,
-            player: "原生窗口",
+            player: t().session.native_window,
         };
 
         Ok((viewer, summary))
@@ -775,7 +776,7 @@ impl ControllerConnection {
         handle.wait_media_control().await?;
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while handle.snapshot().screens.is_empty() {
-            anyhow::ensure!(std::time::Instant::now() < deadline, "被控端没有提供显示器列表");
+            anyhow::ensure!(std::time::Instant::now() < deadline, "{}", t().session.error_no_display_list);
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         self.activate_viewing().await?;
@@ -871,7 +872,7 @@ mod recovery_tests {
         use crate::account::api::ApiFailure;
         use farwing_protocol::error::ErrorCode;
         let offline = anyhow::Error::new(ApiFailure::new(ErrorCode::DeviceOffline, ""))
-            .context("创建会话失败");
+            .context("create session");
         assert_eq!(recovery(&offline), Recovery::WaitDevice);
         let network = anyhow::Error::new(ApiFailure::new(ErrorCode::Network, ""));
         assert_eq!(recovery(&network), Recovery::Retry);

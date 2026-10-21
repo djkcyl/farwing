@@ -1,4 +1,5 @@
 //! Viewer caption and window geometry.
+use crate::i18n::t;
 use super::screen_windows::ScreenTabBar;
 use crate::application::viewer::StreamControlUi;
 use crate::application::viewer_shortcuts::Action as ViewerShortcut;
@@ -187,7 +188,7 @@ pub(in crate::application::viewer) fn player_title_bar(
         "—"
     };
     let parameters = stats.decoded_resolution.map_or_else(
-        || "等待画面".to_owned(),
+        || t().viewer.waiting_for_video.to_owned(),
         |(width, height)| {
             format!(
                 "{width}×{height} · {:.0} FPS · {codec}",
@@ -220,7 +221,7 @@ pub(in crate::application::viewer) fn player_title_bar(
         &mut actions,
         TitleIcon::Quality,
         bar.stream_control_ui.open,
-        "画质与串流设置",
+        t().viewer.quality_and_stream_settings,
     );
     if quality_button.clicked() {
         bar.stream_control_ui.open = !bar.stream_control_ui.open;
@@ -232,7 +233,7 @@ pub(in crate::application::viewer) fn player_title_bar(
         &mut actions,
         TitleIcon::Plugins,
         *bar.plugin_menu_open,
-        "插件",
+        t().viewer.plugins,
     )
     .clicked()
     {
@@ -246,31 +247,38 @@ pub(in crate::application::viewer) fn player_title_bar(
         .add_enabled_ui(
             !annotation.toggling
                 && (annotation.enabled || annotation.supported),
-            |ui| title_icon_button(ui, TitleIcon::Annotation, annotation.enabled, "批注"),
+            |ui| {
+                title_icon_button(
+                    ui,
+                    TitleIcon::Annotation,
+                    annotation.enabled,
+                    t().controls.annotation,
+                )
+            },
         )
         .inner
-        .on_disabled_hover_text("批注暂不可用")
+        .on_disabled_hover_text(t().viewer.annotation_unavailable)
         .clicked();
     action.one_to_one = actions
         .add_enabled_ui(
             !bar.window.is_maximized() && bar.window.fullscreen().is_none(),
-            |ui| title_icon_button(ui, TitleIcon::OneToOne, false, "1:1 实际像素"),
+            |ui| title_icon_button(ui, TitleIcon::OneToOne, false, t().viewer.one_to_one),
         )
         .inner
-        .on_disabled_hover_text("1:1 实际像素")
+        .on_disabled_hover_text(t().viewer.one_to_one)
         .clicked();
     let control = bar.stream_control.snapshot();
     let mic = bar.stream_control.microphone().snapshot();
     let mic_hint = if mic.pending {
-        "麦克风：等待远端确认"
+        t().viewer.mic_hint_waiting
     } else if let Some(error) = mic.error.as_deref() {
         error
     } else if mic.capturing {
-        "麦克风正在发送"
+        t().viewer.mic_sending
     } else if mic.enabled {
-        "麦克风已开启"
+        t().viewer.mic_on
     } else {
-        "麦克风"
+        t().viewer.microphone
     };
     if actions
         .add_enabled_ui(
@@ -278,7 +286,7 @@ pub(in crate::application::viewer) fn player_title_bar(
             |ui| title_icon_button(ui, TitleIcon::Microphone, mic.enabled, mic_hint),
         )
         .inner
-        .on_disabled_hover_text("麦克风不可用")
+        .on_disabled_hover_text(t().viewer.mic_unavailable)
         .clicked()
     {
         crate::ui::controls::clear_notice(actions.ctx(), "microphone-request-error");
@@ -290,7 +298,7 @@ pub(in crate::application::viewer) fn player_title_bar(
             Err(error) => crate::ui::controls::notice(
                 actions.ctx(),
                 "microphone-request-error",
-                "麦克风",
+                t().viewer.microphone,
                 crate::ui::controls::DialogIcon::Error,
                 error.to_string(),
             ),
@@ -305,19 +313,18 @@ pub(in crate::application::viewer) fn player_title_bar(
     let mouse_button = actions
         .add_enabled_ui((enabled || control.ready) && holder.is_none(), |ui| {
             let hint = if bar.stream_control.mouse().transport_recovering() {
-                "键鼠控制恢复中".into()
+                t().viewer.control_recovering.into()
             } else if bar.stream_control.mouse().waiting_for_neutral() {
-                "等待松开全部键鼠".into()
+                t().viewer.release_all_keys.into()
             } else if enabled {
-                format!(
-                    "退出控制（{}）",
-                    crate::application::viewer_shortcuts::label(ViewerShortcut::ReleaseMouse)
-                )
+                (t().viewer.release_control)(&crate::application::viewer_shortcuts::label(
+                    ViewerShortcut::ReleaseMouse,
+                ))
             } else {
                 if bar.stream_control.mouse().keyboard_supported() {
-                    "开启键鼠控制".into()
+                    t().viewer.control_keyboard_mouse.into()
                 } else {
-                    "开启鼠标控制".into()
+                    t().viewer.control_mouse.into()
                 }
             };
 
@@ -347,12 +354,25 @@ pub(in crate::application::viewer) fn player_title_bar(
     );
     controls.spacing_mut().item_spacing.x = 4.0;
     if bar.window.fullscreen().is_some() {
-        if title_icon_button(&mut controls, TitleIcon::Minimize, false, "最小化").clicked() {
+        if title_icon_button(
+            &mut controls,
+            TitleIcon::Minimize,
+            false,
+            t().controls.minimize,
+        )
+        .clicked()
+        {
             bar.window.set_minimized(true);
         }
-        action.exit_fullscreen =
-            title_icon_button(&mut controls, TitleIcon::Restore, false, "退出全屏").clicked();
-        action.close = title_icon_button(&mut controls, TitleIcon::Close, false, "关闭").clicked();
+        action.exit_fullscreen = title_icon_button(
+            &mut controls,
+            TitleIcon::Restore,
+            false,
+            t().viewer.exit_fullscreen,
+        )
+        .clicked();
+        action.close =
+            title_icon_button(&mut controls, TitleIcon::Close, false, t().common.close).clicked();
     } else {
         action.close = window_buttons(&mut controls, bar.window);
     }

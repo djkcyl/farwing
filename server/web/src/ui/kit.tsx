@@ -8,6 +8,7 @@ import {
   type ReactNode,
   type SelectHTMLAttributes,
 } from 'react';
+import { useT } from '../i18n/react';
 import { Icon, type IconName } from './icons';
 
 type Variant = 'primary' | 'default' | 'ghost' | 'danger';
@@ -176,10 +177,11 @@ export function Badge({ tone = 'muted', children }: { tone?: Tone; children: Rea
 }
 
 export function Online({ online, text }: { online: boolean; text?: string }) {
+  const t = useT();
   return (
     <span className={`status ${online ? 'online' : 'offline'}`}>
       <span className="dot" />
-      {text ?? (online ? '在线' : '离线')}
+      {text ?? (online ? t.common.online : t.common.offline)}
     </span>
   );
 }
@@ -188,10 +190,11 @@ export function Spinner({ size = 18 }: { size?: number }) {
   return <span className="spinner" style={{ width: size, height: size }} />;
 }
 
-export function Loading({ text = '正在加载' }: { text?: string }) {
+export function Loading({ text }: { text?: string }) {
+  const t = useT();
   return (
     <div className="loading">
-      <Spinner /> <span>{text}</span>
+      <Spinner /> <span>{text ?? t.common.loading}</span>
     </div>
   );
 }
@@ -287,6 +290,7 @@ export function Stat({
 
 /// Text with a copy button.
 export function Copy({ text, display, mono = true }: { text: string; display?: ReactNode; mono?: boolean }) {
+  const t = useT();
   const [done, setDone] = useState(false);
   return (
     <span className={`copy ${mono ? 'mono' : ''}`}>
@@ -294,8 +298,8 @@ export function Copy({ text, display, mono = true }: { text: string; display?: R
       <button
         type="button"
         className="copy-btn"
-        title="复制"
-        aria-label="复制"
+        title={t.common.copy}
+        aria-label={t.common.copy}
         onClick={async () => {
           await navigator.clipboard?.writeText(text).catch(() => undefined);
           setDone(true);
@@ -325,12 +329,13 @@ export function Row({ label, children }: { label: ReactNode; children: ReactNode
 export function SearchBox({
   value,
   onChange,
-  placeholder = '搜索',
+  placeholder,
 }: {
   value: string;
   onChange(v: string): void;
   placeholder?: string;
 }) {
+  const t = useT();
   return (
     <span className="search">
       <Icon name="search" size={15} />
@@ -339,7 +344,7 @@ export function SearchBox({
         name="search"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
+        placeholder={placeholder ?? t.common.search}
       />
     </span>
   );

@@ -282,6 +282,12 @@ fn err_env(re: Option<&str>, code: ErrorCode, msg: &str) -> Envelope {
     Envelope::error(re, ErrorBody::new(code, msg))
 }
 
+/// `not_found` for a session that is gone.
+fn session_ended(msg: &str) -> ErrorBody {
+    ErrorBody::new(ErrorCode::NotFound, msg)
+        .with_details(json!({ "reason": farwing_protocol::error::reason::SESSION_ENDED }))
+}
+
 fn ended_env(sid: &str, r: &str) -> Envelope {
     Envelope::new(
         types::SESSION_ENDED,
@@ -1280,7 +1286,7 @@ impl Hub {
             return;
         }
         let Some(s) = st.sessions.get(&sid) else {
-            conn.send(&err_env(re, ErrorCode::NotFound, "session ended"));
+            conn.send(&Envelope::error(re, session_ended("session ended")));
             return;
         };
         let host = st
@@ -1289,7 +1295,7 @@ impl Hub {
             .and_then(|id| st.links.get(id))
             .filter(|l| l.epoch == s.host_epoch);
         let Some(host_conn) = host.and_then(|l| l.conn.clone()) else {
-            conn.send(&err_env(re, ErrorCode::DeviceOffline, "目标设备不在线"));
+            conn.send(&err_env(re, ErrorCode::DeviceOffline, "target device is offline"));
             return;
         };
         if s.connect_type == ConnectType::Account && host.is_some_and(|l| l.auth.is_guest()) {
@@ -1384,7 +1390,7 @@ impl Hub {
         let link_session = link.session_id.clone();
         let is_presence = st.presence.get(&link_device).map(String::as_str) == Some(link_id);
         let Some(s) = st.sessions.get(&sid) else {
-            conn.send(&err_env(re, ErrorCode::NotFound, "unknown session"));
+            conn.send(&Envelope::error(re, session_ended("unknown session")));
             return;
         };
         let from_controller = match role {
@@ -1549,7 +1555,7 @@ impl Hub {
             .get(&sid)
             .is_none_or(|s| s.controller_link.as_deref() != Some(link_id))
         {
-            conn.send(&err_env(re, ErrorCode::NotFound, "unknown session"));
+            conn.send(&Envelope::error(re, session_ended("unknown session")));
             return;
         }
         // A per-session controller link closes with the session.
@@ -1580,7 +1586,7 @@ impl Hub {
             .get(sid)
             .is_none_or(|s| s.host_device_id != device)
         {
-            conn.send(&err_env(re, ErrorCode::NotFound, "unknown session"));
+            conn.send(&Envelope::error(re, session_ended("unknown session")));
             return;
         }
         let requested = env

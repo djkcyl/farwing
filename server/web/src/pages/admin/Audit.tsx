@@ -1,14 +1,19 @@
 // The audit log: administrator actions, logins (also failed ones),
 // registrations; filter by kind and actor, page backwards.
 import { useEffect, useState } from 'react';
+import { auditDetail } from '../../i18n/audit';
+import { useLang, useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
-import { AUDIT_KINDS, auditKindText, dateTime } from '../../lib/format';
+import { auditKinds, auditKindText, dateTime } from '../../lib/format';
 import type { AuditEntry } from '../../lib/types';
 import { Alert, Badge, Button, Card, Empty, Input, Loading, PageHeader, Select } from '../../ui/kit';
 
 const PAGE = 100;
 
 export default function Audit() {
+  const t = useT();
+  const [lang] = useLang();
+  const m = t.admin.audit;
   const [kind, setKind] = useState('');
   const [actor, setActor] = useState('');
   const [applied, setApplied] = useState({ kind: '', actor: '' });
@@ -44,7 +49,7 @@ export default function Audit() {
 
   return (
     <div className="stack">
-      <PageHeader title="审计日志" />
+      <PageHeader title={t.nav.audit} />
       <form
         className="row gap-sm wrap"
         onSubmit={(e) => {
@@ -52,9 +57,9 @@ export default function Audit() {
           setApplied({ kind, actor: actor.trim() });
         }}
       >
-        <Select value={kind} onChange={(e) => setKind(e.target.value)} style={{ width: 180 }}>
-          <option value="">全部类型</option>
-          {Object.entries(AUDIT_KINDS).map(([k, v]) => (
+        <Select value={kind} onChange={(e) => setKind(e.target.value)} style={{ width: lang === 'en' ? 260 : 180 }}>
+          <option value="">{m.allKinds}</option>
+          {auditKinds().map(([k, v]) => (
             <option key={k} value={k}>
               {v}
             </option>
@@ -63,11 +68,11 @@ export default function Audit() {
         <Input
           value={actor}
           onChange={(e) => setActor(e.target.value)}
-          placeholder="操作者用户名"
+          placeholder={m.actorPlaceholder}
           style={{ width: 180 }}
         />
         <Button type="submit" icon="search">
-          筛选
+          {t.common.filter}
         </Button>
       </form>
       {error && <Alert>{error}</Alert>}
@@ -75,18 +80,18 @@ export default function Audit() {
         {!rows ? (
           <Loading />
         ) : rows.length === 0 ? (
-          <Empty icon="log" title="暂无记录" />
+          <Empty icon="log" title={m.empty} />
         ) : (
           <>
             <div className="table-wrap">
               <table className="table">
                 <thead>
                   <tr>
-                    <th>时间</th>
-                    <th>操作者</th>
-                    <th>类型</th>
-                    <th>对象</th>
-                    <th>详情</th>
+                    <th>{t.admin.col.time}</th>
+                    <th>{m.actor}</th>
+                    <th>{m.kind}</th>
+                    <th>{m.target}</th>
+                    <th>{m.detail}</th>
                     <th>IP</th>
                   </tr>
                 </thead>
@@ -94,15 +99,15 @@ export default function Audit() {
                   {rows.map((e) => (
                     <tr key={e.id}>
                       <td className="nowrap">{dateTime(e.at)}</td>
-                      <td>{e.actor_name || <span className="muted">匿名</span>}</td>
+                      <td>{e.actor_name || <span className="muted">{t.admin.anonymous}</span>}</td>
                       <td className="nowrap">
-                        {auditKindText(e.kind)} {!e.ok && <Badge tone="red">失败</Badge>}
+                        {auditKindText(e.kind)} {!e.ok && <Badge tone="red">{t.common.failed}</Badge>}
                       </td>
                       <td className="small" style={{ maxWidth: 260, overflowWrap: 'anywhere' }}>
                         {e.target}
                       </td>
                       <td className="small muted" style={{ maxWidth: 320, overflowWrap: 'anywhere' }}>
-                        {e.detail}
+                        {e.detail && auditDetail(lang, e.kind, e.detail)}
                       </td>
                       <td className="mono small">{e.ip}</td>
                     </tr>
@@ -113,7 +118,7 @@ export default function Audit() {
             {more && (
               <div className="pager">
                 <Button loading={busy} onClick={() => void load(rows[rows.length - 1].id)}>
-                  加载更早的记录
+                  {m.loadMore}
                 </Button>
               </div>
             )}

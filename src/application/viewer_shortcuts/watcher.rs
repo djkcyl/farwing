@@ -33,7 +33,7 @@ impl Watcher {
                     super::refresh();
                 }
             })
-            .context("启动快捷键设置读取线程")?;
+            .context(crate::i18n::t().viewer.shortcut_reader_failed)?;
         let owner = Arc::new(Owner {
             stop,
             thread: Some(thread),

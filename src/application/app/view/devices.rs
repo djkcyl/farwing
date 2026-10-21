@@ -19,8 +19,8 @@ enum Sort {
 impl Sort {
     fn label(self) -> &'static str {
         match self {
-            Self::Status => "在线优先",
-            Self::Name => "名称排序",
+            Self::Status => t().center.online_first,
+            Self::Name => t().center.by_name,
         }
     }
 }
@@ -112,14 +112,15 @@ impl DeviceCenterApp {
                 .count()
         });
         let state = &mut self.center_ui.device_list;
+        let text = &t().center;
         ui.horizontal(|ui| {
             let width = (ui.available_width() - 182.0).max(140.0);
             ui.add_sized(
                 [width, 36.0],
-                singleline_input(&mut state.search).hint_text("搜索设备"),
+                singleline_input(&mut state.search).hint_text(text.search_devices),
             );
             if ui
-                .add_enabled(!state.search.is_empty(), egui::Button::new("清除"))
+                .add_enabled(!state.search.is_empty(), egui::Button::new(text.clear))
                 .clicked()
             {
                 state.search.clear();
@@ -136,9 +137,9 @@ impl DeviceCenterApp {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             for (filter, label, n) in [
-                (Filter::All, "全部", count),
-                (Filter::Online, "在线", online),
-                (Filter::Offline, "离线", offline),
+                (Filter::All, text.all, count),
+                (Filter::Online, t().common.online, online),
+                (Filter::Offline, t().common.offline, offline),
             ] {
                 ui.selectable_value(&mut state.filter, filter, format!("{label}  {n}"));
             }
@@ -151,12 +152,12 @@ impl DeviceCenterApp {
         crate::ui::controls::observe_notice(
             ui.ctx(),
             "catalog-error",
-            "设备清单未更新",
+            text.device_list_not_updated,
             crate::ui::controls::DialogIcon::Warning,
             self.catalog_error.as_deref(),
         );
         let Some(mut rows) = rows else {
-            self.empty_state(ui, "正在读取设备清单…", None);
+            self.empty_state(ui, text.loading_devices, None);
             return;
         };
         rows.retain(|e| {
@@ -193,11 +194,11 @@ impl DeviceCenterApp {
                 clear_filters = self.empty_state(
                     ui,
                     if count == 0 {
-                        "暂无可连接的电脑"
+                        text.no_computers
                     } else {
-                        "没有符合条件的设备"
+                        text.no_matching_devices
                     },
-                    (count > 0).then_some("清除搜索和筛选"),
+                    (count > 0).then_some(text.clear_filters),
                 );
             }
             for entry in &rows {
@@ -247,6 +248,7 @@ impl DeviceCenterApp {
         devices: &[(DeviceInfo, bool)],
     ) -> Option<String> {
         let open = &mut self.center_ui.device_list.others_open;
+        let text = &t().center;
         let (rect, response) =
             ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -255,7 +257,7 @@ impl DeviceCenterApp {
                 egui::WidgetType::CollapsingHeader,
                 true,
                 *open,
-                "本机与其他登录设备",
+                text.this_and_other_devices,
             )
         });
         if response.clicked() {
@@ -273,14 +275,14 @@ impl DeviceCenterApp {
         let title = ui.painter().text(
             rect.left_center() + vec2(20.0, 0.0),
             egui::Align2::LEFT_CENTER,
-            "本机与其他登录设备",
+            text.this_and_other_devices,
             FontId::proportional(crate::ui::theme::BODY),
             color,
         );
         ui.painter().text(
             title.right_center() + vec2(8.0, 0.0),
             egui::Align2::LEFT_CENTER,
-            format!("{} 台", devices.len()),
+            (text.device_count)(devices.len()),
             FontId::proportional(crate::ui::theme::SMALL),
             MUTED,
         );
@@ -306,7 +308,7 @@ impl DeviceCenterApp {
                                             .truncate(),
                                     );
                                     if *current {
-                                        super::cards::chip(ui, "本机", theme::ACCENT);
+                                        super::cards::chip(ui, text.page_this_device, theme::ACCENT);
                                     }
                                 });
                                 ui.horizontal(|ui| {
@@ -316,7 +318,7 @@ impl DeviceCenterApp {
                                             device.platform_label(),
                                             crate::account::api::device_id_text(&device.device_id),
                                             if device.version_name.is_empty() {
-                                                "版本未知"
+                                                text.unknown_version
                                             } else {
                                                 &device.version_name
                                             }
@@ -334,7 +336,7 @@ impl DeviceCenterApp {
                                 });
                             });
                             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                                ui.add(crate::ui::controls::secondary("详情")).clicked()
+                                ui.add(crate::ui::controls::secondary(t().common.details)).clicked()
                             })
                             .inner
                         })
@@ -396,7 +398,9 @@ fn row(
         egui::Rect::from_min_size(preview.right_bottom() - vec2(29.0, 29.0), vec2(26.0, 26.0));
     ui.painter().rect_filled(icon, 5.0, BG);
     device_visuals::system_icon(ui.painter(), icon.shrink(3.0), device.platform);
-    let actions_x = rect.right() - if entry.viewing { 210.0 } else { 92.0 };
+    let text = &t().center;
+    // Room for the actions, also with the longer English labels.
+    let actions_x = rect.right() - if entry.viewing { 226.0 } else { 100.0 };
     let status_x = if wide {
         actions_x - 120.0
     } else {
@@ -427,10 +431,9 @@ fn row(
     .on_hover_text(display_alias(device));
     name.add(
         egui::Label::new(
-            RichText::new(format!(
-                "{}ID {}",
-                if entry.current { "本机 · " } else { "" },
-                crate::account::api::device_id_text(&device.device_id)
+            RichText::new((text.device_id_line)(
+                entry.current,
+                &crate::account::api::device_id_text(&device.device_id),
             ))
             .size(crate::ui::theme::TINY)
             .color(MUTED),
@@ -464,7 +467,7 @@ fn row(
         metadata.add(
             egui::Label::new(
                 RichText::new(if device.version_name.is_empty() {
-                    "版本未知"
+                    text.unknown_version
                 } else {
                     &device.version_name
                 })
@@ -480,7 +483,7 @@ fn row(
                     "{} · {}",
                     device.platform_label(),
                     if device.version_name.is_empty() {
-                        "版本未知"
+                        text.unknown_version
                     } else {
                         &device.version_name
                     }
@@ -507,9 +510,9 @@ fn row(
         let button = buttons.add_enabled(
             entry.connect_issue.is_none(),
             primary(if entry.own_session {
-                "已打开"
+                text.opened
             } else {
-                "连接"
+                t().common.connect
             }),
         );
         if button.clicked() {
@@ -519,7 +522,7 @@ fn row(
             .add_enabled_ui(entry.connect_issue.is_none(), |ui| {
                 crate::ui::controls::audio_output_button(
                     ui,
-                    "仅音频连接",
+                    text.audio_only_connect,
                     crate::ui::theme::CONTROL_HEIGHT,
                 )
             })
@@ -534,7 +537,7 @@ fn row(
             button.on_disabled_hover_text(issue);
         }
     }
-    if buttons.button("详情").clicked() {
+    if buttons.button(t().common.details).clicked() {
         action = Some(Action::Details);
     }
     action.or_else(|| response.clicked().then_some(Action::Details))

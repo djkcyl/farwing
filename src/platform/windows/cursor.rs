@@ -1,4 +1,5 @@
 //! DDA pointer shapes. Only cursor-sized data is uploaded; desktop pixels stay on GPU.
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use windows::Win32::{
     Foundation::POINT,
@@ -34,7 +35,8 @@ impl Cursor {
         }
         ensure!(
             frame.PointerShapeBufferSize <= 4 * 1024 * 1024,
-            "光标形状过大"
+            "{}",
+            t().system.cursor_shape_too_large
         );
         let mut raw = vec![0u8; frame.PointerShapeBufferSize as usize];
         let mut info = DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
@@ -47,19 +49,28 @@ impl Cursor {
                 &mut info,
             )?;
         }
-        ensure!(required as usize <= raw.len(), "光标缓冲区不足");
+        ensure!(
+            required as usize <= raw.len(),
+            "{}",
+            t().system.cursor_buffer_too_small
+        );
         ensure!(
             matches!(info.Type, 1 | 2 | 4)
                 && info.Width > 0
                 && info.Width <= 1024
                 && info.Height > 0
                 && info.Height <= 2048,
-            "不支持的光标形状"
+            "{}",
+            t().system.cursor_unsupported_shape
         );
         let mono = info.Type == 1;
-        ensure!(!mono || info.Height % 2 == 0, "单色光标掩码尺寸无效");
+        ensure!(
+            !mono || info.Height % 2 == 0,
+            "{}",
+            t().system.cursor_invalid_mask_size
+        );
         let height = if mono { info.Height / 2 } else { info.Height };
-        ensure!(height <= 1024, "光标高度过大");
+        ensure!(height <= 1024, "{}", t().system.cursor_too_tall);
         let row = if mono {
             info.Width.div_ceil(8)
         } else {
@@ -68,7 +79,8 @@ impl Cursor {
         ensure!(
             info.Pitch >= row
                 && u64::from(info.Pitch) * u64::from(info.Height) <= u64::from(required),
-            "光标行跨度无效"
+            "{}",
+            t().system.cursor_invalid_pitch
         );
         let mut rgba = vec![0u8; info.Width as usize * height as usize * 4];
         for y in 0..height as usize {
@@ -125,11 +137,11 @@ impl Cursor {
             )?;
             let mut view = None;
             device.CreateShaderResourceView(
-                &texture.context("光标纹理未创建")?,
+                &texture.context(t().system.cursor_texture_not_created)?,
                 None,
                 Some(&mut view),
             )?;
-            self.view = Some(view.context("光标视图未创建")?);
+            self.view = Some(view.context(t().system.cursor_view_not_created)?);
         }
         self.kind = info.Type;
         self.width = info.Width;

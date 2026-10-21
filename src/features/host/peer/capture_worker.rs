@@ -12,6 +12,7 @@ use super::super::output_size;
 use super::Published;
 use super::encode_group;
 use crate::features::host::format::{Backend, Color, Format};
+use crate::i18n::t;
 use anyhow::Context as _;
 use anyhow::Result;
 use std::sync::Arc;
@@ -200,7 +201,7 @@ pub(super) fn capture_loop(
             .or_else(|| {
                 negotiated.candidate(&wanted, (screen.width, screen.height), source_gpu, &failed, false)
             })
-            .context("协商的编码器均不可用")?;
+            .context(t().features.peer_no_negotiated_encoder)?;
         let hardware =
             candidate.capability.backend != crate::features::host::format::Backend::Software;
         let candidate_id = (
@@ -473,7 +474,9 @@ pub(super) fn capture_loop(
         }
 
         if !leading {
-            let membership = membership.as_mut().context("缺少共享编码组")?;
+            let membership = membership
+                .as_mut()
+                .context(t().features.peer_shared_group_missing)?;
             // This viewer's own keyframe needs (PLI/FIR, a reoffer) go to
             // the shared encoder.
             if keyframe.swap(false, Ordering::AcqRel) {
@@ -590,7 +593,9 @@ pub(super) fn capture_loop(
             if cancel.is_cancelled() || !handle.requested() {
                 break;
             }
-            sender.blocking_send(encoded).context("画面发送队列已关闭")?;
+            sender
+                .blocking_send(encoded)
+                .context(t().features.peer_send_queue_closed)?;
             continue;
         }
 
@@ -686,16 +691,21 @@ pub(super) fn capture_loop(
         } else {
             next + period
         };
-        let captured = desktop.as_mut().context("缺少采集源")?.next(
-            wait_ms,
-            wanted.quality,
-            wanted.cursor_capture,
-            wanted.color.is_hdr(),
-            wanted.maximum,
-        );
+        let captured = desktop
+            .as_mut()
+            .context(t().features.peer_capture_source_missing)?
+            .next(
+                wait_ms,
+                wanted.quality,
+                wanted.cursor_capture,
+                wanted.color.is_hdr(),
+                wanted.maximum,
+            );
         metrics.capture.record(capture_started.elapsed());
         let captured = captured?;
-        let capture_state = desktop.as_ref().context("缺少采集源")?;
+        let capture_state = desktop
+            .as_ref()
+            .context(t().features.peer_capture_source_missing)?;
         *lock(&pointer) = capture_state.cursor.clone();
         if let Some(membership) = membership.as_ref() {
             membership.set_cursor(capture_state.cursor.clone());
@@ -786,7 +796,10 @@ pub(super) fn capture_loop(
             continue;
         }
         let size = output_size(frame.width, frame.height, wanted.quality);
-        let source_device = &desktop.as_ref().context("缺少采集源")?.device;
+        let source_device = &desktop
+            .as_ref()
+            .context(t().features.peer_capture_source_missing)?
+            .device;
         // NVENC owns a separate D3D11 context even on the capture adapter.
         // Transfer explicitly orders capture/preprocessing before encoding,
         // instead of relying on NVENC's handling of the capture context.
@@ -839,7 +852,10 @@ pub(super) fn capture_loop(
                         active.implementation(),
                         active.maximum_size(),
                         &screen,
-                        desktop.as_ref().context("缺少采集源")?.backend_name(),
+                        desktop
+                            .as_ref()
+                            .context(t().features.peer_capture_source_missing)?
+                            .backend_name(),
                     );
                     encoder_info = Some((active.implementation(), active.maximum_size()));
                     current = Some((size, (candidate_id, wanted.color)));
@@ -906,7 +922,10 @@ pub(super) fn capture_loop(
                         created.implementation(),
                         created.maximum_size(),
                         &screen,
-                        desktop.as_ref().context("缺少采集源")?.backend_name(),
+                        desktop
+                            .as_ref()
+                            .context(t().features.peer_capture_source_missing)?
+                            .backend_name(),
                     );
                     encoder_info = Some((created.implementation(), created.maximum_size()));
                     frame_ids.restart();
@@ -937,7 +956,9 @@ pub(super) fn capture_loop(
             tracing::debug!(?size, "host encoder prepared while connecting");
             continue;
         }
-        let active_encoder = encoder.as_mut().context("缺少编码器")?;
+        let active_encoder = encoder
+            .as_mut()
+            .context(t().features.peer_encoder_missing)?;
         let needs_transfer = device != *source_device;
         let transfer_started = Instant::now();
         let prepared = (|| -> Result<Option<crate::features::host::transfer::Delivery>> {
@@ -1076,7 +1097,8 @@ pub(super) fn capture_loop(
                             && actual.bit_depth_luma == output.format.depth
                             && actual.bit_depth_chroma == output.format.depth
                             && (actual.visible_width, actual.visible_height) == size,
-                        "编码器实际输出偏离协商格式"
+                        "{}",
+                        t().features.peer_encoder_output_mismatch
                     );
                 }
             }
@@ -1241,7 +1263,9 @@ pub(super) fn capture_loop(
                 membership.publish(encode_group::Shared::new(&frame, started));
             }
             if own_active {
-                sender.blocking_send(frame).context("画面发送队列已关闭")?;
+                sender
+                    .blocking_send(frame)
+                    .context(t().features.peer_send_queue_closed)?;
             }
         }
     }

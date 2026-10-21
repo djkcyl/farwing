@@ -2,6 +2,7 @@
 use super::{capture, lock, settings};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
+use crate::i18n::t;
 
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Status {
@@ -384,7 +385,7 @@ fn end_participant(state: &mut Ownership, key: u64) {
     }
     if state.participants.is_empty() {
         clear_session(state);
-        state.status.message = "等待连接".into();
+        state.status.message = t().features.host_waiting.into();
     } else {
         refresh_connections(state);
     }
@@ -537,7 +538,7 @@ impl Handle {
             });
         state.status.ready = false;
         state.status.error = Some(error);
-        state.status.message = "后台连接中断".into();
+        state.status.message = t().features.host_background_lost.into();
     }
     pub(crate) async fn prepare_startup(
         &self,
@@ -655,7 +656,7 @@ impl Handle {
     pub(crate) fn set_max_participants(&self, limit: u32) -> anyhow::Result<()> {
         let limit = limit.clamp(1, farwing_protocol::limits::MAX_PARTICIPANTS);
         let mut state = lock(&self.ownership);
-        anyhow::ensure!(state.active, "账号会话已结束");
+        anyhow::ensure!(state.active, "{}", t().features.host_account_session_ended);
         if state.max_participants != limit {
             state.max_participants = limit;
             state.settings_revision = state.settings_revision.wrapping_add(1);
@@ -676,7 +677,7 @@ impl Handle {
     }
     pub(crate) fn set_file_transfer_allowed(&self, allowed: bool) -> anyhow::Result<()> {
         let mut state = lock(&self.ownership);
-        anyhow::ensure!(state.active, "账号会话已结束");
+        anyhow::ensure!(state.active, "{}", t().features.host_account_session_ended);
         if state.file_transfer != allowed {
             state.file_transfer = allowed;
             state.settings_revision = state.settings_revision.wrapping_add(1);
@@ -696,7 +697,7 @@ impl Handle {
         }
     }
     pub(crate) fn wol_setup_action(&self, action: super::wol::setup::Action) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.guest && lock(&self.ownership).active, "未登录");
+        anyhow::ensure!(!self.guest && lock(&self.ownership).active, "{}", t().common.signed_out);
         use crate::platform::windows::host_service::resident;
         if resident::managed() {
             resident::call(resident::Request::WolSetup {
@@ -720,7 +721,7 @@ impl Handle {
         let mut s = lock(&self.ownership);
         anyhow::ensure!(
             s.active && (!allowed || !self.guest),
-            "当前账号不可启用唤醒协助"
+            "{}", t().features.wol_assistance_not_allowed
         );
         if s.wol != allowed {
             s.wol = allowed;
@@ -749,7 +750,7 @@ impl Handle {
         let mut state = lock(&self.ownership);
         anyhow::ensure!(
             state.active && (!allowed || !self.guest),
-            "当前账号不可启用远程电源操作"
+            "{}", t().features.power_not_allowed_for_account
         );
         if state.remote_power != allowed {
             state.remote_power = allowed;
@@ -767,10 +768,10 @@ impl Handle {
         let mut state = lock(&self.ownership);
         anyhow::ensure!(
             !self.guest && state.active && state.allowed && state.remote_power && !state.updating,
-            "远程电源许可已撤销"
+            "{}", t().features.power_permission_revoked
         );
         state.power_executing = true;
-        state.status.power_message = Some("正在执行电源操作…".into());
+        state.status.power_message = Some(t().features.power_executing.into());
         Ok(())
     }
     pub(crate) fn power_result(&self, result: Result<(), String>) {
@@ -779,7 +780,7 @@ impl Handle {
         // Do not leave remote access permanently disabled after API acceptance.
         state.power_executing = false;
         match result {
-            Ok(()) => state.status.power_message = Some("Windows 已接受电源请求".into()),
+            Ok(()) => state.status.power_message = Some(t().features.power_accepted.into()),
             Err(error) => {
                 state.power_executing = false;
                 state.status.power_message = Some(error);
@@ -791,7 +792,7 @@ impl Handle {
     }
     pub(crate) fn set_port_mapping_allowed(&self, allowed: bool) -> anyhow::Result<()> {
         let mut state = lock(&self.ownership);
-        anyhow::ensure!(state.active, "账号会话已结束");
+        anyhow::ensure!(state.active, "{}", t().features.host_account_session_ended);
         if state.port_mapping != allowed {
             state.port_mapping = allowed;
             state.port_revision = state.port_revision.wrapping_add(1);
@@ -811,7 +812,7 @@ impl Handle {
         settings: super::clipboard::Settings,
     ) -> anyhow::Result<()> {
         let mut state = lock(&self.ownership);
-        anyhow::ensure!(state.active, "账号会话已结束");
+        anyhow::ensure!(state.active, "{}", t().features.host_account_session_ended);
         if state.clipboard != settings {
             state.clipboard = settings;
             state.settings_revision = state.settings_revision.wrapping_add(1);
@@ -830,7 +831,7 @@ impl Handle {
     ) -> anyhow::Result<()> {
         quality.validate()?;
         let mut state = lock(&self.ownership);
-        anyhow::ensure!(state.active, "账号会话已结束");
+        anyhow::ensure!(state.active, "{}", t().features.host_account_session_ended);
         if state.audio_quality != quality {
             state.audio_quality = quality;
             state.settings_revision = state.settings_revision.wrapping_add(1);
@@ -845,7 +846,7 @@ impl Handle {
         selected: super::audio::DefaultDevices,
     ) -> anyhow::Result<()> {
         let mut state = lock(&self.ownership);
-        anyhow::ensure!(state.active, "账号会话已结束");
+        anyhow::ensure!(state.active, "{}", t().features.host_account_session_ended);
         if state.audio_defaults != selected {
             state.audio_defaults = selected;
             state.settings_revision = state.settings_revision.wrapping_add(1);
@@ -863,7 +864,7 @@ impl Handle {
             device.validate()?;
         }
         let mut state = lock(&self.ownership);
-        anyhow::ensure!(state.active, "账号会话已结束");
+        anyhow::ensure!(state.active, "{}", t().features.host_account_session_ended);
         let changed = *state.audio_device.borrow() != device;
         if changed {
             state.audio_device.send_replace(device);
@@ -894,7 +895,7 @@ impl Handle {
         let mut state = lock(&self.ownership);
         state.audio_inventory.pending = false;
         state.audio_inventory.updated = Some(std::time::Instant::now());
-        state.audio_inventory.error = Some("读取播放设备失败".into());
+        state.audio_inventory.error = Some(t().features.audio_devices_read_failed.into());
     }
     pub(crate) async fn refresh_audio_devices(&self) {
         let result =
@@ -921,8 +922,8 @@ impl Handle {
                 list.devices = devices;
                 list.error = None;
             }
-            Ok(Err(error)) => list.error = Some(format!("读取播放设备失败：{error:#}")),
-            Err(_) => list.error = Some("读取播放设备任务中断".into()),
+            Ok(Err(error)) => list.error = Some((t().features.audio_devices_read_error)(&format!("{error:#}"))),
+            Err(_) => list.error = Some(t().features.audio_devices_read_interrupted.into()),
         }
     }
     pub(crate) fn encoding_settings(&self) -> super::EncodingSettings {
@@ -934,7 +935,7 @@ impl Handle {
     ) -> anyhow::Result<()> {
         encoding.validate()?;
         let mut state = lock(&self.ownership);
-        anyhow::ensure!(state.active, "账号会话已结束");
+        anyhow::ensure!(state.active, "{}", t().features.host_account_session_ended);
         if state.encoding != encoding {
             state.encoding = encoding;
             state.settings_revision = state.settings_revision.wrapping_add(1);
@@ -972,9 +973,9 @@ impl Handle {
         state.status.settings_error = None;
         state.status.saving = true;
         state.status.message = if allowed {
-            "正在启用被控…"
+            t().features.host_enabling
         } else {
-            "已禁止被控"
+            t().features.host_disabled
         }
         .into();
         self.desired.send_replace(allowed.then_some(AccessRequest {
@@ -983,7 +984,7 @@ impl Handle {
     }
     pub(crate) fn set_assistance(&self, settings: super::assist::Settings) -> anyhow::Result<()> {
         let mut state = lock(&self.ownership);
-        anyhow::ensure!(state.active, "账号会话已结束");
+        anyhow::ensure!(state.active, "{}", t().features.host_account_session_ended);
         if self.assistance.configure(settings)? {
             state.settings_revision = state.settings_revision.wrapping_add(1);
             state.dirty = true;
@@ -1068,10 +1069,10 @@ impl Handle {
                     )
                 })
                 .await
-                .map_err(|_| anyhow::anyhow!("被控设置保存任务中断"))
+                .map_err(|_| anyhow::anyhow!(t().features.host_settings_save_interrupted))
                 .and_then(|r| r)
             } else {
-                Err(anyhow::anyhow!("被控设置存储不可用"))
+                Err(anyhow::anyhow!(t().features.host_settings_unavailable))
             };
             let mut state = lock(&self.ownership);
             if state.settings_revision != revision {
@@ -1096,7 +1097,7 @@ impl Handle {
         finish_session(&mut state);
         state.status.ready = false;
         state.status.error = None;
-        state.status.message = "正在启用被控…".into();
+        state.status.message = t().features.host_enabling.into();
         self.desired.send_replace(Some(AccessRequest {
             generation: state.permission,
         }));
@@ -1112,7 +1113,7 @@ impl Handle {
         state.permission = state.permission.wrapping_add(1);
         finish_session(&mut state);
         state.status.ready = false;
-        state.status.message = "本机离线".into();
+        state.status.message = t().features.host_offline.into();
         self.desired.send_replace(None);
         drop(state);
         if clear_update {
@@ -1127,7 +1128,7 @@ impl Handle {
         state.permission = state.permission.wrapping_add(1);
         finish_session(&mut state);
         state.status.ready = false;
-        state.status.message = "本机离线".into();
+        state.status.message = t().features.host_offline.into();
         self.desired
             .send_replace((state.active && state.allowed).then_some(AccessRequest {
                 generation: state.permission,
@@ -1404,13 +1405,13 @@ impl Lease {
     }
     pub(crate) fn begin_stream(&self, track: usize) -> anyhow::Result<Self> {
         let mut state = lock(&self.handle.ownership);
-        anyhow::ensure!(self.current(&state), "本次被控许可已失效");
+        anyhow::ensure!(self.current(&state), "{}", t().features.host_permission_expired);
         let generations = match self.participant {
             Some(key) => {
                 &mut state
                     .participants
                     .get_mut(&key)
-                    .ok_or_else(|| anyhow::anyhow!("参与者已离开"))?
+                    .ok_or_else(|| anyhow::anyhow!(t().features.host_participant_left))?
                     .stream_generations
             }
             None => &mut state.stream_generations,
@@ -1500,12 +1501,12 @@ impl Lease {
         });
         let lease = self.clone();
         tokio::select! {
-            result = probe => anyhow::Context::context(result, "媒体准备中断")?,
+            result = probe => anyhow::Context::context(result, t().features.host_media_interrupted)?,
             _ = async move {
                 while lease.requested() {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
-            } => anyhow::bail!("媒体准备已取消"),
+            } => anyhow::bail!("{}", t().features.host_media_cancelled),
         }
     }
     fn current(&self, state: &Ownership) -> bool {
@@ -1605,7 +1606,7 @@ impl Lease {
                     state.media = state.media.wrapping_add(1);
                 }
                 finish_session(&mut state);
-                state.status.message = "等待连接".into();
+                state.status.message = t().features.host_waiting.into();
             }
         }
     }
@@ -1651,7 +1652,7 @@ impl Lease {
             refresh_connections(state);
             state.status.ready = ready;
             state.status.message = if state.status.connected {
-                "正在被远程访问".into()
+                t().features.host_being_accessed.into()
             } else {
                 message.into()
             };
@@ -1660,7 +1661,7 @@ impl Lease {
     pub(crate) fn frame(&self) {
         self.modify(|state| {
             state.status.error = None;
-            state.status.message = "正在被远程访问".into();
+            state.status.message = t().features.host_being_accessed.into();
         });
     }
     pub(crate) fn audio_status(&self, audio: super::audio::Status) {

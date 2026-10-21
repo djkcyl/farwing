@@ -16,10 +16,11 @@ enum DeviceMode {
 impl DeviceMode {
     const ALL: [Self; 3] = [Self::Default, Self::Custom, Self::Hidden];
     fn label(self) -> &'static str {
+        let text = &t().center;
         match self {
-            Self::Default => "跟随默认",
-            Self::Custom => "单独设置",
-            Self::Hidden => "不共享",
+            Self::Default => text.mode_default,
+            Self::Custom => text.mode_custom,
+            Self::Hidden => text.mode_hidden,
         }
     }
     fn of(grants: &Grants, device_id: &str) -> Self {
@@ -113,11 +114,11 @@ impl DeviceCenterApp {
             let mut refresh = false;
             cards::page_header(
                 ui,
-                "好友",
+                Page::Friends.title(),
                 "",
                 |ui| {
                     refresh = ui
-                        .add_enabled(!loading, crate::ui::controls::secondary("刷新"))
+                        .add_enabled(!loading, crate::ui::controls::secondary(t().common.refresh))
                         .clicked();
                     if loading || busy {
                         ui.spinner();
@@ -142,7 +143,7 @@ impl DeviceCenterApp {
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        detail(ui, "正在读取好友…");
+                        detail(ui, t().center.loading_friends);
                     });
                 }
                 return;
@@ -158,13 +159,14 @@ impl DeviceCenterApp {
         let mut submit = false;
         cards::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new("添加好友").strong());
+            ui.label(RichText::new(t().center.add_friend).strong());
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let width = (ui.available_width() - 112.0).max(160.0);
                 let response = ui.add_sized(
                     [width, crate::ui::controls::HEIGHT],
-                    singleline_input(&mut self.friends.add_username).hint_text("对方的用户名"),
+                    singleline_input(&mut self.friends.add_username)
+                        .hint_text(t().center.username),
                 );
                 if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     submit = true;
@@ -172,7 +174,7 @@ impl DeviceCenterApp {
                 if ui
                     .add_enabled(
                         !self.friends.busy && !self.friends.add_username.trim().is_empty(),
-                        primary("发送申请"),
+                        primary(t().center.send_request),
                     )
                     .clicked()
                 {
@@ -191,20 +193,21 @@ impl DeviceCenterApp {
         if pending == 0 {
             return;
         }
-        cards::section_heading(ui, "待处理的申请", Some(pending), |_| {});
+        let text = &t().center;
+        cards::section_heading(ui, text.pending_requests, Some(pending), |_| {});
         let busy = self.friends.busy;
         for request in &data.incoming {
             let mut answer = None;
             person_card(
                 ui,
                 &request.user,
-                |ui| detail(ui, &format!("向你发出了好友申请 · {}", cards::when(request.created_at))),
+                |ui| detail(ui, &(text.request_received)(&cards::when(request.created_at))),
                 |ui| {
-                    if ui.add_enabled(!busy, primary("接受")).clicked() {
+                    if ui.add_enabled(!busy, primary(text.accept)).clicked() {
                         answer = Some(true);
                     }
                     if ui
-                        .add_enabled(!busy, crate::ui::controls::secondary("拒绝"))
+                        .add_enabled(!busy, crate::ui::controls::secondary(text.decline))
                         .clicked()
                     {
                         answer = Some(false);
@@ -220,10 +223,10 @@ impl DeviceCenterApp {
             person_card(
                 ui,
                 &request.user,
-                |ui| detail(ui, &format!("等待对方接受 · 发出于 {}", cards::when(request.created_at))),
+                |ui| detail(ui, &(text.request_sent)(&cards::when(request.created_at))),
                 |ui| {
                     cancel = ui
-                        .add_enabled(!busy, crate::ui::controls::secondary("撤回"))
+                        .add_enabled(!busy, crate::ui::controls::secondary(text.withdraw))
                         .clicked();
                 },
             );
@@ -236,11 +239,12 @@ impl DeviceCenterApp {
     fn friend_list(&mut self, ui: &mut egui::Ui, data: &crate::application::app::friends::FriendsData) {
         let searchable = data.friends.len() > 5;
         let search = &mut self.friends.search;
-        cards::section_heading(ui, "我的好友", Some(data.friends.len()), |ui| {
+        let text = &t().center;
+        cards::section_heading(ui, text.my_friends, Some(data.friends.len()), |ui| {
             if searchable {
                 ui.add_sized(
                     [200.0, crate::ui::controls::HEIGHT],
-                    singleline_input(search).hint_text("搜索好友"),
+                    singleline_input(search).hint_text(text.search_friends),
                 );
             }
         });
@@ -249,7 +253,7 @@ impl DeviceCenterApp {
                 ui.set_width(ui.available_width());
                 ui.add_space(8.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("暂无好友").strong());
+                    ui.label(RichText::new(text.no_friends).strong());
                 });
                 ui.add_space(8.0);
             });
@@ -289,19 +293,19 @@ impl DeviceCenterApp {
                     person_header(
                         ui,
                         user,
-                        |ui| detail(ui, &format!("{} 成为好友", cards::when(friend.since))),
+                        |ui| detail(ui, &(text.friends_since)(&cards::when(friend.since))),
                         |ui| {
-                            edit = ui.add_enabled(!busy, primary("设置权限")).clicked();
+                            edit = ui.add_enabled(!busy, primary(text.set_permissions)).clicked();
                             remove = ui
-                                .add_enabled(!busy, crate::ui::controls::secondary("删除"))
+                                .add_enabled(!busy, crate::ui::controls::secondary(t().common.delete))
                                 .clicked();
                         },
                     );
                     ui.add_space(8.0);
                     if theirs.is_empty() {
-                        detail(ui, "未共享设备");
+                        detail(ui, text.no_devices_shared);
                     } else {
-                        detail(ui, &format!("共享的设备 · {}", theirs.len()));
+                        detail(ui, &(text.shared_devices)(theirs.len()));
                         ui.add_space(4.0);
                         for device in &theirs {
                             if let Some(action) = self.friend_device_row(ui, device) {
@@ -327,7 +331,7 @@ impl DeviceCenterApp {
             }
         }
         if shown == 0 {
-            detail(ui, "没有符合搜索条件的好友");
+            detail(ui, text.no_matching_friends);
         }
         match picked {
             Some((id, DeviceAction::Connect)) => {
@@ -368,7 +372,7 @@ impl DeviceCenterApp {
                                         .size(theme::SMALL)
                                         .color(status.color()),
                                 );
-                                cards::caps_icons(ui, &device.granted, "无权限");
+                                cards::caps_icons(ui, &device.granted, t().center.no_permissions);
                             });
                             detail(
                                 ui,
@@ -381,7 +385,11 @@ impl DeviceCenterApp {
                         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                             let connect = ui.add_enabled(
                                 issue.is_none(),
-                                primary(if open { "已打开" } else { "连接" }),
+                                primary(if open {
+                                    t().center.opened
+                                } else {
+                                    t().common.connect
+                                }),
                             );
                             let connect = match &issue {
                                 Some(issue) => connect.on_disabled_hover_text(issue),
@@ -390,7 +398,7 @@ impl DeviceCenterApp {
                             if connect.clicked() {
                                 action = Some(DeviceAction::Connect);
                             }
-                            if ui.add(crate::ui::controls::secondary("详情")).clicked() {
+                            if ui.add(crate::ui::controls::secondary(t().common.details)).clicked() {
                                 action = Some(DeviceAction::Details);
                             }
                         });
@@ -435,7 +443,8 @@ impl DeviceCenterApp {
         let error = self.friends.error.clone();
         let mut close = false;
         let mut save: Option<Grants> = None;
-        let title = format!("{} 可以做什么", editor.user.display_name());
+        let text = &t().center;
+        let title = (text.permissions_of)(editor.user.display_name());
         let response = egui::Modal::new(egui::Id::new("friend-grants"))
             .frame(dialog_frame())
             .show(ctx, |ui| {
@@ -454,22 +463,25 @@ impl DeviceCenterApp {
                         _ => {
                             ui.horizontal(|ui| {
                                 ui.spinner();
-                                ui.label("正在读取权限…");
+                                ui.label(text.loading_permissions);
                             });
                         }
                     }
-                    let (_, dismiss) = crate::ui::controls::dialog_actions(ui, None, Some("关闭"));
+                    let (_, dismiss) =
+                        crate::ui::controls::dialog_actions(ui, None, Some(t().common.close));
                     close |= dismiss;
                     return;
                 };
-                ui.label(RichText::new("所有设备").strong());
+                ui.label(RichText::new(text.all_devices).strong());
                 ui.add_space(4.0);
                 let sharing = !grants.default.is_empty();
                 ui.horizontal(|ui| {
-                    if cards::choice(ui, sharing, "按以下权限共享").clicked() && !sharing {
+                    if cards::choice(ui, sharing, text.share_with_permissions).clicked() && !sharing {
                         grants.default = shared_default.clone();
                     }
-                    if cards::choice(ui, !sharing, "默认都不共享").clicked() && sharing {
+                    if cards::choice(ui, !sharing, text.share_nothing_by_default).clicked()
+                        && sharing
+                    {
                         grants.default.clear();
                     }
                 });
@@ -480,14 +492,14 @@ impl DeviceCenterApp {
                 ui.add_space(14.0);
                 ui.separator();
                 ui.add_space(6.0);
-                ui.label(RichText::new("按设备设置").strong());
+                ui.label(RichText::new(text.per_device).strong());
                 ui.add_space(6.0);
                 egui::ScrollArea::vertical()
                     .max_height(300.0)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         if devices.is_empty() {
-                            detail(ui, "暂无其他设备");
+                            detail(ui, text.no_other_devices);
                         }
                         for (device_id, name, shown_id) in &devices {
                             let mode = DeviceMode::of(grants, device_id);
@@ -518,7 +530,7 @@ impl DeviceCenterApp {
                                                 .devices
                                                 .get(device_id)
                                                 .unwrap_or(&grants.default);
-                                            cards::caps_icons(ui, effective, "不共享");
+                                            cards::caps_icons(ui, effective, text.not_shared);
                                         },
                                     );
                                 });
@@ -561,13 +573,13 @@ impl DeviceCenterApp {
                     ui,
                     Some(
                         crate::ui::controls::DialogAction::new(if editor.saving {
-                            "正在保存…"
+                            text.saving
                         } else {
-                            "保存"
+                            t().common.save
                         })
                         .enabled(!busy && changed),
                     ),
-                    Some("取消"),
+                    Some(t().common.cancel),
                 );
                 if accept {
                     save = Some(grants.clone());
@@ -594,9 +606,9 @@ impl DeviceCenterApp {
         match cards::confirm(
             ctx,
             "remove-friend",
-            "删除好友？",
-            &format!("{} 与你之间的权限都会撤销", user.display_name()),
-            "删除好友",
+            t().center.remove_friend_title,
+            &(t().center.remove_friend_body)(user.display_name()),
+            t().center.remove_friend,
         ) {
             Some(true) => {
                 self.friends.confirm_remove = None;

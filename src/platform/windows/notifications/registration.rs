@@ -1,4 +1,5 @@
 //! User-scoped identity and protocol activation for unpackaged desktop toasts.
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use std::path::{Path, PathBuf};
 use windows::{
@@ -113,7 +114,7 @@ fn read(path: &str, name: &str) -> Result<Option<String>> {
     let end = value
         .iter()
         .position(|&v| v == 0)
-        .context("通知注册值无效")?;
+        .context(t().system.notification_invalid_registration)?;
     Ok(Some(String::from_utf16(&value[..end])?))
 }
 fn stored_command() -> Option<String> {
@@ -178,7 +179,8 @@ pub(super) fn register(aumid: &str) -> Result<()> {
             old.as_ref()
                 .is_some_and(|v| v.eq_ignore_ascii_case(&command(&image)))
                 || registered_owner.as_deref() == Some(owner().as_str()),
-            "通知协议已登记到其他程序"
+            "{}",
+            t().system.notification_protocol_taken
         );
     } else if opened != ERROR_FILE_NOT_FOUND && opened != ERROR_PATH_NOT_FOUND {
         opened.ok()?;
@@ -195,7 +197,7 @@ pub(super) fn register(aumid: &str) -> Result<()> {
                 PCWSTR(wide(&path.to_string_lossy()).as_ptr()),
                 STGM_READWRITE,
             )
-            .context("以读写方式打开通知快捷方式")?;
+            .context(t().system.notification_open_shortcut_failed)?;
         }
         let mut target = [0u16; 32768];
         unsafe {
@@ -204,11 +206,12 @@ pub(super) fn register(aumid: &str) -> Result<()> {
         let end = target
             .iter()
             .position(|&v| v == 0)
-            .context("快捷方式目标无效")?;
+            .context(t().system.component_invalid_shortcut_target)?;
         let target = PathBuf::from(String::from_utf16_lossy(&target[..end]));
         ensure!(
             target == image || owns_shortcut(&link, &target),
-            "已有Farwing快捷方式指向其他程序，已保留"
+            "{}",
+            t().system.notification_shortcut_conflict
         );
     }
     // A profile's shortcut must start that profile, like its protocol command.
@@ -239,17 +242,22 @@ pub(super) fn register(aumid: &str) -> Result<()> {
         )?;
     }
     let activator = unsafe { InitPropVariantFromCLSID(&ACTIVATOR)? };
-    std::fs::create_dir_all(path.parent().context("快捷方式目录无效")?)?;
+    std::fs::create_dir_all(
+        path.parent()
+            .context(t().system.notification_invalid_shortcut_directory)?,
+    )?;
     unsafe {
         properties
             .SetValue(&APP_KEY, &app)
-            .context("写入通知应用标识")?;
+            .context(t().system.notification_write_app_id_failed)?;
         properties
             .SetValue(&TOAST_KEY, &activator)
-            .context("写入通知激活标识")?;
-        properties.Commit().context("提交通知快捷方式属性")?;
+            .context(t().system.notification_write_activator_failed)?;
+        properties
+            .Commit()
+            .context(t().system.notification_commit_shortcut_failed)?;
         file.Save(PCWSTR(wide(&path.to_string_lossy()).as_ptr()), true)
-            .context("保存通知快捷方式")?;
+            .context(t().system.notification_save_shortcut_failed)?;
     }
     let root = key(&scheme)?;
     set(

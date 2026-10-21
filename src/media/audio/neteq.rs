@@ -43,7 +43,7 @@ impl Receiver {
     pub fn new() -> Result<Self> {
         NonNull::new(unsafe { ou_neteq_create() })
             .map(Self)
-            .ok_or_else(|| anyhow::anyhow!("NetEq初始化失败"))
+            .ok_or_else(|| anyhow::anyhow!("{}", crate::i18n::t().session.neteq_init_failed))
     }
 
     /// Insert a packet that arrived at `arrived`; NetEq's jitter estimate
@@ -82,7 +82,7 @@ impl Receiver {
     ) -> Result<()> {
         let result =
             unsafe { ou_neteq_audio(self.0.as_ptr(), output.as_mut_ptr(), output.len(), stats) };
-        ensure!(result >= 0, "NetEq输出失败：{result}");
+        ensure!(result >= 0, "{}", (crate::i18n::t().session.neteq_output_failed)(result));
         if result == 1 {
             tracing::debug!("NetEq returned a silent block after a recoverable decode error");
         }

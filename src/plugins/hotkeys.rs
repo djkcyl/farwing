@@ -1,5 +1,6 @@
 //! Foreground-only graph activation signals. No input injection or aiming policy.
 use super::*;
+use crate::i18n::t;
 use std::sync::{Arc, Mutex, OnceLock};
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Binding {
@@ -165,7 +166,7 @@ impl ControlGate {
     }
     pub fn binding_text(&self) -> String {
         if self.conditions.is_empty() {
-            return "未绑定快捷键".into();
+            return t().features.plugin_shortcut_unbound.into();
         }
         self.conditions
             .iter()
@@ -176,13 +177,13 @@ impl ControlGate {
                         g.spec.binding.as_ref().map(|b| {
                             let key = label(b);
                             match g.spec.mode {
-                                Mode::Hold => format!("按住 {key}"),
-                                Mode::Trigger => format!("{key} 单次"),
+                                Mode::Hold => (t().features.plugin_shortcut_hold)(&key),
+                                Mode::Trigger => (t().features.plugin_shortcut_once)(&key),
                                 Mode::Toggle => key,
                             }
                         })
                     })
-                    .unwrap_or_else(|| format!("{}未绑定", c.name))
+                    .unwrap_or_else(|| (t().features.plugin_condition_unbound)(&c.name))
             })
             .collect::<Vec<_>>()
             .join(" · ")
@@ -336,11 +337,11 @@ pub fn label(binding: &Binding) -> String {
         }
     }
     let key = match binding.key {
-        1 => "鼠标左键".into(),
-        2 => "鼠标右键".into(),
-        4 => "鼠标中键".into(),
-        5 => "鼠标侧键1".into(),
-        6 => "鼠标侧键2".into(),
+        1 => t().features.plugin_mouse_left.into(),
+        2 => t().features.plugin_mouse_right.into(),
+        4 => t().features.plugin_mouse_middle.into(),
+        5 => t().features.plugin_mouse_side_1.into(),
+        6 => t().features.plugin_mouse_side_2.into(),
         65..=90 | 48..=57 => char::from_u32(u32::from(binding.key))
             .unwrap_or('?')
             .to_string(),

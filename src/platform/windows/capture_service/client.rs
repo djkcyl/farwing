@@ -2,6 +2,7 @@ use super::{
     Layout, NAME, Reply, Request,
     texture::{self, Surface},
 };
+use crate::i18n::t;
 use crate::platform::windows::{
     capture::{self, Frame, Screen},
     host_service::{install, pipe::Pipe},
@@ -61,7 +62,8 @@ impl Client {
         }
         ensure!(
             reply.screen.identity == selected.identity && reply.screen.adapter == selected.adapter,
-            "服务采集源身份不匹配"
+            "{}",
+            t().system.capture_service_source_mismatch
         );
         tracing::info!(
             verified_ms,
@@ -139,10 +141,11 @@ impl Client {
             if reply.needs_surface {
                 let layout = reply
                     .layout
-                    .ok_or_else(|| anyhow::anyhow!("服务没有提供纹理配置"))?;
+                    .ok_or_else(|| anyhow::anyhow!("{}", t().system.capture_service_no_layout))?;
                 ensure!(
                     layout.adapter == self.screen.adapter,
-                    "采集纹理适配器不匹配"
+                    "{}",
+                    t().system.capture_service_adapter_mismatch
                 );
                 self.surface = Some(Surface::new(&self.device, layout)?);
                 self.offer_surface = true;
@@ -152,13 +155,13 @@ impl Client {
                 return Ok(None);
             }
             self.offer_surface = false;
-            let source = self
-                .surface
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("服务未准备共享纹理"))?;
+            let source = self.surface.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("{}", t().system.capture_service_no_shared_texture)
+            })?;
             ensure!(
                 reply.layout == Some(source.layout),
-                "服务返回了过期采集纹理"
+                "{}",
+                t().system.capture_service_stale_texture
             );
             if self.pool_layout != Some(source.layout) {
                 self.pool.clear();
@@ -171,7 +174,11 @@ impl Client {
             {
                 Some(index) => index,
                 None => {
-                    ensure!(self.pool.len() < 3, "采集纹理仍被消费者持有");
+                    ensure!(
+                        self.pool.len() < 3,
+                        "{}",
+                        t().system.capture_service_texture_in_use
+                    );
                     self.pool.push((
                         texture::texture(&self.device, &texture::descriptor(source.layout)?)?,
                         Arc::new(()),

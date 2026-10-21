@@ -1,4 +1,5 @@
 //! Host input configuration: keyboard interrupts and per-application mouse rules.
+use crate::i18n::t;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -23,16 +24,22 @@ impl Default for Configuration {
 }
 impl Configuration {
     pub fn validate(&self) -> Result<()> {
-        ensure!(self.games.len() <= 8192, "输入策略条目过多");
+        ensure!(
+            self.games.len() <= 8192,
+            "{}",
+            t().features.input_policy_too_many
+        );
         for (name, rule) in &self.games {
             ensure!(
                 !name.is_empty() && name.len() <= 512 && rule.mode <= 2,
-                "输入策略条目无效"
+                "{}",
+                t().features.input_policy_entry_invalid
             );
         }
         ensure!(
             serde_json::to_vec(self)?.len() <= 384 * 1024,
-            "输入策略过大"
+            "{}",
+            t().features.input_policy_too_large
         );
         Ok(())
     }

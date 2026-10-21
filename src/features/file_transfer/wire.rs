@@ -7,6 +7,7 @@
 //! last flagged `MORE` (§5.1). File data travels as `TRANSFER{kind: FILE}`
 //! paced by `FLOW{channel: BULK, kind: FILE}` on the bulk channel.
 use super::model::{FileEntry, FileInfo, entry};
+use crate::i18n::t;
 use crate::protocol::peer::{FrameType, Header, flags};
 use crate::transport::transfer::{self, Chunk, Flow};
 use anyhow::{Context as _, Result, ensure};
@@ -130,18 +131,19 @@ pub(crate) mod code {
 pub(crate) const WHOLE_TRANSFER: u32 = u32::MAX;
 
 pub(crate) fn describe(code: i32) -> String {
+    let text = &t().features;
     match code {
-        code::OK => "成功",
-        code::PROTOCOL => "文件协议错误",
-        code::DENIED => "没有文件访问权限",
-        code::NOT_FOUND => "文件或目录不存在",
-        code::EXISTS => "目标名称已经存在",
-        code::NO_SPACE => "磁盘空间不足",
-        code::IO => "文件读写失败",
-        code::BUSY => "被控端忙",
-        code::CHANGED => "文件已变化或无法续传",
-        code::CANCELLED => "已取消",
-        _ => return format!("文件操作失败（{code}）"),
+        code::OK => text.transfer_code_ok,
+        code::PROTOCOL => text.transfer_code_protocol,
+        code::DENIED => text.transfer_code_denied,
+        code::NOT_FOUND => text.transfer_code_not_found,
+        code::EXISTS => text.transfer_name_exists,
+        code::NO_SPACE => text.transfer_code_no_space,
+        code::IO => text.transfer_code_io,
+        code::BUSY => text.transfer_code_busy,
+        code::CHANGED => text.transfer_code_changed,
+        code::CANCELLED => text.transfer_cancelled,
+        _ => return (text.transfer_code_other)(code),
     }
     .into()
 }
@@ -539,11 +541,11 @@ pub(crate) fn classify(bytes: &[u8]) -> Result<Option<Frame<'_>>> {
     Ok(match header.frame_type() {
         Some(FrameType::File) => Some(Frame::File(header, body)),
         Some(FrameType::Transfer) => {
-            let chunk = Chunk::decode(body).context("无效的文件数据块")?;
+            let chunk = Chunk::decode(body).context(t().features.transfer_invalid_chunk)?;
             (chunk.kind == transfer::kind::FILE).then_some(Frame::Chunk(chunk))
         }
         Some(FrameType::Flow) => {
-            let flow = Flow::decode(body).context("无效的文件流控")?;
+            let flow = Flow::decode(body).context(t().features.transfer_invalid_flow)?;
             (flow.kind == transfer::kind::FILE && flow.channel == transfer::channel::BULK)
                 .then_some(Frame::Flow(flow))
         }
@@ -586,14 +588,14 @@ impl Reassembly {
         let key = (header.request_id, header.is_response());
         let whole;
         let body = if more || self.0.contains_key(&key) {
-            ensure!(header.request_id != 0, "文件推送不能分片");
+            ensure!(header.request_id != 0, "{}", t().features.transfer_push_fragmented);
             if !self.0.contains_key(&key) {
-                ensure!(self.0.len() < MAX_PARTIAL, "未完成的文件消息过多");
+                ensure!(self.0.len() < MAX_PARTIAL, "{}", t().features.transfer_too_many_partial_messages);
             }
             let buffer = self.0.entry(key).or_default();
             if buffer.len() + body.len() > MAX_MESSAGE {
                 self.0.remove(&key);
-                anyhow::bail!("文件消息过大");
+                anyhow::bail!("{}", t().features.transfer_message_too_large);
             }
             buffer.extend_from_slice(body);
             if more {
@@ -612,7 +614,7 @@ fn decode_message(header: &Header, body: &[u8]) -> Result<Received> {
     let response = header.is_response();
     let body = if header.is_error() {
         // A generic FPP failure (e.g. an unsupported request) reads as `Failed`.
-        let error = farwing_protocol::peer::PeerError::decode(body).context("无效的文件错误回复")?;
+        let error = farwing_protocol::peer::PeerError::decode(body).context(t().features.transfer_invalid_error_reply)?;
         use farwing_protocol::peer::error_code as peer;
         Body::Failed(Failed {
             code: match error.code.as_str() {
@@ -626,9 +628,9 @@ fn decode_message(header: &Header, body: &[u8]) -> Result<Received> {
         })
     } else {
         FileMessage::decode(body)
-            .context("无效的文件消息")?
+            .context(t().features.transfer_invalid_message)?
             .body
-            .context("文件消息没有受支持的内容")?
+            .context(t().features.transfer_message_unsupported)?
     };
     Ok(Received {
         request_id: header.request_id,

@@ -1,6 +1,7 @@
 //! The WASAPI reader owns its COM apartment; endpoint management cannot stall it.
 use super::{Devices, Endpoint, Samples};
 use anyhow::{Context, Result};
+use crate::i18n::t;
 use std::{
     sync::{
         Arc, Mutex,
@@ -33,7 +34,9 @@ pub(crate) fn open(endpoint: &Endpoint, samples: Samples) -> Result<Capture> {
         .spawn(move || {
             let opened = (|| -> Result<_> {
                 let devices = Devices::new()?;
-                let endpoint = devices.endpoint(Some(&id))?.context("播放设备已断开")?;
+                let endpoint = devices
+                    .endpoint(Some(&id))?
+                    .context(t().system.loopback_device_disconnected)?;
                 super::open_native(&endpoint, samples)
             })();
             let mut capture = match opened {
@@ -61,12 +64,14 @@ pub(crate) fn open(endpoint: &Endpoint, samples: Samples) -> Result<Capture> {
             }
             shared.producing.store(false, Ordering::Release);
         })
-        .context("启动桌面音频取样线程")?;
+        .context(t().system.loopback_thread_start_failed)?;
     let owner = Capture {
         state,
         thread: Some(thread),
     };
-    initialized.recv().context("桌面音频取样线程初始化中断")??;
+    initialized
+        .recv()
+        .context(t().system.loopback_thread_init_interrupted)??;
     Ok(owner)
 }
 impl Capture {
@@ -84,7 +89,7 @@ impl Capture {
             anyhow::bail!("{error}");
         }
         if self.thread.as_ref().is_some_and(|t| t.is_finished()) {
-            anyhow::bail!("桌面音频取样线程已停止");
+            anyhow::bail!("{}", t().system.loopback_thread_stopped);
         }
         Ok(())
     }

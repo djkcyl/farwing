@@ -8,6 +8,7 @@ use crate::session::host_client::HostClient;
 use crate::transport::signal::router::Router;
 use anyhow::{Context, Result, bail, ensure};
 use farwing_protocol::ErrorCode;
+use farwing_protocol::error::reason as refusal_reason;
 use farwing_protocol::api::{Purpose, Relation};
 use crate::features::host::assist::Decision;
 use farwing_protocol::direct::{
@@ -220,19 +221,26 @@ struct Authorized {
     key: Option<[u8; 32]>,
 }
 
-/// A refused handshake step, reported to the controller.
+/// A refused handshake step, reported to the controller. The controller
+/// shows a text for the code and `details.reason`; the message is for logs.
 #[derive(Debug)]
-struct Refused(ErrorCode, String);
+struct Refused(farwing_protocol::ErrorBody);
 
 impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}（{}）", self.1, self.0)
+        write!(f, "{} ({})", self.0.message, self.0.code)
     }
 }
 impl std::error::Error for Refused {}
 
 fn refuse(code: ErrorCode, message: &str) -> anyhow::Error {
-    Refused(code, message.to_owned()).into()
+    Refused(refusal(code, message)).into()
+}
+
+/// A refusal whose code covers several cases: `details` names the reason
+/// (`farwing_protocol::error::reason`) and its parameters.
+fn refuse_with(code: ErrorCode, message: &str, details: serde_json::Value) -> anyhow::Error {
+    Refused(refusal(code, message).with_details(details)).into()
 }
 
 impl super::lan::Announcer for Shared {
@@ -310,8 +318,8 @@ impl Shared {
             // Paired: no session follows.
             Ok(None) => return Ok(()),
             Err(error) => {
-                if let Some(Refused(code, message)) = error.downcast_ref::<Refused>() {
-                    let _ = write_frame(&mut writer, &Envelope::error(None, refusal(*code, message))).await;
+                if let Some(Refused(body)) = error.downcast_ref::<Refused>() {
+                    let _ = write_frame(&mut writer, &Envelope::error(None, body.clone())).await;
                 }
                 return Err(error);
             }
@@ -356,7 +364,7 @@ impl Shared {
         write_frame(writer, &Envelope::new(dtypes::HELLO, &mine)).await?;
         tracing::info!(%peer, device = %hello.device_id, "direct controller identified");
         if !self.client.is_active() || !self.client.host.requested() {
-            return Err(refuse(ErrorCode::HostDisabled, "对方没有开启“允许连接”"));
+            return Err(refuse(ErrorCode::HostDisabled, "host access is off"));
         }
         let authorized = loop {
             let message = self.read(reader, step).await?;
@@ -371,13 +379,13 @@ impl Shared {
                     let pake: DirectPake = message.body().context("PAKE 消息格式无效")?;
                     break match pake.kind.as_str() {
                         pake_kind::ASSIST => self.assist(reader, writer, ekm, &hello, &pake).await?,
-                        _ => return Err(refuse(ErrorCode::BadRequest, "未知的验证方式")),
+                        _ => return Err(refuse(ErrorCode::BadRequest, "unknown authentication method")),
                     };
                 }
                 types::PING => {
                     write_frame(writer, &Envelope { kind: types::PONG.into(), ..message }).await?;
                 }
-                _ => return Err(refuse(ErrorCode::BadRequest, "握手消息顺序错误")),
+                _ => return Err(refuse(ErrorCode::BadRequest, "unexpected handshake message")),
             }
         };
         tracing::info!(
@@ -403,7 +411,7 @@ impl Shared {
                 types::PING => {
                     write_frame(writer, &Envelope { kind: types::PONG.into(), ..message }).await?;
                 }
-                _ => return Err(refuse(ErrorCode::BadRequest, "握手消息顺序错误")),
+                _ => return Err(refuse(ErrorCode::BadRequest, "unexpected handshake message")),
             }
         };
         let id = message.id.clone().context("session.start 缺少请求 ID")?;
@@ -448,16 +456,20 @@ impl Shared {
         let commit = farwing_protocol::crypto::unb64(&request.commit)
             .ok()
             .filter(|c| c.len() == 32)
-            .ok_or_else(|| refuse(ErrorCode::BadRequest, "配对请求格式无效"))?;
+            .ok_or_else(|| refuse(ErrorCode::BadRequest, "invalid pairing request"))?;
         {
             let mut limits = self.pairing.lock().unwrap_or_else(|e| e.into_inner());
             let now = std::time::Instant::now();
             limits.declined.retain(|_, at| now.duration_since(*at) < PAIRING_DECLINED);
             if limits.declined.contains_key(&hello.device_id) {
-                return Err(refuse(ErrorCode::RateLimited, "对方刚拒绝过配对"));
+                return Err(refuse_with(
+                    ErrorCode::RateLimited,
+                    "pairing recently declined",
+                    serde_json::json!({ "reason": refusal_reason::PAIRING_RECENTLY_DECLINED }),
+                ));
             }
             if limits.last.is_some_and(|at| now.duration_since(at) < PAIRING_SPACING) {
-                return Err(refuse(ErrorCode::RateLimited, "配对请求太频繁"));
+                return Err(refuse(ErrorCode::RateLimited, "pairing requests too frequent"));
             }
             limits.last = Some(now);
         }
@@ -480,9 +492,9 @@ impl Shared {
         let theirs = farwing_protocol::crypto::unb64(&reveal.nonce)
             .ok()
             .filter(|n| n.len() == 32)
-            .ok_or_else(|| refuse(ErrorCode::BadRequest, "配对消息格式无效"))?;
+            .ok_or_else(|| refuse(ErrorCode::BadRequest, "invalid pairing message"))?;
         if farwing_protocol::crypto::pairing_commit(&theirs).as_slice() != commit.as_slice() {
-            return Err(refuse(ErrorCode::BadRequest, "配对校验失败"));
+            return Err(refuse(ErrorCode::BadRequest, "pairing verification failed"));
         }
         let code = farwing_protocol::crypto::pairing_code(ekm, &theirs, &nonce);
         let declined = |this: &Self| {
@@ -515,7 +527,11 @@ impl Shared {
                         }
                         Decision::Reject | Decision::Allow => {
                             declined(self);
-                            return Err(refuse(ErrorCode::AssistRejected, "对方没有同意配对"));
+                            return Err(refuse_with(
+                                ErrorCode::AssistRejected,
+                                "pairing declined",
+                                serde_json::json!({ "reason": refusal_reason::PAIRING_DECLINED }),
+                            ));
                         }
                     },
                     frame = &mut controller, if !theirs_agreed => match frame {
@@ -534,7 +550,7 @@ impl Shared {
             Ok(result) => result?,
             Err(_) => {
                 declined(self);
-                return Err(refuse(ErrorCode::Timeout, "配对超时"));
+                return Err(refuse(ErrorCode::Timeout, "pairing timed out"));
             }
         }
         // Each side trusts the other with full control; the controller
@@ -596,9 +612,10 @@ impl Shared {
                 key: None,
             });
         }
-        Err(refuse(
+        Err(refuse_with(
             ErrorCode::Forbidden,
-            "对方没有信任这台设备",
+            "device not trusted",
+            serde_json::json!({ "reason": refusal_reason::NOT_TRUSTED }),
         ))
     }
 
@@ -638,15 +655,23 @@ impl Shared {
         let assistance = &self.client.host.assistance;
         let settings = assistance.settings();
         if !settings.enabled || settings.validate().is_err() {
-            return Err(refuse(ErrorCode::AssistUnavailable, "对方没有开启访问码"));
+            return Err(refuse_with(
+                ErrorCode::AssistUnavailable,
+                "no access code",
+                serde_json::json!({ "reason": refusal_reason::NO_ACCESS_CODE }),
+            ));
         }
         if assistance.locked() {
-            return Err(refuse(ErrorCode::RateLimited, "访问码错误次数过多，已锁定 5 分钟"));
+            return Err(refuse_with(
+                ErrorCode::RateLimited,
+                "too many wrong access codes",
+                serde_json::json!({ "reason": refusal_reason::CODE_LOCKED, "minutes": 5 }),
+            ));
         }
         let mut key = None;
         if settings.mode.needs_password() {
             if pake.messages.is_empty() {
-                return Err(refuse(ErrorCode::AssistCodeRequired, "对方要求输入访问码"));
+                return Err(refuse(ErrorCode::AssistCodeRequired, "access code required"));
             }
             let (messages, confirm, keys) = assistance.direct_pake(ekm, &pake.messages);
             write_frame(
@@ -679,7 +704,7 @@ impl Shared {
             if key.is_none() {
                 assistance.record_failure();
                 tracing::warn!(device = %hello.device_id, "direct assistance refused: wrong code");
-                return Err(refuse(ErrorCode::AssistCodeInvalid, "访问码不正确"));
+                return Err(refuse(ErrorCode::AssistCodeInvalid, "wrong access code"));
             }
         } else {
             write_frame(
@@ -720,7 +745,7 @@ impl Shared {
                     });
                 }
                 Decision::Unavailable(reason) => return Err(refuse(ErrorCode::AssistUnavailable, reason)),
-                Decision::Reject => return Err(refuse(ErrorCode::AssistRejected, "对方拒绝了本次连接")),
+                Decision::Reject => return Err(refuse(ErrorCode::AssistRejected, "connection declined")),
             }
         }
         Ok(Authorized {

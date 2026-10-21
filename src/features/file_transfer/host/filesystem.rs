@@ -2,6 +2,7 @@
 //! Rename, Remove, Exists). Runs in the user's executor only.
 use super::super::{model::FileEntry, service::PartialFile};
 use super::*;
+use crate::i18n::t;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::os::windows::fs::MetadataExt;
@@ -30,9 +31,9 @@ pub(super) struct Store {
 }
 impl Store {
     pub fn new(scope: &str) -> Result<Self> {
-        ensure!(!scope.is_empty() && scope.len() <= 1024, "文件会话身份无效");
+        ensure!(!scope.is_empty() && scope.len() <= 1024, "{}", t().features.transfer_session_scope_invalid);
         let directory = crate::product::local_data_dir()
-            .context("用户目录不可用")?
+            .context(t().features.transfer_user_dir_unavailable)?
             .join("file-receive")
             .join(format!("{:x}", Sha256::digest(scope)));
         Ok(Self::at(directory))
@@ -54,11 +55,11 @@ impl Store {
                     File::open(entry.path())?
                         .take(32 * 1024 * 1024 + 1)
                         .read_to_end(&mut bytes)?;
-                    ensure!(bytes.len() <= 32 * 1024 * 1024, "续传记录过大");
+                    ensure!(bytes.len() <= 32 * 1024 * 1024, "{}", t().features.transfer_resume_record_too_large);
                     let record: Record = serde_json::from_slice(&bytes)?;
                     ensure!(
                         store.path(&record.remote_key)? == entry.path(),
-                        "续传记录身份不符"
+                        "{}", t().features.transfer_resume_identity_mismatch
                     );
                     store.cache_temporary(&record)
                 })();
@@ -72,7 +73,7 @@ impl Store {
     fn path(&self, key: &str) -> Result<PathBuf> {
         ensure!(
             !key.is_empty() && key.len() <= 1024 && !key.contains('\0'),
-            "续传标识无效"
+            "{}", t().features.transfer_resume_key_invalid
         );
         Ok(self
             .directory
@@ -89,17 +90,17 @@ impl Store {
         };
         let mut bytes = Vec::new();
         f.take(32 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
-        ensure!(bytes.len() <= 32 * 1024 * 1024, "续传记录过大");
+        ensure!(bytes.len() <= 32 * 1024 * 1024, "{}", t().features.transfer_resume_record_too_large);
         let record: Record = serde_json::from_slice(&bytes)?;
         ensure!(
             record.remote_key == key && uuid::Uuid::parse_str(&record.key).is_ok(),
-            "续传身份不符"
+            "{}", t().features.transfer_resume_identity_mismatch
         );
         storage::validate_manifest(&record.files)?;
         let root = local_path(&record.root.to_string_lossy())?;
         ensure!(
             root == record.root && record.partial.len() <= storage::MAX_FILES,
-            "续传记录路径无效"
+            "{}", t().features.transfer_resume_record_path_invalid
         );
         for p in &record.partial {
             storage::safe_relative(&p.target)?;
@@ -109,13 +110,13 @@ impl Store {
     }
     pub fn save(&self, r: &Record) -> Result<()> {
         let bytes = serde_json::to_vec(r)?;
-        ensure!(bytes.len() <= 32 * 1024 * 1024, "续传记录过大");
+        ensure!(bytes.len() <= 32 * 1024 * 1024, "{}", t().features.transfer_resume_record_too_large);
         std::fs::create_dir_all(&self.directory)?;
         let final_path = self.path(&r.remote_key)?;
         if !final_path.exists() {
             ensure!(
                 std::fs::read_dir(&self.directory)?.take(257).count() < 256,
-                "未完成的接收任务过多"
+                "{}", t().features.transfer_too_many_pending_receives
             );
         }
         let temp = final_path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
@@ -138,14 +139,14 @@ impl Store {
     }
     fn cache_temporary(&self, r: &Record) -> Result<()> {
         uuid::Uuid::parse_str(&r.key)?;
-        ensure!(r.root.is_absolute(), "续传根目录无效");
+        ensure!(r.root.is_absolute(), "{}", t().features.transfer_resume_root_invalid);
         let mut entries = Vec::new();
         for p in r
             .partial
             .iter()
             .filter(|p| !p.done && !p.skipped && !p.info.directory)
         {
-            ensure!(entries.len() < storage::MAX_FILES, "接收记录的临时文件过多");
+            ensure!(entries.len() < storage::MAX_FILES, "{}", t().features.transfer_too_many_temporary_files);
             let relative = storage::safe_relative(&p.target)?;
             entries.push(storage::temp_path(&r.root, &relative, &r.key));
         }
@@ -188,7 +189,7 @@ pub(super) fn directory(value: &str) -> Result<PathBuf> {
     storage::canonical_dir(&local_path(value)?)
 }
 fn parent_locks(path: &Path) -> Result<Vec<File>> {
-    let parent = path.parent().context("不能修改磁盘根目录")?;
+    let parent = path.parent().context(t().features.transfer_cannot_modify_drive_root)?;
     let root = PathBuf::from(format!(
         "{}:\\",
         path.to_string_lossy().as_bytes()[0] as char
@@ -196,7 +197,7 @@ fn parent_locks(path: &Path) -> Result<Vec<File>> {
     let rel = path.strip_prefix(&root)?;
     ensure!(
         parent != path && rel.components().count() > 0,
-        "不能修改磁盘根目录"
+        "{}", t().features.transfer_cannot_modify_drive_root
     );
     storage::parents(&root, rel, false)
 }
@@ -207,7 +208,7 @@ pub(super) fn receiving_root(destination: &Path, folder: &str, policy: i32) -> R
         return storage::canonical_dir(destination);
     }
     let rel = storage::safe_relative(folder)?;
-    ensure!(rel.components().count() == 1, "接收文件夹名称无效");
+    ensure!(rel.components().count() == 1, "{}", t().features.transfer_receive_folder_name_invalid);
     let _locks = storage::parents(destination, &rel, false)?;
     let mut path = destination.join(&rel);
     if policy == wire::conflict::RENAME {
@@ -221,7 +222,7 @@ pub(super) fn receiving_root(destination: &Path, folder: &str, policy: i32) -> R
                 Err(e) => return Err(e.into()),
             }
         }
-        anyhow::bail!("无法分配接收文件夹")
+        anyhow::bail!("{}", t().features.transfer_receive_folder_unavailable)
     }
     if !path.exists() {
         std::fs::create_dir(&path)?;
@@ -245,7 +246,7 @@ impl Reservation {
             !active.iter().any(|p| p == &key
                 || key.starts_with(&format!("{p}\\"))
                 || p.starts_with(&format!("{key}\\"))),
-            Failure::new(code::BUSY, "另一个文件操作正在使用该位置")
+            Failure::new(code::BUSY, t().features.transfer_location_in_use)
         );
         active.insert(key.clone());
         drop(active);
@@ -262,14 +263,14 @@ fn single_name(name: &str) -> Result<PathBuf> {
     let relative = storage::safe_relative(name)?;
     ensure!(
         relative.components().count() == 1,
-        Failure::new(code::PROTOCOL, "名称不能包含路径")
+        Failure::new(code::PROTOCOL, t().features.transfer_name_has_path)
     );
     Ok(relative)
 }
 
 /// Run one management request and build its response.
 pub(super) fn operation(body: Body, store: &Arc<Store>, stop: &CancellationToken) -> Result<Body> {
-    ensure!(!stop.is_cancelled(), "文件操作已撤销");
+    ensure!(!stop.is_cancelled(), "{}", t().features.transfer_operation_revoked);
     Ok(match body {
         Body::List(v) => {
             let roots = v.path.is_empty();
@@ -291,7 +292,7 @@ pub(super) fn operation(body: Body, store: &Arc<Store>, stop: &CancellationToken
             })
         }
         Body::Exists(v) => {
-            ensure!(v.names.len() <= storage::MAX_FILES, "同名检查项目过多");
+            ensure!(v.names.len() <= storage::MAX_FILES, "{}", t().features.transfer_too_many_name_checks);
             let root = directory(&v.dir)?;
             let mut existing = wire::Existing::default();
             for name in v.names {
@@ -317,7 +318,7 @@ pub(super) fn operation(body: Body, store: &Arc<Store>, stop: &CancellationToken
             match std::fs::create_dir(&path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    return Err(Failure::new(code::EXISTS, "目标名称已经存在").into());
+                    return Err(Failure::new(code::EXISTS, t().features.transfer_name_exists).into());
                 }
                 Err(e) => return Err(e.into()),
             }
@@ -327,7 +328,7 @@ pub(super) fn operation(body: Body, store: &Arc<Store>, stop: &CancellationToken
         }
         Body::Rename(v) => {
             let from = local_path(&v.path)?;
-            let parent = from.parent().context("不能重命名根目录")?;
+            let parent = from.parent().context(t().features.transfer_cannot_rename_root)?;
             let to = parent.join(single_name(&v.name)?);
             let _from = Reservation::acquire(store.clone(), &from)?;
             let same = from
@@ -341,7 +342,7 @@ pub(super) fn operation(body: Body, store: &Arc<Store>, stop: &CancellationToken
             // A case-only rename names the same entry.
             ensure!(
                 same || !to.try_exists()?,
-                Failure::new(code::EXISTS, "目标名称已经存在")
+                Failure::new(code::EXISTS, t().features.transfer_name_exists)
             );
             std::fs::rename(&from, &to)?;
             Body::Done(wire::Done {
@@ -355,7 +356,7 @@ pub(super) fn operation(body: Body, store: &Arc<Store>, stop: &CancellationToken
             let m = std::fs::symlink_metadata(&p)?;
             ensure!(
                 m.file_attributes() & 0x400 == 0,
-                Failure::new(code::DENIED, "不能删除链接或重解析点")
+                Failure::new(code::DENIED, t().features.transfer_cannot_delete_link)
             );
             if m.is_dir() {
                 if v.recursive {
@@ -368,28 +369,28 @@ pub(super) fn operation(body: Body, store: &Arc<Store>, stop: &CancellationToken
             }
             Body::Done(wire::Done { path: v.path })
         }
-        other => anyhow::bail!("{} 不属于文件管理操作", other.name()),
+        other => anyhow::bail!((t().features.transfer_not_management_operation)(other.name())),
     })
 }
 fn remove_tree(path: &Path, stop: &CancellationToken, depth: usize) -> Result<()> {
     ensure!(
         !stop.is_cancelled() && depth < 128,
-        "目录删除已取消或层级过深"
+        "{}", t().features.transfer_delete_cancelled_or_too_deep
     );
     let m = std::fs::symlink_metadata(path)?;
     ensure!(
         m.is_dir() && m.file_attributes() & 0x400 == 0,
-        "删除目标不是普通目录"
+        "{}", t().features.transfer_delete_target_not_directory
     );
     let held = storage::parents(path, Path::new(".farwing-directory-lock"), false)?;
     for child in std::fs::read_dir(path)? {
         let p = child?.path();
         let m = std::fs::symlink_metadata(&p)?;
-        ensure!(m.file_attributes() & 0x400 == 0, "不能递归删除重解析点");
+        ensure!(m.file_attributes() & 0x400 == 0, "{}", t().features.transfer_cannot_delete_reparse_recursively);
         if m.is_dir() {
             remove_tree(&p, stop, depth + 1)?
         } else {
-            ensure!(!stop.is_cancelled(), "目录删除已取消");
+            ensure!(!stop.is_cancelled(), "{}", t().features.transfer_delete_cancelled);
             std::fs::remove_file(p)?;
         }
     }

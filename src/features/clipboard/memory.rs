@@ -48,9 +48,9 @@ pub(super) fn serve(inner: &Arc<Inner>, store: &Store, epoch: u64, id: u32, body
                 .find(|(f, _)| f.id == format.id && f.name == format.name)
             {
                 Some((_, data)) => inner.respond_data(epoch, id, fetch.stream, data.clone()),
-                None => Err(anyhow!("未发布该剪贴板格式")),
+                None => Err(anyhow!("{}", t().features.clipboard_format_not_offered)),
             },
-            _ => Err(anyhow!("原剪贴板已失效")),
+            _ => Err(anyhow!("{}", t().features.clipboard_offer_expired)),
         },
         Body::ListFiles(list) => match current(list.offer).filter(|l| !l.files.is_empty()) {
             Some(local) => inner.respond(
@@ -60,7 +60,7 @@ pub(super) fn serve(inner: &Arc<Inner>, store: &Store, epoch: u64, id: u32, body
                     items: local.files.iter().map(|(item, _)| item.clone()).collect(),
                 }),
             ),
-            None => Err(anyhow!("原文件剪贴板已失效")),
+            None => Err(anyhow!("{}", t().features.clipboard_file_offer_expired)),
         },
         Body::ReadFile(read) => match current(read.offer)
             .and_then(|local| local.files.get(read.index as usize))
@@ -80,7 +80,7 @@ pub(super) fn serve(inner: &Arc<Inner>, store: &Store, epoch: u64, id: u32, body
                 formats: local.as_ref().map(|local| local.formats.clone()).unwrap_or_default(),
             }),
         ),
-        _ => Err(anyhow!("无效的剪贴板请求")),
+        _ => Err(anyhow!("{}", t().features.clipboard_invalid_request)),
     };
     if let Err(error) = result {
         inner.refuse(id, error_code::NOT_FOUND, &error.to_string());

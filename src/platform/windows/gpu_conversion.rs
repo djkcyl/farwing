@@ -1,5 +1,6 @@
 //! Shared D3D11 input contract for NVENC, AMF and QSV. No raw CPU readback.
 use super::format::{Color, Format};
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use windows::Win32::Graphics::{
     Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, Direct3D11::*, Dxgi::Common::*,
@@ -67,7 +68,7 @@ impl Conversion {
         alignment: u32,
         color: Color,
     ) -> Result<Self> {
-        ensure!(format.chroma == 1, "该格式仅使用pixel输入候选");
+        ensure!(format.chroma == 1, "{}", t().system.gpu_pixel_input_only);
         Self::with_path(device, size, format, alignment, color, true, false)
     }
     pub fn pixel(
@@ -95,7 +96,8 @@ impl Conversion {
                 && size.1 > 0
                 && size.0 % 2 == 0
                 && size.1 % 2 == 0,
-            "无效编码纹理参数"
+            "{}",
+            t().system.gpu_invalid_texture_parameters
         );
         let (storage, planes, shader): (_, Vec<_>, &[u8]) = match (format.chroma, format.depth) {
             (1, 8) => (
@@ -147,7 +149,7 @@ impl Conversion {
                 ensure!(prefer_compute, "pixel conversion selected");
                 let mut output = None;
                 device.CreateTexture2D(&desc, None, Some(&mut output))?;
-                let output = output.context("创建硬件编码输入纹理")?;
+                let output = output.context(t().system.gpu_create_input_texture)?;
                 let mut views = Vec::new();
                 for &plane in &planes {
                     let mut view = None;
@@ -162,14 +164,14 @@ impl Conversion {
                         }),
                         Some(&mut view),
                     )?;
-                    views.push(Some(view.context("创建编码输入平面视图")?));
+                    views.push(Some(view.context(t().system.gpu_create_plane_view)?));
                 }
                 let mut compute = None;
                 device.CreateComputeShader(shader, None, Some(&mut compute))?;
                 Ok((
                     output,
                     Engine::Compute {
-                        shader: compute.context("创建编码色彩转换器")?,
+                        shader: compute.context(t().system.gpu_create_color_converter)?,
                         views,
                     },
                 ))
@@ -193,7 +195,7 @@ impl Conversion {
                         None,
                         Some(&mut output),
                     )?;
-                    let output = output.context("创建像素转换输出纹理")?;
+                    let output = output.context(t().system.gpu_create_pixel_output)?;
                     let shaders: Vec<&[u8]> = match (format.chroma, format.depth) {
                         (1, 8) => vec![
                             include_bytes!("encode_nv12_y_ps.cso"),
@@ -235,8 +237,8 @@ impl Conversion {
                             Some(&mut target),
                         )?;
                         targets.push((
-                            shader.context("创建像素转换shader")?,
-                            target.context("创建像素转换目标平面")?,
+                            shader.context(t().system.gpu_create_pixel_shader)?,
+                            target.context(t().system.gpu_create_pixel_target)?,
                         ));
                     }
                     let mut vertex = None;
@@ -248,7 +250,7 @@ impl Conversion {
                     (
                         output,
                         Engine::Pixel {
-                            vertex: vertex.context("创建像素转换顶点shader")?,
+                            vertex: vertex.context(t().system.gpu_create_vertex_shader)?,
                             planes: targets,
                         },
                     )
@@ -270,7 +272,8 @@ impl Conversion {
     pub fn planar_44410(device: &ID3D11Device, size: (u32, u32), color: Color) -> Result<Self> {
         ensure!(
             size.0 > 0 && size.1 > 0 && size.0 <= 16384 && size.1 <= 16384 / 3,
-            "4:4:4 10位输入尺寸超出GPU纹理限制"
+            "{}",
+            t().system.gpu_444_10bit_too_large
         );
         unsafe {
             let mut output = None;
@@ -292,7 +295,7 @@ impl Conversion {
                 None,
                 Some(&mut output),
             )?;
-            let output = output.context("创建44410平面纹理")?;
+            let output = output.context(t().system.gpu_create_444_10bit_texture)?;
             let mut view = None;
             device.CreateUnorderedAccessView(&output, None, Some(&mut view))?;
             let bytes: &[u8] = if color.is_hdr() {
@@ -308,7 +311,7 @@ impl Conversion {
                 device: device.clone(),
                 context: device.GetImmediateContext()?,
                 engine: Engine::Compute {
-                    shader: shader.context("创建44410转换器")?,
+                    shader: shader.context(t().system.gpu_create_444_10bit_converter)?,
                     views: vec![view],
                 },
                 output,
@@ -324,7 +327,8 @@ impl Conversion {
             source.GetDesc(&mut desc);
             ensure!(
                 (desc.Width, desc.Height) == self.size,
-                "编码输入尺寸与协商不一致"
+                "{}",
+                t().system.gpu_input_size_mismatch
             );
             let view = if let Some((_, view)) =
                 self.inputs.iter().find(|(texture, _)| texture == source)
@@ -334,7 +338,7 @@ impl Conversion {
                 let mut view = None;
                 self.device
                     .CreateShaderResourceView(source, None, Some(&mut view))?;
-                let view = view.context("编码输入视图")?;
+                let view = view.context(t().system.gpu_create_input_view)?;
                 // Holding the resource prevents pointer reuse from aliasing an
                 // old cache entry. Four entries cover both transfer rings.
                 if self.inputs.len() == 4 {

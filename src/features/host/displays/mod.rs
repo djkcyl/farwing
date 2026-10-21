@@ -1,5 +1,6 @@
 //! Session-owned display mutations. Native work is serialized and keeps its
 //! recovery intent alive even if the awaiting RPC or connection is cancelled.
+use crate::i18n::t;
 pub(crate) mod fallback;
 mod initial;
 pub(crate) mod recovery;
@@ -102,9 +103,14 @@ impl Session {
     pub(crate) fn new(lease: Lease, remote: &str) -> Result<Arc<Self>> {
         ensure!(
             !lease.display_scope().is_empty() && lease.requested(),
-            "被控显示许可不可用"
+            "{}",
+            t().features.screen_lease_unavailable
         );
-        ensure!(remote.len() <= 256, "控制端标识无效");
+        ensure!(
+            remote.len() <= 256,
+            "{}",
+            t().features.screen_controller_id_invalid
+        );
         let root = store::root()?;
         let token = uuid::Uuid::new_v4().to_string();
         let preference_path = (!lease.is_assistance() && !remote.is_empty()).then(|| {
@@ -160,7 +166,8 @@ impl Session {
     ) -> Result<T> {
         ensure!(
             !self.closed.load(Ordering::Acquire) && self.lease.requested(),
-            "显示操作已取消"
+            "{}",
+            t().features.screen_operation_cancelled
         );
         let state = self.state.clone();
         let lease = self.lease.clone();
@@ -172,7 +179,8 @@ impl Session {
             let mut state = lock(&state);
             ensure!(
                 lease.requested() && !closed.load(Ordering::Acquire),
-                "显示操作已取消"
+                "{}",
+                t().features.screen_operation_cancelled
             );
             let result = action(&mut state, &lease);
             if !lease.requested() || closed.load(Ordering::Acquire) {
@@ -183,7 +191,7 @@ impl Session {
             result
         })
         .await
-        .context("显示工作线程中断")?
+        .context(t().features.screen_worker_interrupted)?
     }
     pub(crate) fn annotate(
         &self,
@@ -264,12 +272,14 @@ impl Session {
     ) -> Result<capture::Screen> {
         ensure!(
             caller.display_expansion_allowed(),
-            "本次会话不允许添加虚拟屏"
+            "{}",
+            t().features.screen_add_virtual_not_allowed
         );
         self.run(move |state, lease| {
             ensure!(
                 state.journal.super_baseline.is_none(),
-                "超级屏内不能添加扩展屏"
+                "{}",
+                t().features.screen_extend_in_super
             );
             let screens = capture::screens()?;
             ensure!(
@@ -281,7 +291,8 @@ impl Session {
                         .filter(|o| matches!(o.kind, 1 | 3))
                         .count()
                         < 3,
-                "显示器数量已达上限"
+                "{}",
+                t().features.screen_limit_reached
             );
             let primary = screens.iter().find(|s| s.primary).or(screens.first());
             let size = primary.map_or((1920, 1080), |s| (s.width, s.height));
@@ -312,9 +323,14 @@ impl Session {
             let index = state.owned_index(&identity)?;
             ensure!(
                 matches!(state.journal.owned[index].kind, 1 | 3),
-                "不能用删除扩展屏操作退出超级屏"
+                "{}",
+                t().features.screen_remove_cannot_exit_super
             );
-            ensure!(lease.requested(), "显示操作已取消");
+            ensure!(
+                lease.requested(),
+                "{}",
+                t().features.screen_operation_cancelled
+            );
             state.save()?;
             let current = Topology::query(true)?.snapshot()?;
             if current.targets.len() == 1
@@ -346,7 +362,11 @@ impl Session {
             if state.journal.super_baseline.is_some() || !state.journal.owned.is_empty() {
                 return Ok(None);
             }
-            ensure!(lease.requested(), "显示操作已取消");
+            ensure!(
+                lease.requested(),
+                "{}",
+                t().features.screen_operation_cancelled
+            );
             fallback::ensure(
                 state.fallback_driver()?,
                 previous.width,
@@ -423,7 +443,11 @@ impl Session {
         self.run(|state, _| state.quit_super(true)).await
     }
     pub(crate) async fn resolution_choice(&self, identity: String, kind: i32) -> Result<()> {
-        ensure!((2..=4).contains(&kind), "无效分辨率选择");
+        ensure!(
+            (2..=4).contains(&kind),
+            "{}",
+            t().features.screen_resolution_choice_invalid
+        );
         self.run(move |state, _| {
             if let Some(owned) = state
                 .journal
@@ -574,7 +598,8 @@ fn validate_modes(modes: &[(u32, u32)]) -> Result<()> {
             && modes
                 .iter()
                 .all(|(w, h)| (2..=16384).contains(w) && (2..=16384).contains(h)),
-        "无效虚拟显示模式"
+        "{}",
+        t().features.screen_virtual_mode_invalid
     );
     Ok(())
 }
@@ -602,7 +627,7 @@ fn find_screen(identity: &str) -> Result<capture::Screen> {
     capture::screens()?
         .into_iter()
         .find(|s| s.identity.as_deref() == Some(identity))
-        .context("显示目标尚未进入桌面")
+        .context(t().features.screen_target_not_on_desktop)
 }
 fn restore_dpi(values: &[(String, u32)]) -> Result<()> {
     let targets = Topology::query(true)?.metadata()?;
@@ -628,7 +653,7 @@ impl State {
         }
         self.fallback_pin
             .as_ref()
-            .context("常驻虚拟屏需要安装或更新虚拟显示驱动")
+            .context(t().features.screen_persistent_needs_driver)
     }
     fn enter_super(
         &mut self,
@@ -651,7 +676,9 @@ impl State {
         };
         if let Some(owned) = self.journal.owned.iter().find(|o| o.kind == 2).cloned() {
             return self.resize_virtual(
-                owned.identity.context("超级屏尚未就绪")?,
+                owned
+                    .identity
+                    .context(t().features.screen_super_not_ready)?,
                 size.0,
                 size.1,
                 dpi,
@@ -859,7 +886,11 @@ impl State {
             let instance = Driver::device_instance()?;
             let targets = Topology::query(false)?.targets()?;
             for target in targets.iter().filter(|t| t.available) {
-                ensure!(!target.adapter_path.is_empty(), "无法核实显示器的驱动归属");
+                ensure!(
+                    !target.adapter_path.is_empty(),
+                    "{}",
+                    t().features.screen_driver_owner_unverified
+                );
                 let path = target
                     .adapter_path
                     .trim_start_matches(r"\\?\")
@@ -884,7 +915,8 @@ impl State {
                             .owned
                             .iter()
                             .any(|o| o.identity.as_deref() == Some(target.identity.as_str())),
-                    "虚拟显示驱动已有其他程序创建的显示器"
+                    "{}",
+                    t().features.screen_driver_in_use
                 );
             }
             self.driver = Some(Heartbeat::open()?);
@@ -907,7 +939,7 @@ impl State {
             .owned
             .iter()
             .position(|o| o.identity.as_deref() == Some(identity))
-            .context("不是本次会话创建的虚拟显示器")
+            .context(t().features.screen_not_owned)
     }
     fn create(
         &mut self,
@@ -950,7 +982,11 @@ impl State {
         let index = self.journal.owned.len();
         self.journal.owned.push(spec.clone());
         self.save()?;
-        ensure!(lease.requested(), "显示操作已取消");
+        ensure!(
+            lease.requested(),
+            "{}",
+            t().features.screen_operation_cancelled
+        );
         let output = lock(&driver).add(
             uuid::Uuid::parse_str(&spec.guid)?,
             spec.width,
@@ -962,7 +998,11 @@ impl State {
         // through the render adapter, under another adapter and target ID.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let target = loop {
-            ensure!(lease.requested(), "显示操作已取消");
+            ensure!(
+                lease.requested(),
+                "{}",
+                t().features.screen_operation_cancelled
+            );
             let topology = Topology::query(false)?;
             if let Some(identity) = topology.identity_of(output.adapter, output.target)
                 && let Some(target) = topology
@@ -974,7 +1014,8 @@ impl State {
             }
             ensure!(
                 std::time::Instant::now() < deadline,
-                "虚拟显示器创建后未出现"
+                "{}",
+                t().features.screen_virtual_not_appeared
             );
             std::thread::sleep(Duration::from_millis(25));
         };
@@ -1017,21 +1058,30 @@ impl State {
             refresh_denominator: 1,
             scan_line_ordering: 1,
         });
-        ensure!(lease.requested(), "显示操作已取消");
+        ensure!(
+            lease.requested(),
+            "{}",
+            t().features.screen_operation_cancelled
+        );
         self.intend_layout(&desired)?;
         // Windows attaches a new monitor by itself as well (for example as a
         // clone of the primary), which leaves its own path unavailable for a
         // moment. Applying the layout undoes that; the next attempt places it.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
-            ensure!(lease.requested(), "显示操作已取消");
+            ensure!(
+                lease.requested(),
+                "{}",
+                t().features.screen_operation_cancelled
+            );
             let missing = desired.apply()?;
             if !missing.contains(&target.identity) {
                 break;
             }
             ensure!(
                 std::time::Instant::now() < deadline,
-                "新虚拟屏未能加入显示布局"
+                "{}",
+                t().features.screen_virtual_not_in_layout
             );
             tracing::debug!("new virtual display not yet available to the layout; retrying");
             std::thread::sleep(Duration::from_millis(200));
@@ -1039,13 +1089,20 @@ impl State {
         // Windows activates the new path shortly after the layout returns.
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         loop {
-            ensure!(lease.requested(), "显示操作已取消");
+            ensure!(
+                lease.requested(),
+                "{}",
+                t().features.screen_operation_cancelled
+            );
             match target.revalidate() {
                 Ok(current) if current.active => break,
                 current => ensure!(
                     std::time::Instant::now() < deadline,
-                    "新虚拟屏已加入布局但未启用（{}）",
-                    current.map_or_else(|e| format!("{e:#}"), |_| "未激活".into())
+                    "{}",
+                    (t().features.screen_virtual_not_enabled)(&current.map_or_else(
+                        |e| format!("{e:#}"),
+                        |_| t().features.screen_not_active.into()
+                    ))
                 ),
             }
             std::thread::sleep(Duration::from_millis(25));
@@ -1056,10 +1113,18 @@ impl State {
             target.set_dpi(spec.dpi, || lease.requested())?;
         }
         if super_screen {
-            let mut only = desired.targets.last().cloned().context("缺少超级屏布局")?;
+            let mut only = desired
+                .targets
+                .last()
+                .cloned()
+                .context(t().features.screen_super_layout_missing)?;
             only.left = 0;
             only.top = 0;
-            ensure!(lease.requested(), "显示操作已取消");
+            ensure!(
+                lease.requested(),
+                "{}",
+                t().features.screen_operation_cancelled
+            );
             let layout = SavedTopology {
                 targets: vec![only],
             };
@@ -1092,7 +1157,7 @@ impl State {
             .targets()?
             .into_iter()
             .find(|t| t.identity == identity)
-            .context("虚拟屏已断开")?;
+            .context(t().features.screen_virtual_disconnected)?;
         if target
             .modes
             .iter()
@@ -1112,7 +1177,11 @@ impl State {
             return Ok(screen);
         }
         let result = (|| -> Result<capture::Screen> {
-            ensure!(lease.requested(), "显示操作已取消");
+            ensure!(
+                lease.requested(),
+                "{}",
+                t().features.screen_operation_cancelled
+            );
             self.save()?;
             remove_owned(&lock(&self.driver()?.driver), &original.guid)?;
             self.journal.owned.remove(index);
@@ -1174,7 +1243,10 @@ impl State {
         width: u32,
         height: u32,
     ) -> Result<()> {
-        let next = screen.identity.as_ref().context("缺少新目标身份")?;
+        let next = screen
+            .identity
+            .as_ref()
+            .context(t().features.screen_new_target_identity_missing)?;
         let mut layout = before.clone();
         if let Some(target) = layout.targets.iter_mut().find(|t| t.identity == identity) {
             target.identity = next.clone();

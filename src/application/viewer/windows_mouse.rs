@@ -1,5 +1,6 @@
 //! Consume RAWMOUSE transitions directly, without winit's per-packet final-state
 //! reduction. Wheel input uses the window path, including precision touchpads.
+use crate::i18n::t;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use windows::Win32::Foundation::{HWND, POINT};
@@ -856,7 +857,8 @@ impl WindowMouse {
     fn release_capture(&mut self, window: &Window) -> bool {
         if self.grabbed {
             if let Err(error) = window.set_cursor_grab(CursorGrabMode::None) {
-                self.input.fail(format!("释放本地鼠标捕获失败：{error}"));
+                self.input
+                    .fail((t().viewer.mouse_release_failed)(&error.to_string()));
                 return false;
             }
             self.grabbed = false;
@@ -866,7 +868,8 @@ impl WindowMouse {
                 && let Some(position) = self.restore_position.take()
                 && let Err(error) = window.set_cursor_position(position)
             {
-                self.input.fail(format!("恢复鼠标位置失败：{error}"));
+                self.input
+                    .fail((t().viewer.mouse_restore_failed)(&error.to_string()));
                 return false;
             }
         }
@@ -944,7 +947,8 @@ impl WindowMouse {
                 && let Some(position) = self.restore_position.take()
                 && let Err(error) = window.set_cursor_position(position)
             {
-                self.input.fail(format!("恢复鼠标位置失败：{error}"));
+                self.input
+                    .fail((t().viewer.mouse_restore_failed)(&error.to_string()));
                 self.release(window);
                 return;
             }
@@ -983,7 +987,7 @@ impl WindowMouse {
                 y: local_center.y,
             };
             if !unsafe { ClientToScreen(HWND(self.owner as _), &mut center).as_bool() } {
-                self.input.fail("无法定位鼠标捕获区域".into());
+                self.input.fail(t().viewer.mouse_capture_area_unknown.into());
                 self.release(window);
                 return;
             }
@@ -1007,7 +1011,8 @@ impl WindowMouse {
                     .and_then(|()| window.set_cursor_position(local_center))
                     .and_then(|()| window.set_cursor_grab(CursorGrabMode::Locked));
                 if let Err(error) = result {
-                    self.input.fail(format!("捕获游戏鼠标失败：{error}"));
+                    self.input
+                        .fail((t().viewer.game_mouse_capture_failed)(&error.to_string()));
                     // Also retire a capture whose final native call partly failed.
                     self.grabbed = true;
                     self.release(window);

@@ -6,6 +6,7 @@
 use super::store::{self, KnownHost};
 use super::{LocalDevice, ROLE_CONTROLLER, ROLE_HOST, Target, read_frame, write_frame};
 use crate::account::api::ApiFailure;
+use crate::i18n::t;
 use crate::transport::signal::SignalSession;
 use anyhow::{Context, Result, bail, ensure};
 use farwing_protocol::ErrorCode;
@@ -63,10 +64,10 @@ async fn dial(target: &Target) -> Result<(TcpStream, SocketAddr)> {
         tokio::net::lookup_host((target.host.as_str(), target.port)),
     )
     .await
-    .context("解析被控端地址超时")?
-    .with_context(|| format!("无法解析 {}", target.host))?
+    .context(t().session.direct_resolve_timeout)?
+    .with_context(|| (t().session.direct_cannot_resolve)(&target.host))?
     .collect();
-    ensure!(!addresses.is_empty(), "无法解析 {}", target.host);
+    ensure!(!addresses.is_empty(), "{}", (t().session.direct_cannot_resolve)(&target.host));
     // Every address in parallel (staggered); the first that answers wins.
     let detail = match timeout(
         Duration::from_secs(3 * addresses.len().min(3) as u64),
@@ -75,24 +76,24 @@ async fn dial(target: &Target) -> Result<(TcpStream, SocketAddr)> {
     .await
     {
         Ok(Ok(stream)) => {
-            let address = stream.peer_addr().context("被控端连接没有对端地址")?;
+            let address = stream.peer_addr().context(t().session.direct_no_peer_address)?;
             return Ok((stream, address));
         }
         Ok(Err(error)) => error.to_string(),
-        Err(_) => "连接超时".to_owned(),
+        Err(_) => t().session.direct_connect_timeout.to_owned(),
     };
     // Nobody listening: the host is offline or not reachable from here.
-    Err(ApiFailure::new(ErrorCode::DeviceOffline, format!("无法连接 {target}：{detail}")).into())
+    Err(ApiFailure::new(ErrorCode::DeviceOffline, format!("cannot connect to {target}: {detail}")).into())
 }
 
 async fn read<R: AsyncRead + Unpin>(reader: &mut R, wait: Duration) -> Result<Envelope> {
     let envelope = timeout(wait, read_frame(reader))
         .await
-        .context("等待被控端响应超时")??
-        .context("被控端关闭了连接")?;
+        .context(t().session.direct_response_timeout)??
+        .context(t().session.direct_host_closed)?;
     if envelope.kind == types::ERROR {
-        let error: farwing_protocol::ErrorBody = envelope.body().context("被控端错误格式无效")?;
-        return Err(ApiFailure::new(error.code, error.message).into());
+        let error: farwing_protocol::ErrorBody = envelope.body().context(t().session.direct_error_invalid)?;
+        return Err(ApiFailure::received(error).into());
     }
     Ok(envelope)
 }
@@ -152,15 +153,15 @@ async fn open(target: &Target, local: &LocalDevice) -> Result<Opened> {
         tokio_rustls::TlsConnector::from(super::client_tls()?).connect(name, stream),
     )
     .await
-    .context("建立加密连接超时")?
-    .context("建立加密连接失败")?;
+    .context(t().session.tls_timeout)?
+    .context(t().session.tls_failed)?;
     let ekm = super::exported_key(tls.get_ref().1)?;
     let (mut reader, mut writer) = tokio::io::split(tls);
     let mine = super::hello(local, ROLE_CONTROLLER, &ekm, Vec::new(), 0);
     write_frame(&mut writer, &Envelope::new(dtypes::HELLO, &mine)).await?;
     let message = read(&mut reader, STEP_TIMEOUT).await?;
-    ensure!(message.kind == dtypes::HELLO, "被控端未发送身份");
-    let mut host: DirectHello = message.body().context("被控端身份格式无效")?;
+    ensure!(message.kind == dtypes::HELLO, "{}", t().session.direct_no_hello);
+    let mut host: DirectHello = message.body().context(t().session.direct_hello_invalid)?;
     super::verify_hello(&host, ROLE_HOST, &ekm)?;
     host.name = super::sanitize_name(&host.name);
     // Keep what the list shows about this host current, also when it no
@@ -233,7 +234,7 @@ async fn connect_inner(
             let reply: DirectPake = read(&mut reader, STEP_TIMEOUT)
                 .await?
                 .body()
-                .context("协助应答格式无效")?;
+                .context(t().session.direct_assist_reply_invalid)?;
             if !states.is_empty() {
                 let key = states
                     .into_iter()
@@ -245,7 +246,7 @@ async fn connect_inner(
                     })
                     .next();
                 let Some(key) = key else {
-                    return Err(ApiFailure::new(ErrorCode::AssistCodeInvalid, "访问码不正确").into());
+                    return Err(ApiFailure::new(ErrorCode::AssistCodeInvalid, "wrong access code").into());
                 };
                 write_frame(
                     &mut writer,
@@ -266,8 +267,8 @@ async fn connect_inner(
     }
     let wait = if matches!(auth, Auth::Code(_)) { DECISION_TIMEOUT } else { STEP_TIMEOUT };
     let message = read(&mut reader, wait).await?;
-    ensure!(message.kind == dtypes::AUTHORIZED, "被控端未授权本次连接");
-    let authorized: DirectAuthorized = message.body().context("授权消息格式无效")?;
+    ensure!(message.kind == dtypes::AUTHORIZED, "{}", t().session.direct_not_authorized);
+    let authorized: DirectAuthorized = message.body().context(t().session.direct_authorization_invalid)?;
     store::remember_host(KnownHost {
         device_id: host.device_id.clone(),
         public_key: host.public_key.clone(),
@@ -300,7 +301,7 @@ pub(crate) async fn pair(
 ) -> Result<DirectHello> {
     tokio::select! {
         biased;
-        _ = cancel.cancelled() => bail!("配对已取消"),
+        _ = cancel.cancelled() => bail!("{}", t().session.pairing_cancelled),
         result = pair_inner(target, device_id, local, shown, agreed) => result,
     }
 }
@@ -323,8 +324,11 @@ async fn pair_inner(
     // at the address, only the device the user chose pairs.
     ensure!(
         host.device_id == device_id,
-        "{target} 上的设备不是所选的设备（{}）",
-        crate::account::api::device_id_text(device_id)
+        "{}",
+        (t().session.pairing_wrong_device)(
+            &target.to_string(),
+            &crate::account::api::device_id_text(device_id)
+        )
     );
     tracing::info!(%address, device = %host.device_id, "pairing with a host");
     let nonce: [u8; 32] = rand::random();
@@ -340,12 +344,12 @@ async fn pair_inner(
     )
     .await?;
     let message = read(&mut reader, STEP_TIMEOUT).await?;
-    ensure!(message.kind == dtypes::PAIR_NONCE, "被控端没有按协议配对");
-    let theirs: DirectPairNonce = message.body().context("配对应答格式无效")?;
+    ensure!(message.kind == dtypes::PAIR_NONCE, "{}", t().session.pairing_unexpected_reply);
+    let theirs: DirectPairNonce = message.body().context(t().session.pairing_reply_invalid)?;
     let host_nonce = farwing_protocol::crypto::unb64(&theirs.nonce)
         .ok()
         .filter(|n| n.len() == 32)
-        .context("配对应答格式无效")?;
+        .context(t().session.pairing_reply_invalid)?;
     write_frame(
         &mut writer,
         &Envelope::new(
@@ -361,10 +365,10 @@ async fn pair_inner(
     // both phases, so nothing it sent is lost.
     let mut answer = std::pin::pin!(read(&mut reader, DECISION_TIMEOUT));
     tokio::select! {
-        agreed = agreed => agreed.map_err(|_| anyhow::anyhow!("配对已取消"))?,
+        agreed = agreed => agreed.map_err(|_| anyhow::anyhow!("{}", t().session.pairing_cancelled))?,
         message = &mut answer => {
             message?;
-            bail!("被控端没有按协议配对");
+            bail!("{}", t().session.pairing_unexpected_reply);
         }
     }
     write_frame(
@@ -373,8 +377,8 @@ async fn pair_inner(
     )
     .await?;
     let message = answer.await?;
-    ensure!(message.kind == dtypes::PAIRED, "被控端没有完成配对");
-    let _: DirectPaired = message.body().context("配对应答格式无效")?;
+    ensure!(message.kind == dtypes::PAIRED, "{}", t().session.pairing_incomplete);
+    let _: DirectPaired = message.body().context(t().session.pairing_reply_invalid)?;
     store::remember_host(KnownHost {
         device_id: host.device_id.clone(),
         public_key: host.public_key.clone(),

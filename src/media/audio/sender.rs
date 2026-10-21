@@ -215,7 +215,7 @@ impl Transmitter {
                 encoder = match make_encoder(config) {
                     Ok(e) => Some(e),
                     Err(e) => {
-                        source.fault(format!("音频编码初始化失败：{e:?}"));
+                        source.fault((crate::i18n::t().session.audio_encoder_init_failed)(&format!("{e:?}")));
                         None
                     }
                 };
@@ -229,7 +229,7 @@ impl Transmitter {
                     if let Err(error) =
                         encoder.set_bitrate(opusic_c::Bitrate::Value(config.bitrate))
                     {
-                        source.fault(format!("音频码率调整失败：{error:?}"));
+                        source.fault((crate::i18n::t().session.audio_bitrate_failed)(&format!("{error:?}")));
                         continue;
                     }
                 }
@@ -272,7 +272,7 @@ impl Transmitter {
             let length = match encoded {
                 Ok(n) => n,
                 Err(e) => {
-                    source.fault(format!("音频编码失败：{e:?}"));
+                    source.fault((crate::i18n::t().session.audio_encode_failed)(&format!("{e:?}")));
                     continue;
                 }
             };
@@ -324,7 +324,7 @@ impl Transmitter {
                 }
                 Ok(_) => marker = true,
                 Err(e) => {
-                    source.send_error(format!("音频发送失败：{e}"));
+                    source.send_error((crate::i18n::t().session.audio_send_failed)(&e.to_string()));
                     marker = true;
                 }
             }

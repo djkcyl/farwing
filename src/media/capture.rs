@@ -40,6 +40,6 @@ impl Screen {
     pub(crate) fn label(&self) -> String {
         monitor_name(&self.display_name)
             .map(str::to_owned)
-            .unwrap_or_else(|| format!("显示器 {}", i64::from(self.id) + 1))
+            .unwrap_or_else(|| (crate::i18n::t().session.display_number)(i64::from(self.id) + 1))
     }
 }

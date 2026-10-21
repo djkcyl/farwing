@@ -1,4 +1,5 @@
 //! Read-only pointer shape sampling, independent of desktop pixel capture.
+use crate::i18n::t;
 use anyhow::{Result, ensure};
 use windows::Win32::{Graphics::Gdi::*, UI::WindowsAndMessaging::*};
 
@@ -43,7 +44,11 @@ impl Sampler {
                 shape.height,
                 image::ExtendedColorType::Rgba8,
             )?;
-            ensure!(png.len() <= 4 * 1024 * 1024, "光标图片过大");
+            ensure!(
+                png.len() <= 4 * 1024 * 1024,
+                "{}",
+                t().system.cursor_image_too_large
+            );
             self.image = Some(Image {
                 width: shape.width,
                 height: shape.height,
@@ -134,7 +139,7 @@ impl Drop for Dib {
 impl Dib {
     fn draw(icon: HICON, width: u32, height: u32, background: u8) -> Result<Vec<u8>> {
         let dc = unsafe { CreateCompatibleDC(None) };
-        ensure!(!dc.0.is_null(), "无法创建光标绘图上下文");
+        ensure!(!dc.0.is_null(), "{}", t().system.cursor_dc_failed);
         let mut dib = Self {
             dc,
             bitmap: HBITMAP::default(),
@@ -158,11 +163,16 @@ impl Dib {
             let mut bits = std::ptr::null_mut();
             dib.bitmap = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0)?;
             dib.bits = bits.cast();
-            ensure!(!dib.bits.is_null(), "光标位图内存不可用");
+            ensure!(
+                !dib.bits.is_null(),
+                "{}",
+                t().system.cursor_bitmap_memory_unavailable
+            );
             dib.old = SelectObject(dc, dib.bitmap.into());
             ensure!(
                 !dib.old.0.is_null() && dib.old.0 as isize != -1,
-                "无法选择光标位图"
+                "{}",
+                t().system.cursor_select_bitmap_failed
             );
             let pixels = std::slice::from_raw_parts_mut(dib.bits, dib.len);
             for pixel in pixels.chunks_exact_mut(4) {
@@ -179,7 +189,11 @@ impl Dib {
                 None,
                 DI_NORMAL,
             )?;
-            ensure!(GdiFlush().as_bool(), "光标绘制未完成");
+            ensure!(
+                GdiFlush().as_bool(),
+                "{}",
+                t().system.cursor_draw_incomplete
+            );
             Ok(std::slice::from_raw_parts(dib.bits, dib.len).to_vec())
         }
     }
@@ -203,7 +217,8 @@ pub(crate) fn shape(handle: usize) -> Result<Shape> {
                 Some((&mut size as *mut BITMAP).cast()),
             )
         } > 0,
-        "无法读取光标尺寸"
+        "{}",
+        t().system.cursor_size_unreadable
     );
     let height = if info.0.hbmColor.0.is_null() {
         size.bmHeight / 2
@@ -212,12 +227,14 @@ pub(crate) fn shape(handle: usize) -> Result<Shape> {
     };
     ensure!(
         (1..=2048).contains(&size.bmWidth) && (1..=2048).contains(&height),
-        "无效光标尺寸"
+        "{}",
+        t().system.cursor_invalid_size
     );
     let (width, height) = (size.bmWidth as u32, height as u32);
     ensure!(
         info.0.xHotspot < width && info.0.yHotspot < height,
-        "无效光标热点"
+        "{}",
+        t().system.cursor_invalid_hotspot
     );
     let black = Dib::draw(icon.0, width, height, 0)?;
     let white = Dib::draw(icon.0, width, height, 255)?;

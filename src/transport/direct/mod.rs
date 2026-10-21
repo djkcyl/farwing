@@ -14,6 +14,7 @@ pub(crate) mod managed;
 pub(crate) mod store;
 
 use crate::account::api::ClientIdentity;
+use crate::i18n::t;
 use anyhow::{Context, Result, bail, ensure};
 use farwing_protocol::direct::{self as wire, DirectHello};
 use farwing_protocol::realtime::Envelope;
@@ -37,7 +38,7 @@ pub(crate) struct LocalDevice {
 impl LocalDevice {
     pub(crate) fn from_identity(identity: ClientIdentity, name: String) -> Result<Self> {
         let id = farwing_protocol::crypto::local_device_id(&identity.public_key())
-            .context("本机设备密钥无效")?;
+            .context(t().session.local_key_invalid)?;
         Ok(Self {
             identity: identity.with_device_id(id),
             name,
@@ -81,7 +82,7 @@ pub(crate) fn sanitize_name(text: &str) -> String {
         .collect::<String>()
         .trim()
         .to_owned();
-    if name.is_empty() { "未命名设备".into() } else { name }
+    if name.is_empty() { t().session.unnamed_device.into() } else { name }
 }
 
 // ------------------------------------------------------------------ target
@@ -96,20 +97,21 @@ pub(crate) struct Target {
 impl Target {
     pub(crate) fn parse(text: &str) -> Result<Self> {
         let text = text.trim();
-        ensure!(!text.is_empty(), "请输入被控端的地址");
+        ensure!(!text.is_empty(), "{}", t().session.address_required);
         ensure!(
             !text.contains("://") && !text.contains('/'),
-            "地址格式应为 主机名或 IP[:端口]"
+            "{}",
+            t().session.address_format
         );
         let default = farwing_protocol::direct::DEFAULT_PORT;
         if let Some(rest) = text.strip_prefix('[') {
-            let (host, tail) = rest.split_once(']').context("IPv6 地址缺少 ]")?;
+            let (host, tail) = rest.split_once(']').context(t().session.ipv6_missing_bracket)?;
             host.parse::<std::net::Ipv6Addr>()
-                .context("IPv6 地址无效")?;
+                .context(t().session.ipv6_invalid)?;
             let port = match tail.strip_prefix(':') {
-                Some(port) => port.parse().context("端口无效")?,
+                Some(port) => port.parse().context(t().session.port_invalid)?,
                 None if tail.is_empty() => default,
-                None => bail!("地址格式应为 [IPv6]:端口"),
+                None => bail!("{}", t().session.ipv6_address_format),
             };
             return Ok(Self {
                 host: host.to_owned(),
@@ -123,17 +125,18 @@ impl Target {
             });
         }
         let (host, port) = match text.rsplit_once(':') {
-            Some((host, port)) => (host, port.parse().context("端口无效")?),
+            Some((host, port)) => (host, port.parse().context(t().session.port_invalid)?),
             None => (text, default),
         };
-        ensure!(port != 0, "端口无效");
+        ensure!(port != 0, "{}", t().session.port_invalid);
         ensure!(
             !host.is_empty()
                 && host.len() <= 253
                 && host
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_'),
-            "主机名无效"
+            "{}",
+            t().session.host_name_invalid
         );
         Ok(Self {
             host: host.to_owned(),
@@ -160,36 +163,37 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<O
     match reader.read_exact(&mut length).await {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(error).context("读取直连数据失败"),
+        Err(error) => return Err(error).context(t().session.direct_read_failed),
     }
     let length = u32::from_be_bytes(length) as usize;
     ensure!(
         (1..=wire::MAX_FRAME).contains(&length),
-        "直连数据帧长度无效（{length}）"
+        "{}",
+        (t().session.direct_frame_length_invalid)(length)
     );
     let mut body = vec![0u8; length];
     reader
         .read_exact(&mut body)
         .await
-        .context("读取直连数据失败")?;
-    let text = std::str::from_utf8(&body).context("直连数据不是 UTF-8")?;
-    let envelope = Envelope::decode(text).context("直连数据格式无效")?;
+        .context(t().session.direct_read_failed)?;
+    let text = std::str::from_utf8(&body).context(t().session.direct_not_utf8)?;
+    let envelope = Envelope::decode(text).context(t().session.direct_data_invalid)?;
     ensure!(
         envelope.v == farwing_protocol::PROTOCOL_VERSION,
-        "对端协议版本 {} 不受支持",
-        envelope.v
+        "{}",
+        (t().session.peer_protocol_unsupported)(&envelope.v.to_string())
     );
     Ok(Some(envelope))
 }
 
 pub(crate) async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, envelope: &Envelope) -> Result<()> {
     let text = envelope.encode();
-    ensure!(text.len() <= wire::MAX_FRAME, "直连数据帧过大");
+    ensure!(text.len() <= wire::MAX_FRAME, "{}", t().session.direct_frame_too_large);
     let mut frame = Vec::with_capacity(4 + text.len());
     frame.extend_from_slice(&(text.len() as u32).to_be_bytes());
     frame.extend_from_slice(text.as_bytes());
-    writer.write_all(&frame).await.context("发送直连数据失败")?;
-    writer.flush().await.context("发送直连数据失败")
+    writer.write_all(&frame).await.context(t().session.direct_send_failed)?;
+    writer.flush().await.context(t().session.direct_send_failed)
 }
 
 // --------------------------------------------------------------------- TLS
@@ -204,7 +208,7 @@ pub(crate) fn server_tls() -> Result<Arc<rustls::ServerConfig>> {
     }
     crate::transport::init_tls();
     let certified = rcgen::generate_simple_self_signed(vec!["farwing.direct".to_owned()])
-        .context("生成直连证书失败")?;
+        .context(t().session.direct_certificate_failed)?;
     let certificate = certified.cert.der().clone();
     let key = rustls::pki_types::PrivateKeyDer::Pkcs8(
         rustls::pki_types::PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()),
@@ -212,7 +216,7 @@ pub(crate) fn server_tls() -> Result<Arc<rustls::ServerConfig>> {
     let mut config = rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_no_client_auth()
         .with_single_cert(vec![certificate], key)
-        .context("配置直连 TLS 失败")?;
+        .context(t().session.direct_tls_config_failed)?;
     config.alpn_protocols = vec![b"farwing-direct/2".to_vec()];
     Ok(Arc::clone(CONFIG.get_or_init(|| Arc::new(config))))
 }
@@ -222,7 +226,7 @@ pub(crate) fn client_tls() -> Result<Arc<rustls::ClientConfig>> {
     crate::transport::init_tls();
     let provider = rustls::crypto::CryptoProvider::get_default()
         .cloned()
-        .context("TLS 加密提供程序未初始化")?;
+        .context(t().session.tls_provider_missing)?;
     let mut config = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(AnyCertificate(provider)))
@@ -287,7 +291,7 @@ pub(crate) fn exported_key<Data>(
 ) -> Result<[u8; wire::EXPORTER_LEN]> {
     connection
         .export_keying_material([0u8; wire::EXPORTER_LEN], wire::EXPORTER_LABEL, None)
-        .context("导出直连 TLS 密钥材料失败")
+        .context(t().session.direct_key_export_failed)
 }
 
 // ------------------------------------------------------------------- hello
@@ -316,10 +320,11 @@ pub(crate) fn hello(
 
 /// Check a peer's `direct.hello` of `role` on this TLS session.
 pub(crate) fn verify_hello(hello: &DirectHello, role: &str, ekm: &[u8]) -> Result<()> {
-    crate::account::api::validate_device_id(&hello.device_id).context("对端设备 ID 无效")?;
+    crate::account::api::validate_device_id(&hello.device_id).context(t().session.peer_device_id_invalid)?;
     ensure!(
         farwing_protocol::crypto::valid_public_key(&hello.public_key),
-        "对端设备公钥无效"
+        "{}",
+        t().session.peer_public_key_invalid
     );
     // The device ID is derived from the key: a peer cannot claim another
     // device's ID (`docs/access-model.md` §2.1).
@@ -336,7 +341,7 @@ pub(crate) fn verify_hello(hello: &DirectHello, role: &str, ekm: &[u8]) -> Resul
         &farwing_protocol::crypto::direct_proof_message(role, ekm),
         &hello.proof,
     )
-    .map_err(|_| anyhow::anyhow!("对端设备身份证明无效"))?;
+    .map_err(|_| anyhow::anyhow!("{}", t().session.peer_identity_proof_invalid))?;
     Ok(())
 }
 

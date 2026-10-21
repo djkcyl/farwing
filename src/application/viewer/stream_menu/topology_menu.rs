@@ -1,3 +1,4 @@
+use crate::i18n::t;
 use super::*;
 use crate::features::stream_control::{
     DisplayResolution, DisplayTopologyAction as Action, RemoteScreen,
@@ -102,16 +103,24 @@ pub(super) fn entries(
     };
     let ready = snapshot.ready && (!snapshot.topology.pending || snapshot.topology.dismissed);
     let action = if screen.display.screen_type == 2 {
-        Some(("退出超级屏", Action::Exit, snapshot.topology_support.exit))
+        Some((
+            t().viewer.exit_super_screen,
+            Action::Exit,
+            snapshot.topology_support.exit,
+        ))
     } else if screen.display.screen_type == 1 {
         Some((
-            "删除虚拟屏",
+            t().viewer.remove_virtual_screen,
             Action::Remove { screen_id: id },
             snapshot.dpi_settings_supported && snapshot.screens.len() > 1,
         ))
     } else if snapshot.topology_support.enter {
         let (width, height, dpi) = local_parameters(ui.ctx(), handle, local);
-        Some(("切换超级屏", Action::Enter { width, height, dpi }, true))
+        Some((
+            t().viewer.enter_super_screen,
+            Action::Enter { width, height, dpi },
+            true,
+        ))
     } else {
         None
     };
@@ -148,15 +157,15 @@ pub(super) fn show(
         close = crate::ui::controls::dialog_header(ui,pending.action.label(),crate::ui::controls::DialogIcon::Warning,true);
         let description = match pending.action {
             Action::Create { .. } => None,
-            Action::Remove { .. } => Some(format!("将删除“{}”", pending.target.label(&snapshot.screens))),
-            Action::Exit => Some("画面会短暂中断".into()),
-            Action::Resolution { .. } => Some("此屏幕不支持所选分辨率".into()),
-            Action::FrameRate { .. } => Some("远端刷新率低于所选帧率".into()),
-            Action::Enter { .. } => Some("将影响远端全部显示器".into()),
+            Action::Remove { .. } => Some((t().viewer.topology_removes)(&pending.target.label(&snapshot.screens))),
+            Action::Exit => Some(t().viewer.topology_exit_interrupts.into()),
+            Action::Resolution { .. } => Some(t().viewer.topology_resolution_unsupported.into()),
+            Action::FrameRate { .. } => Some(t().viewer.topology_refresh_too_low.into()),
+            Action::Enter { .. } => Some(t().viewer.topology_affects_all.into()),
         };
         if let Some(description) = description { ui.label(description); }
-        if !valid { ui.add_space(8.0); ui.label(RichText::new("显示状态已变化").color(crate::ui::theme::MUTED)); }
-        let (apply,cancel) = crate::ui::controls::dialog_actions(ui,Some(crate::ui::controls::DialogAction::new("确认").enabled(valid)),Some("取消"));
+        if !valid { ui.add_space(8.0); ui.label(RichText::new(t().viewer.display_state_changed).color(crate::ui::theme::MUTED)); }
+        let (apply,cancel) = crate::ui::controls::dialog_actions(ui,Some(crate::ui::controls::DialogAction::new(t().viewer.confirm).enabled(valid)),Some(t().common.cancel));
         close |= cancel;
         {
             if apply {
@@ -198,14 +207,14 @@ pub(super) fn show_error(ctx: &egui::Context, handle: &StreamControlHandle) {
                 ui.set_width(340.0);
                 let close = crate::ui::controls::dialog_header(
                     ui,
-                    "显示器操作",
+                    t().viewer.display_action,
                     crate::ui::controls::DialogIcon::Error,
                     true,
                 );
                 ui.label(error);
                 let accept = crate::ui::controls::dialog_actions(
                     ui,
-                    Some(crate::ui::controls::DialogAction::new("确定")),
+                    Some(crate::ui::controls::DialogAction::new(t().common.ok)),
                     None,
                 )
                 .0;

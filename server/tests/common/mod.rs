@@ -195,6 +195,17 @@ impl Resp {
             self.body
         );
     }
+    /// An error with a code and `details.reason`.
+    #[track_caller]
+    pub fn err_reason(&self, status: u16, code: &str, reason: &str) {
+        self.err(status, code);
+        assert_eq!(
+            self.body["error"]["details"]["reason"].as_str(),
+            Some(reason),
+            "body: {}",
+            self.body
+        );
+    }
 }
 
 /// Device policy used by test devices: hosts allow everything but Wake-on-LAN.

@@ -19,7 +19,7 @@ static OCCUPIED: AtomicBool = AtomicBool::new(false);
 pub(crate) struct SoftwarePlaybackBusy;
 impl std::fmt::Display for SoftwarePlaybackBusy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("已有一个软解窗口正在播放")
+        f.write_str(crate::i18n::t().session.software_playback_busy)
     }
 }
 impl std::error::Error for SoftwarePlaybackBusy {}
@@ -47,7 +47,7 @@ impl SoftwareSlot {
     fn acquire_global() -> Result<Rc<Self>> {
         let handle =
             unsafe { CreateMutexW(None, false, SLOT_NAME.pcwstr()) }
-                .context("创建全客户端软解窗口限制失败")?;
+                .context(crate::i18n::t().session.software_slot_create_failed)?;
         let status = unsafe { WaitForSingleObject(handle, 0) };
         if status == WAIT_OBJECT_0 || status == WAIT_ABANDONED {
             return Ok(Rc::new(Self {
@@ -59,7 +59,7 @@ impl SoftwareSlot {
         if status == WAIT_TIMEOUT {
             return Err(SoftwarePlaybackBusy.into());
         }
-        bail!("获取软解窗口名额失败：{status:?}")
+        bail!("{}", (crate::i18n::t().session.software_slot_failed)(&format!("{status:?}")))
     }
 }
 impl Drop for SoftwareSlot {

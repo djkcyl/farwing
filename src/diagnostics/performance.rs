@@ -640,13 +640,13 @@ impl PerformanceMonitor {
                 dropped_present_frames: AtomicU64::new(0),
                 presentation_queue_frames: AtomicU64::new(0),
                 presentation_queue_peak_frames: AtomicU64::new(0),
-                connection: RwLock::new("连接中".to_owned()),
+                connection: RwLock::new(crate::i18n::t().session.perf_connecting.to_owned()),
                 network_switch_phase: AtomicU64::new(0),
                 network_switch_attempts: AtomicU64::new(0),
                 network_switch_successes: AtomicU64::new(0),
-                decoder: RwLock::new("等待视频".to_owned()),
-                video_codec: RwLock::new("等待协商".to_owned()),
-                video_format: RwLock::new("等待参数集".to_owned()),
+                decoder: RwLock::new(crate::i18n::t().session.perf_waiting_video.to_owned()),
+                video_codec: RwLock::new(crate::i18n::t().session.perf_waiting_negotiation.to_owned()),
+                video_format: RwLock::new(crate::i18n::t().session.perf_waiting_parameter_sets.to_owned()),
                 remote_senders: RwLock::new(RemoteSenders::default()),
                 quality: RwLock::new(quality.into()),
                 stream_switch: Mutex::new(None),
@@ -1379,26 +1379,25 @@ impl PerformanceMonitor {
             let remote = read_lock(&common.remote_senders);
             let info = active_track.and_then(|index| remote.tracks.get(&index));
             let capture = info.map_or_else(
-                || "等待远端上报".to_owned(),
+                || crate::i18n::t().session.perf_waiting_remote.to_owned(),
                 |info| {
                     if info.capture_impl.is_empty() {
-                        "远端未提供".to_owned()
+                        crate::i18n::t().session.perf_not_provided.to_owned()
                     } else {
                         info.capture_impl.clone()
                     }
                 },
             );
             let encoder = info.map_or_else(
-                || "等待远端上报".to_owned(),
+                || crate::i18n::t().session.perf_waiting_remote.to_owned(),
                 |info| {
-                    format!(
-                        "{}（轨道 {}）",
+                    (crate::i18n::t().session.perf_encoder_track)(
                         if info.encoder_impl.is_empty() {
-                            "远端未提供"
+                            crate::i18n::t().session.perf_not_provided
                         } else {
                             &info.encoder_impl
                         },
-                        info.video_track_index
+                        &info.video_track_index.to_string(),
                     )
                 },
             );
@@ -1701,11 +1700,11 @@ fn stream_switch_snapshot(
         sequence: state.sequence,
         target: state.target.clone(),
         stage: match state.stage {
-            StreamSwitchStage::Requested => "请求已发送",
-            StreamSwitchStage::Acknowledged => "远端已确认",
-            StreamSwitchStage::MediaChanged => "请求后关键帧已解码",
-            StreamSwitchStage::Presented => "关键帧已显示",
-            StreamSwitchStage::Failed => "切换失败",
+            StreamSwitchStage::Requested => crate::i18n::t().session.switch_requested,
+            StreamSwitchStage::Acknowledged => crate::i18n::t().session.switch_acknowledged,
+            StreamSwitchStage::MediaChanged => crate::i18n::t().session.switch_keyframe_decoded,
+            StreamSwitchStage::Presented => crate::i18n::t().session.switch_keyframe_shown,
+            StreamSwitchStage::Failed => crate::i18n::t().session.switch_failed,
         },
         age_ms: state
             .finished_at

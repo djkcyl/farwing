@@ -9,6 +9,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use winit::window::WindowId;
 
+use crate::i18n::t;
 use crate::ui::{controls, theme};
 
 // Fallback for a connection that never ends after the announcement (for
@@ -124,13 +125,19 @@ pub(crate) fn progress_prompt(ctx: &egui::Context, started: Instant) -> bool {
             ui.set_width(
                 theme::REMOTE_UPGRADE_WIDTH.min((ctx.content_rect().width() - 80.0).max(260.0)),
             );
-            controls::dialog_header(ui, "被控端正在更新", controls::DialogIcon::Waiting, false);
+            controls::dialog_header(
+                ui,
+                t().features.upgrade_host_updating,
+                controls::DialogIcon::Waiting,
+                false,
+            );
             ui.add_space(16.0);
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label(format!("已等待 {} 秒", started.elapsed().as_secs()));
+                ui.label((t().features.upgrade_waited_seconds)(started.elapsed().as_secs()));
             });
-            close = controls::update_actions(ui, None, Some(("关闭观看", ""))).1;
+            close =
+                controls::update_actions(ui, None, Some((t().features.upgrade_close_viewer, ""))).1;
         });
     close
 }

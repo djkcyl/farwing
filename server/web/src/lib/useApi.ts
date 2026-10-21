@@ -1,5 +1,6 @@
 // Load a resource for a page, optionally polling while the page is visible.
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useLang } from '../i18n/react';
 import { call, errorText } from './api';
 
 export interface Resource<T> {
@@ -12,7 +13,8 @@ export interface Resource<T> {
 interface State<T> {
   path: string | null;
   data?: T;
-  error?: string;
+  /// The failure, put into words when shown (in the current language).
+  failure?: { error: unknown };
 }
 
 export function useApi<T>(path: string | null, pollMs = 0): Resource<T> {
@@ -29,7 +31,7 @@ export function useApi<T>(path: string | null, pollMs = 0): Resource<T> {
       if (latest.current === path) setState({ path, data });
     } catch (e) {
       if (latest.current === path) {
-        setState((s) => ({ path, data: s.path === path ? s.data : undefined, error: errorText(e) }));
+        setState((s) => ({ path, data: s.path === path ? s.data : undefined, failure: { error: e } }));
       }
     }
   }, [path]);
@@ -45,10 +47,12 @@ export function useApi<T>(path: string | null, pollMs = 0): Resource<T> {
     return () => window.clearInterval(timer);
   }, [reload, pollMs]);
 
+  // Re-render on a language change: the error text is in the language.
+  useLang();
   const current = state.path === path;
   return {
     data: current ? state.data : undefined,
-    error: current ? state.error : undefined,
+    error: current && state.failure ? errorText(state.failure.error) : undefined,
     loading: path !== null && !current,
     reload,
   };

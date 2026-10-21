@@ -1,6 +1,7 @@
 // A stored (uncompressed) ZIP archive built in memory: how browsers without
 // the File System Access API receive a downloaded folder. Up to 65 535
 // entries and 4 GiB (no ZIP64); names in UTF-8.
+import { t } from '../i18n';
 
 const CRC_TABLE = (() => {
   const table = new Uint32Array(256);
@@ -48,7 +49,7 @@ export class ZipWriter {
   /// in the archive.
   begin(path: string, dir: boolean, modified: Date) {
     this.end();
-    if (this.count >= 0xffff) throw new Error('压缩包里的项目太多');
+    if (this.count >= 0xffff) throw new Error(t().viewer.files.zipTooManyItems);
     const [time, date] = dosTime(modified);
     const name = new TextEncoder().encode(dir && !path.endsWith('/') ? `${path}/` : path);
     this.current = { name, dir, time, date, crc: 0, size: 0, chunks: [] };
@@ -67,7 +68,7 @@ export class ZipWriter {
     const c = this.current;
     if (!c) return;
     this.current = undefined;
-    if (this.offset + 30 + c.name.length + c.size > 0xffffffff) throw new Error('压缩包超过 4 GB');
+    if (this.offset + 30 + c.name.length + c.size > 0xffffffff) throw new Error(t().viewer.files.zipTooLarge);
     const local = new Uint8Array(30 + c.name.length);
     const l = new DataView(local.buffer);
     l.setUint32(0, 0x04034b50, true);

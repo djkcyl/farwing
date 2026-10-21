@@ -270,7 +270,7 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
                     id,
                     vec![PbError {
                         error_code: -1,
-                        error_message: "本次会话不允许修改显示设置".into(),
+                        error_message: t().features.stream_display_change_not_allowed.into(),
                         ..Default::default()
                     }],
                 ));
@@ -282,7 +282,7 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
                     id,
                     vec![PbError {
                         error_code: -2,
-                        error_message: "正在更新，无法修改画面设置".into(),
+                        error_message: t().features.stream_host_updating_settings_locked.into(),
                         ..Default::default()
                     }],
                 ));
@@ -375,7 +375,7 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
             Ok(vec![crate::features::stream_control::wire::error_response(
                 id,
                 farwing_protocol::peer::error_code::UNSUPPORTED,
-                format!("不支持的会话请求 {}", other.name()),
+                (t().features.stream_unsupported_session_request)(other.name()),
             )]
             .into())
         }
@@ -404,7 +404,7 @@ async fn apply_setting(
                 })
                 .flatten()
         })
-        .context("显示器尚未开始采集")?;
+        .context(t().features.stream_display_not_captured)?;
     let size = if setting.resolution_type == 3 {
         Some((info.initial.width, info.initial.height))
     } else if setting.resolution_width > 0 && setting.resolution_height > 0 {
@@ -415,14 +415,20 @@ async fn apply_setting(
     } else {
         None
     };
-    anyhow::ensure!((0..=4).contains(&setting.resolution_type), "无效分辨率策略");
+    anyhow::ensure!(
+        (0..=4).contains(&setting.resolution_type),
+        "{}",
+        t().features.stream_invalid_resolution_policy
+    );
     anyhow::ensure!(
         (setting.resolution_width > 0) == (setting.resolution_height > 0),
-        "不完整的分辨率参数"
+        "{}",
+        t().features.stream_incomplete_resolution
     );
     anyhow::ensure!(
         setting.screen_id != EXISTING_SESSION_TRACKS || (size.is_none() && setting.dpi_scale == 0),
-        "显示设置需要具体屏幕标识"
+        "{}",
+        t().features.stream_display_setting_needs_screen
     );
     let mut proposed = info.screen.clone();
     if let Some((width, height)) = size {
@@ -477,23 +483,37 @@ async fn apply_setting(
         session
             .displays
             .resolution_choice(
-                info.screen.identity.clone().context("缺少显示目标身份")?,
+                info.screen
+                    .identity
+                    .clone()
+                    .context(t().features.stream_missing_display_target_id)?,
                 setting.resolution_type,
             )
             .await?;
     }
     if setting.dpi_scale != 0 {
-        let target = info.target.clone().context("缺少DPI显示目标")?;
+        let target = info
+            .target
+            .clone()
+            .context(t().features.stream_missing_dpi_target)?;
         let dpi = if setting.dpi_scale == -1 {
-            target.dpi.as_ref().context("DPI不可用")?.recommended
+            target
+                .dpi
+                .as_ref()
+                .context(t().features.stream_dpi_unavailable)?
+                .recommended
         } else {
-            u32::try_from(setting.dpi_scale).context("无效DPI")?
+            u32::try_from(setting.dpi_scale).context(t().features.stream_invalid_dpi)?
         };
         session.displays.set_dpi(target, dpi).await?;
     }
     session.refresh()?;
     let screen = session.info(current_id)?.screen;
-    anyhow::ensure!(session.authorization().requested(), "被控许可已失效");
+    anyhow::ensure!(
+        session.authorization().requested(),
+        "{}",
+        t().features.stream_host_permission_expired
+    );
     let slot = &session.slots[session.active_slot(current_id).unwrap_or(index)];
     let mut errors = configure_media(
         setting,

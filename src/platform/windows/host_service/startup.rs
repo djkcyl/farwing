@@ -1,4 +1,5 @@
 //! Installing user's ordinary-permission tray startup; no Windows password.
+use crate::i18n::t;
 use anyhow::{Result, ensure};
 use windows::{
     Win32::System::Registry::*,
@@ -28,7 +29,11 @@ pub(crate) fn set_image(enabled: bool, path: &std::path::Path) -> Result<()> {
     }
     let result = (|| -> Result<()> {
         if enabled {
-            ensure!(path.is_file(), "尚未部署自启动程序");
+            ensure!(
+                path.is_file(),
+                "{}",
+                t().system.service_autostart_not_deployed
+            );
             let command: Vec<u16> = format!("\"{}\" gui --background", path.display())
                 .encode_utf16()
                 .chain(Some(0))
@@ -50,7 +55,8 @@ pub(crate) fn set_image(enabled: bool, path: &std::path::Path) -> Result<()> {
             let result = unsafe { RegDeleteValueW(key, PCWSTR(w!("Farwing").as_ptr())) };
             ensure!(
                 result.is_ok() || result == windows::Win32::Foundation::ERROR_FILE_NOT_FOUND,
-                "无法删除本程序自启动设置"
+                "{}",
+                t().system.service_autostart_remove_failed
             );
         }
         Ok(())

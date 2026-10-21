@@ -1,5 +1,6 @@
 // Connection statistics from `RTCPeerConnection.getStats()`: picture,
 // rates, loss, delay, codec and the path (LAN, P2P or relay).
+import { t } from '../i18n';
 
 export interface ViewStats {
   width: number;
@@ -126,9 +127,7 @@ export class StatsSampler {
   }
 }
 
-export const PATHS: Record<string, string> = {
-  lan: '局域网直连',
-  p2p: 'P2P 直连',
-  relay: '经服务器中继',
-  '': '—',
-};
+/// How the media travels: LAN, P2P or relayed ('' before it is known).
+export function pathText(path: string): string {
+  return (t().viewer.stats.paths as Record<string, string>)[path] ?? '—';
+}

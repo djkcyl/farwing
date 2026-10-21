@@ -16,6 +16,7 @@ use crate::hub::LinkAuth;
 use axum::extract::FromRequestParts;
 use axum::http::HeaderMap;
 use axum::http::request::Parts;
+use farwing_protocol::error::reason;
 use farwing_protocol::{ErrorCode, crypto, headers, ids, limits};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -104,6 +105,15 @@ fn unauthorized(reason: &'static str) -> ApiError {
     ApiError::device_unauthorized()
 }
 
+/// The request time is too far from the server's: the device's clock is off.
+pub fn clock_skew() -> ApiError {
+    ApiError::reason(
+        ErrorCode::DeviceUnauthorized,
+        reason::CLOCK_SKEW,
+        "request time too far from the server's clock",
+    )
+}
+
 /// Verify the request signature and return the signing device.
 pub async fn device_from_parts(app: &App, parts: &mut Parts) -> ApiResult<DeviceRow> {
     if let Some(v) = parts.extensions.get::<VerifiedDevice>() {
@@ -124,10 +134,7 @@ pub async fn device_from_parts(app: &App, parts: &mut Parts) -> ApiResult<Device
         return Err(unauthorized("malformed timestamp"));
     };
     if !timestamp_fresh(timestamp) {
-        return Err(ApiError::new(
-            ErrorCode::DeviceUnauthorized,
-            "请求时间与服务器相差过大，请校准系统时间",
-        ));
+        return Err(clock_skew());
     }
     let body = parts
         .extensions
@@ -226,13 +233,13 @@ pub async fn account_for_device(
         TokenCheck::Revoked => Err(revoked()),
         TokenCheck::Mismatch => Err(ApiError::new(
             ErrorCode::DeviceMismatch,
-            "令牌与设备不匹配",
+            "token belongs to another device",
         )),
     }
 }
 
 fn revoked() -> ApiError {
-    ApiError::new(ErrorCode::SessionRevoked, "登录已失效")
+    ApiError::new(ErrorCode::SessionRevoked, "login revoked or expired")
 }
 
 /// A browser's login expires sooner: `(idle seconds, maximum seconds)`
@@ -274,7 +281,11 @@ impl FromRequestParts<App> for AdminAuth {
             .ok_or_else(ApiError::internal)?;
         let allow = &app.cfg.web.admin_allow;
         if !allow.is_empty() && !allow.iter().any(|n| n.contains(&ip)) {
-            return Err(ApiError::forbidden("管理后台不允许从这个网络访问"));
+            return Err(ApiError::reason(
+                ErrorCode::Forbidden,
+                reason::ADMIN_NETWORK_DENIED,
+                "admin console not allowed from this address",
+            ));
         }
         let account = AccountAuth::from_request_parts(parts, app).await?;
         let (uid, hash) = (account.user.id.clone(), account.token_hash.clone());
@@ -289,11 +300,17 @@ impl FromRequestParts<App> for AdminAuth {
             })
             .await?;
         if role != crate::webdb::ROLE_ADMIN {
-            return Err(ApiError::forbidden("需要管理员权限"));
+            return Err(ApiError::reason(
+                ErrorCode::Forbidden,
+                reason::ADMIN_REQUIRED,
+                "administrator role required",
+            ));
         }
         if totp.is_some() && mfa.is_none() {
-            return Err(ApiError::new(ErrorCode::Forbidden, "需要二次验证").with_details(
-                serde_json::json!({ "totp_required": true }),
+            return Err(ApiError::reason(
+                ErrorCode::Forbidden,
+                reason::TOTP_REQUIRED,
+                "two-step verification required",
             ));
         }
         Ok(AdminAuth { account, ip })
@@ -392,7 +409,10 @@ pub async fn guest_for_device(app: &App, token: &str, device: &DeviceRow) -> Api
         return Err(ApiError::unauthorized());
     }
     if dev != device.id {
-        return Err(ApiError::new(ErrorCode::DeviceMismatch, "令牌与设备不匹配"));
+        return Err(ApiError::new(
+            ErrorCode::DeviceMismatch,
+            "guest token belongs to another device",
+        ));
     }
     Ok(hash)
 }

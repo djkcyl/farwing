@@ -80,7 +80,7 @@ impl Subscription {
     pub(crate) fn poll(&mut self) -> Result<()> {
         match lock(&self.hub.capture).as_mut() {
             Some(capture) => capture.poll(),
-            None => anyhow::bail!("桌面音频取样已关闭"),
+            None => anyhow::bail!("{}", crate::i18n::t().system.loopback_closed),
         }
     }
 }

@@ -191,7 +191,7 @@ impl Initializer {
                             let _ = self.reload(); let _ = reply.send(result); continue;
                         }
                         let result = self.reload().and_then(|()| {
-                            if self.identity.client_identity()?.device_id != expected_id { bail!("本机设备身份已改变"); }
+                            if self.identity.client_identity()?.device_id != expected_id { bail!("{}", crate::i18n::t().session.error_local_identity_changed); }
                             let mut next = self.identity.clone(); next.set_device_name(value); self.commit(next)
                         });
                         let _ = reply.send(result);
@@ -201,7 +201,7 @@ impl Initializer {
                             use crate::platform::windows::host_service::resident::{self, Request, Reply};
                             let value = match resident::request(Request::Initialize { force }).await {
                                 Ok(Reply::Identity(value)) => { self.identity = *value.clone(); self.published.send_replace(*value.clone()); Ok(*value) }
-                                Ok(_) => Err(anyhow::anyhow!("后台设备响应无效")),
+                                Ok(_) => Err(anyhow::anyhow!("{}", crate::i18n::t().session.error_background_reply_invalid)),
                                 Err(e) => Err(e),
                             };
                             self.finish(result, value); continue;
@@ -322,7 +322,8 @@ impl Initializer {
                     let mut next = self.identity.clone();
                     anyhow::ensure!(
                         next.client_identity()?.client_id == sent.client_identity()?.client_id,
-                        "注册请求所属身份已改变"
+                        "{}",
+                        crate::i18n::t().session.error_registration_identity_changed
                     );
                     let previous = next.client_identity()?.device_id;
                     if !previous.is_empty() && previous != response.device_id {

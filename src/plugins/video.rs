@@ -1,5 +1,6 @@
 use super::process::lock;
 use super::*;
+use crate::i18n::t;
 use std::os::windows::process::CommandExt;
 use std::{
     process::{Child, Command, Stdio},
@@ -91,40 +92,48 @@ impl ChainShared {
     }
 }
 pub(crate) fn validate_programs(nodes: &[VideoNode]) -> Result<()> {
-    ensure!(nodes.len() <= 8, "视频节点最多8个");
+    ensure!(
+        nodes.len() <= 8,
+        "{}",
+        t().features.plugin_video_nodes_limit
+    );
     let mut count = 0;
     let mut rates = std::collections::BTreeMap::from([(0, 1usize)]);
     let mut delays = std::collections::BTreeMap::from([(0, 0u32)]);
     for node in nodes {
         ensure!(
             node.id != 0 && !rates.contains_key(&node.id),
-            "重复视频节点ID"
+            "{}",
+            t().features.plugin_video_node_id_duplicate
         );
         let mut rate = *rates
             .get(&node.input)
-            .context("视频输入节点不存在或顺序无效")?;
+            .context(t().features.plugin_video_input_invalid)?;
         let delay = delays[&node.input] + node.program.delay_frames;
         let program = &node.program;
         ensure!(
             program.backend == "d3d11-rgba16f"
                 && !program.passes.is_empty()
                 && program.delay_frames <= 2,
-            "视频插件后端或延迟不兼容"
+            "{}",
+            t().features.plugin_video_backend_incompatible
         );
-        ensure!(delay <= 2, "视频路径延迟预算超限");
+        ensure!(delay <= 2, "{}", t().features.plugin_video_delay_budget);
         for pass in &program.passes {
             count += 1;
             ensure!(
                 pass.shader.len() >= 4
                     && pass.shader.len() <= 1024 * 1024
                     && pass.shader.starts_with(b"DXBC"),
-                "无效的视频Shader"
+                "{}",
+                t().features.plugin_video_shader_invalid
             );
             ensure!(
                 (1..=400).contains(&pass.scale_numerator)
                     && (1..=400).contains(&pass.scale_denominator)
                     && pass.params.iter().all(|v| v.is_finite()),
-                "无效的视频尺寸或参数"
+                "{}",
+                t().features.plugin_video_parameters_invalid
             );
             ensure!(
                 !pass.phases.is_empty()
@@ -135,19 +144,21 @@ pub(crate) fn validate_programs(nodes: &[VideoNode]) -> Result<()> {
                         .iter()
                         .all(|p| p.is_finite() && *p > 0.0 && *p <= 1.0)
                     && pass.phases.windows(2).all(|p| p[0] < p[1]),
-                "无效的输出时间分数"
+                "{}",
+                t().features.plugin_video_phases_invalid
             );
             ensure!(
                 pass.phases.len() == 1 || program.delay_frames > 0,
-                "多输出节点必须声明呈现延迟"
+                "{}",
+                t().features.plugin_video_delay_required
             );
             rate *= pass.phases.len();
-            ensure!(rate <= 4, "链的补帧倍率不能超过4倍");
+            ensure!(rate <= 4, "{}", t().features.plugin_video_rate_limit);
         }
         rates.insert(node.id, rate);
         delays.insert(node.id, delay);
     }
-    ensure!(count <= 16, "视频图pass预算超限");
+    ensure!(count <= 16, "{}", t().features.plugin_video_pass_budget);
     Ok(())
 }
 
@@ -174,11 +185,15 @@ fn describe(requests: Vec<VideoRequest>) -> Result<Vec<VideoNode>> {
     ensure!(requests.len() <= 8, "too many video nodes");
     let mut nodes = Vec::new();
     for request in requests {
-        let type_id = request.type_id.as_deref().context("缺少视频节点类型")?;
+        let type_id = request
+            .type_id
+            .as_deref()
+            .context(t().features.plugin_video_node_type_missing)?;
         let manifest = read_manifest(&request.path)?.for_node(type_id)?;
         ensure!(
             manifest.capability == "video" && manifest.dependencies.is_empty(),
-            "视频Shader节点不能声明原生服务依赖"
+            "{}",
+            t().features.plugin_video_dependencies_unsupported
         );
         let dir = manifest.path.parent().context("plugin directory")?;
         let path = manifest.path.clone();
@@ -199,7 +214,8 @@ fn describe(requests: Vec<VideoRequest>) -> Result<Vec<VideoNode>> {
             ensure!(
                 manifest.nodes.iter().any(|n| &n.type_id == type_id
                     && n.implementation == sdk::NodeImplementation::VideoShader),
-                "视频节点类型不匹配"
+                "{}",
+                t().features.plugin_video_node_type_mismatch
             );
         }
         let mut config = request.config.unwrap_or(manifest.config);
@@ -220,8 +236,8 @@ fn describe(requests: Vec<VideoRequest>) -> Result<Vec<VideoNode>> {
                 )
             } == 0
                 && len <= data.len(),
-            "{} 配置失败",
-            manifest.name
+            "{}",
+            (t().features.plugin_video_configure_failed)(&manifest.name)
         );
         nodes.push(VideoNode {
             id: request.id,
@@ -322,7 +338,10 @@ impl Loader {
         match self.receiver.try_recv() {
             Ok(result) => Some(result),
             Err(mpsc::TryRecvError::Empty) => None,
-            Err(_) => Some(Err(anyhow::anyhow!("视频插件加载线程退出"))),
+            Err(_) => Some(Err(anyhow::anyhow!(
+                "{}",
+                t().features.plugin_video_loader_exited
+            ))),
         }
     }
 }

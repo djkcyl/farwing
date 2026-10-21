@@ -4,6 +4,7 @@ use super::{
     engine::{Engine, Geometry},
     wire::Event,
 };
+use crate::i18n::t;
 use crate::platform::windows::host_service::{process, resident};
 use anyhow::Result;
 
@@ -32,7 +33,8 @@ impl Native {
     fn check(&self) -> Result<()> {
         anyhow::ensure!(
             self.session.is_none_or(NativeSession::current),
-            "输入所属Windows会话已结束"
+            "{}",
+            t().features.input_windows_session_ended
         );
         Ok(())
     }
@@ -49,7 +51,8 @@ impl Backend {
                 == unsafe { windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId() };
             anyhow::ensure!(
                 permitted() && session == process::active_session(),
-                "输入会话已结束"
+                "{}",
+                t().features.input_session_ended
             );
             return Ok(Self::Local(Native {
                 engine: Engine::new(hardware, std::process::id(), true)?,
@@ -62,7 +65,11 @@ impl Backend {
         Ok(match Remote::connect(permitted)? {
             Some(remote) => Self::Service(remote),
             None => {
-                anyhow::ensure!(!require_service, "系统被控服务尚未恢复");
+                anyhow::ensure!(
+                    !require_service,
+                    "{}",
+                    t().features.input_service_not_restored
+                );
                 Self::Local(Native {
                     engine: Engine::new(false, std::process::id(), false)?,
                     session: None,
@@ -109,7 +116,11 @@ impl Backend {
                 for event in events {
                     e.engine.apply(event, geometry.clone(), &allowed)?;
                     if e.engine.take_sas() {
-                        anyhow::ensure!(session.is_some(), "Ctrl+Alt+Del需要安装并启用被控服务");
+                        anyhow::ensure!(
+                            session.is_some(),
+                            "{}",
+                            t().features.input_sas_needs_service
+                        );
                         super::broker::secure_attention(&allowed)?;
                     }
                 }

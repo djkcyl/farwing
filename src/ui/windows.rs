@@ -2,6 +2,7 @@ use super::d3d11::UiPresenter;
 use super::window_manager::{self, Event, Repaint, Request};
 use super::{AppFactory, AppSession, WindowConfig};
 use crate::application::viewer::windows_presenter::ConnectingWindowsRunner;
+use crate::i18n::t;
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -657,7 +658,7 @@ impl ApplicationHandler<Event> for Windows {
             Event::Request(Request::Viewer { key, config, done }) => {
                 if self.viewers.contains_key(&key) {
                     self.focus(&key);
-                    let _ = done.send(Err(anyhow!("观看窗口已打开")));
+                    let _ = done.send(Err(anyhow!(t().controls.viewer_already_open)));
                     return;
                 }
                 let mut viewer = ManagedViewer {

@@ -11,6 +11,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use tokio_util::sync::CancellationToken;
+use crate::i18n::t;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Status {
@@ -51,14 +52,14 @@ impl Handle {
         }
         ensure!(
             !self.0.busy.swap(true, Ordering::AcqRel),
-            "远程开机设置正在处理"
+            "{}", t().features.wol_setup_in_progress
         );
         let result = super::super::lock(&self.0.sender)
             .as_ref()
-            .context("本机账号后台尚未就绪")
+            .context(t().features.wol_account_service_not_ready)
             .and_then(|tx| {
                 tx.try_send(action)
-                    .map_err(|_| anyhow::anyhow!("远程开机设置任务不可用"))
+                    .map_err(|_| anyhow::anyhow!(t().features.wol_setup_unavailable))
             });
         if result.is_err() {
             self.0.busy.store(false, Ordering::Release);
@@ -91,7 +92,7 @@ impl Running {
                     client.host.wol.change();
                 }
                 Err(e) => {
-                    status.error = Some(format!("读取远程开机状态失败：{e}"));
+                    status.error = Some((t().features.wol_status_read_failed)(&e.to_string()));
                 }
             }
             client.host.wol_setup_status(status.clone());
@@ -99,7 +100,7 @@ impl Running {
                 let action = tokio::select! {biased;_=token.cancelled()=>break,v=rx.recv()=>match v {Some(v)=>v,None=>break}};
                 status.busy = true;
                 status.error = None;
-                status.message = "正在处理远程开机设置…".into();
+                status.message = t().features.wol_setup_working.into();
                 client.host.wol_setup_status(status.clone());
                 let result = perform(&client, action, &mut status, &token).await;
                 let enabled = status.enabled == Some(true);
@@ -109,7 +110,7 @@ impl Running {
                 status.busy = false;
                 if let Err(e) = result {
                     status.error = Some(format!("{e:#}"));
-                    status.message = "操作未完成".into();
+                    status.message = t().features.wol_operation_incomplete.into();
                 }
                 client.host.wol_setup_status(status.clone());
                 worker.0.busy.store(false, Ordering::Release);
@@ -134,13 +135,13 @@ async fn hardware(
 ) -> Result<Vec<Adapter>> {
     tokio::task::spawn_blocking(move || {
         if configure {
-            network::setup::configure(key.as_ref().context("未选择网卡")?, &token)
+            network::setup::configure(key.as_ref().context(t().features.wol_no_adapter_selected)?, &token)
         } else {
             network::setup::inspect(key.as_ref(), false, &token)
         }
     })
     .await
-    .context("网卡设置任务中断")?
+    .context(t().features.wol_adapter_setup_interrupted)?
 }
 async fn inventory() -> Result<Vec<network::Interface>> {
     tokio::task::spawn_blocking(network::inventory).await?
@@ -148,7 +149,7 @@ async fn inventory() -> Result<Vec<network::Interface>> {
 fn active(client: &HostClient, stop: &CancellationToken) -> Result<()> {
     ensure!(
         !stop.is_cancelled() && client.is_active() && !client.is_guest(),
-        "账号已结束"
+        "{}", t().features.host_account_session_ended
     );
     Ok(())
 }
@@ -179,23 +180,23 @@ async fn perform(
             status.checked = true;
             status.enabled = None;
             status.enabled = Some(cloud?);
-            status.message = "检查完成".into();
+            status.message = t().features.wol_check_done.into();
         }
         Action::Configure(key) => {
             ensure!(
                 status.checked && status.adapters.iter().any(|a| a.key == key),
-                "未选择网卡"
+                "{}", t().features.wol_no_adapter_selected
             );
             let rows = hardware(Some(key.clone()), true, stop.clone()).await?;
             active(client, stop)?;
-            let adapter = rows.into_iter().next().context("目标网卡已移除")?;
+            let adapter = rows.into_iter().next().context(t().features.wol_adapter_removed)?;
             let partial = !adapter.errors.is_empty();
             status.adapters.retain(|a| a.key != key);
             status.adapters.push(adapter);
             status.message = if partial {
-                "部分网卡设置未完成"
+                t().features.wol_adapter_partial
             } else {
-                "网卡已配置，部分设置重启后生效"
+                t().features.wol_adapter_configured
             }
             .into();
         }
@@ -203,16 +204,16 @@ async fn perform(
             adapter: key,
             confirmed,
         } => {
-            ensure!(confirmed, "未确认网卡与 BIOS 配置");
-            ensure!(client.host.allowed(), "允许被控未开启");
+            ensure!(confirmed, "{}", t().features.wol_not_confirmed);
+            ensure!(client.host.allowed(), "{}", t().features.wol_connections_off);
             ensure!(
                 status.checked && status.adapters.iter().any(|a| a.key == key),
-                "未选择网卡"
+                "{}", t().features.wol_no_adapter_selected
             );
             // Revalidate physical identity and current network just before any cloud write.
             let rows = hardware(Some(key.clone()), false, stop.clone()).await?;
-            let adapter = rows.into_iter().next().context("目标网卡已移除")?;
-            ensure!(adapter.connected, "选中的有线网卡尚未连接");
+            let adapter = rows.into_iter().next().context(t().features.wol_adapter_removed)?;
+            ensure!(adapter.connected, "{}", t().features.wol_adapter_disconnected);
             let info = inventory()
                 .await?
                 .into_iter()
@@ -224,32 +225,32 @@ async fn perform(
                             .collect::<String>()
                             .eq_ignore_ascii_case(&key.mac)
                 })
-                .context("网卡没有可登记的IPv4网络")?;
+                .context(t().features.wol_adapter_no_ipv4)?;
             // Relay registration also uses the primary route; avoid two independent owners
             // repeatedly replacing a device's LAN identity with different adapters.
-            ensure!(info.default_metric.is_some(), "所选网卡不在当前默认网络");
+            ensure!(info.default_metric.is_some(), "{}", t().features.wol_adapter_not_default);
             ensure!(
                 inventory()
                     .await?
                     .first()
                     .is_some_and(|i| i.index == info.index),
-                "默认网络已变化"
+                "{}", t().features.wol_default_network_changed
             );
             active(client, stop)?;
             client
                 .wol_info(info.registration())
                 .await
-                .context("网络登记失败，未开启远程开机")?;
+                .context(t().features.wol_registration_failed)?;
             active(client, stop)?;
-            ensure!(client.host.allowed(), "允许被控已关闭");
+            ensure!(client.host.allowed(), "{}", t().features.wol_connections_turned_off);
             status.enabled = None;
             let saved = client.set_wol_enabled(true).await;
             let readback = client.wol_enabled().await;
             status.enabled = readback.as_ref().ok().copied();
-            saved.context("开启请求未确认")?;
+            saved.context(t().features.wol_enable_unconfirmed)?;
             ensure!(
-                readback.context("设置已提交，状态读取失败")?,
-                "设置已提交，但仍显示为关闭"
+                readback.context(t().features.wol_readback_failed)?,
+                "{}", t().features.wol_still_off
             );
             active(client, stop)?;
             // Only the validated portable account owner installs login startup,
@@ -259,23 +260,23 @@ async fn perform(
                     true,
                     &std::env::current_exe()?,
                 )
-                .context("远程开机已开启，登录自启动设置失败")?;
+                .context(t().features.wol_startup_failed)?;
             }
             client.host.wol.refresh();
-            status.message = "已开启远程开机".into();
+            status.message = t().features.wol_turned_on.into();
         }
         Action::Disable => {
             status.enabled = None;
             let saved = client.set_wol_enabled(false).await;
             let readback = client.wol_enabled().await;
             status.enabled = readback.as_ref().ok().copied();
-            saved.context("关闭请求未确认")?;
+            saved.context(t().features.wol_disable_unconfirmed)?;
             ensure!(
-                !readback.context("设置已提交，状态读取失败")?,
-                "设置已提交，但仍显示为开启"
+                !readback.context(t().features.wol_readback_failed)?,
+                "{}", t().features.wol_still_on
             );
             client.host.wol.refresh();
-            status.message = "已关闭远程开机".into();
+            status.message = t().features.wol_turned_off.into();
         }
     }
     Ok(())

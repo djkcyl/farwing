@@ -1,3 +1,4 @@
+use crate::i18n::t;
 mod actions;
 mod headless;
 // Fixed negotiated video-track pool; captures are attached/detached independently.
@@ -54,7 +55,7 @@ impl Inventory {
         tokio::select! {
             biased;
             _=cancel.cancelled()=>{let _=task.await;Ok(None)},
-            result=&mut task=>result.context("显示器库存读取任务中断").and_then(|r|r).map(Some),
+            result=&mut task=>result.context(t().features.screen_read_interrupted).and_then(|r|r).map(Some),
         }
     }
 }
@@ -239,13 +240,17 @@ impl Screens {
         if let Some(id) = current {
             return self.start(id).await;
         }
-        let index = *self.registered.first().context("没有可用的视频轨道")?;
+        let index = *self
+            .registered
+            .first()
+            .context(t().features.peer_no_video_track)?;
         self.slots[index].suspended = self.initial.clone();
         self.slots[index].awaiting_source = true;
         self.maintain_headless().await?;
         ensure!(
             self.slots.iter().any(|s| s.screen.is_some()),
-            "没有可用显示器，画面尚未恢复"
+            "{}",
+            t().features.screen_none_not_restored
         );
         Ok(())
     }
@@ -454,7 +459,7 @@ impl Screens {
             .iter()
             .find(|s| s.screen.id == id)
             .cloned()
-            .context("显示器已不可用")
+            .context(t().features.screen_unavailable)
     }
     pub(crate) fn active_slot(&self, id: i32) -> Option<usize> {
         self.slots
@@ -471,7 +476,8 @@ impl Screens {
         ensure!(
             indices.len() <= TRACK_COUNT
                 && indices.iter().all(|i| (0..TRACK_COUNT as i32).contains(i)),
-            "无效视频轨道池"
+            "{}",
+            t().features.peer_track_pool_invalid
         );
         let mut registered: Vec<_> = indices.iter().map(|i| *i as usize).collect();
         registered.sort_unstable();
@@ -489,7 +495,8 @@ impl Screens {
     pub(crate) async fn start(&mut self, id: i32) -> Result<()> {
         ensure!(
             self.lease.requested() && !self.cancel.is_cancelled(),
-            "被控许可已失效"
+            "{}",
+            t().features.peer_lease_expired
         );
         let id = self.prepare_video().await?.unwrap_or(id);
         self.refresh()?;
@@ -522,7 +529,7 @@ impl Screens {
             .map(|(index, _)| index)
             .or_else(|| self.available_slot())
             .or_else(|| (self.registered.len() == 1).then(|| self.registered[0]))
-            .context("没有空闲的已登记视频轨道")?;
+            .context(t().features.peer_no_free_track)?;
         let config = if self.slots[index]
             .suspended
             .as_ref()
@@ -542,7 +549,8 @@ impl Screens {
     ) -> Result<()> {
         ensure!(
             self.lease.requested() && !self.cancel.is_cancelled(),
-            "被控许可已失效"
+            "{}",
+            t().features.peer_lease_expired
         );
         let requested_format = config.format;
         self.slots[index]
@@ -558,7 +566,8 @@ impl Screens {
         self.stop_at(index).await;
         ensure!(
             self.lease.requested() && !self.cancel.is_cancelled(),
-            "被控许可已失效"
+            "{}",
+            t().features.peer_lease_expired
         );
         let slot = &mut self.slots[index];
         slot.suspended = None;
@@ -587,7 +596,9 @@ impl Screens {
             index,
             self.source_generation,
             slot.clock.clone(),
-            self.connection.upgrade().context("媒体连接已关闭")?,
+            self.connection
+                .upgrade()
+                .context(t().features.peer_media_connection_closed)?,
             slot.track.clone(),
             slot.sender.clone(),
             screen.clone(),
@@ -636,7 +647,11 @@ impl Screens {
         self.reports.notify();
     }
     pub(crate) async fn stop(&mut self, screen: i32) -> Result<()> {
-        ensure!(self.lease.requested(), "被控许可已失效");
+        ensure!(
+            self.lease.requested(),
+            "{}",
+            t().features.peer_lease_expired
+        );
         self.headless.stop(screen);
         self.stop_media(screen).await
     }
@@ -725,7 +740,8 @@ impl Screens {
         }
         if let Err(error) = self.maintain_headless().await {
             tracing::warn!(error=%format!("{error:#}"), "headless display recovery failed");
-            self.lease.fail(format!("显示器恢复失败：{error:#}"));
+            self.lease
+                .fail((t().features.screen_recovery_failed)(&format!("{error:#}")));
         }
         if fatal
             && self.headless.recovery.is_none()
@@ -745,7 +761,9 @@ impl Screens {
         }
         if let Err(error) = self.displays.close().await {
             self.lease
-                .recovery_failed(format!("显示恢复未完成：{error:#}"));
+                .recovery_failed((t().features.screen_restore_incomplete)(&format!(
+                    "{error:#}"
+                )));
             tracing::error!(%error,"display cleanup failed");
         }
     }

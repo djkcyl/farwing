@@ -288,7 +288,7 @@ impl SignalSession {
             .as_ref()
             .filter(|c| c.device_id == device_id)
             .map(|c| c.carrier.clone())
-            .ok_or_else(|| SignalFailure::Socket("在线连接不可用".into()))?;
+            .ok_or_else(|| SignalFailure::Socket(crate::i18n::t().session.online_connection_unavailable.into()))?;
         let transport = SignalTransport::carried(&carrier, session_id)
             .map_err(|error| SignalFailure::Socket(format!("{error:#}")))?;
         let mut hello = Self::local_hello(farwing_protocol::realtime::Role::Controller);
@@ -492,11 +492,7 @@ impl SignalSession {
                         let error: farwing_protocol::ErrorBody = envelope
                             .body()
                             .context("realtime error reply is invalid")?;
-                        return Err(crate::account::api::ApiFailure::new(
-                            error.code,
-                            error.message,
-                        )
-                        .into());
+                        return Err(crate::account::api::ApiFailure::received(error).into());
                     }
                     return Ok(envelope);
                 }
@@ -870,11 +866,11 @@ impl SignalSession {
                     let info = control.as_ref().expect("manual switch session");
                     let network = network_control.as_ref().expect("manual switch state");
                     if !peer.can_switch_ice_network() || !self.transport.is_connected() {
-                        network.fail("无法切换线路：连接尚未就绪");
+                        network.fail(crate::i18n::t().session.route_switch_not_ready);
                         continue;
                     }
                     if info.force_relay && !relay {
-                        network.fail("本次连接要求使用中转");
+                        network.fail(crate::i18n::t().session.route_relay_required);
                         continue;
                     }
                     // Relay requested: TURN with TLS preferred (relay, attempt 2).
@@ -890,7 +886,7 @@ impl SignalSession {
                         }
                         Err(error) => {
                             tracing::warn!(%error, relay, "manual network switch failed; retaining current path");
-                            network.fail("线路切换未完成");
+                            network.fail(crate::i18n::t().session.route_switch_incomplete);
                         }
                     }
                 }

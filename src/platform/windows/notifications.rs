@@ -1,5 +1,6 @@
 //! Windows toast delivery, activation registration and notification placement.
 
+use crate::i18n::t;
 use anyhow::{Context, Result};
 mod placement;
 mod registration;
@@ -113,9 +114,9 @@ impl Native {
         }
         let apartment = Apartment(Default::default());
         let aumid = crate::product::aumid();
-        registration::register(&aumid).context("登记 Windows 通知身份失败")?;
+        registration::register(&aumid).context(t().system.notification_register_failed)?;
         let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(&aumid))
-            .context("创建 Windows 通知发送器失败")?;
+            .context(t().system.notification_create_failed)?;
 
         Ok(Self {
             sequence: 0,
@@ -144,7 +145,8 @@ impl Native {
             }
             anyhow::ensure!(
                 item.key.len() == 32 && item.key.bytes().all(|b| b.is_ascii_hexdigit()),
-                "无效的通知标识"
+                "{}",
+                t().system.notification_invalid_key
             );
             if item.progress.is_some()
                 && self
@@ -160,7 +162,8 @@ impl Native {
                 )?;
                 anyhow::ensure!(
                     result != NotificationUpdateResult::Failed,
-                    "更新 Windows 文件进度失败"
+                    "{}",
+                    t().system.notification_progress_failed
                 );
                 // A dismissed progress toast stays dismissed. The terminal state
                 // has a separate ticket and may notify once when it arrives.
@@ -198,14 +201,15 @@ impl Native {
             match self.notifier.Setting() {
                 Ok(value) => anyhow::ensure!(
                     value == NotificationSetting::Enabled,
-                    "Windows 已禁用此程序的通知"
+                    "{}",
+                    t().system.notification_disabled
                 ),
                 Err(error) if error.code() == windows::core::HRESULT::from_win32(1168) => (),
-                Err(error) => return Err(error).context("查询 Windows 通知设置失败"),
+                Err(error) => return Err(error).context(t().system.notification_setting_failed),
             }
             self.notifier
                 .Show(&notification)
-                .context("显示 Windows 通知失败")?;
+                .context(t().system.notification_show_failed)?;
             self.shown
                 .insert(item.key.clone(), (item.clone(), notification));
         }
@@ -225,7 +229,10 @@ impl Native {
                 f64::from(item.progress.unwrap_or(0).min(1000)) / 1000.
             )),
         )?;
-        values.Insert(&HSTRING::from("status"), &HSTRING::from("正在传输"))?;
+        values.Insert(
+            &HSTRING::from("status"),
+            &HSTRING::from(t().system.notification_transferring),
+        )?;
         Ok(data)
     }
     fn remove(&mut self, key: &str) -> Result<()> {

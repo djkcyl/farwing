@@ -1,4 +1,5 @@
 //! Generic D3D11 executor. Pixel algorithms are supplied by external modules.
+use crate::i18n::t;
 use super::*;
 use crate::plugins::{Graph, Tap};
 
@@ -35,7 +36,7 @@ impl Pool {
                 && size.height <= 8192
                 && self.targets.len() < 32
                 && self.bytes + bytes <= MAX_BYTES,
-            "视频链纹理预算超限"
+            t().viewer.video_chain_texture_budget
         );
         let desc = D3D11_TEXTURE2D_DESC {
             Width: size.width,
@@ -178,7 +179,7 @@ impl Engine {
         }
         let frames = *delays
             .get(&graph.output_source)
-            .context("视频输出节点不存在")?;
+            .context(t().viewer.video_output_node_missing)?;
         let rate = rates[&graph.output_source];
         let fps = fps.clamp(15.0, 240.0);
         let delay = Duration::from_secs_f64(frames as f64 / fps);
@@ -258,7 +259,7 @@ impl Engine {
         for node in &mut self.nodes {
             let mut pictures = frames
                 .get(&node.input)
-                .context("视频节点输入尚未就绪")?
+                .context(t().viewer.video_node_input_not_ready)?
                 .clone();
             for pass in &mut node.passes {
                 let mut output = Vec::new();
@@ -360,10 +361,10 @@ impl Engine {
         }
         let pictures = frames
             .remove(&self.output_source)
-            .context("视频输出缺少画面")?;
+            .context(t().viewer.video_output_no_picture)?;
         anyhow::ensure!(
             self.queue.len() + pictures.len() <= MAX_QUEUE,
-            "视频链呈现队列超限"
+            t().viewer.video_chain_queue_full
         );
         for picture in pictures {
             let due = picture.at + self.delay;
@@ -449,7 +450,8 @@ impl Captures {
                     .tick(device, context, texture, view, &tap.state, at, new_frame)
             })();
             if let Err(error) = result {
-                tap.state.fail(format!("取帧失败：{error}"));
+                tap.state
+                    .fail((t().viewer.frame_capture_failed)(&error.to_string()));
             }
         }
     }

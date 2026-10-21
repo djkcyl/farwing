@@ -1,4 +1,5 @@
 //! Viewer commands for the existing signaling/ICE owner, not another connection loop.
+use crate::i18n::t;
 use anyhow::{Result, bail};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -74,11 +75,11 @@ impl NetworkControl {
             state.notice_until = None;
         }
         state.view.unavailable_reason = if !state.connected {
-            Some("媒体通道未连接")
+            Some(t().features.network_media_not_connected)
         } else if state.forced {
-            Some("本次连接要求使用中转")
+            Some(t().features.network_relay_required)
         } else if !state.has_turns && !state.view.relay_enabled {
-            Some("无可用中转线路")
+            Some(t().features.network_no_relay)
         } else {
             None
         };
@@ -93,22 +94,22 @@ impl NetworkControl {
     pub(crate) fn request(&self, relay: bool) -> Result<()> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.view.pending {
-            bail!("正在切换线路");
+            bail!("{}", t().features.network_switching);
         }
         if !state.connected {
-            bail!("媒体通道尚未连接");
+            bail!("{}", t().features.network_media_not_connected);
         }
         if state.forced && !relay {
-            bail!("本次连接要求使用中转");
+            bail!("{}", t().features.network_relay_required);
         }
         if relay && !state.has_turns {
-            bail!("无可用中转线路");
+            bail!("{}", t().features.network_no_relay);
         }
         if state
             .last_request
             .is_some_and(|at| at.elapsed() < Duration::from_secs(5))
         {
-            bail!("切换过于频繁");
+            bail!("{}", t().features.network_switching_too_often);
         }
         state.last_request = Some(Instant::now());
         state.view.pending = true;
@@ -134,7 +135,7 @@ impl NetworkControl {
         state.view.pending = relay;
         state.waiting_since = relay.then(Instant::now);
         if !relay {
-            state.view.notice = Some("已恢复自动选路");
+            state.view.notice = Some(t().features.network_auto_route_restored);
             state.notice_until = Some(Instant::now() + Duration::from_secs(3));
         }
     }
@@ -147,12 +148,12 @@ impl NetworkControl {
         if relay {
             state.view.pending = false;
             state.waiting_since = None;
-            state.view.notice = Some("已切换到中转");
+            state.view.notice = Some(t().features.network_switched_to_relay);
             state.view.error = None;
             state.notice_until = Some(Instant::now() + Duration::from_secs(3));
         } else if state.view.pending && start.elapsed() >= Duration::from_secs(3) {
             state.view.pending = false;
-            state.view.error = Some("未能切换到中转".into());
+            state.view.error = Some(t().features.network_relay_switch_failed.into());
         }
     }
 

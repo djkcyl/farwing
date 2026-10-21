@@ -1,5 +1,6 @@
 //! Declarative parameter controls shared by the graph and plugin manager.
 use super::*;
+use crate::i18n::t;
 use std::collections::BTreeMap;
 
 pub fn capturing(ctx: &egui::Context) -> bool {
@@ -89,18 +90,23 @@ impl Fields {
             .iter()
             .filter(|(_, f)| f.kind == "hotkey")
             .collect();
-        ensure!(fields.len() <= 4, "每个功能最多四个快捷键条件");
+        ensure!(
+            fields.len() <= 4,
+            "{}",
+            t().features.plugin_shortcut_conditions_limit
+        );
         let mut conditions = Vec::new();
         for (index, (key, _)) in fields.into_iter().enumerate() {
             let Some(value) = config.get(key).filter(|v| !v.is_null()) else {
                 continue;
             };
             let shortcut: super::hotkeys::Shortcut = serde_json::from_value(value.clone())
-                .with_context(|| format!("快捷键参数无效：{key}"))?;
+                .with_context(|| (t().features.plugin_shortcut_parameter_invalid)(key))?;
             if let Some(binding) = &shortcut.binding {
                 ensure!(
                     super::hotkeys::valid(binding),
-                    "快捷键无效或与保留快捷键冲突"
+                    "{}",
+                    t().features.plugin_shortcut_invalid
                 );
             }
             conditions.push(super::graph::ActivationSpec {
@@ -122,7 +128,8 @@ impl Fields {
                     .is_some_and(|s| s.mode == super::hotkeys::Mode::Trigger))
                 .count()
                 <= 1,
-            "每个功能最多一个单次触发快捷键"
+            "{}",
+            t().features.plugin_trigger_shortcuts_limit
         );
         Ok(conditions)
     }
@@ -215,31 +222,31 @@ impl Fields {
                     serde_json::from_value::<super::hotkeys::Shortcut>(value.clone()).unwrap_or_default()
                 };
                 let mode_label = match shortcut.mode {
-                    super::hotkeys::Mode::Toggle => "开关",
-                    super::hotkeys::Mode::Hold => "长按",
-                    super::hotkeys::Mode::Trigger => "单次",
+                    super::hotkeys::Mode::Toggle => t().features.plugin_mode_toggle,
+                    super::hotkeys::Mode::Hold => t().features.plugin_mode_hold,
+                    super::hotkeys::Mode::Trigger => t().features.plugin_mode_once,
                 };
                 let text = if waiting {
-                    "请按快捷键…".into()
+                    t().features.plugin_shortcut_recording.into()
                 } else if shortcut.disabled {
-                    "已停用".into()
+                    t().features.plugin_shortcut_disabled.into()
                 } else if let Some(binding) = &shortcut.binding {
                     format!("{} · {mode_label}", super::hotkeys::label(binding))
                 } else if value.is_null() {
-                    "点击录入".into()
+                    t().features.plugin_shortcut_click_to_record.into()
                 } else {
-                    format!("未绑定 · {mode_label}")
+                    (t().features.plugin_shortcut_unbound_mode)(mode_label)
                 };
                 let response = ui.add_sized([(width - height - 4.0).max(20.0), height], egui::Button::new(text))
-                    .on_hover_text("左键录入 · 右键切换模式");
+                    .on_hover_text(t().features.plugin_shortcut_hint);
                 if response.clicked() { waiting = true; }
                 // While recording, right mouse is a valid binding, not a menu command.
                 if !was_waiting && !suppress_secondary {
                     response.context_menu(|ui| {
                         for (mode, label) in [
-                            (super::hotkeys::Mode::Toggle, "开关"),
-                            (super::hotkeys::Mode::Hold, "长按"),
-                            (super::hotkeys::Mode::Trigger, "单次触发"),
+                            (super::hotkeys::Mode::Toggle, t().features.plugin_mode_toggle),
+                            (super::hotkeys::Mode::Hold, t().features.plugin_mode_hold),
+                            (super::hotkeys::Mode::Trigger, t().features.plugin_mode_trigger),
                         ] {
                             if ui.selectable_label(shortcut.mode == mode, label).clicked() {
                                 shortcut.mode = mode;
@@ -251,7 +258,7 @@ impl Fields {
                         }
                     });
                 }
-                if crate::ui::controls::close_button(ui, "清除", height).clicked() {
+                if crate::ui::controls::close_button(ui, t().features.plugin_shortcut_clear, height).clicked() {
                     value = serde_json::Value::Null;
                     waiting = false;
                 }
@@ -287,13 +294,18 @@ impl Fields {
                     .iter()
                     .find(|c| c.value == value)
                     .map(|c| c.label.clone())
-                    .unwrap_or_else(|| value.as_str().unwrap_or("未选择").to_owned());
+                    .unwrap_or_else(|| {
+                        value
+                            .as_str()
+                            .unwrap_or(t().features.plugin_not_selected)
+                            .to_owned()
+                    });
                 egui::ComboBox::from_id_salt("choice")
                     .width(width)
                     .selected_text(selected)
                     .show_ui(ui, |ui| {
                         if options.is_empty() {
-                            ui.weak("没有可用选项");
+                            ui.weak(t().features.plugin_no_options);
                         }
                         for option in &options {
                             if ui
@@ -308,9 +320,9 @@ impl Fields {
             } else if field.kind == "multi" {
                 let mut selected = value.as_array().cloned();
                 let text = match &selected {
-                    None => "全部类别".into(),
-                    Some(v) if v.is_empty() => "未选择类别".into(),
-                    Some(v) => format!("已选 {} 类", v.len()),
+                    None => t().features.plugin_all_categories.into(),
+                    Some(v) if v.is_empty() => t().features.plugin_no_categories.into(),
+                    Some(v) => (t().features.plugin_categories_selected)(v.len()),
                 };
                 egui::ComboBox::from_id_salt("multi")
                     .width(width)
@@ -319,7 +331,7 @@ impl Fields {
                     .selected_text(text)
                     .show_ui(ui, |ui| {
                         if ui
-                            .selectable_label(selected.is_none(), "全部类别")
+                            .selectable_label(selected.is_none(), t().features.plugin_all_categories)
                             .clicked()
                         {
                             selected = None;
@@ -327,7 +339,7 @@ impl Fields {
                         if ui
                             .selectable_label(
                                 selected.as_ref().is_some_and(Vec::is_empty),
-                                "清空选择",
+                                t().features.plugin_clear_selection,
                             )
                             .clicked()
                         {
@@ -335,7 +347,7 @@ impl Fields {
                         }
                         ui.separator();
                         if options.is_empty() {
-                            ui.weak("模型未提供类别表");
+                            ui.weak(t().features.plugin_no_category_list);
                         }
                         for option in &options {
                             let mut checked =

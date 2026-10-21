@@ -316,9 +316,7 @@ impl AudioPlayback {
         shared.receiving.store(false, Ordering::Relaxed);
         shared.clear_levels();
         if !codec.eq_ignore_ascii_case("audio/opus") || rate != RATE || channels != 2 {
-            lock(&shared.status).1 = Some(format!(
-                "暂不支持音频格式：{codec} / {rate} Hz / {channels} 声道"
-            ));
+            lock(&shared.status).1 = Some((crate::i18n::t().session.audio_format_unsupported)(codec, rate, channels));
             shared.notify_output();
             return None;
         }
@@ -371,7 +369,7 @@ impl AudioPlayback {
         let thread = std::thread::Builder::new()
             .name("audio-output".into())
             .spawn(move || output_worker(shared))
-            .context("创建音频输出线程失败");
+            .context(crate::i18n::t().session.audio_output_thread_failed);
         match thread {
             Ok(thread) => *worker = Some(thread),
             Err(error) => {
@@ -552,7 +550,8 @@ impl Renderer {
     fn new(shared: Arc<Shared>, rate: u32) -> Result<Self> {
         ensure!(
             (8_000..=384_000).contains(&rate),
-            "不支持输出采样率：{rate}"
+            "{}",
+            (crate::i18n::t().session.audio_output_rate_unsupported)(rate)
         );
         Ok(Self {
             engine: Engine::new(shared)?,
@@ -578,7 +577,7 @@ impl Renderer {
             if let Some(resampler) = self.resampler.as_mut() {
                 let (used, written) =
                     resampler.process(&self.input[self.input_offset..], &mut self.output)?;
-                ensure!(used != 0 || written != 0, "音频重采样未前进");
+                ensure!(used != 0 || written != 0, "{}", crate::i18n::t().session.audio_resample_stalled);
                 self.input_offset += used;
                 self.output_len = written;
             } else {
@@ -604,7 +603,7 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     failed: Arc<AtomicBool>,
 ) -> Result<cpal::Stream> {
     let channels = config.channels as usize;
-    ensure!(channels > 0, "输出设备没有声道");
+    ensure!(channels > 0, "{}", crate::i18n::t().session.audio_output_no_channels);
     let mut renderer = Renderer::new(Arc::clone(&shared), config.sample_rate)?;
     let errors = Arc::clone(&shared);
     let decode_failed = Arc::clone(&failed);
@@ -659,15 +658,15 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
             },
             move |error| {
                 // Only an actual endpoint/stream error triggers rebuild; video is unaffected.
-                lock(&errors.status).1 = Some(format!("音频输出中断：{error}"));
+                lock(&errors.status).1 = Some((crate::i18n::t().session.audio_output_interrupted)(&error.to_string()));
                 errors.clear_levels();
                 failed.store(true, Ordering::Release);
                 errors.notify_output();
             },
             None,
         )
-        .context("打开音频输出失败")?;
-    stream.play().context("启动音频输出失败")?;
+        .context(crate::i18n::t().session.audio_output_open_failed)?;
+    stream.play().context(crate::i18n::t().session.audio_output_start_failed)?;
     Ok(stream)
 }
 
@@ -678,7 +677,7 @@ fn open_output(
 ) -> Result<cpal::Stream> {
     let config = device
         .default_output_config()
-        .context("读取音频输出格式失败")?;
+        .context(crate::i18n::t().session.audio_output_format_unreadable)?;
     let format = config.sample_format();
     let config = config.config();
     match format {
@@ -688,7 +687,7 @@ fn open_output(
         cpal::SampleFormat::I24 => build_stream::<cpal::I24>(device, &config, shared, failed),
         cpal::SampleFormat::I32 => build_stream::<i32>(device, &config, shared, failed),
         cpal::SampleFormat::U16 => build_stream::<u16>(device, &config, shared, failed),
-        _ => Err(anyhow!("不支持输出格式：{format}")),
+        _ => Err(anyhow!("{}", (crate::i18n::t().session.audio_output_format_unsupported)(&format.to_string()))),
     }
 }
 
@@ -753,7 +752,7 @@ fn output_worker(shared: Arc<Shared>) {
                     loaded: true,
                 },
                 Err(error) => OutputDevices {
-                    error: Some(format!("读取输出设备失败：{error}")),
+                    error: Some((crate::i18n::t().session.audio_output_devices_unreadable)(&error.to_string())),
                     loaded: true,
                     ..Default::default()
                 },
@@ -783,18 +782,21 @@ fn output_worker(shared: Arc<Shared>) {
                 failures += 1;
                 lock(&shared.status)
                     .1
-                    .get_or_insert_with(|| "音频处理失败".into());
+                    .get_or_insert_with(|| crate::i18n::t().session.audio_processing_failed.into());
             }
             if stream.is_none() && failures < 3 && shared.receiving.load(Ordering::Acquire) {
                 // Old audio collected while no output was available must not be replayed.
                 while shared.packets.pop().is_some() {}
                 match device.as_ref().map_or_else(
                     || {
-                        Err(anyhow!(if selection.is_some() {
-                            "所选音频输出设备不可用"
-                        } else {
-                            "未找到音频输出设备"
-                        }))
+                        Err(anyhow!(
+                            "{}",
+                            if selection.is_some() {
+                                crate::i18n::t().session.audio_output_selected_unavailable
+                            } else {
+                                crate::i18n::t().session.audio_output_none
+                            }
+                        ))
                     },
                     |device| open_output(device, Arc::clone(&shared), Arc::clone(&failed)),
                 ) {

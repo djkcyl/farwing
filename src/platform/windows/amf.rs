@@ -4,6 +4,7 @@ use super::{
     format::{Codec, Format, Rate},
     gpu_conversion::Conversion,
 };
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use farwing_amf_sys as a;
 use std::ptr::{self, NonNull};
@@ -12,7 +13,8 @@ use windows::{Win32::Graphics::Direct3D11::*, core::Interface};
 fn check(result: a::AMF_RESULT, operation: &str) -> Result<()> {
     ensure!(
         result == a::AMF_RESULT_AMF_OK,
-        "AMF {operation} 失败（{result}）"
+        "{}",
+        (t().system.amf_call_failed)(operation, &result.to_string())
     );
     Ok(())
 }
@@ -47,7 +49,9 @@ trait Release {
 struct Owned<T: Release>(NonNull<T>);
 impl<T: Release> Owned<T> {
     unsafe fn take(p: *mut T) -> Result<Self> {
-        Ok(Self(NonNull::new(p).context("AMF返回空接口")?))
+        Ok(Self(
+            NonNull::new(p).context(t().system.amf_null_interface)?,
+        ))
     }
     fn raw(&self) -> *mut T {
         self.0.as_ptr()
@@ -107,7 +111,7 @@ impl Encoder {
         rate: Rate,
         color: super::format::Color,
     ) -> Result<Self> {
-        ensure!(format.valid(), "AMF输入格式无效");
+        ensure!(format.valid(), "{}", t().system.amf_invalid_input_format);
         let usages: &[i64] = if format.codec == Codec::H265 {
             &[1, 2]
         } else {
@@ -138,7 +142,7 @@ impl Encoder {
                 }
             }
         }
-        Err(failure.context("AMF没有输入候选")?)
+        Err(failure.context(t().system.amf_no_input_candidate)?)
     }
     fn create(
         device: &ID3D11Device,
@@ -158,19 +162,26 @@ impl Encoder {
             check(init(0x1_0005_0002_0000, &mut factory), "Init")?;
             ensure!(
                 !factory.is_null() && !(*factory).pVtbl.is_null(),
-                "AMF工厂无效"
+                "{}",
+                t().system.amf_invalid_factory
             );
             let factory_vt = &*(*factory).pVtbl;
             let mut context = ptr::null_mut();
             check(
                 factory_vt
                     .CreateContext
-                    .context("AMF CreateContext接口缺失")?(factory, &mut context),
+                    .with_context(|| (t().system.amf_interface_missing)("CreateContext"))?(
+                    factory,
+                    &mut context,
+                ),
                 "CreateContext",
             )?;
             let context = Owned::<a::AMFContext>::take(context)?;
             check(
-                context.vt().InitDX11.context("AMF InitDX11接口缺失")?(
+                context
+                    .vt()
+                    .InitDX11
+                    .with_context(|| (t().system.amf_interface_missing)("InitDX11"))?(
                     context.raw(),
                     device.as_raw(),
                     110,
@@ -188,7 +199,7 @@ impl Encoder {
             check(
                 factory_vt
                     .CreateComponent
-                    .context("AMF CreateComponent接口缺失")?(
+                    .with_context(|| (t().system.amf_interface_missing)("CreateComponent"))?(
                     factory,
                     context.raw(),
                     id.as_ptr(),
@@ -352,7 +363,9 @@ impl Encoder {
             }
             let comp = this.component.as_ref().unwrap();
             check(
-                comp.vt().Init.context("AMF Init接口缺失")?(
+                comp.vt()
+                    .Init
+                    .with_context(|| (t().system.amf_interface_missing)("Init"))?(
                     comp.raw(),
                     native,
                     size.0 as i32,
@@ -364,7 +377,8 @@ impl Encoder {
             this.report_parameters("initialized");
             ensure!(
                 size.0 <= this.maximum.0 && size.1 <= this.maximum.1,
-                "AMF尺寸超出实际能力"
+                "{}",
+                t().system.amf_size_exceeds_capability
             );
             Ok(this)
         }
@@ -372,10 +386,18 @@ impl Encoder {
     fn initial_rate(&self, mut rate: Rate) -> Rate {
         let maximum = (|| -> Result<u32> {
             unsafe {
-                let comp = self.component.as_ref().context("AMF编码器已关闭")?;
+                let comp = self
+                    .component
+                    .as_ref()
+                    .context(t().system.amf_encoder_closed)?;
                 let mut caps = ptr::null_mut();
                 check(
-                    comp.vt().GetCaps.context("AMF能力接口缺失")?(comp.raw(), &mut caps),
+                    comp.vt()
+                        .GetCaps
+                        .with_context(|| (t().system.amf_interface_missing)("GetCaps"))?(
+                        comp.raw(),
+                        &mut caps,
+                    ),
                     "GetCaps",
                 )?;
                 let caps = Owned::<a::AMFCaps>::take(caps)?;
@@ -388,7 +410,9 @@ impl Encoder {
                     b"MaxBitrate\0".as_slice()
                 };
                 check(
-                    caps.vt().GetProperty.context("AMF能力属性接口缺失")?(
+                    caps.vt()
+                        .GetProperty
+                        .with_context(|| (t().system.amf_interface_missing)("GetProperty"))?(
                         caps.raw(),
                         wide(name).as_ptr(),
                         &mut value,
@@ -397,7 +421,8 @@ impl Encoder {
                 )?;
                 ensure!(
                     value.type_ == 2 && value.__bindgen_anon_1.int64Value > 0,
-                    "AMF最大码率无效"
+                    "{}",
+                    t().system.amf_invalid_max_bitrate
                 );
                 Ok(u32::try_from(value.__bindgen_anon_1.int64Value).unwrap_or(u32::MAX))
             }
@@ -507,10 +532,15 @@ impl Encoder {
         } else {
             hevc
         });
-        let comp = self.component.as_ref().context("AMF编码器已关闭")?;
+        let comp = self
+            .component
+            .as_ref()
+            .context(t().system.amf_encoder_closed)?;
         unsafe {
             check(
-                comp.vt().SetProperty.context("AMF SetProperty接口缺失")?(
+                comp.vt()
+                    .SetProperty
+                    .with_context(|| (t().system.amf_interface_missing)("SetProperty"))?(
                     comp.raw(),
                     name.as_ptr(),
                     value,
@@ -637,16 +667,26 @@ impl Encoder {
     fn enable_multi_hw(&self) {
         let result = (|| -> Result<()> {
             unsafe {
-                let comp = self.component.as_ref().context("AMF编码器已关闭")?;
+                let comp = self
+                    .component
+                    .as_ref()
+                    .context(t().system.amf_encoder_closed)?;
                 let mut caps = ptr::null_mut();
                 check(
-                    comp.vt().GetCaps.context("AMF GetCaps接口缺失")?(comp.raw(), &mut caps),
+                    comp.vt()
+                        .GetCaps
+                        .with_context(|| (t().system.amf_interface_missing)("GetCaps"))?(
+                        comp.raw(),
+                        &mut caps,
+                    ),
                     "GetCaps",
                 )?;
                 let caps = Owned::<a::AMFCaps>::take(caps)?;
                 let mut count = a::AMFVariantStruct::default();
                 check(
-                    caps.vt().GetProperty.context("AMF GetProperty接口缺失")?(
+                    caps.vt()
+                        .GetProperty
+                        .with_context(|| (t().system.amf_interface_missing)("GetProperty"))?(
                         caps.raw(),
                         wide(a::AMF_VIDEO_ENCODER_HEVC_CAP_NUM_OF_HW_INSTANCES).as_ptr(),
                         &mut count,
@@ -672,13 +712,20 @@ impl Encoder {
             let comp = self.component.as_ref().unwrap();
             let mut caps = ptr::null_mut();
             check(
-                comp.vt().GetCaps.context("AMF GetCaps接口缺失")?(comp.raw(), &mut caps),
+                comp.vt()
+                    .GetCaps
+                    .with_context(|| (t().system.amf_interface_missing)("GetCaps"))?(
+                    comp.raw(),
+                    &mut caps,
+                ),
                 "GetCaps",
             )?;
             let caps = Owned::<a::AMFCaps>::take(caps)?;
             let mut input = ptr::null_mut();
             check(
-                caps.vt().GetInputCaps.context("AMF GetInputCaps接口缺失")?(
+                caps.vt()
+                    .GetInputCaps
+                    .with_context(|| (t().system.amf_interface_missing)("GetInputCaps"))?(
                     caps.raw(),
                     &mut input,
                 ),
@@ -686,13 +733,22 @@ impl Encoder {
             )?;
             let input = Owned::<a::AMFIOCaps>::take(input)?;
             let vt = input.vt();
-            let count = vt.GetNumOfFormats.context("AMF GetNumOfFormats接口缺失")?(input.raw());
-            ensure!((0..=128).contains(&count), "AMF格式能力无效");
+            let count = vt
+                .GetNumOfFormats
+                .with_context(|| (t().system.amf_interface_missing)("GetNumOfFormats"))?(
+                input.raw(),
+            );
+            ensure!(
+                (0..=128).contains(&count),
+                "{}",
+                t().system.amf_invalid_format_caps
+            );
             let mut supported = false;
             for index in 0..count {
                 let (mut format, mut is_native) = (0, 0u8);
                 check(
-                    vt.GetFormatAt.context("AMF GetFormatAt接口缺失")?(
+                    vt.GetFormatAt
+                        .with_context(|| (t().system.amf_interface_missing)("GetFormatAt"))?(
                         input.raw(),
                         index,
                         &mut format,
@@ -702,21 +758,24 @@ impl Encoder {
                 )?;
                 supported |= format == native;
             }
-            ensure!(supported, "AMF实际能力不支持请求格式");
+            ensure!(supported, "{}", t().system.amf_format_unsupported);
             let (mut min_w, mut max_w, mut min_h, mut max_h) = (0, 0, 0, 0);
-            vt.GetWidthRange.context("AMF GetWidthRange接口缺失")?(
+            vt.GetWidthRange
+                .with_context(|| (t().system.amf_interface_missing)("GetWidthRange"))?(
                 input.raw(),
                 &mut min_w,
                 &mut max_w,
             );
-            vt.GetHeightRange.context("AMF GetHeightRange接口缺失")?(
+            vt.GetHeightRange
+                .with_context(|| (t().system.amf_interface_missing)("GetHeightRange"))?(
                 input.raw(),
                 &mut min_h,
                 &mut max_h,
             );
             ensure!(
                 (1..=16384).contains(&max_w) && (1..=16384).contains(&max_h),
-                "AMF最大尺寸无效"
+                "{}",
+                t().system.amf_invalid_max_size
             );
             Ok((max_w as u32, max_h as u32))
         }
@@ -775,7 +834,8 @@ impl Encoder {
     ) -> Result<Vec<Encoded>> {
         ensure!(
             !cancel.load(std::sync::atomic::Ordering::Acquire),
-            "编码已取消"
+            "{}",
+            t().system.encode_cancelled
         );
         if self.pending.is_some() {
             return self.output(cancel);
@@ -789,7 +849,7 @@ impl Encoder {
                 context
                     .vt()
                     .CreateSurfaceFromDX11Native
-                    .context("AMF DX11Surface接口缺失")?(
+                    .with_context(|| (t().system.amf_interface_missing)("DX11Surface"))?(
                     context.raw(),
                     self.conversion.output.as_raw(),
                     &mut surface,
@@ -799,8 +859,13 @@ impl Encoder {
             )?;
             let surface = Owned::<a::AMFSurface>::take(surface)?;
             let vt = surface.vt();
-            vt.SetPts.context("AMF SetPts接口缺失")?(surface.raw(), timestamp);
-            vt.SetDuration.context("AMF SetDuration接口缺失")?(
+            vt.SetPts
+                .with_context(|| (t().system.amf_interface_missing)("SetPts"))?(
+                surface.raw(),
+                timestamp,
+            );
+            vt.SetDuration
+                .with_context(|| (t().system.amf_interface_missing)("SetDuration"))?(
                 surface.raw(),
                 10_000_000 / i64::from(self.configured_fps.max(1)),
             );
@@ -828,11 +893,9 @@ impl Encoder {
                     };
                 for (name, value) in settings {
                     check(
-                        vt.SetProperty.context("AMF surface SetProperty接口缺失")?(
-                            surface.raw(),
-                            wide(name).as_ptr(),
-                            value,
-                        ),
+                        vt.SetProperty.with_context(|| {
+                            (t().system.amf_interface_missing)("surface SetProperty")
+                        })?(surface.raw(), wide(name).as_ptr(), value),
                         "force IDR",
                     )?;
                 }
@@ -865,22 +928,24 @@ impl Encoder {
                 }
                 for (name, value) in settings {
                     check(
-                        vt.SetProperty.context("AMF surface SetProperty接口缺失")?(
-                            surface.raw(),
-                            wide(name).as_ptr(),
-                            value,
-                        ),
+                        vt.SetProperty.with_context(|| {
+                            (t().system.amf_interface_missing)("surface SetProperty")
+                        })?(surface.raw(), wide(name).as_ptr(), value),
                         "long-term reference",
                     )?;
                 }
             }
             let comp = self.component.as_ref().unwrap();
-            let submit = comp.vt().SubmitInput.context("AMF SubmitInput接口缺失")?;
+            let submit = comp
+                .vt()
+                .SubmitInput
+                .with_context(|| (t().system.amf_interface_missing)("SubmitInput"))?;
             let mut accepted = false;
             for attempt in 0..500 {
                 ensure!(
                     !cancel.load(std::sync::atomic::Ordering::Acquire),
-                    "编码已取消"
+                    "{}",
+                    t().system.encode_cancelled
                 );
                 let status = submit(comp.raw(), surface.raw().cast());
                 if status == a::AMF_RESULT_AMF_OK {
@@ -907,9 +972,13 @@ impl Encoder {
                 // Keep pending native input alive until Terminate in Drop.
                 ensure!(
                     !cancel.load(std::sync::atomic::Ordering::Acquire),
-                    "编码已取消"
+                    "{}",
+                    t().system.encode_cancelled
                 );
-                let status = comp.vt().QueryOutput.context("AMF QueryOutput接口缺失")?(
+                let status = comp
+                    .vt()
+                    .QueryOutput
+                    .with_context(|| (t().system.amf_interface_missing)("QueryOutput"))?(
                     comp.raw(),
                     &mut data,
                 );
@@ -925,7 +994,11 @@ impl Encoder {
                 }
                 super::encoder::retry_pause(attempt);
             }
-            ensure!(!data.is_null(), "AMF拉取输出超过500次尝试");
+            ensure!(
+                !data.is_null(),
+                "{}",
+                t().system.amf_output_attempts_exceeded
+            );
             let data = Owned::<a::AMFData>::take(data)?;
             let iid = a::AMFGuid {
                 data1: 0xb04b7248,
@@ -944,18 +1017,31 @@ impl Encoder {
             check(
                 data.vt()
                     .QueryInterface
-                    .context("AMF QueryInterface接口缺失")?(
-                    data.raw(), &iid, &mut buffer
+                    .with_context(|| (t().system.amf_interface_missing)("QueryInterface"))?(
+                    data.raw(),
+                    &iid,
+                    &mut buffer,
                 ),
                 "Buffer interface",
             )?;
             let buffer = Owned::<a::AMFBuffer>::take(buffer.cast())?;
-            let size = buffer.vt().GetSize.context("AMF GetSize接口缺失")?(buffer.raw());
-            let bytes =
-                buffer.vt().GetNative.context("AMF GetNative接口缺失")?(buffer.raw()).cast::<u8>();
+            let size = buffer
+                .vt()
+                .GetSize
+                .with_context(|| (t().system.amf_interface_missing)("GetSize"))?(
+                buffer.raw()
+            );
+            let bytes = buffer
+                .vt()
+                .GetNative
+                .with_context(|| (t().system.amf_interface_missing)("GetNative"))?(
+                buffer.raw()
+            )
+            .cast::<u8>();
             ensure!(
                 !bytes.is_null() && size > 0 && size <= 64 * 1024 * 1024,
-                "AMF输出码流无效"
+                "{}",
+                t().system.amf_invalid_bitstream
             );
             let mut kind = a::AMFVariantStruct::default();
             let name = wide(if self.format.codec == Codec::Av1 {
@@ -965,7 +1051,10 @@ impl Encoder {
             } else {
                 b"HevcOutputDataType\0"
             });
-            let status = buffer.vt().GetProperty.context("AMF GetProperty接口缺失")?(
+            let status = buffer
+                .vt()
+                .GetProperty
+                .with_context(|| (t().system.amf_interface_missing)("GetProperty"))?(
                 buffer.raw(),
                 name.as_ptr(),
                 &mut kind,
@@ -1014,8 +1103,11 @@ impl Encoder {
             let frame = Encoded {
                 data: std::slice::from_raw_parts(bytes, size).to_vec(),
                 keyframe,
-                timestamp_100ns: buffer.vt().GetPts.context("AMF GetPts接口缺失")?(
-                    buffer.raw(),
+                timestamp_100ns: buffer
+                    .vt()
+                    .GetPts
+                    .with_context(|| (t().system.amf_interface_missing)("GetPts"))?(
+                    buffer.raw()
                 ),
                 is_new: true,
                 timing: None,

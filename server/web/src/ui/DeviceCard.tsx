@@ -1,5 +1,6 @@
 // A device as a card: wallpaper, name, state and "watch in the browser".
 import { useEffect, useState } from 'react';
+import { useT } from '../i18n/react';
 import { fetchBlob } from '../lib/api';
 import { ago, deviceIdText, displayName, platformText, shareSummary } from '../lib/format';
 import { Link, navigate } from '../lib/router';
@@ -34,6 +35,7 @@ function Wallpaper({ device }: { device: Device }) {
 }
 
 export function DeviceCard({ device: d, shared }: { device: Device; shared?: boolean }) {
+  const t = useT();
   const blocker = viewBlocker(d);
   const watching = d.participants.length;
   return (
@@ -47,19 +49,19 @@ export function DeviceCard({ device: d, shared }: { device: Device; shared?: boo
             {d.alias}
           </Link>
           <span className="grow" />
-          <Online online={d.status === 'online'} text={d.status === 'online' ? '在线' : ago(d.last_seen_at)} />
+          <Online online={d.status === 'online'} text={d.status === 'online' ? t.common.online : ago(d.last_seen_at)} />
         </div>
         <div className="small muted ellipsis">
           {platformText(d.platform)} {d.version} · <span className="mono">{deviceIdText(d.device_id)}</span>
         </div>
         {shared && d.owner && (
           <div className="small muted ellipsis">
-            {displayName(d.owner)} 共享 · {shareSummary(d.granted)}
+            {t.devices.sharedBy(displayName(d.owner))} · {shareSummary(d.granted)}
           </div>
         )}
         {watching > 0 && (
           <div className="small amber">
-            <Icon name="eye" size={12} /> {watching} 人正在连接
+            <Icon name="eye" size={12} /> {t.devices.watching(watching)}
           </div>
         )}
         <div className="row gap-sm device-actions">
@@ -71,10 +73,10 @@ export function DeviceCard({ device: d, shared }: { device: Device; shared?: boo
             title={blocker}
             onClick={() => navigate(`/view/${d.device_id}`)}
           >
-            观看
+            {t.devices.watch}
           </Button>
           <Button size="sm" variant="ghost" onClick={() => navigate(`/devices/${d.device_id}`)}>
-            详情
+            {t.common.details}
           </Button>
         </div>
       </div>

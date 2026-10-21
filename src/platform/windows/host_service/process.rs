@@ -1,6 +1,7 @@
 //! Privileged helper lifecycle. Executable identity and active session are checked
 //! before attaching a channel; children belong to a kill-on-close job.
 use super::pipe::Handle;
+use crate::i18n::t;
 use anyhow::{Result, ensure};
 use sha2::{Digest, Sha256};
 use windows::{
@@ -100,7 +101,8 @@ pub(crate) fn verify_image(pid: u32) -> Result<()> {
 pub(crate) fn verify_path(path: std::path::PathBuf) -> Result<()> {
     ensure!(
         image_hash(&path)? == image_hash(&std::env::current_exe()?)?,
-        "被控服务版本或身份不匹配"
+        "{}",
+        t().system.service_image_mismatch
     );
     Ok(())
 }
@@ -143,7 +145,8 @@ fn privilege(name: PCWSTR) -> Result<()> {
         AdjustTokenPrivileges(token.0, false, Some(&privileges), 0, None, None)?;
         ensure!(
             GetLastError() != ERROR_NOT_ALL_ASSIGNED,
-            "被控服务缺少系统权限"
+            "{}",
+            t().system.service_missing_privilege
         );
     }
     Ok(())
@@ -176,7 +179,11 @@ impl Agent {
         }
     }
     fn start_role(session: u32, pipe: &str, role: &str) -> Result<Self> {
-        ensure!(session != u32::MAX, "当前没有可用的Windows会话");
+        ensure!(
+            session != u32::MAX,
+            "{}",
+            t().system.service_no_windows_session
+        );
         privilege(w!("SeTcbPrivilege"))?;
         privilege(w!("SeAssignPrimaryTokenPrivilege"))?;
         privilege(w!("SeIncreaseQuotaPrivilege"))?;
@@ -249,10 +256,11 @@ impl Agent {
         let exe = std::env::current_exe()?;
         let exe = exe
             .to_str()
-            .ok_or_else(|| anyhow::anyhow!("被控服务路径无效"))?;
+            .ok_or_else(|| anyhow::anyhow!("{}", t().system.service_invalid_path))?;
         ensure!(
             !exe.contains('"') && !pipe.contains('"'),
-            "被控服务参数无效"
+            "{}",
+            t().system.service_invalid_arguments
         );
         let stop = if role == "host-resident" {
             let name: Vec<u16> = crate::product::global_object(&format!(
@@ -338,7 +346,7 @@ impl Agent {
             return Err(error.into());
         }
         if unsafe { ResumeThread(thread.0) } == u32::MAX {
-            anyhow::bail!("无法启动输入会话进程")
+            anyhow::bail!("{}", t().system.service_input_session_start_failed)
         }
         Ok(Self {
             process,

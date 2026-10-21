@@ -6,6 +6,7 @@ use super::{
 };
 use crate::features::remote_cursor::RemoteCursor;
 use crate::features::remote_input::MouseMode;
+use crate::i18n::t;
 use anyhow::{Result, anyhow, bail};
 use std::time::Instant;
 
@@ -30,7 +31,11 @@ impl StreamControlHandle {
             state.baseline.cursor_capture = true;
             state.initial_capture_sync_sent = false;
             if let Some((sequence, _, _)) = state.cursor_pending {
-                fail_cursor_request(&mut state, sequence, "鼠标连接已中断".into());
+                fail_cursor_request(
+                    &mut state,
+                    sequence,
+                    t().features.stream_mouse_connection_lost.into(),
+                );
                 state
                     .pending_sequences
                     .retain(|pending| *pending != sequence);
@@ -118,7 +123,7 @@ impl StreamControlHandle {
         } else {
             ensure_ready(&state)?;
             if state.annotation.enabled || state.annotation.toggling() {
-                bail!("批注期间不能开启键鼠控制");
+                bail!("{}", t().features.stream_no_control_while_annotating);
             }
             // One participant controls at a time; the others wait for it
             // to give control back.
@@ -226,9 +231,11 @@ impl StreamControlHandle {
         let payload = match active_protocol {
             StreamControlProtocol::CaptureSetting => encode_capture_setting(sequence, baseline)?,
 
-            StreamControlProtocol::Negotiating => bail!("PB 特性协商尚未完成"),
+            StreamControlProtocol::Negotiating => {
+                bail!("{}", t().features.stream_negotiation_pending)
+            }
             StreamControlProtocol::Unsupported => {
-                bail!("对端不支持当前串流协议")
+                bail!("{}", t().features.stream_protocol_unsupported)
             }
         };
         state.next_sequence = state.next_sequence.wrapping_add(1);
@@ -249,9 +256,9 @@ impl StreamControlHandle {
             },
             Some(
                 if visible {
-                    "显示远端光标"
+                    t().features.stream_show_remote_cursor
                 } else {
-                    "隐藏远端光标"
+                    t().features.stream_hide_remote_cursor
                 }
                 .into(),
             ),
@@ -419,7 +426,7 @@ pub(super) fn expire_cursor_request(state: &mut StreamControlState) {
     if let Some((sequence, _, started)) = state.cursor_pending
         && started.elapsed() >= std::time::Duration::from_secs(10)
     {
-        let error = "光标设置确认超时".to_owned();
+        let error = t().features.stream_cursor_confirmation_timeout.to_owned();
         fail_cursor_request(state, sequence, error.clone());
         state
             .pending_capture_preferences

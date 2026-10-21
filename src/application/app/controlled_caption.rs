@@ -1,6 +1,7 @@
 //! Visible remote-access indicator, driven by the actual host session.
 use super::DeviceCenterApp;
 use crate::features::host::Status;
+use crate::i18n::t;
 use crate::ui::{chrome::TitleBarAlert, controls, theme};
 
 impl DeviceCenterApp {
@@ -18,6 +19,7 @@ pub(super) fn caption(
     devices: Option<&crate::account::api::DeviceList>,
     catalog: Option<&super::catalog::Catalog>,
 ) -> Option<TitleBarAlert> {
+    let text = &t().app;
     if status.session_active && status.connected && status.connections.len() > 1 {
         let seconds = status
             .connections
@@ -30,24 +32,19 @@ pub(super) fn caption(
             .map(|c| name(&c.device_id, &c.nickname, devices, catalog))
             .collect();
         return Some(TitleBarAlert {
-            source: format!(
-                "{} 人正在访问 · {}{}",
-                names.len(),
-                names[..2].join("、"),
-                if names.len() > 2 { " 等" } else { "" }
-            ),
-            duration: format!("已连接 {}", duration(seconds)),
+            source: (text.several_accessing)(names.len(), &names),
+            duration: (text.connected_for)(&duration(seconds)),
         });
     }
     let Some(connection) = &status.connection else {
         return status.connected.then(|| TitleBarAlert {
             source: if status.assistance {
-                "访客正在访问"
+                text.visitor_accessing
             } else {
-                "正在被远程访问"
+                text.being_accessed
             }
             .into(),
-            duration: "已连接".into(),
+            duration: text.connected.into(),
         });
     };
     let seconds = connection.elapsed_seconds?;
@@ -56,24 +53,24 @@ pub(super) fn caption(
     }
     let name = name(&connection.device_id, &connection.nickname, devices, catalog);
     let kind = if connection.observation_lost {
-        "被控状态确认中"
+        text.confirming_host
     } else if !status.connected {
-        "连接中断"
+        text.connection_lost
     } else if status.assistance || connection.relation == "assist" {
-        "访客"
+        text.kind_visitor
     } else if connection.relation == "friend" {
-        "好友设备"
+        text.kind_friend_device
     } else if connection.relation == "trusted" {
-        "受信任设备"
+        text.kind_trusted_device
     } else {
-        "自有设备"
+        text.kind_own_device
     };
     Some(TitleBarAlert {
         source: format!("{kind} · {name}"),
         duration: if connection.observation_lost {
-            format!("上次已连接 {}", duration(seconds))
+            (text.previously_connected_for)(&duration(seconds))
         } else {
-            format!("已连接 {}", duration(seconds))
+            (text.connected_for)(&duration(seconds))
         },
     })
 }
@@ -121,32 +118,59 @@ fn name(
     .find(|s| !s.is_empty())
     .unwrap_or_else(|| {
         if device_id.is_empty() {
-            "远程设备".into()
+            t().app.remote_device.into()
         } else {
-            format!(
-                "设备 {}",
-                device_id
+            (t().app.device_short)(
+                &device_id
                     .chars()
                     .rev()
                     .take(6)
                     .collect::<Vec<_>>()
                     .into_iter()
                     .rev()
-                    .collect::<String>()
+                    .collect::<String>(),
             )
         }
     })
 }
 
 /// How the participant relates to this host's account.
-pub(super) fn relation(relation: &str, assistance: bool) -> Option<&'static str> {
-    match relation {
-        "own" => Some("本账号"),
-        "friend" => Some("好友"),
-        "trusted" => Some("受信任"),
-        "assist" => Some("访客"),
-        _ if assistance => Some("访客"),
-        _ => None,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Relation {
+    Own,
+    Friend,
+    Trusted,
+    Visitor,
+}
+
+impl Relation {
+    fn of(relation: &str, assistance: bool) -> Option<Self> {
+        match relation {
+            "own" => Some(Self::Own),
+            "friend" => Some(Self::Friend),
+            "trusted" => Some(Self::Trusted),
+            "assist" => Some(Self::Visitor),
+            _ if assistance => Some(Self::Visitor),
+            _ => None,
+        }
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        let text = &t().app;
+        match self {
+            Self::Own => text.relation_own,
+            Self::Friend => text.relation_friend,
+            Self::Trusted => text.relation_trusted,
+            Self::Visitor => text.relation_visitor,
+        }
+    }
+
+    fn color(self) -> egui::Color32 {
+        match self {
+            Self::Friend => theme::GREEN,
+            Self::Visitor => theme::AMBER,
+            Self::Own | Self::Trusted => theme::ACCENT,
+        }
     }
 }
 
@@ -158,7 +182,7 @@ pub(super) struct Participant {
     pub device_name: String,
     /// The participant's device ID, for display.
     pub device_id: String,
-    pub relation: Option<&'static str>,
+    pub relation: Option<Relation>,
     pub duration: String,
     /// The session can be ended now.
     pub disconnectable: bool,
@@ -211,13 +235,13 @@ pub(super) fn participants(
             name: name(&c.device_id, &c.nickname, devices, catalog),
             device_name: clean_name(&c.device_name),
             device_id: crate::account::api::key_id_text(&c.public_key),
-            relation: relation(&c.relation, c.assistance),
+            relation: Relation::of(&c.relation, c.assistance),
             duration: if c.observation_lost {
-                "状态确认中".into()
+                t().app.confirming_status.into()
             } else {
                 c.elapsed_seconds
-                    .map(|s| format!("已连接 {}", duration(s)))
-                    .unwrap_or_else(|| "正在连接".into())
+                    .map(|s| (t().app.connected_for)(&duration(s)))
+                    .unwrap_or_else(|| t().app.connecting.into())
             },
             disconnectable: status.session_active
                 && !c.observation_lost
@@ -231,12 +255,13 @@ pub(super) fn participants(
         .collect()
 }
 
-/// Every participant with its own "断开" and "禁止控制" buttons.
+/// Every participant with its own disconnect and block-control buttons.
 pub(super) fn participants_list(
     ui: &mut egui::Ui,
     participants: &[Participant],
 ) -> Option<ParticipantAction> {
     let mut ended = None;
+    let text = &t().app;
     for participant in participants {
         ui.push_id(("participant", &participant.session_id), |ui| {
             let (rect, _) = ui.allocate_exact_size(
@@ -249,15 +274,15 @@ pub(super) fn participants_list(
                     .layout(egui::Layout::right_to_left(egui::Align::Center)),
             );
             if row
-                .add_enabled(participant.disconnectable, controls::secondary("断开"))
+                .add_enabled(participant.disconnectable, controls::secondary(t().common.disconnect))
                 .clicked()
             {
                 ended = Some(ParticipantAction::Disconnect(participant.session_id.clone()));
             }
             let label = if participant.control_blocked {
-                "允许控制"
+                text.allow_control
             } else {
-                "禁止控制"
+                text.block_control
             };
             if row
                 .add_enabled(participant.disconnectable, controls::secondary(label))
@@ -269,7 +294,7 @@ pub(super) fn participants_list(
                 ));
             }
             if let Some((device_id, public_key)) = &participant.trust
-                && row.add(controls::secondary("信任")).clicked()
+                && row.add(controls::secondary(text.trust)).clicked()
             {
                 ended = Some(ParticipantAction::Trust {
                     device_id: device_id.clone(),
@@ -288,19 +313,14 @@ pub(super) fn participants_list(
             );
             row.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 if let Some(relation) = participant.relation {
-                    let color = match relation {
-                        "好友" => theme::GREEN,
-                        "访客" => theme::AMBER,
-                        "受信任" => theme::ACCENT,
-                        _ => theme::ACCENT,
-                    };
+                    let color = relation.color();
                     egui::Frame::new()
                         .fill(color.gamma_multiply(0.15))
                         .corner_radius(theme::CONTROL_RADIUS)
                         .inner_margin(egui::Margin::symmetric(6, 1))
                         .show(ui, |ui| {
                             ui.label(
-                                egui::RichText::new(relation)
+                                egui::RichText::new(relation.label())
                                     .size(theme::TINY)
                                     .color(color),
                             );
@@ -387,21 +407,21 @@ mod tests {
         let rows = participants(&status, None, None);
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].name, "Alice");
-        assert_eq!(rows[0].relation, Some("本账号"));
+        assert_eq!(rows[0].relation, Some(Relation::Own));
         assert_eq!(rows[0].duration, "已连接 01:05");
         assert!(rows[0].disconnectable);
         // Without a nickname, the device id.
         assert_eq!(rows[1].name, "设备 123456");
-        assert_eq!(rows[1].relation, Some("好友"));
+        assert_eq!(rows[1].relation, Some(Relation::Friend));
         assert_eq!(rows[1].duration, "已连接 1:01:40");
         // No server session yet: nothing to end.
         assert!(!rows[2].disconnectable);
-        assert_eq!(rows[2].relation, Some("访客"));
+        assert_eq!(rows[2].relation, Some(Relation::Visitor));
         status.session_active = false;
         assert!(participants(&status, None, None).iter().all(|r| !r.disconnectable));
-        assert_eq!(relation("", true), Some("访客"));
-        assert_eq!(relation("trusted", false), Some("受信任"));
-        assert_eq!(relation("", false), None);
+        assert_eq!(Relation::of("", true), Some(Relation::Visitor));
+        assert_eq!(Relation::of("trusted", false), Some(Relation::Trusted));
+        assert_eq!(Relation::of("", false), None);
     }
 
     #[test]

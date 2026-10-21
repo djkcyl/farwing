@@ -2,6 +2,7 @@
 use super::capture_worker::capture_loop;
 use super::{Published, maximum_header, video_timestamp};
 use crate::features::host::{Lease, VideoConfig, capture, encoder, lock};
+use crate::i18n::t;
 use anyhow::Result;
 use bytes::Bytes;
 use std::{
@@ -273,7 +274,7 @@ impl Worker {
                         return;
                     }
                     missing.store(error.is::<capture::SourceGone>(), Ordering::Release);
-                    let message = format!("画面采集已停止：{error:#}");
+                    let message = (t().features.peer_capture_stopped)(&format!("{error:#}"));
                     failed_publication.send_modify(|state| {
                         state.capturing = false;
                         state.visible = false;
@@ -390,7 +391,7 @@ impl Worker {
                 let payloads = match payloads {
                     Ok(v) => v,
                     Err(error) => {
-                        send_handle.fail(format!("视频分包失败：{error}"));
+                        send_handle.fail((t().features.peer_packetize_failed)(&error.to_string()));
                         send_cancel.cancel();
                         break;
                     }
@@ -518,7 +519,7 @@ impl Worker {
                             break;
                         }
                         Err(error) => {
-                            send_handle.fail(format!("画面发送失败：{error}"));
+                            send_handle.fail((t().features.peer_send_failed)(&error.to_string()));
                             send_cancel.cancel();
                             complete = false;
                             break;

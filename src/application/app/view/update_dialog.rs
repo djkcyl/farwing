@@ -1,5 +1,6 @@
 use super::*;
 use crate::application::app::updates::State;
+use crate::i18n::t;
 
 impl DeviceCenterApp {
     pub(in crate::application::app) fn update_dialog(&mut self, ctx: &egui::Context) {
@@ -44,6 +45,7 @@ fn release_prompt(
 ) -> (bool, bool) {
     let mut dismiss = false;
     let mut download = false;
+    let text = &t().settings;
     let response = egui::Modal::new(egui::Id::new("client-release-update"))
         .frame(dialog_frame())
         .show(ctx, |ui| {
@@ -53,9 +55,9 @@ fn release_prompt(
             dismiss = crate::ui::controls::dialog_header(
                 ui,
                 if prerelease {
-                    "发现测试版"
+                    text.beta_available
                 } else {
-                    "发现新版本"
+                    text.update_available
                 },
                 crate::ui::controls::DialogIcon::Required,
                 true,
@@ -65,13 +67,14 @@ fn release_prompt(
                     .size(theme::SECTION)
                     .strong(),
             );
-            let mut subtitle = format!("当前版本 v{}", env!("CARGO_PKG_VERSION"));
+            let mut subtitle = (text.current_version)(env!("CARGO_PKG_VERSION"));
             if let Some(date) = published {
-                subtitle.push_str(&format!("  ·  发布于 {date}"));
+                subtitle.push_str("  ·  ");
+                subtitle.push_str(&(text.released_on)(date));
             }
             ui.label(RichText::new(subtitle).size(theme::SMALL).color(MUTED));
             ui.add_space(20.0);
-            ui.label(RichText::new("更新内容").strong());
+            ui.label(RichText::new(text.release_notes).strong());
             ui.add_space(8.0);
             egui::ScrollArea::vertical()
                 .id_salt(("release-notes", version))
@@ -83,8 +86,8 @@ fn release_prompt(
                 .show(ui, |ui| crate::ui::controls::release_notes(ui, notes));
             let (accept, later) = crate::ui::controls::dialog_actions(
                 ui,
-                Some(crate::ui::controls::DialogAction::new("前往下载")),
-                Some("稍后"),
+                Some(crate::ui::controls::DialogAction::new(text.download)),
+                Some(text.later),
             );
             download = accept;
             dismiss |= later;

@@ -5,6 +5,7 @@ use super::{
     gpu_conversion::Conversion,
     qsv_allocator::Allocator,
 };
+use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use farwing_vpl_sys as v;
 use std::{mem::size_of, ptr};
@@ -14,7 +15,11 @@ use windows::{
 };
 
 fn check(status: v::mfxStatus, operation: &str) -> Result<()> {
-    ensure!(status >= 0, "QSV {operation} 失败（{status}）");
+    ensure!(
+        status >= 0,
+        "{}",
+        (t().system.qsv_call_failed)(operation, &status.to_string())
+    );
     if status > 0 {
         tracing::debug!(status, operation, "QSV adjusted driver parameters");
     }
@@ -58,13 +63,18 @@ impl Session {
             let _ = multithread.SetMultithreadProtected(true);
             ensure!(
                 multithread.GetMultithreadProtected().as_bool(),
-                "QSV D3D11多线程保护未生效"
+                "{}",
+                t().system.qsv_multithread_protection
             );
             let mut result = Self {
                 loader: v::MFXLoad(),
                 session: ptr::null_mut(),
             };
-            ensure!(!result.loader.is_null(), "无法创建oneVPL调度器");
+            ensure!(
+                !result.loader.is_null(),
+                "{}",
+                t().system.qsv_dispatcher_failed
+            );
             let dxgi: IDXGIDevice = device.cast()?;
             let mut luid = dxgi.GetAdapter()?.GetDesc()?.AdapterLuid;
             for (name, kind, data) in [
@@ -87,7 +97,7 @@ impl Session {
                 ),
             ] {
                 let config = v::MFXCreateConfig(result.loader);
-                ensure!(!config.is_null(), "无法创建QSV过滤条件");
+                ensure!(!config.is_null(), "{}", t().system.qsv_filter_failed);
                 check(
                     v::MFXSetConfigFilterProperty(
                         config,
@@ -105,7 +115,7 @@ impl Session {
                 v::MFXCreateSession(result.loader, 0, &mut result.session),
                 "CreateSession",
             )?;
-            ensure!(!result.session.is_null(), "oneVPL未返回编码会话");
+            ensure!(!result.session.is_null(), "{}", t().system.qsv_no_session);
             let status = v::MFXVideoCORE_SetHandle(result.session, 3, device.as_raw());
             if status < 0 {
                 // Do not swallow -16 or give the allocator a different device.
@@ -224,14 +234,22 @@ impl Clone for Extensions {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("QSV编码阶段失败：{0:#}")]
+#[error("{}", encode_failure(.0))]
 struct EncodeFailure(anyhow::Error);
 
 /// `MFXVideoENCODE_Reset` refused a changed frame rate, quality or buffer
 /// size (for example the one-second buffer of cinema mode).
 #[derive(Debug, thiserror::Error)]
-#[error("QSV Reset 失败（{0}）")]
+#[error("{}", reset_rejected(.0))]
 struct ResetRejected(v::mfxStatus);
+
+fn encode_failure(error: &anyhow::Error) -> String {
+    (t().system.qsv_encode_stage_failed)(&format!("{error:#}"))
+}
+
+fn reset_rejected(status: &v::mfxStatus) -> String {
+    (t().system.qsv_reset_failed)(&status.to_string())
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum SubmitAction {
@@ -277,7 +295,10 @@ impl Encoder {
         self.active.as_ref().map_or(self.size, Active::maximum_size)
     }
     pub fn configure(&mut self, rate: Rate) -> Result<bool> {
-        let active = self.active.as_mut().context("QSV编码器已释放")?;
+        let active = self
+            .active
+            .as_mut()
+            .context(t().system.qsv_encoder_released)?;
         let color = active.conversion.color;
         match active.configure(rate) {
             // Initialize again on the same session, as for a stream change,
@@ -302,7 +323,10 @@ impl Encoder {
         rate: Rate,
         color: super::format::Color,
     ) -> Result<bool> {
-        let active = self.active.as_mut().context("QSV编码器已释放")?;
+        let active = self
+            .active
+            .as_mut()
+            .context(t().system.qsv_encoder_released)?;
         if device != &self.device || !active.initialized || active.surface.Data.Locked != 0 {
             return Ok(false);
         }
@@ -329,7 +353,10 @@ impl Encoder {
         let close_ms = closing.elapsed().as_secs_f64() * 1000.;
         // The session and callback addresses stay valid while native surfaces
         // are freed. Never recycle a session after failed encoding/driver loss.
-        let mut resources = active.resources.take().context("QSV会话已关闭")?;
+        let mut resources = active
+            .resources
+            .take()
+            .context(t().system.qsv_session_closed)?;
         resources
             .allocator
             .prepare_reinitialize(conversion.bind_flags())?;
@@ -371,9 +398,13 @@ impl Encoder {
     ) -> Result<Vec<Encoded>> {
         ensure!(
             !cancel.load(std::sync::atomic::Ordering::Acquire),
-            "编码已取消"
+            "{}",
+            t().system.encode_cancelled
         );
-        let active = self.active.as_mut().context("QSV编码器已释放")?;
+        let active = self
+            .active
+            .as_mut()
+            .context(t().system.qsv_encoder_released)?;
         let compute = active.conversion.is_compute();
         let result = active.encode(texture, timestamp, keyframe, control, cancel);
         match result {
@@ -405,7 +436,9 @@ impl Encoder {
                     )
                 })()
                 .map_err(|error: anyhow::Error| {
-                    super::encoder::SwitchCandidate(format!("QSV像素重建失败：{error:#}"))
+                    super::encoder::SwitchCandidate((t().system.qsv_pixel_rebuild_failed)(
+                        &format!("{error:#}"),
+                    ))
                 })?;
                 self.active = Some(replacement);
                 self.active
@@ -591,7 +624,8 @@ impl Active {
         let started = std::time::Instant::now();
         ensure!(
             format.valid() && size.0 > 0 && size.1 > 0 && size.0 <= 16384 && size.1 <= 16384,
-            "QSV输入格式无效"
+            "{}",
+            t().system.qsv_invalid_input_format
         );
         unsafe {
             let reused_session = reuse.is_some();
@@ -617,7 +651,7 @@ impl Active {
             let mfx = &mut params.__bindgen_anon_1.mfx;
             mfx.CodecId = codec(format);
             if format.codec == Codec::Av1 {
-                ensure!(version >= (2, 5), "QSV AV1需要oneVPL 2.5或更新驱动");
+                ensure!(version >= (2, 5), "{}", t().system.qsv_av1_requires_onevpl);
                 mfx.CodecProfile = if format.chroma == 3 {
                     v::MFX_PROFILE_AV1_HIGH
                 } else {
@@ -694,7 +728,11 @@ impl Active {
                 v::MFXVideoENCODE_QueryIOSurf(session.session, &mut params, &mut request),
                 "QueryIOSurf",
             )?;
-            ensure!(request.NumFrameSuggested > 0, "QSV未返回输入纹理要求");
+            ensure!(
+                request.NumFrameSuggested > 0,
+                "{}",
+                t().system.qsv_no_surface_requirement
+            );
             let mut surface = Box::<v::mfxFrameSurface1>::default();
             surface.Info = params.__bindgen_anon_1.mfx.FrameInfo;
             surface.Data.MemId = resources.allocator.register(conversion.output.clone());
@@ -779,7 +817,11 @@ impl Active {
                 v::MFXEnumImplementations(loader, 0, 1, &mut description),
                 "EnumImplementations",
             )?;
-            ensure!(!description.is_null(), "QSV能力描述为空");
+            ensure!(
+                !description.is_null(),
+                "{}",
+                t().system.qsv_empty_caps_description
+            );
             let result = (|| -> Result<(u32, u32)> {
                 let description = &*description.cast::<v::mfxImplDescription>();
                 let mut maximum = (0, 0);
@@ -804,7 +846,8 @@ impl Active {
                 }
                 ensure!(
                     maximum.0 > 0 && maximum.1 > 0 && maximum.0 <= 16384 && maximum.1 <= 16384,
-                    "QSV没有有效格式上限"
+                    "{}",
+                    t().system.qsv_no_size_limit
                 );
                 Ok(maximum)
             })();
@@ -813,7 +856,11 @@ impl Active {
         }
     }
     pub fn configure(&mut self, rate: Rate) -> Result<bool> {
-        ensure!(self.resources.is_some(), "QSV编码会话已关闭");
+        ensure!(
+            self.resources.is_some(),
+            "{}",
+            t().system.qsv_session_closed
+        );
         let Some(update) = self.frame_rate.decide(rate) else {
             return Ok(false);
         };
@@ -867,11 +914,16 @@ impl Active {
         control: super::encoder::FrameControl,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> Result<Vec<Encoded>> {
-        ensure!(self.resources.is_some(), "QSV编码会话已关闭");
+        ensure!(
+            self.resources.is_some(),
+            "{}",
+            t().system.qsv_session_closed
+        );
         for attempt in 0..50 {
             ensure!(
                 !cancel.load(std::sync::atomic::Ordering::Acquire),
-                "编码已取消"
+                "{}",
+                t().system.encode_cancelled
             );
             if self.surface.Data.Locked == 0 {
                 break;
@@ -983,7 +1035,8 @@ impl Active {
             for attempt in 0..50 {
                 ensure!(
                     !cancel.load(std::sync::atomic::Ordering::Acquire),
-                    "编码已取消"
+                    "{}",
+                    t().system.encode_cancelled
                 );
                 stream.Data = self.buffer.as_mut_ptr();
                 stream.MaxLength = self.buffer.len() as u32;
@@ -1002,7 +1055,11 @@ impl Active {
                         break;
                     }
                     SubmitAction::Grow => {
-                        ensure!(self.buffer.len() < 64 * 1024 * 1024, "QSV码流超过64MiB");
+                        ensure!(
+                            self.buffer.len() < 64 * 1024 * 1024,
+                            "{}",
+                            t().system.qsv_bitstream_too_large
+                        );
                         self.buffer
                             .resize((self.buffer.len() * 2).min(64 * 1024 * 1024), 0);
                         continue;
@@ -1013,13 +1070,18 @@ impl Active {
                     }
                     SubmitAction::Failed => {}
                 }
-                return Err(super::encoder::SwitchCandidate(format!(
-                    "QSV EncodeFrameAsync失败或无同步点（{status}）"
-                ))
-                .into());
+                return Err(
+                    super::encoder::SwitchCandidate((t().system.qsv_submit_failed)(
+                        &status.to_string(),
+                    ))
+                    .into(),
+                );
             }
             if !accepted {
-                return Err(super::encoder::SwitchCandidate("QSV提交重试耗尽".into()).into());
+                return Err(super::encoder::SwitchCandidate(
+                    t().system.qsv_submit_retries_exhausted.into(),
+                )
+                .into());
             }
             // Preserve the existing total timeout, but observe cancellation
             // between bounded waits. The stack bitstream stays alive until
@@ -1050,15 +1112,22 @@ impl Active {
                 self.initialized = false;
                 self.resources.take();
                 return Err(
-                    super::encoder::SwitchCandidate(format!("QSV同步未完成（{status}）")).into(),
+                    super::encoder::SwitchCandidate((t().system.qsv_sync_incomplete)(
+                        &status.to_string(),
+                    ))
+                    .into(),
                 );
             }
         }
         let start = stream.DataOffset as usize;
         let end = start
             .checked_add(stream.DataLength as usize)
-            .context("QSV码流长度溢出")?;
-        ensure!(end <= self.buffer.len() && start < end, "QSV返回无效码流");
+            .context(t().system.qsv_bitstream_length_overflow)?;
+        ensure!(
+            end <= self.buffer.len() && start < end,
+            "{}",
+            t().system.qsv_invalid_bitstream
+        );
         let output_time = self
             .timestamps
             .iter()
@@ -1112,7 +1181,8 @@ unsafe fn slice<'a, T>(data: *const T, count: u16) -> Result<&'a [T]> {
     unsafe {
         ensure!(
             count <= 1024 && (count == 0 || !data.is_null()),
-            "QSV能力数组无效"
+            "{}",
+            t().system.qsv_invalid_caps_array
         );
         Ok(if count == 0 {
             &[]
@@ -1140,7 +1210,11 @@ fn output_capacity(size: (u32, u32), format: Format, params: &v::mfxVideoParam) 
             * usize::from(mfx.BRCParamMultiplier).max(1)
             * 1000
     };
-    ensure!(driver <= LIMIT, "QSV驱动要求的码流缓冲超过64MiB");
+    ensure!(
+        driver <= LIMIT,
+        "{}",
+        t().system.qsv_driver_buffer_too_large
+    );
     Ok((raw + 64 * 1024).min(LIMIT).max(driver).max(1024 * 1024))
 }
 fn report_rate(stage: &str, params: &v::mfxVideoParam, extensions: &Extensions, requested: Rate) {
@@ -1226,7 +1300,8 @@ fn validate(params: &v::mfxVideoParam, size: (u32, u32), format: Format) -> Resu
                     || (format.depth == 8 && info.BitDepthChroma == 0))
                 && (u32::from(dimensions.CropW), u32::from(dimensions.CropH)) == size
                 && mfx.__bindgen_anon_1.__bindgen_anon_1.GopRefDist == 1,
-            "QSV驱动修改了必要编码契约"
+            "{}",
+            t().system.qsv_driver_changed_contract
         );
         Ok(())
     }

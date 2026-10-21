@@ -1,4 +1,5 @@
 //! One device connection, independent video-track decoders and local windows.
+use crate::i18n::t;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
@@ -228,7 +229,7 @@ impl ScreenPlayback {
                 .screens
                 .iter()
                 .find(|screen| screen.id == screen_id)
-                .context("显示器已断开")?;
+                .context(t().viewer.display_disconnected)?;
             if screen.video_track_index < 0 || stopped.contains(&screen_id) {
                 // Keep restart required until the new mapping arrives, including cancellation.
                 // A local stop may already be sent while its ScreenSources is still in flight.
@@ -246,7 +247,7 @@ impl ScreenPlayback {
                     .screens
                     .iter()
                     .find(|screen| screen.id == screen_id)
-                    .context("显示器已断开")?;
+                    .context(t().viewer.display_disconnected)?;
                 if generation.is_none_or(|generation| snapshot.screens_generation > generation)
                     && screen.video_track_index >= 0
                     && let Some(track) = peer.video_tracks().get(screen.video_track_index)
@@ -257,7 +258,7 @@ impl ScreenPlayback {
             }
         })
         .await
-        .map_err(|_| anyhow!("显示器未返回视频"))??;
+        .map_err(|_| anyhow!(t().viewer.display_no_video))??;
         if generation.is_some() {
             self.capture_lock.lock().await.remove(&screen_id);
         }
@@ -272,7 +273,10 @@ impl ScreenPlayback {
     ) -> Result<Arc<NativeViewerSession>> {
         let switch_started = Instant::now();
         let _opening = self.opening.lock().await;
-        let peer = self.peer.upgrade().context("观看连接已关闭")?;
+        let peer = self
+            .peer
+            .upgrade()
+            .context(t().viewer.viewer_connection_closed)?;
         let existing_sessions = super::mutex_lock(&self.decoders)
             .values()
             .cloned()
@@ -293,7 +297,7 @@ impl ScreenPlayback {
             .screens()
             .into_iter()
             .find(|screen| screen.id == screen_id && screen.video_track_index == track.index)
-            .context("显示器映射已变化")?;
+            .context(t().viewer.display_mapping_changed)?;
         tracing::debug!(
             screen_id,
             elapsed_ms = switch_started.elapsed().as_secs_f64() * 1000.0,
@@ -332,7 +336,7 @@ impl ScreenPlayback {
         peer.request_keyframe(track.metadata.ssrc).await?;
         tokio::time::timeout(Duration::from_secs(12), session.startup())
             .await
-            .context("等待屏幕解码器启动超时")??;
+            .context(t().viewer.screen_decoder_timeout)??;
         let session = Arc::new(session);
         self.register(Arc::clone(&session));
         Ok(session)
@@ -344,6 +348,6 @@ fn codec(value: &str) -> Result<VideoCodec> {
         "video/h264" => Ok(VideoCodec::H264),
         "video/h265" | "video/hevc" => Ok(VideoCodec::H265),
         "video/av1" => Ok(VideoCodec::Av1),
-        _ => bail!("不支持的视频编码：{value}"),
+        _ => bail!((t().viewer.unsupported_video_codec)(value)),
     }
 }

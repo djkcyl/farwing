@@ -1,4 +1,5 @@
 use super::*;
+use crate::i18n::t;
 use std::collections::BTreeMap;
 
 struct Entry {
@@ -62,14 +63,27 @@ impl Manager {
             for entry in &mut self.entries {
                 if let Some(m) = &entry.manifest {
                     let result = (|| -> Result<()> {
-                        ensure!(counts.get(&m.id) == Some(&1), "插件 ID 重复");
-                        let dir = m.path.parent().context("缺少目录")?;
-                        let library = std::fs::canonicalize(&m.path).context("缺少动态库")?;
-                        ensure!(library.starts_with(dir), "动态库超出插件目录");
+                        ensure!(
+                            counts.get(&m.id) == Some(&1),
+                            "{}",
+                            t().features.plugin_id_duplicate
+                        );
+                        let dir = m
+                            .path
+                            .parent()
+                            .context(t().features.plugin_directory_missing)?;
+                        let library = std::fs::canonicalize(&m.path)
+                            .context(t().features.plugin_library_missing)?;
+                        ensure!(
+                            library.starts_with(dir),
+                            "{}",
+                            t().features.plugin_library_outside_folder
+                        );
                         for dependency in &m.dependencies {
                             ensure!(
                                 counts.get(dependency) == Some(&1),
-                                "缺少或重复依赖：{dependency}"
+                                "{}",
+                                (t().features.plugin_dependency_missing_or_duplicate)(dependency)
                             );
                         }
                         let mut effective = m.clone();
@@ -77,8 +91,12 @@ impl Manager {
                         for key in ["model", "runtime"] {
                             if let Some(file) = effective.config.get(key).and_then(|v| v.as_str()) {
                                 let resource = std::fs::canonicalize(dir.join(file))
-                                    .with_context(|| format!("缺少文件：{file}"))?;
-                                ensure!(resource.starts_with(dir), "资源超出插件目录");
+                                    .with_context(|| (t().features.plugin_file_missing)(file))?;
+                                ensure!(
+                                    resource.starts_with(dir),
+                                    "{}",
+                                    t().features.plugin_resource_outside_folder
+                                );
                             }
                         }
                         Ok(())
@@ -104,7 +122,8 @@ impl Manager {
                         && let Some(dependency) =
                             manifest.dependencies.iter().find_map(|id| failed.get(id))
                     {
-                        entry.error = Some(format!("依赖不可用：{dependency}"));
+                        entry.error =
+                            Some((t().features.plugin_dependency_unavailable)(dependency));
                         changed = true;
                     }
                 }
@@ -133,13 +152,13 @@ impl Manager {
         ui.horizontal(|ui| {
             if !self.graphs {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("插件文件夹").clicked()
+                    if ui.button(t().features.plugin_folder).clicked()
                         && let Err(e) = root().and_then(|p| open_folder(&p))
                     {
                         self.error = Some(e.to_string());
                     }
                     if ui
-                        .add_enabled(self.edit.is_none(), egui::Button::new("刷新"))
+                        .add_enabled(self.edit.is_none(), egui::Button::new(t().common.refresh))
                         .clicked()
                     {
                         self.refresh();
@@ -149,8 +168,8 @@ impl Manager {
         });
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.graphs, false, "已安装");
-            ui.selectable_value(&mut self.graphs, true, "节点图");
+            ui.selectable_value(&mut self.graphs, false, t().features.plugin_installed);
+            ui.selectable_value(&mut self.graphs, true, t().features.plugin_graphs);
         });
         ui.add_space(8.0);
         if self.graphs {
@@ -164,7 +183,7 @@ impl Manager {
             crate::ui::controls::notice(
                 ui.ctx(),
                 "plugin-manager-error",
-                "插件管理",
+                t().features.plugin_manager,
                 crate::ui::controls::DialogIcon::Error,
                 error,
             );
@@ -173,7 +192,7 @@ impl Manager {
             crate::ui::controls::notice(
                 ui.ctx(),
                 "plugin-manager-notice",
-                "插件管理",
+                t().features.plugin_manager,
                 crate::ui::controls::DialogIcon::Info,
                 message,
             );
@@ -187,17 +206,21 @@ impl Manager {
             ui.add_sized(
                 [search_width, crate::ui::controls::HEIGHT],
                 crate::ui::controls::singleline(&mut self.search, crate::ui::controls::HEIGHT)
-                    .hint_text("搜索插件或节点"),
+                    .hint_text(t().features.plugin_search_hint),
             );
             egui::ComboBox::from_id_salt("plugin-type")
                 .width(120.0)
                 .selected_text(if self.filter.is_empty() {
-                    "全部类型"
+                    t().features.plugin_all_types
                 } else {
                     kind(&self.filter)
                 })
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.filter, String::new(), "全部类型");
+                    ui.selectable_value(
+                        &mut self.filter,
+                        String::new(),
+                        t().features.plugin_all_types,
+                    );
                     for category in ["nodes", "inference"] {
                         ui.selectable_value(&mut self.filter, category.into(), kind(category));
                     }
@@ -211,9 +234,9 @@ impl Manager {
                     })
                     .count();
                 ui.weak(if count == self.entries.len() {
-                    format!("{count} 个插件")
+                    (t().features.plugin_count)(count)
                 } else {
-                    format!("{count} / {} 个插件", self.entries.len())
+                    (t().features.plugin_count_filtered)(count, self.entries.len())
                 });
             });
         });
@@ -241,14 +264,15 @@ impl Manager {
             let columns = columns(ui.available_width(), wide);
             let (header, _) = ui
                 .allocate_exact_size(egui::vec2(ui.available_width(), 26.0), egui::Sense::hover());
-            for (offset, label) in [
-                (12.0, "插件"),
-                (columns[1], "类型"),
-                (columns[2], "版本"),
-                (columns[3], "状态"),
-                (columns[4], "操作"),
+            let text = &t().features;
+            for (offset, label, wide_only) in [
+                (12.0, text.plugin_column_plugin, false),
+                (columns[1], text.plugin_column_type, true),
+                (columns[2], text.plugin_column_version, true),
+                (columns[3], text.plugin_column_status, false),
+                (columns[4], text.plugin_column_actions, false),
             ] {
-                if !wide && matches!(label, "类型" | "版本") {
+                if !wide && wide_only {
                     continue;
                 }
                 ui.painter().text(
@@ -263,9 +287,9 @@ impl Manager {
                 ui.add_space(28.0);
                 ui.vertical_centered(|ui| {
                     ui.weak(if self.entries.is_empty() {
-                        "尚未安装插件"
+                        t().features.plugin_none_installed
                     } else {
-                        "没有匹配的插件"
+                        t().features.plugin_no_matches
                     });
                 });
             }
@@ -293,12 +317,12 @@ impl Manager {
                                 .parent()
                                 .and_then(Path::file_name)
                                 .map(|s| s.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| "无效插件".into())
+                                .unwrap_or_else(|| t().features.plugin_invalid.into())
                         },
                         |m| m.name.clone(),
                     );
                     let subtitle = entry.manifest.as_ref().map_or_else(
-                        || "无法读取插件清单".into(),
+                        || t().features.plugin_manifest_unreadable.into(),
                         |m| {
                             if wide {
                                 m.id.clone()
@@ -340,7 +364,7 @@ impl Manager {
                                 entry
                                     .manifest
                                     .as_ref()
-                                    .map_or("未知", |m| kind(&m.capability)),
+                                    .map_or(t().common.unknown, |m| kind(&m.capability)),
                             );
                         });
                         cell(ui, row, columns[2], columns[3] - columns[2] - 8.0, |ui| {
@@ -367,11 +391,11 @@ impl Manager {
                         ui.colored_label(
                             color,
                             if entry.error.is_some() {
-                                "异常"
+                                t().features.plugin_status_error
                             } else if !entry.node_errors.is_empty() {
-                                "部分可用"
+                                t().features.plugin_status_partial
                             } else {
-                                "正常"
+                                t().features.plugin_status_ok
                             },
                         )
                         .on_hover_text(
@@ -379,14 +403,18 @@ impl Manager {
                                 .error
                                 .as_deref()
                                 .or_else(|| entry.node_errors.values().next().map(String::as_str))
-                                .unwrap_or("安装检查通过"),
+                                .unwrap_or(t().features.plugin_check_passed),
                         );
                     });
                     cell(ui, row, columns[4], row.width() - columns[4] - 8.0, |ui| {
                         if ui
                             .add_sized(
                                 [48.0, crate::ui::controls::HEIGHT],
-                                egui::Button::new(if expanded { "收起" } else { "详情" }),
+                                egui::Button::new(if expanded {
+                                    t().features.plugin_collapse
+                                } else {
+                                    t().common.details
+                                }),
                             )
                             .clicked()
                         {
@@ -399,7 +427,7 @@ impl Manager {
                         if ui
                             .add_sized(
                                 [58.0, crate::ui::controls::HEIGHT],
-                                egui::Button::new("文件夹"),
+                                egui::Button::new(t().features.plugin_open_folder),
                             )
                             .clicked()
                         {
@@ -409,7 +437,7 @@ impl Manager {
                             && ui
                                 .add_sized(
                                     [48.0, crate::ui::controls::HEIGHT],
-                                    egui::Button::new("配置"),
+                                    egui::Button::new(t().features.plugin_configure),
                                 )
                                 .clicked()
                         {
@@ -430,29 +458,26 @@ impl Manager {
                                 crate::ui::controls::observe_notice(
                                     ui.ctx(),
                                     ("plugin-entry-error", &entry.path),
-                                    "插件检查失败",
+                                    t().features.plugin_check_failed,
                                     crate::ui::controls::DialogIcon::Error,
                                     entry.error.as_deref(),
                                 );
                                 if let Some(m) = &entry.manifest {
                                     if !m.dependencies.is_empty() {
-                                        ui.label(format!(
-                                            "依赖   {}",
-                                            m.dependencies
+                                        ui.label((t().features.plugin_dependencies)(
+                                            &m.dependencies
                                                 .iter()
-                                                .map(|id| names
-                                                    .get(id.as_str())
-                                                    .copied()
-                                                    .unwrap_or(id))
-                                                .collect::<Vec<_>>()
-                                                .join("、")
+                                                .map(|id| {
+                                                    names.get(id.as_str()).copied().unwrap_or(id)
+                                                })
+                                                .collect::<Vec<_>>(),
                                         ));
                                     }
                                     for node in &m.nodes {
                                         crate::ui::controls::observe_notice(
                                             ui.ctx(),
                                             ("plugin-node-error", &entry.path, &node.type_id),
-                                            "插件节点检查失败",
+                                            t().features.plugin_node_check_failed,
                                             crate::ui::controls::DialogIcon::Error,
                                             entry
                                                 .node_errors
@@ -542,7 +567,7 @@ impl Manager {
                     edit.document
                         .get("name")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("模块配置"),
+                        .unwrap_or(t().features.plugin_module_settings),
                 )
                 .size(crate::ui::theme::DIALOG_TITLE)
                 .strong(),
@@ -551,13 +576,13 @@ impl Manager {
                 save = ui
                     .add_sized(
                         [72.0, crate::ui::controls::HEIGHT],
-                        crate::ui::controls::primary("保存"),
+                        crate::ui::controls::primary(t().common.save),
                     )
                     .clicked();
                 cancel |= ui
                     .add_sized(
                         [72.0, crate::ui::controls::HEIGHT],
-                        egui::Button::new("取消"),
+                        egui::Button::new(t().common.cancel),
                     )
                     .clicked();
             });
@@ -593,7 +618,7 @@ impl Manager {
                 Ok(()) => {
                     self.edit = None;
                     self.refresh();
-                    self.notice = Some("配置已保存".into());
+                    self.notice = Some(t().features.plugin_settings_saved.into());
                 }
                 Err(e) => self.error = Some(e.to_string()),
             }
@@ -606,9 +631,9 @@ impl Manager {
 
 fn kind(capability: &str) -> &'static str {
     match capability {
-        "nodes" => "节点插件",
-        "inference" => "推理引擎",
-        _ => "未知",
+        "nodes" => t().features.plugin_kind_nodes,
+        "inference" => t().features.plugin_kind_inference,
+        _ => t().common.unknown,
     }
 }
 fn configurable(m: &Manifest) -> bool {

@@ -9,6 +9,7 @@ use crate::{
     protocol::drag_drop::{self as wire, Packet, Payload, Point},
 };
 use anyhow::{Result, ensure};
+use crate::i18n::t;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -92,16 +93,18 @@ impl Ticket {
     pub fn commit(&self, point: Point) -> Result<()> {
         ensure!(
             point.valid() && self.alive.load(Ordering::Acquire),
-            "拖放已结束"
+            "{}",
+            t().features.drag_ended
         );
         let state = self.snapshot();
         ensure!(
             state.stage == Stage::Dragging && state.effect == wire::COPY,
-            "目标尚未接受拖放"
+            "{}",
+            t().features.drag_not_accepted
         );
         self.input
             .try_send(Command::Commit(self.id, point))
-            .map_err(|_| anyhow::anyhow!("拖放提交队列不可用"))
+            .map_err(|_| anyhow::anyhow!("{}", t().features.drag_commit_queue_unavailable))
     }
     pub fn cancel(&self) {
         self.alive.store(false, Ordering::Release);
@@ -283,11 +286,11 @@ impl Endpoint {
         };
         self.input
             .try_send(command)
-            .map_err(|_| anyhow::anyhow!("拖放接收队列已满或关闭"))?;
+            .map_err(|_| anyhow::anyhow!("{}", t().features.drag_receive_queue_full))?;
         Ok(true)
     }
     pub fn begin(&self, paths: Vec<PathBuf>, point: Point) -> Result<Arc<Ticket>> {
-        ensure!(self.available() && point.valid(), "当前连接未允许原生拖放");
+        ensure!(self.available() && point.valid(), "{}", t().features.drag_not_allowed);
         let id = (uuid::Uuid::new_v4().as_u128() as u64).max(1);
         let ticket = Arc::new(Ticket {
             id,
@@ -310,7 +313,8 @@ impl Endpoint {
                 .pointer_owner
                 .compare_exchange(0, id, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok(),
-            "另一个拖放尚未交接完成"
+            "{}",
+            t().features.drag_handoff_pending
         );
         if self
             .input
@@ -323,14 +327,15 @@ impl Endpoint {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             );
-            anyhow::bail!("拖放启动队列已满或关闭");
+            anyhow::bail!("{}", t().features.drag_start_queue_full);
         }
         Ok(ticket)
     }
     fn probe(&self, point: Point, release: ReleaseSource) -> Result<Arc<Ticket>> {
         ensure!(
             self.available() && point.valid(),
-            "当前连接不能接管文件拖动"
+            "{}",
+            t().features.drag_takeover_unavailable
         );
         let id = (uuid::Uuid::new_v4().as_u128() as u64).max(1);
         ensure!(
@@ -338,7 +343,8 @@ impl Endpoint {
                 .pointer_owner
                 .compare_exchange(0, id, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok(),
-            "已有拖放正在进行"
+            "{}",
+            t().features.drag_in_progress
         );
         self.shared.source_held.store(id, Ordering::Release);
         let ticket = Arc::new(Ticket {
@@ -374,7 +380,7 @@ impl Endpoint {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             );
-            anyhow::bail!("拖出队列不可用");
+            anyhow::bail!("{}", t().features.drag_out_queue_unavailable);
         }
         Ok(ticket)
     }
@@ -498,7 +504,7 @@ impl Actor {
             entry.sequence = entry
                 .sequence
                 .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("拖放序号用尽"))?;
+                .ok_or_else(|| anyhow::anyhow!("{}", t().features.drag_sequence_exhausted))?;
             entry.sequence
         } else {
             u64::from(id != 0)
@@ -510,7 +516,7 @@ impl Actor {
             sequence,
             payload: Some(payload),
         })?;
-        tokio::select! { _=self.shared.stop.cancelled()=>{}, sent=self.output.send(Outgoing { token: self.token, bulk, data })=>{sent.map_err(|_| anyhow::anyhow!("拖放发送通道已关闭"))?;} }
+        tokio::select! { _=self.shared.stop.cancelled()=>{}, sent=self.output.send(Outgoing { token: self.token, bulk, data })=>{sent.map_err(|_| anyhow::anyhow!("{}", t().features.drag_send_channel_closed))?;} }
         if let Some(notify) = lock(&self.shared.output_ready).clone() {
             notify();
         }
@@ -521,7 +527,7 @@ impl Actor {
         if self.token == 0 {
             return Ok(());
         }
-        tokio::select! { _=self.shared.stop.cancelled()=>{}, sent=self.output.send(Outgoing { token: self.token, bulk: true, data })=>{sent.map_err(|_| anyhow::anyhow!("拖放发送通道已关闭"))?;} }
+        tokio::select! { _=self.shared.stop.cancelled()=>{}, sent=self.output.send(Outgoing { token: self.token, bulk: true, data })=>{sent.map_err(|_| anyhow::anyhow!("{}", t().features.drag_send_channel_closed))?;} }
         if let Some(notify) = lock(&self.shared.output_ready).clone() {
             notify();
         }
@@ -536,7 +542,8 @@ impl Actor {
     ) -> Result<Entry> {
         ensure!(
             self.entries.len() < 4 && !self.entries.contains_key(&id),
-            "拖放会话已存在或数量过多"
+            "{}",
+            t().features.drag_session_exists
         );
         let ticket = ticket.unwrap_or_else(|| {
             Arc::new(Ticket {
@@ -637,7 +644,7 @@ impl Actor {
             .iter()
             .find(|s| s.id == point.screen && s.width > 0 && s.height > 0)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("拖放显示器已不可用"))
+            .ok_or_else(|| anyhow::anyhow!("{}", t().features.drag_display_unavailable))
     }
     fn position(&self, point: Point) -> Result<native::Position> {
         Self::screen_position(point, &self.screen(point)?)
@@ -1031,7 +1038,7 @@ impl Actor {
                 point,
                 target
                     .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("拖放目标缺失"))?,
+                    .ok_or_else(|| anyhow::anyhow!("{}", t().features.drag_target_missing))?,
             )?
         };
         offer.dragging(true);
@@ -1042,7 +1049,8 @@ impl Actor {
                     .pointer_owner
                     .compare_exchange(0, id, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok(),
-            "另一个拖放正在使用鼠标"
+            "{}",
+            t().features.drag_mouse_busy
         );
         let file = offer.clone();
         let commands = self.input.clone();
@@ -1183,7 +1191,8 @@ impl Actor {
             Payload::Image(image) => {
                 ensure!(
                     self.shared.return_capable.load(Ordering::Acquire),
-                    "未协商拖放图像"
+                    "{}",
+                    t().features.drag_image_not_negotiated
                 );
                 if let Some(entry) = self
                     .entries
@@ -1203,8 +1212,8 @@ impl Actor {
                         .entries
                         .get_mut(&id)
                         .filter(|e| e.reverse && !e.sending)
-                        .ok_or_else(|| anyhow::anyhow!("未请求这个反向拖放"))?;
-                    ensure!(entry.point == begin.point.unwrap(), "拖出来源屏幕不符");
+                        .ok_or_else(|| anyhow::anyhow!("{}", t().features.drag_reverse_not_requested))?;
+                    ensure!(entry.point == begin.point.unwrap(), "{}", t().features.drag_source_screen_mismatch);
                     entry.preserve_source &= begin.preserve;
                     if !entry.preserve_source {
                         drop(entry.release_source.take());
@@ -1221,10 +1230,11 @@ impl Actor {
                     self.role == Role::Host
                         && !begin.reverse
                         && self.shared.ready.load(Ordering::Acquire),
-                    "拖放方向未获许可"
+                    "{}",
+                    t().features.drag_direction_denied
                 );
                 if !self.shared.enabled.load(Ordering::Acquire) {
-                    self.finish(id, 4, "远端未允许文件拖放".into()).await?;
+                    self.finish(id, 4, t().features.drag_remote_disabled.into()).await?;
                     return Ok(());
                 }
                 let point = begin.point.unwrap();
@@ -1263,7 +1273,8 @@ impl Actor {
                         ensure!(
                             lock(&entry.ticket.snapshot).stage == Stage::Dragging
                                 && entry.native.is_some(),
-                            "拖放尚未就绪"
+                            "{}",
+                            t().features.drag_not_ready
                         );
                         entry.committed = true;
                         if let Some(offer) = &entry.offer {
@@ -1331,21 +1342,23 @@ impl Actor {
                     self.role == Role::Host
                         && self.shared.enabled.load(Ordering::Acquire)
                         && self.shared.ready.load(Ordering::Acquire),
-                    "当前不允许拖出文件"
+                    "{}",
+                    t().features.drag_out_not_allowed
                 );
                 ensure!(
                     self.shared
                         .pointer_owner
                         .compare_exchange(0, id, Ordering::AcqRel, Ordering::Acquire)
                         .is_ok(),
-                    "已有拖放正在进行"
+                    "{}",
+                    t().features.drag_in_progress
                 );
                 let mut entry = self.entry(id, point, true, None)?;
                 entry.reverse = true;
                 let target = entry
                     .target
                     .clone()
-                    .ok_or_else(|| anyhow::anyhow!("拖出来源缺失"))?;
+                    .ok_or_else(|| anyhow::anyhow!("{}", t().features.drag_out_source_missing))?;
                 let position = Self::screen_position(point, &target)?;
                 let alive = entry.ticket.alive.clone();
                 let binding = self.shared.clone();
@@ -1421,7 +1434,7 @@ impl Actor {
                     .as_ref()
                     .is_some_and(|target| !target_current(&self.shared, target))
             {
-                self.finish(id, 4, "显示器布局已变化，拖放已取消".into())
+                self.finish(id, 4, t().features.drag_layout_changed.into())
                     .await?;
                 continue;
             }
@@ -1430,7 +1443,7 @@ impl Actor {
                     || (lock(&entry.ticket.snapshot).stage == Stage::Preparing
                         && entry.created_at.elapsed() > Duration::from_secs(30)))
             {
-                self.finish(id, 4, "拖放准备超时或显示器已断开".into())
+                self.finish(id, 4, t().features.drag_prepare_timeout.into())
                     .await?;
                 continue;
             }

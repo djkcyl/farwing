@@ -11,8 +11,10 @@ use axum::extract::{Path, State};
 use farwing_protocol::api::{
     AuthSession, AuthSessions, Empty, GuestSession, LoginRequest, LoginResponse, Me,
 };
-use farwing_protocol::ids;
+use farwing_protocol::error::reason;
 use farwing_protocol::realtime::DeviceChangeKind;
+use farwing_protocol::{ErrorCode, ids};
+use serde_json::json;
 use std::time::Duration;
 
 const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
@@ -69,8 +71,13 @@ pub async fn login(
     .unwrap_or(false);
     let Some(user) = user.filter(|_| ok) else {
         tracing::info!(%ip, "login failed");
-        super::me::audit(&app, None, "login", &username, "用户名或密码不正确", false, ip).await;
-        return Err(ApiError::unauthorized());
+        let failed = super::me::failure(reason::LOGIN_FAILED);
+        super::me::audit(&app, None, "login", &username, failed, false, ip).await;
+        return Err(ApiError::reason(
+            ErrorCode::Unauthorized,
+            reason::LOGIN_FAILED,
+            "wrong username or password, or the account is disabled",
+        ));
     };
     app.limiter.refund(&ip_key);
     app.limiter.clear(&user_key);
@@ -109,7 +116,11 @@ pub async fn login(
         Some((&user.id, &user.username)),
         "login",
         &user.username,
-        &format!("{} [{}] {}", device.alias, device.id, device.platform.as_str()),
+        json!({
+            "device": device.alias,
+            "device_id": device.id,
+            "platform": device.platform.as_str(),
+        }),
         true,
         ip,
     )
@@ -212,7 +223,11 @@ pub async fn guest_session(
     dev: DeviceAuth,
 ) -> ApiResult<Json<GuestSession>> {
     if !app.settings.read().guests {
-        return Err(ApiError::forbidden("服务器未开启游客协助"));
+        return Err(ApiError::reason(
+            ErrorCode::Forbidden,
+            reason::GUESTS_DISABLED,
+            "guests are turned off on this server",
+        ));
     }
     let token = new_token(ids::GUEST_TOKEN_PREFIX);
     let hash = token_hash(&token);

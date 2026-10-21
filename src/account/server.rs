@@ -9,6 +9,7 @@
 //! optional extra CA), or when its leaf certificate matches a SHA-256 pin that
 //! the user confirmed.
 
+use crate::i18n::t;
 use anyhow::{Context, Result, bail};
 use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -72,15 +73,15 @@ fn copy_setting(from: &std::path::Path, to: &std::path::Path) -> Result<bool> {
     let bytes = match std::fs::read(&source) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error).context("读取服务器设置失败"),
+        Err(error) => return Err(error).context(t().session.server_settings_read_failed),
     };
-    let stored: Stored = serde_json::from_slice(&bytes).context("服务器设置文件无效")?;
-    anyhow::ensure!(stored.schema == SCHEMA, "服务器设置版本不受支持");
-    std::fs::create_dir_all(to).context("创建配置目录失败")?;
+    let stored: Stored = serde_json::from_slice(&bytes).context(t().session.server_settings_invalid)?;
+    anyhow::ensure!(stored.schema == SCHEMA, "{}", t().session.server_settings_unsupported);
+    std::fs::create_dir_all(to).context(t().session.settings_folder_failed)?;
     let target = to.join(FILE_NAME);
     let temporary = target.with_extension("json.tmp");
-    std::fs::write(&temporary, &bytes).context("保存服务器设置失败")?;
-    std::fs::rename(&temporary, &target).context("保存服务器设置失败")?;
+    std::fs::write(&temporary, &bytes).context(t().session.server_settings_save_failed)?;
+    std::fs::rename(&temporary, &target).context(t().session.server_settings_save_failed)?;
     Ok(true)
 }
 
@@ -89,22 +90,22 @@ impl ServerConfig {
     pub fn new(address: &str, pinned_sha256: Option<&str>, ca_pem: Option<String>) -> Result<Self> {
         let address = address.trim();
         if address.is_empty() {
-            bail!("请输入服务器地址");
+            bail!("{}", t().session.server_address_required);
         }
         let text = if address.contains("://") {
             address.to_owned()
         } else {
             format!("https://{address}")
         };
-        let mut url = Url::parse(&text).context("服务器地址格式不正确")?;
+        let mut url = Url::parse(&text).context(t().session.server_address_invalid)?;
         if url.scheme() != "https" {
-            bail!("服务器地址必须使用 https://");
+            bail!("{}", t().session.server_address_https);
         }
         if url.host_str().is_none_or(str::is_empty) {
-            bail!("服务器地址缺少主机名");
+            bail!("{}", t().session.server_address_no_host);
         }
         if !url.username().is_empty() || url.password().is_some() {
-            bail!("服务器地址不能包含用户名或密码");
+            bail!("{}", t().session.server_address_credentials);
         }
         url.set_path("");
         url.set_query(None);
@@ -135,10 +136,10 @@ impl ServerConfig {
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error).context("读取服务器设置失败"),
+            Err(error) => return Err(error).context(t().session.server_settings_read_failed),
         };
-        let stored: Stored = serde_json::from_slice(&bytes).context("服务器设置文件无效")?;
-        anyhow::ensure!(stored.schema == SCHEMA, "服务器设置版本不受支持");
+        let stored: Stored = serde_json::from_slice(&bytes).context(t().session.server_settings_invalid)?;
+        anyhow::ensure!(stored.schema == SCHEMA, "{}", t().session.server_settings_unsupported);
         Self::new(&stored.url, stored.pinned_sha256.as_deref(), stored.ca_pem).map(Some)
     }
 
@@ -149,7 +150,7 @@ impl ServerConfig {
 
     pub fn save(&self) -> Result<()> {
         let directory = directory()?;
-        std::fs::create_dir_all(&directory).context("创建配置目录失败")?;
+        std::fs::create_dir_all(&directory).context(t().session.settings_folder_failed)?;
         let stored = Stored {
             schema: SCHEMA,
             url: self.origin().to_owned(),
@@ -159,8 +160,8 @@ impl ServerConfig {
         let path = directory.join(FILE_NAME);
         let temporary = path.with_extension("json.tmp");
         std::fs::write(&temporary, serde_json::to_vec_pretty(&stored)?)
-            .context("保存服务器设置失败")?;
-        std::fs::rename(&temporary, &path).context("保存服务器设置失败")?;
+            .context(t().session.server_settings_save_failed)?;
+        std::fs::rename(&temporary, &path).context(t().session.server_settings_save_failed)?;
         Ok(())
     }
 
@@ -169,7 +170,7 @@ impl ServerConfig {
         match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error).context("删除服务器设置失败"),
+            Err(error) => Err(error).context(t().session.server_settings_delete_failed),
         }
     }
 
@@ -235,11 +236,11 @@ impl ServerConfig {
         roots.add_parsable_certificates(native.certs);
         if let Some(pem) = &self.ca_pem {
             for certificate in parse_ca(pem)? {
-                roots.add(certificate).context("自定义 CA 证书无效")?;
+                roots.add(certificate).context(t().session.custom_ca_invalid)?;
             }
         }
         if roots.is_empty() && self.pinned_sha256.is_none() {
-            bail!("没有可用的受信任根证书");
+            bail!("{}", t().session.no_trusted_roots);
         }
         let webpki = if roots.is_empty() {
             None
@@ -247,12 +248,12 @@ impl ServerConfig {
             Some(
                 WebPkiServerVerifier::builder(Arc::new(roots))
                     .build()
-                    .context("创建证书校验器失败")?,
+                    .context(t().session.verifier_failed)?,
             )
         };
         let provider = rustls::crypto::CryptoProvider::get_default()
             .cloned()
-            .context("TLS 加密提供程序未初始化")?;
+            .context(t().session.tls_provider_missing)?;
         let verifier = Arc::new(Verifier {
             webpki,
             pinned: self.pinned_sha256,
@@ -275,7 +276,7 @@ pub struct NoServer;
 
 impl std::fmt::Display for NoServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("尚未设置 Farwing 服务器")
+        f.write_str(t().session.no_server_configured)
     }
 }
 
@@ -366,14 +367,14 @@ pub async fn probe_certificate(address: &str) -> Result<CertificateProbe> {
     crate::transport::init_tls();
     let provider = rustls::crypto::CryptoProvider::get_default()
         .cloned()
-        .context("TLS 加密提供程序未初始化")?;
+        .context(t().session.tls_provider_missing)?;
     let seen = Arc::new(Mutex::new(None::<Vec<u8>>));
     let mut roots = rustls::RootCertStore::empty();
     roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
     let webpki = (!roots.is_empty())
         .then(|| WebPkiServerVerifier::builder(Arc::new(roots)).build())
         .transpose()
-        .context("创建证书校验器失败")?;
+        .context(t().session.verifier_failed)?;
     let recorder = Arc::new(Recorder {
         seen: Arc::clone(&seen),
         webpki,
@@ -393,21 +394,21 @@ pub async fn probe_certificate(address: &str) -> Result<CertificateProbe> {
         crate::transport::happy_eyeballs::connect(&addresses).await
     })
     .await
-    .context("连接服务器超时")?
-    .context("无法连接服务器")?;
-    let name = ServerName::try_from(host).context("服务器主机名无效")?;
+    .context(t().session.server_connect_timeout)?
+    .context(t().session.server_cannot_connect)?;
+    let name = ServerName::try_from(host).context(t().session.server_host_invalid)?;
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         TlsConnector::from(Arc::new(tls)).connect(name, stream),
     )
     .await
-    .context("TLS 握手超时")?
-    .context("TLS 握手失败")?;
+    .context(t().session.tls_handshake_timeout)?
+    .context(t().session.tls_handshake_failed)?;
     let leaf = seen
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
-        .context("服务器没有提供证书")?;
+        .context(t().session.server_no_certificate)?;
     let trusted_by_system = *recorder
         .trusted
         .lock()
@@ -493,7 +494,8 @@ fn parse_fingerprint(value: &str) -> Result<[u8; 32]> {
         .collect();
     anyhow::ensure!(
         digits.len() == 64 && digits.bytes().all(|b| b.is_ascii_hexdigit()),
-        "证书指纹应为 64 位十六进制 SHA-256"
+        "{}",
+        t().session.fingerprint_format
     );
     let mut output = [0u8; 32];
     for (index, byte) in output.iter_mut().enumerate() {
@@ -506,8 +508,8 @@ fn parse_ca(pem: &str) -> Result<Vec<CertificateDer<'static>>> {
     use rustls::pki_types::pem::PemObject;
     let certificates = CertificateDer::pem_slice_iter(pem.as_bytes())
         .collect::<std::result::Result<Vec<_>, _>>()
-        .context("CA 证书不是有效的 PEM")?;
-    anyhow::ensure!(!certificates.is_empty(), "CA 文件中没有证书");
+        .context(t().session.ca_not_pem)?;
+    anyhow::ensure!(!certificates.is_empty(), "{}", t().session.ca_file_empty);
     Ok(certificates)
 }
 

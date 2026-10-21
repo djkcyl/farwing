@@ -1,5 +1,6 @@
 use crate::diagnostics::performance::PerformanceMonitor;
 use crate::features::stream_control::StreamControlHandle;
+use crate::i18n::t;
 use crate::media::VideoCodec;
 use crate::media::decoder::RenderSurface;
 use crate::media::video_color::RenderColor;
@@ -66,12 +67,14 @@ pub struct ConnectionProgress {
     pub title: String,
     pub detail: String,
     pub state: ConnectionProgressState,
+    /// The other side ended the session (rather than it failing).
+    pub(crate) ended: bool,
     pub(crate) background: Option<crate::application::wallpaper::Source>,
     /// An automatic reconnection is waiting; the user may skip the wait.
     pub(crate) retry: Option<RetryNow>,
 }
 
-/// Ends the current wait of an automatic reconnection ("立即重试").
+/// Ends the current wait of an automatic reconnection ("Retry now").
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RetryNow(std::sync::Arc<tokio::sync::Notify>);
 
@@ -120,7 +123,11 @@ impl ConnectionProgress {
     pub(crate) fn updating(started: Instant) -> Self {
         Self {
             state: ConnectionProgressState::Updating(started),
-            ..Self::working(1, "等待被控端更新完成", "正在等待更新完成并恢复画面")
+            ..Self::working(
+                1,
+                t().viewer.waiting_for_update,
+                t().viewer.waiting_for_update_detail,
+            )
         }
     }
 
@@ -130,6 +137,7 @@ impl ConnectionProgress {
             title: title.into(),
             detail: detail.into(),
             state: ConnectionProgressState::Working,
+            ended: false,
             background: None,
             retry: None,
         }
@@ -138,9 +146,10 @@ impl ConnectionProgress {
     pub fn ready(detail: impl Into<String>) -> Self {
         Self {
             step: CONNECTION_PROGRESS_STEPS,
-            title: "连接完成".to_owned(),
+            title: t().viewer.connected.to_owned(),
             detail: detail.into(),
             state: ConnectionProgressState::Ready,
+            ended: false,
             background: None,
             retry: None,
         }
@@ -149,7 +158,8 @@ impl ConnectionProgress {
     /// The other side ended the session; `reason` says why.
     pub(crate) fn ended(reason: impl Into<String>) -> Self {
         Self {
-            title: "连接已结束".to_owned(),
+            title: t().viewer.connection_ended.to_owned(),
+            ended: true,
             ..Self::failed(reason)
         }
     }
@@ -157,15 +167,16 @@ impl ConnectionProgress {
     pub fn failed(detail: impl Into<String>) -> Self {
         Self {
             step: 0,
-            title: "无法建立连接".to_owned(),
+            title: t().viewer.cannot_connect.to_owned(),
             detail: detail.into(),
             state: ConnectionProgressState::Failed,
+            ended: false,
             background: None,
             retry: None,
         }
     }
 
-    /// Offer "立即重试" while this progress is shown.
+    /// Offer "Retry now" while this progress is shown.
     pub(crate) fn with_retry(mut self, retry: &RetryNow) -> Self {
         self.retry = Some(retry.clone());
         self
@@ -242,7 +253,11 @@ impl ConnectionProgressApp {
     }
 
     pub(super) fn new(alias: String, receiver: std_mpsc::Receiver<ConnectionProgress>) -> Self {
-        let current = ConnectionProgress::working(1, "准备连接", "正在读取本地会话和设备配置");
+        let current = ConnectionProgress::working(
+            1,
+            t().viewer.preparing_connection,
+            t().viewer.reading_local_settings,
+        );
         Self {
             alias,
             receiver,
@@ -549,7 +564,7 @@ impl NativeViewerSession {
         // issued immediately after resume, before the worker has run again.
         idle.wait_for(|idle| *idle >= epoch)
             .await
-            .context("软件解码器未能停止")?;
+            .context(t().viewer.software_decoder_not_stopped)?;
         Ok(())
     }
 

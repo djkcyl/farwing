@@ -1,5 +1,6 @@
 use super::*;
 use crate::application::app::updates::State;
+use crate::i18n::t;
 
 #[derive(Clone, Copy)]
 pub(super) enum LegalDocument {
@@ -14,6 +15,7 @@ impl DeviceCenterApp {
             return;
         }
         ui.add_space(8.0);
+        let text = &t().settings;
         crate::ui::controls::page_scroll("about-page").show(ui, |ui| {
             ui.horizontal(|ui| {
                 let (icon, _) = ui.allocate_exact_size(vec2(88.0, 88.0), Sense::hover());
@@ -53,40 +55,40 @@ impl DeviceCenterApp {
             ui.add_space(20.0);
 
             ui.label(
-                RichText::new("项目链接")
+                RichText::new(text.project_links)
                     .size(crate::ui::theme::SECTION)
                     .strong(),
             );
             ui.add_space(6.0);
             // Farwing releases are published through the Farwing server (see
-            // "软件更新" above); the only external link is upstream attribution.
+            // "Software update" above); the only external link is upstream attribution.
             ui.horizontal_wrapped(|ui| {
-                ui.hyperlink_to("上游项目 OpenUUYC", "https://github.com/djkcyl/openuuyc");
+                ui.hyperlink_to(text.upstream_project, "https://github.com/djkcyl/openuuyc");
             });
 
             ui.add_space(28.0);
             ui.label(
-                RichText::new("著作权、协议与许可")
+                RichText::new(text.copyright_section)
                     .size(crate::ui::theme::SECTION)
                     .strong(),
             );
             ui.add_space(6.0);
             ui.label(
-                RichText::new("Farwing 与网易及 UU 远程无关")
+                RichText::new(text.unaffiliated)
                     .size(crate::ui::theme::COMPACT_TEXT)
                     .color(MUTED),
             );
             ui.label(
-                RichText::new("包含 FFmpeg 派生组件（LGPL-2.1-or-later）")
+                RichText::new(text.ffmpeg_notice)
                     .size(crate::ui::theme::COMPACT_TEXT)
                     .color(MUTED),
             );
             ui.horizontal_wrapped(|ui| {
-                if ui.link("著作权与许可声明").clicked() {
+                if ui.link(text.license_notice).clicked() {
                     self.center_ui.legal_document = Some(LegalDocument::License);
                 }
                 ui.add_space(16.0);
-                if ui.link("第三方来源与许可").clicked() {
+                if ui.link(text.third_party_notices).clicked() {
                     self.center_ui.legal_document = Some(LegalDocument::ThirdParty);
                 }
             });
@@ -143,7 +145,7 @@ impl DeviceCenterApp {
                 ),
             ),
         };
-        let back = crate::ui::controls::back_button(ui, "返回关于").clicked();
+        let back = crate::ui::controls::back_button(ui, t().settings.back_to_about).clicked();
         ui.add_space(12.0);
         ui.label(RichText::new(title).size(theme::DIALOG_TITLE).strong());
         if back || ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
@@ -165,52 +167,35 @@ impl DeviceCenterApp {
     }
 
     fn about_updates(&mut self, ui: &mut egui::Ui) {
+        let text = &t().settings;
         crate::ui::controls::observe_notice(
             ui.ctx(),
             "client-update-error",
-            "检查更新失败",
+            text.update_check_failed,
             crate::ui::controls::DialogIcon::Error,
             match &self.updates.state {
                 State::Failed(error) => Some(error.as_str()),
                 _ => None,
             },
         );
+        let beta = self.updates.allow_prerelease();
         let (message, color, destination) = match &self.updates.state {
-            State::Checking => (
-                format!("正在检查最新{}…", self.updates.release_label()),
-                MUTED,
-                None,
-            ),
-            State::Current => (
-                format!("已是最新{}", self.updates.release_label()),
-                GREEN,
-                None,
-            ),
-            State::Ahead => (
-                format!("当前版本高于已发布的最新{}", self.updates.release_label()),
-                MUTED,
-                None,
-            ),
-            State::NoRelease => (
-                format!("暂无公开{}", self.updates.release_label()),
-                MUTED,
-                None,
-            ),
-            State::Failed(_) => ("未能检查更新".into(), MUTED, None),
+            State::Checking => ((text.update_checking)(beta), MUTED, None),
+            State::Current => ((text.update_current)(beta), GREEN, None),
+            State::Ahead => ((text.update_ahead)(beta), MUTED, None),
+            State::NoRelease => ((text.update_none)(beta), MUTED, None),
+            State::Failed(_) => (text.update_check_failed.into(), MUTED, None),
             State::Available {
                 version,
                 url,
                 prerelease,
                 ..
             } => (
-                format!(
-                    "发现{} v{version}",
-                    if *prerelease {
-                        "测试版"
-                    } else {
-                        "新版本"
-                    }
-                ),
+                if *prerelease {
+                    (text.update_found_beta)(version)
+                } else {
+                    (text.update_found_release)(version)
+                },
                 BLUE,
                 Some(url.clone()),
             ),
@@ -219,11 +204,11 @@ impl DeviceCenterApp {
         let wait = self.updates.retry_wait();
         let enabled = !checking && (destination.is_some() || wait == 0);
         let button = if destination.is_some() {
-            "查看新版本"
+            text.view_new_version
         } else if checking {
-            "检查中…"
+            text.checking
         } else {
-            "检查更新"
+            text.check_for_updates
         };
         let mut clicked = false;
         let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::hover());
@@ -232,10 +217,10 @@ impl DeviceCenterApp {
             let response = ui.add_enabled(enabled, primary(button));
             clicked = response.clicked();
             if !enabled && !checking {
-                response.on_disabled_hover_text(format!("{wait} 秒后可重新检查"));
+                response.on_disabled_hover_text((text.check_again_in)(wait));
             }
             ui.with_layout(egui::Layout::top_down(Align::Min), |ui| {
-                ui.label(RichText::new("软件更新").size(theme::SECTION).strong());
+                ui.label(RichText::new(text.software_update).size(theme::SECTION).strong());
                 ui.add(
                     egui::Label::new(
                         RichText::new(&message)
@@ -255,7 +240,7 @@ impl DeviceCenterApp {
             }
         }
         let mut allow = self.updates.allow_prerelease();
-        form_row_content(ui, "允许测试版", "", |ui| {
+        form_row_content(ui, text.allow_beta, "", |ui| {
             if crate::ui::controls::switch(ui, &mut allow).changed() {
                 let _ = self.updates.set_allow_prerelease(allow, ui.ctx());
             }

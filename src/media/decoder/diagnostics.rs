@@ -23,8 +23,7 @@ pub(crate) struct Format {
 }
 impl Format {
     fn label(self) -> String {
-        format!(
-            "{} · {} · {}位",
+        (crate::i18n::t().session.probe_format)(
             if self.codec == VideoCodec::Av1 {
                 "AV1"
             } else if self.codec == VideoCodec::H264 {
@@ -118,12 +117,12 @@ pub(crate) enum Status {
 impl Status {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Pending => "待检查",
-            Self::Passed => "通过",
-            Self::Failed => "失败",
-            Self::Unsupported => "未实现",
-            Self::Busy => "资源占用",
-            Self::Unchecked => "未检查",
+            Self::Pending => crate::i18n::t().session.probe_pending,
+            Self::Passed => crate::i18n::t().session.probe_passed,
+            Self::Failed => crate::i18n::t().session.probe_failed,
+            Self::Unsupported => crate::i18n::t().session.probe_unsupported,
+            Self::Busy => crate::i18n::t().session.probe_busy,
+            Self::Unchecked => crate::i18n::t().session.probe_unchecked,
         }
     }
 }
@@ -165,15 +164,15 @@ pub(crate) fn run(
         Ok(devices) if !devices.is_empty() => devices,
         Ok(_) => vec![(
             "DXVA11".into(),
-            Err(anyhow::anyhow!("没有可用的硬件适配器")),
+            Err(anyhow::anyhow!("{}", crate::i18n::t().session.probe_no_adapter)),
         )],
-        Err(error) => vec![("DXVA11 枚举".into(), Err(error))],
+        Err(error) => vec![(crate::i18n::t().session.probe_dxva_enumeration.into(), Err(error))],
     };
     let mut all: Vec<_> = devices
         .into_iter()
         .map(|(name, writer)| (format!("DXVA11 · {name}"), Some(name), Some(writer)))
         .collect();
-    all.push(("Farwing · 软件".into(), None, None));
+    all.push((crate::i18n::t().session.probe_software_backend.into(), None, None));
     let mut sizes: Vec<_> = crate::protocol::capability::QUALITY_DIMENSIONS
         .iter()
         .map(|&(w, h)| (w as u32, h as u32))
@@ -231,10 +230,10 @@ pub(crate) fn run(
                 };
                 if !supported {
                     cell.status = Status::Unsupported;
-                    cell.detail = "本程序此后端未实现该格式".into();
+                    cell.detail = crate::i18n::t().session.probe_format_not_implemented.into();
                 } else if let Some(Err(error)) = device {
                     cell.status = Status::Failed;
-                    cell.detail = format!("设备不可用：{error:#}");
+                    cell.detail = (crate::i18n::t().session.probe_device_unavailable)(&format!("{error:#}"));
                 } else if let Some(sample) = format.sample(size) {
                     let writer = device.as_ref().and_then(|d| d.as_ref().ok());
                     let result = (|| {
@@ -247,8 +246,8 @@ pub(crate) fn run(
                                 format.depth,
                                 format.chroma,
                             )
-                            .context("驱动配置创建失败")?;
-                            cell.detail = "驱动配置：可创建\n".into();
+                            .context(crate::i18n::t().session.probe_driver_config_failed)?;
+                            cell.detail = format!("{}\n", crate::i18n::t().session.probe_driver_config_ok);
                         }
                         decode_sample(format, size, sample, writer, cancel.clone())
                     })();
@@ -256,7 +255,7 @@ pub(crate) fn run(
                         Ok(()) => {
                             cell.status = Status::Passed;
                             cell.detail
-                                .push_str("解码输出校验通过");
+                                .push_str(crate::i18n::t().session.probe_output_verified);
                         }
                         Err(error) => {
                             cell.status = if error
@@ -271,7 +270,7 @@ pub(crate) fn run(
                         }
                     }
                 } else {
-                    cell.detail = "没有此尺寸的样本".into();
+                    cell.detail = crate::i18n::t().session.probe_no_sample.into();
                 }
                 if cancel.load(Ordering::Acquire) {
                     return Ok(());
@@ -343,14 +342,16 @@ fn decode_sample(
 ) -> Result<()> {
     let sample = first_picture(format, sample);
     let signature = crate::media::video_format::parse_stream_format(format.codec, &sample)
-        .context("样本序列头无效")?;
+        .context(crate::i18n::t().session.probe_sample_header_invalid)?;
     ensure!(
         signature.chroma_format_idc == format.chroma && signature.bit_depth_luma == format.depth,
-        "样本格式不匹配"
+        "{}",
+        crate::i18n::t().session.probe_sample_format_mismatch
     );
     ensure!(
         (signature.visible_width, signature.visible_height) == size,
-        "样本尺寸与目标不一致"
+        "{}",
+        crate::i18n::t().session.probe_sample_size_mismatch
     );
     let _slot = if writer.is_none() {
         Some(SoftwareSlot::acquire()?)
@@ -377,13 +378,13 @@ fn decode_sample(
         gpu_device: writer.map(|w| w.device_handle()),
         extra_data: Bytes::new(),
     })
-    .context("创建指定后端")?;
+    .context(crate::i18n::t().session.probe_backend_create_failed)?;
     decoder.set_notification(DecoderNotification::new(cancel.clone()));
-    decoder.push_packet(&sample, 1).context("提交样本码流")?;
+    decoder.push_packet(&sample, 1).context(crate::i18n::t().session.probe_submit_failed)?;
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        ensure!(!cancel.load(Ordering::Acquire), "检查已取消");
-        if let Some(frame) = decoder.poll_owned_frame().context("读取解码输出")? {
+        ensure!(!cancel.load(Ordering::Acquire), "{}", crate::i18n::t().session.probe_cancelled);
+        if let Some(frame) = decoder.poll_owned_frame().context(crate::i18n::t().session.probe_output_read_failed)? {
             let actual = match frame {
                 WindowsDecodedFrame::Gpu(frame) => {
                     use windows::Win32::Graphics::{
@@ -400,12 +401,12 @@ fn decode_sample(
                     unsafe {
                         frame.texture().GetDesc(&mut desc);
                     }
-                    ensure!(desc.Format == expected, "GPU输出像素格式与样本不一致");
+                    ensure!(desc.Format == expected, "{}", crate::i18n::t().session.probe_gpu_format_mismatch);
                     let pixels = frame.diagnostic_pixels(&points, &cancel)?;
                     check_codec_pattern(format, size, &points, &pixels)?;
                     let actual = (frame.width(), frame.height());
                     let _surface = writer
-                        .context("缺少D3D11输出拥有者")?
+                        .context(crate::i18n::t().session.probe_no_d3d11_owner)?
                         .wrap_decoded_surface(frame)?;
                     actual
                 }
@@ -424,10 +425,11 @@ fn decode_sample(
                     } else {
                         WindowsCpuFormat::Nv12
                     };
-                    ensure!(frame.format == expected, "软件输出像素格式与样本不一致");
+                    ensure!(frame.format == expected, "{}", crate::i18n::t().session.probe_software_format_mismatch);
                     ensure!(
                         (frame.width, frame.height) == (w, h),
-                        "软件输出尺寸与样本不一致"
+                        "{}",
+                        crate::i18n::t().session.probe_software_size_mismatch
                     );
                     let cw = frame.coded_width as usize;
                     let ch = frame.coded_height as usize;
@@ -437,7 +439,7 @@ fn decode_sample(
                         WindowsCpuFormat::P010 | WindowsCpuFormat::I444 => plane * 3,
                         _ => plane * 4,
                     };
-                    ensure!(frame.data.len() == length, "软件输出平面长度不符");
+                    ensure!(frame.data.len() == length, "{}", crate::i18n::t().session.probe_software_plane_mismatch);
                     let pixels: Vec<_> = points
                         .iter()
                         .map(|&(x, y)| {
@@ -492,10 +494,10 @@ fn decode_sample(
                     (frame.width, frame.height)
                 }
             };
-            ensure!(actual == (w, h), "解码输出尺寸与样本不一致");
+            ensure!(actual == (w, h), "{}", crate::i18n::t().session.probe_output_size_mismatch);
             return Ok(());
         }
-        ensure!(Instant::now() < deadline, "创建成功，但2秒内没有解码输出");
+        ensure!(Instant::now() < deadline, "{}", crate::i18n::t().session.probe_no_output);
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -508,10 +510,8 @@ fn check_pattern(pixels: &[[u16; 3]]) -> Result<()> {
                 .iter()
                 .zip(expected)
                 .all(|(&a, e)| a.abs_diff(e) <= 8),
-            "合成图案第{}点像素不符：实际{:?}，预期{:?}",
-            index + 1,
-            actual,
-            expected
+            "{}",
+            (crate::i18n::t().session.probe_pattern_mismatch)(index + 1, &format!("{actual:?}"), &format!("{expected:?}"))
         );
     }
     Ok(())
@@ -533,7 +533,8 @@ fn check_codec_pattern(
             ];
             ensure!(
                 p.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 8),
-                "AV1 4:4:4合成色块像素不符"
+                "{}",
+                crate::i18n::t().session.probe_av1_444_mismatch
             );
         }
     } else if format.codec == VideoCodec::Av1 {
@@ -546,7 +547,8 @@ fn check_codec_pattern(
             };
             ensure!(
                 p[0].abs_diff(y) <= 8 && p[1].abs_diff(128) <= 8 && p[2].abs_diff(128) <= 8,
-                "AV1合成图案像素不符"
+                "{}",
+                crate::i18n::t().session.probe_av1_pattern_mismatch
             );
         }
     } else {
