@@ -145,7 +145,7 @@ code,
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
 }
 .grid-stats {
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 }
 
 /* ------------------------------------------------------------------ shell */
@@ -709,13 +709,17 @@ html[lang='en'] .search {
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  padding: 40px 16px;
+  padding: 28px 16px;
   color: var(--muted);
   text-align: center;
 }
 .empty-title {
-  color: var(--text);
-  font-weight: 600;
+  color: var(--muted);
+}
+.card-count {
+  color: var(--muted);
+  font-weight: 400;
+  margin-left: 8px;
 }
 
 .alert {
@@ -760,6 +764,9 @@ html[lang='en'] .search {
 .stat-label {
   color: var(--muted);
   font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .stat-value {
   font-size: 24px;
@@ -983,6 +990,7 @@ table.table {
 }
 .lang-switch select {
   appearance: none;
+  field-sizing: content;
   border: 0;
   background: transparent
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca7b8' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")

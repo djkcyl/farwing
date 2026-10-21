@@ -313,7 +313,7 @@ export default function Friends() {
       />
       {(friends.error || requests.error) && <Alert>{friends.error ?? requests.error}</Alert>}
       {incoming.length > 0 && (
-        <Card title={m.requests(incoming.length)} pad={false}>
+        <Card title={m.requests} count={incoming.length} pad={false}>
           <div className="list">
             {incoming.map((r) => (
               <Person
@@ -343,7 +343,7 @@ export default function Friends() {
           </div>
         </Card>
       )}
-      <Card title={m.friends(friends.data?.friends.length ?? 0)} pad={false}>
+      <Card title={m.friends} count={friends.data?.friends.length ?? 0} pad={false}>
         {!friends.data ? (
           <Loading />
         ) : friends.data.friends.length === 0 ? (
@@ -386,7 +386,7 @@ export default function Friends() {
         )}
       </Card>
       {outgoing.length > 0 && (
-        <Card title={m.sentRequests(outgoing.length)} pad={false}>
+        <Card title={m.sentRequests} count={outgoing.length} pad={false}>
           <div className="list">
             {outgoing.map((r) => (
               <Person

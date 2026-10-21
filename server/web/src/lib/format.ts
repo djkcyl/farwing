@@ -186,6 +186,12 @@ export function bitrate(bps: number): string {
   return `${num(bps)} bps`;
 }
 
+/// The instance's name, when it says more than the product's.
+export function instanceText(name: string | null | undefined): string {
+  const value = (name ?? '').trim();
+  return value.toLowerCase() === 'farwing' ? '' : value;
+}
+
 export function displayName(u: { nickname?: string; username?: string } | null | undefined): string {
   if (!u) return '';
   return u.nickname || u.username || '';

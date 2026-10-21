@@ -4,7 +4,7 @@ import { useState, type ReactNode } from 'react';
 import type { Messages } from '../i18n';
 import { useT } from '../i18n/react';
 import { useAuth } from '../lib/auth';
-import { displayName } from '../lib/format';
+import { displayName, instanceText } from '../lib/format';
 import { Link, useLocation } from '../lib/router';
 import { Icon, type IconName } from './icons';
 import { IconButton } from './kit';
@@ -81,9 +81,11 @@ export function Shell({ children }: { children: ReactNode }) {
           <BrandMark />
           <div className="grow">
             <div className="brand-name">Farwing</div>
-            <div className="brand-sub ellipsis" title={auth.info?.instance_name}>
-              {auth.info?.instance_name || 'Farwing Server'}
-            </div>
+            {instanceText(auth.info?.instance_name) && (
+              <div className="brand-sub ellipsis" title={auth.info?.instance_name}>
+                {instanceText(auth.info?.instance_name)}
+              </div>
+            )}
           </div>
         </div>
         <nav className="nav">
@@ -102,10 +104,13 @@ export function Shell({ children }: { children: ReactNode }) {
           <span className="avatar">{(name || '?').slice(0, 1).toUpperCase()}</span>
           <div className="grow">
             <div className="ellipsis">{name}</div>
-            <div className="small muted ellipsis">
-              {auth.me?.username}
-              {auth.isAdmin ? t.auth.shell.adminSuffix : ''}
-            </div>
+            {(auth.me?.nickname || auth.isAdmin) && (
+              <div className="small muted ellipsis">
+                {[auth.me?.nickname ? auth.me.username : '', auth.isAdmin ? t.auth.shell.admin : '']
+                  .filter(Boolean)
+                  .join(' · ')}
+              </div>
+            )}
           </div>
           <IconButton
             icon="logout"

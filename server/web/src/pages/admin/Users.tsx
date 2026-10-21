@@ -188,7 +188,7 @@ export default function Users() {
                         {u.nickname || u.username}
                         {u.id === me?.user_id && <span className="muted small">{m.you}</span>}
                       </div>
-                      <div className="cell-sub">{u.username}</div>
+                      {u.nickname && <div className="cell-sub">{u.username}</div>}
                     </td>
                     <td>
                       {u.role === 'admin' ? (

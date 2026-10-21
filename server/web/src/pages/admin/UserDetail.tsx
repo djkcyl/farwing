@@ -12,7 +12,6 @@ import type { AdminFriend, Grants, UserDetail as Detail } from '../../lib/types'
 import { useApi } from '../../lib/useApi';
 import { Icon } from '../../ui/icons';
 import {
-  Alert,
   Badge,
   Button,
   Card,
@@ -21,9 +20,9 @@ import {
   Field,
   IconButton,
   Input,
-  Loading,
   Online,
   PageHeader,
+  PageState,
   Row,
   Rows,
 } from '../../ui/kit';
@@ -69,7 +68,19 @@ export default function UserDetail({ params }: { params: Record<string, string> 
   const [renaming, setRenaming] = useState(false);
   const [nickname, setNickname] = useState('');
 
-  if (!data) return error ? <Alert>{error}</Alert> : <Loading />;
+  if (!data) {
+    return (
+      <PageState
+        title={t.nav.users}
+        back={
+          <Link to="/admin/users" className="back">
+            <Icon name="back" size={14} /> {t.nav.users}
+          </Link>
+        }
+        error={error}
+      />
+    );
+  }
   const a = data.account;
   const self = a.id === me?.user_id;
   const deviceNames = new Map(data.devices.map((d) => [d.device_id, d.alias]));
@@ -219,7 +230,7 @@ export default function UserDetail({ params }: { params: Record<string, string> 
             </Row>
           </Rows>
         </Card>
-        <Card title={m.logins(data.logins.length)} pad={false}>
+        <Card title={m.logins} count={data.logins.length} pad={false}>
           {data.logins.length === 0 ? (
             <Empty icon="lock" title={m.noLogins} />
           ) : (
@@ -240,7 +251,7 @@ export default function UserDetail({ params }: { params: Record<string, string> 
         </Card>
       </div>
 
-      <Card title={m.devices(data.devices.length)} pad={false}>
+      <Card title={m.devices} count={data.devices.length} pad={false}>
         {data.devices.length === 0 ? (
           <Empty icon="monitor" title={m.noDevices} />
         ) : (
@@ -300,7 +311,7 @@ export default function UserDetail({ params }: { params: Record<string, string> 
         )}
       </Card>
 
-      <Card title={m.friends(data.friends.length)} pad={false}>
+      <Card title={m.friends} count={data.friends.length} pad={false}>
         {data.friends.length === 0 ? (
           <Empty icon="users" title={m.noFriends} />
         ) : (

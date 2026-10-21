@@ -108,8 +108,8 @@ export function verify(publicKey: Uint8Array, message: Uint8Array, signature: Ui
   }
 }
 
-/// A readable name for this browser device, e.g. "Web · Chrome · Windows", in
-/// the language of the console when the browser registers.
+/// A readable name for this browser device, e.g. "Chrome · Windows": the
+/// same in every language; lists show the platform ("Web") beside it.
 export function browserName(): string {
   const ua = navigator.userAgent;
   const browser = /Edg\//.test(ua)
@@ -132,5 +132,5 @@ export function browserName(): string {
           : /Linux/.test(ua)
             ? 'Linux'
             : '';
-  return [t().format.platforms.web, browser, os].filter(Boolean).join(' · ');
+  return [browser, os].filter(Boolean).join(' · ');
 }

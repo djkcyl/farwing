@@ -5,7 +5,7 @@ import { byName } from '../../lib/devices';
 import type { DeviceList } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
 import { DeviceCard } from '../../ui/DeviceCard';
-import { Alert, Empty, Loading, PageHeader, Tabs } from '../../ui/kit';
+import { Alert, Empty, PageHeader, PageState, Tabs } from '../../ui/kit';
 
 type Tab = 'own' | 'shared';
 
@@ -14,7 +14,7 @@ export default function Devices() {
   const m = t.account.devices;
   const { data, error } = useApi<DeviceList>('/api/v2/devices', 10000);
   const [tab, setTab] = useState<Tab>('own');
-  if (!data) return error ? <Alert>{error}</Alert> : <Loading />;
+  if (!data) return <PageState title={t.nav.devices} error={error} />;
   const own = data.own.filter((d) => d.platform !== 'web');
   const browsers = data.own.length - own.length;
   const list = tab === 'own' ? own : data.shared;

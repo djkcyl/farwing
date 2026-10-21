@@ -169,7 +169,6 @@ export const zh = {
     pip: '画中画',
     stats: '连接统计',
     people: '参与者',
-    peopleCount: (n: number) => `参与者（${n}）`,
     fullscreen: '全屏（F）',
     exitFullscreen: '退出全屏（F）',
     /** A participant whose name is unknown. */
@@ -463,7 +462,6 @@ export const en: typeof zh = {
     pip: 'Picture-in-picture',
     stats: 'Connection statistics',
     people: 'Participants',
-    peopleCount: (n) => `Participants (${n})`,
     fullscreen: 'Full screen (F)',
     exitFullscreen: 'Exit full screen (F)',
     participant: 'Participant',

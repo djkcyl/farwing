@@ -8,6 +8,7 @@ import { Link, navigate, useLocation } from '../lib/router';
 import { Alert, Button, Field, Input } from '../ui/kit';
 import { LangSwitch } from '../ui/LangSwitch';
 import { BrandMark } from '../ui/Shell';
+import { instanceText } from '../lib/format';
 
 export function AuthFrame({ title, children, foot }: { title: string; children: ReactNode; foot?: ReactNode }) {
   const { info } = useAuth();
@@ -19,7 +20,9 @@ export function AuthFrame({ title, children, foot }: { title: string; children: 
           <BrandMark size={40} />
           <div>
             <div className="brand-name">Farwing</div>
-            <div className="small muted">{info?.instance_name || 'Farwing Server'}</div>
+            {instanceText(info?.instance_name) && (
+              <div className="small muted">{instanceText(info?.instance_name)}</div>
+            )}
           </div>
         </div>
         <div className="auth-panel">

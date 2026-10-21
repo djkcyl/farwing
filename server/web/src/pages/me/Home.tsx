@@ -1,23 +1,21 @@
 // The user centre's first page: online devices, who is connected to mine,
 // open friend requests, recent logins.
 import { useT } from '../../i18n/react';
-import { useAuth } from '../../lib/auth';
-import { ago, displayName, platformText, purposeText, relationText } from '../../lib/format';
+import { ago, platformText, purposeText, relationText } from '../../lib/format';
 import { Link } from '../../lib/router';
 import type { AuthSession, DeviceList, FriendRequests } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
 import { DeviceCard } from '../../ui/DeviceCard';
-import { Alert, Badge, Card, Empty, Loading, PageHeader, Stat } from '../../ui/kit';
+import { Badge, Card, Empty, Loading, PageHeader, PageState, Stat } from '../../ui/kit';
 
 export default function Home() {
   const t = useT();
   const m = t.account.home;
-  const auth = useAuth();
   const devices = useApi<DeviceList>('/api/v2/devices', 10000);
   const requests = useApi<FriendRequests>('/api/v2/friends/requests', 30000);
   const logins = useApi<{ sessions: AuthSession[] }>('/api/v2/auth/sessions');
   const d = devices.data;
-  if (!d) return devices.error ? <Alert>{devices.error}</Alert> : <Loading />;
+  if (!d) return <PageState title={t.nav.home} error={devices.error} />;
 
   const hosts = d.own.filter((x) => x.platform !== 'web' && x.capabilities.includes('host'));
   const online = [...hosts, ...d.shared].filter((x) => x.status === 'online');
@@ -26,7 +24,7 @@ export default function Home() {
 
   return (
     <div className="stack">
-      <PageHeader title={displayName(auth.me)} subtitle={auth.info?.instance_name} />
+      <PageHeader title={t.nav.home} />
       <div className="grid grid-stats">
         <Stat
           label={m.myComputersOnline}

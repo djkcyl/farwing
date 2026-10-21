@@ -7,7 +7,7 @@ import { useAuth } from '../../lib/auth';
 import { capText, listText, WEB_CAPS } from '../../lib/format';
 import type { RuntimeSettings, SettingsView } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
-import { Alert, Button, Card, Checkbox, Field, Input, Loading, PageHeader, Row, Rows, Switch } from '../../ui/kit';
+import { Alert, Button, Card, Checkbox, Field, Input, PageHeader, PageState, Row, Rows, Switch } from '../../ui/kit';
 import { useOverlay } from '../../ui/overlay';
 
 function value(v: unknown, t: Messages): ReactNode {
@@ -120,7 +120,7 @@ function Form({ initial, onSaved }: { initial: RuntimeSettings; onSaved(): void 
 export default function Settings() {
   const t = useT();
   const { data, error, reload } = useApi<SettingsView>('/api/v2/admin/settings');
-  if (!data) return error ? <Alert>{error}</Alert> : <Loading />;
+  if (!data) return <PageState title={t.nav.settings} error={error} />;
   const config = data.config;
   return (
     <div className="stack">

@@ -20,7 +20,7 @@ import type { DeviceDetail as Detail, DeviceList } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
 import { viewBlocker } from '../../lib/devices';
 import { Icon } from '../../ui/icons';
-import { Alert, Button, Card, Copy, Empty, Field, Input, Loading, Online, PageHeader, Row, Rows } from '../../ui/kit';
+import { Button, Card, Copy, Empty, Field, Input, Online, PageHeader, PageState, Row, Rows } from '../../ui/kit';
 import { Dialog, useOverlay } from '../../ui/overlay';
 
 export default function DeviceDetail({ params }: { params: Record<string, string> }) {
@@ -33,7 +33,19 @@ export default function DeviceDetail({ params }: { params: Record<string, string
   const [alias, setAlias] = useState('');
 
   const d = detail.data;
-  if (!d) return detail.error ? <Alert>{detail.error}</Alert> : <Loading />;
+  if (!d) {
+    return (
+      <PageState
+        title={t.nav.devices}
+        back={
+          <Link to="/devices" className="back">
+            <Icon name="back" size={14} /> {t.nav.devices}
+          </Link>
+        }
+        error={detail.error}
+      />
+    );
+  }
   const device = [...(list.data?.own ?? []), ...(list.data?.shared ?? [])].find((x) => x.device_id === d.device_id);
   const own = !d.owner;
   const blocker = device ? viewBlocker(device) : t.common.loading;

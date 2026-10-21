@@ -394,7 +394,12 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
         });
       });
     }, 0);
+    // Leaving the page ends the session at once; otherwise the host keeps
+    // it open for a reconnection.
+    const leave = () => current?.stop();
+    window.addEventListener('pagehide', leave);
     return () => {
+      window.removeEventListener('pagehide', leave);
       window.clearTimeout(timer);
       current?.stop();
       autoControlTried.current = false;
@@ -1266,7 +1271,8 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                 ? t.viewer.screen.stats
                 : panel === 'files'
                   ? t.viewer.screen.hostFiles
-                  : t.viewer.screen.peopleCount(people?.participants.length ?? 1)}
+                  : t.viewer.screen.people}
+              {panel === 'people' && <span className="card-count">{people?.participants.length ?? 1}</span>}
             </h2>
             <button type="button" className="tool" onClick={() => setPanel('none')} aria-label={t.common.close}>
               <Icon name="close" size={16} />

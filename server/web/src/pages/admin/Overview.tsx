@@ -5,14 +5,14 @@ import { auditKindText, bytes, dateTime, duration, listText } from '../../lib/fo
 import { Link } from '../../lib/router';
 import type { Overview } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
-import { Alert, Badge, Card, Copy, Empty, Loading, PageHeader, Row, Rows, Stat } from '../../ui/kit';
+import { Alert, Badge, Card, Copy, Empty, PageHeader, PageState, Row, Rows, Stat } from '../../ui/kit';
 
 export default function AdminOverview() {
   const t = useT();
   const [lang] = useLang();
   const m = t.admin.overview;
   const { data, error } = useApi<Overview>('/api/v2/admin/overview', 5000);
-  if (!data) return error ? <Alert>{error}</Alert> : <Loading />;
+  if (!data) return <PageState title={t.nav.adminHome} error={error} />;
   const onOff = (on: boolean) => (on ? <Badge tone="green">{t.common.on}</Badge> : <Badge>{t.common.off}</Badge>);
   return (
     <div className="stack">

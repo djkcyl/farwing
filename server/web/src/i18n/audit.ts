@@ -91,9 +91,13 @@ function field(
       const names: Record<string, string> = m.caps;
       return t.webCaps(value.map((c) => names[String(c)] ?? String(c)).join(m.listSeparator));
     }
-    // A login: the device, as `alias [device ID] platform`.
-    case 'device':
-      return `${raw(value)} [${raw(all.device_id ?? '')}] ${raw(all.platform ?? '')}`.trim();
+    // A login: the device, its platform and its ID.
+    case 'device': {
+      const platforms: Record<string, string> = messages[lang].format.platforms;
+      const platform = raw(all.platform ?? '');
+      const id = raw(all.device_id ?? '').replace(/(.{4})(?=.)/g, '$1 ');
+      return [raw(value), platforms[platform] ?? platform, id && `ID ${id}`].filter(Boolean).join(' · ');
+    }
     case 'device_id':
     case 'platform':
       return 'device' in all ? undefined : `${key}: ${raw(value)}`;

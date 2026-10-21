@@ -2,7 +2,7 @@
 
 export const zh = {
   shell: {
-    adminSuffix: ' · 管理员',
+    admin: '管理员',
     signOutQuestion: '退出登录？',
     signOutConfirm: '退出',
   },
@@ -44,7 +44,7 @@ export const zh = {
 
 export const en: typeof zh = {
   shell: {
-    adminSuffix: ' · Admin',
+    admin: 'Administrator',
     signOutQuestion: 'Sign out?',
     signOutConfirm: 'Sign out',
   },

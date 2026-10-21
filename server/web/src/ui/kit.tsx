@@ -146,12 +146,15 @@ export function Checkbox({
 
 export function Card({
   title,
+  count,
   actions,
   children,
   className = '',
   pad = true,
 }: {
   title?: ReactNode;
+  /// How many items the card lists, after the title.
+  count?: number;
   actions?: ReactNode;
   children: ReactNode;
   className?: string;
@@ -161,7 +164,10 @@ export function Card({
     <section className={`card ${className}`}>
       {(title || actions) && (
         <header className="card-head">
-          <h2>{title}</h2>
+          <h2>
+            {title}
+            {count !== undefined && <span className="card-count">{count}</span>}
+          </h2>
           {actions && <div className="row gap-sm">{actions}</div>}
         </header>
       )}
@@ -238,6 +244,23 @@ export function PageHeader({
       </div>
       {actions && <div className="row gap-sm wrap">{actions}</div>}
     </header>
+  );
+}
+
+/// A page whose data is not there yet: its title, then loading or why
+/// it could not be read, where the content would be.
+export function PageState({ title, back, error }: { title: ReactNode; back?: ReactNode; error?: string }) {
+  return (
+    <div className="stack">
+      <PageHeader title={title} back={back} />
+      {error ? (
+        <Card>
+          <Empty icon="alert" title={error} />
+        </Card>
+      ) : (
+        <Loading />
+      )}
+    </div>
   );
 }
 

@@ -35,7 +35,7 @@
 
 原提案用 HttpOnly Cookie 会话加 CSRF 校验。实施时改为让浏览器作为一台平台为 `web` 的 Farwing 设备，复用客户端的接口与签名，理由：观看本来就需要设备密钥（DTLS 身份签名），一套凭据即可；签名请求不依赖 Cookie，没有 CSRF 面。
 
-- 浏览器生成 Ed25519 设备密钥：优先 WebCrypto（不可导出，存 IndexedDB）；不支持时用 `@noble/curves`（种子存 IndexedDB）。设备 ID 由公钥推导，名称如“网页 · Chrome · Windows”。
+- 浏览器生成 Ed25519 设备密钥：优先 WebCrypto（不可导出，存 IndexedDB）；不支持时用 `@noble/curves`（种子存 IndexedDB）。设备 ID 由公钥推导，名称如“Chrome · Windows”（不含界面语言；平台“网页”在显示时另列）。
 - 每个请求与客户端一样签名（`FWREQ2`，设备 ID、时间戳、签名头），时间戳在页面内严格递增（同一毫秒的相同请求签名不同，避免被当作重放）。
 - 登录令牌放在 `localStorage`（多个标签页共享）；没有这个浏览器的私钥，令牌不能使用。网页设备的登录空闲 `session_idle_minutes`、最长 `session_max_hours` 后失效（客户端登录不受影响），在“我的登录”中可单独注销。远程会话进行中（画面播放或正在恢复）每 5 分钟用一次 `GET /api/v2/me` 保持登录，所以看着、控制着不会因空闲过期；这个请求即使遇到登录失效也不会把页面退出到登录页（会话继续，之后的普通请求再提示），最长期限照常生效。
 - 登录限流沿用 `login_failures_per_ip/per_user`；改密码、禁用、删除账号时撤销该账号的所有登录（含网页）。
