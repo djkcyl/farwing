@@ -125,6 +125,8 @@ pub(super) enum GuiEvent {
     AssistOperation(u64, u64, std::result::Result<AssistResult, String>),
     Friends(u64, std::result::Result<super::friends::FriendResult, String>),
     Devices(u64, DeviceList),
+    /// The last device list, while the server cannot be reached at startup.
+    CachedDevices(u64, DeviceList),
     Catalog(u64, std::result::Result<catalog::Catalog, String>, String),
     MutationFinished(u64, std::result::Result<MutationOutcome, String>),
     Detail(

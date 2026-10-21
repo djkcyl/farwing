@@ -164,7 +164,7 @@ Farwing.exe --profile a gui
 Farwing.exe --profile b gui
 ```
 
-或设置环境变量 `FARWING_PROFILE=b`。默认 profile 为 `default`，数据在 `%LOCALAPPDATA%\Farwing`；其他 profile 的数据在 `%LOCALAPPDATA%\Farwing\profiles\<名称>`。后台服务、驱动等全机组件只属于默认 profile；非默认 profile 以便携模式运行（不使用后台服务提供的锁屏接入、服务端输入注入等能力），也不会显示或执行“安装服务”。
+或设置环境变量 `FARWING_PROFILE=b`。默认 profile 为 `default`，数据在 `%LOCALAPPDATA%\Farwing`；其他 profile 的数据在 `%LOCALAPPDATA%\Farwing\profiles\<名称>`。后台服务、驱动等全机组件只属于默认 profile；非默认 profile 以便携模式运行（不使用后台服务提供的锁屏接入、服务端输入注入等能力），也不会显示或执行“安装服务”；从哪个程序文件启动就运行哪个，不转交给已安装的版本。
 
 同一台电脑上一个 profile 作为被控、另一个作为主控时，被控画面就是本机桌面，观看窗口会出现“画中画”；本机声音也会被播放两遍，测试时可加 `--mute`。
 

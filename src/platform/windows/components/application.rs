@@ -215,6 +215,11 @@ pub(crate) fn cleanup_retired(directory: &Path) -> Result<()> {
 }
 
 pub(crate) fn needs_handoff() -> Result<bool> {
+    // The installed program belongs to the default profile; other profiles
+    // run portable, from whichever copy was started.
+    if !crate::product::is_default_profile() {
+        return Ok(false);
+    }
     let image = image()?;
     if !image.is_file() {
         return Ok(false);

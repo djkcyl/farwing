@@ -154,6 +154,13 @@ impl DeviceCenterApp {
             }
         }
         self.connect_bar(ui, access);
+        if self.cached_devices {
+            cards::banner(
+                ui,
+                "暂时连不上服务器：先显示上次的设备列表，连上后自动刷新。局域网中的设备仍可以在“附近”中直接连接。",
+                Tone::Warning,
+            );
+        }
         if let Some((message, _)) = &self.direct.message {
             cards::banner(ui, message, Tone::Success);
         }

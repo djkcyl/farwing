@@ -100,16 +100,14 @@ enum StartupStage {
     #[default]
     Identity,
     Credentials,
-    Media,
     Device,
     Account,
     Devices,
 }
 impl StartupStage {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 5] = [
         Self::Identity,
         Self::Credentials,
-        Self::Media,
         Self::Device,
         Self::Account,
         Self::Devices,
@@ -118,17 +116,15 @@ impl StartupStage {
         match self {
             Self::Identity => 0,
             Self::Credentials => 1,
-            Self::Media => 2,
-            Self::Device => 3,
-            Self::Account => 4,
-            Self::Devices => 5,
+            Self::Device => 2,
+            Self::Account => 3,
+            Self::Devices => 4,
         }
     }
     fn title(self) -> &'static str {
         match self {
             Self::Identity => "读取本机身份",
             Self::Credentials => "读取登录凭据",
-            Self::Media => "检查本机媒体能力",
             Self::Device => "初始化设备会话",
             Self::Account => "校验账号登录状态",
             Self::Devices => "获取设备清单",
@@ -138,7 +134,6 @@ impl StartupStage {
         match self {
             Self::Identity => "正在读取系统凭据库中的本机身份并启动会话服务。",
             Self::Credentials => "正在读取已保存的账号凭据，准备恢复上次登录。",
-            Self::Media => "正在检查显示器和视频编码能力，完成后连接将复用检查结果。",
             Self::Device => "正在与 Farwing 服务器同步本机身份，建立设备会话。",
             Self::Account => "正在向 Farwing 服务器验证已保存的登录凭据并读取账号信息。",
             Self::Devices => "正在获取账号设备列表和在线状态，首批设备就绪后进入主界面。",
@@ -187,6 +182,8 @@ struct DeviceCenterApp {
     login_generation: u64,
     login_form: LoginForm,
     login_restoring: bool,
+    /// The device list shown is the cached one from before this start.
+    cached_devices: bool,
     startup_stage: StartupStage,
     startup_stage_since: Instant,
     login_running: bool,
@@ -242,6 +239,7 @@ impl DeviceCenterApp {
             login_generation: 0,
             login_form: LoginForm::default(),
             login_restoring: true,
+            cached_devices: false,
             startup_stage: StartupStage::Identity,
             startup_stage_since: Instant::now(),
             login_running: false,
@@ -305,6 +303,7 @@ impl DeviceCenterApp {
                         && !self.logout_pending
                         && self.startup_stage != stage
                     {
+                        tracing::info!(stage = stage.title(), "device center startup");
                         self.startup_stage = stage;
                         self.startup_stage_since = Instant::now();
                     }
@@ -327,6 +326,28 @@ impl DeviceCenterApp {
                         });
                     }
                 }
+                GuiEvent::CachedDevices(generation, mut devices) => {
+                    if generation != self.login_generation
+                        || !self.login_restoring
+                        || self.devices.is_some()
+                        || self.logout_pending
+                        || self.login_running
+                    {
+                        continue;
+                    }
+                    // Whether they are online is unknown until the server answers.
+                    for device in std::iter::once(&mut devices.current_device)
+                        .chain(&mut devices.devices)
+                        .chain(&mut devices.shared)
+                    {
+                        device.status = "offline".into();
+                    }
+                    tracing::info!("device center startup: cached devices shown");
+                    self.cached_devices = true;
+                    self.devices = Some(devices);
+                    self.normalize_selection();
+                    self.login_restoring = false;
+                }
                 GuiEvent::Devices(generation, devices) => {
                     if generation != self.login_generation
                         || self.logout_pending
@@ -339,8 +360,12 @@ impl DeviceCenterApp {
                     self.normalize_selection();
                     self.refreshed_at = Some(Instant::now());
                     self.refresh_pending = false;
+                    self.cached_devices = false;
                     if !self.status.kind.is_alert() {
                         self.status = StatusMessage::success("设备状态已刷新");
+                    }
+                    if self.login_restoring {
+                        tracing::info!("device center startup: devices shown");
                     }
                     self.login_restoring = false;
                 }
@@ -426,6 +451,7 @@ impl DeviceCenterApp {
                 GuiEvent::SessionUnavailable(message) => {
                     self.clear_catalog();
                     self.devices = None;
+                    self.cached_devices = false;
                     self.selected_device_id = None;
                     self.refresh_pending = false;
                     self.status = StatusMessage::warning(message);
@@ -437,6 +463,7 @@ impl DeviceCenterApp {
                 GuiEvent::SignedOut => {
                     self.clear_catalog();
                     self.devices = None;
+                    self.cached_devices = false;
                     self.selected_device_id = None;
                     self.refresh_pending = false;
                     self.login_restoring = false;
@@ -503,6 +530,7 @@ impl DeviceCenterApp {
                         session.handle.request_close();
                     }
                     self.devices = None;
+                    self.cached_devices = false;
                     self.selected_device_id = None;
                     self.presence = PresenceState::Offline;
                     self.status = StatusMessage::warning(message);
@@ -515,6 +543,7 @@ impl DeviceCenterApp {
                     self.logout_pending = false;
                     self.logout_sent = false;
                     self.devices = None;
+                    self.cached_devices = false;
                     self.selected_device_id = None;
                     self.presence = PresenceState::Offline;
                     self.status = match (outcome.remote_error, outcome.local_error) {

@@ -12,6 +12,10 @@ use anyhow::{Result, anyhow};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
+
+/// How long a starting device center waits for the server before showing
+/// the cached device list.
+const CACHED_LIST_AFTER: std::time::Duration = std::time::Duration::from_millis(1500);
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
@@ -118,6 +122,9 @@ pub(super) async fn gui_worker_loop(
     };
     let _ = events.send(GuiEvent::Startup(0, StartupStage::Credentials));
     let mut startup_last = None;
+    // When the saved account was opened, until its device list was offered
+    // from the cache (the server may be slow or unreachable).
+    let mut restoring: Option<(u64, Instant)> = None;
     let mut startup_media: Option<StartupMedia> = None;
     let mut media_ready = None;
     let mut client: Option<Arc<AuthenticatedClient>> = None;
@@ -798,6 +805,7 @@ pub(super) async fn gui_worker_loop(
             ));
             match AuthenticatedClient::from_saved_session_with_device(device_runtime.handle()) {
                 Ok(loaded) => {
+                    restoring = Some((catalog_generation, Instant::now()));
                     client = Some(Arc::new(loaded));
                     presence_stopped = false;
                 }
@@ -829,6 +837,10 @@ pub(super) async fn gui_worker_loop(
             if logout_task.is_some() {
                 continue;
             }
+            // Probing the encoders takes seconds when nothing is cached (a
+            // new installation, graphics changes). It runs alongside the
+            // account and device list; a session arriving meanwhile waits
+            // for its result.
             if media_ready != Some(catalog_generation) {
                 if startup_media.is_none() {
                     let host = active_client.host.clone();
@@ -839,26 +851,23 @@ pub(super) async fn gui_worker_loop(
                         cancel,
                         task: tokio::spawn(async move { host.prepare_startup(task_cancel).await }),
                     });
-                    startup_last = Some((catalog_generation, StartupStage::Media));
-                    let _ = events.send(GuiEvent::Startup(catalog_generation, StartupStage::Media));
                 }
-                if !startup_media
+                if startup_media
                     .as_ref()
                     .is_some_and(|task| task.task.is_finished())
                 {
-                    continue;
+                    let prepared = startup_media.take().expect("completed media preparation");
+                    if let Err(error) = prepared
+                        .task
+                        .await
+                        .unwrap_or_else(|error| Err(error.into()))
+                    {
+                        let _ = events.send(GuiEvent::Warning(format!(
+                            "本机媒体能力检查失败：{error:#}；连接时将重新检查"
+                        )));
+                    }
+                    media_ready = Some(catalog_generation);
                 }
-                let prepared = startup_media.take().expect("completed media preparation");
-                if let Err(error) = prepared
-                    .task
-                    .await
-                    .unwrap_or_else(|error| Err(error.into()))
-                {
-                    let _ = events.send(GuiEvent::Warning(format!(
-                        "本机媒体能力检查失败：{error:#}；连接时将重新检查"
-                    )));
-                }
-                media_ready = Some(catalog_generation);
             }
             let stage = match active_client.restoration_stage() {
                 crate::account::client::RestorationStage::Device => StartupStage::Device,
@@ -868,6 +877,19 @@ pub(super) async fn gui_worker_loop(
             if startup_last != Some((catalog_generation, stage)) {
                 startup_last = Some((catalog_generation, stage));
                 let _ = events.send(GuiEvent::Startup(catalog_generation, stage));
+            }
+            if stage == StartupStage::Devices {
+                restoring = None;
+            } else if let Some((generation, since)) = restoring
+                && since.elapsed() >= CACHED_LIST_AFTER
+            {
+                restoring = None;
+                if generation == catalog_generation
+                    && let Some(list) =
+                        crate::transport::direct::store::device_list(active_client.user_id())
+                {
+                    let _ = events.send(GuiEvent::CachedDevices(generation, list));
+                }
             }
             let refresh_active = *foreground.borrow();
             if refresh_active

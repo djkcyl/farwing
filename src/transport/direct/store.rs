@@ -416,6 +416,54 @@ pub(crate) fn save_own_devices(user_id: &str, list: &crate::account::api::Device
     }
 }
 
+const DEVICE_LIST: &str = "device_list.json";
+
+#[derive(Serialize, Deserialize)]
+struct CachedList {
+    user_id: String,
+    list: crate::account::api::DeviceList,
+}
+
+/// Keep the account's last device list, shown at startup while the server
+/// cannot be reached. Written when it changes, at most once a minute.
+pub(crate) fn save_device_list(user_id: &str, list: &crate::account::api::DeviceList) {
+    static LAST: Mutex<Option<(std::time::Instant, Vec<u8>)>> = Mutex::new(None);
+    let Ok(bytes) = serde_json::to_vec(&CachedList {
+        user_id: user_id.to_owned(),
+        list: list.clone(),
+    }) else {
+        return;
+    };
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if last.as_ref().is_some_and(|(at, previous)| {
+        *previous == bytes || at.elapsed() < std::time::Duration::from_secs(60)
+    }) {
+        return;
+    }
+    let _guard = guard();
+    let result = file(DEVICE_LIST).and_then(|path| {
+        let temporary = path.with_extension("json.tmp");
+        std::fs::write(&temporary, &bytes)?;
+        std::fs::rename(&temporary, &path)?;
+        Ok(())
+    });
+    match result {
+        Ok(()) => *last = Some((std::time::Instant::now(), bytes)),
+        Err(error) => tracing::warn!(error = %format!("{error:#}"), "device list cache not saved"),
+    }
+}
+
+/// The last device list of `user_id`, if this profile kept one.
+pub(crate) fn device_list(user_id: &str) -> Option<crate::account::api::DeviceList> {
+    let _guard = guard();
+    file(DEVICE_LIST)
+        .and_then(|path| read::<Option<CachedList>>(&path))
+        .ok()
+        .flatten()
+        .filter(|cache| !user_id.is_empty() && cache.user_id == user_id)
+        .map(|cache| cache.list)
+}
+
 /// The cached devices of `user_id`; empty for another or no account.
 pub(crate) fn own_devices(user_id: &str) -> Vec<OwnDevice> {
     if user_id.is_empty() {
@@ -457,7 +505,7 @@ pub(crate) fn own_devices_account() -> Option<String> {
 /// Forget the account caches (logout).
 pub(crate) fn clear_own_devices() {
     let _guard = guard();
-    for name in ["own_devices.json", FRIEND_DEVICES] {
+    for name in ["own_devices.json", FRIEND_DEVICES, DEVICE_LIST] {
         if let Ok(path) = file(name) {
             let _ = std::fs::remove_file(path);
         }

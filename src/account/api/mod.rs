@@ -414,7 +414,7 @@ impl fmt::Debug for DeviceInfo {
 
 /// `GET /devices`: this device, the account's other devices and friends'
 /// devices shared with this account.
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DeviceList {
     pub current_device: DeviceInfo,
     /// Other devices of this account.

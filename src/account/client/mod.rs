@@ -502,6 +502,7 @@ impl AuthenticatedClient {
         // Direct connections recognise this account's devices by key, also
         // while the server is unreachable (`docs/protocol/v2-design.md` §12.2).
         crate::transport::direct::store::save_own_devices(self.session.user_id(), &list);
+        crate::transport::direct::store::save_device_list(self.session.user_id(), &list);
         self.schedule_publication();
         Ok(list)
     }
