@@ -168,12 +168,13 @@ impl DeviceCenterApp {
     }
     /// The background service, as it matters to others connecting.
     pub(super) fn service_row(&mut self, ui: &mut egui::Ui) {
-        let Some((hint, action)) = self.center_ui.components.reach() else {
+        let Some(reach) = self.center_ui.components.reach() else {
             return;
         };
         let mut install = false;
         let mut manage = false;
-        form_row(ui, "后台服务", hint, |ui| match action {
+        let hint = format!("{}：{}", reach.state, reach.meaning);
+        form_row(ui, "后台服务", &hint, |ui| match reach.action {
             Some(label) => install = ui.add(crate::ui::controls::primary(label)).clicked(),
             None => manage = ui.add(crate::ui::controls::secondary("管理")).clicked(),
         });

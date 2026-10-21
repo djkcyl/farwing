@@ -6,6 +6,15 @@ struct ResultState {
     components: Vec<(Kind, Result<Status, String>)>,
     operation: Option<(Kind, Operation, Result<bool, String>)>,
 }
+/// The background service as it matters to others connecting.
+pub(super) struct ServiceReach {
+    pub state: &'static str,
+    pub color: Color32,
+    pub meaning: &'static str,
+    /// What to do about it, if anything.
+    pub action: Option<&'static str>,
+}
+
 #[derive(Default)]
 pub(in crate::application::app) struct Manager {
     status: Option<Status>,
@@ -141,17 +150,32 @@ impl Manager {
     }
     /// What the background service means for reaching this device, and the
     /// action it calls for (default profile only).
-    pub(super) fn reach(&self) -> Option<(&'static str, Option<&'static str>)> {
+    pub(super) fn reach(&self) -> Option<ServiceReach> {
         if !crate::product::is_default_profile() {
             return None;
         }
         let status = self.status.as_ref()?;
         Some(if status.ready {
-            ("已安装：锁屏、注销或重启后（无需登录 Windows）也能连接本机", None)
+            ServiceReach {
+                state: "已安装",
+                color: GREEN,
+                meaning: "锁屏、注销或重启后（无需登录 Windows）也能连接本机",
+                action: None,
+            }
         } else if status.installed {
-            ("需要完成安装或更新，完成前锁屏或重启后可能无法连接本机", Some("更新服务"))
+            ServiceReach {
+                state: "需要更新",
+                color: AMBER,
+                meaning: "完成前，锁屏或重启后可能无法连接本机",
+                action: Some("更新服务"),
+            }
         } else {
-            ("未安装：只有本程序在运行且已登录 Windows 时，才能连接本机", Some("安装服务"))
+            ServiceReach {
+                state: "未安装",
+                color: MUTED,
+                meaning: "只有本程序在运行且已登录 Windows 时，才能连接本机",
+                action: Some("安装服务"),
+            }
         })
     }
     pub(super) fn request_install(&mut self) {

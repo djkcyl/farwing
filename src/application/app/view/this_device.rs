@@ -12,20 +12,56 @@ fn detail(ui: &mut egui::Ui, text: &str) {
     ui.add(egui::Label::new(RichText::new(text).size(theme::SMALL).color(MUTED)).wrap());
 }
 
-/// A label column and a value, for the identity card.
-fn field(ui: &mut egui::Ui, label: &str, value: impl FnOnce(&mut egui::Ui)) {
+/// The identity card's columns: what a row is, its value, what that means.
+const LABEL_COLUMN: f32 = 72.0;
+const VALUE_COLUMN: f32 = 260.0;
+
+/// A row of the identity card, its three columns lined up with the others.
+fn field(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: impl FnOnce(&mut egui::Ui),
+    meaning: impl FnOnce(&mut egui::Ui),
+) {
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(
-            vec2(72.0, theme::CONTROL_HEIGHT),
+            vec2(LABEL_COLUMN, theme::CONTROL_HEIGHT),
             egui::Layout::left_to_right(Align::Center),
             |ui| {
-                // A fixed label column, so the values line up.
-                ui.set_min_size(vec2(72.0, theme::CONTROL_HEIGHT));
+                ui.set_min_size(vec2(LABEL_COLUMN, theme::CONTROL_HEIGHT));
                 ui.label(RichText::new(label).color(MUTED));
             },
         );
-        value(ui);
+        ui.allocate_ui_with_layout(
+            vec2(VALUE_COLUMN, theme::CONTROL_HEIGHT),
+            egui::Layout::left_to_right(Align::Center).with_main_wrap(true),
+            |ui| {
+                ui.set_min_size(vec2(VALUE_COLUMN, theme::CONTROL_HEIGHT));
+                value(ui);
+            },
+        );
+        meaning(ui);
     });
+}
+
+/// A value to copy, framed like a button; it says so once copied.
+fn copy_chip(ui: &mut egui::Ui, salt: &str, text: &str, value: &str, copied: &str) {
+    let id = ui.id().with(("copy-chip", salt));
+    let recent = ui
+        .ctx()
+        .data(|data| data.get_temp::<Instant>(id))
+        .filter(|at| at.elapsed() < Duration::from_secs(2));
+    let response = ui
+        .add(egui::Button::new(RichText::new(text).monospace()))
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(if recent.is_some() { copied } else { "点击复制" });
+    if response.clicked() {
+        ui.ctx().copy_text(value.to_owned());
+        ui.ctx().data_mut(|data| data.insert_temp(id, Instant::now()));
+    }
+    if recent.is_some() {
+        ui.ctx().request_repaint_after(Duration::from_millis(250));
+    }
 }
 
 impl DeviceCenterApp {
@@ -120,90 +156,111 @@ impl DeviceCenterApp {
                 });
             });
             ui.add_space(8.0);
-            field(ui, "设备 ID", |ui| {
-                assist_components::copy_value(
-                    ui,
-                    "this-device-id",
-                    vec2(240.0, theme::CONTROL_HEIGHT),
-                    RichText::new(identity.as_ref().map_or("未知", |(_, id)| id.as_str()))
-                        .monospace()
-                        .strong(),
-                    (!raw_id.is_empty()).then_some(raw_id.as_str()),
-                    "已复制设备 ID",
-                );
-                detail(ui, "由本机密钥生成，在任何服务器和局域网中都相同");
-            });
-            field(ui, "短号", |ui| {
-                if !short.is_empty() {
-                    assist_components::copy_value(
-                        ui,
-                        "this-device-short",
-                        vec2(240.0, theme::CONTROL_HEIGHT),
-                        RichText::new(assist_components::grouped_id(&short))
-                            .monospace()
-                            .strong(),
-                        Some(short.as_str()),
-                        "已复制短号",
-                    );
-                    detail(ui, "服务器分配，方便口头告诉别人");
-                } else {
-                    detail(
-                        ui,
-                        match access {
-                            Access::NoServer => "没有服务器时没有短号",
-                            _ if !allowed => "开启“允许连接本机”后由服务器分配",
-                            _ => "正在从服务器获取…",
-                        },
-                    );
-                }
-            });
-            field(ui, "局域网", |ui| match state.as_ref().map(|s| (s.listening_port, s.settings)) {
-                // The endpoint listens but refuses everyone, and the device
-                // is not announced.
-                Some((_, settings)) if !allowed && settings.direct => {
-                    detail(ui, "开启“允许连接本机”后接受直连");
-                }
-                Some((Some(port), settings)) => {
-                    let default = port == farwing_protocol::direct::DEFAULT_PORT;
-                    if addresses.is_empty() {
-                        detail(ui, "没有找到本机的局域网地址；对方可以输入本机的 IP 或主机名");
+            field(
+                ui,
+                "设备 ID",
+                |ui| match identity.as_ref() {
+                    Some((_, id)) if !raw_id.is_empty() => {
+                        copy_chip(ui, "this-device-id", id, &raw_id, "已复制设备 ID");
                     }
-                    for address in &addresses {
-                        let text = if default {
-                            address.to_string()
-                        } else {
-                            format!("{address}:{port}")
-                        };
-                        if ui
-                            .add(egui::Button::new(RichText::new(&text).monospace()))
-                            .on_hover_text("点击复制")
-                            .clicked()
-                        {
-                            ui.ctx().copy_text(text);
+                    _ => detail(ui, "未知"),
+                },
+                |ui| detail(ui, "由本机密钥生成，在任何服务器和局域网中都相同"),
+            );
+            field(
+                ui,
+                "短号",
+                |ui| {
+                    if short.is_empty() {
+                        detail(
+                            ui,
+                            match access {
+                                Access::NoServer => "没有服务器时没有短号",
+                                _ if !allowed => "开启“允许连接本机”后由服务器分配",
+                                _ => "正在从服务器获取…",
+                            },
+                        );
+                    } else {
+                        copy_chip(
+                            ui,
+                            "this-device-short",
+                            &assist_components::grouped_id(&short),
+                            &short,
+                            "已复制短号",
+                        );
+                    }
+                },
+                |ui| {
+                    if !short.is_empty() {
+                        detail(ui, "服务器分配，方便口头告诉别人");
+                    }
+                },
+            );
+            let lan = state.as_ref().map(|s| (s.listening_port, s.settings));
+            field(
+                ui,
+                "局域网",
+                |ui| match lan {
+                    // The endpoint listens but refuses everyone, and the
+                    // device is not announced.
+                    Some((_, settings)) if !allowed && settings.direct => {
+                        detail(ui, "开启“允许连接本机”后接受直连");
+                    }
+                    Some((Some(port), _)) => {
+                        if addresses.is_empty() {
+                            detail(ui, "没有找到本机的局域网地址");
+                        }
+                        let default = port == farwing_protocol::direct::DEFAULT_PORT;
+                        for (index, address) in addresses.iter().enumerate() {
+                            let text = if default {
+                                address.to_string()
+                            } else {
+                                format!("{address}:{port}")
+                            };
+                            copy_chip(ui, &format!("this-device-lan-{index}"), &text, &text, "已复制地址");
                         }
                     }
-                    detail(
-                        ui,
-                        &format!(
-                            "直连端口 {port}{}",
-                            if settings.lan_discovery { " · 局域网可发现" } else { " · 局域网发现已关闭" }
-                        ),
-                    );
-                }
-                Some((None, settings)) if !settings.direct => {
-                    detail(ui, "直连已关闭");
-                    open_network = ui.add(crate::ui::controls::secondary("直连设置")).clicked();
-                }
-                Some((None, _)) => detail(ui, "正在开启直连…"),
-                None => detail(ui, "正在读取后台服务的状态…"),
-            });
-            if let Some((hint, action)) = self.center_ui.components.reach() {
-                field(ui, "后台服务", |ui| {
-                    detail(ui, hint);
-                    if let Some(label) = action {
-                        install_service = ui.add(crate::ui::controls::secondary(label)).clicked();
+                    Some((None, settings)) if !settings.direct => detail(ui, "直连已关闭"),
+                    Some((None, _)) => detail(ui, "正在开启直连…"),
+                    None => detail(ui, "正在读取后台服务的状态…"),
+                },
+                |ui| match lan {
+                    Some((Some(port), settings)) if allowed || !settings.direct => {
+                        detail(
+                            ui,
+                            &format!(
+                                "直连端口 {port}{}",
+                                if settings.lan_discovery {
+                                    " · 局域网可发现"
+                                } else {
+                                    " · 局域网发现已关闭"
+                                }
+                            ),
+                        );
+                        if addresses.is_empty() {
+                            detail(ui, "对方可以输入本机的 IP 或主机名");
+                        }
                     }
-                });
+                    Some((None, settings)) if !settings.direct => {
+                        open_network = ui.add(crate::ui::controls::secondary("直连设置")).clicked();
+                    }
+                    _ => {}
+                },
+            );
+            if let Some(reach) = self.center_ui.components.reach() {
+                field(
+                    ui,
+                    "后台服务",
+                    |ui| {
+                        cards::chip(ui, reach.state, reach.color);
+                    },
+                    |ui| {
+                        detail(ui, reach.meaning);
+                        if let Some(label) = reach.action {
+                            install_service = ui.add(crate::ui::controls::secondary(label)).clicked();
+                        }
+                    },
+                );
             }
             if !allowed {
                 ui.add_space(4.0);
