@@ -108,7 +108,26 @@ pub(crate) async fn connect(
     tokio::select! {
         biased;
         _ = cancel.cancelled() => bail!("connection cancelled"),
-        result = connect_inner(target, local, auth) => result,
+        result = connect_admitted(target, local, auth) => result,
+    }
+}
+
+/// A host that says it admits this device by key is asked so first. Its
+/// answer comes from caches that it may refresh before deciding (a friend's
+/// access withdrawn meanwhile): then the code the user gave, or asking the
+/// host's user, still applies, on a new connection.
+async fn connect_admitted(target: &Target, local: &LocalDevice, auth: Auth) -> Result<Connected> {
+    match connect_inner(target, local, auth.clone(), true).await {
+        Err(error)
+            if matches!(auth, Auth::Code(_))
+                && error
+                    .downcast_ref::<ApiFailure>()
+                    .is_some_and(|failure| failure.code == ErrorCode::Forbidden) =>
+        {
+            tracing::info!(%error, "host no longer admits this device by key; using the code or confirmation");
+            connect_inner(target, local, auth, false).await
+        }
+        result => result,
     }
 }
 
@@ -157,7 +176,12 @@ async fn open(target: &Target, local: &LocalDevice) -> Result<Opened> {
     })
 }
 
-async fn connect_inner(target: &Target, local: &LocalDevice, auth: Auth) -> Result<Connected> {
+async fn connect_inner(
+    target: &Target,
+    local: &LocalDevice,
+    auth: Auth,
+    by_key_if_admitted: bool,
+) -> Result<Connected> {
     let Opened {
         mut reader,
         mut writer,
@@ -167,7 +191,7 @@ async fn connect_inner(target: &Target, local: &LocalDevice, auth: Auth) -> Resu
     } = open(target, local).await?;
     // A host that admits this device by its key needs neither a code nor a
     // confirmation, whichever was asked for.
-    let auth = if host.admits { Auth::Key } else { auth };
+    let auth = if host.admits && by_key_if_admitted { Auth::Key } else { auth };
     tracing::info!(%address, device = %host.device_id, methods = ?host.methods, ?auth, "direct host identified");
     let mut pake_key = None;
     match &auth {

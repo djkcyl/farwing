@@ -281,8 +281,14 @@ pub(crate) fn take_over() -> Result<bool> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    std::fs::remove_file(&path)?;
-    let state: Handover = serde_json::from_slice(&bytes).context("交给后台服务的直连记录无效")?;
+    let state: Handover = match serde_json::from_slice(&bytes) {
+        Ok(state) => state,
+        Err(error) => {
+            // Never retried: kept beside for a look, out of the way.
+            let _ = std::fs::rename(&path, path.with_extension("json.invalid"));
+            return Err(error).context("交给后台服务的直连记录无效");
+        }
+    };
     apply(Action::Network(state.settings))?;
     let mut trusted = Vec::new();
     for device in state.trusted {
@@ -309,6 +315,8 @@ pub(crate) fn take_over() -> Result<bool> {
     }
     let count = trusted.len();
     store::replace_trusted(trusted)?;
+    // Removed once adopted: a failure above is retried next time.
+    std::fs::remove_file(&path)?;
     tracing::info!(trusted = count, "adopted the installing user's direct records");
     Ok(true)
 }

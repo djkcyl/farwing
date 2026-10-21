@@ -41,7 +41,31 @@ fn read<T: DeserializeOwned + Default>(path: &Path) -> Result<T> {
     }
 }
 
+/// The trusted devices and known hosts as last read, for a moment: pages
+/// draw them every frame. Every write here drops them.
+static TRUSTED_READ: Mutex<Option<(std::time::Instant, Vec<TrustedDevice>)>> = Mutex::new(None);
+static KNOWN_READ: Mutex<Option<(std::time::Instant, Vec<KnownHost>)>> = Mutex::new(None);
+const READ_FOR: std::time::Duration = std::time::Duration::from_secs(1);
+
+fn cached<T: Clone>(slot: &Mutex<Option<(std::time::Instant, T)>>) -> Option<T> {
+    slot.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .filter(|(at, _)| at.elapsed() < READ_FOR)
+        .map(|(_, value)| value.clone())
+}
+
+fn keep<T>(slot: &Mutex<Option<(std::time::Instant, T)>>, value: T) {
+    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some((std::time::Instant::now(), value));
+}
+
+fn forget_reads() {
+    *TRUSTED_READ.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *KNOWN_READ.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 fn write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    forget_reads();
     let parent = path.parent().context("记录目录无效")?;
     std::fs::create_dir_all(parent)?;
     let temporary = parent.join(format!(
@@ -157,14 +181,19 @@ pub(crate) fn with_view(grants: &[String]) -> Vec<String> {
 
 /// The devices this one trusts.
 pub(crate) fn trusted() -> Vec<TrustedDevice> {
+    if let Some(devices) = cached(&TRUSTED_READ) {
+        return devices;
+    }
     let _guard = guard();
-    dir()
+    let devices = dir()
         .and_then(|dir| load_trusted_in(&dir))
         .map(|(_, t)| t.devices)
         .unwrap_or_else(|error| {
             tracing::warn!(error = %format!("{error:#}"), "trusted devices unavailable");
             Vec::new()
-        })
+        });
+    keep(&TRUSTED_READ, devices.clone());
+    devices
 }
 
 /// Whether this device trusts any other (read at most every few seconds).
@@ -272,6 +301,9 @@ fn load_known_in(dir: &Path) -> Result<(PathBuf, Known)> {
 
 /// The devices this one connected to, most recent first.
 pub(crate) fn known_hosts() -> Vec<KnownHost> {
+    if let Some(hosts) = cached(&KNOWN_READ) {
+        return hosts;
+    }
     let _guard = guard();
     let mut hosts = dir()
         .and_then(|dir| load_known_in(&dir))
@@ -281,6 +313,7 @@ pub(crate) fn known_hosts() -> Vec<KnownHost> {
             Vec::new()
         });
     hosts.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+    keep(&KNOWN_READ, hosts.clone());
     hosts
 }
 
@@ -427,31 +460,35 @@ struct CachedList {
     list: crate::account::api::DeviceList,
 }
 
-/// Keep the account's last device list, shown at startup while the server
-/// cannot be reached. Written when it changes, at most once a minute.
+/// What was last written to [`DEVICE_LIST`] (dropped with the file).
+static DEVICE_LIST_WRITTEN: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+
+/// Keep the account's device list, shown at startup while the server cannot
+/// be reached. Without what will have changed by then (who is online and
+/// connected), so it is written only when the devices themselves change.
 pub(crate) fn save_device_list(user_id: &str, list: &crate::account::api::DeviceList) {
-    static LAST: Mutex<Option<(std::time::Instant, Vec<u8>)>> = Mutex::new(None);
-    let Ok(bytes) = serde_json::to_vec(&CachedList {
+    let mut list = list.clone();
+    for device in std::iter::once(&mut list.current_device)
+        .chain(&mut list.devices)
+        .chain(&mut list.shared)
+    {
+        device.status = "offline".into();
+        device.participants_info.clear();
+    }
+    let cached = CachedList {
         user_id: user_id.to_owned(),
-        list: list.clone(),
-    }) else {
+        list,
+    };
+    let Ok(bytes) = serde_json::to_vec(&cached) else {
         return;
     };
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    if last.as_ref().is_some_and(|(at, previous)| {
-        *previous == bytes || at.elapsed() < std::time::Duration::from_secs(60)
-    }) {
+    let mut written = DEVICE_LIST_WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
+    if written.as_deref() == Some(bytes.as_slice()) {
         return;
     }
     let _guard = guard();
-    let result = file(DEVICE_LIST).and_then(|path| {
-        let temporary = path.with_extension("json.tmp");
-        std::fs::write(&temporary, &bytes)?;
-        std::fs::rename(&temporary, &path)?;
-        Ok(())
-    });
-    match result {
-        Ok(()) => *last = Some((std::time::Instant::now(), bytes)),
+    match file(DEVICE_LIST).and_then(|path| write(&path, &cached)) {
+        Ok(()) => *written = Some(bytes),
         Err(error) => tracing::warn!(error = %format!("{error:#}"), "device list cache not saved"),
     }
 }
@@ -507,6 +544,7 @@ pub(crate) fn own_devices_account() -> Option<String> {
 
 /// Forget the account caches (logout).
 pub(crate) fn clear_own_devices() {
+    *DEVICE_LIST_WRITTEN.lock().unwrap_or_else(|e| e.into_inner()) = None;
     let _guard = guard();
     for name in ["own_devices.json", FRIEND_DEVICES, DEVICE_LIST] {
         if let Ok(path) = file(name) {

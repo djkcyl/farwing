@@ -737,6 +737,9 @@ async fn run_authorized_account(
     let mut device_changes = crate::account::device_change::relay::Relay::new();
     let mut blocked = String::new();
     let mut next_start = std::time::Instant::now();
+    // Whether a signed-out host goes without a server: read every few
+    // seconds, and kept when the setting cannot be read for a moment.
+    let mut serverless_checked: Option<(std::time::Instant, bool)> = None;
     let mut tick = tokio::time::interval(Duration::from_millis(200));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let result: Result<()> = async {
@@ -949,7 +952,18 @@ async fn run_authorized_account(
             } else { saved.clone() };
             // Signed out, the service hosts as the GUI would: without a
             // server (or with direct connections only) on its own.
-            let serverless = saved.is_empty() && HostClient::serverless();
+            let serverless = saved.is_empty() && {
+                match serverless_checked {
+                    Some((at, known)) if at.elapsed() < Duration::from_secs(3) => known,
+                    previous => {
+                        let known = HostClient::serverless_setting()
+                            .or(previous.map(|(_, known)| known))
+                            .unwrap_or(false);
+                        serverless_checked = Some((std::time::Instant::now(), known));
+                        known
+                    }
+                }
+            };
             if client
                 .as_ref()
                 .is_some_and(|c| !c.is_active() || !c.matches_saved(&saved) || c.is_local() != serverless)

@@ -59,6 +59,8 @@ pub(super) struct DirectUi {
     pub tab_chosen: bool,
     /// The connect bar: a device ID, a short number or an address.
     pub target: String,
+    /// The name of the nearby device put in the connect bar (target, name).
+    pub target_name: Option<(String, String)>,
     /// The connect bar's optional access code.
     pub code: String,
     /// Ask the other side's user to confirm instead of using a code.

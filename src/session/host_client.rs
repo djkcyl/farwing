@@ -75,11 +75,13 @@ impl HostClient {
     }
     /// A signed-out host does not use a server.
     pub fn serverless() -> bool {
-        crate::account::server::ServerConfig::load()
-            .ok()
-            .flatten()
-            .is_none()
-            || crate::transport::nat::settings::current().serverless
+        Self::serverless_setting().unwrap_or(true)
+    }
+    /// [`Self::serverless`], or `None` when the server setting cannot be
+    /// read just now.
+    pub fn serverless_setting() -> Option<bool> {
+        let server = crate::account::server::ServerConfig::load().ok()?;
+        Some(server.is_none() || crate::transport::nat::settings::current().serverless)
     }
     /// A host without a server: this profile's device key and settings, the
     /// device ID derived from the key unless it is registered.

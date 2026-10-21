@@ -378,7 +378,16 @@ impl DeviceCenterApp {
         let code = code.trim();
         match parse_target(text) {
             Err(error) => self.direct.error = Some(error),
-            Ok(Target::Address(address)) => self.connect_address(&address, code, ask, None),
+            Ok(Target::Address(address)) => {
+                // A nearby device that asked for a code keeps its name.
+                let name = self
+                    .direct
+                    .target_name
+                    .clone()
+                    .filter(|(target, _)| *target == address)
+                    .map(|(_, name)| name);
+                self.connect_address(&address, code, ask, name.as_deref());
+            }
             Ok(Target::ShortNumber(number)) => {
                 if self.access() == Access::NoServer {
                     self.direct.error =
@@ -450,6 +459,7 @@ impl DeviceCenterApp {
 
     /// Fill the connect bar for a device that needs an access code.
     fn ask_for_code(&mut self, target: String, name: &str) {
+        self.direct.target_name = Some((target.clone(), name.to_owned()));
         self.direct.target = target;
         self.direct.code.clear();
         self.direct.ask = false;

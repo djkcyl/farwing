@@ -125,6 +125,11 @@ pub(super) async fn gui_worker_loop(
     // When the saved account was opened, until its device list was offered
     // from the cache (the server may be slow or unreachable).
     let mut restoring: Option<(u64, Instant)> = None;
+    // This device goes online once the encoders are known (a session must
+    // not wait out the probe against its connection deadline), or after
+    // this long whatever the probe does.
+    let mut online_after: Option<Instant> = None;
+    let mut host_shown: Option<u64> = None;
     let mut startup_media: Option<StartupMedia> = None;
     let mut media_ready = None;
     let mut client: Option<Arc<AuthenticatedClient>> = None;
@@ -806,6 +811,8 @@ pub(super) async fn gui_worker_loop(
             match AuthenticatedClient::from_saved_session_with_device(device_runtime.handle()) {
                 Ok(loaded) => {
                     restoring = Some((catalog_generation, Instant::now()));
+                    online_after = Some(Instant::now() + std::time::Duration::from_secs(30));
+                    host_shown = None;
                     client = Some(Arc::new(loaded));
                     presence_stopped = false;
                 }
@@ -925,11 +932,19 @@ pub(super) async fn gui_worker_loop(
                     "设备同步失败：{error:#}；可手动刷新重试"
                 )));
             }
-            if host_signal.is_none() && !presence_stopped {
+            // The 本机 page works with the host before it is online.
+            if host_shown != Some(catalog_generation) {
+                host_shown = Some(catalog_generation);
                 let _ = events.send(GuiEvent::Host(
                     catalog_generation,
                     active_client.host.clone(),
                 ));
+            }
+            if host_signal.is_none()
+                && !presence_stopped
+                && (media_ready == Some(catalog_generation)
+                    || online_after.is_some_and(|at| Instant::now() >= at))
+            {
                 host_signal = Some(ActivePresence::start(Arc::clone(active_client)));
             }
         }
