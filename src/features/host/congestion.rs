@@ -205,7 +205,11 @@ impl Controller {
         // File/audio connections may attach their first video later. Seed that
         // first video once, but never treat a quality/FPS revision as a route
         // change: a starting_rate overwrites both live bandwidth estimators.
-        let start = (video && !self.video_configured).then_some(bounds.initial);
+        // Until media has been acknowledged the estimate holds nothing
+        // learnt: a start rate that changed meanwhile (the route chosen,
+        // and with it the remembered rate) still replaces it.
+        let reseed = self.feedback_count == 0 && bounds.initial != self.bounds.initial;
+        let start = (video && (!self.video_configured || reseed)).then_some(bounds.initial);
         self.video_configured |= video;
         if bounds == self.bounds && start.is_none() {
             return;

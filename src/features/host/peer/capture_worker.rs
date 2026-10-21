@@ -87,11 +87,10 @@ pub(super) fn capture_loop(
     let mut initial_auto = true;
     let mut auto_logged = false;
     let mut degrade = crate::features::host::parameters::Degrade::default();
-    // Start near what this controller reached last time.
-    let remembered = crate::features::host::bandwidth::remembered(&handle.controller_device());
-    if let Some(bps) = remembered {
-        tracing::info!(bps, "host start bitrate from the previous session");
-    }
+    // Start near what this controller reached last time over this kind of
+    // route, once the route is chosen (when the connection is up, before the
+    // encoder starts).
+    let mut remembered = None::<(&'static str, Option<u32>)>;
     let mut degraded_fps = None::<u32>;
     // Encoded bytes of the last second: is the encoder using its budget?
     let mut encoded_recently = std::collections::VecDeque::<(Instant, usize)>::new();
@@ -375,8 +374,22 @@ pub(super) fn capture_loop(
                 wanted.fps,
             )
         };
+        let start = transport.route_class().and_then(|route| match remembered {
+            Some((known, bps)) if known == route => bps,
+            _ => {
+                let bps = crate::features::host::bandwidth::remembered(
+                    &handle.controller_device(),
+                    route,
+                );
+                if let Some(bps) = bps {
+                    tracing::info!(bps, route, "host start bitrate from the previous session");
+                }
+                remembered = Some((route, bps));
+                bps
+            }
+        });
         bounds.initial = crate::features::host::bandwidth::start_rate(
-            remembered,
+            start,
             crate::features::host::parameters::NETWORK_FLOOR,
             bounds.initial,
             bounds.maximum,

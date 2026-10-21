@@ -1,6 +1,9 @@
-//! The bandwidth each controller device reached in its last session, so the
-//! next session starts near it instead of at a fixed fraction of the tier
-//! (`docs/protocol/v2-design.md` §6, start bitrate).
+//! The bandwidth each controller device reached in its last session over
+//! each kind of route, so the next session starts near it instead of at a
+//! fixed fraction of the tier (`docs/protocol/v2-design.md` §6, start
+//! bitrate). A laptop last seen on the local network must not start a
+//! session across the internet at the local network's rate: its first
+//! keyframe would flood the slower link.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -40,8 +43,13 @@ fn read() -> Store {
         .unwrap_or_default()
 }
 
-/// The last estimate for `device`, if recent.
-pub(crate) fn remembered(device: &str) -> Option<u32> {
+/// Where `device` was reached over `route` (`LAN`, `P2P`, `relay`).
+fn key(device: &str, route: &str) -> String {
+    format!("{device}@{route}")
+}
+
+/// The last estimate for `device` over `route`, if recent.
+pub(crate) fn remembered(device: &str, route: &str) -> Option<u32> {
     if device.is_empty() {
         return None;
     }
@@ -49,13 +57,13 @@ pub(crate) fn remembered(device: &str) -> Option<u32> {
     let now = chrono::Utc::now().timestamp();
     read()
         .devices
-        .get(device)
+        .get(&key(device, route))
         .filter(|entry| now - entry.saved_at < MAX_AGE_SECONDS && entry.bps > 0)
         .map(|entry| entry.bps)
 }
 
-/// Record the estimate a session with `device` converged to.
-pub(crate) fn remember(device: &str, bps: u32) {
+/// Record the estimate a session with `device` over `route` converged to.
+pub(crate) fn remember(device: &str, route: &str, bps: u32) {
     if device.is_empty() || bps == 0 {
         return;
     }
@@ -69,7 +77,7 @@ pub(crate) fn remember(device: &str, bps: u32) {
         .devices
         .retain(|_, entry| now - entry.saved_at < MAX_AGE_SECONDS);
     store.devices.insert(
-        device.to_owned(),
+        key(device, route),
         Entry {
             bps,
             saved_at: now,

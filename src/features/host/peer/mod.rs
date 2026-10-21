@@ -609,7 +609,7 @@ impl Peer {
                     remote_relay_protocol=%pair.remote.relay_protocol,
                     route, mtu, "host selected transport path");
                 route_transport.route_changed();
-                route_transport.selected_route(&pair);
+                route_transport.selected_route(&pair, route);
                 let transport = route_transport.clone();
                 Box::pin(async move {
                     let ip = if pair
@@ -1121,10 +1121,14 @@ impl Peer {
         }
     }
     pub(crate) async fn close(mut self) {
-        if self.started.elapsed() >= super::bandwidth::MIN_SESSION {
+        if self.started.elapsed() >= super::bandwidth::MIN_SESSION
+            && let Some(route) = self.transport.route_class()
+        {
             let device = self.handle.controller_device();
             let estimate = self.transport.estimate();
-            tokio::task::spawn_blocking(move || super::bandwidth::remember(&device, estimate));
+            tokio::task::spawn_blocking(move || {
+                super::bandwidth::remember(&device, route, estimate)
+            });
         }
         let started = std::time::Instant::now();
         self.cancel.cancel();

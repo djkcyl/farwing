@@ -175,6 +175,8 @@ struct Shared {
     tcc_id: AtomicU64,
     timing_ids: Mutex<[u8; 4]>,
     queued_at: Mutex<Option<Instant>>,
+    /// The kind of the selected route (`LAN`, `P2P`, `relay`), once chosen.
+    route: Mutex<Option<&'static str>>,
     /// Probing starts once the first frame has crossed the link at the start
     /// rate: on a slow link with a shallow buffer, probes sent alongside it
     /// overflow the buffer and lose parts of the first keyframe.
@@ -284,6 +286,7 @@ impl Transport {
             tcc_id: AtomicU64::new(0),
             timing_ids: Mutex::new([0; 4]),
             queued_at: Mutex::new(None),
+            route: Mutex::new(None),
             probe_after: Mutex::new(None),
             budget: Mutex::new(Budget::default()),
             repair_refused: std::sync::atomic::AtomicBool::new(false),
@@ -458,8 +461,14 @@ impl Transport {
     pub(crate) fn selected_route(
         &self,
         pair: &webrtc::ice_transport::ice_candidate_pair::RTCIceCandidatePair,
+        route: &'static str,
     ) {
+        *lock(&self.0.route) = Some(route);
         lock(&self.0.automatic).route(pair);
+    }
+    /// The kind of the selected route, once chosen.
+    pub(crate) fn route_class(&self) -> Option<&'static str> {
+        *lock(&self.0.route)
     }
     pub(crate) fn remote_report(&self, loss: u8, rtt: Duration) {
         if !self.active() || !lock(&self.0.allocations).contains_key(&self.0.index) {
