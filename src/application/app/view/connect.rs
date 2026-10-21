@@ -420,7 +420,7 @@ impl DeviceCenterApp {
                 );
                 for device in devices {
                     let on_lan = nearby.contains(&device.device_id);
-                    if let Some(action) = self.shared_row(ui, device, on_lan) {
+                    if let Some(action) = self.shared_row(ui, device, on_lan, false) {
                         picked = Some((device.device_id.clone(), action));
                     }
                 }
@@ -436,12 +436,14 @@ impl DeviceCenterApp {
         }
     }
 
-    /// One device a friend shares, as in every other device list.
-    fn shared_row(
+    /// One device a friend shares, as in every other device list (`inset`:
+    /// inside a card).
+    pub(super) fn shared_row(
         &mut self,
         ui: &mut egui::Ui,
         device: &DeviceInfo,
         on_lan: bool,
+        inset: bool,
     ) -> Option<super::friends::DeviceAction> {
         use super::friends::DeviceAction;
         let status = self.device_status(device);
@@ -458,47 +460,49 @@ impl DeviceCenterApp {
             Vec::new()
         };
         let detail = super::devices::detail_line(device);
+        let row = device_list::Row {
+            title: display_alias(device),
+            tile: Tile::Wallpaper {
+                texture: texture.as_ref(),
+                platform: device.platform,
+            },
+            status: Some((status.label(), status.color())),
+            chips: &chips,
+            grants: Some(&device.granted),
+            detail: &detail,
+            selected,
+        };
         let mut action = None;
+        let actions = |ui: &mut egui::Ui| {
+            let connect = ui.add_enabled(
+                issue.is_none(),
+                primary(if open {
+                    t().center.opened
+                } else {
+                    t().common.connect
+                }),
+            );
+            let connect = match &issue {
+                Some(issue) => connect.on_disabled_hover_text(issue),
+                None => connect,
+            };
+            if connect.clicked() {
+                action = Some(DeviceAction::Connect);
+            }
+            if ui
+                .add(crate::ui::controls::secondary(t().common.details))
+                .clicked()
+            {
+                action = Some(DeviceAction::Details);
+            }
+        };
         let clicked = ui
             .push_id(&device.device_id, |ui| {
-                device_list::row(
-                    ui,
-                    &device_list::Row {
-                        title: display_alias(device),
-                        tile: Tile::Wallpaper {
-                            texture: texture.as_ref(),
-                            platform: device.platform,
-                        },
-                        status: Some((status.label(), status.color())),
-                        chips: &chips,
-                        grants: Some(&device.granted),
-                        detail: &detail,
-                        selected,
-                    },
-                    |ui| {
-                        let connect = ui.add_enabled(
-                            issue.is_none(),
-                            primary(if open {
-                                t().center.opened
-                            } else {
-                                t().common.connect
-                            }),
-                        );
-                        let connect = match &issue {
-                            Some(issue) => connect.on_disabled_hover_text(issue),
-                            None => connect,
-                        };
-                        if connect.clicked() {
-                            action = Some(DeviceAction::Connect);
-                        }
-                        if ui
-                            .add(crate::ui::controls::secondary(t().common.details))
-                            .clicked()
-                        {
-                            action = Some(DeviceAction::Details);
-                        }
-                    },
-                )
+                if inset {
+                    device_list::inset_row(ui, &row, actions)
+                } else {
+                    device_list::row(ui, &row, actions)
+                }
             })
             .inner;
         action.or_else(|| clicked.then_some(DeviceAction::Details))

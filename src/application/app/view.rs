@@ -438,6 +438,11 @@ fn login_card(
         .frame(egui::Frame::new().fill(BG).inner_margin(24))
         .show(root, |ui| {
             let bounds = ui.available_rect_before_wrap();
+            // The card ends where its content does, measured on the last
+            // frame; `height` is the first guess.
+            let measured = egui::Id::new("sign-in-content-height");
+            let content_height = ui.ctx().data(|d| d.get_temp::<f32>(measured));
+            let height = content_height.map_or(height, |h| 98.0 + h + 40.0);
             let card = egui::Rect::from_center_size(
                 bounds.center(),
                 vec2(
@@ -470,16 +475,24 @@ fn login_card(
                 egui::pos2(card.left() + 40.0, card.top() + 98.0),
                 egui::pos2(card.right() - 40.0, card.bottom() - 24.0),
             );
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .id_salt("sign-in")
-                    .max_rect(column)
-                    .layout(egui::Layout::top_down(Align::Min)),
-                |ui| {
-                    ui.spacing_mut().item_spacing.y = 6.0;
-                    content(ui);
-                },
-            );
+            let used = ui
+                .scope_builder(
+                    egui::UiBuilder::new()
+                        .id_salt("sign-in")
+                        .max_rect(column)
+                        .layout(egui::Layout::top_down(Align::Min)),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        content(ui);
+                    },
+                )
+                .response
+                .rect
+                .height();
+            if content_height.is_none_or(|h| (h - used).abs() > 0.5) {
+                ui.ctx().data_mut(|d| d.insert_temp(measured, used));
+                ui.ctx().request_repaint();
+            }
         });
 }
 
@@ -795,11 +808,15 @@ impl DeviceCenterApp {
                 (text.no_public_release)(prerelease_offered).to_owned(),
                 None,
             ),
-            // The server's state is on the left of the bar already.
-            State::Failed(_) if self.server_unreachable => (
+            // The server's state, not an update failure: no warning here.
+            State::Unreachable => (
                 current.clone(),
                 MUTED,
-                (text.current_version)(&current),
+                format!(
+                    "{}\n{}",
+                    (text.current_version)(&current),
+                    text.status_unreachable
+                ),
                 None,
             ),
             State::Failed(error) => (
@@ -829,9 +846,8 @@ impl DeviceCenterApp {
         };
         let checking = matches!(self.updates.state, State::Checking);
         let wait = self.updates.retry_wait();
-        let enabled =
-            !checking && (destination.is_some() || (wait == 0 && !self.server_unreachable));
-        if !checking && destination.is_none() && wait > 0 && !self.server_unreachable {
+        let enabled = !checking && (destination.is_some() || wait == 0);
+        if !checking && destination.is_none() && wait > 0 {
             hint.push('\n');
             hint.push_str(&(text.check_again_in)(wait));
         }

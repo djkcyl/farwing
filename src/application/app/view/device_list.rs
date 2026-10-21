@@ -39,6 +39,20 @@ const HEADING: f32 = 28.0;
 /// One device. `actions` adds buttons from right to left (the main one
 /// first). Returns whether the row itself (not a button) was clicked.
 pub(super) fn row(ui: &mut egui::Ui, row: &Row, actions: impl FnOnce(&mut egui::Ui)) -> bool {
+    paint_row(ui, row, SURFACE, actions)
+}
+
+/// [`row`] inside a card.
+pub(super) fn inset_row(ui: &mut egui::Ui, row: &Row, actions: impl FnOnce(&mut egui::Ui)) -> bool {
+    paint_row(ui, row, BG, actions)
+}
+
+fn paint_row(
+    ui: &mut egui::Ui,
+    row: &Row,
+    background: Color32,
+    actions: impl FnOnce(&mut egui::Ui),
+) -> bool {
     let (rect, response) =
         ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), Sense::click());
     if ui.is_rect_visible(rect) {
@@ -47,7 +61,7 @@ pub(super) fn row(ui: &mut egui::Ui, row: &Row, actions: impl FnOnce(&mut egui::
         } else if response.hovered() {
             theme::HOVER
         } else {
-            SURFACE
+            background
         };
         ui.painter().rect_filled(rect, 8.0, fill);
         ui.painter().rect_stroke(

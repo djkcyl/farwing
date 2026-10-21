@@ -25,6 +25,8 @@ pub(super) enum State {
         prerelease: bool,
     },
     NoRelease,
+    /// The server did not answer: its state, not the release's.
+    Unreachable,
     Failed(String),
 }
 
@@ -140,7 +142,7 @@ impl UpdateCheck {
 
     /// Check again at once after a failed check: the server is back.
     pub fn retry_failed(&mut self, ctx: &egui::Context) {
-        if matches!(self.state, State::Failed(_)) {
+        if matches!(self.state, State::Failed(_) | State::Unreachable) {
             self.retry_at = Instant::now();
             self.request(ctx);
         }
@@ -159,7 +161,11 @@ impl UpdateCheck {
         self.cancel = None;
         self.state = result.unwrap_or_else(|error| {
             tracing::warn!(error = %format!("{error:#}"), "release check failed");
-            State::Failed(format!("{error:#}"))
+            if out_of_reach(&error) {
+                State::Unreachable
+            } else {
+                State::Failed(format!("{error:#}"))
+            }
         });
         if let State::Available { version, .. } = &self.state
             && self.notified_version.as_ref() != Some(version)
@@ -183,6 +189,16 @@ impl Drop for UpdateCheck {
             let _ = cancel.send(());
         }
     }
+}
+
+/// The server could not be reached (or did not answer in time).
+fn out_of_reach(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.is::<tokio::time::error::Elapsed>()
+            || cause
+                .downcast_ref::<crate::account::api::ApiFailure>()
+                .is_some_and(|failure| crate::account::session_restore::out_of_reach(failure.code))
+    })
 }
 
 async fn latest(allow_prerelease: bool) -> Result<State> {

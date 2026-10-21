@@ -186,7 +186,7 @@ impl DeviceCenterApp {
             State::Current => ((text.update_current)(beta), GREEN, None),
             State::Ahead => ((text.update_ahead)(beta), MUTED, None),
             State::NoRelease => ((text.update_none)(beta), MUTED, None),
-            State::Failed(_) if away => (Blocker::Unreachable.reason().into(), MUTED, None),
+            State::Unreachable => (Blocker::Unreachable.reason().into(), MUTED, None),
             State::Failed(_) => (text.update_check_failed.into(), MUTED, None),
             State::Available {
                 version,

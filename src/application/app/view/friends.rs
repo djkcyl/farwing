@@ -270,14 +270,7 @@ impl DeviceCenterApp {
             }
         });
         if data.friends.is_empty() {
-            cards::card().show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.add_space(8.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(RichText::new(text.no_friends).strong());
-                });
-                ui.add_space(8.0);
-            });
+            super::device_list::empty(ui, text.no_friends);
             return;
         }
         let query = if searchable {
@@ -291,6 +284,13 @@ impl DeviceCenterApp {
             .map(|list| list.shared.clone())
             .unwrap_or_default();
         let busy = self.friends.busy;
+        let blocker = self.blocker();
+        let nearby: Vec<String> = self
+            .direct
+            .nearby()
+            .into_iter()
+            .map(|h| h.announce.device_id)
+            .collect();
         let mut shown = 0;
         let mut picked = None;
         for friend in &data.friends {
@@ -316,10 +316,15 @@ impl DeviceCenterApp {
                         user,
                         |ui| detail(ui, &(text.friends_since)(&cards::when(friend.since))),
                         |ui| {
-                            edit = ui.add_enabled(!busy, primary(text.set_permissions)).clicked();
-                            remove = ui
-                                .add_enabled(!busy, crate::ui::controls::secondary(t().common.delete))
+                            edit = server_button(ui, blocker, !busy, primary(text.set_permissions))
                                 .clicked();
+                            remove = server_button(
+                                ui,
+                                blocker,
+                                !busy,
+                                crate::ui::controls::secondary(t().common.delete),
+                            )
+                            .clicked();
                         },
                     );
                     ui.add_space(8.0);
@@ -329,7 +334,8 @@ impl DeviceCenterApp {
                         detail(ui, &(text.shared_devices)(theirs.len()));
                         ui.add_space(4.0);
                         for device in &theirs {
-                            if let Some(action) = self.friend_device_row(ui, device) {
+                            let on_lan = nearby.contains(&device.device_id);
+                            if let Some(action) = self.shared_row(ui, device, on_lan, true) {
                                 picked = Some((device.device_id.clone(), action));
                             }
                         }
@@ -362,72 +368,6 @@ impl DeviceCenterApp {
             Some((id, DeviceAction::Details)) => self.open_details(id),
             None => {}
         }
-    }
-
-    /// One device a friend shares: what it is, what may be done, actions.
-    pub(super) fn friend_device_row(&self, ui: &mut egui::Ui, device: &DeviceInfo) -> Option<DeviceAction> {
-        let status = self.device_status(device);
-        let issue = self.viewer_action_issue(device);
-        let open = self.viewer_for_device(&device.device_id).is_some();
-        let mut action = None;
-        ui.push_id(&device.device_id, |ui| {
-            egui::Frame::new()
-                .fill(BG)
-                .corner_radius(theme::CONTROL_RADIUS)
-                .inner_margin(egui::Margin::symmetric(10, 8))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        let (icon, _) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::hover());
-                        device_visuals::system_icon(ui.painter(), icon, device.platform);
-                        ui.add_space(4.0);
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 3.0;
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::Label::new(RichText::new(display_alias(device)).strong())
-                                        .truncate(),
-                                );
-                                ui.label(
-                                    RichText::new(status.label())
-                                        .size(theme::SMALL)
-                                        .color(status.color()),
-                                );
-                                cards::caps_icons(ui, &device.granted, t().center.no_permissions);
-                            });
-                            detail(
-                                ui,
-                                &format!(
-                                    "ID {}",
-                                    crate::account::api::device_id_text(&device.device_id)
-                                ),
-                            );
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                            let connect = ui.add_enabled(
-                                issue.is_none(),
-                                primary(if open {
-                                    t().center.opened
-                                } else {
-                                    t().common.connect
-                                }),
-                            );
-                            let connect = match &issue {
-                                Some(issue) => connect.on_disabled_hover_text(issue),
-                                None => connect,
-                            };
-                            if connect.clicked() {
-                                action = Some(DeviceAction::Connect);
-                            }
-                            if ui.add(crate::ui::controls::secondary(t().common.details)).clicked() {
-                                action = Some(DeviceAction::Details);
-                            }
-                        });
-                    });
-                });
-        });
-        ui.add_space(4.0);
-        action
     }
 
     /// What one friend may do: a default for every device, and devices
