@@ -1,22 +1,68 @@
-// The interface language: 简体中文 / English, each in its own language.
-import { LANGS, type Lang } from '../i18n/lang';
+// The interface language: 简体中文 / English, each in its own language,
+// chosen from the console's own menu.
+import { useEffect, useRef, useState } from 'react';
+import { LANGS } from '../i18n/lang';
 import { useLang, useT } from '../i18n/react';
 import { Icon } from './icons';
 
-/// `compact`: the globe alone, as an icon button; the list opens from it.
+/// `compact`: the globe alone, as an icon button, its menu opening upwards
+/// (the account bar at the bottom of the sidebar).
 export function LangSwitch({ className = '', compact = false }: { className?: string; compact?: boolean }) {
   const t = useT();
   const [lang, setLang] = useLang();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const escape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('mousedown', away);
+    window.addEventListener('keydown', escape);
+    return () => {
+      window.removeEventListener('mousedown', away);
+      window.removeEventListener('keydown', escape);
+    };
+  }, [open]);
+  const current = LANGS.find((l) => l.id === lang);
   return (
-    <label className={`${compact ? 'icon-btn lang-icon' : 'lang-switch'} ${className}`} title={t.common.language}>
-      <Icon name="globe" size={compact ? 16 : 14} />
-      <select name="lang" aria-label={t.common.language} value={lang} onChange={(e) => setLang(e.target.value as Lang)}>
-        {LANGS.map((l) => (
-          <option key={l.id} value={l.id} lang={l.id}>
-            {l.name}
-          </option>
-        ))}
-      </select>
-    </label>
+    <div className={`lang-switch ${className}`} ref={ref}>
+      <button
+        type="button"
+        className={compact ? `icon-btn btn-ghost ${open ? 'active' : ''}` : `lang-button ${open ? 'active' : ''}`}
+        title={t.common.language}
+        aria-label={t.common.language}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        <Icon name="globe" size={compact ? 16 : 14} />
+        {!compact && <span>{current?.name}</span>}
+      </button>
+      {open && (
+        <div className={`menu lang-menu ${compact ? 'menu-up' : ''}`} role="menu">
+          {LANGS.map((l) => (
+            <button
+              key={l.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={l.id === lang}
+              lang={l.id}
+              className={`menu-item ${l.id === lang ? 'selected' : ''}`}
+              onClick={() => {
+                setLang(l.id);
+                setOpen(false);
+              }}
+            >
+              <span className="menu-check">{l.id === lang && <Icon name="check" size={14} />}</span>
+              <span className="grow">{l.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

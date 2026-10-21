@@ -978,62 +978,52 @@ table.table {
 /* ---------------------------------------------------------------- language */
 
 .lang-switch {
+  position: relative;
+  display: inline-flex;
+}
+.lang-button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--muted);
+  font: inherit;
   font-size: 13px;
   cursor: pointer;
 }
-.lang-switch:hover {
+.lang-button:hover,
+.lang-button.active {
+  background: var(--hover);
   color: var(--text);
 }
-.lang-switch select {
-  appearance: none;
-  field-sizing: content;
-  border: 0;
-  background: transparent
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca7b8' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")
-    no-repeat right center;
-  color: inherit;
-  font: inherit;
-  padding: 2px 16px 2px 0;
-  cursor: pointer;
-  outline: none;
-}
-.lang-switch select:focus-visible {
+.lang-button:focus-visible {
   outline: 2px solid var(--focus);
-  outline-offset: 2px;
-  border-radius: 4px;
+  outline-offset: 1px;
 }
-.lang-switch option {
-  background: var(--surface);
+.icon-btn.active {
+  background: var(--hover);
   color: var(--text);
+}
+.lang-switch .menu.lang-menu {
+  left: auto;
+  right: 0;
+  width: max-content;
+  min-width: 150px;
+  max-width: 320px;
+}
+/* From the account bar at the bottom of the sidebar: upwards. */
+.menu.menu-up {
+  top: auto;
+  bottom: calc(100% + 6px);
 }
 .lang-corner {
   position: absolute;
   top: 16px;
   right: 20px;
-}
-/* The language as an icon button: the list is the select laid over it. */
-.lang-icon {
-  position: relative;
-}
-.lang-icon:hover {
-  background: var(--hover);
-  color: var(--text);
-}
-.lang-icon:focus-within {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
-}
-.lang-icon select {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  opacity: 0;
-  cursor: pointer;
 }
 
 /* --------------------------------------------------------------- auth pages */
