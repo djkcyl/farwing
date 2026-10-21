@@ -175,6 +175,10 @@ struct Shared {
     tcc_id: AtomicU64,
     timing_ids: Mutex<[u8; 4]>,
     queued_at: Mutex<Option<Instant>>,
+    /// Probing starts once the first frame has crossed the link at the start
+    /// rate: on a slow link with a shallow buffer, probes sent alongside it
+    /// overflow the buffer and lose parts of the first keyframe.
+    probe_after: Mutex<Option<Instant>>,
     budget: Mutex<Budget>,
     /// A NACKed media packet was not retransmitted (too old, rate limit or
     /// budget): the receiver will not repair it.
@@ -280,6 +284,7 @@ impl Transport {
             tcc_id: AtomicU64::new(0),
             timing_ids: Mutex::new([0; 4]),
             queued_at: Mutex::new(None),
+            probe_after: Mutex::new(None),
             budget: Mutex::new(Budget::default()),
             repair_refused: std::sync::atomic::AtomicBool::new(false),
             generic_dependencies: std::sync::atomic::AtomicBool::new(false),
@@ -681,6 +686,7 @@ impl Transport {
         self.0.queued.fetch_add(bytes as u64, Ordering::Relaxed);
         QueuedFrame {
             transport: self.clone(),
+            bytes: bytes as u64,
             remaining: bytes as u64,
         }
     }
@@ -1198,6 +1204,11 @@ impl Transport {
                 active = None;
                 continue;
             };
+            if active.is_none()
+                && lock(&self.0.probe_after).is_none_or(|at| Instant::now() < at)
+            {
+                continue;
+            }
             if active.is_none() {
                 let mut c = lock(&self.0.controller);
                 while let Some(cluster) = c.probes.pop_front() {
@@ -1575,6 +1586,7 @@ impl Drop for Ticket {
 }
 pub(crate) struct QueuedFrame {
     transport: Transport,
+    bytes: u64,
     remaining: u64,
 }
 impl QueuedFrame {
@@ -1587,6 +1599,14 @@ impl QueuedFrame {
 impl Drop for QueuedFrame {
     fn drop(&mut self) {
         *lock(&self.transport.0.queued_at) = None;
+        let mut probe_after = lock(&self.transport.0.probe_after);
+        if probe_after.is_none() && self.remaining < self.bytes {
+            let rate = u64::from(lock(&self.transport.0.controller).target.max(100_000));
+            *probe_after = Some(
+                Instant::now() + Duration::from_micros(self.bytes * 8_000_000 / rate),
+            );
+        }
+        drop(probe_after);
         self.transport
             .0
             .queued
