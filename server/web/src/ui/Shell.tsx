@@ -97,9 +97,6 @@ export function Shell({ children }: { children: ReactNode }) {
             </>
           )}
         </nav>
-        <div className="sidebar-lang">
-          <LangSwitch />
-        </div>
         <div className="sidebar-foot">
           <span className="avatar">{(name || '?').slice(0, 1).toUpperCase()}</span>
           <div className="grow">
@@ -112,6 +109,7 @@ export function Shell({ children }: { children: ReactNode }) {
               </div>
             )}
           </div>
+          <LangSwitch compact />
           <IconButton
             icon="logout"
             label={t.common.signOut}
