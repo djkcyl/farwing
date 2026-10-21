@@ -27,6 +27,7 @@ mod logs;
 mod port_mapping;
 mod power;
 mod settings;
+mod status_bar;
 mod this_device;
 mod remote_diagnostics;
 mod update_dialog;
@@ -368,15 +369,6 @@ fn nav_item(
     response.clicked()
 }
 
-fn presence_text(state: &PresenceState) -> (&'static str, Color32) {
-    let text = &t().center;
-    match state {
-        PresenceState::Connecting => (text.presence_connecting, MUTED),
-        PresenceState::Online => (text.presence_online, GREEN),
-        PresenceState::Reconnecting => (text.presence_reconnecting, AMBER),
-        PresenceState::Offline => (text.presence_offline, MUTED),
-    }
-}
 
 fn form_row(ui: &mut egui::Ui, label: &str, hint: &str, content: impl FnOnce(&mut egui::Ui)) {
     form_row_content(ui, label, hint, content);
@@ -522,6 +514,8 @@ impl DeviceCenterApp {
         // Reconcile navigation before choosing the panel margins. A removed
         // device must not leave an empty, edge-to-edge detail page behind.
         self.reconcile_device_details();
+        // First, so it spans the whole width under the sidebar too.
+        self.draw_status_bar(ui);
         self.draw_navigation(ui, access);
         let locked = self.center_ui.page.needs_account() && access != Access::Account;
         if self.center_ui.page != Page::Settings
@@ -681,7 +675,7 @@ impl DeviceCenterApp {
     }
 
     fn draw_account_footer(&mut self, ui: &mut egui::Ui) {
-        let (bounds, _) = ui.allocate_exact_size(vec2(ui.available_width(), 76.0), Sense::hover());
+        let (bounds, _) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::hover());
         let left = bounds.left() + 6.0;
         let right = bounds.right() - 6.0;
         ui.painter()
@@ -747,50 +741,6 @@ impl DeviceCenterApp {
             }
         }
 
-        let unreachable = self.server_unreachable
-            && !self.host.as_ref().is_some_and(|h| h.status().connected);
-        let (presence, color) = if self.host.as_ref().is_some_and(|h| h.status().connected) {
-            (t().center.being_controlled.to_owned(), GREEN)
-        } else if unreachable {
-            (t().center.footer_unreachable.to_owned(), AMBER)
-        } else {
-            let (text, color) = presence_text(&self.presence);
-            (text.to_owned(), color)
-        };
-        let baseline = bounds.top() + 62.0;
-        ui.painter()
-            .circle_filled(egui::pos2(left + 3.0, baseline), 3.0, color);
-        let presence_rect = ui.painter().text(
-            egui::pos2(left + 13.0, baseline),
-            egui::Align2::LEFT_CENTER,
-            presence,
-            FontId::proportional(crate::ui::theme::TINY),
-            MUTED,
-        );
-        if unreachable {
-            let response = ui
-                .interact(
-                    presence_rect.expand(4.0),
-                    ui.id().with("reconnect-now"),
-                    Sense::click(),
-                )
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-            let next = self.next_reconnect(ui.ctx());
-            let response = response.on_hover_text(match next {
-                Some(seconds) => (t().center.reconnect_in)(seconds),
-                None => t().center.reconnecting.to_owned(),
-            });
-            if response.clicked() {
-                self.reconnect();
-            }
-        }
-        self.draw_version(
-            ui,
-            egui::Rect::from_min_max(
-                egui::pos2((presence_rect.right() + 8.0).min(right), baseline - 11.0),
-                egui::pos2(right, baseline + 11.0),
-            ),
-        );
     }
 
     fn draw_version(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {

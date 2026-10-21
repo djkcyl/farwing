@@ -113,7 +113,6 @@ impl DeviceCenterApp {
     pub(super) fn signed_out_footer(&mut self, ui: &mut egui::Ui, bounds: egui::Rect) {
         let left = bounds.left() + 6.0;
         let right = bounds.right() - 6.0;
-        let server = self.saved_server();
         ui.painter().text(
             egui::pos2(left, bounds.top() + 30.0),
             egui::Align2::LEFT_CENTER,
@@ -137,27 +136,6 @@ impl DeviceCenterApp {
         if sign_in {
             self.sign_in();
         }
-        let baseline = bounds.top() + 62.0;
-        let (text, color) = match &server {
-            Some(origin) => (
-                (t().center.server_origin)(origin.trim_start_matches("https://")),
-                MUTED,
-            ),
-            None => (t().center.no_server.to_owned(), MUTED),
-        };
-        ui.painter()
-            .circle_filled(egui::pos2(left + 3.0, baseline), 3.0, color);
-        let galley = ui.painter().layout(
-            text,
-            FontId::proportional(theme::TINY),
-            MUTED,
-            (right - left - 13.0).max(0.0),
-        );
-        ui.painter().galley(
-            egui::pos2(left + 13.0, baseline - galley.size().y / 2.0),
-            galley,
-            MUTED,
-        );
     }
 
     /// This device's name and (display) ID, also without an account.

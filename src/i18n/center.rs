@@ -9,21 +9,12 @@ pub(crate) struct Center {
     pub upstream_project_link: &'static str,
 
     // ------------------------------------------------------ account footer
-    pub presence_connecting: &'static str,
-    pub presence_online: &'static str,
-    pub presence_reconnecting: &'static str,
-    pub presence_offline: &'static str,
     pub signing_out: &'static str,
     pub signed_in: &'static str,
     pub being_controlled: &'static str,
-    /// Seconds until the next attempt (the narrow footer).
-    pub footer_unreachable: &'static str,
     pub reconnect_in: fn(u64) -> String,
     pub reconnecting: &'static str,
     pub reconnect_now: &'static str,
-    /// The server's address.
-    pub server_origin: fn(&str) -> String,
-    pub no_server: &'static str,
 
     // ------------------------------------------------------------- version
     pub checking: &'static str,
@@ -396,6 +387,11 @@ pub(crate) struct Center {
     pub set: &'static str,
     pub set_action: &'static str,
     pub guests_can: &'static str,
+    pub status_no_server: &'static str,
+    pub status_connecting: &'static str,
+    pub status_online: &'static str,
+    pub status_unreachable: &'static str,
+    pub status_set_up_server: &'static str,
 }
 
 pub(crate) const ZH_CN: Center = Center {
@@ -406,21 +402,12 @@ pub(crate) const ZH_CN: Center = Center {
     upstream_project: "上游项目 OpenUUYC",
     upstream_project_link: "在 GitHub 查看上游项目 OpenUUYC",
 
-    presence_connecting: "本机正在上线",
-    presence_online: "本机在线",
-    presence_reconnecting: "本机正在重连",
-    presence_offline: "本机离线",
     signing_out: "正在退出登录…",
     signed_in: "已登录",
     being_controlled: "正在被控",
-    footer_unreachable: "无法连接服务器",
     reconnect_in: |seconds| format!("{seconds} 秒后重连"),
     reconnecting: "正在重连",
     reconnect_now: "立即重连",
-    server_origin: |origin| format!("服务器 {origin}"),
-    no_server: "未设置服务器",
-
-    checking: "正在检查…",
     current_version: |version| format!("当前版本 {version}"),
     up_to_date: |prerelease| {
         if prerelease {
@@ -790,6 +777,12 @@ pub(crate) const ZH_CN: Center = Center {
     set: "已设置",
     set_action: "设置",
     guests_can: "访客可以",
+    checking: "正在检查…",
+    status_no_server: "未设置服务器",
+    status_connecting: "正在连接服务器",
+    status_online: "已连接服务器",
+    status_unreachable: "无法连接服务器",
+    status_set_up_server: "设置服务器",
 };
 
 pub(crate) const EN: Center = Center {
@@ -800,21 +793,12 @@ pub(crate) const EN: Center = Center {
     upstream_project: "Upstream project OpenUUYC",
     upstream_project_link: "View the upstream project OpenUUYC on GitHub",
 
-    presence_connecting: "Going online",
-    presence_online: "Online",
-    presence_reconnecting: "Reconnecting",
-    presence_offline: "Offline",
     signing_out: "Signing out…",
     signed_in: "Signed in",
     being_controlled: "Being controlled",
-    footer_unreachable: "Server unreachable",
     reconnect_in: |seconds| format!("Reconnecting in {seconds} s"),
     reconnecting: "Reconnecting",
     reconnect_now: "Reconnect now",
-    server_origin: |origin| format!("Server {origin}"),
-    no_server: "No server set",
-
-    checking: "Checking…",
     current_version: |version| format!("Current version {version}"),
     up_to_date: |prerelease| {
         if prerelease {
@@ -1196,4 +1180,10 @@ pub(crate) const EN: Center = Center {
     set: "Set",
     set_action: "Set",
     guests_can: "Visitors can",
+    checking: "Checking…",
+    status_no_server: "No server",
+    status_connecting: "Connecting to the server",
+    status_online: "Connected to the server",
+    status_unreachable: "Can't connect to the server",
+    status_set_up_server: "Set up a server",
 };
