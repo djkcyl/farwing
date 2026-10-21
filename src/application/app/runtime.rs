@@ -483,9 +483,16 @@ pub(super) async fn gui_worker_loop(
                     tracing::info!("device center preparing to exit");
                     let update_exit = super::instance::take_update_exit();
                     let result = if crate::platform::windows::host_service::resident::managed() {
-                        crate::platform::windows::host_service::resident::pause_for_exit()
-                            .await
-                            .map_err(|e| format!("{e:#}"))
+                        use crate::platform::windows::host_service::resident;
+                        let paused = resident::pause_for_exit().await;
+                        if paused.is_err() {
+                            // This window stays: so does hosting, unpaused,
+                            // and every request of this window works again.
+                            if let Err(error) = resident::request(resident::Request::Resume).await {
+                                tracing::warn!(error = %format!("{error:#}"), "background host not resumed after a failed exit");
+                            }
+                        }
+                        paused.map_err(|e| format!("{e:#}"))
                     } else if update_exit && let Some(current) = &client {
                         current
                             .host
@@ -827,6 +834,7 @@ pub(super) async fn gui_worker_loop(
                         GuiEvent::SignedOut
                     } else {
                         tracing::warn!(%error, "saved account could not be opened; credentials retained");
+                        guest_allowed = true;
                         GuiEvent::SessionUnavailable(format!("无法打开账号会话：{error:#}"))
                     };
                     let _ = events.send(event);
@@ -894,6 +902,7 @@ pub(super) async fn gui_worker_loop(
                 if generation == catalog_generation
                     && let Some(list) =
                         crate::transport::direct::store::device_list(active_client.user_id())
+                            .or_else(this_device_only)
                 {
                     let _ = events.send(GuiEvent::CachedDevices(generation, list));
                 }
@@ -926,6 +935,8 @@ pub(super) async fn gui_worker_loop(
                     device_sync.reset().await;
                     client = None;
                     stop_active_signal(&mut host_signal).await;
+                    // The login page still lets others connect to this device.
+                    guest_allowed = true;
                     continue;
                 }
                 let _ = events.send(GuiEvent::Warning(format!(
@@ -963,13 +974,14 @@ pub(super) async fn gui_worker_loop(
 
     // A user-confirmed mutation may already have reached the service. Let its
     // acknowledgement/reconciliation and own-name persistence finish on exit.
+    // Neither waits for good on an unreachable server.
     if let Some(task) = mutation_task {
-        let _ = task.await;
+        let _ = tokio::time::timeout(EXIT_TASK_WAIT, task).await;
     }
     // Once explicitly requested, logout still commits its local cleanup even
     // if the device-center window closes while the HTTP response is pending.
     if let Some(task) = logout_task {
-        let _ = task.await;
+        let _ = tokio::time::timeout(EXIT_TASK_WAIT, task).await;
     }
     tracing::info!("device center shutdown: presence");
     stop_active_signal(&mut host_signal).await;
@@ -978,6 +990,27 @@ pub(super) async fn gui_worker_loop(
     tracing::info!("device center shutdown: device runtime");
     device_runtime.close().await;
     tracing::info!("device center shut down");
+}
+
+/// How long exiting waits for a confirmed change or a sign-out to finish.
+const EXIT_TASK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What the device list shows before the server first answered and with no
+/// list saved from before: this device alone.
+fn this_device_only() -> Option<crate::account::api::DeviceList> {
+    let device = crate::transport::direct::local_device().ok()?;
+    Some(crate::account::api::DeviceList {
+        current_device: crate::account::api::DeviceInfo {
+            device_id: device.identity.device_id.clone(),
+            alias: device.name.clone(),
+            status: "offline".into(),
+            controlled_support: true,
+            version_name: env!("CARGO_PKG_VERSION").into(),
+            ..Default::default()
+        },
+        devices: Vec::new(),
+        shared: Vec::new(),
+    })
 }
 
 pub(super) async fn stop_active_signal(active_signal: &mut Option<ActivePresence>) {

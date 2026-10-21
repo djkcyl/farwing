@@ -49,6 +49,28 @@ struct Participant {
 /// Host status while the server cannot be reached but direct connections can.
 const DIRECT_ONLY: &str = "服务器暂不可用，仅接受直连";
 
+/// Tell the server whether this host accepts connections. An unreachable
+/// server holds requests until it returns; that must not hold this session
+/// (direct connections, closing it on exit) for longer than this.
+async fn publish(
+    client: &crate::session::host_client::HostClient,
+    allowed: bool,
+    wait: Duration,
+) -> Result<()> {
+    tokio::time::timeout(wait, client.publish_policy(allowed))
+        .await
+        .unwrap_or_else(|_| {
+            Err(crate::account::api::ApiFailure::new(
+                crate::account::api::ErrorCode::Network,
+                "连接 Farwing 服务器超时",
+            )
+            .into())
+        })
+}
+/// Withdrawing waits briefly: `sync_policy` publishes what is still due once
+/// the server answers, and a host that left is offline there anyway.
+const WITHDRAW_WAIT: Duration = Duration::from_secs(3);
+
 pub(crate) struct Session {
     power: crate::features::host::power::Inbox,
     client: crate::session::host_client::HostClient,
@@ -238,20 +260,7 @@ impl Session {
                     let published = if offline {
                         Ok(())
                     } else {
-                        // An unreachable server holds requests until it
-                        // returns; it must not hold back direct connections.
-                        tokio::time::timeout(
-                            std::time::Duration::from_secs(10),
-                            self.client.publish_policy(true),
-                        )
-                        .await
-                        .unwrap_or_else(|_| {
-                            Err(crate::account::api::ApiFailure::new(
-                                crate::account::api::ErrorCode::Network,
-                                "连接 Farwing 服务器超时",
-                            )
-                            .into())
-                        })
+                        publish(&self.client, true, Duration::from_secs(10)).await
                     };
                     match published {
                         Ok(()) if lease.requested() && self.client.is_active() => {
@@ -265,7 +274,7 @@ impl Session {
                         }
                         Ok(()) => {
                             if !offline {
-                                let _ = self.client.publish_policy(false).await;
+                                let _ = publish(&self.client, false, WITHDRAW_WAIT).await;
                             }
                         }
                         Err(error)
@@ -279,7 +288,7 @@ impl Session {
                             self.republish = true;
                         }
                         Err(error) => {
-                            let _ = self.client.publish_policy(false).await;
+                            let _ = publish(&self.client, false, WITHDRAW_WAIT).await;
                             lease.update(false, false, "被控服务暂不可用");
                             lease.fail(format!("无法启用被控：{error:#}"));
                         }
@@ -289,7 +298,7 @@ impl Session {
                     if self.client.offline() {
                         return Ok(());
                     }
-                    if let Err(error) = self.client.publish_policy(false).await {
+                    if let Err(error) = publish(&self.client, false, WITHDRAW_WAIT).await {
                         if !self.client.host.requested() {
                             self.client.host.update(
                                 false,

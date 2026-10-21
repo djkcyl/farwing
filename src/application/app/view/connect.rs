@@ -171,9 +171,17 @@ impl DeviceCenterApp {
         }
         self.connect_bar(ui, access);
         if self.cached_devices {
+            let saved = self
+                .devices
+                .as_ref()
+                .is_some_and(|d| !d.devices.is_empty() || !d.shared.is_empty());
             cards::banner(
                 ui,
-                "暂时连不上服务器：先显示上次的设备列表，连上后自动刷新。局域网中的设备仍可以在“附近”中直接连接。",
+                if saved {
+                    "暂时连不上服务器：先显示上次的设备列表，连上后自动刷新。局域网中的设备仍可以在“附近”中直接连接。"
+                } else {
+                    "暂时连不上服务器：连上后自动显示设备列表。局域网中的设备仍可以在“附近”中直接连接。"
+                },
                 Tone::Warning,
             );
         }

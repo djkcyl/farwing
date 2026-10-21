@@ -53,6 +53,9 @@ fn note_device_push() {
     device_push_sender().send_modify(|count| *count = count.wrapping_add(1));
 }
 
+/// How long closing waits before the presence is stopped where it is.
+const CLOSE_WAIT: Duration = Duration::from_secs(6);
+
 pub(crate) struct ActivePresence {
     cancel: CancellationToken,
     pub(crate) task: JoinHandle<Result<()>>,
@@ -95,10 +98,21 @@ impl ActivePresence {
         }
     }
 
-    pub(crate) async fn close(self) {
+    pub(crate) async fn close(mut self) {
         self.cancel.cancel();
-        if let Err(error) = self.task.await {
-            tracing::warn!(%error, "host presence task ended unexpectedly");
+        // Exit, pause and sign-out wait here. A handler still waiting on an
+        // unreachable server must not keep them waiting for good.
+        match tokio::time::timeout(CLOSE_WAIT, &mut self.task).await {
+            Ok(Err(error)) => tracing::warn!(%error, "host presence task ended unexpectedly"),
+            Ok(Ok(_)) => (),
+            Err(_) => {
+                tracing::warn!(
+                    seconds = CLOSE_WAIT.as_secs(),
+                    "host presence did not close in time; stopping it"
+                );
+                self.task.abort();
+                let _ = (&mut self.task).await;
+            }
         }
     }
 }

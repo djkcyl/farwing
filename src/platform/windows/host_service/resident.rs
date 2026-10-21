@@ -762,6 +762,7 @@ async fn run_authorized_account(
                 let mut restart_presence = false;
                 let result: Result<Reply> = match request {
                     Request::Pause => {
+                        tracing::info!("background host pausing");
                         initializers.abort_all();
                         while initializers.join_next().await.is_some() {}
                         cancel_preparation(&mut preparation).await;
@@ -778,7 +779,9 @@ async fn run_authorized_account(
                         while !(super::activity::idle() && super::user_backend::idle().unwrap_or(false)) && std::time::Instant::now()<deadline {
                             tokio::time::sleep(Duration::from_millis(20)).await;
                         }
-                        if super::activity::idle() && super::user_backend::idle()? {Ok(Reply::Done)}else{Err(anyhow::anyhow!("会话资源尚未排空"))}
+                        let idle = super::activity::idle() && super::user_backend::idle()?;
+                        tracing::info!(idle, "background host paused");
+                        if idle {Ok(Reply::Done)}else{Err(anyhow::anyhow!("会话资源尚未排空"))}
                     },
                     Request::Quiescent => {
                         if client.as_ref().is_none_or(|c|c.host.status().connection.is_none())

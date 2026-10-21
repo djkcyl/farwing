@@ -264,6 +264,16 @@ impl DeviceCenterApp {
                             self.exit_requested = false;
                             self.status = StatusMessage::error(format!("后台尚未退出：{error}"));
                             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                            // The status line is not on every page (startup, login).
+                            crate::ui::controls::notice(
+                                ctx,
+                                "exit-failed",
+                                "没有退出",
+                                crate::ui::controls::DialogIcon::Error,
+                                format!("后台被控没有停止，本机仍可以被连接，所以程序没有退出。可以稍后再试。
+
+{error}"),
+                            );
                         }
                     }
                 }
