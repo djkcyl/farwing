@@ -200,7 +200,7 @@ impl DeviceCenterApp {
     ) -> Self {
         Self {
             updates: updates::UpdateCheck::start(ctx),
-            center_ui: CenterUi::default(),
+            center_ui: CenterUi::new(),
             viewers: Default::default(),
             assist: AssistUi::default(),
             friends: Default::default(),

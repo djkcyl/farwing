@@ -159,17 +159,14 @@ fn access_code_card(
                 Mode::PasswordConfirmation => "输入访问码后，还需要你在本机确认",
                 Mode::Confirmation => "不用访问码，每次由你在本机确认",
             };
-            ui.add(
-                egui::Label::new(
-                    RichText::new(format!(
-                        "{how} · 访客可以：{}",
-                        super::cards::caps_summary(&settings.grants())
-                    ))
-                    .size(theme::SMALL)
-                    .color(MUTED),
-                )
-                .wrap(),
-            );
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new(format!("{how} · 访客可以："))
+                        .size(theme::SMALL)
+                        .color(MUTED),
+                );
+                super::cards::caps_icons(ui, &settings.grants(), "无权限");
+            });
         }
         if action.enabled && !allowed {
             ui.colored_label(AMBER, "请先开启上方的“允许连接本机”");

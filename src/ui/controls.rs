@@ -1356,7 +1356,7 @@ mod annotation_color;
 pub(crate) use annotation::{
     AnnotationIcon, annotation_board, annotation_button, annotation_clear_dialog, annotation_color,
     annotation_frame, annotation_header, annotation_tool_button, annotation_tool_frame,
-    annotation_width,
+    annotation_width, paint_annotation_icon,
 };
 
 mod task_status;

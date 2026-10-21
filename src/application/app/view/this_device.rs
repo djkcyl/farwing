@@ -3,7 +3,7 @@
 //! and addresses; the access code; the devices it trusts; the account's
 //! devices and friends; and who is connected now.
 use super::cards::{self, Tone};
-use super::connect::{device_card, empty_card};
+use super::connect::{device_card_with, empty_card};
 use super::*;
 use crate::application::app::controlled_caption::ParticipantAction;
 use crate::transport::direct::managed::{self, Action, HostDirect};
@@ -249,21 +249,17 @@ impl DeviceCenterApp {
             return;
         }
         for device in trusted {
-            let summary = cards::caps_summary(&device.grants);
             // It trusts this device too: the two are paired.
             let paired = crate::transport::direct::store::known_host(&device.device_id)
                 .is_some_and(|h| h.trusted);
             let mut edit = false;
             let mut remove = false;
-            device_card(
+            device_card_with(
                 ui,
                 &device.device_id,
                 &device.name,
-                &if paired {
-                    vec![("已配对", GREEN), (summary.as_str(), BLUE)]
-                } else {
-                    vec![(summary.as_str(), BLUE)]
-                },
+                if paired { &[("已配对", GREEN)][..] } else { &[] },
+                Some(&device.grants),
                 &[
                     format!("ID {}", crate::account::api::device_id_text(&device.device_id)),
                     format!(

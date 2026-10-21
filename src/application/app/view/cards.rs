@@ -247,31 +247,6 @@ fn same_set(list: &[String], preset: &[&str]) -> bool {
     caps::normalize(list) == caps::normalize(preset)
 }
 
-/// What a capability set allows, in a few words.
-pub(super) fn caps_summary(list: &[String]) -> String {
-    if list.is_empty() {
-        return "无权限".into();
-    }
-    if let Some((label, _)) = PRESETS.iter().find(|(_, preset)| same_set(list, preset)) {
-        return (*label).into();
-    }
-    let labels: Vec<_> = caps::normalize(list).iter().map(|c| cap_label(c)).collect();
-    if labels.len() <= 3 {
-        labels.join("、")
-    } else {
-        format!("{} 等 {} 项", labels[..3].join("、"), labels.len())
-    }
-}
-
-/// What a friend sees of one device: nothing at all without capabilities.
-pub(super) fn share_summary(list: &[String]) -> String {
-    if list.is_empty() {
-        "不共享 · 不可见".into()
-    } else {
-        caps_summary(list)
-    }
-}
-
 /// Edit a capability set: presets, then the capabilities by group. Returns
 /// whether anything changed.
 pub(super) fn caps_editor(ui: &mut egui::Ui, id: impl egui::AsIdSalt, list: &mut Vec<String>) -> bool {
@@ -408,4 +383,131 @@ pub(super) fn when(seconds: i64) -> String {
                 .to_string()
         })
         .unwrap_or_default()
+}
+
+/// Capabilities as a row of icons in a chip, in display order; each names
+/// itself on hover. `empty` stands for no capabilities.
+pub(super) fn caps_icons(ui: &mut egui::Ui, list: &[String], empty: &str) {
+    let granted: Vec<&str> = GROUPS
+        .iter()
+        .flat_map(|(_, group)| group.iter().copied())
+        .filter(|cap| list.iter().any(|c| c == cap))
+        .collect();
+    if granted.is_empty() {
+        chip(ui, empty, MUTED);
+        return;
+    }
+    let icon = 14.0;
+    let gap = 5.0;
+    let pad = vec2(8.0, 3.0);
+    let width = granted.len() as f32 * icon + (granted.len() - 1) as f32 * gap;
+    let (rect, _) = ui.allocate_exact_size(vec2(width, icon) + pad * 2.0, Sense::hover());
+    ui.painter()
+        .rect_filled(rect, rect.height() / 2.0, BLUE.gamma_multiply(0.16));
+    for (index, cap) in granted.into_iter().enumerate() {
+        let cell = egui::Rect::from_min_size(
+            rect.min + pad + vec2(index as f32 * (icon + gap), 0.0),
+            vec2(icon, icon),
+        );
+        let response = ui
+            .interact(cell, ui.id().with(("cap-icon", rect.min.x as i32, rect.min.y as i32, index)), Sense::hover())
+            .on_hover_text(cap_label(cap));
+        paint_cap(ui.painter(), cell, cap, if response.hovered() { TEXT } else { BLUE });
+    }
+}
+
+/// The icon of a capability, drawn in a square.
+fn paint_cap(p: &egui::Painter, rect: egui::Rect, cap: &str, color: Color32) {
+    let c = rect.center();
+    let s = rect.width() / 14.0;
+    let q = |x: f32, y: f32| c + vec2(x, y) * s;
+    let stroke = Stroke::new(1.3, color);
+    let line = |points: &[(f32, f32)]| {
+        p.add(egui::Shape::line(points.iter().map(|&(x, y)| q(x, y)).collect(), stroke));
+    };
+    let boxed = |x: f32, y: f32, w: f32, h: f32, r: f32| {
+        p.rect_stroke(
+            egui::Rect::from_center_size(q(x, y), vec2(w, h) * s),
+            r * s,
+            stroke,
+            egui::StrokeKind::Middle,
+        );
+    };
+    match cap {
+        caps::VIEW => {
+            let curve = |sign: f32| {
+                (0..=12)
+                    .map(|i| {
+                        let x = -7.0 + 14.0 * i as f32 / 12.0;
+                        (x, sign * 4.2 * (1.0 - (x / 7.0).powi(2)))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            line(&curve(-1.0));
+            line(&curve(1.0));
+            p.circle_stroke(c, 2.2 * s, stroke);
+        }
+        caps::AUDIO => {
+            line(&[(-6.5, -2.0), (-3.5, -2.0), (0.0, -5.5), (0.0, 5.5), (-3.5, 2.0), (-6.5, 2.0), (-6.5, -2.0)]);
+            let arc = |r: f32| {
+                (0..=8)
+                    .map(|i| {
+                        let a = -0.8 + 1.6 * i as f32 / 8.0;
+                        (1.0 + r * a.cos(), r * a.sin())
+                    })
+                    .collect::<Vec<_>>()
+            };
+            line(&arc(3.0));
+            line(&arc(5.8));
+        }
+        caps::ANNOTATION => crate::ui::controls::paint_annotation_icon(
+            p,
+            rect,
+            crate::ui::controls::AnnotationIcon::Pen,
+            color,
+        ),
+        caps::CONTROL => {
+            boxed(0.0, 0.0, 9.0, 13.0, 4.5);
+            line(&[(0.0, -6.5), (0.0, -2.5)]);
+        }
+        caps::CLIPBOARD => {
+            boxed(0.0, 1.0, 10.0, 12.0, 1.5);
+            boxed(0.0, -5.0, 5.0, 2.5, 1.0);
+            line(&[(-2.5, 1.0), (2.5, 1.0)]);
+            line(&[(-2.5, 3.5), (2.5, 3.5)]);
+        }
+        caps::MICROPHONE => {
+            boxed(0.0, -2.5, 5.0, 8.5, 2.5);
+            line(&[(-5.0, -1.5), (-5.0, 0.5), (-2.5, 3.5), (2.5, 3.5), (5.0, 0.5), (5.0, -1.5)]);
+            line(&[(0.0, 3.5), (0.0, 6.5)]);
+            line(&[(-3.0, 6.5), (3.0, 6.5)]);
+        }
+        caps::FILES => {
+            line(&[(-7.0, -5.0), (-2.5, -5.0), (-0.5, -3.0), (7.0, -3.0), (7.0, 5.5), (-7.0, 5.5), (-7.0, -5.0)]);
+            line(&[(-7.0, -1.0), (7.0, -1.0)]);
+        }
+        caps::DISPLAY => {
+            boxed(0.0, -1.5, 14.0, 9.0, 1.5);
+            line(&[(0.0, 3.0), (0.0, 6.0)]);
+            line(&[(-3.5, 6.0), (3.5, 6.0)]);
+        }
+        caps::PORTS => crate::ui::controls::paint_port_mapping_icon(p, rect.expand(2.0 * s), color),
+        caps::POWER => {
+            let arc = (0..=16)
+                .map(|i| {
+                    // Open at the top, around the stroke.
+                    let a = -std::f32::consts::FRAC_PI_2 + 0.6 + (std::f32::consts::TAU - 1.2) * i as f32 / 16.0;
+                    (6.0 * a.cos(), 0.5 + 6.0 * a.sin())
+                })
+                .collect::<Vec<_>>();
+            line(&arc);
+            line(&[(0.0, -7.0), (0.0, -1.0)]);
+        }
+        caps::DIAGNOSTICS => {
+            line(&[(-7.0, 0.5), (-3.5, 0.5), (-1.5, -5.0), (1.5, 5.5), (3.5, 0.5), (7.0, 0.5)]);
+        }
+        _ => {
+            p.circle_stroke(c, 5.0 * s, stroke);
+        }
+    }
 }

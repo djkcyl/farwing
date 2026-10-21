@@ -46,6 +46,19 @@ pub(super) fn device_card(
     lines: &[String],
     actions: impl FnOnce(&mut egui::Ui),
 ) {
+    device_card_with(ui, id, name, chips, None, lines, actions);
+}
+
+/// [`device_card`], with what the device may do as icons after the chips.
+pub(super) fn device_card_with(
+    ui: &mut egui::Ui,
+    id: &str,
+    name: &str,
+    chips: &[(&str, Color32)],
+    grants: Option<&[String]>,
+    lines: &[String],
+    actions: impl FnOnce(&mut egui::Ui),
+) {
     ui.push_id(id, |ui| {
         cards::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -61,6 +74,9 @@ pub(super) fn device_card(
                         ui.add(egui::Label::new(RichText::new(name).strong()).truncate());
                         for (text, color) in chips {
                             cards::chip(ui, text, *color);
+                        }
+                        if let Some(grants) = grants {
+                            cards::caps_icons(ui, grants, "无权限");
                         }
                     });
                     for line in lines {

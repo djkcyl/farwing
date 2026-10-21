@@ -471,6 +471,32 @@ fn login_card(
         });
 }
 
+/// Signed out, the device center opens on its pages rather than the sign-in
+/// steps once the user chose to go on without an account or a server.
+fn signed_out_view_path() -> Option<std::path::PathBuf> {
+    crate::product::local_data_dir().ok().map(|dir| dir.join("signed-out-view"))
+}
+
+impl CenterUi {
+    pub(super) fn new() -> Self {
+        Self {
+            browsing: signed_out_view(),
+            ..Self::default()
+        }
+    }
+}
+
+fn signed_out_view() -> bool {
+    signed_out_view_path().is_some_and(|path| path.is_file())
+}
+
+fn remember_signed_out_view() {
+    if let Some(path) = signed_out_view_path() {
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
+        let _ = std::fs::write(path, b"1");
+    }
+}
+
 impl DeviceCenterApp {
     fn needs_login(&self) -> bool {
         self.devices.is_none() && self.catalog.is_none()
@@ -1333,9 +1359,11 @@ impl DeviceCenterApp {
             self.submit_login();
         } else if action.guest {
             self.center_ui.browsing = true;
+            remember_signed_out_view();
             self.center_ui.page = Page::ThisDevice;
         } else if action.direct {
             self.center_ui.browsing = true;
+            remember_signed_out_view();
             self.center_ui.page = Page::Devices;
             self.direct.tab = super::direct::DeviceTab::Nearby;
             self.direct.tab_chosen = true;

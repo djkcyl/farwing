@@ -373,11 +373,7 @@ impl DeviceCenterApp {
                                         .size(theme::SMALL)
                                         .color(status.color()),
                                 );
-                                cards::chip(
-                                    ui,
-                                    &format!("可以：{}", cards::caps_summary(&device.granted)),
-                                    BLUE,
-                                );
+                                cards::caps_icons(ui, &device.granted, "无权限");
                             });
                             detail(
                                 ui,
@@ -535,7 +531,7 @@ impl DeviceCenterApp {
                                                 .devices
                                                 .get(device_id)
                                                 .unwrap_or(&grants.default);
-                                            detail(ui, &cards::share_summary(effective));
+                                            cards::caps_icons(ui, effective, "不共享 · 不可见");
                                         },
                                     );
                                 });
