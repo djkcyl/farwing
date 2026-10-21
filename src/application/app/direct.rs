@@ -186,7 +186,11 @@ impl DirectUi {
                             crate::transport::direct::client::pair(&target, &local, shown, &cancel).await
                         })
                     })
-                    .map_err(|error| format!("{error:#}"));
+                    .map_err(|error| match error.downcast_ref::<crate::account::api::ApiFailure>() {
+                        // The host's own words, without the protocol code.
+                        Some(failure) if !failure.message.is_empty() => failure.message.clone(),
+                        _ => format!("{error:#}"),
+                    });
                 if let Some(pairing) = slot.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
                     pairing.outcome = Some(result);
                 }

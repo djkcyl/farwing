@@ -491,6 +491,9 @@ impl DeviceCenterApp {
             if first_scan {
                 ui.spinner();
                 detail(ui, "正在查找局域网中的设备…");
+            } else if found.is_empty() {
+                // The empty list says what the other side needs.
+                detail(ui, "自动查找局域网中的设备");
             } else {
                 detail(ui, "自动查找局域网中的设备 · 对方需要开启“允许连接”和“局域网发现”");
             }

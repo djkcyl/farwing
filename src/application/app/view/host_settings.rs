@@ -196,7 +196,7 @@ impl DeviceCenterApp {
             |ui| {
                 if ui
                     .add_enabled_ui(host.is_some(), |ui| {
-                        crate::ui::controls::service_switch(ui, &mut allowed)
+                        crate::ui::controls::switch(ui, &mut allowed)
                     })
                     .inner
                     .changed()
