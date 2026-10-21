@@ -262,7 +262,7 @@ impl HostClient {
             .await
     }
     pub(crate) async fn wol_enabled(&self) -> Result<bool> {
-        anyhow::ensure!(!self.is_guest(), "请先登录");
+        anyhow::ensure!(!self.is_guest(), "未登录");
         let devices = self
             .request(|api| async move { api.list_devices().await })
             .await?;
@@ -335,7 +335,7 @@ impl HostClient {
     }
     /// Remote boot of this device (`policy.wol`).
     pub(crate) async fn set_wol_enabled(&self, enabled: bool) -> Result<()> {
-        anyhow::ensure!(!self.is_guest(), "请先登录");
+        anyhow::ensure!(!self.is_guest(), "未登录");
         self.publish(crate::account::api::DevicePolicy {
             wol: enabled,
             ..self.desired_policy()

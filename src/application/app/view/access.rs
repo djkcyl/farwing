@@ -91,16 +91,13 @@ impl DeviceCenterApp {
     /// A page for an account only: why, and how to get there.
     pub(super) fn locked_page(&mut self, ui: &mut egui::Ui) {
         let page = self.center_ui.page;
-        let (title, hint) = match page {
-            Page::Friends => (
-                "登录后使用好友",
-                "登录账号后可以添加好友、把设备共享给好友，也能连接好友共享给你的设备。",
-            ),
-            _ => ("登录后使用", "这个页面需要登录账号。"),
+        let title = match page {
+            Page::Friends => "登录后使用好友",
+            _ => "登录后使用",
         };
         cards::page_header(ui, page.title(), "", |_| {});
         let primary = self.sign_in_label();
-        match cards::locked(ui, title, hint, &[primary, "附近的设备"]) {
+        match cards::locked(ui, title, &[primary, "附近的设备"]) {
             Some(0) => self.sign_in(),
             Some(_) => {
                 self.center_ui.page = Page::Devices;
@@ -132,11 +129,6 @@ impl DeviceCenterApp {
         ui.scope_builder(egui::UiBuilder::new().max_rect(button), |ui| {
             sign_in = ui
                 .add_sized(button.size(), primary("登录").min_size(vec2(0.0, 0.0)))
-                .on_hover_text(if server.is_some() {
-                    "登录账号"
-                } else {
-                    "先设置服务器，再登录账号"
-                })
                 .clicked();
         });
         if sign_in {

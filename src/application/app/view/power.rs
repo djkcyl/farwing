@@ -38,16 +38,10 @@ impl DeviceCenterApp {
                 ui.label(RichText::new(&confirm.device.device_id).monospace().color(MUTED));
                 ui.label(format!("{} · {}", confirm.device.platform_label(), confirm.device.status_label()));
                 ui.add_space(12.0);
-                match confirm.action {
-                    PowerAction::Wake => { ui.label("发送远程唤醒请求，随后等待设备上线。需要远端已配置网络唤醒。"); }
-                    PowerAction::Shutdown | PowerAction::Reboot => {
-                        ui.colored_label(AMBER, "请确保已保存远端工作；未保存的应用可能被强制关闭，所有远控连接将断开。");
-                        if confirm.device.participant_count() > 0 {
-                            ui.label(format!("设备当前有 {} 个远控参与者。", confirm.device.participant_count()));
-                        }
-                        if self.viewer_for_device(&confirm.device.device_id).is_some() {
-                            ui.label("本程序会先结束当前观看并释放控制按键，再发送电源请求。");
-                        }
+                if confirm.action != PowerAction::Wake {
+                    ui.colored_label(AMBER, "未保存的工作可能丢失，远控连接将断开");
+                    if confirm.device.participant_count() > 0 {
+                        ui.label(format!("{} 人正在连接", confirm.device.participant_count()));
                     }
                 }
                 if let Some(issue) = &issue { ui.colored_label(AMBER, issue.to_string()); }

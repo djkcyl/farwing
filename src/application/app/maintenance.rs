@@ -57,9 +57,7 @@ pub(crate) fn update(silent: bool, no_elevate: bool) -> Result<bool> {
     if no_elevate && !components::elevated()? {
         return Err(UpdateExit {
             code: 740,
-            message:
-                "静默更新需要管理员权限；请在管理员终端运行，或移除 --no-elevate 以请求 UAC 授权"
-                    .into(),
+            message: "静默更新需要管理员权限".into(),
         }
         .into());
     }
@@ -67,7 +65,7 @@ pub(crate) fn update(silent: bool, no_elevate: bool) -> Result<bool> {
     if !installed.is_file() {
         return Err(UpdateExit {
             code: 1605,
-            message: "尚未安装 Farwing；update 仅更新已有安装".into(),
+            message: "尚未安装 Farwing".into(),
         }
         .into());
     }
@@ -75,7 +73,7 @@ pub(crate) fn update(silent: bool, no_elevate: bool) -> Result<bool> {
     ensure!(
         host_service::vault::owner()?.as_deref()
             == Some(host_service::vault::sid(std::process::id())?.as_str()),
-        "请由安装此程序的 Windows 用户执行更新"
+        "只能由安装此程序的 Windows 用户更新"
     );
     let _installer = super::instance::reserve_installer().map_err(|error| UpdateExit {
         code: 170,
@@ -88,7 +86,7 @@ pub(crate) fn update(silent: bool, no_elevate: bool) -> Result<bool> {
     }
     ensure!(
         !is_downgrade(Some(&deployment::installed_version()?)),
-        "已安装较新版本；请打开更新窗口明确确认降级"
+        "已安装较新版本"
     );
     update_running(true)
 }
@@ -253,7 +251,7 @@ impl crate::ui::App for Maintenance {
                                 self.open_installed(ui.ctx());
                             }
                         }
-                        Ok(true) => self.error = Some("需要重启Windows后完成操作".into()),
+                        Ok(true) => self.error = Some("需要重启 Windows 后完成".into()),
                         Err(error) => self.error = Some(error),
                     }
                 }
@@ -300,11 +298,13 @@ impl crate::ui::App for Maintenance {
                     ui.add_space(12.);
                 }
                 ui.label(if self.finished {
-                    if self.removal.remove_data { "卸载完成，本机数据已清除。" } else { "卸载完成，账号和用户设置已保留。" }
+                    "卸载完成"
                 } else if self.uninstall {
-                    "将断开当前连接并退出 Farwing，然后移除程序、后台服务、输入驱动、快捷方式及自启动。"
+                    "将断开所有连接并移除 Farwing"
+                } else if is_downgrade(self.installed_version.as_deref()) {
+                    "将断开所有连接并降级到此版本"
                 } else {
-                    if is_downgrade(self.installed_version.as_deref()) {"本次版本低于已安装版本。确认后将结束当前连接并降级程序。"}else{"更新将结束当前连接并关闭运行中的 Farwing，完成后自动打开新版本。"}
+                    "将断开所有连接并更新"
                 });
                 ui.add_space(12.);
                 if !self.finished {
@@ -314,7 +314,7 @@ impl crate::ui::App for Maintenance {
                             ui.checkbox(&mut self.removal.remove_audio_driver, "同时卸载 Farwing 虚拟声卡" );
                             ui.checkbox(&mut self.removal.remove_data, "同时删除本机 Farwing 数据");
                             if self.removal.remove_data {
-                                ui.label(egui::RichText::new("删除登录信息、设置、插件、缓存和日志，下次使用需重新登录。").color(theme::AMBER));
+                                ui.label(egui::RichText::new("登录信息、设置、插件和日志将被删除").color(theme::AMBER));
                             }
                         } else if ui.link("打开已安装版本").clicked() {
                             self.open_installed(ui.ctx());
@@ -454,7 +454,7 @@ fn maintain_running(
                     }
                     std::thread::sleep(Duration::from_millis(50))
                 }
-                None => anyhow::bail!("运行版本仍在退出，尚未开始替换文件"),
+                None => anyhow::bail!("旧版本未能退出"),
             }
         };
         match removal {
@@ -520,9 +520,9 @@ fn prepare_resident_update(
     tracing::warn!(error=%format!("{error:#}"), "update preparation could not notify remote; stopping old host");
     match request(Request::Pause) {
         Ok(Reply::Done) => Ok(()),
-        Ok(_) => anyhow::bail!("结束旧被控后台返回无效响应，尚未开始更新"),
+        Ok(_) => anyhow::bail!("停止被控返回无效响应"),
         Err(shutdown) => Err(anyhow::anyhow!(
-            "更新通知未完成：{error:#}；结束旧被控后台失败，尚未开始更新：{shutdown:#}"
+            "更新通知失败：{error:#}；停止被控失败：{shutdown:#}"
         )),
     }
 }

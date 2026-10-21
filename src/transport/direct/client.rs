@@ -48,7 +48,6 @@ pub(crate) struct Connected {
     pub signal: SignalSession,
     pub host: DirectHello,
     pub relation: Relation,
-    pub grants: Vec<String>,
     /// The PAKE key of an access code, bound into the session's SDP.
     pub pake_key: Option<[u8; 32]>,
 }
@@ -153,8 +152,8 @@ async fn open(target: &Target, local: &LocalDevice) -> Result<Opened> {
         tokio_rustls::TlsConnector::from(super::client_tls()?).connect(name, stream),
     )
     .await
-    .context("TLS 握手超时")?
-    .context("TLS 握手失败（对端可能不是 Farwing 被控端）")?;
+    .context("建立加密连接超时")?
+    .context("建立加密连接失败")?;
     let ekm = super::exported_key(tls.get_ref().1)?;
     let (mut reader, mut writer) = tokio::io::split(tls);
     let mine = super::hello(local, ROLE_CONTROLLER, &ekm, Vec::new(), 0);
@@ -278,12 +277,11 @@ async fn connect_inner(
         trusted: authorized.relation != Relation::Assist,
         last_seen: 0,
     });
-    tracing::info!(device = %host.device_id, relation = ?authorized.relation, "direct connection authorized");
+    tracing::info!(device = %host.device_id, relation = ?authorized.relation, grants = ?authorized.grants, "direct connection authorized");
     Ok(Connected {
         signal: SignalSession::direct(reader, writer, address.ip()),
         host,
         relation: authorized.relation,
-        grants: authorized.grants,
         pake_key,
     })
 }

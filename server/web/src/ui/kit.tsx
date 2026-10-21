@@ -92,21 +92,16 @@ export function Switch({
   checked,
   onChange,
   label,
-  hint,
   disabled,
 }: {
   checked: boolean;
   onChange(value: boolean): void;
   label?: ReactNode;
-  hint?: ReactNode;
   disabled?: boolean;
 }) {
   return (
     <label className={`switch-row ${disabled ? 'disabled' : ''}`}>
-      <span className="switch-text">
-        {label && <span>{label}</span>}
-        {hint && <span className="muted small">{hint}</span>}
-      </span>
+      <span className="switch-text">{label && <span>{label}</span>}</span>
       <button
         type="button"
         role="switch"
@@ -201,22 +196,11 @@ export function Loading({ text = '正在加载' }: { text?: string }) {
   );
 }
 
-export function Empty({
-  icon = 'info',
-  title,
-  hint,
-  action,
-}: {
-  icon?: IconName;
-  title: ReactNode;
-  hint?: ReactNode;
-  action?: ReactNode;
-}) {
+export function Empty({ icon = 'info', title, action }: { icon?: IconName; title: ReactNode; action?: ReactNode }) {
   return (
     <div className="empty">
       <Icon name={icon} size={28} />
       <div className="empty-title">{title}</div>
-      {hint && <div className="muted">{hint}</div>}
       {action}
     </div>
   );

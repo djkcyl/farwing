@@ -81,7 +81,7 @@ pub(super) async fn run_owner(
     cancel: &CancellationToken,
     reporter: &mut ConnectionProgressReporter,
 ) -> Result<()> {
-    report_progress(Some(reporter), 1, "准备直连", "正在读取本机设备身份与显示能力");
+    report_progress(Some(reporter), 1, "准备直连", "");
     let local = direct::local_device()?;
     let display_info = detect_local_display().unwrap_or(LocalDisplayInfo::FALLBACK);
     let profile = options.resolve(display_info)?;
@@ -150,8 +150,8 @@ pub(super) async fn run_owner(
                     return Err(error);
                 }
                 attempt += 1;
-                let since = *recovering.get_or_insert_with(std::time::Instant::now);
-                display = reconnect_display(&alias, &error, since, reporter, cancel, &sender).await?;
+                recovering.get_or_insert_with(std::time::Instant::now);
+                display = reconnect_display(&alias, &error, reporter, cancel, &sender).await?;
                 continue;
             }
         };
@@ -174,8 +174,8 @@ pub(super) async fn run_owner(
         match result {
             Err(error) if recovery(&error) != Recovery::Fatal => {
                 attempt += 1;
-                let since = *recovering.get_or_insert_with(std::time::Instant::now);
-                display = reconnect_display(&alias, &error, since, reporter, cancel, &sender).await?;
+                recovering.get_or_insert_with(std::time::Instant::now);
+                display = reconnect_display(&alias, &error, reporter, cancel, &sender).await?;
             }
             result => {
                 close.close();
@@ -239,7 +239,7 @@ async fn connect_once(
         4,
         "直连已授权",
         format!(
-            "{} · {} · 可用：{}",
+            "{} · {}",
             host.name,
             match connected.relation {
                 Relation::Own => "本账号设备",
@@ -247,7 +247,6 @@ async fn connect_once(
                 Relation::Assist => "访客",
                 Relation::Friend => "好友设备",
             },
-            connected.grants.join(",")
         ),
     );
     let store = crate::features::viewing_settings::ViewingSettingsStore::new(SETTINGS_OWNER, &host.device_id).ok();
@@ -311,7 +310,7 @@ async fn wait(
 ) -> Result<()> {
     anyhow::ensure!(
         since.elapsed() < RECOVERY_LIMIT,
-        "被控端在 {} 分钟内没有恢复，请稍后重新连接",
+        "被控端在 {} 分钟内没有恢复",
         RECOVERY_LIMIT.as_secs() / 60
     );
     let delay = if recovery(error) == Recovery::WaitDevice {
@@ -319,15 +318,12 @@ async fn wait(
     } else {
         recovery_backoff(attempt)
     };
-    let remaining = (since + RECOVERY_LIMIT)
-        .saturating_duration_since(std::time::Instant::now())
-        .as_secs();
     tracing::info!(attempt, delay_ms = delay.as_millis(), %error, "reconnecting the direct session after a delay");
     let retry = crate::application::viewer::RetryNow::default();
     reporter(ConnectionProgress::working(
         if recovery(error) == Recovery::WaitDevice { 1 } else { 4 },
         if recovery(error) == Recovery::WaitDevice { "等待被控端" } else { "正在重新连接" },
-        format!("{error:#}；{} 秒后第 {attempt} 次重试（最多再等 {remaining} 秒），可关闭窗口取消", delay.as_secs()),
+        format!("{error:#}；{} 秒后第 {attempt} 次重试", delay.as_secs()),
     ).with_retry(&retry));
     cancellable(cancel, async {
         tokio::select! {
@@ -343,7 +339,6 @@ async fn wait(
 async fn reconnect_display(
     alias: &str,
     error: &anyhow::Error,
-    since: std::time::Instant,
     reporter: &mut ConnectionProgressReporter,
     cancel: &CancellationToken,
     sender: &std::sync::mpsc::Sender<ViewerWindowEvent>,
@@ -353,15 +348,7 @@ async fn reconnect_display(
     *reporter = Arc::new(move |progress| {
         let _ = progress_tx.send(progress);
     });
-    reporter(ConnectionProgress::working(
-        4,
-        "正在重新连接",
-        format!(
-            "{error:#}；正在重新建立直连（已用 {} 秒，最长 {} 分钟）",
-            since.elapsed().as_secs(),
-            RECOVERY_LIMIT.as_secs() / 60
-        ),
-    ));
+    reporter(ConnectionProgress::working(4, "正在重新连接", format!("{error:#}")));
     sender
         .send(ViewerWindowEvent::Reconnect {
             alias: alias.to_owned(),

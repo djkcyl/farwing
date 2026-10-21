@@ -350,7 +350,7 @@ pub(super) fn show(
             ui,
             body,
             match q.filter {
-                None => "选择文件后上传或下载",
+                None => "没有传输任务",
                 Some(0) => "没有进行中的任务",
                 Some(1) => "没有暂停的任务",
                 Some(2) => "没有已完成的任务",

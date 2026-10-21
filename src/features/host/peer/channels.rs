@@ -697,15 +697,15 @@ fn control_turn(
         return (false, String::new());
     }
     if !lease.requested() || !lease.granted(farwing_protocol::caps::CONTROL) {
-        return (false, "你没有这台设备的键鼠控制权限".into());
+        return (false, "没有键鼠控制权限".into());
     }
     match participants::take_control(key, automatic) {
         Ok(()) => (true, String::new()),
-        Err(Refusal::NotAllowed) => (false, "你没有这台设备的键鼠控制权限".into()),
+        Err(Refusal::NotAllowed) => (false, "没有键鼠控制权限".into()),
         Err(Refusal::HeldBy(holder)) => {
             (false, crate::features::stream_control::control_turn::held_by(&holder))
         }
-        Err(Refusal::Shared) => (false, "多人连接时请手动开启键鼠控制".into()),
+        Err(Refusal::Shared) => (false, "多人连接时不自动开启键鼠控制".into()),
     }
 }
 

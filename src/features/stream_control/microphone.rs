@@ -33,10 +33,10 @@ impl StreamControlHandle {
                 bail!("对端未开放麦克风功能");
             }
             if !state.viewing_enabled {
-                bail!("请先打开画面，再开启麦克风");
+                bail!("画面未打开");
             }
             if !self.microphone.configured() {
-                bail!("对端未协商可接收的Opus麦克风轨道");
+                bail!("对端不接收麦克风音频");
             }
             self.microphone.start()?;
         }

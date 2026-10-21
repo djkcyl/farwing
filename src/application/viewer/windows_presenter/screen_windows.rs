@@ -113,7 +113,7 @@ impl ScreenTabBar {
                                 !self.software_only,
                                 false,
                             )
-                            .on_disabled_hover_text("软解仅允许一个播放窗口，请使用标签切换屏幕")
+                            .on_disabled_hover_text("软解仅支持一个播放窗口")
                             .clicked()
                             {
                                 if let Ok(origin) = window.outer_position() {
@@ -556,7 +556,7 @@ impl ScreenWindows {
             .as_ref()
             .is_some_and(|app| app._session.is_software())
         {
-            bail!("软解仅允许一个播放窗口，请使用顶部标签切换屏幕");
+            bail!("软解仅支持一个播放窗口");
         }
         let target = {
             let window = event_loop.create_window(

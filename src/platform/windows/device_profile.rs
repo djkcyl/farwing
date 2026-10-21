@@ -446,14 +446,13 @@ fn resolve_wallpaper(
     }
     // Do not pick an arbitrary old thumbnail when the original was removed.
     // The standard current cache must identify this exact configured image.
-    let (cached_path, bytes) =
-        cache().context("壁纸原文件不可用，无法核对 Windows 当前壁纸缓存")?;
+    let (cached_path, bytes) = cache().context("壁纸原文件不可用")?;
     let cached_from = transcoded_source(&bytes);
     ensure!(
         cached_from.as_ref() == Some(&path),
-        "壁纸原文件不可用，Windows 壁纸缓存与当前设置不一致，请重新选择壁纸"
+        "壁纸原文件不可用，壁纸缓存不匹配"
     );
-    wallpaper_file(cached_path, path).context("壁纸原文件不可用，Windows 当前壁纸缓存也不可用")
+    wallpaper_file(cached_path, path).context("壁纸原文件和缓存均不可用")
 }
 
 fn wallpaper_file(path: PathBuf, configured_path: PathBuf) -> Result<WallpaperSource> {

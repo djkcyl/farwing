@@ -68,12 +68,12 @@ const MESSAGES: Record<string, string> = {
   assist_code_invalid: '访问码不正确',
   assist_code_required: '对方要求输入访问码',
   assist_rejected: '对方拒绝了本次连接',
-  assist_unavailable: '对方没有开启访问码，也没有信任这个浏览器',
+  assist_unavailable: '对方未开放访客连接',
   device_offline: '对方设备不在线',
   device_not_found: '没有找到这个短号或设备 ID',
   not_found: '没有找到这个短号或设备 ID',
   timeout: '等待对方确认超时',
-  rate_limited: '尝试次数太多，请稍后再试',
+  rate_limited: '尝试次数太多',
   busy: '对方的连接数已满',
 };
 
@@ -136,7 +136,7 @@ export async function visitAdmission(
       joined.host.public_key !== pending.host.public_key ||
       (await deviceIdOf(unb64(joined.host.public_key))) !== joined.host.device_id
     ) {
-      throw new VisitError('identity', '对方设备身份在连接过程中发生变化，已停止连接');
+      throw new VisitError('identity', '对方设备身份发生变化');
     }
     onStep('joining');
     return { ticket: joined, hostId: joined.host.device_id, pakeKey: key };

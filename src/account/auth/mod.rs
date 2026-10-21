@@ -321,7 +321,7 @@ impl NativeIdentity {
 
     fn validate_schema(&self) -> Result<()> {
         if self.schema != IDENTITY_SCHEMA {
-            bail!("本机设备注册记录需要重新建立，未修改现有账号登录");
+            bail!("本机设备注册记录需要重新建立");
         }
         Uuid::parse_str(&self.client_id).context("saved installation id is not a UUID")?;
         self.key_seed()?;

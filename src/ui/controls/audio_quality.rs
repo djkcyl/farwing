@@ -6,7 +6,7 @@ fn label(kbps: u32) -> &'static str {
         128 => "标准 · 128 kbps",
         192 => "高音质 · 192 kbps",
         256 => "极高音质 · 256 kbps",
-        _ => "请选择音质档位",
+        _ => "未选择",
     }
 }
 
@@ -80,8 +80,7 @@ pub(crate) fn remote_audio_quality(
             egui::RichText::new("音质由被控端设置")
                 .size(super::theme::SMALL)
                 .color(super::theme::MUTED),
-        )
-        .on_hover_text("当前被控端未提供音质切换，需要两端均使用支持此功能的 Farwing。");
+        );
         return;
     }
     let mut quality = status.quality;

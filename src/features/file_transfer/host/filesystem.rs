@@ -115,7 +115,7 @@ impl Store {
         if !final_path.exists() {
             ensure!(
                 std::fs::read_dir(&self.directory)?.take(257).count() < 256,
-                "未完成的接收任务过多，请先清理旧任务"
+                "未完成的接收任务过多"
             );
         }
         let temp = final_path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));

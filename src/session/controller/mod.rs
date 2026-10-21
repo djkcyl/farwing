@@ -357,7 +357,7 @@ impl ControllerConnection {
             }
         })
         .await
-        .context("端口转发协议握手未完成")?;
+        .context("端口转发未就绪")?;
         self.port_mapping_transport().wait_ready().await
     }
     pub fn stream_control_handle(&self) -> StreamControlHandle {
@@ -436,26 +436,16 @@ impl ControllerConnection {
         let signal = if room.via_presence {
             // The session rides on this process's presence connection (§11).
             let sid = room.session_id.as_deref().context("会话缺少标识")?;
-            report_progress(reporter, 4, "复用在线连接", "通过本机已有的在线连接进入服务器会话");
+            report_progress(reporter, 4, "正在连接服务器", "");
             SignalSession::carried(&local.identity.device_id, sid)
                 .context("signal over the presence connection")?
         } else {
-            report_progress(
-                reporter,
-                4,
-                "连接信令服务",
-                "正在完成 TLS 与 WebSocket 握手，进入服务器会话",
-            );
+            report_progress(reporter, 4, "正在连接服务器", "");
             SignalSession::connect_cancellable(room, SignalRole::Controller, cancel)
                 .await
                 .context("connect controller signaling")?
         };
-        report_progress(
-            reporter,
-            4,
-            "信令通道已连接",
-            "会话凭据已验证，保活与断线恢复凭据已就绪",
-        );
+        report_progress(reporter, 4, "已连接服务器", "");
         Self::establish_on(
             signal,
             local,
@@ -491,12 +481,8 @@ impl ControllerConnection {
         report_progress(
             reporter,
             5,
-            "控制握手",
-            format!(
-                "正在探测并上报解码能力；帧率上限 {} FPS，{}",
-                profile.stream_fps,
-                profile.codec.label()
-            ),
+            "正在请求连接",
+            format!("{} FPS · {}", profile.stream_fps, profile.codec.label()),
         );
         let control = match cancellable(
             cancel,
@@ -519,29 +505,15 @@ impl ControllerConnection {
         report_progress(
             reporter,
             5,
-            "控制握手已接受",
-            format!(
-                "远端返回 {} 组 ICE 服务；自动切路={}，强制 Relay={}",
-                control.ice_servers.len(),
-                if control.network.auto_switch {
-                    "启用"
-                } else {
-                    "关闭"
-                },
-                if control.force_relay { "是" } else { "否" }
-            ),
+            "对方已接受连接",
+            if control.force_relay { "仅使用中转" } else { "" },
         );
         let transport = if control.force_relay {
             crate::media::TransportChoice::Relay
         } else {
             transport
         };
-        report_progress(
-            reporter,
-            6,
-            "创建安全传输栈",
-            "正在初始化 ICE、DTLS-SRTP、SCTP 数据通道与 RTP/RTX/FEC 接收链",
-        );
+        report_progress(reporter, 6, "正在准备连接", "");
         let peer = match NativePeer::new_with_profile(
             control
                 .ice_servers
@@ -582,12 +554,6 @@ impl ControllerConnection {
             .audio()
             .set_settings(audio_settings);
         peer.configure_network_control(transport, control.force_relay);
-        report_progress(
-            reporter,
-            6,
-            "安全传输栈已就绪",
-            "本地媒体能力与控制数据通道已经创建，等待远端协商",
-        );
         let forward_config = RtpForwardConfig {
             video_track_id: None,
         };
@@ -599,66 +565,35 @@ impl ControllerConnection {
                 return Err(error).context("install decrypted RTP forwarder");
             }
         };
-        report_progress(
-            reporter,
-            7,
-            "交换媒体能力",
-            format!(
-                "正在发送 SDP Offer 并协商 {}、RTP 扩展、RTX/FEC 与数据通道",
-                profile.codec.label()
-            ),
-        );
+        report_progress(reporter, 7, "正在协商连接", "");
         let answer_installed = AtomicBool::new(false);
+        // One line per stage: later candidates add no row of their own.
         let negotiation_progress = |event| match event {
-            NegotiationEvent::OfferCreated { sdp_bytes } => report_progress(
-                reporter,
-                7,
-                "本地媒体能力已生成",
-                format!(
-                    "SDP {sdp_bytes} 字节；包含视频、RTP 扩展、RTX/FEC 与数据通道"
-                ),
-            ),
-            NegotiationEvent::OfferSent => report_progress(
-                reporter,
-                7,
-                "等待远端媒体答复",
-                "SDP Offer 已通过服务器信令发送，正在等待 Answer 与远端候选",
-            ),
-            NegotiationEvent::LocalCandidateSent { count } => report_progress(
-                reporter,
-                if answer_installed.load(Ordering::Acquire) {
-                    8
-                } else {
-                    7
-                },
-                "收集本地网络候选",
-                format!("已向远端发送 {count} 个 ICE 候选，LAN/P2P/Relay 探测继续进行"),
-            ),
-            NegotiationEvent::AnswerInstalled { sdp_bytes } => {
-                answer_installed.store(true, Ordering::Release);
-                report_progress(
-                    reporter,
-                    8,
-                    "远端媒体能力已确认",
-                    format!(
-                        "已安装 {sdp_bytes} 字节 SDP Answer，正在检查候选对并完成 DTLS-SRTP 握手"
-                    ),
-                );
+            NegotiationEvent::OfferSent => report_progress(reporter, 7, "等待对方响应", ""),
+            NegotiationEvent::LocalCandidateSent { count } => {
+                if count == 1 {
+                    report_progress(
+                        reporter,
+                        if answer_installed.load(Ordering::Acquire) {
+                            8
+                        } else {
+                            7
+                        },
+                        "正在查找线路",
+                        "",
+                    );
+                }
             }
-            NegotiationEvent::RemoteCandidateInstalled { count } => report_progress(
-                reporter,
-                8,
-                "判断最佳连接线路",
-                format!(
-                    "已安装 {count} 个远端 ICE 候选，正在按优先级与连通性选择 LAN、P2P 或 Relay"
-                ),
-            ),
-            NegotiationEvent::Connected => report_progress(
-                reporter,
-                8,
-                "安全媒体通道已建立",
-                "ICE 候选对、DTLS 握手与 SRTP 密钥协商均已完成",
-            ),
+            NegotiationEvent::AnswerInstalled => {
+                answer_installed.store(true, Ordering::Release);
+                report_progress(reporter, 8, "对方已响应", "");
+            }
+            NegotiationEvent::RemoteCandidateInstalled { count } => {
+                if count == 1 {
+                    report_progress(reporter, 8, "正在选择线路", "");
+                }
+            }
+            NegotiationEvent::Connected => report_progress(reporter, 8, "已建立连接", ""),
         };
         if let Err(error) = cancellable(
             cancel,
@@ -673,8 +608,8 @@ impl ControllerConnection {
         let route = peer
             .selected_route_details()
             .await
-            .unwrap_or_else(|| "安全媒体通道已连接，候选对详情尚未发布".to_owned());
-        report_progress(reporter, 8, "连接线路已选定", route);
+            .unwrap_or_default();
+        report_progress(reporter, 8, "已选定线路", route);
         peer.stream_control_handle()
             .network_control()
             .connected(true);
@@ -721,28 +656,17 @@ impl ControllerConnection {
         display: ViewerDisplayHandle,
     ) -> Result<(NativeViewerSession, PlaybackSummary)> {
         let hardware_decode = self.profile.decoder.mode.hardware();
-        report_progress(
-            reporter,
-            9,
-            "等待视频轨道",
-            "安全媒体通道已建立，正在等待远端发布桌面视频轨道",
-        );
+        report_progress(reporter, 9, "正在准备画面", "");
         let (video, codec) = self.select_video_track().await?;
         report_progress(
             reporter,
             10,
-            "视频轨道已协商",
-            format!(
-                "{} · RTP PT {} · SSRC {} · 轨道 {}",
-                match codec {
-                    VideoCodec::H264 => "H.264/AVC",
-                    VideoCodec::H265 => "H.265/HEVC",
-                    VideoCodec::Av1 => "AV1",
-                },
-                video.payload_type,
-                video.ssrc,
-                video.id
-            ),
+            "画面格式已确定",
+            match codec {
+                VideoCodec::H264 => "H.264/AVC",
+                VideoCodec::H265 => "H.265/HEVC",
+                VideoCodec::Av1 => "AV1",
+            },
         );
         let profile = self.profile;
         let track_index = video
@@ -765,18 +689,18 @@ impl ControllerConnection {
         report_progress(
             reporter,
             11,
-            "初始化视频解码器",
+            "正在准备解码",
             format!(
-                "正在打开 {} {} 解码路径，实际画面尺寸以收到的码流为准",
-                if hardware_decode {
-                    "平台硬件优先"
-                } else {
-                    "软件"
-                },
+                "{} · {}",
                 match codec {
                     VideoCodec::H264 => "H.264",
                     VideoCodec::H265 => "H.265",
                     VideoCodec::Av1 => "AV1",
+                },
+                if hardware_decode {
+                    "硬件解码优先"
+                } else {
+                    "软件解码"
                 },
             ),
         );
@@ -798,16 +722,8 @@ impl ControllerConnection {
         report_progress(
             reporter,
             11,
-            "视频解码器已就绪",
-            format!(
-                "{} · {}",
-                performance.snapshot().decoder,
-                if hardware_decode {
-                    "允许平台硬解，失败时由解码层报告实际后端"
-                } else {
-                    "已按用户设置禁用硬解优先"
-                }
-            ),
+            "解码已就绪",
+            performance.snapshot().decoder.clone(),
         );
         self.forwarder.add_video_sink(viewer.video_sink()).await;
         viewer.ensure_running()?;
@@ -816,12 +732,7 @@ impl ControllerConnection {
         if let Err(error) = self.peer.stream_control_handle().audio().start() {
             tracing::warn!(%error, "native audio did not start; video remains available");
         }
-        report_progress(
-            reporter,
-            12,
-            "同步首个完整画面",
-            "已启动 RTP 接收，正在发送 PLI 并等待参数集、完整关键帧与首帧解码",
-        );
+        report_progress(reporter, 12, "正在等待画面", "");
         self.peer.request_keyframe(video.ssrc).await?;
         let keyframe_ready = self
             .forwarder
@@ -830,19 +741,9 @@ impl ControllerConnection {
         viewer.ensure_running()?;
         if !keyframe_ready {
             tracing::warn!("PLI 后 2 秒内未识别到完整参数集和关键帧，已继续等待后续关键帧");
-            report_progress(
-                reporter,
-                12,
-                "继续等待关键帧",
-                "远端尚未在 2 秒内返回完整关键帧；接收链保持运行并继续请求恢复",
-            );
+            report_progress(reporter, 12, "仍在等待画面", "");
         } else {
-            report_progress(
-                reporter,
-                12,
-                "首个完整画面已到达",
-                "参数集与关键帧已通过接收门禁，播放器可以开始显示",
-            );
+            report_progress(reporter, 12, "已收到画面", "");
         }
         let summary = PlaybackSummary {
             track_id: video.id,

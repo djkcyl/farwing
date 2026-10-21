@@ -198,7 +198,7 @@ impl Native {
             match self.notifier.Setting() {
                 Ok(value) => anyhow::ensure!(
                     value == NotificationSetting::Enabled,
-                    "Windows 已禁用此程序的通知，请检查系统通知设置"
+                    "Windows 已禁用此程序的通知"
                 ),
                 Err(error) if error.code() == windows::core::HRESULT::from_win32(1168) => (),
                 Err(error) => return Err(error).context("查询 Windows 通知设置失败"),

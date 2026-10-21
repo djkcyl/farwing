@@ -23,9 +23,9 @@ export function resultText(code: number): string {
     case 2:
       return '对方没有登录的用户，批注已关闭';
     case 3:
-      return '对方已锁定，请解锁后清空或重新开启批注';
+      return '对方已锁定，批注没有完成';
     case 4:
-      return '对方没有完成批注操作，请清空或重新开启批注';
+      return '对方拒绝了批注操作';
     default:
       return `批注操作没有完成（${code}）`;
   }

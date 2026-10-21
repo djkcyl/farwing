@@ -38,7 +38,7 @@ impl Api {
             // `supported` is (major << 4) | minor.
             ensure!(
                 supported >= 0xd0,
-                "NVENC 需要支持 API 13 的 NVIDIA 驱动（570 或更新），当前驱动只支持 {}.{}",
+                "NVENC 需要 NVIDIA 驱动 570 或更新（当前 API {}.{}）",
                 supported >> 4,
                 supported & 15
             );

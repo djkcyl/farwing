@@ -132,7 +132,6 @@ pub(super) fn avatar(ui: &mut egui::Ui, seed: &str, name: &str, size: f32) {
 pub(super) enum Tone {
     Success,
     Warning,
-    Info,
 }
 
 /// A one-line message across the page.
@@ -140,7 +139,6 @@ pub(super) fn banner(ui: &mut egui::Ui, text: &str, tone: Tone) {
     let color = match tone {
         Tone::Success => GREEN,
         Tone::Warning => AMBER,
-        Tone::Info => BLUE,
     };
     egui::Frame::new()
         .fill(color.gamma_multiply(0.1))
@@ -323,7 +321,7 @@ pub(super) fn paint_lock(painter: &egui::Painter, center: egui::Pos2, size: f32,
 
 /// What a feature needs before it can be used and the ways to get there.
 /// Returns the action chosen; the first one is the primary.
-pub(super) fn locked(ui: &mut egui::Ui, title: &str, hint: &str, actions: &[&str]) -> Option<usize> {
+pub(super) fn locked(ui: &mut egui::Ui, title: &str, actions: &[&str]) -> Option<usize> {
     let mut chosen = None;
     card().show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -336,7 +334,6 @@ pub(super) fn locked(ui: &mut egui::Ui, title: &str, hint: &str, actions: &[&str
             ui.add_space(8.0);
             ui.label(RichText::new(title).size(theme::SECTION).strong());
             ui.set_max_width(520.0);
-            ui.add(egui::Label::new(RichText::new(hint).color(MUTED)).wrap());
             if actions.is_empty() {
                 return;
             }

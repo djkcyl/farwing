@@ -68,24 +68,12 @@ impl DeviceCenterApp {
     pub(super) fn this_device_page(&mut self, ui: &mut egui::Ui) {
         self.direct.poll_messages();
         let access = self.access();
-        cards::page_header(
-            ui,
-            "本机",
-            "谁可以连接这台电脑，以及怎样连接。",
-            |ui| self.active_view(ui),
-        );
+        cards::page_header(ui, "本机", "", |ui| self.active_view(ui));
         if let Some((message, _)) = &self.direct.message {
             cards::banner(ui, message, Tone::Success);
         }
         if let Some(error) = self.direct.error.clone() {
             cards::banner(ui, &error, Tone::Warning);
-        }
-        if access == Access::NoServer {
-            cards::banner(
-                ui,
-                "没有设置服务器：其他设备只能在同一局域网中直连本机（输入本机地址，或在“附近”中选择）。",
-                Tone::Info,
-            );
         }
         crate::ui::controls::page_scroll("this-device").show(ui, |ui| {
             let Some(host) = self.host.clone() else {
@@ -165,7 +153,7 @@ impl DeviceCenterApp {
                     }
                     _ => detail(ui, "未知"),
                 },
-                |ui| detail(ui, "由本机密钥生成，在任何服务器和局域网中都相同"),
+                |_| {},
             );
             field(
                 ui,
@@ -175,9 +163,10 @@ impl DeviceCenterApp {
                         detail(
                             ui,
                             match access {
-                                Access::NoServer => "没有服务器时没有短号",
-                                _ if !allowed => "开启“允许连接本机”后由服务器分配",
-                                _ => "正在从服务器获取…",
+                                Access::NoServer => "无",
+                                _ if self.server_unreachable => "无",
+                                _ if !allowed => "未分配",
+                                _ => "正在获取…",
                             },
                         );
                     } else {
@@ -190,11 +179,7 @@ impl DeviceCenterApp {
                         );
                     }
                 },
-                |ui| {
-                    if !short.is_empty() {
-                        detail(ui, "服务器分配，方便口头告诉别人");
-                    }
-                },
+                |_| {},
             );
             let lan = state.as_ref().map(|s| (s.listening_port, s.settings));
             field(
@@ -204,11 +189,11 @@ impl DeviceCenterApp {
                     // The endpoint listens but refuses everyone, and the
                     // device is not announced.
                     Some((_, settings)) if !allowed && settings.direct => {
-                        detail(ui, "开启“允许连接本机”后接受直连");
+                        detail(ui, "不接受连接");
                     }
                     Some((Some(port), _)) => {
                         if addresses.is_empty() {
-                            detail(ui, "没有找到本机的局域网地址");
+                            detail(ui, "未找到局域网地址");
                         }
                         let default = port == farwing_protocol::direct::DEFAULT_PORT;
                         for (index, address) in addresses.iter().enumerate() {
@@ -222,7 +207,7 @@ impl DeviceCenterApp {
                     }
                     Some((None, settings)) if !settings.direct => detail(ui, "直连已关闭"),
                     Some((None, _)) => detail(ui, "正在开启直连…"),
-                    None => detail(ui, "正在读取后台服务的状态…"),
+                    None => detail(ui, "正在读取…"),
                 },
                 |ui| match lan {
                     Some((Some(port), settings)) if allowed || !settings.direct => {
@@ -237,9 +222,6 @@ impl DeviceCenterApp {
                                 }
                             ),
                         );
-                        if addresses.is_empty() {
-                            detail(ui, "对方可以输入本机的 IP 或主机名");
-                        }
                     }
                     Some((None, settings)) if !settings.direct => {
                         open_network = ui.add(crate::ui::controls::secondary("直连设置")).clicked();
@@ -255,18 +237,10 @@ impl DeviceCenterApp {
                         cards::chip(ui, reach.state, reach.color);
                     },
                     |ui| {
-                        detail(ui, reach.meaning);
                         if let Some(label) = reach.action {
                             install_service = ui.add(crate::ui::controls::secondary(label)).clicked();
                         }
                     },
-                );
-            }
-            if !allowed {
-                ui.add_space(4.0);
-                detail(
-                    ui,
-                    "关闭时，任何设备都不能连接本机（包括本账号的设备、好友、受信任设备和访客）。",
                 );
             }
         });
@@ -292,17 +266,8 @@ impl DeviceCenterApp {
             crate::account::api::list_order(&a.name, &a.device_id, &b.name, &b.device_id)
         });
         cards::section_heading(ui, "受信任设备", Some(trusted.len()), |_| {});
-        detail(
-            ui,
-            "这些设备无需访问码和确认即可连接本机，经服务器或直连都可以，按各自的权限。",
-        );
-        ui.add_space(6.0);
         if trusted.is_empty() {
-            empty_card(
-                ui,
-                "还没有受信任的设备",
-                "在“设备 → 附近”中与对方配对；或在访客连接后，在下方“正在连接”中点“信任”，或在连接请求中选“允许并信任”。",
-            );
+            empty_card(ui, "还没有受信任的设备", "");
             return;
         }
         for device in trusted {
@@ -360,7 +325,6 @@ impl DeviceCenterApp {
                     ui.label(RichText::new("本账号的其他设备").strong());
                     cards::chip(ui, "完全控制", GREEN);
                 });
-                detail(ui, "登录同一账号的电脑可以完全控制本机；在局域网中可以直连。");
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("好友").strong());
@@ -369,13 +333,9 @@ impl DeviceCenterApp {
                         friends = ui.add(crate::ui::controls::secondary("管理好友")).clicked();
                     });
                 });
-                detail(
-                    ui,
-                    "好友按你在“好友”页给的权限连接，没有共享的设备对好友不可见；在局域网中也可以直连。",
-                );
             } else {
                 ui.horizontal(|ui| {
-                    detail(ui, "登录后，本账号的其他设备与好友也可以连接本机。");
+                    detail(ui, "未登录");
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         sign_in = ui
                             .add(crate::ui::controls::secondary(self.sign_in_label()))
@@ -405,7 +365,7 @@ impl DeviceCenterApp {
         cards::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             if participants.is_empty() {
-                detail(ui, "目前没有人连接本机。");
+                detail(ui, "没有人连接本机");
             } else {
                 action = super::super::controlled_caption::participants_list(ui, &participants);
             }
@@ -424,10 +384,6 @@ impl DeviceCenterApp {
         cards::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                detail(
-                    ui,
-                    "文件、剪贴板、端口转发、同时连接人数，以及直连与局域网、画面与声音，对所有连接本机的人生效。",
-                );
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                     open = ui.add(crate::ui::controls::secondary("被控设置")).clicked();
                 });
@@ -462,7 +418,7 @@ impl DeviceCenterApp {
                         name: name.clone(),
                         grants,
                     },
-                    format!("已信任 {name}：以后无需访问码和确认"),
+                    format!("已信任 {name}"),
                 );
             }
             other => {
@@ -489,8 +445,6 @@ impl DeviceCenterApp {
                         true,
                     );
                     cards::caps_editor(ui, "trusted-grants", &mut grants);
-                    ui.add_space(6.0);
-                    detail(ui, "与本机的上限取交集；修改在对方下次连接时生效。");
                     let (accept, dismiss) = crate::ui::controls::dialog_actions(
                         ui,
                         Some(crate::ui::controls::DialogAction::new("保存")),
@@ -518,7 +472,7 @@ impl DeviceCenterApp {
             ctx,
             "trusted-remove",
             "不再信任这台设备？",
-            &format!("{name} 以后连接本机需要访问码或你的确认，它正在进行的连接会结束。"),
+            &format!("{name} 正在进行的连接会结束"),
             "不再信任",
         ) {
             Some(true) => {

@@ -253,7 +253,7 @@ impl Microphone {
         s.pending = None;
         s.enabled = false;
         s.confirmed = false;
-        s.error = Some(format!("麦克风请求发送失败，远端状态未确认：{error}"));
+        s.error = Some(format!("麦克风请求发送失败：{error}"));
         self.0.refresh(&s);
         true
     }
@@ -575,7 +575,7 @@ fn capture_owner(shared: Arc<Shared>) {
             let result = device
                 .ok_or_else(|| {
                     if selection.is_some() {
-                        anyhow!("所选麦克风已断开，请重新连接或选择其他设备")
+                        anyhow!("所选麦克风已断开")
                     } else {
                         anyhow!("没有可用的默认麦克风")
                     }
@@ -662,7 +662,7 @@ fn open_input(
     }?;
     stream
         .play()
-        .context("启动麦克风失败（请检查系统麦克风权限）")?;
+        .context("启动麦克风失败")?;
     let mut s = lock(&shared.state);
     if shared.current(generation) {
         s.device = device

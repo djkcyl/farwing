@@ -104,7 +104,7 @@ export function Shell({ children }: { children: ReactNode }) {
             icon="logout"
             label="退出登录"
             onClick={async () => {
-              if (await confirm({ title: '退出登录', message: '这个浏览器将退出登录。', confirm: '退出' })) {
+              if (await confirm({ title: '退出登录', confirm: '退出' })) {
                 await auth.logout();
               }
             }}

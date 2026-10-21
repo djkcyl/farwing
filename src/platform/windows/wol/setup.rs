@@ -142,9 +142,7 @@ pub(crate) fn inspect(
         if cancel.is_cancelled() || start.elapsed() > Duration::from_secs(45) {
             let _ = child.kill();
             let _ = child.wait();
-            break Err(anyhow::anyhow!(
-                "网卡检查或配置已取消/超时；请重新检查实际状态"
-            ));
+            break Err(anyhow::anyhow!("网卡检查或配置已取消或超时"));
         }
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
@@ -160,10 +158,7 @@ pub(crate) fn inspect(
         .join()
         .map_err(|_| anyhow::anyhow!("网卡结果读取中断"))??;
     let _ = errors.join();
-    ensure!(
-        outcome?.success(),
-        "网卡检查或配置失败；请确认目标仍存在且有读取/配置权限"
-    );
+    ensure!(outcome?.success(), "网卡检查或配置失败");
     ensure!(data.len() <= 1024 * 1024, "网卡结果过大");
     serde_json::from_slice(&data).context("网卡检查结果格式错误")
 }
@@ -175,7 +170,7 @@ pub(crate) fn configure_elevated(guid: String, mac: String) -> Result<()> {
     let result = inspect(Some(&key), true, &CancellationToken::new())?;
     ensure!(
         result.len() == 1 && result[0].errors.is_empty(),
-        "部分网卡设置失败，请重新检查；已成功的设置保留"
+        "部分网卡设置失败"
     );
     Ok(())
 }
@@ -212,13 +207,13 @@ pub(crate) fn configure(key: &AdapterKey, cancel: &CancellationToken) -> Result<
         ..Default::default()
     };
     ensure!(!cancel.is_cancelled(), "操作已取消");
-    unsafe { ShellExecuteExW(&mut info) }.context("网卡配置未启动（可能取消了管理员授权）")?;
+    unsafe { ShellExecuteExW(&mut info) }.context("网卡配置未启动")?;
     let handle = crate::platform::windows::host_service::pipe::Handle(info.hProcess);
     ensure!(!handle.0.is_invalid(), "网卡配置进程不可用");
     // Once elevated configuration starts, wait for its bounded operation. Do not
     // interrupt an arbitrary successful subset by killing the privileged helper.
     let result = unsafe { WaitForSingleObject(handle.0, 60_000) };
-    ensure!(result == WAIT_OBJECT_0, "网卡配置尚未结束；请稍后重新检查");
+    ensure!(result == WAIT_OBJECT_0, "网卡配置尚未结束");
     let mut code = 0;
     unsafe {
         GetExitCodeProcess(handle.0, &mut code)?;
@@ -226,7 +221,7 @@ pub(crate) fn configure(key: &AdapterKey, cancel: &CancellationToken) -> Result<
     let mut rows = inspect(Some(key), false, cancel)?;
     if code != 0 {
         for row in &mut rows {
-            row.errors.push("部分设置未完成，请检查当前状态".into());
+            row.errors.push("部分设置未完成".into());
         }
     }
     Ok(rows)

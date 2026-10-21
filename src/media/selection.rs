@@ -46,12 +46,12 @@ pub(crate) enum SelectionReason {
 impl SelectionReason {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Automatic => "按当前能力与设置自动选择",
+            Self::Automatic => "自动选择",
             Self::Preferred => "已采用首选",
-            Self::MissingGpu => "首选显卡不可用，已自动回退",
-            Self::GpuFormat => "首选显卡不满足本次格式或输出要求，已回退",
-            Self::CodecFormat => "首选格式不满足双方能力或输出要求，已回退",
-            Self::FailedCandidate => "原候选失败，已切换可用候选",
+            Self::MissingGpu => "首选显卡不可用，已回退",
+            Self::GpuFormat => "首选显卡不支持本次格式，已回退",
+            Self::CodecFormat => "首选格式不可用，已回退",
+            Self::FailedCandidate => "原候选失败，已切换",
         }
     }
 }

@@ -10,7 +10,6 @@ struct ResultState {
 pub(super) struct ServiceReach {
     pub state: &'static str,
     pub color: Color32,
-    pub meaning: &'static str,
     /// What to do about it, if anything.
     pub action: Option<&'static str>,
 }
@@ -99,7 +98,7 @@ impl Manager {
             Err(std::sync::mpsc::TryRecvError::Empty) => (),
             Err(_) => {
                 self.pending = None;
-                self.error = Some("安装任务已中断，请重新检查".into());
+                self.error = Some("安装任务已中断".into());
             }
         }
     }
@@ -141,7 +140,7 @@ impl Manager {
             self.confirm = Some(Operation::Install);
         }
         response.on_hover_text(if active {
-            "请先结束本机被控会话"
+            "正在被控"
         } else {
             self.status
                 .as_ref()
@@ -159,21 +158,18 @@ impl Manager {
             ServiceReach {
                 state: "已安装",
                 color: GREEN,
-                meaning: "锁屏、注销或重启后（无需登录 Windows）也能连接本机",
                 action: None,
             }
         } else if status.installed {
             ServiceReach {
                 state: "需要更新",
                 color: AMBER,
-                meaning: "完成前，锁屏或重启后可能无法连接本机",
                 action: Some("更新服务"),
             }
         } else {
             ServiceReach {
                 state: "未安装",
                 color: MUTED,
-                meaning: "只有本程序在运行且已登录 Windows 时，才能连接本机",
                 action: Some("安装服务"),
             }
         })
@@ -187,7 +183,7 @@ impl Manager {
         if !crate::product::is_default_profile() {
             section(ui, "服务管理");
             ui.label(format!(
-                "当前 profile「{}」以便携模式运行。后台服务、驱动和安装只属于默认 profile。",
+                "profile「{}」以便携模式运行",
                 crate::product::profile()
             ));
             return;
@@ -197,11 +193,11 @@ impl Manager {
         let label = self
             .status
             .as_ref()
-            .map_or("正在检查…", |s| s.label.as_str());
+            .map_or("正在检查…", |s| s.label.as_str())
+            .to_owned();
         let removable = self.status.as_ref().is_some_and(|s| s.removable);
         let installable = self.status.as_ref().is_some_and(|s| !s.installed);
-        let hint = format!("{label} · 锁屏、注销或重启后（无需登录 Windows）也能连接本机，不需要账号");
-        form_row(ui, "常驻服务", &hint, |ui| {
+        form_row(ui, "常驻服务", &label, |ui| {
             if installable
                 && ui
                     .add_enabled(
@@ -209,7 +205,7 @@ impl Manager {
                         crate::ui::controls::primary("安装服务"),
                     )
                     .on_disabled_hover_text(if active {
-                        "请先结束本机被控会话"
+                        "正在被控"
                     } else {
                         "正在处理"
                     })
@@ -222,7 +218,7 @@ impl Manager {
             }
             let idle = !active && !self.reboot && self.pending.is_none();
             let busy = if active {
-                "请先结束本机被控会话"
+                "正在被控"
             } else {
                 "正在处理"
             };
@@ -283,11 +279,6 @@ impl Manager {
                 self.audio_confirm = Some(Operation::Uninstall);
             }
         });
-        if audio.is_some_and(|status| status.installed && !status.ready) {
-            ui.label(
-                "虚拟声卡使用测试签名驱动，需要 Windows 允许加载；重新安装不一定能解决加载失败。",
-            );
-        }
     }
     fn audio_dialog(&mut self, ctx: &egui::Context, active: bool) {
         if let Some(operation) = self.audio_confirm {
@@ -308,9 +299,9 @@ impl Manager {
                 .frame(crate::ui::controls::dialog_frame()).show(ctx, |ui| {
                     ui.set_width(460.0);
                     dismissed = crate::ui::controls::dialog_header(ui, title, crate::ui::controls::DialogIcon::Warning, true);
-                    ui.label(if operation == Operation::Install {
-                        "安装 Farwing 虚拟扬声器和虚拟麦克风。此构建使用测试签名驱动，需要在允许测试驱动的启动环境中安装；是否允许加载由 Windows 判断。"
-                    } else { "移除 Farwing 虚拟扬声器和虚拟麦克风。请先关闭正在使用它们的应用。" });
+                    if operation == Operation::Uninstall {
+                        ui.label("将移除虚拟扬声器和虚拟麦克风");
+                    }
                     let (yes, close) = crate::ui::controls::dialog_actions(ui,
                         Some(crate::ui::controls::DialogAction::new(title).enabled(!active && self.pending.is_none())), Some("取消"));
                     accepted = yes;
@@ -374,20 +365,16 @@ impl Manager {
                 dismiss = crate::ui::controls::dialog_header(ui,verb,crate::ui::controls::DialogIcon::Warning,true);
                 if operation == Operation::Install {
                     let drivers = crate::platform::windows::input::install::bundled() || crate::platform::windows::display::install::bundled();
-                    if drivers { ui.label("安装被控服务、输入驱动及虚拟显示驱动，登录后自动启动托盘。允许被控时，重启后无需登录 Windows 即可连接。"); } else { ui.label("安装被控服务，登录后自动启动托盘。允许被控时，重启后无需登录 Windows 即可连接。此构建未包含驱动包，将使用系统输入注入和现有显示器。"); }
-                    ui.label("程序安装到系统目录并创建桌面和开始菜单快捷方式，完成后重新打开控制中心。");
-                    ui.label("本机身份、已登录账号的授权和被控设置将加密保存在本机，由当前 Windows 用户和系统服务使用；受信任设备与直连设置一并交给服务。不登录账号也可以使用：服务按访问码、受信任设备和局域网直连接受连接。");
                     ui.checkbox(&mut self.allow_sas,"允许服务发送 Ctrl+Alt+Del");
                     if drivers { ui.collapsing("驱动与证书", |ui| {
                         if let Some((subject, thumbprint, _)) = Kind::InputDriver.certificate() { ui.label(subject); ui.label(egui::RichText::new(thumbprint).monospace().small()); }
-                        ui.label("两个驱动共用此证书，安装时加入本机受信任根证书及受信任发布者。");
+                        ui.label("安装时加入受信任根证书和受信任发布者");
                         ui.hyperlink_to("显示驱动上游与许可证", "https://github.com/SudoMaker/SudoVDA");
                     }); }
                 } else {
-                    ui.label("停止开机被控，卸载服务和输入驱动，移除自启动与后台账号授权。");
+                    ui.label("将停止开机被控");
                     ui.checkbox(&mut self.removal.remove_display_driver, "同时卸载 Farwing 虚拟显示驱动" );
                     ui.checkbox(&mut self.removal.remove_audio_driver, "同时卸载 Farwing 虚拟声卡" );
-                    ui.label("保留程序本体、当前账号和设置，仍可在普通桌面以便携模式使用。");
                 }
                 for (kind,status) in &self.components { ui.horizontal(|ui| { ui.label(kind.label()); ui.label(match status { Ok(s) => s.label.as_str(), Err(e) => e.as_str() }); }); }
                 let (yes, close) = crate::ui::controls::dialog_actions(ui,Some(crate::ui::controls::DialogAction::new(verb).enabled(!active && self.pending.is_none())),Some("取消")); accepted = yes; dismiss |= close;

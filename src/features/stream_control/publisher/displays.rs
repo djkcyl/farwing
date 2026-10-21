@@ -217,7 +217,7 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
                 // checked before stop(-1) or any native topology mutation.
                 anyhow::ensure!(
                     session.authorization().display_expansion_allowed(),
-                    "本次会话不允许手动进入超级屏或通过超级屏提高帧率"
+                    "本次会话不允许切换超级屏"
                 );
                 session
                     .enter_super(size.width as u32, size.height as u32, dpi, true)
@@ -282,7 +282,7 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
                     id,
                     vec![PbError {
                         error_code: -2,
-                        error_message: "正在更新，暂时无法修改画面设置".into(),
+                        error_message: "正在更新，无法修改画面设置".into(),
                         ..Default::default()
                     }],
                 ));

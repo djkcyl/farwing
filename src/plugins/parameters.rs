@@ -100,7 +100,7 @@ impl Fields {
             if let Some(binding) = &shortcut.binding {
                 ensure!(
                     super::hotkeys::valid(binding),
-                    "快捷键无效或与播放器保留快捷键冲突"
+                    "快捷键无效或与保留快捷键冲突"
                 );
             }
             conditions.push(super::graph::ActivationSpec {

@@ -83,7 +83,7 @@ pub(super) enum AssistResult {
 pub(super) fn operation_error(error: anyhow::Error) -> String {
     if let Some(failure) = error.downcast_ref::<crate::account::api::ApiFailure>() {
         let message = if failure.message.trim().is_empty() {
-            "请求未成功，请稍后重试"
+            "请求失败"
         } else {
             failure.message.trim()
         };
@@ -257,7 +257,7 @@ impl DeviceCenterApp {
             })
             .is_ok();
         if !self.assist.busy {
-            self.assist.fail("设备后台服务不可用");
+            self.assist.fail("请求发送失败");
         }
     }
     pub(super) fn cancel_assist_check(&mut self) {

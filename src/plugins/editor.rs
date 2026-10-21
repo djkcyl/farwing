@@ -202,7 +202,6 @@ impl Editor {
                                 [64.0, crate::ui::controls::HEIGHT],
                                 crate::ui::controls::primary("应用"),
                             )
-                            .on_hover_text("保存并应用到使用此图的观看窗口")
                             .clicked()
                         {
                             self.save(true);
@@ -212,7 +211,6 @@ impl Editor {
                                 [64.0, crate::ui::controls::HEIGHT],
                                 egui::Button::new("保存"),
                             )
-                            .on_hover_text("仅保存草稿")
                             .clicked()
                         {
                             self.save(false);
@@ -222,7 +220,6 @@ impl Editor {
                                 [64.0, crate::ui::controls::HEIGHT],
                                 egui::Button::new("校验"),
                             )
-                            .on_hover_text("检查节点和连线")
                             .clicked()
                         {
                             self.validate();
@@ -300,7 +297,6 @@ impl Editor {
                                 [72.0, crate::ui::controls::HEIGHT],
                                 egui::Button::new("整理节点"),
                             )
-                            .on_hover_text("重新排列并清除中继点，可撤销")
                             .clicked()
                         {
                             self.arrange();
@@ -384,7 +380,7 @@ impl Editor {
                     crate::ui::controls::DialogIcon::Warning,
                     true,
                 );
-                ui.label("切换会丢弃当前修改。可以先继续编辑并保存，再切换节点图。");
+                ui.label("未保存的修改将丢失");
                 let (accept, dismiss) = crate::ui::controls::dialog_actions(
                     ui,
                     Some(crate::ui::controls::DialogAction::new("继续编辑")),
@@ -558,10 +554,7 @@ impl Editor {
                                         )
                                     })
                                     .inner
-                                    .on_hover_text(format!(
-                                        "{}\n\n按住拖入画布 · 点击添加",
-                                        ty.definition.description
-                                    ))
+                                    .on_hover_text(ty.definition.description.as_str())
                                     .on_hover_cursor(egui::CursorIcon::Grab);
                                 if response.clicked() {
                                     add = Some(ty.definition.type_id.clone());
@@ -1063,7 +1056,7 @@ impl Editor {
                 .get(&node.type_id)
                 .map(|t| t.definition.description.as_str())
                 .filter(|s| !s.is_empty())
-                .unwrap_or("插件未提供此节点的用途说明。");
+                .unwrap_or("无说明");
             let description_rect = Rect::from_min_max(
                 r.min + Vec2::new(12.0, 37.0),
                 Pos2::new(r.right() - 12.0, r.top() + 76.0),
@@ -1324,14 +1317,12 @@ impl Editor {
                     }
                     wire_consumed = true;
                 }
-                response
-                    .on_hover_text("拖动调整连线；右键删除")
-                    .context_menu(|ui| {
-                        if ui.button("删除中继点").clicked() {
-                            remove_knot = Some(key);
-                            ui.close();
-                        }
-                    });
+                response.context_menu(|ui| {
+                    if ui.button("删除中继点").clicked() {
+                        remove_knot = Some(key);
+                        ui.close();
+                    }
+                });
             }
         }
         if let Some((id, index)) = remove_knot {
@@ -1556,7 +1547,7 @@ impl Editor {
             .as_ref()
             .is_none_or(|d| d.nodes.len() + nodes.len() > 64 || d.edges.len() + edges.len() > 256)
         {
-            self.message = "粘贴后会超出图规模限制".into();
+            self.message = "超出图规模限制".into();
             return;
         }
         self.checkpoint();

@@ -75,18 +75,7 @@ fn access_code_card(
         if !enabled {
             *show_code = false;
         }
-        if !action.enabled {
-            ui.add(
-                egui::Label::new(
-                    RichText::new(
-                        "开启后，其他设备输入你的访问码（或经你确认）即可作为访客连接本机，权限为访客权限；访客只能连接这一次。",
-                    )
-                    .size(theme::SMALL)
-                    .color(MUTED),
-                )
-                .wrap(),
-            );
-        } else {
+        if action.enabled {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let password = if settings.passwords == Passwords::Custom {
@@ -144,7 +133,6 @@ fn access_code_card(
                             login_button(if copied.is_some() { "已复制" } else { "复制邀请" })
                                 .min_size(vec2(theme::ASSIST_SHARE_WIDTH, theme::CONTROL_HEIGHT)),
                         )
-                        .on_hover_text("复制设备 ID、短号与访问码，发给对方")
                         .clicked()
                     {
                         ui.ctx()
@@ -154,14 +142,9 @@ fn access_code_card(
                     }
                 });
             });
-            let how = match settings.mode {
-                Mode::Password => "输入访问码即可连接",
-                Mode::PasswordConfirmation => "输入访问码后，还需要你在本机确认",
-                Mode::Confirmation => "不用访问码，每次由你在本机确认",
-            };
             ui.horizontal_wrapped(|ui| {
                 ui.label(
-                    RichText::new(format!("{how} · 访客可以："))
+                    RichText::new(format!("{} · 访客可以：", settings.mode.label()))
                         .size(theme::SMALL)
                         .color(MUTED),
                 );
@@ -169,7 +152,7 @@ fn access_code_card(
             });
         }
         if action.enabled && !allowed {
-            ui.colored_label(AMBER, "请先开启上方的“允许连接本机”");
+            ui.colored_label(AMBER, "“允许连接本机”已关闭");
         }
         if let Some(error) = save_error {
             ui.colored_label(AMBER, format!("设置未保存：{error}"));
@@ -275,8 +258,6 @@ impl DeviceCenterApp {
                     crate::ui::controls::DialogIcon::Edit,
                     true,
                 );
-                ui.label("长期有效，8至16位字母和数字，必须同时包含两者。长期访问更推荐“信任”对方的设备。");
-                ui.add_space(12.0);
                 ui.label("新的固定访问码");
                 ui.add_sized(
                     [ui.available_width(), theme::CONTROL_HEIGHT],
@@ -295,7 +276,7 @@ impl DeviceCenterApp {
                 let valid = Settings::valid_custom_code(&editor.code);
                 let matching = editor.code == editor.confirmation;
                 if !editor.code.is_empty() && !valid {
-                    ui.colored_label(AMBER, "访问码不符合格式要求");
+                    ui.colored_label(AMBER, "需 8 至 16 位，同时包含字母和数字");
                 } else if !editor.confirmation.is_empty() && !matching {
                     ui.colored_label(AMBER, "两次输入的访问码不一致");
                 }
@@ -352,7 +333,7 @@ impl DeviceCenterApp {
                     true,
                 );
                 ui.add_enabled_ui(!host.status().saving, |ui| {
-                    ui.label(RichText::new("访客怎样连接").color(MUTED));
+                    ui.label(RichText::new("访客连接方式").color(MUTED));
                     egui::ComboBox::from_id_salt("host-assist-mode")
                         .width(ui.available_width())
                         .selected_text(settings.mode.label())

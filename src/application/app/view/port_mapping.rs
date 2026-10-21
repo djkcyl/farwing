@@ -22,7 +22,7 @@ impl DeviceCenterApp {
             })
             .is_err()
         {
-            self.status = StatusMessage::error("设备后台服务已停止");
+            self.status = StatusMessage::error("无法打开文件传输");
         }
     }
     pub(in crate::application::app) fn open_port_mapping(&mut self, id: String) {
@@ -47,7 +47,7 @@ impl DeviceCenterApp {
             })
             .is_err()
         {
-            self.status = StatusMessage::error("设备后台服务已停止");
+            self.status = StatusMessage::error("无法打开端口转发");
         }
     }
 }

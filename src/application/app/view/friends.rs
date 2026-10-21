@@ -114,7 +114,7 @@ impl DeviceCenterApp {
             cards::page_header(
                 ui,
                 "好友",
-                "好友可以使用你共享给 TA 的设备；TA 共享给你的设备列在 TA 的名下，可以直接连接。",
+                "",
                 |ui| {
                     refresh = ui
                         .add_enabled(!loading, crate::ui::controls::secondary("刷新"))
@@ -164,7 +164,7 @@ impl DeviceCenterApp {
                 let width = (ui.available_width() - 112.0).max(160.0);
                 let response = ui.add_sized(
                     [width, crate::ui::controls::HEIGHT],
-                    singleline_input(&mut self.friends.add_username).hint_text("输入对方的用户名"),
+                    singleline_input(&mut self.friends.add_username).hint_text("对方的用户名"),
                 );
                 if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     submit = true;
@@ -179,10 +179,6 @@ impl DeviceCenterApp {
                     submit = true;
                 }
             });
-            detail(
-                ui,
-                "对方接受后你们成为好友。新好友默认只能观看画面和批注，可以随时调整。对方已向你发出申请时，将直接成为好友。",
-            );
         });
         if submit && !self.friends.busy && !self.friends.add_username.trim().is_empty() {
             let username = std::mem::take(&mut self.friends.add_username);
@@ -254,7 +250,6 @@ impl DeviceCenterApp {
                 ui.add_space(8.0);
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new("还没有好友").strong());
-                    detail(ui, "在上方输入对方的用户名发送申请。成为好友后，可以把自己的设备授权给 TA。");
                 });
                 ui.add_space(8.0);
             });
@@ -479,21 +474,13 @@ impl DeviceCenterApp {
                     }
                 });
                 ui.add_space(4.0);
-                if grants.default.is_empty() {
-                    detail(
-                        ui,
-                        "没有单独设置的设备对 TA 完全不可见：TA 的列表里看不到，也不能连接，包括你以后新登录的设备。要共享的设备在下面选“单独设置”。",
-                    );
-                } else {
-                    detail(ui, "没有单独设置的设备都使用这里的权限，包括以后新登录的设备。");
-                    ui.add_space(6.0);
+                if !grants.default.is_empty() {
                     cards::caps_editor(ui, "default", &mut grants.default);
                 }
                 ui.add_space(14.0);
                 ui.separator();
                 ui.add_space(6.0);
                 ui.label(RichText::new("按设备设置").strong());
-                detail(ui, "需要不同权限的设备可以单独设置，或者不共享给 TA。");
                 ui.add_space(6.0);
                 egui::ScrollArea::vertical()
                     .max_height(300.0)
@@ -531,7 +518,7 @@ impl DeviceCenterApp {
                                                 .devices
                                                 .get(device_id)
                                                 .unwrap_or(&grants.default);
-                                            cards::caps_icons(ui, effective, "不共享 · 不可见");
+                                            cards::caps_icons(ui, effective, "不共享");
                                         },
                                     );
                                 });
@@ -608,10 +595,7 @@ impl DeviceCenterApp {
             ctx,
             "remove-friend",
             "删除好友？",
-            &format!(
-                "与 {} 解除好友关系后，双方给对方的权限都会撤销，正在进行的连接会结束。",
-                user.display_name()
-            ),
+            &format!("{} 与你之间的权限都会撤销", user.display_name()),
             "删除好友",
         ) {
             Some(true) => {

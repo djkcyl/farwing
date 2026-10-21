@@ -101,7 +101,7 @@ impl Driver {
             ..Default::default()
         };
         match unsafe { SetupDiEnumDeviceInterfaces(devices.0, None, &INTERFACE, 1, &mut other) } {
-            Ok(()) => anyhow::bail!("存在多个Farwing虚拟显示设备，无法确定驱动拥有者"),
+            Ok(()) => anyhow::bail!("存在多个 Farwing 虚拟显示设备"),
             Err(error)
                 if error.code()
                     == windows::core::HRESULT::from_win32(
@@ -183,7 +183,7 @@ impl Driver {
                 None,
             )
         }
-        .context("打开虚拟显示驱动失败；可能正被其他程序占用")?;
+        .context("打开虚拟显示驱动失败")?;
         let mut driver = Self(handle, [0; 4], std::cell::Cell::new(false));
         let mut version = [0u8; 4];
         let returned = driver.control(0x8ff, &[], &mut version)?;
@@ -222,7 +222,7 @@ impl Driver {
     pub(crate) fn add_fallback(&self, width: u32, height: u32, hz: u32) -> Result<Output> {
         ensure!(
             self.persistent_supported(),
-            "请更新虚拟显示驱动以启用常驻无屏显示器"
+            "常驻虚拟屏需要更新虚拟显示驱动"
         );
         self.add_command(0x805, FALLBACK_ID, width, height, hz)
     }
@@ -232,7 +232,7 @@ impl Driver {
     pub(crate) fn pin_fallback(&self) -> Result<()> {
         ensure!(
             self.persistent_supported(),
-            "请更新虚拟显示驱动以启用常驻无屏显示器"
+            "常驻虚拟屏需要更新虚拟显示驱动"
         );
         self.control(0x806, &1u32.to_le_bytes(), &mut [])?;
         self.2.set(true);

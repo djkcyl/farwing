@@ -320,7 +320,7 @@ async fn upload(
             r.folder.clone()
         };
         let (present, writing) = exists(wire, r.destination.clone(), name, stop).await?;
-        ensure!(!writing, "另一个任务正在写入同名文件，请等待完成");
+        ensure!(!writing, "另一个任务正在写入同名文件");
         if present && r.policy == conflict::SKIP {
             r.state = TaskState::Skipped;
             return Ok(());
@@ -556,7 +556,7 @@ async fn receive_items(
             r.folder == manifest.folder
                 && r.files.len() == files.len()
                 && r.files.iter().zip(&files).all(|(a, b)| a.same(b)),
-            wire::Failure::new(code::CHANGED, "源文件清单已变化，不能续传原任务")
+            wire::Failure::new(code::CHANGED, "源文件已变化，无法续传")
         );
     } else {
         r.files = files;

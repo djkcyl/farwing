@@ -14,7 +14,7 @@ impl DeviceCenterApp {
             })
             .is_err()
         {
-            self.status = StatusMessage::error("设备后台服务已停止");
+            self.status = StatusMessage::error("获取诊断包失败");
         }
     }
 }
@@ -99,7 +99,7 @@ pub(super) fn popup(
                         egui::RichText::new(if state.warnings > 0 {
                             "已保存，部分日志未包含"
                         } else {
-                            "诊断包已保存到本机"
+                            "诊断包已保存"
                         })
                         .color(if state.warnings > 0 {
                             theme::AMBER
@@ -128,7 +128,7 @@ pub(super) fn popup(
                                     ("diagnostic-folder", target),
                                     "无法打开文件夹",
                                     crate::ui::controls::DialogIcon::Error,
-                                    "诊断包已保存，但文件夹未能打开，请从日志目录查看。",
+                                    path.display().to_string(),
                                 );
                             }
                         }

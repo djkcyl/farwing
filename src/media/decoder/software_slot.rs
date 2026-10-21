@@ -19,7 +19,7 @@ static OCCUPIED: AtomicBool = AtomicBool::new(false);
 pub(crate) struct SoftwarePlaybackBusy;
 impl std::fmt::Display for SoftwarePlaybackBusy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("已有一个软解窗口正在播放，请先关闭它或切换到硬解。整个客户端最多允许一个软解播放窗口。")
+        f.write_str("已有一个软解窗口正在播放")
     }
 }
 impl std::error::Error for SoftwarePlaybackBusy {}

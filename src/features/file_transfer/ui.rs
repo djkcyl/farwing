@@ -325,11 +325,11 @@ impl Window {
                 };
                 let destination = if remote { &s.local } else { &s.remote };
                 if destination.busy || destination.error.is_some() || destination.path.is_empty() {
-                    self.error = Some("请先打开可用的目标文件夹".into());
+                    self.error = Some("目标文件夹不可用".into());
                     return;
                 }
                 if target == ":/" {
-                    self.error = Some("请先打开目标文件夹".into());
+                    self.error = Some("未打开目标文件夹".into());
                     return;
                 }
                 let records = entries
@@ -456,13 +456,13 @@ fn operation_prompt(ctx: &egui::Context, d: &mut Dialog, policy: &mut i32) -> (b
                         e.full_path
                     ));
                     ui.label(if e.entry_type < 4 {
-                        "将永久删除此文件夹及其中全部内容。"
+                        "文件夹及其内容将永久删除"
                     } else {
-                        "将永久删除此文件，无法撤销。"
+                        "文件将永久删除"
                     });
                 }
                 Dialog::Cancel(_) => {
-                    ui.label("停止此任务并清理未完成的临时文件。已完成的文件会保留。");
+                    ui.label("已完成的文件会保留");
                 }
             }
             let (accept, dismiss) = crate::ui::controls::dialog_actions(

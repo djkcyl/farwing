@@ -332,7 +332,7 @@ impl Receiver {
             gate.pending.clear();
             self.shared
                 .lease
-                .input_status(None, Some("输入暂时阻塞，正在释放并恢复".into()));
+                .input_status(None, Some("输入阻塞，正在恢复".into()));
         } else {
             gate.pending.push_back(item);
         }

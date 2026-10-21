@@ -83,7 +83,7 @@ impl StreamControlHandle {
             bail!("批注尚未就绪");
         }
         if s.annotation.busy() {
-            bail!("请等待当前批注操作完成");
+            bail!("批注操作进行中");
         }
         let display = s
             .screens

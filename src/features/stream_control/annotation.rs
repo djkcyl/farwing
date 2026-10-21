@@ -410,14 +410,14 @@ impl StreamControlHandle {
             return Ok(());
         }
         if enable && s.annotation.uncertain {
-            bail!("请先关闭批注清理未确认状态，再重新开启");
+            bail!("批注状态未确认");
         }
         self.annotation_toggle_locked(&mut s, enable)
     }
     fn annotation_toggle_locked(&self, s: &mut StreamControlState, enable: bool) -> Result<()> {
         ensure_ready(s)?;
         if enable && !annotation_supported(s) {
-            bail!("当前设备不支持批注，或能力配置尚未就绪");
+            bail!("当前设备不支持批注或未就绪");
         }
         let native_token = if enable {
             s.annotation_extension
@@ -513,13 +513,13 @@ impl StreamControlHandle {
                     + points.len()
                     > MAX_POINTS)
         {
-            bail!("批注已达到本次会话容量，请先清空");
+            bail!("批注已达容量上限");
         }
         let id = a.next_id;
         a.next_id = a
             .next_id
             .checked_add(1)
-            .ok_or_else(|| anyhow!("请重新开启批注"))?;
+            .ok_or_else(|| anyhow!("批注编号已用尽"))?;
         a.drawing = Some(Drawing {
             owner,
             stroke: Stroke {
@@ -652,8 +652,7 @@ impl StreamControlHandle {
             .iter()
             .any(|screen| screen.id == shape.stroke.screen)
         {
-            s.annotation
-                .uncertain("批注屏幕已移除，形状绘制已结束".into());
+            s.annotation.uncertain("批注屏幕已移除".into());
             return;
         }
         // Refresh the desired laser snapshot even while the previous replace is
@@ -768,7 +767,7 @@ impl StreamControlHandle {
                     d.stroke.points.push(point);
                 } else {
                     d.finished = true;
-                    s.annotation.error = Some("已达到笔迹容量，当前一笔已结束".into());
+                    s.annotation.error = Some("笔迹已达容量上限".into());
                 }
             }
         }
@@ -789,8 +788,7 @@ impl StreamControlHandle {
             .as_ref()
             .is_some_and(|d| !s.screens.iter().any(|v| v.id == d.stroke.screen))
         {
-            s.annotation
-                .uncertain("批注屏幕已移除，当前绘制已结束".into());
+            s.annotation.uncertain("批注屏幕已移除".into());
             return;
         }
         if let Some(d) = &s.annotation.drawing {
@@ -824,8 +822,7 @@ impl StreamControlHandle {
             if let Pending::Toggle(enable) = request.effect {
                 s.annotation.enabled = !enable;
             }
-            s.annotation
-                .uncertain("批注操作未收到确认，请关闭后重新开启".into());
+            s.annotation.uncertain("批注操作未收到确认".into());
         }
         self.flush_annotation(&mut s);
         self.drive_live_shape(&mut s);
@@ -840,7 +837,7 @@ impl StreamControlHandle {
     fn annotation_history(&self, redo: bool) -> Result<()> {
         let mut s = lock(&self.shared);
         if s.annotation.uncertain {
-            bail!("当前笔迹状态未确认，请先清空");
+            bail!("笔迹状态未确认");
         }
         let edit = if redo {
             s.annotation.redo.last()
@@ -864,7 +861,7 @@ impl StreamControlHandle {
     pub(crate) fn annotation_erase(&self, id: u32) -> Result<()> {
         let mut s = lock(&self.shared);
         if s.annotation.uncertain {
-            bail!("当前笔迹状态未确认，请先清空");
+            bail!("笔迹状态未确认");
         }
         if let Some(stroke) = s.annotation.strokes.iter().find(|v| v.id == id).cloned() {
             self.edit_annotation(&mut s, Edit::Remove(stroke), Direction::Forward)?;
@@ -888,7 +885,7 @@ impl StreamControlHandle {
     ) -> Result<()> {
         ensure_ready(s)?;
         if !s.annotation.enabled || s.annotation.busy() {
-            bail!("请等待当前批注操作完成");
+            bail!("批注尚未就绪");
         }
         if s.annotation.native_token.is_some() {
             return self.edit_native(s, edit, direction);
@@ -928,7 +925,7 @@ impl StreamControlHandle {
             return Ok(());
         }
         if requests.len() > MAX_PENDING {
-            bail!("本次操作包含的笔迹过多，请清空后继续");
+            bail!("本次操作的笔迹过多");
         }
         s.annotation.editing = Some(Editing {
             clears_boards: matches!(&edit, Edit::Clear(_)) && s.annotation.uncertain,

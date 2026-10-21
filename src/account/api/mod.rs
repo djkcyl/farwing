@@ -1314,7 +1314,7 @@ impl ServerApi {
             .await?;
         anyhow::ensure!(
             farwing_protocol::ids::is_uuid(&pending.request_id),
-            "协助请求标识无效，已停止连接"
+            "协助请求标识无效"
         );
         Ok(pending)
     }

@@ -322,7 +322,7 @@ pub(super) async fn run_viewer_connection_owner(
                 Err(error) if !cancel.is_cancelled() && retry_session_failure(&error) && retries < 5 => {
                     retries += 1;
                     resolved.refresh_after_upgrade |= update_attempt;
-                    reporter(ConnectionProgress::working(4, "重建观看会话", format!("{error:#}；正在重新加入房间（{retries}/5）")));
+                    reporter(ConnectionProgress::working(4, "正在重新连接", format!("{error:#}（{retries}/5）")));
                     if update_attempt {
                         cancellable(cancel,async {tokio::time::sleep(crate::features::remote_upgrade::UPDATE_PROBE_INTERVAL).await;Ok(())}).await?;
                     }
@@ -513,11 +513,11 @@ pub(super) async fn run_viewer_connection_owner(
                     resolved.preferences = Some(session_control.preferences());
                     resolved.audio_preferences = Some(session_control.audio().settings());
                     retries += 1;
-                    let since = *recovering.get_or_insert_with(std::time::Instant::now);
+                    recovering.get_or_insert_with(std::time::Instant::now);
                     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
                     let (display_tx, display_rx) = oneshot::channel();
                     *reporter = Arc::new(move |progress| { let _ = progress_tx.send(progress); });
-                    reporter(ConnectionProgress::working(4, "正在重新连接", format!("{error:#}；正在重新建立连接（已用 {} 秒，最长 {} 分钟）", since.elapsed().as_secs(), RECOVERY_LIMIT.as_secs() / 60)));
+                    reporter(ConnectionProgress::working(4, "正在重新连接", format!("{error:#}")));
                     if let Some(background)=resolved.background.clone(){reporter(ConnectionProgress::background(background));}
                     viewer_sender.send(ViewerWindowEvent::Reconnect { alias: resolved.summary.alias.clone(), window: None, progress: progress_rx, display: display_tx })
                         .map_err(|_| anyhow!("player window closed during reconnect"))?;
@@ -570,7 +570,7 @@ async fn wait_before_rebuild(
             reporter(ConnectionProgress::working(
                 1,
                 "等待设备上线",
-                format!("设备暂时离线，恢复上线后会自动重新连接（最多再等 {} 秒）；可关闭窗口取消", remaining()),
+                format!("设备离线 · 最多再等 {} 秒", remaining()),
             ).with_retry(&retry));
             let online = cancellable(cancel, async {
                 Ok(resolved
@@ -592,7 +592,7 @@ async fn wait_before_rebuild(
             }
             anyhow::ensure!(
                 std::time::Instant::now() < deadline,
-                "设备在 {} 分钟内没有重新上线，请稍后重新连接",
+                "设备在 {} 分钟内没有重新上线",
                 RECOVERY_LIMIT.as_secs() / 60
             );
             let waited = cancellable(cancel, async {
@@ -616,7 +616,7 @@ async fn wait_before_rebuild(
     reporter(ConnectionProgress::working(
         4,
         "正在重新连接",
-        format!("{error:#}；{} 秒后第 {attempt} 次重试（最多再等 {} 秒）", delay.as_secs(), remaining()),
+        format!("{error:#}；{} 秒后第 {attempt} 次重试", delay.as_secs()),
     ).with_retry(&retry));
     cancellable(cancel, async {
         tokio::select! {
@@ -689,7 +689,7 @@ pub(super) async fn present_video(
         .peer
         .selected_route_details()
         .await
-        .unwrap_or_else(|| "安全媒体通道已建立".into());
+        .unwrap_or_else(|| "已连接".into());
     reporter(ConnectionProgress::ready(format!(
         "{route} · {} · {}",
         playback.codec,

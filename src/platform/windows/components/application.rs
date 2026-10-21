@@ -27,7 +27,7 @@ pub(super) fn folder(id: &GUID) -> Result<PathBuf> {
 /// Windows of other profiles (or viewers) still run the installed image;
 /// the file cannot be removed until they exit.
 #[derive(Debug, thiserror::Error)]
-#[error("仍有 Farwing 程序在运行（进程 {0}），可能是以 --profile 启动的其他实例或观看窗口；请全部关闭后重试")]
+#[error("仍有 Farwing 程序在运行（进程 {0}）")]
 pub(crate) struct ImageInUse(pub String);
 
 /// User processes running the installed image. The service, its resident and
@@ -280,7 +280,7 @@ pub(crate) fn start_installed(
     use std::os::windows::process::CommandExt;
     let image = image()?;
     verify_directory(image.parent().context("安装路径无效")?)?;
-    ensure!(image.is_file(), "安装程序缺失，请修复安装");
+    ensure!(image.is_file(), "安装程序缺失");
     let child = std::process::Command::new(&image)
         .args(arguments)
         .current_dir(image.parent().unwrap())
@@ -310,7 +310,7 @@ pub(crate) fn request_uninstall(removal: super::RemovalOptions) -> Result<bool> 
     if let Some(owner) = vault::owner()? {
         ensure!(
             owner == vault::sid(std::process::id())?,
-            "请由安装此程序的Windows用户卸载"
+            "只能由安装此程序的 Windows 用户卸载"
         );
         if !removal.remove_data {
             crate::account::auth::restore_portable()?;
@@ -338,7 +338,7 @@ pub(crate) fn uninstall(removal: super::RemovalOptions) -> Result<bool> {
         // image has already been removed. All component removals remain scoped.
         ensure!(
             !host_service::install::status()?.installed,
-            "服务安装目录缺失，请先修复安装"
+            "服务安装目录缺失"
         );
         let mut reboot = removal.remove_optional_drivers()?;
         reboot |= input::install::uninstall()?;
@@ -358,7 +358,7 @@ pub(crate) fn uninstall(removal: super::RemovalOptions) -> Result<bool> {
         reboot |= input::install::uninstall()?;
         reboot | host_service::install::uninstall()?
     };
-    ensure!(!reboot, "组件移除需要重启Windows；重启后可继续卸载程序");
+    ensure!(!reboot, "组件移除需要重启 Windows");
     remove_directory(&directory)?;
     integration::register(false)?;
     Ok(false)
@@ -376,8 +376,7 @@ fn remove_directory(directory: &Path) -> Result<()> {
         let file = directory.join(name);
         reject_reparse(&file)?;
         if file.exists() {
-            std::fs::remove_file(&file)
-                .with_context(|| format!("无法移除{}，请先退出运行中的程序", file.display()))?;
+            std::fs::remove_file(&file).with_context(|| format!("无法移除{}", file.display()))?;
         }
     }
     std::fs::remove_file(directory.join("owner.txt"))?;

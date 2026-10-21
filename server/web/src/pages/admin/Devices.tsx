@@ -52,7 +52,6 @@ export default function AdminDevices() {
     <div className="stack">
       <PageHeader
         title="全部设备"
-        subtitle="在本服务器注册过的所有设备。"
         actions={<SearchBox value={query} onChange={setQuery} placeholder="名称、设备 ID、短号、账号、IP" />}
       />
       {error && <Alert>{error}</Alert>}
@@ -126,7 +125,7 @@ export default function AdminDevices() {
                             if (
                               await confirm({
                                 title: '断开连接',
-                                message: `断开 ${d.alias} 与服务器的所有连接（含进行中的会话）。登录仍然有效，设备会自动重连。`,
+                                message: `${d.alias} 的所有连接将断开。`,
                                 confirm: '断开',
                               })
                             )
@@ -146,7 +145,7 @@ export default function AdminDevices() {
                             if (
                               await confirm({
                                 title: '解绑设备',
-                                message: `${d.alias} 将从 ${d.owner} 的账号移除并退出登录，需要重新登录才能使用账号功能。`,
+                                message: `${d.alias} 将从 ${d.owner} 的账号移除并退出登录。`,
                                 confirm: '解绑',
                                 danger: true,
                               })

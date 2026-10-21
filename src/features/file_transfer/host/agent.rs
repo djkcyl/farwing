@@ -302,7 +302,7 @@ fn worker(
                 remote.exchange(&request, &stop)?
             } else {
                 let failure = if requested {
-                    Failure::new(code::BUSY, "被控端没有已登录的用户，暂时无法访问文件")
+                    Failure::new(code::BUSY, "被控端没有已登录的用户")
                 } else {
                     Failure::new(code::DENIED, "被控端已关闭文件传输权限")
                 };

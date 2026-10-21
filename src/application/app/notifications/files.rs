@@ -20,9 +20,9 @@ pub(super) fn cards(notices: Vec<Notice>, now: i64) -> Vec<(String, Card)> {
             } else {
                 match n.state {
                     RUNNING => format!("{} / {}", bytes(n.done), bytes(n.total)),
-                    COMPLETE if n.saved == 0 => "已处理，未新增文件".into(),
+                    COMPLETE if n.saved == 0 => "未新增文件".into(),
                     COMPLETE => format!("{} · {} 个文件", bytes(n.done), n.saved),
-                    PAUSED => "可从传输端继续任务".into(),
+                    PAUSED => String::new(),
                     CANCELLED => "传输已取消".into(),
                     _ => "连接或接收权限已中断".into(),
                 }

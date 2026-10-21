@@ -92,7 +92,7 @@ impl WindowDrag {
                         let snapshot = ticket.snapshot();
                         ui.label(match snapshot.stage {
                             Stage::Preparing => "正在准备文件…",
-                            Stage::Dragging if snapshot.effect == COPY => "松开以复制到此处",
+                            Stage::Dragging if snapshot.effect == COPY => "复制到此处",
                             Stage::Dragging => "此处不能接收文件",
                             _ => "拖放已停止",
                         });
@@ -110,7 +110,7 @@ impl WindowDrag {
                                 ui.label(match snapshot.stage {
                                     Stage::Preparing => "正在准备文件…".to_owned(),
                                     Stage::Dragging if snapshot.effect == COPY => {
-                                        "松开以复制到此处".to_owned()
+                                        "复制到此处".to_owned()
                                     }
                                     Stage::Dragging => "此处不能接收文件".to_owned(),
                                     Stage::Returning => "正在交还原拖动…".to_owned(),

@@ -69,8 +69,8 @@ const RETRY_WINDOW_MS = 5 * 60 * 1000;
 /// Start failures worth retrying (the device may come back).
 const RETRY_CODES = new Set(['device_offline', 'timeout', 'busy', 'unavailable', 'closed', 'error', 'network']);
 
-const QUALITIES: { id: number; label: string; hint: string }[] = [
-  { id: 5, label: '自动', hint: '按网络调整' },
+const QUALITIES: { id: number; label: string; hint?: string }[] = [
+  { id: 5, label: '自动' },
   { id: 4, label: '原画', hint: '30M' },
   { id: 3, label: '超清', hint: '14M' },
   { id: 2, label: '高清', hint: '8M' },
@@ -114,15 +114,15 @@ function colorOf(p: Participant | undefined, id: string): string {
 function hostEventText(e: HostEvent): string {
   switch (e.kind) {
     case HostEventKind.UPDATING:
-      return '对方正在更新 Farwing，完成后自动重连';
+      return '对方正在更新 Farwing';
     case HostEventKind.RESTARTING:
-      return '对方设备正在重启，恢复后自动重连';
+      return '对方设备正在重启';
     case HostEventKind.SLEEPING:
       return '对方设备正在进入睡眠';
     case HostEventKind.SHUTTING_DOWN:
       return '对方设备正在关机';
     case HostEventKind.SESSION_SWITCH:
-      return '对方切换了 Windows 用户，画面稍后恢复';
+      return '对方切换了 Windows 用户';
     case HostEventKind.DISPLAY_CHANGING:
       return e.message || '对方正在修改显示设置';
     default:
@@ -829,20 +829,18 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
               </MenuItem>
               <MenuItem
                 selected={relative}
-                hint="游戏等"
                 onClick={() => {
                   setRelative(true);
                   void stage.current?.requestPointerLock?.();
                 }}
               >
-                相对移动（锁定指针，Esc 退出）
+                相对移动
               </MenuItem>
               {!!hostFeatures.touch && (
                 <>
                   <div className="menu-label">触屏</div>
                   <MenuItem
                     selected={!touchMouse}
-                    hint="多指手势"
                     onClick={() => {
                       localStorage.removeItem(TOUCH_KEY);
                       setTouchMouse(false);
@@ -852,7 +850,6 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                   </MenuItem>
                   <MenuItem
                     selected={touchMouse}
-                    hint="轻点即点击"
                     onClick={() => {
                       localStorage.setItem(TOUCH_KEY, 'mouse');
                       setTouchMouse(true);
@@ -863,12 +860,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                 </>
               )}
               <div className="menu-label">组合键</div>
-              <MenuItem
-                hint="需要对方以服务方式运行"
-                onClick={() => special((v) => v.input.command(SystemCommand.SAS))}
-              >
-                Ctrl+Alt+Del
-              </MenuItem>
+              <MenuItem onClick={() => special((v) => v.input.command(SystemCommand.SAS))}>Ctrl+Alt+Del</MenuItem>
               <MenuItem onClick={() => special((v) => v.input.chord([Usage.WIN]))}>Win</MenuItem>
               <MenuItem hint="运行" onClick={() => special((v) => v.input.chord([Usage.WIN, Usage.R]))}>
                 Win+R
@@ -890,9 +882,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
               {clipboardAllowed && (
                 <>
                   <div className="menu-label">文字</div>
-                  <MenuItem hint="经剪贴板粘贴" onClick={() => setTyping('')}>
-                    输入文字…
-                  </MenuItem>
+                  <MenuItem onClick={() => setTyping('')}>输入文字…</MenuItem>
                 </>
               )}
             </Menu>
@@ -900,7 +890,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
           {inkAllowed && ink.available && (
             <Menu label="批注" icon="edit">
               <MenuItem selected={ink.enabled} onClick={() => void toggleInk()}>
-                {ink.enabled ? '关闭批注（清除对方屏幕上的笔迹）' : '开启批注'}
+                {ink.enabled ? '关闭批注' : '开启批注'}
               </MenuItem>
               {ink.enabled && shown && (
                 <>
@@ -964,7 +954,6 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
             <Menu label="剪贴板" icon="clipboard">
               <MenuItem
                 selected={clipboardAuto}
-                hint="控制时"
                 onClick={() => {
                   localStorage.setItem(CLIPBOARD_KEY, clipboardAuto ? '0' : '1');
                   setClipboardAuto(!clipboardAuto);
@@ -974,7 +963,6 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
               </MenuItem>
               <MenuItem onClick={() => void sendClipboard()}>发送本机剪贴板到对方</MenuItem>
               <MenuItem onClick={() => void pullClipboard()}>获取对方剪贴板</MenuItem>
-              {others.length > 0 && <div className="menu-note small faint">多人时只有控制者自动同步</div>}
             </Menu>
           )}
           {filesAllowed && (
@@ -995,7 +983,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                   : mic.state === 'starting'
                     ? '正在开启麦克风'
                     : mic.state === 'waiting'
-                      ? '麦克风已开启，等待对方程序使用 Farwing 虚拟麦克风'
+                      ? '麦克风已开启，等待对方使用'
                       : '关闭麦克风'
               }
               active={mic.state === 'on'}
@@ -1037,7 +1025,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                 <div className="menu-label">编码格式</div>
                 {codecs.hostPreferred ? (
                   <div className="menu-note small faint">
-                    对方设定优先使用 {CODECS.find((c) => c.id === codecs.hostPreferred)?.label}
+                    对方指定 {CODECS.find((c) => c.id === codecs.hostPreferred)?.label}
                   </div>
                 ) : (
                   <>
@@ -1207,7 +1195,6 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
               <div className="stack" style={{ alignItems: 'center' }}>
                 <Spinner size={28} />
                 <div className="overlay-title">{overlayText}</div>
-                {state === 'waiting_media' && <div className="muted">对方第一次准备画面可能需要几秒</div>}
               </div>
             )}
           </div>
@@ -1219,13 +1206,13 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
           </button>
         )}
         {banner && <div className="viewer-banner">{banner}</div>}
-        {keyboardLocked && barVisible && <div className="viewer-hint">键盘已交给对方：按住 Esc 退出全屏</div>}
+        {keyboardLocked && barVisible && <div className="viewer-hint">键盘已交给对方</div>}
         {pendingCopy !== undefined && (
           <button type="button" className="unmute-hint copy-hint" onClick={() => copyLocally(pendingCopy)}>
-            <Icon name="clipboard" size={16} /> 对方复制了文字，点击复制到本机
+            <Icon name="clipboard" size={16} /> 复制对方的文字到本机
           </button>
         )}
-        {dragOver && <div className="drop-hint">松开即上传到对方的“下载”文件夹</div>}
+        {dragOver && <div className="drop-hint">上传到对方的“下载”文件夹</div>}
         {panel !== 'files' && transfers.length > 0 && (
           <div className="transfers-float">
             <TransferList transfers={transfers} files={viewer.current?.files} />
@@ -1254,16 +1241,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
           </>
         }
       >
-        <div className="stack-sm">
-          <textarea
-            className="input"
-            rows={5}
-            value={typing ?? ''}
-            onChange={(e) => setTyping(e.target.value)}
-            placeholder="文字经剪贴板粘贴到对方当前的输入位置"
-          />
-          <div className="small muted">会替换对方剪贴板的内容。</div>
-        </div>
+        <textarea className="input" rows={5} value={typing ?? ''} onChange={(e) => setTyping(e.target.value)} />
       </Dialog>
 
       {panel !== 'none' && (
@@ -1339,7 +1317,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
                   {p.id === people?.controlling && <span className="badge badge-amber">控制中</span>}
                 </div>
               ))}
-              {!people && <div className="muted small">连接后显示</div>}
+              {!people && <div className="muted small">暂无参与者</div>}
               {people && others.length === 0 && (
                 <div className="muted small" style={{ padding: 12 }}>
                   只有你在观看

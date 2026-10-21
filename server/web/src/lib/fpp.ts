@@ -319,7 +319,7 @@ export const MicrophoneState = { ACTIVE: 1, INACTIVE: 2, RESTART: 3 } as const;
 export function microphoneError(code: number): string {
   switch (code >>> 0) {
     case 0x0e003001:
-      return '对方没有安装 Farwing 虚拟声卡（在对方的设备中心“组件”中安装）';
+      return '对方没有安装 Farwing 虚拟声卡';
     case 0x0e003006:
       return '没有麦克风权限';
     default:

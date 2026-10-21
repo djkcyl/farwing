@@ -7,7 +7,7 @@ impl DeviceCenterApp {
         form_row(
             ui,
             "通知方式",
-            "连接与文件传输状态；Windows 通知受系统通知和勿扰设置影响",
+            "",
             |ui| {
                 egui::ComboBox::from_id_salt("remote-notification-mode")
                     .width(238.)
@@ -47,7 +47,7 @@ impl DeviceCenterApp {
             })
             .is_err()
         {
-            self.status = StatusMessage::error("设置服务已停止，请重新打开程序后确认被控设置");
+            self.status = StatusMessage::error("被控设置保存失败");
         }
     }
     pub(super) fn host_settings(&mut self, ui: &mut egui::Ui) {
@@ -81,7 +81,7 @@ impl DeviceCenterApp {
         form_row(
             ui,
             "访问权限",
-            &format!("已开启 {enabled} / {total} 项 · 对所有连接本机的人生效，各人的权限不会超过这里"),
+            &format!("已开启 {enabled} / {total} 项"),
             |ui| {
                 if ui
                     .add(crate::ui::controls::secondary(if open {
@@ -114,12 +114,6 @@ impl DeviceCenterApp {
                         if account {
                             ui.checkbox(&mut power, "关机和重启");
                             ui.checkbox(&mut wol, "局域网唤醒协助");
-                        } else {
-                            ui.label(
-                                RichText::new("关机和重启、局域网唤醒协助需要登录账号")
-                                    .small()
-                                    .color(MUTED),
-                            );
                         }
                     });
                     ui.add_space(theme::MENU_GROUP_GAP);
@@ -173,8 +167,7 @@ impl DeviceCenterApp {
         };
         let mut install = false;
         let mut manage = false;
-        let hint = format!("{}：{}", reach.state, reach.meaning);
-        form_row(ui, "后台服务", &hint, |ui| match reach.action {
+        form_row(ui, "后台服务", reach.state, |ui| match reach.action {
             Some(label) => install = ui.add(crate::ui::controls::primary(label)).clicked(),
             None => manage = ui.add(crate::ui::controls::secondary("管理")).clicked(),
         });
@@ -193,7 +186,7 @@ impl DeviceCenterApp {
         form_row(
             ui,
             "允许连接本机",
-            "总开关：本账号的设备、好友、受信任设备与访客都需要它；访问码在“本机”页单独开启",
+            "",
             |ui| {
                 if ui
                     .add_enabled_ui(host.is_some(), |ui| {
@@ -234,7 +227,7 @@ impl DeviceCenterApp {
             form_row(
                 ui,
                 "桌面声音音质",
-                "控制本机发送的桌面声音，修改立即生效",
+                "",
                 |ui| {
                     quality_changed = crate::ui::controls::audio_quality(ui, &mut quality);
                 },
@@ -250,7 +243,7 @@ impl DeviceCenterApp {
             form_row(
                 ui,
                 "默认音频设备",
-                "调整为虚拟设备，断开后恢复；修改立即生效",
+                "",
                 |ui| {
                     egui::ComboBox::from_id_salt("host-audio-defaults")
                         .width(238.0)
@@ -288,7 +281,7 @@ impl DeviceCenterApp {
                         }
                     }),
             };
-            form_row(ui, "声音采集设备", "切换后立即生效", |ui| {
+            form_row(ui, "声音采集设备", "", |ui| {
                 egui::ComboBox::from_id_salt("host-audio-device")
                     .width(238.0)
                     .truncate()
@@ -337,11 +330,7 @@ impl DeviceCenterApp {
             form_row(
                 ui,
                 "编码格式",
-                if selected.codec == EncoderCodec::Automatic {
-                    "主控未指定时使用；重连后生效"
-                } else {
-                    "已固定，可在高级限制中调整"
-                },
+                "",
                 |ui| {
                     if selected.codec != EncoderCodec::Automatic {
                         ui.label(selected.codec.label());
@@ -364,7 +353,7 @@ impl DeviceCenterApp {
             form_row(
                 ui,
                 "编码器",
-                "不可用时自动回退；重连后生效",
+                "",
                 |ui| {
                     if selected.mode == EncoderMode::Software {
                         ui.label("仅软件编码");
@@ -377,11 +366,7 @@ impl DeviceCenterApp {
             form_row(
                 ui,
                 "GPU 调度",
-                if selected.gpu_compatibility {
-                    "遇到显卡驱动冻结时使用；重连后生效"
-                } else {
-                    "改善游戏满载时的串流流畅度；重连后生效"
-                },
+                "",
                 |ui| {
                     egui::ComboBox::from_id_salt("host-gpu-scheduling")
                         .width(238.)
@@ -400,8 +385,7 @@ impl DeviceCenterApp {
                                 &mut selected.gpu_compatibility,
                                 true,
                                 "兼容优先",
-                            )
-                            .on_hover_text("降低 GPU 调度优先级以兼容部分显卡驱动，游戏满载时可能降低串流流畅度。");
+                            );
                         });
                 },
             );

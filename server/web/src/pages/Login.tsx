@@ -7,17 +7,7 @@ import { Link, navigate, useLocation } from '../lib/router';
 import { Alert, Button, Field, Input } from '../ui/kit';
 import { BrandMark } from '../ui/Shell';
 
-export function AuthFrame({
-  title,
-  subtitle,
-  children,
-  foot,
-}: {
-  title: string;
-  subtitle?: ReactNode;
-  children: ReactNode;
-  foot?: ReactNode;
-}) {
+export function AuthFrame({ title, children, foot }: { title: string; children: ReactNode; foot?: ReactNode }) {
   const { info } = useAuth();
   return (
     <div className="auth-page">
@@ -30,10 +20,7 @@ export function AuthFrame({
           </div>
         </div>
         <div className="auth-panel">
-          <div className="stack-sm">
-            <h1>{title}</h1>
-            {subtitle && <p className="muted">{subtitle}</p>}
-          </div>
+          <h1>{title}</h1>
           {children}
         </div>
         {foot && <div className="auth-foot">{foot}</div>}
@@ -67,7 +54,6 @@ export function LoginPage() {
   return (
     <AuthFrame
       title="登录"
-      subtitle="使用 Farwing 账号登录网页端。"
       foot={
         <>
           {auth.info?.registration ? <Link to="/register">用邀请码注册</Link> : <span />}
@@ -130,7 +116,6 @@ export function SecondFactorPage() {
   return (
     <AuthFrame
       title="二次验证"
-      subtitle={recovery ? '输入一个未用过的恢复码，每个恢复码只能用一次。' : '打开身份验证器，输入 6 位验证码。'}
       foot={
         <>
           <a
@@ -158,18 +143,20 @@ export function SecondFactorPage() {
     >
       <form className="stack" onSubmit={submit}>
         {error && <Alert>{error}</Alert>}
-        <Input
-          id="totp"
-          className={recovery ? 'mono' : 'code'}
-          inputMode={recovery ? 'text' : 'numeric'}
-          autoComplete="one-time-code"
-          maxLength={recovery ? 32 : 6}
-          placeholder={recovery ? 'xxxxx-xxxxx' : '000000'}
-          value={code}
-          onChange={(e) => setCode(recovery ? e.target.value : e.target.value.replace(/\D/g, ''))}
-          autoFocus
-          required
-        />
+        <Field label={recovery ? '恢复码' : '验证码'}>
+          <Input
+            id="totp"
+            className={recovery ? 'mono' : 'code'}
+            inputMode={recovery ? 'text' : 'numeric'}
+            autoComplete="one-time-code"
+            maxLength={recovery ? 32 : 6}
+            placeholder={recovery ? 'xxxxx-xxxxx' : '000000'}
+            value={code}
+            onChange={(e) => setCode(recovery ? e.target.value : e.target.value.replace(/\D/g, ''))}
+            autoFocus
+            required
+          />
+        </Field>
         <Button
           id="verify"
           type="submit"
@@ -199,7 +186,7 @@ export function RegisterPage() {
   if (auth.info && !auth.info.registration) {
     return (
       <AuthFrame title="注册" foot={<Link to="/login">返回登录</Link>}>
-        <Alert tone="amber">本服务器没有开放注册，请联系管理员创建账号。</Alert>
+        <Alert tone="amber">本服务器未开放注册</Alert>
       </AuthFrame>
     );
   }
@@ -223,11 +210,7 @@ export function RegisterPage() {
   }
 
   return (
-    <AuthFrame
-      title="用邀请码注册"
-      subtitle="邀请码由服务器管理员提供。"
-      foot={<Link to="/login">已有账号？登录</Link>}
-    >
+    <AuthFrame title="用邀请码注册" foot={<Link to="/login">已有账号？登录</Link>}>
       <form className="stack" onSubmit={submit}>
         {error && <Alert>{error}</Alert>}
         <Field label="邀请码">
@@ -240,7 +223,7 @@ export function RegisterPage() {
             autoFocus={!invite}
           />
         </Field>
-        <Field label="用户名" hint="1–64 位字母、数字或 . _ - @，登录时使用">
+        <Field label="用户名" hint="1–64 位字母、数字或 . _ - @">
           <Input
             autoComplete="username"
             value={username}
@@ -249,7 +232,7 @@ export function RegisterPage() {
             autoFocus={!!invite}
           />
         </Field>
-        <Field label="昵称" hint="可选，好友看到的名字">
+        <Field label="昵称" hint="可选">
           <Input value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={64} />
         </Field>
         <Field label="密码" hint="至少 8 位">

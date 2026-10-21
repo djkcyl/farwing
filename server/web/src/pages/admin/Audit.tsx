@@ -44,7 +44,7 @@ export default function Audit() {
 
   return (
     <div className="stack">
-      <PageHeader title="审计日志" subtitle="管理操作、网页与客户端的登录（含失败）、邀请码注册。" />
+      <PageHeader title="审计日志" />
       <form
         className="row gap-sm wrap"
         onSubmit={(e) => {
@@ -75,7 +75,7 @@ export default function Audit() {
         {!rows ? (
           <Loading />
         ) : rows.length === 0 ? (
-          <Empty icon="log" title="没有记录" />
+          <Empty icon="log" title="暂无记录" />
         ) : (
           <>
             <div className="table-wrap">

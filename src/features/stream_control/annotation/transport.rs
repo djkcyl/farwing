@@ -24,9 +24,9 @@ impl Outcome {
     pub(super) fn message(self) -> String {
         match self {
             Self::NotLoggedIn => "被控端未登录，批注已关闭".into(),
-            Self::Locked => "被控端已锁定，请解锁后清空或重新开启批注".into(),
-            Self::Rejected => "远端未完成批注操作，请清空或重新开启批注".into(),
-            Self::Unknown(code) => format!("批注操作未完成（{code}），请清空或重新开启"),
+            Self::Locked => "被控端已锁定".into(),
+            Self::Rejected => "远端未完成批注操作".into(),
+            Self::Unknown(code) => format!("批注操作未完成（{code}）"),
             Self::Applied => unreachable!("successful operation has no error message"),
         }
     }

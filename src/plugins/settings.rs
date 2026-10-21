@@ -31,7 +31,7 @@ pub fn write(path: &Path, expected: &Option<Vec<u8>>, config: &serde_json::Value
     ensure!(config.is_object(), "模块配置必须为对象");
     let bytes = serde_json::to_vec_pretty(config)?;
     ensure!(bytes.len() <= 65536, "插件配置过大");
-    ensure!(&read(path)? == expected, "配置已被其他程序修改，请重新打开");
+    ensure!(&read(path)? == expected, "配置已被其他程序修改");
     std::fs::create_dir_all(path.parent().context("配置目录无效")?)?;
     let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| -> Result<()> {
@@ -47,7 +47,7 @@ pub fn write(path: &Path, expected: &Option<Vec<u8>>, config: &serde_json::Value
             std::fs::hard_link(&temporary, path)?;
             std::fs::remove_file(&temporary)?;
         } else {
-            ensure!(&read(path)? == expected, "配置已被其他程序修改，请重新打开");
+            ensure!(&read(path)? == expected, "配置已被其他程序修改");
             std::fs::rename(&temporary, path)?;
         }
         Ok(())

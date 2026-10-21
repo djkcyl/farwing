@@ -330,7 +330,7 @@ impl DirectUi {
         done: impl Into<String>,
     ) {
         let Some(account) = host.map(|host| host.account_generation()) else {
-            self.error = Some("后台服务尚未就绪，请稍后再试".into());
+            self.error = Some("后台服务未就绪".into());
             return;
         };
         let done = done.into();

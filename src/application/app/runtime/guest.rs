@@ -48,9 +48,9 @@ impl Guest {
             if let Some(client) = &self.client {
                 client.host.remote_failed(
                     if self.blocked {
-                        "游客在线状态已被服务端结束，请退出并重新打开程序"
+                        "已被服务器断开"
                     } else {
-                        "与服务器的连接已结束，正在重新连接"
+                        "正在重新连接服务器"
                     }
                     .into(),
                 );

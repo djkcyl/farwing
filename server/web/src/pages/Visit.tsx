@@ -15,7 +15,7 @@ import { ViewerScreen } from '../ui/ViewerScreen';
 const STEPS: Record<VisitStep, string> = {
   asking: '正在联系对方',
   checking: '正在验证访问码',
-  confirming: '等待对方在设备上允许本次连接',
+  confirming: '等待对方允许',
   joining: '正在建立会话',
 };
 
@@ -67,7 +67,7 @@ export default function Visit() {
     return (
       <ViewerScreen
         title={parseTarget(target)?.connect_id ? connectIdText(parseTarget(target)!.connect_id) : target}
-        subtitle="访客观看 · 只看不控"
+        subtitle="访客观看"
         // A session needing the host user's confirmation is not re-asked
         // automatically.
         autoRetry={!confirmed}
@@ -88,7 +88,6 @@ export default function Visit() {
   return (
     <AuthFrame
       title="访客观看"
-      subtitle="输入对方设备的短号或设备 ID。网页端只看不控。"
       foot={
         auth.status === 'signed_in' ? (
           <Link to="/">返回用户中心</Link>
@@ -103,7 +102,7 @@ export default function Visit() {
       <form className="stack" onSubmit={submit}>
         {error && <Alert>{error}</Alert>}
         {auth.info && !auth.info.guests && auth.status !== 'signed_in' && (
-          <Alert tone="amber">本服务器没有开启游客功能，请先登录账号。</Alert>
+          <Alert tone="amber">本服务器未开启游客功能</Alert>
         )}
         <Field label="短号或设备 ID">
           <Input
@@ -124,8 +123,8 @@ export default function Visit() {
             请对方确认
           </button>
         </div>
-        {mode === 'code' ? (
-          <Field label="访问码" hint="访问码只在这个浏览器中使用，不会发送给服务器">
+        {mode === 'code' && (
+          <Field label="访问码">
             <Input
               type="password"
               autoComplete="off"
@@ -136,8 +135,6 @@ export default function Visit() {
               required
             />
           </Field>
-        ) : (
-          <p className="small muted">对方设备会弹出请求，由对方允许后开始观看。对方信任过这个浏览器时直接连接。</p>
         )}
         {busy && (
           <div className="row gap-sm muted">

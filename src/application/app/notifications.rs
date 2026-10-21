@@ -479,19 +479,19 @@ impl Center {
                             )
                         },
                         detail: if p.responding {
-                            "正在提交处理结果…".into()
+                            "正在提交…".into()
                         } else if let Some(code) = &pairing {
                             format!(
-                                "配对码 {} {}。请确认对方屏幕上显示的配对码与此相同。配对后两台设备可以互相直接连接，无需访问码或确认，彼此有完全控制权限。",
+                                "配对码 {} {} · 配对后可互相完全控制",
                                 &code[..code.len().min(3)],
                                 &code[code.len().min(3)..]
                             )
                         } else if browser_controls == Some(false) {
-                            "网页端只能观看和收听。“允许本次”只对这次连接有效；“允许并信任”后，这个浏览器以后无需访问码和确认。".into()
+                            "网页端 · 仅观看和收听".into()
                         } else if browser_controls == Some(true) {
-                            "网页端请求查看画面并控制键鼠。“允许本次”只对这次连接有效；“允许并信任”后，这个浏览器以后无需访问码和确认。".into()
+                            "网页端 · 请求观看和控制".into()
                         } else {
-                            "请求查看画面并控制键鼠。“允许本次”只对这次连接有效；“允许并信任”后，这台设备以后无需访问码和确认。".into()
+                            "请求观看和控制".into()
                         },
                         expires_at: p.expires_at,
                         confirmation: true,
@@ -509,11 +509,11 @@ impl Center {
                         disconnect: None,
                         ticket: String::new(),
                         title: "收到连接尝试".into(),
-                        body: "对方正在申请连接这台电脑。".into(),
+                        body: "对方正在连接本机".into(),
                         detail: if a.verifying {
-                            "正在校验访问码，尚未建立控制会话。".into()
+                            "正在校验访问码".into()
                         } else {
-                            "等待对方继续连接，当前尚未获得控制权限。".into()
+                            "未获得控制权限".into()
                         },
                         expires_at: a.expires_at,
                         confirmation: false,
@@ -582,7 +582,7 @@ impl Center {
                     ticket: String::new(),
                     title: "连接提示".into(),
                     body: clean(error),
-                    detail: "请查看当前请求状态。".into(),
+                    detail: String::new(),
                     expires_at: *until,
                     confirmation: false,
                     pairing: false,
@@ -606,7 +606,7 @@ impl Center {
             card.ticket = ticket.clone();
             card.busy |= self.claimed.contains(&ticket);
             if card.confirmation && card.busy {
-                card.detail = "正在提交处理结果…".into();
+                card.detail = "正在提交…".into();
             }
             targets.insert(
                 ticket,
@@ -860,7 +860,7 @@ impl DeviceCenterApp {
                             })
                             .is_err()
                         {
-                            self.notifications.error = Some("访问码后台已停止".into());
+                            self.notifications.error = Some("提交失败".into());
                         }
                     }
                 }

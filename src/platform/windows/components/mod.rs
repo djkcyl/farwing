@@ -245,7 +245,7 @@ pub(crate) fn execute(
         );
         ensure!(
             crate::product::is_default_profile(),
-            "非默认 profile 以便携模式运行，不能安装或卸载全机服务与驱动；请使用默认 profile"
+            "非默认 profile 不能安装或卸载服务与驱动"
         );
         ensure!(
             owner.is_none() || (kind == Kind::Suite && operation == Operation::Install),
@@ -286,7 +286,7 @@ impl Serial {
         let result = unsafe { WaitForSingleObject(handle.0, 0) };
         ensure!(
             result == WAIT_OBJECT_0 || result == WAIT_ABANDONED,
-            "已有组件操作正在进行，请稍后重试"
+            "已有组件操作正在进行"
         );
         Ok(Self(handle))
     }
@@ -369,7 +369,7 @@ pub(super) fn elevate(args: &str, kind: Kind) -> Result<bool> {
         nShow: SW_HIDE.0,
         ..Default::default()
     };
-    unsafe { ShellExecuteExW(&mut info) }.context("组件操作未启动（可能已取消管理员授权）")?;
+    unsafe { ShellExecuteExW(&mut info) }.context("组件操作未启动")?;
     let process = super::host_service::pipe::Handle(info.hProcess);
     ensure!(!process.0.is_invalid(), "组件操作进程不可用");
     ensure!(
@@ -381,7 +381,7 @@ pub(super) fn elevate(args: &str, kind: Kind) -> Result<bool> {
         GetExitCodeProcess(process.0, &mut code)?;
     }
     if code == 170 {
-        anyhow::bail!("被控服务仍有活动的输入或画面会话，请断开连接后重试");
+        anyhow::bail!("被控服务仍有活动会话");
     }
     if code == 2404 {
         return Err(super::display::install::DriverInUse.into());
@@ -390,13 +390,11 @@ pub(super) fn elevate(args: &str, kind: Kind) -> Result<bool> {
         return Err(super::virtual_audio::install::TestSigningRequired.into());
     }
     if code == 32 {
-        anyhow::bail!(
-            "仍有 Farwing 程序在运行（可能是以 --profile 启动的其他实例或观看窗口），请全部关闭后重试"
-        );
+        anyhow::bail!("仍有 Farwing 程序在运行");
     }
     ensure!(
         code == 0 || code == 3010,
-        "{}操作失败，请查看日志（退出码 {code}）",
+        "{}操作失败（退出码 {code}）",
         kind.label()
     );
     Ok(code == 3010)

@@ -91,7 +91,7 @@ impl DeviceCenterApp {
             }
         }
         let Some(host) = self.host.clone() else {
-            diagnostics_empty(ui, "请先登录并开启被控");
+            diagnostics_empty(ui, "被控未开启");
             return;
         };
         let wol = host.status().wol;
@@ -156,12 +156,6 @@ impl DeviceCenterApp {
         if let Some(error) = wol.error.as_ref().or(state.wol_error.as_ref()) {
             ui.colored_label(theme::AMBER, error);
         }
-        ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new("报文发送不代表目标已开机；目标网卡和 BIOS 需启用 WoL。")
-                .small()
-                .color(theme::MUTED),
-        );
     }
 
     fn diagnostic_device(&self, ui: &mut egui::Ui) {
@@ -198,7 +192,7 @@ impl DeviceCenterApp {
             }
         }
         ui.horizontal(|ui| {
-            ui.label("本机注册资料与壁纸发布状态");
+            ui.label("注册资料与壁纸");
             if ui
                 .add_enabled(
                     state.publication_refresh.is_none(),
@@ -320,7 +314,7 @@ impl DeviceCenterApp {
 
     fn diagnostic_encoding(&mut self, ui: &mut egui::Ui) {
         let Some(caps) = self.host.as_ref().and_then(|host| host.capabilities()) else {
-            diagnostics_empty(ui, "暂无有效编码能力，连接时会重新检查");
+            diagnostics_empty(ui, "暂无编码能力");
             return;
         };
         let mut groups = Vec::new();
@@ -541,7 +535,7 @@ impl DeviceCenterApp {
             .filter_map(|s| s.handle.info().map(|info| (s.alias.clone(), info)))
             .collect();
         if !host.as_ref().is_some_and(|host| host.session_active) && viewing.is_empty() {
-            diagnostics_empty(ui, "暂无活动会话 · 连接后显示实际编解码信息");
+            diagnostics_empty(ui, "暂无活动会话");
             return;
         }
         if let Some(host) = host.filter(|host| host.session_active) {

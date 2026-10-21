@@ -39,21 +39,6 @@ impl SettingsTab {
         }
     }
 
-    fn hint(self) -> &'static str {
-        match self {
-            Self::Account => "当前账号、所连接的服务器和本机身份",
-            Self::Host => "别人连接本机时：总开关、直连与局域网、权限上限、画面与声音、通知；谁可以连接在“本机”页",
-            Self::Controller => "本机连接其他设备时的画质、编解码与线路",
-            Self::Network => "打洞与端口映射，主控与被控都适用",
-            Self::Shortcuts => "观看窗口中的快捷键",
-            Self::Plugins => "视频与输入插件",
-            Self::Service => "后台服务，以及输入、虚拟显示与虚拟声卡驱动",
-            Self::Diagnostics => "本机的编解码、上报与会话状态，可以导出诊断包",
-            Self::Logs => "日志级别与保存位置",
-            Self::About => "版本、许可与开源组件",
-        }
-    }
-
     fn icon(self) -> Icon {
         match self {
             Self::Account => Icon::Friends,
@@ -115,7 +100,6 @@ impl DeviceCenterApp {
                 .layout(egui::Layout::top_down(Align::Min)),
             |ui| {
                 ui.label(RichText::new(tab.label()).size(theme::TITLE).strong());
-                ui.label(RichText::new(tab.hint()).color(MUTED));
                 ui.add_space(14.0);
                 self.alert(ui);
                 match tab {
@@ -169,7 +153,7 @@ impl DeviceCenterApp {
             self.account_name.clone()
         };
         let mut logout = false;
-        form_row(ui, &account, "退出后，本机设备会从这个账号中移除", |ui| {
+        form_row(ui, &account, "", |ui| {
             logout = ui
                 .add_enabled(!self.logout_pending, crate::ui::controls::secondary("退出登录"))
                 .clicked();
@@ -184,7 +168,7 @@ impl DeviceCenterApp {
         form_row(
             ui,
             server.as_ref().map_or("未设置", |server| server.origin()),
-            "更换服务器需要先退出当前账号，然后在登录页填写新的地址",
+            "",
             |ui| {
                 change = ui
                     .add_enabled(!self.logout_pending, crate::ui::controls::secondary("更换服务器…"))
@@ -232,20 +216,12 @@ impl DeviceCenterApp {
     /// server, and this device.
     fn signed_out_settings(&mut self, ui: &mut egui::Ui) {
         use super::super::login_form::LoginStep;
-        let access = self.access();
         section(ui, "账号");
         let label = self.sign_in_label();
         let mut sign_in = false;
-        form_row(
-            ui,
-            "未登录",
-            if access == Access::Guest {
-                "登录后可以使用我的设备、好友共享的设备与收藏"
-            } else {
-                "登录需要先设置服务器"
-            },
-            |ui| sign_in = ui.add(primary(label)).clicked(),
-        );
+        form_row(ui, "未登录", "", |ui| {
+            sign_in = ui.add(primary(label)).clicked();
+        });
         if sign_in {
             self.sign_in();
         }
@@ -256,11 +232,7 @@ impl DeviceCenterApp {
         form_row(
             ui,
             server.as_deref().unwrap_or("未设置"),
-            if server.is_some() {
-                "未登录时可以直接更换"
-            } else {
-                "设置后，不登录也可以用设备 ID、短号连接或被连接"
-            },
+            "",
             |ui| {
                 change = ui
                     .add(crate::ui::controls::secondary(if server.is_some() {
@@ -289,7 +261,7 @@ impl DeviceCenterApp {
             form_row(
                 ui,
                 "我的光标颜色",
-                "多人连接时其他参与者看到的颜色，连接中修改也会立即生效",
+                "",
                 |ui| {
                     let swatch = |ui: &mut egui::Ui, color: u32, selected: bool| {
                         let (rect, response) =
@@ -324,7 +296,7 @@ impl DeviceCenterApp {
                     });
                 },
             );
-            form_row(ui, "串流帧率", "以远端实际刷新率为准", |ui| {
+            form_row(ui, "串流帧率", "", |ui| {
                 egui::ComboBox::from_id_salt("center-fps")
                     .width(238.0)
                     .selected_text(self.media.frame_rate.label(self.local_display))
@@ -341,11 +313,7 @@ impl DeviceCenterApp {
             form_row(
                 ui,
                 "编码格式",
-                if self.media.codec.restricted() {
-                    "已固定，可在高级限制中调整"
-                } else {
-                    "不可用时自动回退；重连后生效"
-                },
+                "",
                 |ui| {
                     if self.media.codec.restricted() {
                         ui.label(self.media.codec.label());
@@ -364,7 +332,7 @@ impl DeviceCenterApp {
             form_row(
                 ui,
                 "解码器",
-                "仅影响本机播放；重连后生效",
+                "",
                 |ui| {
                     if self.media.decoder.mode.hardware() {
                         self.media_inventory.draw(
@@ -430,7 +398,7 @@ impl DeviceCenterApp {
             form_row(
                 ui,
                 "连接线路",
-                "自动模式支持直连与中转切换",
+                "",
                 |ui| {
                     egui::ComboBox::from_id_salt("center-route")
                         .width(238.0)
@@ -503,20 +471,14 @@ impl DeviceCenterApp {
                         ui.ctx(),
                         host.as_ref(),
                         crate::transport::direct::managed::Action::Network(edited),
-                        if edited.serverless != network.serverless {
-                            "已应用到后台服务，被控端正在按新设置重新连接"
-                        } else {
-                            "已应用到后台服务"
-                        },
+                        "已保存",
                     );
                 }
                 Ok(()) => {
-                    if edited.serverless != network.serverless {
-                        self.status = StatusMessage::info("已生效，被控端正在按新设置重新连接");
-                    } else if (edited.direct, edited.direct_port, edited.lan_discovery)
-                        != (network.direct, network.direct_port, network.lan_discovery)
+                    if (edited.serverless, edited.direct, edited.direct_port, edited.lan_discovery)
+                        != (network.serverless, network.direct, network.direct_port, network.lan_discovery)
                     {
-                        self.status = StatusMessage::info("直连设置已生效");
+                        self.status = StatusMessage::info("已生效");
                     }
                 }
                 Err(error) => self.status = StatusMessage::error(format!("{error:#}")),
@@ -528,7 +490,7 @@ impl DeviceCenterApp {
         form_row(
             ui,
             "激进打洞（对称型 NAT）",
-            "对端为对称型 NAT 时预测其端口，主控与被控均适用",
+            "",
             |ui| {
                 crate::ui::controls::switch(ui, &mut edited.aggressive_punching);
             },
@@ -536,7 +498,7 @@ impl DeviceCenterApp {
         form_row(
             ui,
             "允许 UPnP / NAT-PMP / PCP 端口映射",
-            "会话期间在路由器上为直连端口申请映射，结束后删除",
+            "",
             |ui| {
                 crate::ui::controls::switch(ui, &mut edited.port_mapping);
             },
@@ -547,7 +509,7 @@ impl DeviceCenterApp {
         form_row(
             ui,
             "允许直连",
-            "接受局域网和地址直连（本账号设备、好友、受信任设备、访问码）；还需要开启“允许连接本机”",
+            "",
             |ui| {
                 crate::ui::controls::switch(ui, &mut edited.direct);
             },
@@ -555,7 +517,7 @@ impl DeviceCenterApp {
         form_row(
             ui,
             "直连端口",
-            "TCP 与 UDP 都用此端口（所有直连会话共用这一个 UDP 端口）。从公网直连时在路由器上转发 TCP 与 UDP 的这个端口",
+            "TCP / UDP",
             |ui| {
                 ui.add_enabled(
                     edited.direct,
@@ -566,7 +528,7 @@ impl DeviceCenterApp {
         form_row(
             ui,
             "局域网发现",
-            "让同一局域网中的设备在“附近”里看到本机（需要允许直连）",
+            "",
             |ui| {
                 ui.add_enabled_ui(edited.direct, |ui| {
                     crate::ui::controls::switch(ui, &mut edited.lan_discovery);
@@ -580,7 +542,7 @@ impl DeviceCenterApp {
         form_row(
             ui,
             "仅直连（不连接服务器）",
-            "被控端不再连接服务器，只能通过局域网或地址直连；好友和服务器中转不可用",
+            "",
             |ui| {
                 crate::ui::controls::switch(ui, &mut edited.serverless);
             },

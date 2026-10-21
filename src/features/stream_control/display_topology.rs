@@ -104,7 +104,7 @@ impl DisplayTopology {
         if self.status.pending {
             self.status.pending = false;
             self.status.error = true;
-            self.status.message = "连接已断开，请重新连接后查看实际显示状态".into();
+            self.status.message = "连接已断开".into();
         }
     }
 
@@ -192,7 +192,7 @@ impl DisplayTopology {
                     if matches!(pending.action, DisplayTopologyAction::Remove { .. }) {
                         "显示器已删除"
                     } else {
-                        "显示状态已更新，正在恢复画面…"
+                        "正在恢复画面…"
                     }
                     .into();
             }
@@ -208,7 +208,7 @@ pub(super) fn support(state: &StreamControlState) -> DisplayTopologySupport {
     let create_unavailable = if !available {
         Some("对端未开放虚拟屏")
     } else if super_screen {
-        Some("请先退出超级屏")
+        Some("超级屏中不可用")
     } else if state.assistance {
         Some("访客不能添加虚拟屏")
     } else if state.screens.len() >= 5 {
@@ -356,10 +356,7 @@ impl StreamControlHandle {
                         .any(|s| s.id == screen_id && s.display.screen_type == 1),
                     "只能删除当前 Farwing 虚拟屏"
                 );
-                anyhow::ensure!(
-                    state.screens.len() > 1,
-                    "最后一个显示器不能删除，请关闭观看窗口"
-                );
+                anyhow::ensure!(state.screens.len() > 1, "不能删除最后一个显示器");
                 request = SessionBody::RemoveVirtualDisplay(PbRemoveVirtualDisplay {
                     screen_id: vec![screen_id],
                 });
@@ -570,12 +567,12 @@ impl StreamControlHandle {
                     pending.rollback = None;
                 }
                 if !state.topology.status.reported {
-                    state.topology.status.message = "请求已受理，等待显示状态更新…".into();
+                    state.topology.status.message = "等待显示状态更新…".into();
                 }
             }
             error => {
                 let message = match error {
-                    Ok(code) => format!("显示操作未完成（{code}），请以实际显示状态为准"),
+                    Ok(code) => format!("显示操作未完成（{code}）"),
                     Err(message) => message,
                 };
                 self.topology_send_failed(state, sequence, &message);

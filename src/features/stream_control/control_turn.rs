@@ -30,7 +30,7 @@ pub(crate) struct TurnResponse {
 pub(crate) fn held_by(holder: &str) -> String {
     let holder = holder.trim();
     let holder = if holder.is_empty() { "另一位参与者" } else { holder };
-    format!("{holder} 正在控制，对方释放控制权后才能开启键鼠控制")
+    format!("{holder} 正在控制")
 }
 
 impl StreamControlHandle {
@@ -114,7 +114,7 @@ impl StreamControlHandle {
             // Our take is still on its way; the list predates it.
             return;
         }
-        self.leave_control_locked(state, Some("被控端收回了本机的键鼠控制权".to_owned()));
+        self.leave_control_locked(state, Some("被控端已收回键鼠控制权".to_owned()));
     }
 
     fn leave_control_locked(&self, state: &mut StreamControlState, notice: Option<String>) {

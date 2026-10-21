@@ -249,22 +249,15 @@ pub(in crate::application::viewer) fn player_title_bar(
             |ui| title_icon_button(ui, TitleIcon::Annotation, annotation.enabled, "批注"),
         )
         .inner
-        .on_disabled_hover_text("当前设备暂不支持批注，或仍在连接中")
+        .on_disabled_hover_text("批注暂不可用")
         .clicked();
     action.one_to_one = actions
         .add_enabled_ui(
             !bar.window.is_maximized() && bar.window.fullscreen().is_none(),
-            |ui| {
-                title_icon_button(
-                    ui,
-                    TitleIcon::OneToOne,
-                    false,
-                    "1:1 实际像素（固定左上角，空间不足时等比缩小）",
-                )
-            },
+            |ui| title_icon_button(ui, TitleIcon::OneToOne, false, "1:1 实际像素"),
         )
         .inner
-        .on_disabled_hover_text("请先还原窗口")
+        .on_disabled_hover_text("1:1 实际像素")
         .clicked();
     let control = bar.stream_control.snapshot();
     let mic = bar.stream_control.microphone().snapshot();
@@ -273,11 +266,11 @@ pub(in crate::application::viewer) fn player_title_bar(
     } else if let Some(error) = mic.error.as_deref() {
         error
     } else if mic.capturing {
-        "正在将麦克风发送到远端，点击关闭"
+        "麦克风正在发送"
     } else if mic.enabled {
-        "麦克风已开启，等待远端应用使用，点击关闭"
+        "麦克风已开启"
     } else {
-        "将所选麦克风发送到远端（设备可在高级设置中切换）"
+        "麦克风"
     };
     if actions
         .add_enabled_ui(
@@ -285,7 +278,7 @@ pub(in crate::application::viewer) fn player_title_bar(
             |ui| title_icon_button(ui, TitleIcon::Microphone, mic.enabled, mic_hint),
         )
         .inner
-        .on_disabled_hover_text("请先连接支持麦克风的 Windows 设备")
+        .on_disabled_hover_text("麦克风不可用")
         .clicked()
     {
         crate::ui::controls::clear_notice(actions.ctx(), "microphone-request-error");
@@ -312,12 +305,9 @@ pub(in crate::application::viewer) fn player_title_bar(
     let mouse_button = actions
         .add_enabled_ui((enabled || control.ready) && holder.is_none(), |ui| {
             let hint = if bar.stream_control.mouse().transport_recovering() {
-                "键鼠控制正在自动恢复；点击取消".into()
+                "键鼠控制恢复中".into()
             } else if bar.stream_control.mouse().waiting_for_neutral() {
-                format!(
-                    "等待松开全部键鼠；退出控制快捷键：{}",
-                    crate::application::viewer_shortcuts::label(ViewerShortcut::ReleaseMouse)
-                )
+                "等待松开全部键鼠".into()
             } else if enabled {
                 format!(
                     "退出控制（{}）",
@@ -327,7 +317,7 @@ pub(in crate::application::viewer) fn player_title_bar(
                 if bar.stream_control.mouse().keyboard_supported() {
                     "开启键鼠控制".into()
                 } else {
-                    "开启鼠标控制（此平台暂未适配键盘）".into()
+                    "开启鼠标控制".into()
                 }
             };
 
@@ -362,8 +352,7 @@ pub(in crate::application::viewer) fn player_title_bar(
         }
         action.exit_fullscreen =
             title_icon_button(&mut controls, TitleIcon::Restore, false, "退出全屏").clicked();
-        action.close =
-            title_icon_button(&mut controls, TitleIcon::Close, false, "关闭当前串流窗口").clicked();
+        action.close = title_icon_button(&mut controls, TitleIcon::Close, false, "关闭").clicked();
     } else {
         action.close = window_buttons(&mut controls, bar.window);
     }

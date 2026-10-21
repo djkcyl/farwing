@@ -109,7 +109,7 @@ impl Inventory {
                 self.adapters
                     .iter()
                     .find(|a| a.id == Some(id))
-                    .map_or_else(|| "已选显卡不可用（自动回退）".to_owned(), label)
+                    .map_or_else(|| "已选显卡不可用".to_owned(), label)
             },
         );
         egui::ComboBox::from_id_salt(id)

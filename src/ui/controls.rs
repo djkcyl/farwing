@@ -254,11 +254,7 @@ pub(crate) fn shortcut_row(
         painter.text(
             keys.center() + vec2(0.0, 9.0),
             Align2::CENTER_CENTER,
-            if pending.is_some() {
-                "松开按键完成 · Esc 取消"
-            } else {
-                "Esc 取消"
-            },
+            "Esc 取消",
             FontId::proportional(theme::TINY),
             MUTED,
         );
@@ -319,11 +315,6 @@ pub(crate) fn shortcut_row(
     } else {
         ShortcutRowAction::None
     };
-    response.on_hover_text(if recording {
-        "按 Esc 取消录入"
-    } else {
-        binding.unwrap_or("点击设置快捷键")
-    });
     ui.advance_cursor_after_rect(rect);
     action
 }
@@ -740,7 +731,7 @@ pub fn dialog_frame() -> egui::Frame {
 /// Release text is displayed locally; it never loads remote images or HTML.
 pub(crate) fn release_notes(ui: &mut egui::Ui, notes: &str) {
     if notes.trim().is_empty() {
-        ui.label(RichText::new("此版本未提供更新说明，可前往发布页查看。").color(MUTED));
+        ui.label(RichText::new("暂无更新说明").color(MUTED));
         return;
     }
     for line in notes.lines() {
@@ -1313,7 +1304,7 @@ pub fn setting_row(
         &if edited {
             format!("撤销{label}修改")
         } else {
-            "停止等待，不会撤回已发送的修改".into()
+            "停止等待".into()
         },
         COMPACT_HEIGHT,
     )

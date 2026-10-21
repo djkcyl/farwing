@@ -28,7 +28,7 @@ impl Handle {
     pub(crate) fn send(&self, command: Command) -> Result<()> {
         self.commands
             .try_send(command)
-            .context("请等待当前操作完成")
+            .context("上一个操作尚未完成")
     }
     pub(crate) fn set_enabled(&self, enabled: bool) {
         self.enabled.send_replace(enabled);
@@ -166,7 +166,7 @@ async fn connect(
     let policy = client.feature_catalog().policy_for(current);
     ensure!(
         policy.supports(crate::account::feature_ability::Feature::PortMapping),
-        "被控端版本不支持端口转发，请更新被控端"
+        "被控端版本不支持端口转发"
     );
     ControllerConnection::connect_mapping(client, current, policy, transport, stop).await
 }

@@ -84,9 +84,6 @@ function CapsEditor({ value, onChange }: { value: string[]; onChange(v: string[]
           ))}
         </div>
       ))}
-      {value.length > 0 && !value.includes('view') && (
-        <span className="small amber">没有“观看画面”时，其他权限大多无法使用。</span>
-      )}
     </div>
   );
 }
@@ -146,7 +143,7 @@ function GrantsEditor({
     setBusy(true);
     try {
       await call('PUT', `/api/v2/grants/${friend.user_id}`, grants);
-      toast('已保存，正在进行的连接立即按新权限生效');
+      toast('已保存');
       onClose();
     } catch (err) {
       setError(errorText(err));
@@ -158,7 +155,7 @@ function GrantsEditor({
   return (
     <Dialog
       open={!!friend}
-      title={`${friend ? displayName(friend) : ''} 可以做什么`}
+      title={`${friend ? displayName(friend) : ''} 的权限`}
       onClose={onClose}
       wide
       footer={
@@ -188,32 +185,21 @@ function GrantsEditor({
                 className={`chip ${sharing ? 'on' : ''}`}
                 onClick={() => !sharing && setGrants({ ...grants, default: [...DEFAULT_FRIEND] })}
               >
-                按以下权限共享
+                共享
               </button>
               <button
                 type="button"
                 className={`chip ${!sharing ? 'on' : ''}`}
                 onClick={() => sharing && setGrants({ ...grants, default: [] })}
               >
-                默认都不共享
+                不共享
               </button>
             </div>
-            {sharing ? (
-              <>
-                <span className="small muted">没有单独设置的设备都使用这里的权限，包括以后新登录的设备。</span>
-                <CapsEditor value={grants.default} onChange={(v) => setGrants({ ...grants, default: v })} />
-              </>
-            ) : (
-              <span className="small muted">
-                没有单独设置的设备对 TA 完全不可见：TA
-                的列表里看不到，也不能连接，包括你以后新登录的设备。要共享的设备在下面选“单独设置”。
-              </span>
-            )}
+            {sharing && <CapsEditor value={grants.default} onChange={(v) => setGrants({ ...grants, default: v })} />}
           </div>
           <div className="stack-sm">
             <h3>按设备设置</h3>
-            <span className="small muted">需要不同权限的设备可以单独设置，或者不共享给 TA。</span>
-            {devices.length === 0 && <span className="small muted">账号中还没有可被控的电脑。</span>}
+            {devices.length === 0 && <span className="small muted">暂无设备</span>}
             {devices.map((d) => {
               const mode = modeOf(grants, d.device_id);
               const effective = grants.devices[d.device_id] ?? grants.default;
@@ -288,7 +274,7 @@ export default function Friends() {
       const r = await call<{ sent?: unknown; accepted?: unknown }>('POST', '/api/v2/friends/requests', {
         username: username.trim(),
       });
-      toast(r.accepted ? '对方也申请过加你，已成为好友' : '已发送好友申请');
+      toast(r.accepted ? '已成为好友' : '已发送好友申请');
       setUsername('');
       await reload();
     } catch (err) {
@@ -305,13 +291,12 @@ export default function Friends() {
     <div className="stack">
       <PageHeader
         title="好友"
-        subtitle="好友之间可以按你设置的权限互相使用设备。"
         actions={
           <form className="row gap-sm" onSubmit={add}>
             <Input
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              placeholder="对方的用户名"
+              placeholder="用户名"
               style={{ width: 200 }}
             />
             <Button type="submit" variant="primary" icon="userPlus" loading={busy}>
@@ -358,7 +343,7 @@ export default function Friends() {
         {!friends.data ? (
           <Loading />
         ) : friends.data.friends.length === 0 ? (
-          <Empty icon="users" title="还没有好友" hint="输入对方的用户名发送申请。" />
+          <Empty icon="users" title="暂无好友" />
         ) : (
           <div className="list">
             {friends.data.friends.map((f) => (
@@ -368,7 +353,7 @@ export default function Friends() {
                 actions={
                   <>
                     <Button size="sm" icon="share" onClick={() => setEditing(f.user)}>
-                      TA 可以做什么
+                      权限
                     </Button>
                     <Button
                       size="sm"
@@ -377,7 +362,7 @@ export default function Friends() {
                         if (
                           await confirm({
                             title: '删除好友',
-                            message: `删除后你们互相看不到对方共享的设备，进行中的连接会断开。`,
+                            message: '你们将不再互相共享设备。',
                             confirm: '删除',
                             danger: true,
                           })

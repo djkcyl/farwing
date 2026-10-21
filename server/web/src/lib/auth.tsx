@@ -64,16 +64,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setState((s) => ({
         status: 'signed_out',
         info,
-        notice: hasToken() ? undefined : (s.notice ?? '登录已过期，请重新登录'),
+        notice: hasToken() ? undefined : (s.notice ?? '登录已过期'),
       }));
     }
   }, []);
 
   useEffect(() => {
     setUnauthorizedHandler(() =>
-      setState((s) =>
-        s.status === 'signed_out' ? s : { status: 'signed_out', info: s.info, notice: '登录已过期，请重新登录' },
-      ),
+      setState((s) => (s.status === 'signed_out' ? s : { status: 'signed_out', info: s.info, notice: '登录已过期' })),
     );
     void syncClock()
       .catch(() => undefined)

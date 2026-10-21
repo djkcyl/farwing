@@ -45,7 +45,7 @@ fn columns(rect: Rect) -> ([f32; 3], Rect) {
 }
 
 pub(crate) fn performance_header(ui: &mut egui::Ui) {
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
     let (columns, plot) = columns(rect);
     let font = FontId::proportional(theme::TINY);
     ui.painter().text(
@@ -75,7 +75,6 @@ pub(crate) fn performance_header(ui: &mut egui::Ui) {
         [rect.left_bottom(), rect.right_bottom()],
         Stroke::new(1.0, LINE),
     );
-    response.on_hover_text("均值与峰值来自近 30 秒的可见采样，不是逐帧统计。每行趋势独立刻度，下沿为 0；悬停可查看读数与刻度。");
 }
 
 pub(crate) struct PerformanceTrace<'a> {
@@ -85,7 +84,6 @@ pub(crate) struct PerformanceTrace<'a> {
     pub current: Option<f64>,
     pub minimum_scale: f64,
     pub decimals: usize,
-    pub hint: &'a str,
     pub points: &'a [(f64, Option<f64>)],
 }
 
@@ -204,6 +202,5 @@ pub(crate) fn performance_trace(ui: &mut egui::Ui, now: f64, trace: PerformanceT
             ));
         }
         ui.label(format!("纵轴 0–{top:.2} {}", trace.unit));
-        ui.label(trace.hint);
     });
 }

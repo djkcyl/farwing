@@ -254,8 +254,7 @@ async fn serve_presence(
                     Duration::from_millis(500)
                 };
                 let _ = events.send(PresenceEvent::Warning(format!(
-                    "在线连接请求失败：{error:#}；{} ms 后重试",
-                    delay.as_millis()
+                    "在线连接请求失败：{error:#}"
                 )));
                 let cancelled = local
                     .run_host(host, async {
@@ -389,10 +388,7 @@ async fn serve_presence(
         backoff = true;
         initial_requests = 0;
         if let Err(error) = result {
-            let _ = events.send(PresenceEvent::Warning(format!(
-                "在线连接失联：{error:#}；{} 秒后重建",
-                delay.as_secs()
-            )));
+            let _ = events.send(PresenceEvent::Warning(format!("在线连接中断：{error:#}")));
         }
         let _ = events.send(PresenceEvent::State(PresenceState::Reconnecting));
         let cancelled = local

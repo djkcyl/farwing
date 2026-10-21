@@ -191,7 +191,7 @@ fn unavailable_reason(flags: CM_DEVNODE_STATUS_FLAGS, problem: CM_PROB) -> Optio
     } else if problem == CM_PROB_DISABLED {
         Some("设备已禁用（代码 22）".into())
     } else if problem == CM_PROB_NEED_RESTART {
-        Some("驱动需要重启 Windows 后才能启动（代码 14）".into())
+        Some("需要重启 Windows（代码 14）".into())
     } else if problem.0 != 0 {
         Some(format!("驱动未就绪（代码 {}）", problem.0))
     } else if !flags.contains(DN_STARTED) {
@@ -384,7 +384,7 @@ impl Package {
     pub fn install(&self) -> Result<bool> {
         ensure!(
             self.bundled(),
-            "此构建未包含 Farwing {}包。请按 drivers/README.md 构建并签名驱动，放入 assets/drivers 后重新构建客户端",
+            "此构建未包含 Farwing {}包",
             self.kind.label()
         );
         let (set, nodes) = self.nodes()?;
@@ -394,7 +394,7 @@ impl Package {
             ensure!(self.repair, "已有{}设备，保留现有安装", self.kind.label());
             ensure!(
                 self.matches_inf(&inf_directory()?.join(bound_package(&set, device)?))?,
-                "现有驱动不是当前程序的包，已保留"
+                "现有驱动不属于本程序，已保留"
             );
         }
         let stage = Staging::new(self.files).context("准备驱动安装文件失败")?;
@@ -463,7 +463,7 @@ impl Package {
             }
             ensure!(
                 self.current_package(&bound_package(&set, &info)?)?,
-                "Windows仍在使用旧驱动包；更新后的驱动必须使用新的DriverVer版本"
+                "Windows 仍在使用旧驱动包"
             );
         }
         Ok(reboot.as_bool())
@@ -476,7 +476,7 @@ impl Package {
             let bound = bound_package(&set, device)?;
             ensure!(
                 packages.iter().any(|p| p.eq_ignore_ascii_case(&bound)),
-                "现有驱动不是当前程序的包，已保留"
+                "现有驱动不属于本程序，已保留"
             );
         }
         Ok(Removal {

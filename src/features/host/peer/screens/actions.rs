@@ -94,7 +94,7 @@ impl Screens {
         // Reject unsupported removal before interrupting its active capture.
         ensure!(
             self.displays.owns(&identity),
-            "此虚拟屏由其他会话或驱动管理，请通过创建它的程序删除"
+            "此虚拟屏由其他会话或程序管理"
         );
         let before = self.running();
         self.stop(id).await?;

@@ -66,7 +66,7 @@ fn exchange(pipe: &Pipe, request: &Request, permitted: impl Fn() -> bool) -> Res
         reply = pipe.receive(|| true)?;
         reply.sas = false;
         if reply.error.is_none() {
-            reply.error = Some("本次输入已取消，已释放持有状态".into());
+            reply.error = Some("本次输入已取消".into());
         }
     }
     Ok(reply)

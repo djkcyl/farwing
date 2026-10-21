@@ -83,11 +83,18 @@ function CreateInvite({ open, onClose, onCreated }: { open: boolean; onClose(): 
     >
       <form id="create-invite" className="stack" onSubmit={submit}>
         {error && <Alert>{error}</Alert>}
-        <Field label="备注" hint="例如发给谁、做什么用">
+        <Field label="备注">
           <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={128} />
         </Field>
-        <Field label="可用次数" hint="留空为不限次数">
-          <Input type="number" min={1} max={1000} value={uses} onChange={(e) => setUses(e.target.value)} />
+        <Field label="可用次数">
+          <Input
+            type="number"
+            min={1}
+            max={1000}
+            value={uses}
+            onChange={(e) => setUses(e.target.value)}
+            placeholder="不限"
+          />
         </Field>
         <Field label="有效期">
           <Select value={hours} onChange={(e) => setHours(Number(e.target.value))}>
@@ -98,7 +105,7 @@ function CreateInvite({ open, onClose, onCreated }: { open: boolean; onClose(): 
             ))}
           </Select>
         </Field>
-        <Checkbox checked={autoFriend} onChange={setAutoFriend} label="注册后自动与我成为好友" />
+        <Checkbox checked={autoFriend} onChange={setAutoFriend} label="自动加我为好友" />
       </form>
     </Dialog>
   );
@@ -112,7 +119,7 @@ function Uses({ invite, onClose }: { invite: Invite | undefined; onClose(): void
       {!data ? (
         <Loading />
       ) : data.length === 0 ? (
-        <Empty icon="ticket" title="还没有人使用" />
+        <Empty icon="ticket" title="暂无使用记录" />
       ) : (
         <table className="table">
           <thead>
@@ -158,7 +165,6 @@ export default function Invites() {
     <div className="stack">
       <PageHeader
         title="邀请码"
-        subtitle="凭邀请码可在网页上自行注册账号。"
         actions={
           <Button variant="primary" icon="plus" onClick={() => setCreating(true)}>
             生成邀请码
@@ -167,7 +173,7 @@ export default function Invites() {
       />
       {settings.data && !settings.data.runtime.registration && (
         <Alert tone="amber">
-          “邀请码注册”目前是关闭的，邀请码暂时不能使用。在 <Link to="/admin/settings">服务器设置</Link> 中开启。
+          <Link to="/admin/settings">邀请码注册</Link>已关闭
         </Alert>
       )}
       {error && <Alert>{error}</Alert>}
@@ -175,7 +181,7 @@ export default function Invites() {
         {!data ? (
           <Loading />
         ) : data.length === 0 ? (
-          <Empty icon="ticket" title="还没有邀请码" />
+          <Empty icon="ticket" title="暂无邀请码" />
         ) : (
           <div className="table-wrap">
             <table className="table">
@@ -219,7 +225,7 @@ export default function Invites() {
                               if (
                                 await confirm({
                                   title: '作废邀请码',
-                                  message: '作废后不能再用它注册。已注册的账号不受影响。',
+                                  message: '作废后不能再用于注册。',
                                   confirm: '作废',
                                   danger: true,
                                 })

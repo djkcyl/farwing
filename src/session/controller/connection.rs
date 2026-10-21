@@ -61,19 +61,14 @@ impl ResolvedConnection {
                     );
                     return Ok(());
                 }
-                report_progress(
-                    reporter,
-                    1,
-                    "等待被控端更新完成",
-                    "更新尚未完成或被控端正在恢复上线，可关闭窗口取消等待",
-                );
+                report_progress(reporter, 1, "等待被控端更新完成", "");
                 tokio::time::sleep(crate::features::remote_upgrade::UPDATE_PROBE_INTERVAL).await;
             }
         };
         cancellable(cancel, async {
             tokio::time::timeout_at(deadline, operation)
                 .await
-                .context("等待被控端更新完成超时，请稍后重新连接")?
+                .context("等待被控端更新完成超时")?
         })
         .await
     }
@@ -156,7 +151,7 @@ impl ResolvedConnection {
             tracing::info!(ready, "waited for the presence connection");
         }
         tracing::info!("creating server session");
-        report_progress(reporter, 3, "创建远程会话", "正在创建会话并获取信令凭据");
+        report_progress(reporter, 3, "正在创建会话", "");
         let mut pake_key = None;
         let room = if let Some(assist) = &mut self.assist {
             let reply = assist
@@ -404,18 +399,8 @@ pub(super) async fn resolve_connection_with_client(
     reporter: Option<&ConnectionProgressReporter>,
     target_id: Option<&str>,
 ) -> Result<ResolvedConnection> {
-    report_progress(
-        reporter,
-        1,
-        "验证本地会话",
-        "正在读取登录态、本机设备身份与显示能力",
-    );
-    report_progress(
-        reporter,
-        2,
-        "恢复账号会话",
-        format!("正在初始化本机设备、核验保存的登录态，然后检查 {alias} 的在线与可观看状态"),
-    );
+    report_progress(reporter, 1, "正在读取本机信息", "");
+    report_progress(reporter, 2, "正在检查设备状态", "");
     let devices = client.list_devices().await?;
     if let Some(id) = target_id {
         crate::account::api::validate_device_id(id)?;
@@ -471,9 +456,9 @@ pub(super) async fn resolve_connection_with_client(
     report_progress(
         reporter,
         2,
-        "目标设备可连接",
+        "设备可连接",
         format!(
-            "本机显示 {}×{} @ {} Hz；帧率上限 {} FPS，{}",
+            "本机显示 {}×{} @ {} Hz · {} FPS · {}",
             display.width,
             display.height,
             display.refresh_hz,

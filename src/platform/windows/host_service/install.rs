@@ -50,7 +50,7 @@ fn images() -> Result<Images> {
 pub(crate) fn verify_client(pid: u32) -> Result<()> {
     ensure!(
         super::process::image_hash(&super::process::image(pid)?)? == images()?.client,
-        "控制中心与已安装被控服务不匹配，请更新组件"
+        "控制中心与被控服务版本不匹配"
     );
     Ok(())
 }
@@ -194,14 +194,14 @@ fn stop(service: &Sc) -> Result<()> {
         }
         ensure!(
             start.elapsed() < Duration::from_secs(10),
-            "被控服务仍在退出，请稍后重试"
+            "等待被控服务退出超时"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("被控服务仍有活动的输入或画面会话，请断开连接后重试")]
+#[error("被控服务仍有活动会话")]
 pub(crate) struct ActiveSession;
 
 // A repair/uninstall cannot invalidate a live input or capture agent.

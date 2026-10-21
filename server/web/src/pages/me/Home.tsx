@@ -36,11 +36,7 @@ export default function Home() {
           hint={`${d.shared.filter((x) => x.status === 'online').length} 台在线`}
         />
         <Stat label="正在连接我的电脑" value={connections.length} tone={connections.length ? 'amber' : undefined} />
-        <Stat
-          label="好友申请"
-          value={incoming}
-          hint={incoming ? <Link to="/friends">去处理</Link> : '没有待处理的申请'}
-        />
+        <Stat label="好友申请" value={incoming} hint={incoming ? <Link to="/friends">去处理</Link> : undefined} />
       </div>
 
       <div>
@@ -50,7 +46,7 @@ export default function Home() {
         </div>
         {online.length === 0 ? (
           <Card>
-            <Empty icon="monitor" title="现在没有在线的设备" hint="电脑开机并运行 Farwing 客户端后会显示在这里。" />
+            <Empty icon="monitor" title="暂无在线设备" />
           </Card>
         ) : (
           <div className="device-grid">

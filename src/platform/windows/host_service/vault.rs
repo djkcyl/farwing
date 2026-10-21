@@ -95,7 +95,7 @@ pub(crate) fn create(owner: &str) -> Result<()> {
             && owner
                 .bytes()
                 .all(|c| c.is_ascii_digit() || c == b'S' || c == b'-'),
-        "请选择安装服务的 Windows 用户"
+        "安装服务的 Windows 用户无效"
     );
     if let Some(existing) = self::owner()? {
         ensure!(existing == owner, "服务已由另一 Windows 用户管理");

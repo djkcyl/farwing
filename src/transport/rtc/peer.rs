@@ -442,13 +442,11 @@ impl NativePeer {
             String::new()
         };
         Some(format!(
-            "{route} · {protocol}{relay} · {}:{} → {}:{} · {:?}/{:?}",
+            "{route} · {protocol}{relay} · {}:{} → {}:{}",
             pair.local.address,
             pair.local.port,
             pair.remote.address,
             pair.remote.port,
-            pair.local.typ,
-            pair.remote.typ
         ))
     }
 

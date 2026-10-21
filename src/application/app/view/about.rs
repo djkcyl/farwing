@@ -32,11 +32,6 @@ impl DeviceCenterApp {
                             .strong(),
                     );
                     ui.label(
-                        RichText::new("可自建部署的远程控制与桌面串流客户端")
-                            .size(crate::ui::theme::BODY)
-                            .color(MUTED),
-                    );
-                    ui.label(
                         RichText::new(format!(
                             "v{}  ·  {} {}",
                             env!("CARGO_PKG_VERSION"),
@@ -77,16 +72,14 @@ impl DeviceCenterApp {
             );
             ui.add_space(6.0);
             ui.label(
-                RichText::new("Farwing 与网易及 UU 远程无关，不连接其任何服务。")
+                RichText::new("Farwing 与网易及 UU 远程无关")
                     .size(crate::ui::theme::COMPACT_TEXT)
                     .color(MUTED),
             );
             ui.label(
-                RichText::new(
-                    "包含 FFmpeg 派生组件（LGPL-2.1-or-later）；第三方署名与许可独立适用。",
-                )
-                .size(crate::ui::theme::COMPACT_TEXT)
-                .color(MUTED),
+                RichText::new("包含 FFmpeg 派生组件（LGPL-2.1-or-later）")
+                    .size(crate::ui::theme::COMPACT_TEXT)
+                    .color(MUTED),
             );
             ui.horizontal_wrapped(|ui| {
                 if ui.link("著作权与许可声明").clicked() {
@@ -262,16 +255,11 @@ impl DeviceCenterApp {
             }
         }
         let mut allow = self.updates.allow_prerelease();
-        form_row_content(
-            ui,
-            "允许测试版",
-            "检查 alpha、beta、rc 等测试版更新",
-            |ui| {
-                if crate::ui::controls::switch(ui, &mut allow).changed() {
-                    let _ = self.updates.set_allow_prerelease(allow, ui.ctx());
-                }
-            },
-        );
+        form_row_content(ui, "允许测试版", "", |ui| {
+            if crate::ui::controls::switch(ui, &mut allow).changed() {
+                let _ = self.updates.set_allow_prerelease(allow, ui.ctx());
+            }
+        });
         if let Some(error) = &self.updates.settings_error {
             ui.colored_label(AMBER, error);
         }

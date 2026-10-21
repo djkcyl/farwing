@@ -74,11 +74,11 @@ impl NetworkControl {
             state.notice_until = None;
         }
         state.view.unavailable_reason = if !state.connected {
-            Some("媒体通道连接后可切换")
+            Some("媒体通道未连接")
         } else if state.forced {
             Some("本次连接要求使用中转")
         } else if !state.has_turns && !state.view.relay_enabled {
-            Some("本次会话未提供高速中转线路")
+            Some("无可用中转线路")
         } else {
             None
         };
@@ -102,13 +102,13 @@ impl NetworkControl {
             bail!("本次连接要求使用中转");
         }
         if relay && !state.has_turns {
-            bail!("本次会话未提供高速中转线路");
+            bail!("无可用中转线路");
         }
         if state
             .last_request
             .is_some_and(|at| at.elapsed() < Duration::from_secs(5))
         {
-            bail!("切换过于频繁，请稍后再试");
+            bail!("切换过于频繁");
         }
         state.last_request = Some(Instant::now());
         state.view.pending = true;
@@ -152,7 +152,7 @@ impl NetworkControl {
             state.notice_until = Some(Instant::now() + Duration::from_secs(3));
         } else if state.view.pending && start.elapsed() >= Duration::from_secs(3) {
             state.view.pending = false;
-            state.view.error = Some("尚未切换到中转，当前线路仍在使用".into());
+            state.view.error = Some("未能切换到中转".into());
         }
     }
 

@@ -86,7 +86,6 @@ enum Action {
 enum Icon {
     Back,
     Close,
-    Info,
 }
 
 fn icon_button(ui: &mut egui::Ui, icon: Icon, hint: &str) -> egui::Response {
@@ -108,13 +107,6 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon, hint: &str) -> egui::Response {
                 .line_segment([point(-2.5, 0.0), point(2.5, 5.0)], stroke);
         }
         Icon::Close => crate::ui::controls::paint_close(ui.painter(), rect, stroke.color),
-        Icon::Info => {
-            ui.painter().circle_stroke(center, 6.0, stroke);
-            ui.painter()
-                .circle_filled(point(0.0, -2.5), 0.8, stroke.color);
-            ui.painter()
-                .line_segment([point(0.0, 0.0), point(0.0, 3.0)], stroke);
-        }
     }
     response.on_hover_text(hint)
 }
@@ -420,16 +412,15 @@ fn volume_bar(
         }
         ui.add_space(4.0);
         let choose_output =
-            crate::ui::controls::audio_output_button(ui, "音频设置（音质与输出设备）", ROW_HEIGHT)
-                .clicked();
+            crate::ui::controls::audio_output_button(ui, "音频设置", ROW_HEIGHT).clicked();
         let hint = if *volume > 100 {
             format!(
-                "音量 {}% · 增益 +{:.1} dB\n双击恢复 100%",
+                "音量 {}% · 增益 +{:.1} dB",
                 *volume,
                 20.0 * (f32::from(*volume) / 100.0).log10()
             )
         } else {
-            format!("音量 {}%\n双击恢复 100%", *volume)
+            format!("音量 {}%", *volume)
         };
         (response.on_hover_text(hint), choose_output)
     })
@@ -444,15 +435,6 @@ fn bitrate_editor(ui: &mut egui::Ui, value: &mut u32, multi_screen: bool, limit:
         } else {
             "视频码率"
         });
-        icon_button(
-            ui,
-            Icon::Info,
-            if multi_screen {
-                "同一上限分别应用到各屏幕；实际码率随内容和带宽变化，音频与重传另计。"
-            } else {
-                "使用自定义码率设置；实际流量随画面内容和网络变化。"
-            },
-        );
         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
             ui.label(format!("{value}/{limit} Mbps"));
         });
@@ -638,8 +620,7 @@ pub(super) fn show_stream_control_window(
             ui.set_width(menu_width);
             ui.horizontal(|ui| {
                 if state.page != Page::Quality {
-                    back =
-                        icon_button(ui, Icon::Back, if matches!(state.page, Page::Mouse | Page::Microphone | Page::DisplayAspect) { "返回高级设置" } else { "返回画质菜单；未应用的修改会取消" }).clicked();
+                    back = icon_button(ui, Icon::Back, "返回").clicked();
                 }
                 let title = if state.page == Page::Display {
                     "显示设置".to_owned()
@@ -691,18 +672,12 @@ pub(super) fn show_stream_control_window(
                                         .size(crate::ui::theme::SMALL)
                                         .strong(),
                                     );
-                                    ui.label(
-                                        RichText::new("开启键鼠控制、获得控制权后，可自行调整画质并使用低延迟")
-                                            .size(crate::ui::theme::TINY)
-                                            .color(MUTED),
-                                    );
                                     section_separator(ui);
                                 }
                                 if menu_row(ui, "此设备编码偏好", codec.map_or("跟随全局", |value| value.label()), None, !locked, true).clicked() {
                                     state.page = Page::Codec;
                                 }
                                 if menu_row(ui, "网络不佳时", preferences.weak_network.label(), None, !locked, true)
-                                    .on_hover_text("带宽不足时先降低码率还是帧率；分辨率保持不变")
                                     .clicked()
                                 {
                                     state.page = Page::WeakNetwork;
@@ -711,7 +686,6 @@ pub(super) fn show_stream_control_window(
                                 if ui
                                     .add_enabled_ui(!locked, |ui| switch_row(ui, "观影模式", &mut cinema))
                                     .inner
-                                    .on_hover_text("看视频时使用：画质优先，播放更平稳、音画同步；会增加少量延迟")
                                     .changed()
                                 {
                                     if let Err(error) = handle.set_playback(preferences.weak_network, cinema) {
@@ -770,7 +744,7 @@ pub(super) fn show_stream_control_window(
                                         }
                                     }
                                     if more && !snapshot.custom_bitrate_supported {
-                                        response.on_hover_text("此被控端不支持自定义码率");
+                                        response.on_hover_text("被控端不支持");
                                     }
                                 }
                                 ui.add_space(crate::ui::theme::MENU_GROUP_GAP);
@@ -788,17 +762,14 @@ pub(super) fn show_stream_control_window(
                                 }
                                 ui.add_space(crate::ui::theme::MENU_GROUP_GAP);
                                 ui.horizontal(|ui| {
-                                    ui.label(
+                                    let label = ui.label(
                                         RichText::new("帧率上限")
                                             .size(crate::ui::theme::TINY)
                                             .color(MUTED),
-                                    )
-                                    .on_hover_text(
-                                        snapshot
-                                            .last_notice
-                                            .as_deref()
-                                            .unwrap_or("实际帧率受被控端刷新率和画面内容影响"),
                                     );
+                                    if let Some(notice) = snapshot.last_notice.as_deref() {
+                                        label.on_hover_text(notice);
+                                    }
                                     ui.with_layout(
                                         egui::Layout::right_to_left(Align::Center),
                                         |ui| {
@@ -836,7 +807,6 @@ pub(super) fn show_stream_control_window(
                                                             == choice.value(snapshot.local_display),
                                                     ),
                                                 )
-                                                .on_hover_text("帧率上限；实际帧率受双方屏幕刷新率和编解码能力限制")
                                                 .clicked()
                                                 && settings.frame_rate != choice
                                             {
@@ -858,18 +828,9 @@ pub(super) fn show_stream_control_window(
                                         snapshot.ready && snapshot.pending_sequence.is_none() && !locked,
                                         |ui| {
                                             ui.horizontal(|ui| {
-                                                for (enabled, label, hint) in [
-                                                    (
-                                                        true,
-                                                        "YUV 4:4:4",
-                                                        "保留完整色度细节，适合文字与图形",
-                                                    ),
-                                                    (
-                                                        false,
-                                                        "YUV 4:2:0",
-                                                        "对色度降采样，减少传输与解码开销",
-                                                    ),
-                                                ] {
+                                                for (enabled, label) in
+                                                    [(true, "YUV 4:4:4"), (false, "YUV 4:2:0")]
+                                                {
                                                     if ui
                                                         .add_sized(
                                                             [(WIDTH - 6.0) / 2.0, ROW_HEIGHT],
@@ -877,7 +838,6 @@ pub(super) fn show_stream_control_window(
                                                                 settings.true_color == enabled,
                                                             ),
                                                         )
-                                                        .on_hover_text(hint)
                                                         .clicked()
                                                         && settings.true_color != enabled
                                                     {
@@ -903,12 +863,9 @@ pub(super) fn show_stream_control_window(
                                     if response.changed() {
                                         action = Some(Action::Hdr(hdr));
                                     }
-                                    response.on_hover_text(
-                                        snapshot
-                                            .hdr_unavailable
-                                            .as_deref()
-                                            .unwrap_or("高动态范围；需要双方屏幕已开启 HDR"),
-                                    );
+                                    if let Some(reason) = snapshot.hdr_unavailable.as_deref() {
+                                        response.on_hover_text(reason);
+                                    }
                                 }
                                 section_separator(ui);
                                 if menu_row(ui, "高级设置", "", None, true, true).clicked() {
@@ -944,11 +901,6 @@ pub(super) fn show_stream_control_window(
                                 handle.set_codec_preference(value);
                             }
                         }
-                        section_separator(ui);
-                        ui.add(egui::Label::new(
-                            RichText::new("仅为此设备保存，重连后生效。")
-                                .size(crate::ui::theme::TINY).color(MUTED),
-                        ).wrap());
                     }
                     Page::WeakNetwork => {
                         let preferences = handle.device_preferences();
@@ -964,11 +916,6 @@ pub(super) fn show_stream_control_window(
                                 }
                             }
                         }
-                        section_separator(ui);
-                        ui.add(egui::Label::new(
-                            RichText::new("降低码率：帧率保持，码率最低到当前画质上限的 1/4，之后再降帧率。降低帧率：每帧画质保持，帧率最低到 30 fps，之后再降码率。仅为此设备保存。")
-                                .size(crate::ui::theme::TINY).color(MUTED),
-                        ).wrap());
                     }
                     Page::Audio => {
                         crate::ui::controls::remote_audio_quality(ui,handle);
@@ -994,7 +941,7 @@ pub(super) fn show_stream_control_window(
                                 if outputs.loaded && outputs.devices.is_empty() && outputs.error.is_none() {
                                     ui.label(RichText::new("未找到输出设备").color(MUTED));
                                 }
-crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", "音频设备已断开", crate::ui::controls::DialogIcon::Warning, (outputs.loaded && selected.as_ref().is_some_and(|id| !outputs.devices.iter().any(|device| &device.id == id))).then_some("所选设备已断开，请选择其他输出设备"));
+crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", "音频设备已断开", crate::ui::controls::DialogIcon::Warning, (outputs.loaded && selected.as_ref().is_some_and(|id| !outputs.devices.iter().any(|device| &device.id == id))).then_some("所选设备已断开"));
                             });
                     }
                     Page::Advanced => {
@@ -1014,7 +961,7 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", "音�
                                 if menu_row(ui, "本地显示比例", label, None, true, true).clicked() {
                                     state.page = Page::DisplayAspect;
                                 }
-                                if menu_row(ui, "仅音频模式", "关闭画面", None, true, false).on_hover_text("关闭此设备会话的所有画面，继续播放声音").clicked() {
+                                if menu_row(ui, "仅音频模式", "", None, true, false).clicked() {
                                     handle.request_audio_only(true);
                                     state.open = false;
                                 }
@@ -1031,13 +978,14 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", "音�
                                         .err()
                                         .map(|e| e.to_string());
                                 }
-                                response.on_hover_text(
-                                    snapshot.network.unavailable_reason.unwrap_or(
-                                        "仅本次连接生效；关闭后恢复自动选路，不保证一定直连",
-                                    ),
+                                if let Some(reason) = snapshot.network.unavailable_reason {
+                                    response.on_hover_text(reason);
+                                }
+                                switch_row(
+                                    ui,
+                                    "性能监控常驻",
+                                    &mut view.performance_always_visible,
                                 );
-                                switch_row(ui, "性能监控常驻", &mut view.performance_always_visible)
-                                    .on_hover_text("关闭后仅在异常时临时显示");
                                 ui.horizontal(|ui| {
                                     for (mode, label) in [
                                         (super::PerformancePanelMode::Compact, "精简"),
@@ -1060,8 +1008,7 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", "音�
                                 {
                                     state.page = Page::Mouse;
                                 }
-                                switch_row(ui, "拦截本机快捷键", &mut view.intercept_shortcuts)
-                                    .on_hover_text("为此设备保存，同一设备的播放窗口共用。开启后，控制时优先将按键交给远端；关闭后允许本机快捷键响应。播放器自身快捷键始终保留。");
+                                switch_row(ui, "拦截本机快捷键", &mut view.intercept_shortcuts);
                                 let clipboard = handle.clipboard();
                                 let input=handle.microphone().selected_input();
                                 let devices=handle.microphone().input_devices();
@@ -1082,18 +1029,14 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", "音�
                                 }
                                 let clip = clipboard.snapshot();
                                 let mut enabled = clip.enabled;
-                                if switch_row(ui, "剪贴板同步", &mut enabled)
-                                    .on_hover_text("为此设备记住开关；键鼠控制就绪且对端允许时同步，不保存剪贴板内容")
-                                    .changed() {
+                                if switch_row(ui, "剪贴板同步", &mut enabled).changed() {
                                     if let Err(error) = handle.set_clipboard_enabled(enabled) {
                                         state.local_error = Some(error.to_string());
                                     }
                                 }
                                 if enabled {
                                     let mut files = clip.files;
-                                    if switch_row(ui, "文件复制", &mut files)
-                                        .on_hover_text("为此设备记住文件复制开关")
-                                        .changed() {
+                                    if switch_row(ui, "文件复制", &mut files).changed() {
                                         handle.set_clipboard_files(files);
                                     }
                                     crate::ui::controls::progress_notice(ui.ctx(),"clipboard-wait","剪贴板同步",(!clip.active && snapshot.mouse_mode != MouseMode::View).then_some("等待剪贴板通道就绪"));
@@ -1103,7 +1046,6 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                                 // without automatic sync (view mode, not controlling).
                                 let pulling = state.clipboard_pull.is_some();
                                 if menu_row(ui, "获取被控剪贴板", if pulling { "正在获取…" } else { "" }, None, clip.active && !pulling, false)
-                                    .on_hover_text("把被控端当前的剪贴板内容复制到本机剪贴板；粘贴时才传输内容")
                                     .clicked()
                                 {
                                     let result = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -1120,7 +1062,7 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                                 if let Some(result) = finished {
                                     state.clipboard_pull = None;
                                     match result {
-                                        Ok(_) => crate::ui::controls::notice(ui.ctx(), "clipboard-pull", "获取被控剪贴板", crate::ui::controls::DialogIcon::Ready, "已复制到本机剪贴板，可以粘贴"),
+                                        Ok(_) => crate::ui::controls::notice(ui.ctx(), "clipboard-pull", "获取被控剪贴板", crate::ui::controls::DialogIcon::Ready, "已复制到本机剪贴板"),
                                         Err(error) => crate::ui::controls::notice(ui.ctx(), "clipboard-pull", "获取被控剪贴板", crate::ui::controls::DialogIcon::Error, error),
                                     }
                                 } else if pulling {
@@ -1133,21 +1075,14 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                                     && !handle.mouse().waiting_for_neutral();
                                 section_separator(ui);
                                 use crate::features::remote_input::SystemCommand;
-                                for (label, command, hint) in [
-                                    ("发送 Ctrl+Alt+Del", SystemCommand::Sas, "打开远端 Windows 安全选项（需要远端安装被控服务）"),
-                                    ("锁定远端设备", SystemCommand::Lock, "锁定远端 Windows"),
-                                    ("任务管理器", SystemCommand::TaskManager, "打开远端任务管理器"),
-                                    ("显示桌面", SystemCommand::ShowDesktop, "最小化远端窗口并显示桌面"),
-                                    ("任务视图", SystemCommand::TaskView, "打开远端任务视图"),
+                                for (label, command) in [
+                                    ("发送 Ctrl+Alt+Del", SystemCommand::Sas),
+                                    ("锁定远端设备", SystemCommand::Lock),
+                                    ("任务管理器", SystemCommand::TaskManager),
+                                    ("显示桌面", SystemCommand::ShowDesktop),
+                                    ("任务视图", SystemCommand::TaskView),
                                 ] {
-                                    if menu_row(ui, label, "", None, can_send, false)
-                                        .on_hover_text(if can_send {
-                                            hint
-                                        } else {
-                                            "请先开启 Windows 设备的键鼠控制并松开按键"
-                                        })
-                                        .clicked()
-                                    {
+                                    if menu_row(ui, label, "", None, can_send, false).clicked() {
                                         view.system_command = Some(command);
                                     }
                                 }
@@ -1165,22 +1100,19 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                                 handle.set_display_aspect(value);
                             }
                         }
-                        section_separator(ui);
-                        ui.add(egui::Label::new(
-                            RichText::new("仅调整本地画面比例，不修改远端分辨率。")
-                                .size(crate::ui::theme::TINY).color(MUTED),
-                        ).wrap());
-                        let description = if let Some((width, height)) = preferred {
-                            format!("目标显示器原始尺寸：{width} × {height}")
-                        } else if aspect == crate::media::geometry::DisplayAspect::Display {
-                            "对端未提供显示器原始比例，当前保持画面比例，可手动选择。".to_owned()
-                        } else {
-                            "对端未提供显示器原始比例，可手动选择。".to_owned()
-                        };
-                        ui.add(egui::Label::new(
-                            RichText::new(description)
-                                .size(crate::ui::theme::TINY).color(MUTED),
-                        ).wrap());
+                        if let Some((width, height)) = preferred {
+                            section_separator(ui);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!(
+                                        "目标显示器原始尺寸：{width} × {height}"
+                                    ))
+                                    .size(crate::ui::theme::TINY)
+                                    .color(MUTED),
+                                )
+                                .wrap(),
+                            );
+                        }
                     }
                     Page::Microphone => {
                         let microphone=handle.microphone();
@@ -1219,28 +1151,16 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                                     ui.label(RichText::new("未找到麦克风设备").color(MUTED));
                                 }
                                 if inputs.error.is_none() && selected.as_ref().is_some_and(|id| inputs.updated.is_some() && !inputs.devices.iter().any(|d|&d.id==id)) {
-                                    ui.label(RichText::new("所选麦克风已断开，请重新连接或选择其他设备").color(MUTED));
+                                    ui.label(RichText::new("所选麦克风已断开").color(MUTED));
                                 }
                             });
                         crate::ui::controls::observe_notice(ui.ctx(),"microphone-device-query","麦克风设备",crate::ui::controls::DialogIcon::Error,inputs.error.as_deref());
                     }
                     Page::Mouse => {
-                        for (mode, label, description) in [
-                            (
-                                MouseMode::Smart,
-                                "智能鼠标",
-                                "根据远端光标和软件状态切换输入方式。",
-                            ),
-                            (
-                                MouseMode::Remote,
-                                "使用被控端鼠标",
-                                "更好的兼容性，光标随视频显示，受网络延迟影响。",
-                            ),
-                            (
-                                MouseMode::Local,
-                                "使用主控端鼠标",
-                                "本地光标即时响应，部分游戏或软件可能不兼容。",
-                            ),
+                        for (mode, label) in [
+                            (MouseMode::Smart, "智能鼠标"),
+                            (MouseMode::Remote, "使用被控端鼠标"),
+                            (MouseMode::Local, "使用主控端鼠标"),
                         ] {
                             if menu_row(
                                 ui,
@@ -1260,17 +1180,8 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                                     .err()
                                     .map(|error| error.to_string());
                             }
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(description)
-                                        .size(crate::ui::theme::TINY)
-                                        .color(MUTED),
-                                )
-                                .wrap(),
-                            );
-                            ui.add_space(7.0);
                         }
-                        separator(ui);
+                        section_separator(ui);
                         let preferences = handle.device_preferences();
                         let mut throttle = preferences.mouse_throttle;
                         let mut rate = preferences.mouse_throttle_rate;
@@ -1291,9 +1202,6 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                         if changed {
                             state.local_error = handle.set_mouse_throttle(throttle, rate).err().map(|e|format!("{e:#}"));
                         }
-                        ui.add(egui::Label::new(RichText::new(
-                            "降低高回报率鼠标的输入负担。开启鼠标加速度时，手感可能变化。"
-                        ).size(crate::ui::theme::TINY).color(MUTED)).wrap());
                         separator(ui);
                         ui.add_space(7.0);
                         ui.label(
@@ -1350,7 +1258,6 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
             });
         });
     if let Some((target, proposed)) = state.format_confirm {
-        let current = handle.snapshot().settings;
         let response = egui::Modal::new(egui::Id::new("stream-format-confirmation"))
             .frame(crate::ui::controls::dialog_frame())
             .show(ctx, |ui| {
@@ -1361,7 +1268,6 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                     crate::ui::controls::DialogIcon::Info,
                     true,
                 );
-                ui.label("双方设备需要使用以下组合：");
                 ui.label(format!(
                     "{} · {} · {}",
                     proposed.quality.label(),
@@ -1372,9 +1278,6 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", "剪贴板同�
                     },
                     if proposed.hdr { "HDR" } else { "SDR" }
                 ));
-                if proposed.quality != current.quality {
-                    ui.label("画质会一并调整。");
-                }
                 let (apply, cancel) = crate::ui::controls::dialog_actions(
                     ui,
                     Some(crate::ui::controls::DialogAction::new("应用")),

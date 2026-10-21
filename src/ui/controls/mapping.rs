@@ -110,9 +110,9 @@ pub(crate) fn mapping_row(ui: &mut Ui, row: MappingRow<'_>, last: bool) -> Mappi
         .on_hover_text(if row.url.is_some() {
             "HTTP 服务"
         } else if row.reachable == Some(true) {
-            "TCP 可达，未识别为 HTTP"
+            "TCP 服务"
         } else {
-            "服务类型尚未确认"
+            "类型未知"
         });
     line(
         ui,
@@ -192,11 +192,14 @@ pub(crate) fn mapping_row(ui: &mut Ui, row: MappingRow<'_>, last: bool) -> Mappi
     } else {
         MappingRowAction::None
     };
-    response.on_hover_text(if row.can_probe {
-        format!("{}\n点击重新探测", row.hint)
-    } else {
-        row.hint.to_owned()
-    });
+    let hint = match (row.hint.is_empty(), row.can_probe) {
+        (true, true) => "重新探测".to_owned(),
+        (false, true) => format!("{}\n重新探测", row.hint),
+        _ => row.hint.to_owned(),
+    };
+    if !hint.is_empty() {
+        response.on_hover_text(hint);
+    }
     if !detail.is_empty() {
         line(
             ui,
@@ -331,12 +334,6 @@ pub(crate) fn mapping_empty(ui: &mut Ui, alias: &str, height: f32) -> bool {
             RichText::new("连接你的远端服务")
                 .size(theme::SECTION)
                 .strong(),
-        );
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new("添加规则，通过本地端口访问目标服务")
-                .color(theme::MUTED)
-                .size(theme::COMPACT_TEXT),
         );
         ui.add_space(16.0);
         add = ui

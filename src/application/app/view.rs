@@ -572,7 +572,7 @@ impl DeviceCenterApp {
                     ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
                 let response = response
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text("在 GitHub 查看上游项目 OpenUUYC");
+                    .on_hover_text("上游项目 OpenUUYC");
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(
                         egui::WidgetType::Button,
@@ -777,40 +777,31 @@ impl DeviceCenterApp {
             State::Checking => (
                 "检查中…".into(),
                 MUTED,
-                format!("当前版本 {current}，正在检查更新…"),
+                format!("当前版本 {current}"),
                 None,
             ),
             State::Current => (
                 current.clone(),
                 MUTED,
-                format!(
-                    "当前版本 {current}，已是最新{}，点击重新检查",
-                    self.updates.release_label()
-                ),
+                format!("已是最新{}", self.updates.release_label()),
                 None,
             ),
             State::Ahead => (
                 current.clone(),
                 MUTED,
-                format!(
-                    "当前版本 {current} 高于 GitHub 最新{}，点击重新检查",
-                    self.updates.release_label()
-                ),
+                format!("高于最新{}", self.updates.release_label()),
                 None,
             ),
             State::NoRelease => (
                 current.clone(),
                 MUTED,
-                format!(
-                    "当前版本 {current}，暂无公开{}，点击重新检查",
-                    self.updates.release_label()
-                ),
+                format!("暂无公开{}", self.updates.release_label()),
                 None,
             ),
             State::Failed(error) => (
                 format!("{current} !"),
                 AMBER,
-                format!("当前版本 {current}\n检查更新失败：{error}\n点击重试"),
+                format!("检查更新失败：{error}"),
                 None,
             ),
             State::Available {
@@ -828,7 +819,7 @@ impl DeviceCenterApp {
                     },
                     BLUE,
                     format!(
-                        "发现{} v{version}（当前 {current}）\n点击查看更新内容",
+                        "发现{} v{version}（当前 {current}）",
                         if *prerelease {
                             "测试版"
                         } else {
@@ -1072,7 +1063,7 @@ impl DeviceCenterApp {
                 ctx,
                 "change-server",
                 "更换服务器？",
-                "需要先退出当前账号：当前连接会结束，本机设备会从这个账号中移除。退出后在登录页填写新的服务器地址。本机信任的设备和直连设置会保留。",
+                "退出后本机将从账号中移除",
                 "退出并更换",
             ) {
                 Some(true) => {
@@ -1151,7 +1142,7 @@ impl DeviceCenterApp {
                     }
                 } else {
                     if self.viewer_for_device(&edit.device.device_id).is_some() {
-                        ui.colored_label(AMBER, "当前观看将结束。");
+                        ui.colored_label(AMBER, "当前观看将结束");
                     }
                 }
                 let (accept, dismiss) = crate::ui::controls::dialog_actions(
@@ -1228,21 +1219,6 @@ impl DeviceCenterApp {
                         ));
                     });
                 });
-                let detail = if self.startup_stage == StartupStage::Devices
-                    && !ui.ctx().input(|i| i.focused)
-                {
-                    "窗口不在前台，设备清单刷新已暂停；返回窗口后继续加载。"
-                } else {
-                    self.startup_stage.detail()
-                };
-                content.add(
-                    egui::Label::new(
-                        RichText::new(detail)
-                            .size(crate::ui::theme::COMPACT_TEXT)
-                            .color(MUTED),
-                    )
-                    .wrap(),
-                );
                 content.add_space(6.0);
                 // Completed stages, not an estimate of remaining time.
                 content.add(
@@ -1327,9 +1303,9 @@ impl DeviceCenterApp {
         let step = self.login_form.step;
         // The card fits its step; a certificate check adds its result.
         let height = match step {
-            LoginStep::Server if self.login_form.probe.is_some() => 600.0,
-            LoginStep::Server => 500.0,
-            LoginStep::Account => 545.0,
+            LoginStep::Server if self.login_form.probe.is_some() => 565.0,
+            LoginStep::Server => 465.0,
+            LoginStep::Account => 525.0,
         };
         login_card(root, height, |ui| match step {
             LoginStep::Server => server_step(ui, &mut self.login_form, busy, &mut action),
@@ -1387,11 +1363,8 @@ struct LoginAction {
     direct: bool,
 }
 
-fn step_title(ui: &mut egui::Ui, title: &str, hint: &str) {
+fn step_title(ui: &mut egui::Ui, title: &str) {
     ui.label(RichText::new(title).size(theme::DIALOG_TITLE).strong());
-    ui.add(
-        egui::Label::new(RichText::new(hint).size(theme::SMALL).color(MUTED)).wrap(),
-    );
     ui.add_space(12.0);
 }
 
@@ -1421,11 +1394,7 @@ fn divider(ui: &mut egui::Ui, text: &str) {
 /// Step one: which Farwing Server to use, or none at all.
 fn server_step(ui: &mut egui::Ui, form: &mut LoginForm, busy: bool, action: &mut LoginAction) {
     let width = ui.available_width();
-    step_title(
-        ui,
-        "连接服务器",
-        "填写服务器管理员提供的地址。不使用服务器也可以在局域网中或通过地址直接连接。",
-    );
+    step_title(ui, "连接服务器");
     ui.label(RichText::new("服务器地址").color(MUTED));
     let before = form.server.clone();
     ui.add_enabled_ui(!busy, |ui| {
@@ -1444,7 +1413,7 @@ fn server_step(ui: &mut egui::Ui, form: &mut LoginForm, busy: bool, action: &mut
         form.advance = false;
     }
     ui.add_space(6.0);
-    ui.label(RichText::new("证书指纹（自签名证书时填写，可留空）").color(MUTED));
+    ui.label(RichText::new("证书指纹（可选）").color(MUTED));
     ui.add_enabled_ui(!busy, |ui| {
         ui.add_sized(
             [width, theme::CONTROL_HEIGHT],
@@ -1490,9 +1459,9 @@ fn server_step(ui: &mut egui::Ui, form: &mut LoginForm, busy: bool, action: &mut
                 RichText::new(if probe.trusted_by_system {
                     "证书受系统信任"
                 } else if trusted {
-                    "证书与填写的指纹一致"
+                    "证书与指纹一致"
                 } else {
-                    "证书不受系统信任：请与服务器管理员核对下面的指纹"
+                    "证书不受系统信任"
                 })
                 .size(theme::COMPACT_TEXT)
                 .color(if trusted { MUTED } else { AMBER }),
@@ -1545,7 +1514,7 @@ fn account_step(
     action: &mut LoginAction,
 ) {
     let width = ui.available_width();
-    step_title(ui, "登录账号", "账号由服务器管理员创建。");
+    step_title(ui, "登录账号");
     let origin = LoginForm::saved_origin().unwrap_or_else(|| form.server.clone());
     ui.horizontal(|ui| {
         ui.label(RichText::new("服务器").color(MUTED));
@@ -1621,7 +1590,6 @@ fn account_step(
                 !busy,
                 login_button("让别人连接本机").min_size(vec2(half, theme::CONTROL_HEIGHT)),
             )
-            .on_hover_text("不登录：开启访问码，或让受信任的设备连接本机（服务器需开启游客功能）")
             .clicked();
         action.direct |= ui
             .add_enabled(
@@ -1646,7 +1614,7 @@ impl DeviceCenterApp {
                     crate::ui::controls::DialogIcon::Warning,
                     true,
                 );
-                ui.label("当前连接将结束，本机设备也会从账号中移除。");
+                ui.label("本机将从账号中移除");
                 let (accept, dismiss) = crate::ui::controls::dialog_actions(
                     ui,
                     Some(crate::ui::controls::DialogAction::new("退出登录").danger(true)),

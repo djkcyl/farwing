@@ -433,13 +433,14 @@ impl Engine {
     }
 
     fn start(&mut self, transfer: u32, id: u32, body: Body) -> Result<()> {
-        let active = self.transfers.get(&transfer).ok_or_else(|| {
-            Failure::new(code::CANCELLED, "文件传输已结束，请重新开始")
-        })?;
+        let active = self
+            .transfers
+            .get(&transfer)
+            .ok_or_else(|| Failure::new(code::CANCELLED, "文件传输已结束"))?;
         active
             .events
             .send(Event::Start(id, body))
-            .map_err(|_| Failure::new(code::CANCELLED, "文件传输已结束，请重新开始"))?;
+            .map_err(|_| Failure::new(code::CANCELLED, "文件传输已结束"))?;
         Ok(())
     }
 

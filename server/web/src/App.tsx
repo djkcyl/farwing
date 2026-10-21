@@ -47,7 +47,7 @@ function find(routes: [string, Page][], path: string): [Page, Record<string, str
 }
 
 function NotFound() {
-  return <Empty icon="alert" title="页面不存在" hint="地址可能有误，或页面已经移动。" />;
+  return <Empty icon="alert" title="页面不存在" />;
 }
 
 function Routes() {
@@ -73,7 +73,6 @@ function Routes() {
         <Empty
           icon="alert"
           title="无法连接服务器"
-          hint="请检查网络，或稍后再试。"
           action={
             <Button variant="primary" icon="refresh" onClick={() => void auth.refresh()}>
               重试
@@ -101,13 +100,7 @@ function Routes() {
   return (
     <Shell>
       <Suspense fallback={<Loading />}>
-        {Component ? (
-          <Component params={params} />
-        ) : forbidden ? (
-          <Empty icon="lock" title="没有权限" hint="只有管理员可以打开这个页面。" />
-        ) : (
-          <NotFound />
-        )}
+        {Component ? <Component params={params} /> : forbidden ? <Empty icon="lock" title="没有权限" /> : <NotFound />}
       </Suspense>
     </Shell>
   );

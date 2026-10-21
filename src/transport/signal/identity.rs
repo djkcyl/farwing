@@ -75,7 +75,7 @@ impl std::fmt::Display for IdentityMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "对端出示的密钥与设备 ID {} 不符，可能有人冒充该设备，已拒绝连接",
+            "对方设备的密钥与设备 ID {} 不符，已拒绝连接",
             crate::account::api::device_id_text(&self.device_id)
         )
     }
@@ -108,7 +108,7 @@ impl Binding {
     /// Add this side's attributes to a local SDP.
     pub(crate) fn sign(&self, sdp: String) -> Result<String> {
         let fingerprints = fingerprints(&sdp);
-        ensure!(!fingerprints.is_empty(), "本地 SDP 缺少 DTLS 指纹");
+        ensure!(!fingerprints.is_empty(), "本机连接参数缺少证书指纹");
         let role = self.role.as_str();
         let signature = self.local.identity.sign(&crypto::dtls_identity_message(
             &self.session_id,
@@ -129,23 +129,23 @@ impl Binding {
     /// Verify the peer's attributes on a remote SDP.
     pub(crate) fn verify(&self, sdp: &str) -> Result<()> {
         let fingerprints = fingerprints(sdp);
-        ensure!(!fingerprints.is_empty(), "对端 SDP 缺少 DTLS 指纹");
+        ensure!(!fingerprints.is_empty(), "对方连接参数缺少证书指纹");
         let role = match self.role {
             Role::Controller => Role::Host,
             Role::Host => Role::Controller,
         }
         .as_str();
-        let signature = attribute(sdp, IDENTITY_ATTRIBUTE).context("对端未签名其 DTLS 指纹")?;
+        let signature = attribute(sdp, IDENTITY_ATTRIBUTE).context("对方未签名证书指纹")?;
         crypto::verify(
             &self.peer_key,
             &crypto::dtls_identity_message(&self.session_id, &self.attempt_id, role, &fingerprints),
             signature,
         )
-        .map_err(|_| anyhow::anyhow!("对端 DTLS 指纹签名无效"))?;
+        .map_err(|_| anyhow::anyhow!("对方证书指纹签名无效"))?;
         if let Some(key) = &self.local.pake {
-            let binding = attribute(sdp, PAKE_ATTRIBUTE).context("对端未用访问码确认 DTLS 指纹")?;
+            let binding = attribute(sdp, PAKE_ATTRIBUTE).context("对方未用访问码确认证书指纹")?;
             if !crypto::pake_fingerprint_matches(key, &self.session_id, role, &fingerprints, binding) {
-                bail!("对端 DTLS 指纹与访问码协商结果不符");
+                bail!("对方证书指纹与访问码不符");
             }
         }
         Ok(())

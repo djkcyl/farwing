@@ -100,22 +100,16 @@ impl Settings {
                     (8..=254).contains(&b.key)
                         && !matches!(b.key,16..=18|91..=92|160..=165|229|231)
                         && b.modifiers <= 15,
-                    "请选择一个普通按键或组合键"
+                    "不支持此按键"
                 );
-                ensure!(
-                    !(b.key == 27 && b.modifiers == 0),
-                    "Esc 用于取消与关闭菜单，请添加修饰键"
-                );
+                ensure!(!(b.key == 27 && b.modifiers == 0), "Esc 需配合修饰键");
                 ensure!(
                     !(b.key == 46 && b.modifiers & 5 == 5)
                         && !(b.key == 76 && b.modifiers & 8 != 0),
                     "此组合由 Windows 保留"
                 );
                 if let Some(other) = self.bindings[..index].iter().position(|v| v == binding) {
-                    bail!(
-                        "与“{}”重复，请修改或解绑其中一项",
-                        Action::ALL[other].label()
-                    );
+                    bail!("与“{}”重复", Action::ALL[other].label());
                 }
             }
         }
@@ -314,14 +308,11 @@ fn save(expected: &Option<Vec<u8>>, settings: &Settings) -> Result<()> {
         unsafe {
             let _ = CloseHandle(handle);
         }
-        bail!("其他窗口正在保存快捷键，请稍后重试");
+        bail!("其他窗口正在保存快捷键");
     }
     let _guard = FileGuard(handle);
     let path = path()?;
-    ensure!(
-        &read(&path)? == expected,
-        "快捷键已在其他窗口修改，请点击重新载入"
-    );
+    ensure!(&read(&path)? == expected, "快捷键已在其他窗口修改");
     std::fs::create_dir_all(path.parent().context("设置目录无效")?)?;
     let bytes = serde_json::to_vec_pretty(settings)?;
     let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
@@ -401,7 +392,7 @@ impl Editor {
             self.cancel_recording();
         } else if self.pending_unsupported {
             self.pending_unsupported = false;
-            self.error = Some("此按键暂不支持，请尝试其他按键或组合键".into());
+            self.error = Some("不支持此按键".into());
         }
     }
     fn reload(&mut self) {
@@ -555,12 +546,6 @@ impl Editor {
             self.finish_recording(released);
             ui.ctx().request_repaint_after(Duration::from_millis(30));
         }
-        ui.label(
-            egui::RichText::new("在播放窗口内生效 · 所有设备通用")
-                .size(crate::ui::theme::SMALL)
-                .color(crate::ui::theme::MUTED),
-        );
-        ui.add_space(18.0);
         egui::Frame::new()
             .stroke(egui::Stroke::new(1.0, crate::ui::theme::LINE))
             .corner_radius(crate::ui::theme::PANEL_RADIUS)
@@ -621,7 +606,6 @@ impl Editor {
         ui.horizontal(|ui| {
             if ui
                 .add(crate::ui::controls::quiet_button("恢复默认"))
-                .on_hover_text("恢复默认组合，保存后生效")
                 .clicked()
             {
                 self.cancel_recording();

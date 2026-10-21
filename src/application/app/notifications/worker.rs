@@ -150,15 +150,13 @@ impl Worker {
                                 } else {
                                     c.title.clone()
                                 },
-                                body: format!(
-                                    "{}\n{}",
-                                    c.body,
-                                    if c.expires_at == 0 && c.transfer.is_none() {
-                                        "打开控制中心查看当前连接状态。"
-                                    } else {
-                                        &c.detail
-                                    }
-                                ),
+                                body: if (c.expires_at == 0 && c.transfer.is_none())
+                                    || c.detail.is_empty()
+                                {
+                                    c.body.clone()
+                                } else {
+                                    format!("{}\n{}", c.body, c.detail)
+                                },
                                 expires_at: c.expires_at,
                                 buttons,
                             }

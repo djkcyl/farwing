@@ -115,7 +115,7 @@ impl Form {
                 .local_addr
                 .trim()
                 .parse()
-                .context("请输入有效的本机监听地址（IPv4 或 IPv6）")?,
+                .context("监听地址应为 IPv4 或 IPv6 地址")?,
             local_port: self.local.trim().parse().context("本地端口应为 1–65535")?,
             target: self
                 .target
@@ -174,10 +174,7 @@ impl Editor {
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut enabled = snapshot.enabled;
-                if controls::service_switch(ui, &mut enabled)
-                    .on_hover_text("启停此设备的全部端口转发")
-                    .changed()
-                {
+                if controls::service_switch(ui, &mut enabled).changed() {
                     handle.set_enabled(enabled);
                 }
                 ui.add_space(4.0);
@@ -193,15 +190,6 @@ impl Editor {
                 ui.label(RichText::new(label).size(theme::COMPACT_TEXT).color(color));
             });
         });
-        ui.label(
-            RichText::new(if snapshot.enabled {
-                "关闭此窗口后，转发服务仍保持运行"
-            } else {
-                "开启服务后使用下方规则，重启客户端后默认关闭"
-            })
-            .size(theme::SMALL)
-            .color(theme::MUTED),
-        );
         ui.add_space(20.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("转发规则").strong());
@@ -336,15 +324,13 @@ impl Editor {
                                         String::new()
                                     };
                                     let hint = if rule.protocol == super::Protocol::Udp {
-                                        status.error.as_deref().unwrap_or(
-                                            "UDP 仅在本地收到数据报后连接目标，不进行 TCP 探测",
-                                        )
+                                        status.error.as_deref().unwrap_or("UDP 不探测")
                                     } else {
                                         match &status.probe {
                                             super::ProbeStatus::Unreachable(error) => {
                                                 error.as_str()
                                             }
-                                            _ => "经 Farwing 链路确认远端 TCP 建连；每 30 秒探测一次",
+                                            _ => "探测间隔 30 秒",
                                         }
                                     };
                                     let speed = if !snapshot.enabled || !rule.enabled {
@@ -454,12 +440,6 @@ impl Editor {
                                 );
                             });
                     });
-                    if form.protocol == super::Protocol::Udp {
-                        ui.label(
-                            RichText::new("UDP 需要两端 Farwing；弱网下可靠传输可能增加等待。")
-                                .color(theme::MUTED),
-                        );
-                    }
                     ui.add_space(16.0);
                     ui.columns(2, |columns| {
                         egui::Frame::new()
@@ -470,11 +450,6 @@ impl Editor {
                                 ui.set_width(ui.available_width());
                                 ui.set_min_height(theme::MAPPING_ENDPOINT_HEIGHT);
                                 ui.label(RichText::new("本机").strong());
-                                ui.label(
-                                    RichText::new("提供访问入口")
-                                        .size(theme::COMPACT_TEXT)
-                                        .color(theme::MUTED),
-                                );
                                 ui.add_space(12.0);
                                 field(ui, "监听地址", &mut form.local_addr, "127.0.0.1");
                                 ui.add_space(10.0);
@@ -488,11 +463,6 @@ impl Editor {
                                 ui.set_width(ui.available_width());
                                 ui.set_min_height(theme::MAPPING_ENDPOINT_HEIGHT);
                                 ui.label(RichText::new("目标服务").strong());
-                                ui.label(
-                                    RichText::new("由被控设备访问")
-                                        .size(theme::COMPACT_TEXT)
-                                        .color(theme::MUTED),
-                                );
                                 ui.add_space(12.0);
                                 field(ui, "目标地址", &mut form.target, "127.0.0.1 或 nas.local");
                                 ui.add_space(10.0);
@@ -548,7 +518,7 @@ impl Editor {
                         crate::ui::controls::DialogIcon::Warning,
                         true,
                     );
-                    ui.label(format!("将删除“{}”，并关闭它的现有连接。", rule.name));
+                    ui.label(format!("“{}”的现有连接将断开", rule.name));
                     let (accept, dismiss) = crate::ui::controls::dialog_actions(
                         ui,
                         Some(crate::ui::controls::DialogAction::new("删除").danger(true)),

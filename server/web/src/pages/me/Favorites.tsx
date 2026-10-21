@@ -74,7 +74,6 @@ export default function Favorites() {
     <div className="stack">
       <PageHeader
         title="收藏"
-        subtitle="收藏的短号与备注在客户端和网页间同步；访问码只保存在各自的客户端。"
         actions={
           <Button
             variant="primary"
@@ -105,8 +104,7 @@ export default function Favorites() {
         ) : list.length === 0 ? (
           <Empty
             icon={tab === 'favorites' ? 'star' : 'activity'}
-            title={tab === 'favorites' ? '还没有收藏' : '还没有最近连接'}
-            hint={tab === 'favorites' ? '收藏常用设备的短号，方便以后连接。' : '用短号连接过的设备会出现在这里。'}
+            title={tab === 'favorites' ? '暂无收藏' : '暂无最近连接'}
           />
         ) : (
           <div className="table-wrap">

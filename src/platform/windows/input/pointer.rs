@@ -79,7 +79,7 @@ unsafe impl Send for Device {}
 impl Device {
     fn new(kind: POINTER_INPUT_TYPE, count: u32) -> Result<Self> {
         let Some(api) = API.as_ref() else {
-            bail!("这个系统不支持合成触摸与笔（需要 Windows 10 1809 或更新）");
+            bail!("触摸与笔输入需要 Windows 10 1809 或更新");
         };
         let handle = unsafe { (api.create)(kind, count, FEEDBACK_DEFAULT) };
         ensure!(handle != 0, "无法创建合成指针设备：{:?}", unsafe { GetLastError() });

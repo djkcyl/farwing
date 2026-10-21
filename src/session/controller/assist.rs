@@ -18,19 +18,14 @@ impl AssistConnection {
         cancel: &CancellationToken,
     ) -> Result<AssistJoined> {
         let mut reply = if let Some(previous) = &self.room {
-            report_progress(
-                reporter,
-                3,
-                "恢复会话",
-                "正在更新已授权会话的连接凭据",
-            );
+            report_progress(reporter, 3, "正在恢复会话", "");
             // Rebuilding keeps the verified target; only the single-use
             // realtime ticket of the same server session is renewed.
             let session_id = previous
                 .ticket
                 .session_id
                 .clone()
-                .context("会话缺少会话标识，无法恢复")?;
+                .context("无法恢复会话")?;
             match cancellable(cancel, client.assist_refetch(&session_id)).await {
                 Ok(ticket) => AssistJoined {
                     ticket,
@@ -58,7 +53,7 @@ impl AssistConnection {
             .as_ref()
             .is_some_and(|id| id != &reply.host.device_id)
         {
-            bail!("该记录对应的设备身份发生变化，请刷新记录后重试");
+            bail!("该记录对应的设备身份已变化");
         }
         if reply.host.alias.trim().is_empty() {
             reply.host.alias = target_label(&self.request.target);
@@ -117,7 +112,7 @@ pub(super) async fn resolve(
     reporter: Option<&ConnectionProgressReporter>,
 ) -> Result<ResolvedConnection> {
     request.validate()?;
-    report_progress(reporter, 1, "验证本地会话", "正在恢复本机设备身份");
+    report_progress(reporter, 1, "正在读取本机信息", "");
     if !client.is_guest() {
         client.account_info().await?;
     }
@@ -172,7 +167,7 @@ async fn authorize(
         let (pending, states) = match &request.pending {
             Some(pending) => (pending.clone(), Vec::new()),
             None => {
-                report_progress(reporter, 2, "请求连接", "正在请对方允许本机连接");
+                report_progress(reporter, 2, "正在请求连接", "");
                 let (states, messages): (Vec<_>, Vec<_>) = if request.has_code() {
                     (0..crypto::ASSIST_PAKE_SLOTS)
                         .map(|_| crypto::pake_start(&request.connect_code))
@@ -228,15 +223,9 @@ async fn authorize(
             } else if confirming {
                 "等待对方确认"
             } else {
-                "验证访问码"
+                "访问码正确"
             },
-            if pending.trusted {
-                "无需访问码，正在建立会话"
-            } else if confirming {
-                "请在对方设备上允许本次连接；关闭此窗口可取消"
-            } else {
-                "访问码正确，正在建立会话"
-            },
+            "",
         );
         let confirm = key
             .map(|key| crypto::key_confirm(&key, "controller", &pending.request_id))
@@ -246,7 +235,7 @@ async fn authorize(
         anyhow::ensure!(
             joined.host.device_id == pending.host.device_id
                 && joined.host.public_key == pending.host.public_key,
-            "对方设备身份在连接过程中发生变化，已停止连接"
+            "对方设备身份已变化"
         );
         crate::transport::signal::identity::check_key(&joined.host.device_id, &joined.host.public_key)?;
         joined.pake_key = key;

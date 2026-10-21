@@ -200,7 +200,7 @@ pub(super) fn capture_loop(
             .or_else(|| {
                 negotiated.candidate(&wanted, (screen.width, screen.height), source_gpu, &failed, false)
             })
-            .context("本会话的协商编码候选已全部失败")?;
+            .context("协商的编码器均不可用")?;
         let hardware =
             candidate.capability.backend != crate::features::host::format::Backend::Software;
         let candidate_id = (

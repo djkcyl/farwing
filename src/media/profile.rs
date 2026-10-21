@@ -247,7 +247,7 @@ impl ConnectionMediaOptions {
         anyhow::ensure!(
             self.decoder.mode != super::selection::ProcessingMode::Software
                 || self.codec != CodecPreference::H265,
-            "软件解码不支持 HEVC，请取消仅 HEVC 限制或启用硬解"
+            "软件解码不支持 HEVC"
         );
         Ok(())
     }

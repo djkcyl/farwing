@@ -51,7 +51,7 @@ impl Handle {
         }
         ensure!(
             !self.0.busy.swap(true, Ordering::AcqRel),
-            "远程开机设置正在处理，请等待完成"
+            "远程开机设置正在处理"
         );
         let result = super::super::lock(&self.0.sender)
             .as_ref()
@@ -109,7 +109,7 @@ impl Running {
                 status.busy = false;
                 if let Err(e) = result {
                     status.error = Some(format!("{e:#}"));
-                    status.message = "操作未完成，请检查当前状态".into();
+                    status.message = "操作未完成".into();
                 }
                 client.host.wol_setup_status(status.clone());
                 worker.0.busy.store(false, Ordering::Release);
@@ -184,7 +184,7 @@ async fn perform(
         Action::Configure(key) => {
             ensure!(
                 status.checked && status.adapters.iter().any(|a| a.key == key),
-                "请先检查并选择网卡"
+                "未选择网卡"
             );
             let rows = hardware(Some(key.clone()), true, stop.clone()).await?;
             active(client, stop)?;
@@ -193,9 +193,9 @@ async fn perform(
             status.adapters.retain(|a| a.key != key);
             status.adapters.push(adapter);
             status.message = if partial {
-                "部分网卡设置未完成；请查看各项结果"
+                "部分网卡设置未完成"
             } else {
-                "已配置并复查；部分驱动设置需下次重启生效，未重启网卡"
+                "网卡已配置，部分设置重启后生效"
             }
             .into();
         }
@@ -203,11 +203,11 @@ async fn perform(
             adapter: key,
             confirmed,
         } => {
-            ensure!(confirmed, "请先确认网卡与 BIOS 已配置");
-            ensure!(client.host.allowed(), "请先开启允许被控");
+            ensure!(confirmed, "未确认网卡与 BIOS 配置");
+            ensure!(client.host.allowed(), "允许被控未开启");
             ensure!(
                 status.checked && status.adapters.iter().any(|a| a.key == key),
-                "请先检查并选择网卡"
+                "未选择网卡"
             );
             // Revalidate physical identity and current network just before any cloud write.
             let rows = hardware(Some(key.clone()), false, stop.clone()).await?;
@@ -227,16 +227,13 @@ async fn perform(
                 .context("网卡没有可登记的IPv4网络")?;
             // Relay registration also uses the primary route; avoid two independent owners
             // repeatedly replacing a device's LAN identity with different adapters.
-            ensure!(
-                info.default_metric.is_some(),
-                "请选择当前默认网络的有线网卡"
-            );
+            ensure!(info.default_metric.is_some(), "所选网卡不在当前默认网络");
             ensure!(
                 inventory()
                     .await?
                     .first()
                     .is_some_and(|i| i.index == info.index),
-                "默认网络已变化，请重新检查"
+                "默认网络已变化"
             );
             active(client, stop)?;
             client
@@ -249,10 +246,10 @@ async fn perform(
             let saved = client.set_wol_enabled(true).await;
             let readback = client.wol_enabled().await;
             status.enabled = readback.as_ref().ok().copied();
-            saved.context("开启请求未确认；不会自动重发，请重新检查云端状态")?;
+            saved.context("开启请求未确认")?;
             ensure!(
-                readback.context("服务器已接受设置，但状态回读失败；请重新检查")?,
-                "服务器已接受设置，但回读仍为关闭；未确认生效"
+                readback.context("设置已提交，状态读取失败")?,
+                "设置已提交，但仍显示为关闭"
             );
             active(client, stop)?;
             // Only the validated portable account owner installs login startup,
@@ -262,23 +259,23 @@ async fn perform(
                     true,
                     &std::env::current_exe()?,
                 )
-                .context("云端开机许可已开启，但登录自启动设置失败")?;
+                .context("远程开机已开启，登录自启动设置失败")?;
             }
             client.host.wol.refresh();
-            status.message = "已开启本设备远程开机；硬件实际唤醒仍取决于网卡和 BIOS".into();
+            status.message = "已开启远程开机".into();
         }
         Action::Disable => {
             status.enabled = None;
             let saved = client.set_wol_enabled(false).await;
             let readback = client.wol_enabled().await;
             status.enabled = readback.as_ref().ok().copied();
-            saved.context("关闭请求未确认；不会自动重发，请重新检查云端状态")?;
+            saved.context("关闭请求未确认")?;
             ensure!(
-                !readback.context("服务器已接受设置，但状态回读失败；请重新检查")?,
-                "服务器已接受设置，但回读仍为开启；未确认生效"
+                !readback.context("设置已提交，状态读取失败")?,
+                "设置已提交，但仍显示为开启"
             );
             client.host.wol.refresh();
-            status.message = "已关闭本设备远程开机；网卡配置保持不变".into();
+            status.message = "已关闭远程开机".into();
         }
     }
     Ok(())

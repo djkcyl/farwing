@@ -431,7 +431,7 @@ impl RemoteInput {
             bail!("仅支持向 Windows 设备发送系统命令");
         }
         if !s.ready || s.stopping || s.mode == MouseMode::View || s.waiting_for_neutral {
-            bail!("请先开启键鼠控制并松开按键");
+            bail!("键鼠控制未开启或按键未松开");
         }
         // Retire physical input before the command, keeping any release owed
         // to transport; the host also releases its holds before executing it.
@@ -444,7 +444,7 @@ impl RemoteInput {
                 down: true,
             },
         ) {
-            bail!("键鼠输入队列已满，请稍后重试");
+            bail!("键鼠输入队列已满");
         }
         drop(s);
         self.wake.notify_one();
@@ -626,7 +626,7 @@ impl RemoteInput {
             bail!("控制连接尚未就绪");
         }
         if s.transport_recovery.as_ref().is_some_and(|r| !r.confirmed) {
-            bail!("键鼠通道正在恢复，请稍候");
+            bail!("键鼠通道正在恢复");
         }
         if s.mode == mode {
             s.relative = relative;
@@ -1318,7 +1318,7 @@ impl RemoteInput {
     ) -> Result<()> {
         let mut s = self.lock();
         if !s.ready || s.stopping || s.mode == MouseMode::View || !s.relative {
-            bail!("请开启相对鼠标控制");
+            bail!("相对鼠标控制未开启");
         }
         if !guard() || !Self::claim(&mut s, owner) {
             bail!("控制不可用");

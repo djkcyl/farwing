@@ -667,7 +667,7 @@ fn pull(s: &Arc<Inner>, epoch: u64, id: u32) -> Result<()> {
     use farwing_protocol::peer::error_code;
     let object = clipboard_retry(|| unsafe { OleGetClipboard() })?;
     if excluded(&object) {
-        s.refuse(id, error_code::FORBIDDEN, "被控剪贴板内容被来源标记为不同步");
+        s.refuse(id, error_code::FORBIDDEN, "被控剪贴板内容不允许同步");
         return Ok(());
     }
     let (source, ids) = describe(object)?;

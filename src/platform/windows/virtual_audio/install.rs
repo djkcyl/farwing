@@ -35,18 +35,16 @@ pub(crate) fn bridge_open_error(error: windows::core::Error) -> anyhow::Error {
     .any(|code| error.code() == code.to_hresult());
     let reason = if missing {
         match PACKAGE.unavailable_reason() {
-            Ok(Some(reason)) => {
-                format!("Farwing 虚拟声卡不可用：{reason}；请在被控端连接设置中检查虚拟声卡")
-            }
-            Ok(None) => "Farwing 虚拟声卡设备已启动，但音频接口不可用，请查看被控端诊断信息".into(),
+            Ok(Some(reason)) => format!("Farwing 虚拟声卡不可用：{reason}"),
+            Ok(None) => "Farwing 虚拟声卡接口不可用".into(),
             Err(status) => format!("Farwing 虚拟声卡接口不可用，设备状态读取失败：{status:#}"),
         }
     } else if error.code() == ERROR_ACCESS_DENIED.to_hresult() {
-        "无法访问 Farwing 虚拟声卡，请检查被控服务是否已安装并正常运行".into()
+        "无法访问 Farwing 虚拟声卡".into()
     } else if error.code() == ERROR_SHARING_VIOLATION.to_hresult() {
-        "Farwing 虚拟声卡正在被其他会话或进程使用，请结束占用后重试".into()
+        "Farwing 虚拟声卡正被其他会话或进程使用".into()
     } else {
-        "无法打开 Farwing 虚拟声卡接口，请查看被控端诊断信息".into()
+        "无法打开 Farwing 虚拟声卡接口".into()
     };
     // Preserve the original Windows error for policy classification and the
     // installer's occupancy guard; the diagnostic text is not an error code.
@@ -61,7 +59,7 @@ fn idle() -> Result<()> {
                 let state = bridge.state()?;
                 ensure!(
                     state.microphone_running == 0 && state.speaker_running == 0,
-                    "虚拟声卡正在使用，请先关闭使用它的应用和连接"
+                    "虚拟声卡正在使用"
                 );
             }
             Err(error) => {
@@ -93,12 +91,7 @@ fn idle() -> Result<()> {
 pub(crate) struct TestSigningRequired;
 impl std::fmt::Display for TestSigningRequired {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(
-            "Windows 拒绝加载虚拟声卡驱动（代码 52），已撤回本次安装：它是用项目证书签名的测试驱动，\
-             只有本次启动允许测试驱动时才能加载。请以管理员身份执行 bcdedit /set testsigning on 后重启\
-             （启用了 BitLocker 时先暂停保护），或开机时在“启动设置”中按 7 选择“禁用驱动程序强制签名”；\
-             开着“内存完整性”时还需先将其关闭",
-        )
+        f.write_str("虚拟声卡驱动未加载：需要允许测试签名驱动")
     }
 }
 impl std::error::Error for TestSigningRequired {}
@@ -132,11 +125,11 @@ pub(crate) fn execute(operation: Operation) -> Result<bool> {
                     match PACKAGE.removal().and_then(|removal| removal.execute()) {
                         Ok(_) => Err(TestSigningRequired.into()),
                         Err(removal) => Err(error.context(format!(
-                            "Windows 拒绝加载虚拟声卡驱动（代码 52），撤回安装也失败了（{removal:#}），请在设备管理器中卸载 Farwing 虚拟声卡"
+                            "虚拟声卡驱动未加载，撤回安装失败：{removal:#}"
                         ))),
                     }
                 }
-                result => result.context("虚拟声卡安装或加载失败；此测试签名包需要本次启动允许测试驱动，具体原因见系统错误和安装日志"),
+                result => result.context("虚拟声卡安装或加载失败"),
             }
             .and_then(|reboot| {
                 if !reboot {

@@ -66,7 +66,7 @@ pub(super) async fn execute(
         }
         FriendOperation::Add(username) => match client.send_friend_request(&username).await {
             Ok(farwing_protocol::api::FriendRequestOutcome::Sent { .. }) => {
-                FriendResult::Done("好友申请已发送，等待对方接受".into())
+                FriendResult::Done("好友申请已发送".into())
             }
             Ok(farwing_protocol::api::FriendRequestOutcome::Accepted { friend }) => {
                 FriendResult::Done(format!("已与 {} 成为好友", friend.user.display_name()))
@@ -90,7 +90,7 @@ pub(super) async fn execute(
         }
         FriendOperation::Remove(user_id) => {
             client.remove_friend(&user_id).await?;
-            FriendResult::Done("已解除好友关系，双方的授权已撤销".into())
+            FriendResult::Done("已解除好友关系".into())
         }
         FriendOperation::LoadGrants(user) => {
             let grants = client.grants(&user.user_id).await?;
@@ -98,7 +98,7 @@ pub(super) async fn execute(
         }
         FriendOperation::SaveGrants(user_id, grants) => {
             client.set_grants(&user_id, grants).await?;
-            FriendResult::Done("权限已保存，正在进行的连接会立即按新权限生效".into())
+            FriendResult::Done("权限已保存".into())
         }
     })
 }
@@ -148,7 +148,7 @@ impl DeviceCenterApp {
         {
             self.friends.loading = false;
             self.friends.busy = false;
-            self.friends.error = Some("设备后台服务不可用".into());
+            self.friends.error = Some("请求发送失败".into());
         }
     }
 

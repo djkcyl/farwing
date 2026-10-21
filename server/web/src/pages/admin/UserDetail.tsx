@@ -115,7 +115,7 @@ export default function UserDetail({ params }: { params: Record<string, string> 
                 if (
                   await confirm({
                     title: '重置密码',
-                    message: `将为 ${a.username} 生成新的随机密码，并注销该账号在所有设备上的登录${self ? '（包括你现在的登录）' : ''}。`,
+                    message: `${a.username} 的所有登录将被注销${self ? '，包括当前登录' : ''}。`,
                     confirm: '重置',
                     danger: true,
                   })
@@ -143,7 +143,7 @@ export default function UserDetail({ params }: { params: Record<string, string> 
                   if (
                     await confirm({
                       title: make ? '设为管理员' : '取消管理员',
-                      message: make ? `${a.username} 将可以管理整个服务器。` : `${a.username} 将不能再打开管理后台。`,
+                      message: make ? `${a.username} 将成为管理员。` : `${a.username} 将不再是管理员。`,
                       confirm: make ? '设为管理员' : '取消管理员',
                     })
                   )
@@ -162,7 +162,7 @@ export default function UserDetail({ params }: { params: Record<string, string> 
                   } else if (
                     await confirm({
                       title: '禁用账号',
-                      message: `${a.username} 将无法登录，现有的登录与连接立即结束。可以随时重新启用。`,
+                      message: `${a.username} 的登录与连接将立即结束。`,
                       confirm: '禁用',
                       danger: true,
                     })
@@ -198,7 +198,7 @@ export default function UserDetail({ params }: { params: Record<string, string> 
                       if (
                         await confirm({
                           title: '重置二次验证',
-                          message: `用于 ${a.username} 丢失了身份验证器。重置后该账号可只凭密码登录，并可重新开启。`,
+                          message: `${a.username} 的二次验证将被关闭。`,
                           confirm: '重置',
                           danger: true,
                         })
@@ -217,7 +217,7 @@ export default function UserDetail({ params }: { params: Record<string, string> 
         </Card>
         <Card title={`登录（${data.logins.length}）`} pad={false}>
           {data.logins.length === 0 ? (
-            <Empty icon="lock" title="没有有效的登录" />
+            <Empty icon="lock" title="暂无登录" />
           ) : (
             <div className="list">
               {data.logins.map((l) => (
@@ -238,7 +238,7 @@ export default function UserDetail({ params }: { params: Record<string, string> 
 
       <Card title={`设备（${data.devices.length}）`} pad={false}>
         {data.devices.length === 0 ? (
-          <Empty icon="monitor" title="没有设备" />
+          <Empty icon="monitor" title="暂无设备" />
         ) : (
           <div className="table-wrap">
             <table className="table">
@@ -295,7 +295,7 @@ export default function UserDetail({ params }: { params: Record<string, string> 
 
       <Card title={`好友与授权（${data.friends.length}）`} pad={false}>
         {data.friends.length === 0 ? (
-          <Empty icon="users" title="没有好友" />
+          <Empty icon="users" title="暂无好友" />
         ) : (
           <div className="table-wrap">
             <table className="table">
@@ -320,7 +320,6 @@ export default function UserDetail({ params }: { params: Record<string, string> 
       {!self && (
         <Card title="删除账号">
           <div className="row gap wrap">
-            <p className="grow muted">删除后账号的好友关系与授权一并删除，设备解绑并退出登录。不可恢复。</p>
             <Button
               variant="danger"
               icon="trash"

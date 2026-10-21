@@ -250,19 +250,17 @@ pub(super) fn participants_list(
             );
             if row
                 .add_enabled(participant.disconnectable, controls::secondary("断开"))
-                .on_hover_text(format!("只断开 {}", participant.name))
                 .clicked()
             {
                 ended = Some(ParticipantAction::Disconnect(participant.session_id.clone()));
             }
-            let (label, hint) = if participant.control_blocked {
-                ("允许控制", "恢复此人的键鼠控制")
+            let label = if participant.control_blocked {
+                "允许控制"
             } else {
-                ("禁止控制", "收回此人的键鼠控制，本次连接内只能观看")
+                "禁止控制"
             };
             if row
                 .add_enabled(participant.disconnectable, controls::secondary(label))
-                .on_hover_text(hint)
                 .clicked()
             {
                 ended = Some(ParticipantAction::BlockControl(
@@ -271,10 +269,7 @@ pub(super) fn participants_list(
                 ));
             }
             if let Some((device_id, public_key)) = &participant.trust
-                && row
-                    .add(controls::secondary("信任"))
-                    .on_hover_text("以后这台设备无需访问码和确认即可连接本机，权限同访客权限，可在“本机 → 受信任设备”中修改")
-                    .clicked()
+                && row.add(controls::secondary("信任")).clicked()
             {
                 ended = Some(ParticipantAction::Trust {
                     device_id: device_id.clone(),

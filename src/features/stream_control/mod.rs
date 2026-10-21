@@ -936,7 +936,7 @@ impl StreamControlHandle {
 fn ensure_ready(state: &StreamControlState) -> Result<()> {
     ensure_business_ready(state)?;
     if state.remote_display.is_none() {
-        bail!("尚未收到活动屏幕基线，已阻止发送不完整的串流设置");
+        bail!("屏幕状态尚未就绪");
     }
     if state.baseline.codec_type == 0 {
         bail!("视频编码尚未完成协商");
@@ -955,7 +955,7 @@ fn ensure_business_ready(state: &StreamControlState) -> Result<()> {
         bail!("对端特性协商尚未完成");
     }
     if protocol(state) == StreamControlProtocol::Unsupported {
-        bail!("对端不支持当前串流协议（需要CaptureSetting RPC）");
+        bail!("对端不支持当前串流协议");
     }
     Ok(())
 }

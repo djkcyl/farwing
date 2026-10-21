@@ -239,7 +239,7 @@ impl ServerConfig {
             }
         }
         if roots.is_empty() && self.pinned_sha256.is_none() {
-            bail!("没有可用的受信任根证书，请导入 CA 或固定服务器证书指纹");
+            bail!("没有可用的受信任根证书");
         }
         let webpki = if roots.is_empty() {
             None
@@ -275,7 +275,7 @@ pub struct NoServer;
 
 impl std::fmt::Display for NoServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("尚未设置 Farwing 服务器，请先在登录页填写服务器地址（或运行 `Farwing server set <地址>`）")
+        f.write_str("尚未设置 Farwing 服务器")
     }
 }
 

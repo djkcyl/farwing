@@ -46,7 +46,7 @@ export function OnceDialog({
       }
     >
       {children}
-      <Alert tone="amber">关闭后不会再显示，请现在复制并安全地交给对方。</Alert>
+      <Alert tone="amber">只显示这一次</Alert>
     </Dialog>
   );
 }
@@ -112,12 +112,13 @@ function CreateUser({
         <Field label="昵称">
           <Input value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={64} />
         </Field>
-        <Field label="初始密码" hint="留空则生成随机密码">
+        <Field label="初始密码">
           <Input
             type="password"
             autoComplete="new-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            placeholder="随机生成"
           />
         </Field>
         <Checkbox checked={admin} onChange={setAdmin} label="设为管理员" />
@@ -145,7 +146,6 @@ export default function Users() {
     <div className="stack">
       <PageHeader
         title="账号"
-        subtitle="账号可在客户端与网页端登录。"
         actions={
           <>
             <SearchBox value={query} onChange={setQuery} placeholder="搜索用户名或昵称" />
@@ -160,7 +160,7 @@ export default function Users() {
         {!data ? (
           <Loading />
         ) : rows.length === 0 ? (
-          <Empty icon="user" title={query ? '没有匹配的账号' : '还没有账号'} />
+          <Empty icon="user" title={query ? '没有匹配的账号' : '暂无账号'} />
         ) : (
           <div className="table-wrap">
             <table className="table">

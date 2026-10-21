@@ -53,9 +53,7 @@ pub fn run(options: GuiOptions) -> Result<()> {
         Ok(display) => (display, None),
         Err(error) => (
             LocalDisplayInfo::FALLBACK,
-            Some(format!(
-                "显示器探测失败（{error:#}），暂用 1920×1080 @ 60 Hz"
-            )),
+            Some(format!("显示器探测失败：{error:#}")),
         ),
     };
     let display_warning = match (display_warning, options.startup_warning) {
@@ -128,15 +126,6 @@ impl StartupStage {
             Self::Device => "初始化设备会话",
             Self::Account => "校验账号登录状态",
             Self::Devices => "获取设备清单",
-        }
-    }
-    fn detail(self) -> &'static str {
-        match self {
-            Self::Identity => "正在读取系统凭据库中的本机身份并启动会话服务。",
-            Self::Credentials => "正在读取已保存的账号凭据，准备恢复上次登录。",
-            Self::Device => "正在与 Farwing 服务器同步本机身份，建立设备会话。",
-            Self::Account => "正在向 Farwing 服务器验证已保存的登录凭据并读取账号信息。",
-            Self::Devices => "正在获取账号设备列表和在线状态，首批设备就绪后进入主界面。",
         }
     }
 }
@@ -228,7 +217,7 @@ impl DeviceCenterApp {
             host: None,
             notifications: notifications::Center::new(ctx),
             status: display_warning.map_or_else(
-                || StatusMessage::info("正在读取设备并建立本机在线状态"),
+                || StatusMessage::info("正在加载设备"),
                 StatusMessage::warning,
             ),
             refreshed_at: None,
@@ -265,17 +254,15 @@ impl DeviceCenterApp {
                         }
                         Err(error) => {
                             self.exit_requested = false;
-                            self.status = StatusMessage::error(format!("后台尚未退出：{error}"));
+                            self.status = StatusMessage::error(format!("退出失败：{error}"));
                             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                             // The status line is not on every page (startup, login).
                             crate::ui::controls::notice(
                                 ctx,
                                 "exit-failed",
-                                "没有退出",
+                                "无法退出",
                                 crate::ui::controls::DialogIcon::Error,
-                                format!("后台被控没有停止，本机仍可以被连接，所以程序没有退出。可以稍后再试。
-
-{error}"),
+                                format!("被控未停止：{error}"),
                             );
                         }
                     }
@@ -426,7 +413,7 @@ impl DeviceCenterApp {
                         }
                         Ok(MutationOutcome::Power(accepted)) => {
                             self.accept_power(*accepted);
-                            StatusMessage::info("电源请求已受理，正在观察设备状态")
+                            StatusMessage::info("电源请求已受理")
                         }
                         Err(message) => StatusMessage::warning(message),
                     };
@@ -518,8 +505,8 @@ impl DeviceCenterApp {
                             self.login_restoring = true;
                             self.startup_stage = StartupStage::Device;
                             self.startup_stage_since = Instant::now();
-                            self.login_status = "登录成功，正在加载设备…".to_owned();
-                            self.status = StatusMessage::success("登录成功，正在加载设备");
+                            self.login_status = "正在加载设备…".to_owned();
+                            self.status = StatusMessage::success("登录成功");
                             self.refresh_pending = true;
                         }
                         Err(error) => {
@@ -563,13 +550,13 @@ impl DeviceCenterApp {
                     self.selected_device_id = None;
                     self.presence = PresenceState::Offline;
                     self.status = match (outcome.remote_error, outcome.local_error) {
-                        (_, Some(error)) => StatusMessage::error(format!(
-                            "账号会话已停止，但本地凭据删除失败：{error}"
-                        )),
-                        (Some(error), None) => StatusMessage::warning(format!(
-                            "已清除本地登录，服务端退出未确认：{error}"
-                        )),
-                        (None, None) => StatusMessage::success("已退出登录，本机设备已从账号移除"),
+                        (_, Some(error)) => {
+                            StatusMessage::error(format!("本地凭据删除失败：{error}"))
+                        }
+                        (Some(error), None) => {
+                            StatusMessage::warning(format!("服务器未确认退出：{error}"))
+                        }
+                        (None, None) => StatusMessage::success("已退出登录"),
                     };
                     self.login_restoring = false;
                     self.login_running = false;
@@ -653,9 +640,9 @@ impl DeviceCenterApp {
                 Ok(crate::session::controller::windows::ViewerEnd::RoomReleased(reason)) => {
                     StatusMessage::notice(format!("与 {alias} 的连接已结束：{reason}"))
                 }
-                Err(error) => StatusMessage::error(format!(
-                    "{alias} 的观看窗口已停止（{error}），请查看诊断日志"
-                )),
+                Err(error) => {
+                    StatusMessage::error(format!("{alias} 的观看窗口异常停止：{error}"))
+                }
             };
             if self.devices.is_some() && !self.logout_pending {
                 self.refresh_pending = self.worker.commands.send(GuiCommand::Refresh).is_ok();
@@ -666,7 +653,7 @@ impl DeviceCenterApp {
             self.logout_sent = self.worker.commands.send(GuiCommand::Logout).is_ok();
             if !self.logout_sent {
                 self.logout_pending = false;
-                self.status = StatusMessage::error("设备后台服务已经停止，尚未执行账号退出");
+                self.status = StatusMessage::error("退出登录失败");
             }
         }
         if let Some(id) = self
@@ -725,7 +712,7 @@ impl DeviceCenterApp {
             || self.mutation_pending
             || (self.assist.busy && !self.assist.querying)
         {
-            self.status = StatusMessage::warning("请等待设备操作完成再退出账号");
+            self.status = StatusMessage::warning("设备操作未完成");
             return false;
         }
         true
@@ -846,7 +833,7 @@ impl DeviceCenterApp {
             if let Some(id) = change.close_target() {
                 self.stop_device_viewers(id);
             }
-            self.status = StatusMessage::info("正在等待目标连接结束，随后执行设备操作");
+            self.status = StatusMessage::info("正在等待连接结束…");
             self.queued_mutation = Some(change);
         } else {
             self.send_mutation(change);
@@ -865,7 +852,7 @@ impl DeviceCenterApp {
             .is_err()
         {
             self.mutation_pending = false;
-            self.status = StatusMessage::error("后台服务已停止，未发送设备操作");
+            self.status = StatusMessage::error("设备操作发送失败");
             self.pending_power = None;
         } else {
             self.status = StatusMessage::info("正在处理设备操作…");
@@ -877,7 +864,7 @@ impl DeviceCenterApp {
             self.refresh_pending = true;
             self.status = StatusMessage::info("正在刷新设备状态");
         } else {
-            self.status = StatusMessage::error("设备后台服务已经停止");
+            self.status = StatusMessage::error("刷新失败");
         }
     }
 
@@ -889,11 +876,11 @@ impl DeviceCenterApp {
             return;
         }
         let Some(device) = self.selected_device().cloned() else {
-            self.status = StatusMessage::warning("请先选择设备");
+            self.status = StatusMessage::warning("未选择设备");
             return;
         };
         if !self.is_viewing_target(&device.device_id) {
-            self.status = StatusMessage::warning("此设备仅用于账号管理，不能观看");
+            self.status = StatusMessage::warning("此设备不能观看");
             return;
         }
         if let Err(message) = self.connection_issue(&device) {
@@ -926,12 +913,12 @@ impl DeviceCenterApp {
             .opening
             .contains_key(&viewing::Key::Device(device.device_id.clone()))
         {
-            Some("正在打开该设备的观看窗口".into())
+            Some("正在打开观看窗口".into())
         } else if self
             .viewer_for_device(&device.device_id)
             .is_some_and(|s| s.closing)
         {
-            Some("正在关闭该设备的观看窗口".into())
+            Some("正在关闭观看窗口".into())
         } else {
             self.connection_issue(device).err()
         }
@@ -1007,7 +994,7 @@ impl DeviceCenterApp {
             .is_err()
         {
             self.viewers.opening.remove(&key);
-            self.status = StatusMessage::error("设备后台服务已停止");
+            self.status = StatusMessage::error("无法打开观看窗口");
         }
     }
     /// Open a viewer for a host reached directly (§12), logged in or not.
@@ -1038,7 +1025,7 @@ impl DeviceCenterApp {
             .is_err()
         {
             self.viewers.opening.remove(&key);
-            self.status = StatusMessage::error("设备后台服务已停止");
+            self.status = StatusMessage::error("无法打开观看窗口");
         }
     }
     fn prepare_exit(&mut self) {
@@ -1052,7 +1039,7 @@ impl DeviceCenterApp {
         self.exit_pending = self.worker.commands.send(GuiCommand::PrepareExit).is_ok();
         if !self.exit_pending {
             self.exit_requested = false;
-            self.status = StatusMessage::error("后台线程已停止，无法确认被控是否退出");
+            self.status = StatusMessage::error("退出失败");
         }
     }
     fn has_viewers(&self) -> bool {
@@ -1205,10 +1192,10 @@ fn connectability_error(device: &DeviceInfo) -> std::result::Result<(), String> 
         return Err(format!("{} 当前离线", display_alias(device)));
     }
     if !device.controlled_support || !device.controllable {
-        return Err(format!("{} 当前没有开放远程控制", display_alias(device)));
+        return Err(format!("{} 未开放远程控制", display_alias(device)));
     }
     if device.is_shared() && !device.granted(farwing_protocol::caps::VIEW) {
-        return Err(format!("{} 的主人未授予你观看权限", display_alias(device)));
+        return Err(format!("{} 未授予你观看权限", display_alias(device)));
     }
     Ok(())
 }

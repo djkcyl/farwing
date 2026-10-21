@@ -104,7 +104,7 @@ impl DeviceCenterApp {
                     );
                     ui.label(
                         RichText::new(format!(
-                            "{} 没有信任本机，需要它的访问码",
+                            "{} 需要访问码",
                             crate::session::controller::assist_target_label(&pending.id)
                         ))
                         .color(MUTED),
@@ -190,7 +190,7 @@ impl DeviceCenterApp {
                         .add_sized(
                             [380.0, theme::CONTROL_HEIGHT],
                             singleline_input(&mut edit.code)
-                                .hint_text("可选，仅保存在本机")
+                                .hint_text("可选")
                                 .char_limit(256),
                         )
                         .changed();

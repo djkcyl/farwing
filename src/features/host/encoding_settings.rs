@@ -73,7 +73,7 @@ impl EncodingSettings {
         anyhow::ensure!(
             self.mode != EncoderMode::Software
                 || matches!(self.codec, EncoderCodec::Automatic | EncoderCodec::H264),
-            "软件编码仅支持 H.264，请选择自动或 H.264"
+            "软件编码仅支持 H.264"
         );
         Ok(())
     }
@@ -84,10 +84,7 @@ impl EncodingSettings {
             .filter(|capability| self.accepts(capability))
             .cloned()
             .collect();
-        anyhow::ensure!(
-            !selected.is_empty(),
-            "当前屏幕没有符合本机编码设置的可用编码器"
-        );
+        anyhow::ensure!(!selected.is_empty(), "没有符合编码设置的可用编码器");
         Ok(selected)
     }
 }

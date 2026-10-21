@@ -19,9 +19,7 @@ const PACKAGE: Package = Package {
     repair: true,
 };
 #[derive(Debug, thiserror::Error)]
-#[error(
-    "虚拟显示驱动仍有显示器。请先接通其他显示器、结束远程连接并等待兜底屏回收，再更换或卸载驱动"
-)]
+#[error("虚拟显示驱动仍有显示器在使用")]
 pub(crate) struct DriverInUse;
 pub(crate) fn bundled() -> bool {
     PACKAGE.bundled()
@@ -81,7 +79,7 @@ pub(crate) fn uninstall() -> Result<bool> {
     let _serial = super::recovery::Serial::acquire()?;
     let reboot = removal_plan()?.execute()?;
     if !reboot {
-        ensure!(!status()?.removable, "卸载尚未完成，请重新检查驱动状态");
+        ensure!(!status()?.removable, "卸载尚未完成");
     }
     Ok(reboot)
 }

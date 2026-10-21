@@ -241,7 +241,7 @@ impl ConnectionProgressApp {
                         } else if failed {
                             "连接失败"
                         } else if ready {
-                            "连接成功，正在显示画面"
+                            "已连接"
                         } else {
                             match self.current.step {
                                 0..=2 => "正在检查设备状态…",

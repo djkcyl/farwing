@@ -54,7 +54,6 @@ pub(super) fn show(
                     [120.0, theme::CONTROL_HEIGHT],
                     crate::ui::controls::secondary("继续观看"),
                 )
-                .on_hover_text("收起遮罩并停止等待；已发送的修改不会撤回")
                 .clicked()
             {
                 if topology_visible {

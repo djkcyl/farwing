@@ -165,8 +165,7 @@ fn diagnostics_button(
         can_start || state.is_some(),
         size,
         ButtonTone::Normal,
-    )
-    .on_hover_text("获取远端 Farwing 诊断包；点击查看进度和结果");
+    );
     if let Some(state) = state
         && state.busy
         && state.progress.total > 0
@@ -824,7 +823,7 @@ impl DeviceCenterApp {
                         ButtonTone::Normal
                     },
                 )
-                .on_disabled_hover_text("设备需要在线且允许连接")
+                .on_disabled_hover_text("设备离线或不允许连接")
                 .clicked();
             }
             if viewing {

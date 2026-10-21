@@ -139,7 +139,7 @@ pub(super) fn show(ui: &mut Ui, rgb: &mut [u8; 3], opacity: &mut u8) {
         ),
         4.,
     );
-    response.on_hover_text("选择饱和度与明度");
+    response.on_hover_text("饱和度与明度");
 
     let (r, response) = ui.allocate_exact_size(
         vec2(width, theme::ANNOTATION_COLOR_BAR_HEIGHT),
@@ -259,7 +259,7 @@ pub(super) fn show(ui: &mut Ui, rgb: &mut [u8; 3], opacity: &mut u8) {
         "annotation-color-error",
         "颜色格式无效",
         crate::ui::controls::DialogIcon::Error,
-        editor.invalid_hex.then_some("请输入六位十六进制颜色"),
+        editor.invalid_hex.then_some("应为六位十六进制"),
     );
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.;

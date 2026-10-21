@@ -83,7 +83,7 @@ impl Device {
                     if WaitForSingleObject(event.0, 500) != WAIT_OBJECT_0 {
                         let _ = CancelIoEx(self.handle, Some(&overlapped));
                         let _ = GetOverlappedResult(self.handle, &overlapped, &mut count, true);
-                        anyhow::bail!("输入驱动请求超时，未重放输入");
+                        anyhow::bail!("输入驱动请求超时");
                     }
                     GetOverlappedResult(self.handle, &overlapped, &mut count, false)?;
                 }

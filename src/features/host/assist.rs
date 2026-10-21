@@ -136,11 +136,11 @@ impl Settings {
                     && self.code.bytes().all(|b| b.is_ascii_alphanumeric())
                     && self.code.bytes().any(|b| b.is_ascii_alphabetic())
                     && self.code.bytes().any(|b| b.is_ascii_digit())),
-            "临时访问码须为8至32位，且同时包含字母和数字"
+            "临时访问码应为 8–32 位字母和数字组合"
         );
         ensure!(
             self.custom_code.is_empty() || Self::valid_custom_code(&self.custom_code),
-            "固定访问码须为8至16位字母和数字，且同时包含两者"
+            "固定访问码应为 8–16 位字母和数字组合"
         );
         ensure!(
             self.grants.as_ref().is_none_or(|grants| grants
@@ -151,11 +151,11 @@ impl Settings {
         if self.enabled && self.mode.needs_password() {
             ensure!(
                 !self.passwords.random() || !self.code.is_empty(),
-                "请先生成临时访问码"
+                "未生成临时访问码"
             );
             ensure!(
                 !self.passwords.custom() || !self.custom_code.is_empty(),
-                "请先设置固定访问码"
+                "未设置固定访问码"
             );
         }
         Ok(())
@@ -433,16 +433,16 @@ impl Handle {
         {
             let mut state = self.lock();
             if state.snapshot.pending.is_some() {
-                return Decision::Unavailable("对方正在处理另一个连接请求，请稍后再试");
+                return Decision::Unavailable("对方正在处理另一个连接请求");
             }
             if crate::platform::capture::session_locked() != Some(false) {
-                return Decision::Unavailable("对方的电脑已锁定，没有人能确认");
+                return Decision::Unavailable("对方的电脑已锁定");
             }
             if !state
                 .ui_seen
                 .is_some_and(|at| at.elapsed() < Duration::from_secs(3))
             {
-                return Decision::Unavailable("对方没有打开 Farwing 设备中心，无法在那里确认");
+                return Decision::Unavailable("对方未打开 Farwing 设备中心");
             }
             state.snapshot.pending = Some(Confirmation {
                 id: id.clone(),
@@ -590,7 +590,7 @@ impl Handle {
             .as_ref()
             .context("访问码后台未就绪")?
             .try_send(Push::Answer { id, token, allow, trust })
-            .map_err(|_| anyhow::anyhow!("访问码后台忙，请稍后重试"))
+            .map_err(|_| anyhow::anyhow!("访问码后台忙"))
     }
     pub fn refresh(&self) -> Result<()> {
         self.lock()
@@ -598,7 +598,7 @@ impl Handle {
             .as_ref()
             .context("访问码后台未就绪")?
             .try_send(Push::Refresh)
-            .map_err(|_| anyhow::anyhow!("访问码后台忙，请稍后重试"))
+            .map_err(|_| anyhow::anyhow!("访问码后台忙"))
     }
     /// The PAKE key of the assistance request granted to `controller_device`
     /// (at most once, within two minutes of the grant).
@@ -800,8 +800,8 @@ fn report_failure(state: &mut State, error: &anyhow::Error) {
         .map(|e| e.code);
     tracing::warn!(code = ?code, "host assistance request failed");
     state.snapshot.error = Some(match code {
-        Some(code) => format!("连接请求失败（{code}），请重试"),
-        None => "连接请求未完成，请检查网络后重试".into(),
+        Some(code) => format!("连接请求失败（{code}）"),
+        None => "连接请求未完成".into(),
     });
 }
 
@@ -846,7 +846,7 @@ async fn run(client: HostClient, mut rx: mpsc::Receiver<Push>, stop: Cancellatio
                     }
                     Err(_) => {
                         handle.unavailable();
-                        handle.lock().snapshot.error = Some("访问码后台已停止，请重新打开程序".into());
+                        handle.lock().snapshot.error = Some("访问码后台已停止".into());
                         break;
                     }
                 }
@@ -1266,7 +1266,7 @@ async fn run(client: HostClient, mut rx: mpsc::Receiver<Push>, stop: Cancellatio
     while jobs.join_next().await.is_some() {}
 }
 
-const LOCKED_MESSAGE: &str = "多次收到错误的访问码，访问码已暂停 5 分钟";
+const LOCKED_MESSAGE: &str = "访问码错误次数过多，已暂停 5 分钟";
 
 enum Reply {
     Pake(String, AssistPakeReply),

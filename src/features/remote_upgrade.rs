@@ -5,7 +5,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use egui::RichText;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use winit::window::WindowId;
@@ -126,21 +125,12 @@ pub(crate) fn progress_prompt(ctx: &egui::Context, started: Instant) -> bool {
                 theme::REMOTE_UPGRADE_WIDTH.min((ctx.content_rect().width() - 80.0).max(260.0)),
             );
             controls::dialog_header(ui, "被控端正在更新", controls::DialogIcon::Waiting, false);
-            ui.label(RichText::new("正在等待更新完成并恢复画面，请稍候。").color(theme::MUTED));
             ui.add_space(16.0);
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label(format!(
-                    "已等待 {} 秒 · 就绪后自动恢复",
-                    started.elapsed().as_secs()
-                ));
+                ui.label(format!("已等待 {} 秒", started.elapsed().as_secs()));
             });
-            close = controls::update_actions(
-                ui,
-                None,
-                Some(("关闭观看", "仅关闭观看窗口，被控端会继续更新")),
-            )
-            .1;
+            close = controls::update_actions(ui, None, Some(("关闭观看", ""))).1;
         });
     close
 }

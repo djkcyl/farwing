@@ -146,7 +146,7 @@ pub(super) fn local_path(value: &str) -> Result<PathBuf> {
     Ok(result)
 }
 pub(super) fn canonical_dir(p: &Path) -> Result<PathBuf> {
-    ensure!(p.is_absolute(), "请选择完整本地目录");
+    ensure!(p.is_absolute(), "本地目录不是绝对路径");
     ensure!(not_link(p)?.is_dir(), "本地路径不是目录");
     Ok(dunce::canonicalize(p)?)
 }
@@ -193,7 +193,7 @@ pub(super) fn scan(
     let folder = if m.is_dir() {
         source
             .file_name()
-            .context("请选择文件夹而非整个磁盘")?
+            .context("不能传输整个磁盘")?
             .to_str()
             .context("文件夹名称无效")?
             .to_owned()
@@ -250,7 +250,7 @@ pub(super) fn open_source(root: &Path, item: &FileInfo) -> Result<File> {
     let m = f.metadata()?;
     ensure!(
         m.is_file() && m.len() == item.size && item.same_time(modified_ns(&m)),
-        wire::Failure::new(wire::code::CHANGED, "源文件已变化，不能继续原任务")
+        wire::Failure::new(wire::code::CHANGED, "源文件已变化，无法续传")
     );
     Ok(f)
 }
@@ -346,7 +346,7 @@ pub(super) fn plan(
     if let Some(old) = old {
         ensure!(
             old.info.same(item),
-            wire::Failure::new(wire::code::CHANGED, "源文件已变化，不能续传")
+            wire::Failure::new(wire::code::CHANGED, "源文件已变化，无法续传")
         );
         if old.done || old.skipped {
             return Ok(skip(old.clone()));
@@ -657,7 +657,7 @@ impl Store {
         Ok(records)
     }
     pub(super) fn save(&self, r: &[Record]) -> Result<()> {
-        ensure!(r.len() <= 256, "传输记录已满，请清理已完成记录");
+        ensure!(r.len() <= 256, "传输记录已满");
         let b = serde_json::to_vec(r)?;
         ensure!(b.len() <= 64 * 1024 * 1024, "传输记录过大");
         std::fs::create_dir_all(self.0.parent().context("历史路径无效")?)?;

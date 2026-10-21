@@ -48,7 +48,7 @@ function Profile() {
           <Row label="用户名">{auth.me?.username}</Row>
           <Row label="角色">{auth.isAdmin ? <Badge tone="blue">管理员</Badge> : '用户'}</Row>
         </Rows>
-        <Field label="昵称" hint="好友和其他参与者看到的名字">
+        <Field label="昵称">
           <Input value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={64} />
         </Field>
         <div>
@@ -87,7 +87,7 @@ function Password() {
       setOld('');
       setNext('');
       setAgain('');
-      toast('密码已修改，其他设备上的登录已注销');
+      toast('密码已修改，其他登录已注销');
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -127,7 +127,6 @@ function Password() {
             required
           />
         </Field>
-        <p className="small muted">修改后，这个账号在其他电脑与浏览器上的登录都会注销，这个浏览器保持登录。</p>
         <div>
           <Button type="submit" variant="primary" loading={busy}>
             修改密码
@@ -175,28 +174,22 @@ function TwoStep() {
 
   return (
     <Card title="二次验证">
-      <div className="stack">
-        <p className="muted">
-          开启后，在网页上登录需要再输入身份验证器（如 Microsoft Authenticator、Google Authenticator）中的 6
-          位验证码，管理后台只对完成验证的登录开放。客户端登录不受影响。
-        </p>
-        {security.totp ? (
-          <div className="row gap wrap">
-            <Badge tone="green">已开启</Badge>
-            <span className="small muted">剩余 {security.recovery_codes_left} 个恢复码</span>
-            <span className="grow" />
-            <Button variant="danger" onClick={() => setStep('disable')}>
-              关闭二次验证
-            </Button>
-          </div>
-        ) : (
-          <div>
-            <Button variant="primary" icon="lock" onClick={() => setStep('password')}>
-              开启二次验证
-            </Button>
-          </div>
-        )}
-      </div>
+      {security.totp ? (
+        <div className="row gap wrap">
+          <Badge tone="green">已开启</Badge>
+          <span className="small muted">剩余 {security.recovery_codes_left} 个恢复码</span>
+          <span className="grow" />
+          <Button variant="danger" onClick={() => setStep('disable')}>
+            关闭二次验证
+          </Button>
+        </div>
+      ) : (
+        <div>
+          <Button variant="primary" icon="lock" onClick={() => setStep('password')}>
+            开启二次验证
+          </Button>
+        </div>
+      )}
 
       <Dialog
         open={step === 'password' || step === 'scan'}
@@ -253,7 +246,6 @@ function TwoStep() {
         ) : (
           setup && (
             <>
-              <p className="muted">用身份验证器扫描二维码，或手动输入密钥，然后输入它显示的 6 位验证码。</p>
               <div className="row gap wrap" style={{ alignItems: 'flex-start' }}>
                 <QrCode text={setup.uri} />
                 <div className="stack-sm grow">
@@ -288,7 +280,6 @@ function TwoStep() {
           </Button>
         }
       >
-        <p className="muted">二次验证已开启。手机丢失时，可以用下面的恢复码代替验证码登录，每个只能用一次。</p>
         <div className="secret codes">
           {codes.map((c) => (
             <span key={c}>{c}</span>
@@ -297,7 +288,7 @@ function TwoStep() {
         <div>
           <Copy text={codes.join('\n')} display="复制全部" mono={false} />
         </div>
-        <Alert tone="amber">关闭后不会再显示。都丢失时，请其他管理员在后台或命令行重置。</Alert>
+        <Alert tone="amber">只显示这一次</Alert>
       </Dialog>
 
       <Dialog

@@ -180,7 +180,7 @@ impl PreparedLogin {
                 mut permit,
             } => {
                 if !KeyringSessionStore::new()?.save_if_matches(expected.as_ref(), &session)? {
-                    bail!("登录状态已在其他进程中改变，请重新登录");
+                    bail!("登录状态已在其他进程中改变");
                 }
                 *permit = true;
                 Ok(LoginOutcome::New)
@@ -220,7 +220,7 @@ where
             }
             Err(error) => {
                 return Err(Error::new(error))
-                    .context("无法验证保存的登录态；已保留原登录信息");
+                    .context("无法验证保存的登录态");
             }
         }
     }
@@ -255,7 +255,7 @@ where
 fn login_error(error: Error) -> Error {
     match error.downcast_ref::<ApiFailure>().map(|failure| failure.code) {
         Some(ErrorCode::Unauthorized) => anyhow::anyhow!("用户名或密码不正确，或账号已停用"),
-        Some(ErrorCode::RateLimited) => anyhow::anyhow!("登录尝试过于频繁，请稍后再试"),
+        Some(ErrorCode::RateLimited) => anyhow::anyhow!("登录尝试过于频繁"),
         Some(ErrorCode::Network) => error.context("无法连接 Farwing 服务器"),
         _ => error,
     }

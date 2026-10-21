@@ -68,7 +68,7 @@ export function DeviceCard({ device: d, shared }: { device: Device; shared?: boo
             variant="primary"
             icon="play"
             disabled={!!blocker}
-            title={blocker ?? '在浏览器中观看（只看不控）'}
+            title={blocker}
             onClick={() => navigate(`/view/${d.device_id}`)}
           >
             观看

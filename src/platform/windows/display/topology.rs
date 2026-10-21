@@ -288,7 +288,7 @@ impl Topology {
             result.modes.truncate(modes as usize);
             return Ok(result);
         }
-        bail!("显示拓扑正在变化，请稍后重试")
+        bail!("显示拓扑正在变化")
     }
 
     /// Identifies this display configuration: paths, sources, targets, their

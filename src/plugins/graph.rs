@@ -176,10 +176,10 @@ impl Catalog {
                         schema_version: 1,
                         name: name.into(),
                         description: match id {
-                            RAW => "提供远端解码后的原始画面。",
-                            VIDEO => "将连接的画面呈现在观看窗口。",
-                            INPUT => "将插件指令发送到远端；需单独开启控制。",
-                            _ => "将绘制图层叠加到观看画面。",
+                            RAW => "远端解码后的画面",
+                            VIDEO => "输出到观看窗口",
+                            INPUT => "输出到远端，需开启控制",
+                            _ => "叠加到观看画面",
                         }
                         .into(),
                         category: if id == RAW { "输入源" } else { "输出端" }.into(),
@@ -201,17 +201,13 @@ impl Catalog {
             for definition in &manifest.nodes {
                 let mut definition = definition.clone();
                 let (category, description) = match definition.implementation {
-                    sdk::NodeImplementation::VideoShader => {
-                        ("图像处理", "处理输入画面并输出处理后的画面。")
-                    }
-                    sdk::NodeImplementation::FrameAnalysis => {
-                        ("画面分析", "分析输入画面并输出分析结果。")
-                    }
+                    sdk::NodeImplementation::VideoShader => ("图像处理", "处理画面"),
+                    sdk::NodeImplementation::FrameAnalysis => ("画面分析", "分析画面"),
                     sdk::NodeImplementation::Overlay | sdk::NodeImplementation::SceneSource => {
-                        ("绘制", "将绘制指令转换为叠加图层。")
+                        ("绘制", "生成叠加图层")
                     }
                     sdk::NodeImplementation::DetectionControl => {
-                        ("输入控制", "将检测结果转换为远端输入指令。")
+                        ("输入控制", "检测结果转为输入指令")
                     }
                 };
                 if definition.description.is_empty() {
@@ -796,7 +792,7 @@ pub(crate) fn compile(
             .nodes
             .iter()
             .filter(|n| !visited.contains(&n.id))
-            .map(|n| format!("{} 未连接到输出，不会执行", n.name))
+            .map(|n| format!("{} 未连接到输出", n.name))
             .collect();
         Ok(Compiled {
             document: document.clone(),

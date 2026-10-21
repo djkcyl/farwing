@@ -96,11 +96,11 @@ async fn run(
     options: ConnectionMediaOptions,
     job: &Job,
 ) -> Result<Snapshot> {
-    let list = tokio::select! {_=job.cancel.cancelled()=>anyhow::bail!("已取消获取远端诊断包"),list=client.list_devices()=>list.context("暂时无法读取设备状态，请重试")?};
+    let list = tokio::select! {_=job.cancel.cancelled()=>anyhow::bail!("已取消获取远端诊断包"),list=client.list_devices()=>list.context("暂时无法读取设备状态")?};
     let target = list.with_capability(&device.device_id, farwing_protocol::caps::DIAGNOSTICS)?;
     target
         .validated_device_id()
-        .context("设备信息无效，请刷新设备列表")?;
+        .context("设备信息无效")?;
     ensure!(
         target.platform == farwing_protocol::Platform::Windows
             && target.device_id != client.device_id()
@@ -113,8 +113,8 @@ async fn run(
     let connection =
         ControllerConnection::connect_files(client, target, policy, options, &job.cancel)
             .await
-            .context("连接设备失败，请检查网络后重试")?;
-    lock(&job.view).progress.stage = "连接已建立，等待远端回应…".into();
+            .context("连接设备失败")?;
+    lock(&job.view).progress.stage = "等待远端响应…".into();
     let wire = connection.stream_control_handle().diagnostics().clone();
     let mut started = false;
     let result = collect(&wire, job, &mut started).await;
@@ -142,20 +142,20 @@ async fn collect(wire: &Controller, job: &Job, started: &mut bool) -> Result<Sna
         _=job.cancel.cancelled()=>anyhow::bail!("已取消获取远端诊断包"),
         ready=tokio::time::timeout(Duration::from_secs(15),async {
             loop {
-                ensure!(!wire.is_closed(), "诊断连接已关闭，请重试");
+                ensure!(!wire.is_closed(), "诊断连接已关闭");
                 let view=wire.snapshot();
                 if view.supported {ensure!(view.allowed,"远端未允许账号内文件访问");return Ok::<_,anyhow::Error>(());}
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
-        })=>ready.map_err(|_| anyhow::anyhow!("远端未响应诊断请求，请重试或确认对端支持此功能"))??,
+        })=>ready.map_err(|_| anyhow::anyhow!("远端未响应诊断请求"))??,
     }
-    wire.start().context("无法开始获取诊断包，请重试")?;
+    wire.start().context("无法开始获取诊断包")?;
     *started = true;
     loop {
         let snapshot = wire.snapshot();
         if !snapshot.busy {
             if let Some(error) = &snapshot.error {
-                return Err(anyhow::anyhow!(error.clone()).context("诊断包获取未完成，请重试"));
+                return Err(anyhow::anyhow!(error.clone()).context("诊断包获取未完成"));
             }
             ensure!(snapshot.path.is_some(), "远端诊断包未完成");
             return Ok(snapshot);

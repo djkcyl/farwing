@@ -95,7 +95,7 @@ impl Task {
                 REMOTE_EXPORTING
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok(),
-                "远端正在生成诊断包，请稍后重试"
+                "远端正在生成诊断包"
             );
             Some(RemotePermit)
         } else {

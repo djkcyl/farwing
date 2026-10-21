@@ -165,7 +165,7 @@ impl Transport {
         self.wake();
     }
     fn ready(&self) -> Result<()> {
-        ensure!(self.supported(), "被控端尚未就绪或不支持当前文件传输协议");
+        ensure!(self.supported(), "被控端未就绪或不支持文件传输");
         ensure!(self.allowed(), "被控端已关闭文件传输权限");
         Ok(())
     }
@@ -254,7 +254,7 @@ impl Transport {
             fault: Mutex::new(None),
         });
         let mut streams = lock(&self.streams);
-        ensure!(streams.len() < 64, "文件任务过多，请等待当前任务完成");
+        ensure!(streams.len() < 64, "文件任务过多");
         let id = loop {
             let id = self.transfers.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
             if id != 0 && !streams.contains_key(&id) {

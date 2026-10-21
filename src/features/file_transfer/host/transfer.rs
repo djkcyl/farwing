@@ -200,7 +200,7 @@ fn prepare_upload(store: &Arc<Store>, upload: &wire::Upload) -> Result<Prepared>
         match record.files.iter().find(|f| f.rel_path == item.rel_path) {
             Some(known) => ensure!(
                 known.same(item),
-                Failure::new(code::CHANGED, "源文件已变化，不能续传")
+                Failure::new(code::CHANGED, "源文件已变化，无法续传")
             ),
             None => record.files.push(item.clone()),
         }

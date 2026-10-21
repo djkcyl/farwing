@@ -130,20 +130,19 @@ struct Record {
 
 impl Record {
     fn decode(bytes: &[u8]) -> Result<Self> {
-        let record: Self = serde_json::from_slice(bytes).map_err(|error| {
-            anyhow::anyhow!("已保存的画面设置格式无效，请重新应用画质设置：{error}")
-        })?;
+        let record: Self = serde_json::from_slice(bytes)
+            .map_err(|error| anyhow::anyhow!("已保存的画面设置格式无效：{error}"))?;
         record.validate()?;
         Ok(record)
     }
 
     fn validate(&self) -> Result<()> {
-        anyhow::ensure!(self.schema == 1, "画面设置版本不受支持，请重新应用画质设置");
+        anyhow::ensure!(self.schema == 1, "画面设置版本不受支持");
         anyhow::ensure!(
             self.settings.is_none_or(|settings| {
                 (1..=MAX_CUSTOM_BITRATE_MBPS).contains(&settings.custom_bitrate_mbps)
             }) && (1..=6).contains(&self.auto_frame_quality),
-            "已保存的画面设置数值无效，请重新应用画质设置"
+            "已保存的画面设置数值无效"
         );
         Ok(())
     }

@@ -45,7 +45,7 @@ impl PowerProgress {
             self.message = match self.action {
                 PowerAction::Wake => "设备已上线",
                 PowerAction::Shutdown => "设备已离线",
-                PowerAction::Reboot => "已观察到设备离线后重新上线",
+                PowerAction::Reboot => "设备已重新上线",
             }
             .into();
         }
@@ -66,9 +66,9 @@ impl DeviceCenterApp {
             .get(&device.device_id)
             .is_some_and(|p| p.waiting)
         {
-            anyhow::bail!("正在等待该设备的电源操作结果");
+            anyhow::bail!("正在等待电源操作结果");
         }
-        let catalog = self.catalog.as_ref().context("等待完整设备清单")?;
+        let catalog = self.catalog.as_ref().context("设备列表未就绪")?;
         if device.device_id == catalog.groups.current_device_id
             || !catalog
                 .groups
@@ -76,7 +76,7 @@ impl DeviceCenterApp {
                 .iter()
                 .any(|d| d.device_id == device.device_id)
         {
-            anyhow::bail!("仅支持本账号绑定的远端电脑");
+            anyhow::bail!("仅支持本账号的电脑");
         }
         action.check(device, &catalog.features)
     }
@@ -124,9 +124,9 @@ impl DeviceCenterApp {
             if progress.waiting && progress.elapsed() >= 120 {
                 progress.waiting = false;
                 progress.message = match progress.action {
-                    PowerAction::Wake => "等待超时，尚未确认上线；请检查远端电源及唤醒条件",
-                    PowerAction::Shutdown => "等待超时，尚未确认设备离线；请检查远端状态",
-                    PowerAction::Reboot => "尚未确认离线再上线，不能据此判定重启成功或失败",
+                    PowerAction::Wake => "等待超时，未确认上线",
+                    PowerAction::Shutdown => "等待超时，未确认离线",
+                    PowerAction::Reboot => "等待超时，未确认重启",
                 }
                 .into();
             }

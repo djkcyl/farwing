@@ -176,11 +176,11 @@ impl DisplayChanges {
                 );
                 tracing::warn!(screen_id = id, sequence = pending.sequence, %reason,
                     "display request ended without full confirmation; observing later reports");
-                format!("{reason}。尚未收到后续屏幕状态，这里保留的是上次上报值。")
+                reason
             }
             None => {
                 self.observations.remove(&id);
-                "远端上报已达到所选显示设置".into()
+                "显示设置已生效".into()
             }
         };
         self.status.insert(
@@ -217,15 +217,13 @@ impl DisplayChanges {
                 .dpi
                 .is_none_or(|dpi| dpi == screen.display.current_dpi);
             let actual = match (mode_matches, dpi_matches) {
-                (true, true) => "最新上报已达到所选值",
-                (true, false) if observation.resolution.is_some() => {
-                    "最新上报分辨率已达到所选值，DPI未达到所选值"
-                }
-                _ => "已收到新的屏幕状态，尚未完整达到所选值",
+                (true, true) => "已达到所选值",
+                (true, false) if observation.resolution.is_some() => "DPI 未达到所选值",
+                _ => "未完全达到所选值",
             };
             if let Some(status) = self.status.get_mut(id) {
                 status.awaiting_report = false;
-                let message = format!("{}。{actual}。", observation.reason);
+                let message = format!("{}；{actual}", observation.reason);
                 if status.message != message {
                     tracing::info!(
                         screen_id = *id,
@@ -255,9 +253,9 @@ impl DisplayChanges {
                     .requested_dpi
                     .is_none_or(|dpi| dpi == screen.display.current_dpi);
             let message = if matches {
-                "远端上报已达到所选显示设置"
+                "显示设置已生效"
             } else {
-                "远端显示状态已有新变化，当前值已更新"
+                "远端显示状态已变化"
             };
             if status.message != message {
                 status.message = message.into();
@@ -334,7 +332,7 @@ impl DisplayChanges {
                     Step::Dpi(dpi) => screen.display.current_dpi == dpi,
                 }
             });
-            let error = (!reached).then(|| "被控在 10 秒内没有上报新的屏幕状态".to_owned());
+            let error = (!reached).then(|| "等待屏幕状态超时".to_owned());
             self.finish(*id, &pending, error);
         }
         !expired.is_empty()
@@ -351,10 +349,7 @@ fn resolve(
     choice: DisplayResolution,
 ) -> Result<(RemoteDisplayMode, i32)> {
     let (mode, kind) = expand_resolution(info, choice)?;
-    anyhow::ensure!(
-        info.modes.contains(&mode),
-        "此分辨率不受支持，需要确认切换超级屏"
-    );
+    anyhow::ensure!(info.modes.contains(&mode), "此分辨率需切换到超级屏");
     Ok((mode, kind))
 }
 
@@ -392,7 +387,7 @@ fn validate_dpi(state: &StreamControlState, info: &RemoteDisplayInfo, dpi: u32) 
         state.peer.has(crate::protocol::peer::feature::DISPLAY_CONFIG),
         "对端未开放DPI设置"
     );
-    anyhow::ensure!(info.dpis.contains(&dpi), "此DPI已不在远端当前支持列表中");
+    anyhow::ensure!(info.dpis.contains(&dpi), "远端不支持此 DPI");
     Ok(())
 }
 
@@ -431,14 +426,14 @@ impl StreamControlHandle {
     ) -> Result<()> {
         let mut state = lock(&self.shared);
         ensure_ready(&state)?;
-        anyhow::ensure!(supported(&state), "目前仅支持Windows被控端显示设置");
+        anyhow::ensure!(supported(&state), "显示设置仅支持 Windows 被控端");
         anyhow::ensure!(
             request.resolution.is_some() || request.dpi.is_some(),
-            "请选择要修改的显示设置"
+            "未选择显示设置"
         );
         anyhow::ensure!(
             request.resolution.is_none() || request.dpi.is_none(),
-            "分辨率与 DPI 需分别应用"
+            "分辨率与 DPI 不能同时修改"
         );
         let screen = state
             .screens

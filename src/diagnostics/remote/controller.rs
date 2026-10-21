@@ -237,7 +237,7 @@ async fn download(
     while !(last && ready.is_some()) {
         let incoming = tokio::time::timeout(TIMEOUT, inbox.recv())
             .await
-            .map_err(|_| anyhow::anyhow!("远端未响应诊断请求，请重试"))?
+            .map_err(|_| anyhow::anyhow!("远端未响应诊断请求"))?
             .ok_or_else(|| anyhow::anyhow!("诊断连接已关闭"))?;
         match incoming {
             Incoming::Message(Received::Push(Body::Progress(progress))) if progress.stream == stream => {

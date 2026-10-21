@@ -111,9 +111,7 @@ pub(crate) fn annotation_header(
             egui::FontId::proportional(theme::COMPACT_TEXT),
             theme::TEXT,
         );
-        let response = response
-            .on_hover_cursor(egui::CursorIcon::Grab)
-            .on_hover_text("拖动调整面板位置");
+        let response = response.on_hover_cursor(egui::CursorIcon::Grab);
         if response.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         }
@@ -130,15 +128,8 @@ pub(crate) fn annotation_header(
             })
             .inner
             .clicked();
-        end = ink_button(
-            ui,
-            AnnotationIcon::Exit,
-            false,
-            "结束批注并清除笔迹与白板",
-            height,
-        )
-        .clicked();
-        close = close_button(ui, "收起面板，仍可继续批注", height).clicked();
+        end = ink_button(ui, AnnotationIcon::Exit, false, "结束批注", height).clicked();
+        close = close_button(ui, "收起面板", height).clicked();
         response
     });
     (row.inner, close, undo, redo, end)
@@ -158,9 +149,9 @@ pub(crate) fn annotation_clear_dialog(ctx: &egui::Context, uncertain: bool) -> O
             ui.add(
                 egui::Label::new(
                     RichText::new(if uncertain {
-                        "清除全部批注并恢复桌面。"
+                        "将清除全部批注并恢复桌面"
                     } else {
-                        "清除本次连接的全部笔迹，白板背景将保留。"
+                        "将清除本次连接的全部笔迹"
                     })
                     .size(theme::BODY)
                     .color(theme::MUTED),

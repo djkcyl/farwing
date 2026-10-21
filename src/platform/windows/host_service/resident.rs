@@ -417,10 +417,7 @@ fn control_connection(
                     }
                 }
                 request => {
-                    ensure!(
-                        !paused.load(Ordering::Acquire),
-                        "被控后台已退出，请重新打开程序"
-                    );
+                    ensure!(!paused.load(Ordering::Acquire), "被控后台已退出");
                     if forward
                         .as_ref()
                         .is_some_and(|(_, pipe)| pipe.queued_bytes().is_err())
@@ -489,7 +486,7 @@ fn wait_for_session(
         }
         ensure!(
             started.elapsed() < Duration::from_secs(10),
-            "等待本机被控后台就绪超时，请检查服务状态"
+            "等待被控后台就绪超时"
         );
         waited = true;
         // Poll readiness only: no RPC has been sent, and no side effect is replayed.
@@ -866,13 +863,13 @@ async fn run_authorized_account(
                                     current.host.assistance.act(action)?;
                                     Ok(Reply::Done)
                                 },
-                                Request::RefreshWol => {ensure!(!current.is_guest(), "请先登录");current.host.wol.refresh();Ok(Reply::Done)},
+                                Request::RefreshWol => {ensure!(!current.is_guest(), "未登录");current.host.wol.refresh();Ok(Reply::Done)},
                                 Request::WolSetup { account: expected, action } => {
                                     ensure!(expected == account && !current.is_guest(), "账号已改变或未登录");
                                     current.host.wol_setup.act(action)?;
                                     Ok(Reply::Done)
                                 },
-                                Request::RefreshPublication => {ensure!(!current.is_guest(), "请先登录");crate::account::reporting::REFRESH.notify_one();Ok(Reply::Done)},
+                                Request::RefreshPublication => {ensure!(!current.is_guest(), "未登录");crate::account::reporting::REFRESH.notify_one();Ok(Reply::Done)},
                                 Request::Settings {
                                     account: expected,
                                     allowed,

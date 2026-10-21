@@ -73,7 +73,7 @@ impl Watcher {
                         && sender
                             .try_send(Update {
                                 revision: String::new(),
-                                result: Err("此图尚未发布，请在编辑器中点击应用".into()),
+                                result: Err("此图尚未应用".into()),
                             })
                             .is_ok()
                     {

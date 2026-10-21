@@ -244,12 +244,12 @@ impl AnnotationUi {
                             ui.spacing_mut().item_spacing.x = theme::ANNOTATION_TOOL_GAP;
                             ui.horizontal(|ui| {
                                 for (tool, name) in [
-                                    (Tool::Pen, "画笔 · 右键整笔擦除"),
-                                    (Tool::Laser, "激光笔 · 移动指示，停下自动消退"),
-                                    (Tool::Line, "直线 · Shift 水平/垂直/45°对齐"),
-                                    (Tool::Arrow, "箭头 · Shift 水平/垂直/45°对齐"),
-                                    (Tool::Rectangle, "矩形 · Shift 绘制正方形"),
-                                    (Tool::Ellipse, "椭圆 · Shift 绘制正圆"),
+                                    (Tool::Pen, "画笔"),
+                                    (Tool::Laser, "激光笔"),
+                                    (Tool::Line, "直线"),
+                                    (Tool::Arrow, "箭头"),
+                                    (Tool::Rectangle, "矩形"),
+                                    (Tool::Ellipse, "椭圆"),
                                     (Tool::Eraser, "整笔擦除"),
                                 ] {
                                     if controls::annotation_tool_button(
@@ -288,7 +288,7 @@ impl AnnotationUi {
                                                 ui,
                                                 Tool::Clear,
                                                 false,
-                                                "清空全部屏幕批注",
+                                                "清空批注",
                                             )
                                         })
                                         .inner

@@ -138,7 +138,7 @@ pub(crate) fn describe(code: i32) -> String {
         code::EXISTS => "目标名称已经存在",
         code::NO_SPACE => "磁盘空间不足",
         code::IO => "文件读写失败",
-        code::BUSY => "被控端忙，请稍后再试",
+        code::BUSY => "被控端忙",
         code::CHANGED => "文件已变化或无法续传",
         code::CANCELLED => "已取消",
         _ => return format!("文件操作失败（{code}）"),

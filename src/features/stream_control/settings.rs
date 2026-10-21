@@ -179,7 +179,7 @@ impl StreamControlHandle {
             if matches!(settings.quality, StreamQuality::Custom)
                 && !custom_bitrate_supported(&state)
             {
-                bail!("被控端不支持运行时自定义码率");
+                bail!("被控端不支持自定义码率");
             }
             anyhow::ensure!(
                 settings.quality != StreamQuality::Custom
@@ -260,7 +260,7 @@ impl StreamControlHandle {
 
                 StreamControlProtocol::Negotiating => bail!("PB 特性协商尚未完成"),
                 StreamControlProtocol::Unsupported => {
-                    bail!("对端不支持当前串流协议（需要CaptureSetting RPC）")
+                    bail!("对端不支持当前串流协议")
                 }
             };
             state.next_sequence = state.next_sequence.wrapping_add(1);
@@ -345,7 +345,7 @@ pub(super) fn prepare_initial_capture_sync(
     let active_protocol = protocol(state);
     if matches!(state.settings.quality, StreamQuality::Custom) && !custom_bitrate_supported(&state)
     {
-        bail!("新连接的被控端不支持自定义码率，不能恢复该选择");
+        bail!("被控端不支持自定义码率");
     }
     if (state.settings.hdr || state.settings.true_color) && state.capability.is_none() {
         return Ok(None);
@@ -370,8 +370,7 @@ pub(super) fn prepare_initial_capture_sync(
                 settings.true_color = color;
                 settings.hdr = hdr;
                 set_requested_settings(state, settings)?;
-                state.last_notice =
-                    Some("当前设备组合无法恢复原色彩/HDR选择，本次连接已使用可用模式".into());
+                state.last_notice = Some("无法恢复原色彩/HDR 设置".into());
             }
         }
     }
@@ -383,10 +382,7 @@ pub(super) fn prepare_initial_capture_sync(
             requested,
         );
         if selected.result != 0 {
-            bail!(
-                "双端没有可用的所选色彩视频格式（协商结果{}）",
-                selected.result
-            );
+            bail!("双方设备不支持所选色彩格式（{}）", selected.result);
         }
         if !matches!(requested, 0 | 5) && selected.max_frame_quality < requested {
             let mut settings = state.settings;
@@ -395,10 +391,7 @@ pub(super) fn prepare_initial_capture_sync(
                     anyhow!("invalid negotiated quality {}", selected.max_frame_quality)
                 })?;
             set_requested_settings(state, settings)?;
-            state.last_notice = Some(format!(
-                "初始画质按双端能力调整为{}",
-                settings.quality.label()
-            ));
+            state.last_notice = Some(format!("画质已调整为{}", settings.quality.label()));
         }
         apply_codec_limits(state, selected);
     }
@@ -485,7 +478,7 @@ pub(super) fn validate_format(
         || (!matches!(requested, 0 | 5) && selected.max_frame_quality < requested)
     {
         bail!(
-            "双端能力不支持此色彩下的{}（最高能力档位{}，结果{}）",
+            "双方设备不支持此色彩下的{}（最高档位{}，结果{}）",
             quality.label(),
             selected.max_frame_quality,
             selected.result
@@ -507,13 +500,13 @@ pub(super) fn ensure_hdr_displays(state: &StreamControlState) -> Result<()> {
         cap.remote_display_info
             .iter()
             .any(|display| display.hdr == 0),
-        "请先在被控端支持 HDR 的屏幕上开启 Windows HDR"
+        "被控端未开启 Windows HDR"
     );
     anyhow::ensure!(
         cap.local_display_info
             .iter()
             .any(|display| display.hdr == 0),
-        "请先在本机支持 HDR 的屏幕上开启 Windows HDR"
+        "本机未开启 Windows HDR"
     );
     Ok(())
 }
@@ -723,7 +716,7 @@ pub(super) fn apply_capture_setting_response(
                 }
             }
             CAPTURE_RESULT_FPS_ADJUSTED => notices.push(format!(
-                "远端屏幕刷新率低于请求档位，串流已按屏幕能力降档（{}）",
+                "远端屏幕刷新率较低，帧率已降档（{}）",
                 format_pb_error(error)
             )),
             _ => failures.push(format_pb_error(error)),

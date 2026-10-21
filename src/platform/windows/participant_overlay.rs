@@ -231,10 +231,7 @@ pub(crate) struct Overlay {
 }
 impl Overlay {
     pub fn new() -> Result<Self> {
-        ensure!(
-            capture_exclusion(),
-            "当前系统版本无法从远程画面中排除参与者指针"
-        );
+        ensure!(capture_exclusion(), "当前系统不支持从画面中排除指针");
         let runtime = Runtime::new()?;
         static CLASS_REGISTERED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         ensure!(
@@ -423,7 +420,7 @@ impl Surface {
             // Before the window is ever shown: the host's own video must not
             // carry it, or participants would see these pointers twice.
             SetWindowDisplayAffinity(surface.hwnd, WDA_EXCLUDEFROMCAPTURE)
-                .context("无法从远程画面中排除参与者指针")?;
+                .context("无法从画面中排除参与者指针")?;
             surface.dc = CreateCompatibleDC(None);
             ensure!(!surface.dc.0.is_null(), "创建参与者指针DC失败");
         }

@@ -82,7 +82,7 @@ export default function DeviceDetail({ params }: { params: Record<string, string
                   if (
                     await confirm({
                       title: '从账号移除',
-                      message: `${d.alias} 将退出这个账号，需要重新登录才能再出现在设备列表中。`,
+                      message: `${d.alias} 将退出这个账号。`,
                       confirm: '移除',
                       danger: true,
                     })
@@ -134,13 +134,13 @@ export default function DeviceDetail({ params }: { params: Record<string, string
           </Card>
         ) : (
           <Card title="硬件">
-            <Empty icon="info" title={own ? '设备没有上报硬件信息' : '只有设备主人可以看到硬件信息'} />
+            <Empty icon="info" title={own ? '暂无硬件信息' : '仅设备主人可见'} />
           </Card>
         )}
       </div>
       <Card title="正在连接" pad={false}>
         {!device || device.participants.length === 0 ? (
-          <Empty icon="users" title="现在没有人连接这台设备" />
+          <Empty icon="users" title="没有人在连接" />
         ) : (
           <div className="list">
             {device.participants.map((p) => (

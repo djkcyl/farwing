@@ -207,7 +207,7 @@ impl StreamControlHandle {
         if !state.pb_connected {
             // Stop retrying only. Without a HELLO response no feature level is
             // negotiated, so no stream-control protocol is selected.
-            state.last_error = Some("对端握手超时；画面继续播放，串流设置尚未就绪".to_owned());
+            state.last_error = Some("对端握手超时".to_owned());
         }
     }
 
@@ -387,14 +387,10 @@ impl StreamControlHandle {
                 state.annotation.disconnect();
             }
             kind::SESSION_SWITCH => {
-                state.remote_notice = Some((
-                    Instant::now(),
-                    "被控端系统会话发生变化，画面会有短暂卡顿，请稍候".into(),
-                ));
+                state.remote_notice = Some((Instant::now(), "被控端系统会话已切换".into()));
             }
             kind::RESTARTING | kind::SLEEPING | kind::SHUTTING_DOWN => {
-                state.remote_notice =
-                    Some((Instant::now(), "被控端即将离线，恢复后会自动重新连接".into()));
+                state.remote_notice = Some((Instant::now(), "被控端即将离线".into()));
             }
             kind::DISPLAY_CHANGING => {
                 let message = event.message.trim();
@@ -456,7 +452,7 @@ impl StreamControlHandle {
             );
             handshake_changed = true;
             state.last_error = (protocol(&state) == StreamControlProtocol::Unsupported)
-                .then(|| "对端不支持当前串流协议（需要串流设置 RPC）".into());
+                .then(|| "对端不支持当前串流协议".into());
             tracing::info!(
                 features = hello.features.len(),
                 protocol = protocol(&state).label(),

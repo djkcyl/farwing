@@ -62,7 +62,7 @@ impl AuthenticatedClient {
                     Ok(Some(saved)) => device.saved_code = saved.code,
                     Ok(None) => {}
                     Err(_) => {
-                        lists.code_error = Some("无法读取本机保存的访问码，可手动输入后连接".into())
+                        lists.code_error = Some("无法读取本机保存的访问码".into())
                     }
                 }
             }
@@ -169,7 +169,7 @@ impl AuthenticatedClient {
         {
             return Ok(saved);
         }
-        bail!("收藏未确认保存，请刷新后检查设备 ID")
+        bail!("收藏未确认保存")
     }
     pub(crate) async fn delete_assist_saved(
         &self,
@@ -201,7 +201,7 @@ impl AuthenticatedClient {
                 .iter()
                 .any(|d| d.publisher_device_id == publisher_id)
             {
-                bail!("删除结果未确认，请刷新检查；未自动重复提交");
+                bail!("删除结果未确认");
             }
         }
         self.remove_unused_assist_codes(removed).await
@@ -216,7 +216,7 @@ impl AuthenticatedClient {
                 return Err(error);
             }
             if !self.assist_saved(SavedKind::Recent).await?.is_empty() {
-                bail!("清空结果未确认，请刷新检查；未自动重复提交");
+                bail!("清空结果未确认");
             }
         }
         self.remove_unused_assist_codes(previous).await

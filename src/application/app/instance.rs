@@ -206,7 +206,7 @@ fn exit_message() -> u32 {
     })
 }
 pub(crate) fn reserve_installer() -> Result<Instance> {
-    acquire_named(INSTALLER.pcwstr())?.context("已有安装或卸载窗口，请先完成该操作")
+    acquire_named(INSTALLER.pcwstr())?.context("已有安装或卸载窗口")
 }
 pub(crate) fn reserve_update() -> Result<Instance> {
     acquire_named(UPDATING.pcwstr())?.context("已有程序更新正在进行")
@@ -270,15 +270,15 @@ fn running_image(expected: &std::path::Path) -> Result<Option<Running>> {
         }
         anyhow::ensure!(
             process::session(pid)? == session && vault::sid(pid)? == sid,
-            "运行版本不属于当前Windows用户会话"
+            "运行版本不属于当前 Windows 用户会话"
         );
-        anyhow::ensure!(found.is_none(), "检测到多个控制中心，暂不能进行更新");
+        anyhow::ensure!(found.is_none(), "检测到多个控制中心");
         // Pin the process handle and verify the HWND still belongs to it.
         let mut current = 0;
         unsafe {
             GetWindowThreadProcessId(window, Some(&mut current));
         }
-        anyhow::ensure!(current == pid, "运行程序已变化，请重试更新");
+        anyhow::ensure!(current == pid, "运行程序已变化");
         found = Some(Running {
             window,
             process: pinned,
@@ -333,7 +333,7 @@ impl Running {
         if !unsafe { IsWindow(Some(self.window)) }.as_bool() {
             anyhow::ensure!(
                 unsafe { WaitForSingleObject(self.process.0, 45_000) } == WAIT_OBJECT_0,
-                "等待运行版本完成退出超时，更新未开始"
+                "等待旧版本退出超时"
             );
             return Ok(());
         }
@@ -353,9 +353,9 @@ impl Running {
                 )
             }
             .0 != 0,
-            "运行版本未响应退出请求，更新未开始"
+            "旧版本未响应退出请求"
         );
-        anyhow::ensure!(reply != 2, "运行版本正在处理组件操作，暂不能更新");
+        anyhow::ensure!(reply != 2, "旧版本正在处理组件操作");
         if reply == 0 {
             // Existing builds predate ExitForUpdate. Their current winit owner
             // accepts this registered destroy request and runs the application's
@@ -368,7 +368,7 @@ impl Running {
         }
         anyhow::ensure!(
             unsafe { WaitForSingleObject(self.process.0, 45_000) } == WAIT_OBJECT_0,
-            "等待运行版本完成退出超时，更新未开始"
+            "等待旧版本退出超时"
         );
         Ok(())
     }

@@ -235,13 +235,12 @@ impl Screens {
             let Some((index, original)) = candidate else {
                 return Ok(());
             };
-            self.lease
-                .update(true, true, "没有可用普通显示器，正在准备常驻虚拟屏…");
+            self.lease.update(true, true, "正在准备常驻虚拟屏…");
             let Some(fallback) = self
                 .displays
                 .ensure_fallback(original.clone())
                 .await
-                .context("无屏兜底无法建立；请检查虚拟显示驱动或重新连接显示器")?
+                .context("无法建立常驻虚拟屏")?
             else {
                 return Ok(());
             };

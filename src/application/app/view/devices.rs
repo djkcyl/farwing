@@ -116,7 +116,7 @@ impl DeviceCenterApp {
             let width = (ui.available_width() - 182.0).max(140.0);
             ui.add_sized(
                 [width, 36.0],
-                singleline_input(&mut state.search).hint_text("搜索设备名称、ID、系统或版本"),
+                singleline_input(&mut state.search).hint_text("搜索设备"),
             );
             if ui
                 .add_enabled(!state.search.is_empty(), egui::Button::new("清除"))
@@ -280,7 +280,7 @@ impl DeviceCenterApp {
         ui.painter().text(
             title.right_center() + vec2(8.0, 0.0),
             egui::Align2::LEFT_CENTER,
-            format!("{} 台 · 改名或移除请进入详情", devices.len()),
+            format!("{} 台", devices.len()),
             FontId::proportional(crate::ui::theme::SMALL),
             MUTED,
         );

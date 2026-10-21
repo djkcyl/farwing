@@ -155,7 +155,7 @@ export async function fetchBlob(path: string): Promise<Blob> {
 /// A short message for a failed request.
 export function errorText(error: unknown): string {
   if (error instanceof ApiError) {
-    if (error.code === 'rate_limited') return error.message || '操作太频繁，请稍后再试';
+    if (error.code === 'rate_limited') return error.message || '操作太频繁';
     return error.message || `请求失败（${error.status}）`;
   }
   if (error instanceof TypeError) return '无法连接服务器';

@@ -454,10 +454,10 @@ impl Shared {
             let now = std::time::Instant::now();
             limits.declined.retain(|_, at| now.duration_since(*at) < PAIRING_DECLINED);
             if limits.declined.contains_key(&hello.device_id) {
-                return Err(refuse(ErrorCode::RateLimited, "对方刚拒绝过配对，请稍后再试"));
+                return Err(refuse(ErrorCode::RateLimited, "对方刚拒绝过配对"));
             }
             if limits.last.is_some_and(|at| now.duration_since(at) < PAIRING_SPACING) {
-                return Err(refuse(ErrorCode::RateLimited, "配对请求太频繁，请稍后再试"));
+                return Err(refuse(ErrorCode::RateLimited, "配对请求太频繁"));
             }
             limits.last = Some(now);
         }
@@ -598,7 +598,7 @@ impl Shared {
         }
         Err(refuse(
             ErrorCode::Forbidden,
-            "对方没有信任这台设备：请输入对方的访问码，或请对方确认",
+            "对方没有信任这台设备",
         ))
     }
 
@@ -641,7 +641,7 @@ impl Shared {
             return Err(refuse(ErrorCode::AssistUnavailable, "对方没有开启访问码"));
         }
         if assistance.locked() {
-            return Err(refuse(ErrorCode::RateLimited, "多次输入错误的访问码，请 5 分钟后再试"));
+            return Err(refuse(ErrorCode::RateLimited, "访问码错误次数过多，已锁定 5 分钟"));
         }
         let mut key = None;
         if settings.mode.needs_password() {

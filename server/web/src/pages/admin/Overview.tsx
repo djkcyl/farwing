@@ -74,7 +74,7 @@ export default function AdminOverview() {
         </Card>
         <Card title="最近的事件" actions={<Link to="/admin/audit">全部</Link>} pad={false}>
           {data.recent.length === 0 ? (
-            <Empty icon="log" title="还没有事件" />
+            <Empty icon="log" title="暂无事件" />
           ) : (
             <div className="list">
               {data.recent.map((e) => (

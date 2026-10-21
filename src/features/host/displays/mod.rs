@@ -628,7 +628,7 @@ impl State {
         }
         self.fallback_pin
             .as_ref()
-            .context("常驻无屏显示需要安装或更新虚拟显示驱动")
+            .context("常驻虚拟屏需要安装或更新虚拟显示驱动")
     }
     fn enter_super(
         &mut self,

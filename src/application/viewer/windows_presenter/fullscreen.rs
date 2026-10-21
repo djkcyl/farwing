@@ -126,12 +126,12 @@ fn floating_width(ctx: &egui::Context) -> f32 {
 fn show_hint(ctx: &egui::Context, top: f32) {
     let fullscreen = viewer_shortcuts::label(Action::Fullscreen);
     let release = viewer_shortcuts::label(Action::ReleaseMouse);
-    let mut text = String::from("已进入全屏 · 鼠标移至顶部横条可展开操作栏并退出全屏");
+    let mut text = String::from("已进入全屏");
     if fullscreen != "未绑定" {
         text.push_str(&format!("\n退出全屏：{fullscreen}"));
     }
     if release != "未绑定" {
-        text.push_str(&format!("\n游戏鼠标锁定时，先按 {release} 释放键鼠"));
+        text.push_str(&format!("\n退出键鼠控制：{release}"));
     }
     // Paint only: this reminder must never intercept desktop input or focus.
     let painter = ctx.layer_painter(egui::LayerId::new(

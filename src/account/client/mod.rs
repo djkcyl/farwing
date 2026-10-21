@@ -24,7 +24,7 @@ const GUEST_USER: &str = "guest";
 
 impl std::fmt::Display for NoSavedSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("尚未登录当前 Farwing 服务器；请先在客户端登录，或运行 `Farwing login`")
+        f.write_str("尚未登录当前 Farwing 服务器")
     }
 }
 impl std::error::Error for NoSavedSession {}
@@ -665,7 +665,7 @@ impl AuthenticatedClient {
 
     pub async fn revoke_auth_session(&self, device_id: &str) -> Result<()> {
         if device_id == self.device_id() {
-            bail!("本机登录请使用退出登录");
+            bail!("不能移除本机登录");
         }
         self.request(|api| async move { api.revoke_auth_session(device_id).await })
             .await
@@ -702,7 +702,7 @@ impl AuthenticatedClient {
     ) -> Result<(String, String)> {
         let groups = self.device_groups().await?;
         if !groups.entries().any(|(_, d)| d.device_id == id) {
-            bail!("设备已不在本账号绑定列表中，未发送改名请求");
+            bail!("设备已不在本账号中");
         }
         let result = self
             .request(|api| async move { api.rename_device(id, alias).await })
@@ -732,7 +732,7 @@ impl AuthenticatedClient {
                         .err()
                         .map(|e| format!("{e:#}"))
                         .unwrap_or_else(|| "返回的设备 ID 不匹配".into());
-                    bail!("改名结果未确认，未自动重试：{error}。请刷新检查当前名称");
+                    bail!("改名结果未确认：{error}");
                 }
             }
         };
@@ -749,7 +749,7 @@ impl AuthenticatedClient {
 
     pub(crate) async fn remove_account_device(&self, id: &str) -> Result<String> {
         if id == self.device_id() {
-            bail!("移除本机设备请使用退出登录，以完成本地会话清理");
+            bail!("不能移除本机设备");
         }
         let present = self
             .device_groups()
@@ -757,7 +757,7 @@ impl AuthenticatedClient {
             .entries()
             .any(|(_, d)| d.device_id == id);
         if !present {
-            bail!("设备或所有权已变化，未发送移除请求，请刷新列表");
+            bail!("设备或所有权已变化");
         }
         let result = self
             .request(|api| async move { api.remove_device(id).await })
@@ -771,7 +771,7 @@ impl AuthenticatedClient {
                 .await
                 .map(|g| !g.entries().any(|(_, d)| d.device_id == id));
             if !matches!(absent, Ok(true)) {
-                bail!("移除结果未确认，未自动重试：{error:#}。请刷新列表检查");
+                bail!("移除结果未确认：{error:#}");
             }
         }
         Ok("设备已移除".into())
@@ -786,18 +786,18 @@ impl AuthenticatedClient {
         let id = expected.validated_device_id()?;
         let groups = self.device_groups().await?;
         if id == self.device_id() || id == groups.current_device_id {
-            bail!("本机设备不支持电源操作，未发送请求");
+            bail!("本机设备不支持电源操作");
         }
         let device = groups
             .desktop_devices
             .iter()
             .find(|d| d.device_id == id)
-            .context("设备或所有权已变化，未发送电源请求，请刷新列表")?;
+            .context("设备或所有权已变化")?;
         if device.alias != expected.alias || device.platform != expected.platform {
-            bail!("设备名称或平台已变化，请刷新后重新确认目标");
+            bail!("设备名称或平台已变化");
         }
         if device.participant_count() > expected.participant_count() {
-            bail!("该设备新增了远控连接，请刷新后重新确认影响");
+            bail!("该设备新增了远控连接");
         }
         action.check(device, &self.features)?;
         // One user decision produces one request; a lost acknowledgement is
@@ -827,7 +827,7 @@ impl AuthenticatedClient {
                 Err(error.context(format!("{}请求被服务端拒绝", action.label())))
             }
             Err(error) => bail!(
-                "{}结果未确认，未自动重试；请先检查设备状态：{error:#}",
+                "{}结果未确认：{error:#}",
                 action.label()
             ),
         }
@@ -872,7 +872,7 @@ fn retry_later(error: &anyhow::Error) -> bool {
 fn unreachable_error() -> anyhow::Error {
     ApiFailure::new(
         crate::account::api::ErrorCode::Network,
-        "暂时连不上 Farwing 服务器，连上后自动刷新",
+        "暂时连不上 Farwing 服务器",
     )
     .into()
 }

@@ -228,8 +228,8 @@ impl DeviceCenterApp {
         {
             self.login_form.submitting = false;
             self.sync_login_running();
-            self.login_form.status = "登录服务不可用".into();
-            self.login_form.error = Some("设备后台服务已经停止".into());
+            self.login_form.status = "登录失败".into();
+            self.login_form.error = Some("登录请求发送失败".into());
         }
     }
 
@@ -254,7 +254,7 @@ impl DeviceCenterApp {
             .is_err()
         {
             self.login_form.saving_server = false;
-            self.login_form.error = Some("设备后台服务已经停止".into());
+            self.login_form.error = Some("保存服务器失败".into());
         }
     }
 

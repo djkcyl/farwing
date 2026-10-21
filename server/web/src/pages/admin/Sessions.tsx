@@ -12,13 +12,13 @@ export default function Sessions() {
 
   return (
     <div className="stack">
-      <PageHeader title="会话" subtitle="正在进行或正在建立的远程会话，每 3 秒刷新。" />
+      <PageHeader title="会话" />
       {error && <Alert>{error}</Alert>}
       <Card pad={false}>
         {!data ? (
           <Loading />
         ) : data.length === 0 ? (
-          <Empty icon="activity" title="没有进行中的会话" />
+          <Empty icon="activity" title="暂无会话" />
         ) : (
           <div className="table-wrap">
             <table className="table">

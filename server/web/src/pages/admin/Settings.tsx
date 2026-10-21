@@ -42,7 +42,7 @@ function Form({ initial, onSaved }: { initial: RuntimeSettings; onSaved(): void 
         instance_name: form.instance_name.trim(),
         bitrate_limit_mbps: bitrate ? Number(bitrate) : null,
       });
-      toast('设置已保存，立即生效');
+      toast('设置已保存');
       onSaved();
       void auth.refresh();
     } catch (err) {
@@ -63,14 +63,14 @@ function Form({ initial, onSaved }: { initial: RuntimeSettings; onSaved(): void 
     >
       <div className="stack">
         {error && <Alert>{error}</Alert>}
-        <Field label="实例名称" hint="显示在客户端的服务器信息与网页标题中">
+        <Field label="实例名称">
           <Input
             value={form.instance_name}
             onChange={(e) => setForm({ ...form, instance_name: e.target.value })}
             maxLength={64}
           />
         </Field>
-        <Field label="码率上限（Mbit/s）" hint="留空为不限；新会话生效">
+        <Field label="码率上限（Mbit/s）">
           <Input
             type="number"
             min={1}
@@ -80,17 +80,11 @@ function Form({ initial, onSaved }: { initial: RuntimeSettings; onSaved(): void 
             placeholder="不限"
           />
         </Field>
-        <Switch
-          checked={form.guests}
-          onChange={(v) => setForm({ ...form, guests: v })}
-          label="游客功能"
-          hint="未登录账号的设备可以被控（短号 + 访问码）和用短号连接，网页访客观看也需要它"
-        />
+        <Switch checked={form.guests} onChange={(v) => setForm({ ...form, guests: v })} label="游客功能" />
         <Switch
           checked={form.registration}
           onChange={(v) => setForm({ ...form, registration: v })}
           label="邀请码注册"
-          hint="持有邀请码的人可以在网页上自行注册账号"
         />
         <div className="field" role="group" aria-labelledby="web-caps-label">
           <span className="field-label" id="web-caps-label">
@@ -112,9 +106,6 @@ function Form({ initial, onSaved }: { initial: RuntimeSettings; onSaved(): void 
               />
             ))}
           </div>
-          <span className="field-hint">
-            在授权范围内，浏览器最多能做这些；不勾选的项即使对方授权了也不可用。只勾“观看画面”和“接收声音”即只看不控。对之后建立的连接生效
-          </span>
         </div>
       </div>
     </Card>
@@ -129,11 +120,8 @@ export default function Settings() {
     <div className="stack">
       <PageHeader title="服务器设置" />
       <Form key={JSON.stringify(data.runtime)} initial={data.runtime} onSaved={() => void reload()} />
-      <Card title="配置文件">
+      <Card title="配置文件（只读）">
         <div className="stack">
-          <Alert tone="blue">
-            以下内容来自 farwing-server.toml，只读。修改需要编辑配置文件并重启服务器；密钥不会显示。
-          </Alert>
           {SECTIONS.map(([key, title]) => {
             const section = (key ? config[key] : config) as Record<string, unknown> | undefined;
             if (!section) return null;

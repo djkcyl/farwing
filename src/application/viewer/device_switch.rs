@@ -72,7 +72,7 @@ impl DeviceSwitcher {
             .is_err()
         {
             state.switching = false;
-            state.error = Some("连接已结束，请重新打开观看窗口".into());
+            state.error = Some("连接已结束".into());
         }
     }
 
@@ -113,7 +113,7 @@ impl DeviceSwitcher {
                     state.devices.dedup_by(|a, b| a.device_id == b.device_id);
                 }
                 Ok(Err(error)) => state.error = Some(format!("获取设备失败：{error}")),
-                Err(_) => state.error = Some("获取设备超时，请重试".into()),
+                Err(_) => state.error = Some("获取设备超时".into()),
             }
             ctx.request_repaint();
         });

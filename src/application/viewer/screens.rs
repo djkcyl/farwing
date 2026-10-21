@@ -257,7 +257,7 @@ impl ScreenPlayback {
             }
         })
         .await
-        .map_err(|_| anyhow!("显示器未返回视频，请重试"))??;
+        .map_err(|_| anyhow!("显示器未返回视频"))??;
         if generation.is_some() {
             self.capture_lock.lock().await.remove(&screen_id);
         }

@@ -241,7 +241,7 @@ impl Defaults {
             {
                 ensure!(
                     Record::load(&path)?.roles.is_empty(),
-                    "其他Windows用户仍有音频设备待恢复，请完成恢复后再清除数据"
+                    "其他 Windows 用户的音频设备尚未恢复"
                 );
             }
         }
@@ -311,7 +311,7 @@ impl Defaults {
                 }
                 ensure!(
                     std::time::Instant::now() < deadline,
-                    "虚拟音频端点未完成初始化，请检查Windows音频服务"
+                    "虚拟音频端点初始化超时"
                 );
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
@@ -373,7 +373,7 @@ impl Defaults {
         if let Some((speakers, microphone)) = selection {
             ensure!(
                 roles.len() == 3 * (usize::from(speakers) + usize::from(microphone)),
-                "当前用户没有完整的默认音频设备，无法安全临时切换"
+                "当前用户的默认音频设备不完整"
             );
         }
         let record = Record { roles };

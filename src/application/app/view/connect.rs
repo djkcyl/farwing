@@ -30,7 +30,7 @@ fn parse_target(text: &str) -> Result<Target, String> {
     }
     crate::transport::direct::Target::parse(text)
         .map(|target| Target::Address(target.to_string()))
-        .map_err(|_| "无法识别：请输入 16 位设备 ID、9 位短号，或 IP / 主机名".into())
+        .map_err(|_| "无法识别的设备 ID、短号或地址".into())
 }
 
 fn detail(ui: &mut egui::Ui, text: &str) {
@@ -98,7 +98,9 @@ pub(super) fn empty_card(ui: &mut egui::Ui, title: &str, hint: &str) {
     cards::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(RichText::new(title).strong());
-        detail(ui, hint);
+        if !hint.is_empty() {
+            detail(ui, hint);
+        }
     });
 }
 
@@ -134,7 +136,7 @@ impl DeviceCenterApp {
         cards::page_header(
             ui,
             "设备",
-            "输入设备 ID、短号或地址连接，或从下面选择。能直连时直连，否则经服务器。",
+            "",
             |ui| {
                 self.active_view(ui);
                 let busy = match tab {
@@ -169,21 +171,9 @@ impl DeviceCenterApp {
                 DeviceTab::Recent => self.request_assist_refresh(),
             }
         }
-        self.connect_bar(ui, access);
+        self.connect_bar(ui);
         if self.cached_devices {
-            let saved = self
-                .devices
-                .as_ref()
-                .is_some_and(|d| !d.devices.is_empty() || !d.shared.is_empty());
-            cards::banner(
-                ui,
-                if saved {
-                    "暂时连不上服务器：先显示上次的设备列表，连上后自动刷新。局域网中的设备仍可以在“附近”中直接连接。"
-                } else {
-                    "暂时连不上服务器：连上后自动显示设备列表。局域网中的设备仍可以在“附近”中直接连接。"
-                },
-                Tone::Warning,
-            );
+            cards::banner(ui, "暂时连不上服务器", Tone::Warning);
         }
         if let Some((message, _)) = &self.direct.message {
             cards::banner(ui, message, Tone::Success);
@@ -233,11 +223,6 @@ impl DeviceCenterApp {
                 match cards::locked(
                     ui,
                     if friends { "登录后查看好友共享的设备" } else { "登录后查看你的设备" },
-                    if friends {
-                        "好友把设备共享给你后，会出现在这里。未登录时，也可以输入对方的设备 ID 或短号，用访问码连接。"
-                    } else {
-                        "登录账号后，这里会列出账号下的电脑，点一下即可连接。未登录时，可以在“附近”中连接同一网络的设备，或输入设备 ID、短号、地址。"
-                    },
                     &[self.sign_in_label(), "附近的设备"],
                 ) {
                     Some(0) => self.sign_in(),
@@ -288,7 +273,7 @@ impl DeviceCenterApp {
     }
 
     /// One field for every way of addressing a device.
-    fn connect_bar(&mut self, ui: &mut egui::Ui, access: Access) {
+    fn connect_bar(&mut self, ui: &mut egui::Ui) {
         let mut connect = false;
         let parsed = parse_target(&self.direct.target);
         cards::card().show(ui, |ui| {
@@ -298,7 +283,7 @@ impl DeviceCenterApp {
                 let response = ui.add_sized(
                     [width, crate::ui::controls::HEIGHT],
                     singleline_input(&mut self.direct.target)
-                        .hint_text("设备 ID、9 位短号，或 IP / 主机名"),
+                        .hint_text("设备 ID、短号或地址"),
                 );
                 if response.changed() {
                     self.direct.error = None;
@@ -335,17 +320,11 @@ impl DeviceCenterApp {
                 ui.add_space(8.0);
                 ui.checkbox(&mut self.direct.ask, "不用访问码，请对方确认");
             });
-            let hint = match &parsed {
-                Err(_) if self.direct.target.trim().is_empty() => "对方信任本机、或是本账号与好友的设备时，不需要访问码；其他设备需要对方的访问码，或由对方确认。".to_owned(),
-                Err(error) => error.clone(),
-                Ok(Target::Address(_)) => "地址：局域网或公网直连，默认端口 28890。".into(),
-                Ok(Target::ShortNumber(_)) if access == Access::NoServer => {
-                    "短号需要服务器；没有服务器时，请输入对方的地址或在“附近”中选择。".into()
-                }
-                Ok(Target::ShortNumber(_)) => "短号：经服务器连接，按对方的设置验证。".into(),
-                Ok(Target::DeviceId(id)) => self.route_hint(id, access),
-            };
-            detail(ui, &hint);
+            if let Err(error) = &parsed
+                && !self.direct.target.trim().is_empty()
+            {
+                detail(ui, error);
+            }
         });
         if connect {
             let (target, code, ask) = (
@@ -355,29 +334,6 @@ impl DeviceCenterApp {
             );
             self.direct.code.clear();
             self.connect_target(&target, &code, ask);
-        }
-    }
-
-    /// How a device ID typed in the connect bar would be reached.
-    fn route_hint(&self, id: &str, access: Access) -> String {
-        let text = crate::account::api::device_id_text(id);
-        if let Some(list) = &self.devices {
-            if list.devices.iter().any(|d| d.device_id == id) {
-                return format!("{text}：本账号的设备，经账号连接。");
-            }
-            if list.shared.iter().any(|d| d.device_id == id) {
-                return format!("{text}：好友共享的设备，经账号连接。");
-            }
-        }
-        if self.direct.nearby().iter().any(|h| h.announce.device_id == id) {
-            return format!("{text}：在局域网中，直连。");
-        }
-        if access != Access::NoServer {
-            return format!("{text}：经服务器请求连接；对方信任本机时无需访问码。");
-        }
-        match store::known_host(id).filter(|h| !h.address.is_empty()) {
-            Some(host) => format!("{text}：直连上次的地址 {}。", host.address),
-            None => format!("{text}：没有服务器，也不在附近；请输入对方的地址。"),
         }
     }
 
@@ -398,8 +354,7 @@ impl DeviceCenterApp {
             }
             Ok(Target::ShortNumber(number)) => {
                 if self.access() == Access::NoServer {
-                    self.direct.error =
-                        Some("短号需要服务器。没有服务器时，请输入对方的地址，或在“附近”中选择。".into());
+                    self.direct.error = Some("没有服务器，不能用短号连接".into());
                 } else {
                     self.direct.error = None;
                     self.request_assist_connect(number, code.to_owned());
@@ -440,7 +395,7 @@ impl DeviceCenterApp {
             Some(host) => self.connect_address(&host.address, code, ask, Some(&host.name)),
             None => {
                 self.direct.error = Some(format!(
-                    "找不到设备 {}：没有服务器时，请在“附近”中选择，或输入对方的地址。",
+                    "找不到设备 {}",
                     crate::account::api::device_id_text(id)
                 ))
             }
@@ -472,9 +427,7 @@ impl DeviceCenterApp {
         self.direct.code.clear();
         self.direct.ask = false;
         self.direct.focus_code = true;
-        self.direct.note(format!(
-            "请输入 {name} 的访问码再点“连接”，或勾选“不用访问码，请对方确认”"
-        ));
+        self.direct.note(format!("{name} 需要访问码"));
     }
 
     fn friend_devices_tab(&mut self, ui: &mut egui::Ui) {
@@ -484,11 +437,7 @@ impl DeviceCenterApp {
             .map(|list| list.shared.clone())
             .unwrap_or_default();
         if shared.is_empty() {
-            empty_card(
-                ui,
-                "还没有好友共享的设备",
-                "好友在“好友”页把设备共享给你后，会出现在这里，并按 TA 给你的权限连接。",
-            );
+            empty_card(ui, "还没有好友共享的设备", "");
             return;
         }
         // Grouped by owner; owners and their devices by name, then ID.
@@ -512,7 +461,7 @@ impl DeviceCenterApp {
             cards::section_heading(ui, &format!("{owner} 共享"), Some(devices.len()), |_| {});
             for device in &devices {
                 if nearby.iter().any(|h| h.announce.device_id == device.device_id) {
-                    cards::chip(ui, "在局域网中，可直连", GREEN);
+                    cards::chip(ui, "在局域网中", GREEN);
                 }
                 if let Some(action) = self.friend_device_row(ui, device) {
                     picked = Some((device.device_id.clone(), action));
@@ -535,28 +484,19 @@ impl DeviceCenterApp {
             (lan.scanning && lan.found.is_none(), lan.error.clone())
         };
         let found = self.direct.nearby();
-        ui.horizontal(|ui| {
-            if first_scan {
+        if first_scan {
+            ui.horizontal(|ui| {
                 ui.spinner();
                 detail(ui, "正在查找局域网中的设备…");
-            } else if found.is_empty() {
-                // The empty list says what the other side needs.
-                detail(ui, "自动查找局域网中的设备");
-            } else {
-                detail(ui, "自动查找局域网中的设备 · 对方需要开启“允许连接”和“局域网发现”");
-            }
-        });
-        ui.add_space(6.0);
+            });
+            ui.add_space(6.0);
+        }
         if let Some(error) = error {
             cards::banner(ui, &error, Tone::Warning);
         }
         if found.is_empty() {
             if !first_scan {
-                empty_card(
-                    ui,
-                    "附近没有发现设备",
-                    "对方需要开启“允许连接”和“局域网发现”。不同网段、访客网络或开启了设备隔离的 Wi-Fi 中可能发现不了，可以在上方直接输入对方的地址。",
-                );
+                empty_card(ui, "附近没有发现设备", "");
             }
             return;
         }
@@ -638,27 +578,14 @@ impl DeviceCenterApp {
                         // It takes friends' keys directly (also while the
                         // server cannot be reached); otherwise through it.
                         let direct = methods(farwing_protocol::direct::method::FRIEND);
-                        if ui
-                            .add(primary("连接"))
-                            .on_hover_text(if direct {
-                                "在局域网中直连，按好友给你的权限"
-                            } else {
-                                "经账号连接，按好友给你的权限"
-                            })
-                            .clicked()
-                        {
+                        if ui.add(primary("连接")).clicked() {
                             picked = Some(if direct {
                                 Pick::Key(target.clone(), announce.name.clone())
                             } else {
                                 Pick::Server(device.device_id.clone())
                             });
                         }
-                    } else if ui
-                        .add_enabled(accepts_code, primary("连接"))
-                        .on_hover_text("输入对方的访问码，或请对方确认")
-                        .on_disabled_hover_text("对方没有开启访问码：可以先配对")
-                        .clicked()
-                    {
+                    } else if ui.add_enabled(accepts_code, primary("连接")).clicked() {
                         picked = Some(Pick::Code(target.clone(), announce.name.clone()));
                     }
                     if !own_device
@@ -666,7 +593,6 @@ impl DeviceCenterApp {
                         && !paired
                         && ui
                             .add_enabled(!pairing, crate::ui::controls::secondary("配对"))
-                            .on_hover_text("两台设备互相信任：以后互相连接都无需访问码或确认")
                             .clicked()
                     {
                         // Two devices may share a name: show which one.
@@ -716,7 +642,7 @@ impl DeviceCenterApp {
         };
         match outcome {
             Ok(host) => {
-                let done = format!("已与 {} 配对：以后双方互相连接都无需访问码或确认", host.name);
+                let done = format!("已与 {} 配对", host.name);
                 self.direct.perform(
                     ctx,
                     self.host.as_ref(),
@@ -764,9 +690,9 @@ impl DeviceCenterApp {
                             detail(
                                 ui,
                                 if agreed {
-                                    "已确认，等待对方在其电脑上点“配对”…"
+                                    "等待对方确认…"
                                 } else {
-                                    "核对对方电脑上显示的配对码与此相同，再在两台电脑上都点“配对”。配对码不同时请取消。"
+                                    "确认对方显示相同的配对码"
                                 },
                             );
                         }
@@ -825,7 +751,7 @@ impl DeviceCenterApp {
                     } else {
                         "还没有收藏"
                     },
-                    "收藏常用设备的短号（可以同时在本机保存它的访问码），下次一键连接。",
+                    "",
                 );
             }
             let mut favorites = lists.favorites.clone();
@@ -939,11 +865,7 @@ impl DeviceCenterApp {
             self.assist.delete_prompt = Some(DeletePrompt::Recent);
         }
         if rows.is_empty() {
-            empty_card(
-                ui,
-                "还没有连接记录",
-                "用设备 ID、短号或地址连接成功后，设备会出现在这里。对方信任本机后，再连接无需访问码。",
-            );
+            empty_card(ui, "还没有连接记录", "");
             return;
         }
         enum Pick {
@@ -990,7 +912,6 @@ impl DeviceCenterApp {
                 }
                 if ui
                     .add_enabled(available, crate::ui::controls::secondary("删除"))
-                    .on_hover_text("删除这条记录（不影响对方是否信任本机）")
                     .clicked()
                 {
                     action = Some(1);

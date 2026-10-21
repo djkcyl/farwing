@@ -126,10 +126,9 @@ struct NegotiationProgress {
 
 #[derive(Clone, Debug)]
 pub(crate) enum NegotiationEvent {
-    OfferCreated { sdp_bytes: usize },
     OfferSent,
     LocalCandidateSent { count: usize },
-    AnswerInstalled { sdp_bytes: usize },
+    AnswerInstalled,
     RemoteCandidateInstalled { count: usize },
     Connected,
 }
@@ -536,12 +535,6 @@ impl SignalSession {
         let mut progress = NegotiationProgress::default();
         let offer = peer.create_offer().await?;
         tracing::debug!(sdp_bytes = offer.len(), "sending WebRTC offer");
-        report_negotiation(
-            reporter,
-            NegotiationEvent::OfferCreated {
-                sdp_bytes: offer.len(),
-            },
-        );
         self.generation = 1;
         self.transport
             .send(self.rtc_offer(info, offer, false, network::ALL)?)?;
@@ -717,14 +710,13 @@ impl SignalSession {
                                     continue;
                                 }
                                 tracing::debug!(restart_ice, sdp_bytes = sdp.len(), "installing remote WebRTC answer");
-                                let sdp_bytes = sdp.len();
                                 if let Err(error) = peer.set_remote_answer(sdp, restart_ice).await {
                                     tracing::warn!(%error, "remote answer rejected; awaiting a valid answer or peer deadline");
                                     continue;
                                 }
                                 answer_installed = true;
                                 progress.answer_installed = true;
-                                report_negotiation(reporter, NegotiationEvent::AnswerInstalled { sdp_bytes });
+                                report_negotiation(reporter, NegotiationEvent::AnswerInstalled);
                             }
                             Some(RemoteRtc::Candidate(candidate)) if answer_installed => {
                                 if let Err(error) = self.install_remote_candidate(peer, candidate).await {
@@ -878,7 +870,7 @@ impl SignalSession {
                     let info = control.as_ref().expect("manual switch session");
                     let network = network_control.as_ref().expect("manual switch state");
                     if !peer.can_switch_ice_network() || !self.transport.is_connected() {
-                        network.fail("当前连接尚未就绪，无法切换线路");
+                        network.fail("无法切换线路：连接尚未就绪");
                         continue;
                     }
                     if info.force_relay && !relay {
@@ -898,7 +890,7 @@ impl SignalSession {
                         }
                         Err(error) => {
                             tracing::warn!(%error, relay, "manual network switch failed; retaining current path");
-                            network.fail("线路切换未完成，可稍后重试");
+                            network.fail("线路切换未完成");
                         }
                     }
                 }

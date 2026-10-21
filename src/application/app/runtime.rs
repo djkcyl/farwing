@@ -36,7 +36,7 @@ impl GuiWorker {
                 Ok(runtime) => runtime,
                 Err(error) => {
                     let _ = event_sender
-                        .send(GuiEvent::Error(format!("无法启动 GUI 后台服务：{error}")));
+                        .send(GuiEvent::Error(format!("启动失败：{error}")));
                     return;
                 }
             };
@@ -108,14 +108,14 @@ pub(super) async fn gui_worker_loop(
         )
         .await
         {
-            let _ = events.send(GuiEvent::Warning(format!("后台启动失败：{error:#}")));
+            let _ = events.send(GuiEvent::Warning(format!("后台服务启动失败：{error:#}")));
         }
     }
     let device_runtime = match crate::session::device_session::DeviceRuntime::start() {
         Ok(runtime) => runtime,
         Err(error) => {
             let _ = events.send(GuiEvent::SessionUnavailable(format!(
-                "无法打开本机设备身份：{error:#}"
+                "无法读取本机身份：{error:#}"
             )));
             return;
         }
@@ -286,7 +286,7 @@ pub(super) async fn gui_worker_loop(
                                     background,
                                 )
                             })
-                            .ok_or_else(|| "请先登录".to_owned())
+                            .ok_or_else(|| "未登录".to_owned())
                     } else {
                         Err("账号状态已改变".into())
                     };
@@ -371,7 +371,7 @@ pub(super) async fn gui_worker_loop(
                     } else {
                         let _ = events.send(GuiEvent::Friends(
                             generation,
-                            Err("请先登录".into()),
+                            Err("未登录".into()),
                         ));
                     }
                 }
@@ -404,7 +404,7 @@ pub(super) async fn gui_worker_loop(
                         let _ = events.send(GuiEvent::AssistOperation(
                             generation,
                             sequence,
-                            Err("当前无法连接，请稍后再试".into()),
+                            Err("当前无法连接".into()),
                         ));
                     } else if let Some(client) = acting {
                         assist_operation_is_query = operation.is_query();
@@ -432,7 +432,7 @@ pub(super) async fn gui_worker_loop(
                     {
                         let _ = events.send(GuiEvent::MutationFinished(
                             generation,
-                            Err("当前无法执行设备操作，未发送请求".into()),
+                            Err("当前无法执行设备操作".into()),
                         ));
                     } else if let Some(client) = &client {
                         let client = Arc::clone(client);
@@ -590,7 +590,7 @@ pub(super) async fn gui_worker_loop(
                     } else {
                         let _ = events.send(GuiEvent::LoggedOut(
                             crate::account::client::LogoutOutcome {
-                                remote_error: Some("没有可用账号会话，未发送服务端退出请求".into()),
+                                remote_error: Some("无账号会话".into()),
                                 local_error: None,
                             },
                         ));
@@ -715,8 +715,8 @@ pub(super) async fn gui_worker_loop(
                 Err(error) => {
                     let _ =
                         events.send(GuiEvent::LoggedOut(crate::account::client::LogoutOutcome {
-                            remote_error: Some(format!("退出后台任务异常：{error}")),
-                            local_error: Some("后台退出未完成，凭据删除结果未知".into()),
+                            remote_error: Some(format!("退出任务异常：{error}")),
+                            local_error: Some(format!("退出任务异常：{error}")),
                         }));
                 }
             }
@@ -762,7 +762,7 @@ pub(super) async fn gui_worker_loop(
             client = None;
             allow_load = false;
             let _ = events.send(GuiEvent::AccountEnded(
-                "本机设备的账号会话已结束，正在关闭观看连接；请重新登录".into(),
+                "账号会话已结束".into(),
             ));
             stop_active_signal(&mut host_signal).await;
         }
@@ -879,7 +879,7 @@ pub(super) async fn gui_worker_loop(
                         .unwrap_or_else(|error| Err(error.into()))
                     {
                         let _ = events.send(GuiEvent::Warning(format!(
-                            "本机媒体能力检查失败：{error:#}；连接时将重新检查"
+                            "媒体能力检查失败：{error:#}"
                         )));
                     }
                     media_ready = Some(catalog_generation);
@@ -935,7 +935,7 @@ pub(super) async fn gui_worker_loop(
                     allow_load = false;
                     tracing::warn!(%error, "saved account restoration failed");
                     let _ = events.send(GuiEvent::SessionUnavailable(format!(
-                        "登录恢复未完成，凭据已保留，可点击登录重试：{error:#}"
+                        "登录恢复失败：{error:#}"
                     )));
                     device_sync.reset().await;
                     client = None;
@@ -945,7 +945,7 @@ pub(super) async fn gui_worker_loop(
                     continue;
                 }
                 let _ = events.send(GuiEvent::Warning(format!(
-                    "设备同步失败：{error:#}；可手动刷新重试"
+                    "设备同步失败：{error:#}"
                 )));
             }
             let away = active_client.server_unreachable();

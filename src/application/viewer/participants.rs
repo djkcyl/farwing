@@ -167,10 +167,7 @@ pub(super) fn paint_turn_hint(ctx: &egui::Context, control: &StreamControlHandle
         .layer_painter(egui::LayerId::background())
         .with_clip_rect(picture);
     let galley = painter.layout(
-        format!(
-            "{} 正在控制，你的键鼠输入不会生效",
-            display_name(&holder.nickname)
-        ),
+        format!("{} 正在控制", display_name(&holder.nickname)),
         FontId::proportional(theme::SMALL),
         theme::TEXT,
         (picture.width() - 64.0).max(1.0),

@@ -394,7 +394,7 @@ impl Clipboard {
         let Value::Offer(offer, formats) = self.0.wait(epoch, id, waiter)? else {
             bail!("剪贴板响应类型错误");
         };
-        ensure!(!formats.is_empty(), "被控剪贴板为空，或内容格式不受支持");
+        ensure!(!formats.is_empty(), "被控剪贴板为空或格式不受支持");
         let count = formats.len();
         self.0.apply_offer(epoch, offer, formats, true)?;
         Ok(count)
@@ -1038,7 +1038,7 @@ impl Inner {
             }
             if lock(&waiter.progress).elapsed() >= REQUEST_STALL_TIMEOUT {
                 tracing::warn!(id, "remote clipboard request stalled; giving up");
-                return Err(give_up("远端剪贴板 30 秒内没有响应，已取消"));
+                return Err(give_up("远端剪贴板响应超时"));
             }
             if matches!(self.backend, Backend::Native) {
                 native::pump();

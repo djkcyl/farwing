@@ -35,12 +35,12 @@ const WHOLE_TRANSFER = 0xffffffff;
 
 const ERRORS: Record<number, string> = {
   1: '传输协议出错',
-  2: '对方不允许文件传输（没有权限，或对方关闭了文件传输）',
+  2: '对方不允许文件传输',
   3: '文件或文件夹不存在',
   4: '目标已存在',
   5: '对方磁盘空间不足',
   6: '读写文件失败',
-  7: '对方暂时无法处理（可能没有已登录的用户），请稍后再试',
+  7: '对方暂时无法处理',
   8: '文件在传输过程中被修改',
   9: '已取消',
 };
@@ -629,7 +629,7 @@ export async function saveTarget(name: string, size: number): Promise<DownloadSi
       // Not allowed here: fall back to memory.
     }
   }
-  if (size > MEMORY_LIMIT) throw new FileError(6, '这个浏览器只能下载 1 GB 以内的文件，请使用 Chrome 或 Edge');
+  if (size > MEMORY_LIMIT) throw new FileError(6, '这个浏览器只能下载 1 GB 以内的文件');
   const parts: Uint8Array[] = [];
   return {
     write: async (data) => {
@@ -687,7 +687,7 @@ export function zipTarget(folder: string): DownloadTarget {
     },
     write: async (data) => {
       size += data.length;
-      if (size > MEMORY_LIMIT) throw new Error('这个浏览器只能下载 1 GB 以内的文件夹，请使用 Chrome 或 Edge');
+      if (size > MEMORY_LIMIT) throw new Error('这个浏览器只能下载 1 GB 以内的文件夹');
       zip.write(data);
     },
     finish: async () => zip.end(),
@@ -720,7 +720,7 @@ export async function saveFolderTarget(folder: string, size: number): Promise<Do
       // Not allowed here: fall back to a ZIP.
     }
   }
-  if (size > MEMORY_LIMIT) throw new FileError(6, '这个浏览器只能下载 1 GB 以内的文件夹，请使用 Chrome 或 Edge');
+  if (size > MEMORY_LIMIT) throw new FileError(6, '这个浏览器只能下载 1 GB 以内的文件夹');
   return zipTarget(safeName(folder));
 }
 

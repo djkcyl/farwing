@@ -696,7 +696,7 @@ impl Handle {
         }
     }
     pub(crate) fn wol_setup_action(&self, action: super::wol::setup::Action) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.guest && lock(&self.ownership).active, "请先登录");
+        anyhow::ensure!(!self.guest && lock(&self.ownership).active, "未登录");
         use crate::platform::windows::host_service::resident;
         if resident::managed() {
             resident::call(resident::Request::WolSetup {
@@ -720,7 +720,7 @@ impl Handle {
         let mut s = lock(&self.ownership);
         anyhow::ensure!(
             s.active && (!allowed || !self.guest),
-            "当前账号不可启用局域网唤醒协助"
+            "当前账号不可启用唤醒协助"
         );
         if s.wol != allowed {
             s.wol = allowed;
@@ -770,7 +770,7 @@ impl Handle {
             "远程电源许可已撤销"
         );
         state.power_executing = true;
-        state.status.power_message = Some("正在结束连接并执行电源操作…".into());
+        state.status.power_message = Some("正在执行电源操作…".into());
         Ok(())
     }
     pub(crate) fn power_result(&self, result: Result<(), String>) {
@@ -1549,7 +1549,7 @@ impl Lease {
     pub(crate) fn peer_lease(&self) -> anyhow::Result<SessionLease> {
         let mut state = lock(&self.handle.ownership);
         anyhow::ensure!(self.current(&state), "本次被控许可已失效");
-        anyhow::ensure!(!state.updating, "被控端正在更新，请稍后重新连接");
+        anyhow::ensure!(!state.updating, "被控端正在更新");
         anyhow::ensure!(!state.power_executing, "被控端正在执行电源操作");
         anyhow::ensure!(
             state.participants.len() < participant_limit(&state),

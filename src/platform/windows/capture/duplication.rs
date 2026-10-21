@@ -306,7 +306,7 @@ impl Source {
             } else {
                 output.DuplicateOutput(device)
             }
-            .context("无法采集当前桌面；请检查屏幕、锁屏或其他采集程序")?;
+            .context("无法采集当前桌面")?;
             Ok(duplication)
         }
     }
@@ -419,7 +419,7 @@ impl Source {
             match duplication.AcquireNextFrame(timeout_ms.min(50), &mut info, &mut resource) {
                 Ok(()) => self.frame_acquired = true,
                 Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(()),
-                Err(error) => return Err(error).context("桌面采集失效，需要重建所选屏幕采集"),
+                Err(error) => return Err(error).context("桌面采集失效"),
             }
             let captured = std::time::Instant::now();
             let cursor_update = self.cursor.update(&self.device, duplication, &info);

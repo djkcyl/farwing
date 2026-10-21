@@ -483,7 +483,7 @@ export class Viewer {
       if (pc.connectionState !== 'connected') {
         this.finish({
           reason: 'network',
-          message: '无法与对方建立连接（网络不通或被防火墙拦截）',
+          message: '无法与对方建立连接',
           recoverable: true,
         });
       }
@@ -960,7 +960,7 @@ export class Viewer {
   async startMicrophone() {
     if (this.mic) return;
     if (!this.grants.includes('microphone')) throw new Error('没有麦克风权限');
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error('这个浏览器不能使用麦克风（需要 HTTPS）');
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('这个浏览器不能使用麦克风');
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         // The browser also plays the host's sound: cancel its echo.

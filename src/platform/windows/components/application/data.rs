@@ -63,7 +63,7 @@ fn ensure_recovered(root: &Path) -> Result<()> {
         reject_reparse(&directory)?;
         ensure!(
             std::fs::read_dir(directory)?.next().is_none(),
-            "屏幕布局仍有待恢复记录，请先完成恢复再清除数据"
+            "屏幕布局尚未恢复，不能清除数据"
         );
     }
     Ok(())

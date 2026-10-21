@@ -147,15 +147,15 @@ pub(super) fn show(
         ui.set_width(340.0);
         close = crate::ui::controls::dialog_header(ui,pending.action.label(),crate::ui::controls::DialogIcon::Warning,true);
         let description = match pending.action {
-            Action::Create { .. } => "将在远端添加一个虚拟显示器，并打开新增屏幕。".to_owned(),
-            Action::Remove { .. } => format!("删除远端的“{}”？该屏幕上的窗口可能移到其他显示器。", pending.target.label(&snapshot.screens)),
-            Action::Exit => "退出超级屏并恢复远端显示布局，画面会短暂中断。".into(),
-            Action::Resolution { .. } => "此屏幕不支持所选分辨率。继续将切换为超级屏，影响远端全部显示器及本次多窗口观看。".into(),
-            Action::FrameRate { .. } => "远端屏幕刷新率低于所选帧率。继续将切换为超级屏，影响远端全部显示器及本次多窗口观看。".into(),
-            Action::Enter { .. } => "切换为超级屏将暂时停用远端其他显示目标，并调整本次多窗口观看。退出后由远端恢复显示布局。".into(),
+            Action::Create { .. } => None,
+            Action::Remove { .. } => Some(format!("将删除“{}”", pending.target.label(&snapshot.screens))),
+            Action::Exit => Some("画面会短暂中断".into()),
+            Action::Resolution { .. } => Some("此屏幕不支持所选分辨率".into()),
+            Action::FrameRate { .. } => Some("远端刷新率低于所选帧率".into()),
+            Action::Enter { .. } => Some("将影响远端全部显示器".into()),
         };
-        ui.label(description);
-        if !valid { ui.add_space(8.0); ui.label(RichText::new("显示状态或连接已变化，请重新选择操作").color(crate::ui::theme::MUTED)); }
+        if let Some(description) = description { ui.label(description); }
+        if !valid { ui.add_space(8.0); ui.label(RichText::new("显示状态已变化").color(crate::ui::theme::MUTED)); }
         let (apply,cancel) = crate::ui::controls::dialog_actions(ui,Some(crate::ui::controls::DialogAction::new("确认").enabled(valid)),Some("取消"));
         close |= cancel;
         {

@@ -94,10 +94,16 @@ function Editor({ value, onClose, onSaved }: { value: Announcement | undefined; 
             </Select>
           </Field>
         </div>
-        <Field label="版本号" hint="例如 0.2.0">
-          <Input value={form.version} onChange={(e) => set({ version: e.target.value })} required maxLength={64} />
+        <Field label="版本号">
+          <Input
+            value={form.version}
+            onChange={(e) => set({ version: e.target.value })}
+            required
+            maxLength={64}
+            placeholder="0.2.0"
+          />
         </Field>
-        <Field label="下载地址" hint="安装包的 http(s) 链接；客户端从这里下载更新">
+        <Field label="下载地址">
           <Input value={form.url} onChange={(e) => set({ url: e.target.value })} required placeholder="https://" />
         </Field>
         <Field label="更新说明">
@@ -124,7 +130,6 @@ export default function Updates() {
     <div className="stack">
       <PageHeader
         title="客户端更新"
-        subtitle="客户端检查更新时看到每个平台发布时间最新的一条；选择了测试版的客户端也会看到测试版渠道。"
         actions={
           <Button variant="primary" icon="plus" onClick={() => setEditing({ ...BLANK })}>
             发布更新
@@ -136,7 +141,7 @@ export default function Updates() {
         {!data ? (
           <Loading />
         ) : data.length === 0 ? (
-          <Empty icon="download" title="还没有更新公告" hint="发布后，客户端会在检查更新时看到它。" />
+          <Empty icon="download" title="暂无更新公告" />
         ) : (
           <div className="table-wrap">
             <table className="table">

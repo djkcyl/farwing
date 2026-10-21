@@ -300,7 +300,7 @@ async fn write(
             .unwrap_or_else(|_| Err(anyhow::anyhow!("拖放发送超时")))
         };
         if result.is_err() {
-            fail(&state, &endpoint, "拖放发送失败，未自动重试".into());
+            fail(&state, &endpoint, "拖放发送失败".into());
             break;
         }
     }

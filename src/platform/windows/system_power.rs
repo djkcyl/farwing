@@ -35,10 +35,7 @@ fn token() -> Result<Handle> {
         };
         SetLastError(ERROR_SUCCESS);
         AdjustTokenPrivileges(token.0, false, Some(&privileges), 0, None, None)?;
-        ensure!(
-            GetLastError() == ERROR_SUCCESS,
-            "当前运行身份没有关机权限，请检查服务与系统策略"
-        );
+        ensure!(GetLastError() == ERROR_SUCCESS, "当前运行身份没有关机权限");
         Ok(token)
     }
 }

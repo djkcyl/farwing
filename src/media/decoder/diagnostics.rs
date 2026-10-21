@@ -256,7 +256,7 @@ pub(crate) fn run(
                         Ok(()) => {
                             cell.status = Status::Passed;
                             cell.detail
-                                .push_str("实际解码出帧，尺寸、像素格式及合成图案采样校验通过");
+                                .push_str("解码输出校验通过");
                         }
                         Err(error) => {
                             cell.status = if error
@@ -271,7 +271,7 @@ pub(crate) fn run(
                         }
                     }
                 } else {
-                    cell.detail = "没有此尺寸的内置样本，未执行实际解码".into();
+                    cell.detail = "没有此尺寸的样本".into();
                 }
                 if cancel.load(Ordering::Acquire) {
                     return Ok(());

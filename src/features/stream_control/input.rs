@@ -118,7 +118,7 @@ impl StreamControlHandle {
         } else {
             ensure_ready(&state)?;
             if state.annotation.enabled || state.annotation.toggling() {
-                bail!("请先关闭批注，再开启键鼠控制");
+                bail!("批注期间不能开启键鼠控制");
             }
             // One participant controls at a time; the others wait for it
             // to give control back.
@@ -228,7 +228,7 @@ impl StreamControlHandle {
 
             StreamControlProtocol::Negotiating => bail!("PB 特性协商尚未完成"),
             StreamControlProtocol::Unsupported => {
-                bail!("对端不支持当前串流协议（需要CaptureSetting RPC）")
+                bail!("对端不支持当前串流协议")
             }
         };
         state.next_sequence = state.next_sequence.wrapping_add(1);
@@ -419,7 +419,7 @@ pub(super) fn expire_cursor_request(state: &mut StreamControlState) {
     if let Some((sequence, _, started)) = state.cursor_pending
         && started.elapsed() >= std::time::Duration::from_secs(10)
     {
-        let error = "光标设置确认超时，远端状态未知；请重试".to_owned();
+        let error = "光标设置确认超时".to_owned();
         fail_cursor_request(state, sequence, error.clone());
         state
             .pending_capture_preferences

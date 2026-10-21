@@ -168,7 +168,7 @@ impl Handle {
         self.service
             .commands
             .try_send(c)
-            .map_err(|_| anyhow::anyhow!("操作队列已满，请稍后再试"))
+            .map_err(|_| anyhow::anyhow!("操作队列已满"))
     }
 }
 pub(super) struct Repository {
@@ -429,7 +429,7 @@ async fn run(
                 }
                 if !c.stream_control_handle().file_transfer().supported() {
                     let _ = c.close().await;
-                    anyhow::bail!("被控端不支持当前文件传输协议");
+                    anyhow::bail!("被控端不支持文件传输");
                 }
                 Ok(c)
             };
@@ -606,7 +606,7 @@ async fn run(
                     lock(&state).records = records.iter().cloned().map(Arc::new).collect();
                 }
                 Command::ResumeAll => {
-                    ensure!(wire.is_some(), "请先连接设备");
+                    ensure!(wire.is_some(), "设备未连接");
                     let mut records = lock(&repo.records);
                     let mut next = records.clone();
                     for r in &mut next {
@@ -701,7 +701,7 @@ async fn run(
                     });
                 }
                 Command::Add(records) => {
-                    ensure!(wire.is_some(), "请先连接设备");
+                    ensure!(wire.is_some(), "设备未连接");
                     ensure!(
                         lock(&repo.records).len() + records.len() <= 256,
                         "传输记录已满"
@@ -723,7 +723,7 @@ async fn run(
                                         old.state,
                                         TaskState::Queued | TaskState::Running | TaskState::Paused
                                     )),
-                            "同一传输任务已经存在，请继续或取消原任务"
+                            "相同的传输任务已存在"
                         );
                         repo.save(&r)?;
                     }
@@ -740,8 +740,8 @@ async fn run(
                     }
                 }
                 Command::Resume(key) => {
-                    ensure!(wire.is_some(), "请先重新连接设备");
-                    ensure!(!running.contains_key(&key), "任务正在停止，请稍后继续");
+                    ensure!(wire.is_some(), "设备未连接");
+                    ensure!(!running.contains_key(&key), "任务正在停止");
                     let mut r = repo.get(&key).context("任务不存在")?;
                     ensure!(
                         matches!(r.state, TaskState::Paused | TaskState::Failed),
@@ -767,9 +767,7 @@ async fn run(
                                     storage::cleanup(root, &r.key, &r.partial)?;
                                 }
                             } else if r.started {
-                                let w = wire
-                                    .as_ref()
-                                    .context("请连接设备后取消，以清理远端临时文件")?;
+                                let w = wire.as_ref().context("设备未连接")?;
                                 tasks::discard(w.clone(), r.key.clone(), stop.child_token())
                                     .await?;
                             }
@@ -779,7 +777,7 @@ async fn run(
                         r.state = TaskState::Cancelled;
                         r.error = cleanup
                             .err()
-                            .map(|e| format!("已取消；临时文件清理未完成：{e:#}"));
+                            .map(|e| format!("已取消，临时文件未清理：{e:#}"));
                         repo.save(&r)?;
                     } else {
                         let mut records = lock(&repo.records);
@@ -794,7 +792,7 @@ async fn run(
                     }
                 }
                 c @ (Command::Create(..) | Command::Rename(..) | Command::Delete(..)) => {
-                    ensure!(!lock(&state).operation_busy, "请等待文件操作完成");
+                    ensure!(!lock(&state).operation_busy, "文件操作进行中");
                     lock(&state).operation_busy = true;
                     let repo = repo.clone();
                     let w = wire.clone();
@@ -931,7 +929,7 @@ async fn manage(c: Command, wire: Option<Arc<Transport>>, stop: CancellationToke
     };
     if kind < 2 {
         let n = storage::safe_relative(&name)?;
-        ensure!(n.components().count() == 1, "请输入单个文件名");
+        ensure!(n.components().count() == 1, "名称不能包含路径");
     }
     if kind != 0 {
         ensure!(

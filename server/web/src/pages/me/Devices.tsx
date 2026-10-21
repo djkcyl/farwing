@@ -18,7 +18,7 @@ export default function Devices() {
   const order = [...list].sort(byName);
   return (
     <div className="stack">
-      <PageHeader title="设备" subtitle="在浏览器中观看在线的设备；网页端只看不控。" />
+      <PageHeader title="设备" />
       {error && <Alert tone="amber">刷新失败：{error}</Alert>}
       <Tabs<Tab>
         value={tab}
@@ -29,15 +29,7 @@ export default function Devices() {
         ]}
       />
       {order.length === 0 ? (
-        <Empty
-          icon="monitor"
-          title={tab === 'own' ? '账号中还没有电脑' : '还没有好友共享设备给你'}
-          hint={
-            tab === 'own'
-              ? '在电脑上安装 Farwing 客户端并登录这个账号，它就会出现在这里。'
-              : '好友在客户端或网页的“好友”中为你开启权限后，设备会出现在这里。'
-          }
-        />
+        <Empty icon="monitor" title={tab === 'own' ? '暂无设备' : '暂无共享设备'} />
       ) : (
         <div className="device-grid">
           {order.map((d) => (
@@ -45,9 +37,7 @@ export default function Devices() {
           ))}
         </div>
       )}
-      {tab === 'own' && browsers > 0 && (
-        <p className="small muted">另有 {browsers} 个网页登录，在“账号与安全”中管理。</p>
-      )}
+      {tab === 'own' && browsers > 0 && <p className="small muted">另有 {browsers} 个网页登录</p>}
     </div>
   );
 }

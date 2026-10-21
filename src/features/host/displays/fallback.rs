@@ -98,7 +98,7 @@ pub(super) fn ensure(
     }
     ensure!(
         driver.persistent_supported(),
-        "无可用普通显示器，请更新虚拟显示驱动以启用常驻兜底屏"
+        "无可用显示器：需要更新虚拟显示驱动"
     );
     let saved = store::read::<Record>(&path()?)?;
     let record = saved.unwrap_or(Record {
@@ -167,7 +167,7 @@ pub(super) fn ensure(
         if let Some(screen) = screen(driver)? {
             break screen;
         }
-        ensure!(Instant::now() < deadline, "常驻虚拟屏尚未成为可用采集目标");
+        ensure!(Instant::now() < deadline, "常驻虚拟屏不可采集");
         std::thread::sleep(Duration::from_millis(25));
     };
     if !verify_frame {
@@ -185,7 +185,7 @@ pub(super) fn ensure(
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    anyhow::bail!("常驻虚拟屏已建立，但尚未得到桌面画面；保留屏幕等待恢复")
+    anyhow::bail!("常驻虚拟屏暂无桌面画面")
 }
 
 pub(super) fn retire(driver: &Driver, replacement_identity: Option<&str>) -> Result<bool> {
