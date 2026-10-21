@@ -9,3 +9,13 @@ export function viewBlocker(d: Device): string | undefined {
   if (!d.policy.control) return '对方没有开启“允许被控”';
   return undefined;
 }
+
+/// Every device list shows devices by name, then by ID: a fixed order that
+/// does not move when the list refreshes.
+export function byName(a: { alias: string; device_id: string }, b: { alias: string; device_id: string }): number {
+  const x = a.alias.toLowerCase();
+  const y = b.alias.toLowerCase();
+  if (x !== y) return x < y ? -1 : 1;
+  if (a.alias !== b.alias) return a.alias < b.alias ? -1 : 1;
+  return a.device_id < b.device_id ? -1 : a.device_id > b.device_id ? 1 : 0;
+}

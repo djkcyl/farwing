@@ -2,6 +2,7 @@
 // logins, friends and what they share.
 import { useState } from 'react';
 import { call, errorText } from '../../lib/api';
+import { byName } from '../../lib/devices';
 import { useAuth } from '../../lib/auth';
 import { ago, capText, connectIdText, dateTime, deviceIdText, platformText } from '../../lib/format';
 import { Link, navigate } from '../../lib/router';
@@ -252,7 +253,7 @@ export default function UserDetail({ params }: { params: Record<string, string> 
                 </tr>
               </thead>
               <tbody>
-                {data.devices.map((d) => (
+                {[...data.devices].sort(byName).map((d) => (
                   <tr key={d.device_id}>
                     <td>
                       <div className="cell-main">{d.alias}</div>

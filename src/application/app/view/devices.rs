@@ -11,8 +11,8 @@ enum Filter {
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Sort {
-    #[default]
     Status,
+    #[default]
     Name,
 }
 
@@ -94,7 +94,7 @@ impl DeviceCenterApp {
         devices.sort_by(|(a, a_current), (b, b_current)| {
             b_current
                 .cmp(a_current)
-                .then_with(|| display_alias(a).to_lowercase().cmp(&display_alias(b).to_lowercase()))
+                .then_with(|| a.list_order(b))
         });
         devices
     }
@@ -183,12 +183,7 @@ impl DeviceCenterApp {
             } else {
                 std::cmp::Ordering::Equal
             })
-            .then_with(|| {
-                display_alias(&a.device)
-                    .to_lowercase()
-                    .cmp(&display_alias(&b.device).to_lowercase())
-            })
-            .then_with(|| a.device.device_id.cmp(&b.device.device_id))
+            .then_with(|| a.device.list_order(&b.device))
         });
         let others = self.other_devices();
         let mut picked = None;

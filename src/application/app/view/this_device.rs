@@ -158,6 +158,11 @@ impl DeviceCenterApp {
                 }
             });
             field(ui, "局域网", |ui| match state.as_ref().map(|s| (s.listening_port, s.settings)) {
+                // The endpoint listens but refuses everyone, and the device
+                // is not announced.
+                Some((_, settings)) if !allowed && settings.direct => {
+                    detail(ui, "开启“允许连接本机”后接受直连");
+                }
                 Some((Some(port), settings)) => {
                     let default = port == farwing_protocol::direct::DEFAULT_PORT;
                     if addresses.is_empty() {
@@ -189,7 +194,6 @@ impl DeviceCenterApp {
                     detail(ui, "直连已关闭");
                     open_network = ui.add(crate::ui::controls::secondary("直连设置")).clicked();
                 }
-                Some((None, _)) if !allowed => detail(ui, "开启“允许连接本机”后接受直连"),
                 Some((None, _)) => detail(ui, "正在开启直连…"),
                 None => detail(ui, "正在读取后台服务的状态…"),
             });
@@ -223,10 +227,13 @@ impl DeviceCenterApp {
     }
 
     fn trusted_section(&mut self, ui: &mut egui::Ui) {
-        let trusted = self
+        let mut trusted = self
             .direct_host_state()
             .map(|state| state.trusted)
             .unwrap_or_default();
+        trusted.sort_by(|a, b| {
+            crate::account::api::list_order(&a.name, &a.device_id, &b.name, &b.device_id)
+        });
         cards::section_heading(ui, "受信任设备", Some(trusted.len()), |_| {});
         detail(
             ui,

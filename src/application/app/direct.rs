@@ -131,7 +131,15 @@ impl DirectUi {
                                     merged.push(host);
                                 }
                             }
-                            merged.sort_by(|a, b| a.announce.name.cmp(&b.announce.name));
+                            // Stable between scans, also for devices of the same name.
+                            merged.sort_by(|a, b| {
+                                crate::account::api::list_order(
+                                    &a.announce.name,
+                                    &a.announce.device_id,
+                                    &b.announce.name,
+                                    &b.announce.device_id,
+                                )
+                            });
                             lan.seen.retain(|_, at| now.duration_since(*at) < SCAN_KEEP);
                             lan.found = Some(merged);
                             lan.error = None;

@@ -425,7 +425,29 @@ pub struct DeviceList {
     pub shared: Vec<DeviceInfo>,
 }
 
+/// Every device list shows devices by name, then by ID: a fixed order,
+/// whatever order they arrive in.
+pub fn list_order(name: &str, id: &str, other_name: &str, other_id: &str) -> std::cmp::Ordering {
+    name.to_lowercase()
+        .cmp(&other_name.to_lowercase())
+        .then_with(|| name.cmp(other_name))
+        .then_with(|| id.cmp(other_id))
+}
+
+impl DeviceInfo {
+    /// See [`list_order`].
+    pub fn list_order(&self, other: &Self) -> std::cmp::Ordering {
+        list_order(&self.alias, &self.device_id, &other.alias, &other.device_id)
+    }
+}
+
 impl DeviceList {
+    /// In [`list_order`].
+    pub fn sort(&mut self) {
+        self.devices.sort_by(DeviceInfo::list_order);
+        self.shared.sort_by(DeviceInfo::list_order);
+    }
+
     /// Every listed device: the current one, own devices, then shared ones.
     pub fn all(&self) -> impl Iterator<Item = &DeviceInfo> {
         std::iter::once(&self.current_device)
@@ -483,11 +505,13 @@ impl DeviceGroups {
     }
 
     pub fn insert(&mut self, device: DeviceInfo) {
-        if device.platform.is_desktop() {
-            self.desktop_devices.push(device);
+        let list = if device.platform.is_desktop() {
+            &mut self.desktop_devices
         } else {
-            self.mobile_devices.push(device);
-        }
+            &mut self.mobile_devices
+        };
+        let at = list.partition_point(|d| d.list_order(&device).is_lt());
+        list.insert(at, device);
     }
 
     pub fn entries(&self) -> impl Iterator<Item = (&'static str, &DeviceInfo)> {
@@ -990,8 +1014,11 @@ impl ServerApi {
     // ----------------------------------------------------------- devices
 
     pub async fn list_devices(&self) -> Result<DeviceList> {
-        self.call(Method::GET, path::DEVICES, Body::None, REQUEST_TIMEOUT, Auth::Session)
-            .await
+        let mut list: DeviceList = self
+            .call(Method::GET, path::DEVICES, Body::None, REQUEST_TIMEOUT, Auth::Session)
+            .await?;
+        list.sort();
+        Ok(list)
     }
 
     pub async fn device_detail(&self, device_id: &str) -> Result<DeviceDetail> {

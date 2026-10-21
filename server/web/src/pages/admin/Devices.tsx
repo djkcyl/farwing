@@ -2,6 +2,7 @@
 // sign out (unbind) or drop its connections.
 import { useMemo, useState } from 'react';
 import { call, errorText } from '../../lib/api';
+import { byName } from '../../lib/devices';
 import { ago, connectIdText, dateTime, deviceIdText, platformText } from '../../lib/format';
 import { Link } from '../../lib/router';
 import type { AdminDevice } from '../../lib/types';
@@ -19,15 +20,17 @@ export default function AdminDevices() {
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase().replace(/\s/g, '');
-    return (data ?? []).filter((d) => {
-      if (filter === 'online' && !d.online) return false;
-      if (filter === 'hosts' && !d.host) return false;
-      if (filter === 'guests' && d.owner_id) return false;
-      if (!q) return true;
-      return [d.alias, d.name, d.device_id, d.connect_id ?? '', d.owner ?? '', d.created_ip].some((v) =>
-        v.toLowerCase().replace(/\s/g, '').includes(q),
-      );
-    });
+    return (data ?? [])
+      .filter((d) => {
+        if (filter === 'online' && !d.online) return false;
+        if (filter === 'hosts' && !d.host) return false;
+        if (filter === 'guests' && d.owner_id) return false;
+        if (!q) return true;
+        return [d.alias, d.name, d.device_id, d.connect_id ?? '', d.owner ?? '', d.created_ip].some((v) =>
+          v.toLowerCase().replace(/\s/g, '').includes(q),
+        );
+      })
+      .sort(byName);
   }, [data, query, filter]);
 
   async function act(fn: () => Promise<unknown>, done: string) {

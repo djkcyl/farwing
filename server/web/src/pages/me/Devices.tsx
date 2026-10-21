@@ -1,5 +1,6 @@
 // This account's devices and the devices friends share with it.
 import { useState } from 'react';
+import { byName } from '../../lib/devices';
 import type { DeviceList } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
 import { DeviceCard } from '../../ui/DeviceCard';
@@ -14,9 +15,7 @@ export default function Devices() {
   const own = data.own.filter((d) => d.platform !== 'web');
   const browsers = data.own.length - own.length;
   const list = tab === 'own' ? own : data.shared;
-  const order = [...list].sort(
-    (a, b) => Number(b.status === 'online') - Number(a.status === 'online') || b.last_seen_at - a.last_seen_at,
-  );
+  const order = [...list].sort(byName);
   return (
     <div className="stack">
       <PageHeader title="设备" subtitle="在浏览器中观看在线的设备；网页端只看不控。" />

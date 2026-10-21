@@ -453,7 +453,9 @@ impl DeviceCenterApp {
             );
             return;
         }
-        // Grouped by owner.
+        // Grouped by owner; owners and their devices by name, then ID.
+        let mut shared = shared;
+        shared.sort_by(DeviceInfo::list_order);
         let mut owners: Vec<(String, Vec<DeviceInfo>)> = Vec::new();
         for device in shared {
             let owner = device
@@ -465,6 +467,7 @@ impl DeviceCenterApp {
                 None => owners.push((owner, vec![device])),
             }
         }
+        owners.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()).then_with(|| a.0.cmp(&b.0)));
         let nearby = self.direct.nearby();
         let mut picked = None;
         for (owner, devices) in owners {
@@ -616,7 +619,15 @@ impl DeviceCenterApp {
                             .on_hover_text("两台设备互相信任：以后互相连接都无需访问码或确认")
                             .clicked()
                     {
-                        picked = Some(Pick::Pair(target.clone(), announce.name.clone()));
+                        // Two devices may share a name: show which one.
+                        picked = Some(Pick::Pair(
+                            target.clone(),
+                            format!(
+                                "{}（{}）",
+                                announce.name,
+                                crate::account::api::device_id_text(&announce.device_id)
+                            ),
+                        ));
                     }
                 },
             );
@@ -744,9 +755,13 @@ impl DeviceCenterApp {
             }
             let mut favorites = lists.favorites.clone();
             favorites.sort_by(|a, b| {
-                b.favorited_at
-                    .cmp(&a.favorited_at)
-                    .then_with(|| a.connect_id.cmp(&b.connect_id))
+                crate::account::api::list_order(
+                    a.title(),
+                    &a.publisher_device_id,
+                    b.title(),
+                    &b.publisher_device_id,
+                )
+                .then_with(|| a.connect_id.cmp(&b.connect_id))
             });
             let mut connect = None;
             for item in &favorites {
@@ -828,7 +843,15 @@ impl DeviceCenterApp {
                 });
             }
         }
-        rows.sort_by(|a, b| b.last.cmp(&a.last));
+        rows.sort_by(|a, b| {
+            crate::account::api::list_order(
+                &a.title,
+                a.device_id.as_deref().unwrap_or_default(),
+                &b.title,
+                b.device_id.as_deref().unwrap_or_default(),
+            )
+            .then_with(|| a.address.cmp(&b.address))
+        });
         let mut clear = false;
         cards::section_heading(ui, "最近连接", Some(rows.len()), |ui| {
             if account && !lists.recent.is_empty() {

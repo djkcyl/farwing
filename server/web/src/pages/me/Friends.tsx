@@ -2,6 +2,7 @@
 // account's devices (the same editor as the client's).
 import { useEffect, useState, type FormEvent } from 'react';
 import { call, errorText } from '../../lib/api';
+import { byName } from '../../lib/devices';
 import {
   CAP_GROUPS,
   CAP_PRESETS,
@@ -261,7 +262,9 @@ export default function Friends() {
   const [username, setUsername] = useState('');
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<UserSummary>();
-  const hosts = (devices.data?.own ?? []).filter((d) => d.capabilities.includes('host') && d.platform !== 'web');
+  const hosts = (devices.data?.own ?? [])
+    .filter((d) => d.capabilities.includes('host') && d.platform !== 'web')
+    .sort(byName);
 
   const reload = async () => {
     await Promise.all([friends.reload(), requests.reload()]);
