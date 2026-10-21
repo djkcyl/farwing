@@ -302,7 +302,7 @@ impl AuthenticatedClient {
                     tokio::select! {
                         biased;
                         _ = self.ended.cancelled() => bail!("account session has ended"),
-                        _ = tokio::time::sleep(RESTORE_RETRY) => {}
+                        _ = crate::session::reconnect::wait(RESTORE_RETRY) => {}
                     }
                 }
                 result => return result,
@@ -872,7 +872,7 @@ fn retry_later(error: &anyhow::Error) -> bool {
 fn unreachable_error() -> anyhow::Error {
     ApiFailure::new(
         crate::account::api::ErrorCode::Network,
-        "暂时连不上 Farwing 服务器",
+        "无法连接 Farwing 服务器",
     )
     .into()
 }

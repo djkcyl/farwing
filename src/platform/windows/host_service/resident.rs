@@ -102,6 +102,8 @@ pub(crate) enum Request {
     Retry {
         account: String,
     },
+    /// Try the server again now instead of waiting.
+    Reconnect,
     Retire {
         account: String,
     },
@@ -142,6 +144,9 @@ pub(crate) struct Snapshot {
     /// What the hosting process uses for direct connections.
     #[serde(default)]
     pub direct: crate::transport::direct::managed::HostDirect,
+    /// When this process next tries the server again, if it is waiting.
+    #[serde(default)]
+    pub retry_in_ms: Option<u64>,
 }
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Reply {
@@ -788,6 +793,10 @@ async fn run_authorized_account(
                             && preparation.is_none() && initializers.is_empty() && super::activity::idle() && super::user_backend::idle()? {Ok(Reply::Done)}
                         else{Err(anyhow::anyhow!("后台仍有活动会话"))}
                     },
+                    Request::Reconnect => {
+                        crate::session::reconnect::now();
+                        Ok(Reply::Done)
+                    },
                     Request::PrepareUpdate => {
                         if let Some(current)=&client {current.host.prepare_update().await.map(|_|Reply::Done)} else {Ok(Reply::Done)}
                     },
@@ -843,6 +852,9 @@ async fn run_authorized_account(
                                     status: current.host.status(),
                                     capabilities: current.host.capabilities().map(|v| (*v).clone()),
                                     direct: crate::transport::direct::managed::HostDirect::current(),
+                                    retry_in_ms: crate::session::reconnect::next().map(|at| {
+                                        at.saturating_duration_since(std::time::Instant::now()).as_millis() as u64
+                                    }),
                                 })))},
                                 Request::DirectState => Ok(Reply::DirectState {
                                     account,

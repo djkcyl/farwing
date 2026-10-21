@@ -172,8 +172,16 @@ impl DeviceCenterApp {
             }
         }
         self.connect_bar(ui);
-        if self.cached_devices {
-            cards::banner(ui, "暂时连不上服务器", Tone::Warning);
+        if self.server_unreachable {
+            let text = match self.next_reconnect(ui.ctx()) {
+                Some(seconds) => format!("无法连接服务器 · {seconds} 秒后重连"),
+                None => "无法连接服务器 · 正在重连".to_owned(),
+            };
+            if cards::banner_action(ui, &text, Tone::Warning, "立即重连") {
+                self.reconnect();
+            }
+        } else if self.cached_devices {
+            cards::banner(ui, "正在连接服务器", Tone::Warning);
         }
         if let Some((message, _)) = &self.direct.message {
             cards::banner(ui, message, Tone::Success);
@@ -437,7 +445,7 @@ impl DeviceCenterApp {
             .map(|list| list.shared.clone())
             .unwrap_or_default();
         if shared.is_empty() {
-            empty_card(ui, "还没有好友共享的设备", "");
+            empty_card(ui, "暂无好友共享的设备", "");
             return;
         }
         // Grouped by owner; owners and their devices by name, then ID.
@@ -749,7 +757,7 @@ impl DeviceCenterApp {
                     if self.assist.loading && self.assist.lists.is_none() {
                         "正在读取收藏…"
                     } else {
-                        "还没有收藏"
+                        "暂无收藏"
                     },
                     "",
                 );
@@ -865,7 +873,7 @@ impl DeviceCenterApp {
             self.assist.delete_prompt = Some(DeletePrompt::Recent);
         }
         if rows.is_empty() {
-            empty_card(ui, "还没有连接记录", "");
+            empty_card(ui, "暂无连接记录", "");
             return;
         }
         enum Pick {

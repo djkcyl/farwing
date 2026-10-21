@@ -318,7 +318,7 @@ pub(crate) fn deliver_notification(uri: &str) -> Result<()> {
     };
     anyhow::ensure!(
         result.0 != 0 && accepted == 1,
-        "通知已失效或控制中心暂时不可用"
+        "通知已失效或控制中心不可用"
     );
     Ok(())
 }

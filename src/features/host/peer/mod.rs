@@ -561,7 +561,7 @@ impl Peer {
                 state == RTCPeerConnectionState::Connected,
                 match state {
                     RTCPeerConnectionState::Connected => "正在被远程访问",
-                    RTCPeerConnectionState::Disconnected => "连接暂时中断",
+                    RTCPeerConnectionState::Disconnected => "连接中断",
                     RTCPeerConnectionState::Failed => "连接已中断",
                     RTCPeerConnectionState::Closed => "等待连接",
                     _ => "正在建立远程连接",

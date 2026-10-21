@@ -98,7 +98,7 @@ pub mod limits {
 pub mod timing {
     pub const CONNECT_TIMEOUT_MS: u32 = 10_000;
     pub const RETRY_DELAY_MS: u32 = 1_000;
-    pub const MAX_RECONNECT_DELAY_S: u32 = 300;
+    pub const MAX_RECONNECT_DELAY_S: u32 = 30;
     pub const HEARTBEAT_MS: u32 = 20_000;
     pub const IDLE_TIMEOUT_MS: u32 = 60_000;
     /// Requests that expect an `ack` (session.start, resume.refresh).

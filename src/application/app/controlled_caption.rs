@@ -58,7 +58,7 @@ pub(super) fn caption(
     let kind = if connection.observation_lost {
         "被控状态确认中"
     } else if !status.connected {
-        "连接暂时中断"
+        "连接中断"
     } else if status.assistance || connection.relation == "assist" {
         "访客"
     } else if connection.relation == "friend" {

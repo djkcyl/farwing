@@ -643,7 +643,7 @@ impl Worker {
                 let delay = (initial_delay * 1.5_f64.powi(attempts.min(32) as i32))
                     .min(MAX_RETRY_DELAY_MS.max(initial_delay)) as u64;
                 tracing::warn!(%reason, attempts, max_retries, delay_ms = delay, "realtime socket retry scheduled; media is preserved");
-                let wait = tokio::time::sleep(Duration::from_millis(delay));
+                let wait = crate::session::reconnect::wait(Duration::from_millis(delay));
                 tokio::pin!(wait);
                 loop {
                     tokio::select! {

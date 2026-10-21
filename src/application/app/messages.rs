@@ -59,6 +59,8 @@ pub(super) enum GuiCommand {
     CancelLogin(u64),
     Logout,
     PrepareExit,
+    /// Try the server again now.
+    Reconnect,
     Shutdown,
     Mutate {
         generation: u64,

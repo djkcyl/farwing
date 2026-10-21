@@ -96,7 +96,7 @@ async fn run(
     options: ConnectionMediaOptions,
     job: &Job,
 ) -> Result<Snapshot> {
-    let list = tokio::select! {_=job.cancel.cancelled()=>anyhow::bail!("已取消获取远端诊断包"),list=client.list_devices()=>list.context("暂时无法读取设备状态")?};
+    let list = tokio::select! {_=job.cancel.cancelled()=>anyhow::bail!("已取消获取远端诊断包"),list=client.list_devices()=>list.context("无法读取设备状态")?};
     let target = list.with_capability(&device.device_id, farwing_protocol::caps::DIAGNOSTICS)?;
     target
         .validated_device_id()

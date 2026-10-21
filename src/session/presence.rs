@@ -258,7 +258,7 @@ async fn serve_presence(
                 )));
                 let cancelled = local
                     .run_host(host, async {
-                        tokio::select! { _ = task_cancel.cancelled() => true, _ = tokio::time::sleep(delay) => false }
+                        tokio::select! { _ = task_cancel.cancelled() => true, _ = super::reconnect::wait(delay) => false }
                     })
                     .await?;
                 if cancelled {
@@ -393,7 +393,7 @@ async fn serve_presence(
         let _ = events.send(PresenceEvent::State(PresenceState::Reconnecting));
         let cancelled = local
             .run_host(host, async {
-                tokio::select! { _ = task_cancel.cancelled() => true, _ = tokio::time::sleep(delay) => false }
+                tokio::select! { _ = task_cancel.cancelled() => true, _ = super::reconnect::wait(delay) => false }
             })
             .await?;
         if cancelled {
@@ -414,7 +414,7 @@ impl Default for HostRoomRetry {
     fn default() -> Self {
         Self {
             delay_seconds: 0,
-            maximum_seconds: 300,
+            maximum_seconds: farwing_protocol::timing::MAX_RECONNECT_DELAY_S,
             last_room_response: None,
         }
     }
@@ -503,6 +503,11 @@ async fn run_remote(
         .await
         {
             Ok(Reply::Snapshot(mut snapshot)) if snapshot.account == client.generation() => {
+                super::reconnect::set_remote(
+                    snapshot
+                        .retry_in_ms
+                        .map(|ms| Instant::now() + Duration::from_millis(ms)),
+                );
                 crate::account::reporting::replace(snapshot.publication.clone());
                 crate::transport::direct::managed::sync_local_settings(&snapshot.direct.settings);
                 crate::transport::direct::managed::remember(snapshot.direct.clone());
@@ -522,6 +527,7 @@ async fn run_remote(
                 client.host.apply_remote(*snapshot).await;
             }
             Ok(Reply::Snapshot(_)) => {
+                super::reconnect::set_remote(None);
                 device_cursor = None;
                 let _ = events.send(PresenceEvent::State(PresenceState::Connecting));
             }

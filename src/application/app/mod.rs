@@ -604,6 +604,10 @@ impl DeviceCenterApp {
                             }
                             self.assist.lists = Some(lists);
                         }
+                        // The banner already says the server is away.
+                        Err(error) if self.server_unreachable => {
+                            self.assist.last_list_error = Some(error);
+                        }
                         Err(error) => {
                             self.assist.list_failure(error);
                         }
@@ -759,6 +763,19 @@ impl DeviceCenterApp {
                     .find(|(_, d)| d.device_id == selected)
                     .map(|(_, d)| d)
             })
+    }
+
+    /// Seconds until the next attempt to reach the server; `None` while one
+    /// is under way.
+    fn next_reconnect(&self, ctx: &egui::Context) -> Option<u64> {
+        ctx.request_repaint_after(Duration::from_secs(1));
+        crate::session::reconnect::next()
+            .filter(|at| *at > Instant::now() + Duration::from_millis(500))
+            .map(|at| at.saturating_duration_since(Instant::now()).as_secs_f32().ceil() as u64)
+    }
+
+    fn reconnect(&mut self) {
+        let _ = self.worker.commands.send(GuiCommand::Reconnect);
     }
 
     fn clear_catalog(&mut self) {

@@ -135,6 +135,30 @@ pub(super) enum Tone {
 }
 
 /// A one-line message across the page.
+/// A banner with one action on its right; true when it was clicked.
+pub(super) fn banner_action(ui: &mut egui::Ui, text: &str, tone: Tone, action: &str) -> bool {
+    let color = match tone {
+        Tone::Success => GREEN,
+        Tone::Warning => AMBER,
+    };
+    let mut clicked = false;
+    egui::Frame::new()
+        .fill(color.gamma_multiply(0.1))
+        .stroke(Stroke::new(1.0, color.gamma_multiply(0.45)))
+        .corner_radius(theme::CONTROL_RADIUS)
+        .inner_margin(egui::Margin::symmetric(12, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(text).color(color));
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    clicked = ui.button(action).clicked();
+                });
+            });
+        });
+    clicked
+}
+
 pub(super) fn banner(ui: &mut egui::Ui, text: &str, tone: Tone) {
     let color = match tone {
         Tone::Success => GREEN,

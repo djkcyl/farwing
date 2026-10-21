@@ -52,7 +52,7 @@ pub(crate) async fn initialize(
                 };
                 long_retries = long_retries.saturating_add(1);
                 tracing::warn!(?trigger, code = %code, long_retries, seconds = delay.as_secs(), %error, "device initialization retry scheduled");
-                tokio::time::sleep(delay).await;
+                crate::session::reconnect::wait(delay).await;
             }
         }
     }

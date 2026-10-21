@@ -744,12 +744,19 @@ impl DeviceCenterApp {
             }
         }
 
+        let unreachable = self.server_unreachable
+            && !self.host.as_ref().is_some_and(|h| h.status().connected);
         let (presence, color) = if self.host.as_ref().is_some_and(|h| h.status().connected) {
-            ("正在被控", GREEN)
-        } else if self.server_unreachable {
-            ("连不上服务器", AMBER)
+            ("正在被控".to_owned(), GREEN)
+        } else if unreachable {
+            let text = match self.next_reconnect(ui.ctx()) {
+                Some(seconds) => format!("无法连接服务器 · {seconds} 秒"),
+                None => "无法连接服务器 · 重连中".to_owned(),
+            };
+            (text, AMBER)
         } else {
-            presence_text(&self.presence)
+            let (text, color) = presence_text(&self.presence);
+            (text.to_owned(), color)
         };
         let baseline = bounds.top() + 62.0;
         ui.painter()
@@ -761,6 +768,19 @@ impl DeviceCenterApp {
             FontId::proportional(crate::ui::theme::TINY),
             MUTED,
         );
+        if unreachable {
+            let response = ui
+                .interact(
+                    presence_rect.expand(4.0),
+                    ui.id().with("reconnect-now"),
+                    Sense::click(),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("立即重连");
+            if response.clicked() {
+                self.reconnect();
+            }
+        }
         self.draw_version(
             ui,
             egui::Rect::from_min_max(

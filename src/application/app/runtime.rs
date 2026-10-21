@@ -506,6 +506,17 @@ pub(super) async fn gui_worker_loop(
                     tracing::info!(ready = result.is_ok(), "device center exit prepared");
                     let _ = events.send(GuiEvent::ExitReady(result));
                 }
+                GuiCommand::Reconnect => {
+                    crate::session::reconnect::now();
+                    if crate::platform::windows::host_service::resident::managed() {
+                        tokio::spawn(async {
+                            use crate::platform::windows::host_service::resident;
+                            if let Err(error) = resident::request(resident::Request::Reconnect).await {
+                                tracing::debug!(error = %format!("{error:#}"), "background host not asked to reconnect");
+                            }
+                        });
+                    }
+                }
                 GuiCommand::Shutdown => break,
                 GuiCommand::UseServer { server } => {
                     // A guest presence on the previous server ends first; it
@@ -692,6 +703,16 @@ pub(super) async fn gui_worker_loop(
                 .await
             {
                 Ok((generation, result)) => {
+                    // The window learns the server is away before the error.
+                    let away = result
+                        .as_ref()
+                        .err()
+                        .and_then(crate::account::api::failure_code)
+                        .is_some_and(crate::account::session_restore::out_of_reach);
+                    if away && reachability != Some((generation, true)) {
+                        reachability = Some((generation, true));
+                        let _ = events.send(GuiEvent::Reachability(generation, true));
+                    }
                     let _ = events.send(GuiEvent::AssistLists(
                         generation,
                         result.map_err(assist::operation_error),

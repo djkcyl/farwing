@@ -249,7 +249,7 @@ impl DeviceCenterApp {
                 ui.set_width(ui.available_width());
                 ui.add_space(8.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("还没有好友").strong());
+                    ui.label(RichText::new("暂无好友").strong());
                 });
                 ui.add_space(8.0);
             });
@@ -299,9 +299,9 @@ impl DeviceCenterApp {
                     );
                     ui.add_space(8.0);
                     if theirs.is_empty() {
-                        detail(ui, "TA 还没有共享设备给你");
+                        detail(ui, "未共享设备");
                     } else {
-                        detail(ui, &format!("TA 共享给你的设备 · {}", theirs.len()));
+                        detail(ui, &format!("共享的设备 · {}", theirs.len()));
                         ui.add_space(4.0);
                         for device in &theirs {
                             if let Some(action) = self.friend_device_row(ui, device) {
@@ -487,7 +487,7 @@ impl DeviceCenterApp {
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         if devices.is_empty() {
-                            detail(ui, "账号中还没有其他电脑");
+                            detail(ui, "暂无其他设备");
                         }
                         for (device_id, name, shown_id) in &devices {
                             let mode = DeviceMode::of(grants, device_id);

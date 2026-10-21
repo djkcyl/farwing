@@ -267,7 +267,7 @@ impl DeviceCenterApp {
         });
         cards::section_heading(ui, "受信任设备", Some(trusted.len()), |_| {});
         if trusted.is_empty() {
-            empty_card(ui, "还没有受信任的设备", "");
+            empty_card(ui, "暂无受信任设备", "");
             return;
         }
         for device in trusted {

@@ -533,7 +533,7 @@ impl Center {
                 } else if connected {
                     "正在被远程访问"
                 } else {
-                    "远程连接暂时中断"
+                    "远程连接中断"
                 };
                 if connected && !active.lost {
                     self.last_source

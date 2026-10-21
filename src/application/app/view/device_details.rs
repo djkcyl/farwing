@@ -518,7 +518,7 @@ impl DeviceCenterApp {
         let wallpaper_note = if device.wallpaper_url.is_empty() {
             "未提供桌面壁纸"
         } else if self.center_ui.wallpapers.failed(&id) {
-            "壁纸暂时无法加载"
+            "壁纸加载失败"
         } else {
             "正在加载桌面壁纸…"
         };
