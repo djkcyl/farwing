@@ -402,9 +402,14 @@ impl ScreenWindows {
         if let Some(context) = context {
             let pass = context.cumulative_pass_nr();
             if pass == event.pass || pass == event.pass.saturating_add(1) {
+                let interval = if slot.app.is_some() {
+                    slot.interval
+                } else {
+                    slot.interval.max(super::connection::WAITING_FRAME_INTERVAL)
+                };
                 let when = slot
                     .last_frame
-                    .map_or(event.when, |at| event.when.max(at + slot.interval));
+                    .map_or(event.when, |at| event.when.max(at + interval));
                 slot.repaint = Some(slot.repaint.map_or(when, |old| old.min(when)));
             }
         }

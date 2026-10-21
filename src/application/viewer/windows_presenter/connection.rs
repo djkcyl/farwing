@@ -57,6 +57,13 @@ pub(in crate::application::viewer) fn run_connecting(
     run_player(config, true)
 }
 
+/// Before a picture plays (connecting, waiting for the device), the screen
+/// animates only a spinner: redrawing it at a fast display's full rate
+/// (165 Hz) costs a tenth of a core for nothing. Input still redraws at the
+/// display's rate.
+pub(in crate::application::viewer) const WAITING_FRAME_INTERVAL: Duration =
+    Duration::from_micros(16_667);
+
 pub(in crate::application::viewer) fn ui_frame_interval(window: &Window) -> Duration {
     let millihertz = window
         .current_monitor()
@@ -279,9 +286,14 @@ impl ApplicationHandler<UiEvent> for ConnectingWindowsRunner {
         {
             let current = context.cumulative_pass_nr();
             if current == event.pass || current == event.pass.saturating_add(1) {
+                let interval = if self.playing.is_some() {
+                    self.ui_frame_interval
+                } else {
+                    self.ui_frame_interval.max(WAITING_FRAME_INTERVAL)
+                };
                 let when = self
                     .last_ui_frame
-                    .map_or(event.when, |at| event.when.max(at + self.ui_frame_interval));
+                    .map_or(event.when, |at| event.when.max(at + interval));
                 self.next_repaint = Some(self.next_repaint.map_or(when, |old| old.min(when)));
             }
         }
