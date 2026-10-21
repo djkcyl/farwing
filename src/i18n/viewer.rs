@@ -888,7 +888,7 @@ pub(crate) const EN: Viewer = Viewer {
     participant_device: |name| format!("Device: {name}"),
     relation_own: "This account",
     relation_friend: "Friend",
-    relation_guest: "Guest",
+    relation_guest: "Visitor",
     relation_trusted: "Trusted",
     participant: "Participant",
     performance_monitor: "Performance monitor",

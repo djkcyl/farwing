@@ -56,10 +56,14 @@ pub(crate) fn control_turn(bytes: &[u8]) -> Result<Option<ControlTurn>> {
     }))
 }
 impl ControlTurn {
-    pub fn response(&self, held: bool, message: String) -> Vec<u8> {
+    pub fn response(&self, held: bool, refusal: i32, holder: String) -> Vec<u8> {
         super::wire::response(
             self.request_id,
-            SessionBody::ControlTurnResult(super::control_turn::TurnResponse { held, message }),
+            SessionBody::ControlTurnResult(super::control_turn::TurnResponse {
+                held,
+                refusal,
+                holder,
+            }),
         )
     }
 }

@@ -104,7 +104,7 @@ export const en: typeof zh = {
   noNote: '(No note)',
   unlimited: 'Unlimited',
   optional: 'Optional',
-  guest: 'Guest',
+  guest: 'Visitor',
   admin: 'Admin',
   user: 'User',
   menu: 'Menu',

@@ -497,6 +497,7 @@ async fn run_remote(
         match resident::request(Request::Snapshot {
             ui: client.host.assistance.ui_present(),
             device_cursor: device_cursor.clone(),
+            language: Some(crate::i18n::language().tag().to_owned()),
         })
         .await
         {

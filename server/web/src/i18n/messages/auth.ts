@@ -55,7 +55,7 @@ export const en: typeof zh = {
     password: 'Password',
     badCredentials: 'Incorrect username or password, or the account is disabled',
     registerLink: 'Register with an invite code',
-    visitLink: 'Watch with a connect ID and access code',
+    visitLink: 'Watch with a short ID and access code',
   },
   secondFactor: {
     title: 'Two-step verification',

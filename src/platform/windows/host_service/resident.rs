@@ -48,6 +48,10 @@ pub(crate) enum Request {
         ui: bool,
         #[serde(default)]
         device_cursor: Option<crate::account::device_change::relay::Cursor>,
+        /// The device centre's interface language: texts this process
+        /// composes for it (status, errors) use it too.
+        #[serde(default)]
+        language: Option<String>,
     },
     Assist {
         account: String,
@@ -162,6 +166,10 @@ pub(crate) enum Reply {
     ApiError {
         code: crate::account::api::ErrorCode,
         message: String,
+        #[serde(default)]
+        reason: Option<String>,
+        #[serde(default)]
+        details: serde_json::Value,
     },
 }
 impl Reply {
@@ -170,6 +178,8 @@ impl Reply {
             Ok(error) => Self::ApiError {
                 code: error.code,
                 message: error.message,
+                reason: error.reason,
+                details: error.details,
             },
             Err(error) => Self::Error(format!("{error:#}")),
         }
@@ -177,8 +187,16 @@ impl Reply {
     pub fn checked(self) -> Result<Self> {
         match self {
             Self::Error(e) => anyhow::bail!(e),
-            Self::ApiError { code, message } => {
-                Err(crate::account::api::ApiFailure::new(code, message).into())
+            Self::ApiError {
+                code,
+                message,
+                reason,
+                details,
+            } => {
+                let mut failure = crate::account::api::ApiFailure::new(code, message);
+                failure.reason = reason;
+                failure.details = details;
+                Err(failure.into())
             }
             other => Ok(other),
         }
@@ -844,7 +862,10 @@ async fn run_authorized_account(
                             let current = client.as_ref().context(t().system.service_account_not_restored)?;
                             let account = current.generation();
                             match request {
-                                Request::Snapshot { ui, device_cursor } => {
+                                Request::Snapshot { ui, device_cursor, language } => {
+                                    if let Some(language) = language.as_deref().and_then(crate::i18n::Language::from_tag) {
+                                        crate::i18n::set(language);
+                                    }
                                     if ui { current.host.assistance.touch_ui(); }
                                     Ok(Reply::Snapshot(Box::new(Snapshot {
                                     device_changes: Some(device_changes.read(device_cursor.as_ref())),

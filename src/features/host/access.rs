@@ -4,6 +4,17 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 use crate::i18n::t;
 
+/// The host already admits as many participants as it allows; the session
+/// ends as closed by the host, not as a media failure.
+#[derive(Debug)]
+pub(crate) struct ParticipantLimit;
+impl std::fmt::Display for ParticipantLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(t().features.host_participant_limit)
+    }
+}
+impl std::error::Error for ParticipantLimit {}
+
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Status {
     /// The first participant's connection (single-connection views).
@@ -1549,13 +1560,12 @@ impl Lease {
     /// Admit one participant. Other participants keep their sessions.
     pub(crate) fn peer_lease(&self) -> anyhow::Result<SessionLease> {
         let mut state = lock(&self.handle.ownership);
-        anyhow::ensure!(self.current(&state), "本次被控许可已失效");
-        anyhow::ensure!(!state.updating, "被控端正在更新");
-        anyhow::ensure!(!state.power_executing, "被控端正在执行电源操作");
-        anyhow::ensure!(
-            state.participants.len() < participant_limit(&state),
-            "被控端的连接数已达上限"
-        );
+        anyhow::ensure!(self.current(&state), "{}", t().features.peer_lease_expired);
+        anyhow::ensure!(!state.updating, "{}", t().features.upgrade_host_updating);
+        anyhow::ensure!(!state.power_executing, "{}", t().features.host_power_executing);
+        if state.participants.len() >= participant_limit(&state) {
+            return Err(ParticipantLimit.into());
+        }
         if state.participants.is_empty() {
             // A new first participant starts a fresh single-connection view.
             state.status.ended_connection = None;

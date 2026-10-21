@@ -1,7 +1,6 @@
 //! Publisher business-channel routing and observed source reporting.
 use super::super::lock;
 use super::{ReportRoutes, ReportTarget};
-use crate::i18n::t;
 use anyhow::Result;
 use bytes::Bytes;
 use std::sync::Arc;
@@ -343,11 +342,13 @@ pub(super) async fn bind_channel(
                 match crate::features::stream_control::publisher::control_turn(&message.data) {
                     Ok(Some(turn)) => {
                         let lease = screens.lock().await.authorization();
-                        let (held, reason) = control_turn(&lease, turn.take, turn.automatic);
+                        let (held, refusal, holder) =
+                            control_turn(&lease, turn.take, turn.automatic);
                         if let Some(channel) = weak.upgrade()
                             && !cancel.is_cancelled()
-                            && let Err(error) =
-                                channel.send(&Bytes::from(turn.response(held, reason))).await
+                            && let Err(error) = channel
+                                .send(&Bytes::from(turn.response(held, refusal, holder)))
+                                .await
                         {
                             tracing::debug!(%error, "control token response failed");
                         }
@@ -683,30 +684,30 @@ pub(super) async fn publish_state(
 }
 
 /// Take or release the control token for this participant: whether it
-/// holds the token now, and why not.
+/// holds the token now, and why not (a refusal code and the holder; the
+/// requester words it in its own language).
 fn control_turn(
     lease: &crate::features::host::Lease,
     take: bool,
     automatic: bool,
-) -> (bool, String) {
+) -> (bool, i32, String) {
     use crate::features::host::participants::{self, Refusal};
+    use crate::features::stream_control::control_turn::refusal;
     let Some(key) = lease.participant() else {
-        return (false, t().features.peer_control_not_available.into());
+        return (false, refusal::UNAVAILABLE, String::new());
     };
     if !take {
         participants::release_control(key);
-        return (false, String::new());
+        return (false, refusal::NONE, String::new());
     }
     if !lease.requested() || !lease.granted(farwing_protocol::caps::CONTROL) {
-        return (false, t().features.peer_no_control_permission.into());
+        return (false, refusal::NOT_ALLOWED, String::new());
     }
     match participants::take_control(key, automatic) {
-        Ok(()) => (true, String::new()),
-        Err(Refusal::NotAllowed) => (false, t().features.peer_no_control_permission.into()),
-        Err(Refusal::HeldBy(holder)) => {
-            (false, crate::features::stream_control::control_turn::held_by(&holder))
-        }
-        Err(Refusal::Shared) => (false, t().features.peer_control_not_automatic_shared.into()),
+        Ok(()) => (true, refusal::NONE, String::new()),
+        Err(Refusal::NotAllowed) => (false, refusal::NOT_ALLOWED, String::new()),
+        Err(Refusal::HeldBy(holder)) => (false, refusal::HELD, holder),
+        Err(Refusal::Shared) => (false, refusal::SHARED, String::new()),
     }
 }
 

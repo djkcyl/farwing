@@ -10,7 +10,7 @@ pub(crate) struct Snapshot {
     pub reported_name: String,
     pub client_id: String,
     pub reported_controllable: bool,
-    pub server_details: Vec<(String, String)>,
+    pub server_details: Vec<(crate::account::api::DetailRow, String)>,
     pub readback: String,
     pub readback_at: Option<i64>,
     pub registration: String,

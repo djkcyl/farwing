@@ -21,9 +21,39 @@ pub(crate) struct TurnResponse {
     /// Whether the requester holds the token now.
     #[prost(bool, tag = "1")]
     pub held: bool,
-    /// Why a take was refused, for the user.
-    #[prost(string, tag = "2")]
-    pub message: String,
+    /// Why a take was refused (one of [`refusal`]); the requester words it.
+    #[prost(int32, tag = "3")]
+    pub refusal: i32,
+    /// Who controls now, for [`refusal::HELD`].
+    #[prost(string, tag = "4")]
+    pub holder: String,
+}
+
+/// Why the host refused a take.
+pub(crate) mod refusal {
+    pub const NONE: i32 = 0;
+    /// This participant cannot control in this session.
+    pub const UNAVAILABLE: i32 = 1;
+    /// It was not granted control.
+    pub const NOT_ALLOWED: i32 = 2;
+    /// Another participant controls.
+    pub const HELD: i32 = 3;
+    /// Shared view: control is not taken automatically.
+    pub const SHARED: i32 = 4;
+}
+
+impl TurnResponse {
+    /// The refusal in this device's language; `None` without one.
+    pub(crate) fn refusal_text(&self) -> Option<String> {
+        let text = &t().features;
+        Some(match self.refusal {
+            refusal::UNAVAILABLE => text.peer_control_not_available.to_owned(),
+            refusal::NOT_ALLOWED => text.peer_no_control_permission.to_owned(),
+            refusal::HELD => held_by(&self.holder),
+            refusal::SHARED => text.peer_control_not_automatic_shared.to_owned(),
+            _ => return None,
+        })
+    }
 }
 
 /// Why a take is refused while `holder` (a nickname) controls.
@@ -85,13 +115,11 @@ impl StreamControlHandle {
         if response.held {
             return;
         }
-        tracing::info!(automatic, message = %response.message, "control token refused");
+        tracing::info!(automatic, refusal = response.refusal, "control token refused");
         let notice = (!automatic).then(|| {
-            if response.message.is_empty() {
-                t().features.stream_control_refused.to_owned()
-            } else {
-                response.message
-            }
+            response
+                .refusal_text()
+                .unwrap_or_else(|| t().features.stream_control_refused.to_owned())
         });
         self.leave_control_locked(state, notice);
     }

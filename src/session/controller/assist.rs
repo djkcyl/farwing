@@ -260,6 +260,13 @@ async fn authorize(
     }
     .await
     .map_err(|error| match crate::account::api::failure_code(&error) {
+        // A specific reason (busy, locked, pairing declined…) says more.
+        _ if error
+            .downcast_ref::<ApiFailure>()
+            .is_some_and(|failure| failure.reason.is_some()) =>
+        {
+            error
+        }
         Some(ErrorCode::AssistCodeInvalid) => anyhow!("{}", t().session.error_code_invalid),
         Some(ErrorCode::AssistCodeRequired) => anyhow!("{}", t().session.error_code_required),
         Some(ErrorCode::AssistRejected) => anyhow!("{}", t().session.error_connection_declined),

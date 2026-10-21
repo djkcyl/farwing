@@ -42,6 +42,7 @@ pub(crate) fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 pub(crate) use access::{
+    ParticipantLimit,
     AccessRequest, ActiveEncoding, Handle, Lease, RemoteAction, SessionLease, Status,
     StreamStatus,
 };

@@ -9,7 +9,6 @@ pub(crate) struct Common {
     pub remove: &'static str,
     pub retry: &'static str,
     pub refresh: &'static str,
-    pub copy: &'static str,
     pub copied: &'static str,
     pub click_to_copy: &'static str,
     pub connect: &'static str,
@@ -19,12 +18,7 @@ pub(crate) struct Common {
     pub back: &'static str,
     pub next: &'static str,
     pub done: &'static str,
-    pub yes: &'static str,
-    pub no: &'static str,
-    pub allow: &'static str,
     pub deny: &'static str,
-    pub on: &'static str,
-    pub off: &'static str,
     pub online: &'static str,
     pub offline: &'static str,
     pub loading: &'static str,
@@ -36,8 +30,6 @@ pub(crate) struct Common {
     pub sign_in: &'static str,
     pub sign_out: &'static str,
     pub signed_out: &'static str,
-    /// "<what>失败：<error>"-style generic failure with the error text.
-    pub failed: fn(&str) -> String,
 }
 
 pub(crate) const ZH_CN: Common = Common {
@@ -50,7 +42,6 @@ pub(crate) const ZH_CN: Common = Common {
     remove: "移除",
     retry: "重试",
     refresh: "刷新",
-    copy: "复制",
     copied: "已复制",
     click_to_copy: "点击复制",
     connect: "连接",
@@ -60,12 +51,7 @@ pub(crate) const ZH_CN: Common = Common {
     back: "返回",
     next: "下一步",
     done: "完成",
-    yes: "是",
-    no: "否",
-    allow: "允许",
     deny: "拒绝",
-    on: "开",
-    off: "关",
     online: "在线",
     offline: "离线",
     loading: "正在加载…",
@@ -77,7 +63,6 @@ pub(crate) const ZH_CN: Common = Common {
     sign_in: "登录",
     sign_out: "退出登录",
     signed_out: "未登录",
-    failed: |error| format!("操作失败：{error}"),
 };
 
 pub(crate) const EN: Common = Common {
@@ -90,7 +75,6 @@ pub(crate) const EN: Common = Common {
     remove: "Remove",
     retry: "Retry",
     refresh: "Refresh",
-    copy: "Copy",
     copied: "Copied",
     click_to_copy: "Click to copy",
     connect: "Connect",
@@ -100,12 +84,7 @@ pub(crate) const EN: Common = Common {
     back: "Back",
     next: "Next",
     done: "Done",
-    yes: "Yes",
-    no: "No",
-    allow: "Allow",
     deny: "Deny",
-    on: "On",
-    off: "Off",
     online: "Online",
     offline: "Offline",
     loading: "Loading…",
@@ -117,5 +96,4 @@ pub(crate) const EN: Common = Common {
     sign_in: "Sign in",
     sign_out: "Sign out",
     signed_out: "Not signed in",
-    failed: |error| format!("Failed: {error}"),
 };

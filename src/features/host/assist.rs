@@ -216,7 +216,8 @@ pub(crate) enum Decision {
     /// Allowed, and the device is trusted from now on (always so for a
     /// pairing request).
     Trust,
-    /// Nobody can answer here: the reason.
+    /// Nobody can answer here: why (`farwing_protocol::error::reason`),
+    /// shown on the asking device in its language.
     Unavailable(&'static str),
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -434,16 +435,16 @@ impl Handle {
         {
             let mut state = self.lock();
             if state.snapshot.pending.is_some() {
-                return Decision::Unavailable(t().features.assist_other_request_pending);
+                return Decision::Unavailable(farwing_protocol::error::reason::HOST_BUSY);
             }
             if crate::platform::capture::session_locked() != Some(false) {
-                return Decision::Unavailable(t().features.assist_other_locked);
+                return Decision::Unavailable(farwing_protocol::error::reason::HOST_LOCKED);
             }
             if !state
                 .ui_seen
                 .is_some_and(|at| at.elapsed() < Duration::from_secs(3))
             {
-                return Decision::Unavailable(t().features.assist_other_not_open);
+                return Decision::Unavailable(farwing_protocol::error::reason::HOST_APP_CLOSED);
             }
             state.snapshot.pending = Some(Confirmation {
                 id: id.clone(),

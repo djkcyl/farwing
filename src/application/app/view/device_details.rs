@@ -37,14 +37,13 @@ enum Hardware {
 impl Hardware {
     const ALL: [Self; 4] = [Self::Board, Self::Processor, Self::Memory, Self::Graphics];
 
-    /// The row's key in `crate::account::api::DeviceDetail::details`: an
-    /// identifier set there, not shown.
-    fn key(self) -> &'static str {
+    /// The row in `crate::account::api::DeviceDetail::details`.
+    fn row(self) -> DetailRow {
         match self {
-            Self::Board => "主板",
-            Self::Processor => "处理器",
-            Self::Memory => "总内存",
-            Self::Graphics => "显卡",
+            Self::Board => DetailRow::Board,
+            Self::Processor => DetailRow::Processor,
+            Self::Memory => DetailRow::Memory,
+            Self::Graphics => DetailRow::Graphics,
         }
     }
 
@@ -68,8 +67,7 @@ impl Hardware {
     }
 }
 
-/// The key of the operating system row in `DeviceDetail::details`.
-const SYSTEM_KEY: &str = "系统";
+use crate::account::api::DetailRow;
 
 fn hardware_summary(hardware: Option<Hardware>, value: &str) -> String {
     match hardware {
@@ -587,7 +585,7 @@ impl DeviceCenterApp {
             .and_then(|d| {
                 d.details
                     .iter()
-                    .find(|(k, _)| k == SYSTEM_KEY)
+                    .find(|(row, _)| *row == DetailRow::System)
             })
             .map(|(_, v)| v.clone())
             .filter(|v| !v.is_empty())
@@ -927,7 +925,7 @@ impl DeviceCenterApp {
             );
             for (i, hardware) in Hardware::ALL.into_iter().enumerate() {
                 let value = fields
-                    .and_then(|d| d.details.iter().find(|(k, _)| k == hardware.key()))
+                    .and_then(|d| d.details.iter().find(|(row, _)| *row == hardware.row()))
                     .map(|(_, v)| v.as_str())
                     .unwrap_or(if detail.is_none() {
                         text.reading

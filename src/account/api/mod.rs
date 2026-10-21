@@ -295,7 +295,7 @@ pub fn device_id_text(device_id: &str) -> String {
 /// The device ID of a device key, for display; `未知` without a valid key.
 pub fn key_id_text(public_key: &str) -> String {
     farwing_protocol::crypto::local_device_id(public_key)
-        .map_or_else(|| "未知".to_owned(), |id| device_id_text(&id))
+        .map_or_else(|| crate::i18n::t().common.unknown.to_owned(), |id| device_id_text(&id))
 }
 
 /// A typed device ID: case, spaces and dashes are ignored.
@@ -317,8 +317,8 @@ pub fn platform_label(platform: Platform) -> &'static str {
         Platform::Linux => "Linux",
         Platform::Android => "Android",
         Platform::Ios => "iOS",
-        Platform::Web => "网页",
-        Platform::Unknown => "未知平台",
+        Platform::Web => crate::i18n::t().session.platform_web,
+        Platform::Unknown => crate::i18n::t().session.platform_unknown,
     }
 }
 
@@ -436,9 +436,9 @@ impl DeviceInfo {
 
     pub fn status_label(&self) -> &str {
         match self.status.as_str() {
-            wire::STATUS_ONLINE => "在线",
-            wire::STATUS_OFFLINE => "离线",
-            "" => "未提供",
+            wire::STATUS_ONLINE => crate::i18n::t().common.online,
+            wire::STATUS_OFFLINE => crate::i18n::t().common.offline,
+            "" => crate::i18n::t().center.not_provided,
             _ => &self.status,
         }
     }
@@ -579,15 +579,61 @@ impl DeviceGroups {
     pub fn entries(&self) -> impl Iterator<Item = (&'static str, &DeviceInfo)> {
         self.desktop_devices
             .iter()
-            .map(|d| ("电脑", d))
-            .chain(self.mobile_devices.iter().map(|d| ("手机 / 平板", d)))
+            .map(|d| (crate::i18n::t().session.group_computers, d))
+            .chain(self.mobile_devices.iter().map(|d| (crate::i18n::t().session.group_mobile, d)))
     }
 }
 
 /// `GET /devices/{id}/detail`, flattened into labelled rows for display.
 #[derive(Clone, Default)]
 pub struct DeviceDetail {
-    pub details: Vec<(String, String)>,
+    pub details: Vec<(DetailRow, String)>,
+}
+
+/// One row of a device's details; its label is in the reader's language.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DetailRow {
+    Name,
+    DeviceId,
+    Owner,
+    Platform,
+    System,
+    Version,
+    Status,
+    Registered,
+    LastSeen,
+    ConnectId,
+    Processor,
+    Board,
+    Graphics,
+    Memory,
+    Screen,
+    Mac,
+}
+
+impl DetailRow {
+    pub fn label(self) -> &'static str {
+        let text = &crate::i18n::t().session;
+        match self {
+            Self::Name => text.detail_name,
+            Self::DeviceId => text.detail_device_id,
+            Self::Owner => text.detail_owner,
+            Self::Platform => text.detail_platform,
+            Self::System => text.detail_system,
+            Self::Version => text.detail_version,
+            Self::Status => text.detail_status,
+            Self::Registered => text.detail_registered,
+            Self::LastSeen => text.detail_last_seen,
+            Self::ConnectId => text.detail_connect_id,
+            Self::Processor => text.detail_processor,
+            Self::Board => text.detail_board,
+            Self::Graphics => text.detail_graphics,
+            Self::Memory => text.detail_memory,
+            Self::Screen => text.detail_screen,
+            Self::Mac => text.detail_mac,
+        }
+    }
 }
 
 impl From<wire::DeviceDetail> for DeviceDetail {
@@ -602,42 +648,46 @@ impl From<wire::DeviceDetail> for DeviceDetail {
                 .unwrap_or_default()
         }
         let mut rows = Vec::new();
-        let mut push = |label: &str, value: String| {
+        let mut push = |row: DetailRow, value: String| {
             if !value.trim().is_empty() {
-                rows.push((label.to_owned(), value));
+                rows.push((row, value));
             }
         };
-        push("设备名称", value.alias);
-        push("设备 ID", value.device_id);
+        let common = &crate::i18n::t().common;
+        push(DetailRow::Name, value.alias);
+        push(DetailRow::DeviceId, value.device_id);
         if let Some(owner) = &value.owner {
-            push("所有者", owner.display_name().to_owned());
+            push(DetailRow::Owner, owner.display_name().to_owned());
         }
-        push("平台", platform_label(value.platform).to_owned());
-        push("系统", value.os);
-        push("Farwing 版本", value.version);
-        push("状态", if value.online { "在线" } else { "离线" }.to_owned());
+        push(DetailRow::Platform, platform_label(value.platform).to_owned());
+        push(DetailRow::System, value.os);
+        push(DetailRow::Version, value.version);
+        push(
+            DetailRow::Status,
+            if value.online { common.online } else { common.offline }.to_owned(),
+        );
         if value.registered_at > 0 {
-            push("登记时间", time(value.registered_at));
+            push(DetailRow::Registered, time(value.registered_at));
         }
         if value.last_seen_at > 0 {
-            push("最后在线", time(value.last_seen_at));
+            push(DetailRow::LastSeen, time(value.last_seen_at));
         }
         if let Some(connect_id) = value.connect_id {
-            push("短号", connect_id);
+            push(DetailRow::ConnectId, connect_id);
         }
         if let Some(hardware) = value.hardware {
-            push("处理器", hardware.cpu);
-            push("主板", hardware.base_board);
-            push("显卡", hardware.video.join(" / "));
+            push(DetailRow::Processor, hardware.cpu);
+            push(DetailRow::Board, hardware.base_board);
+            push(DetailRow::Graphics, hardware.video.join(" / "));
             if hardware.memory > 0 {
                 // Bytes.
                 push(
-                    "总内存",
+                    DetailRow::Memory,
                     format!("{:.1} GB", hardware.memory as f64 / 1024f64.powi(3)),
                 );
             }
-            push("屏幕", hardware.screen);
-            push("网卡 MAC", hardware.mac);
+            push(DetailRow::Screen, hardware.screen);
+            push(DetailRow::Mac, hardware.mac);
         }
         Self { details: rows }
     }
@@ -671,10 +721,10 @@ pub struct RealtimeTicket {
 impl RealtimeTicket {
     pub fn validate(&self) -> Result<()> {
         if !farwing_protocol::ids::is_token(&self.ticket, farwing_protocol::ids::TICKET_PREFIX) {
-            bail!("服务器未返回有效的实时连接凭据");
+            bail!("{}", crate::i18n::t().session.api_no_ticket);
         }
         if self.endpoints.iter().all(String::is_empty) {
-            bail!("服务器未返回实时连接地址");
+            bail!("{}", crate::i18n::t().session.api_no_endpoint);
         }
         Ok(())
     }
@@ -750,7 +800,7 @@ impl AssistJoined {
     pub(crate) fn validate(&self, controller_id: &str) -> Result<()> {
         self.ticket.validate()?;
         if !self.host.platform.is_desktop() {
-            bail!("暂不支持观看此类设备");
+            bail!("{}", crate::i18n::t().session.api_unsupported_device);
         }
         validate_device_id(&self.host.device_id)?;
         if self.host.device_id == controller_id {
@@ -760,7 +810,8 @@ impl AssistJoined {
         }
         anyhow::ensure!(
             farwing_protocol::crypto::valid_public_key(&self.host.public_key),
-            "协助设备未提供有效的身份公钥"
+            "{}",
+            crate::i18n::t().session.api_assist_no_key
         );
         Ok(())
     }
@@ -867,7 +918,7 @@ impl ServerApi {
     /// Register this installation (or update its registration) with a proof
     /// of possession of the device key.
     pub async fn init_device(&self, request: DeviceInitRequest) -> Result<DeviceInitResponse> {
-        let identity = self.identity.as_ref().context("本机身份尚未建立")?;
+        let identity = self.identity.as_ref().context(crate::i18n::t().session.api_no_identity)?;
         let mut request = request;
         request.public_key = identity.public_key();
         request.timestamp = signed_now_ms();
@@ -959,7 +1010,8 @@ impl ServerApi {
                 &session.guest_token,
                 farwing_protocol::ids::GUEST_TOKEN_PREFIX
             ),
-            "游客凭据无效"
+            "{}",
+            crate::i18n::t().session.api_guest_token_invalid
         );
         self.set_bearer(Some(&session.guest_token))?;
         self.guest = true;
@@ -1014,7 +1066,7 @@ impl ServerApi {
 
     /// `action`: `accept` or `reject`.
     pub async fn answer_friend_request(&self, id: &str, accept: bool) -> Result<()> {
-        anyhow::ensure!(farwing_protocol::ids::is_uuid(id), "好友申请标识无效");
+        anyhow::ensure!(farwing_protocol::ids::is_uuid(id), "{}", crate::i18n::t().session.api_friend_request_id_invalid);
         self.call::<IgnoredAny>(
             Method::POST,
             &path::friend_request(id, if accept { "accept" } else { "reject" }),
@@ -1027,7 +1079,7 @@ impl ServerApi {
     }
 
     pub async fn cancel_friend_request(&self, id: &str) -> Result<()> {
-        anyhow::ensure!(farwing_protocol::ids::is_uuid(id), "好友申请标识无效");
+        anyhow::ensure!(farwing_protocol::ids::is_uuid(id), "{}", crate::i18n::t().session.api_friend_request_id_invalid);
         self.call::<IgnoredAny>(
             Method::DELETE,
             &path::friend_request_entry(id),
@@ -1040,7 +1092,7 @@ impl ServerApi {
     }
 
     pub async fn remove_friend(&self, user_id: &str) -> Result<()> {
-        anyhow::ensure!(farwing_protocol::ids::is_uuid(user_id), "用户标识无效");
+        anyhow::ensure!(farwing_protocol::ids::is_uuid(user_id), "{}", crate::i18n::t().session.api_user_id_invalid);
         self.call::<IgnoredAny>(
             Method::DELETE,
             &path::friend(user_id),
@@ -1054,7 +1106,7 @@ impl ServerApi {
 
     /// What this account grants `user_id`.
     pub async fn grants(&self, user_id: &str) -> Result<wire::Grants> {
-        anyhow::ensure!(farwing_protocol::ids::is_uuid(user_id), "用户标识无效");
+        anyhow::ensure!(farwing_protocol::ids::is_uuid(user_id), "{}", crate::i18n::t().session.api_user_id_invalid);
         self.call(
             Method::GET,
             &path::grants(user_id),
@@ -1066,7 +1118,7 @@ impl ServerApi {
     }
 
     pub async fn set_grants(&self, user_id: &str, grants: &wire::Grants) -> Result<()> {
-        anyhow::ensure!(farwing_protocol::ids::is_uuid(user_id), "用户标识无效");
+        anyhow::ensure!(farwing_protocol::ids::is_uuid(user_id), "{}", crate::i18n::t().session.api_user_id_invalid);
         self.call::<IgnoredAny>(
             Method::PUT,
             &path::grants(user_id),
@@ -1167,7 +1219,8 @@ impl ServerApi {
     ) -> Result<String> {
         anyhow::ensure!(
             !image.is_empty() && image.len() <= farwing_protocol::limits::MAX_WALLPAPER_BYTES,
-            "壁纸图片超出大小限制"
+            "{}",
+            crate::i18n::t().session.api_wallpaper_too_large
         );
         let response: wire::WallpaperResponse = self
             .call(
@@ -1185,7 +1238,8 @@ impl ServerApi {
     pub(crate) async fn download_wallpaper(&self, relative: &str) -> Result<Bytes> {
         anyhow::ensure!(
             relative.starts_with(&format!("{}/", path::DEVICES)) && !relative.contains(".."),
-            "壁纸地址不属于当前服务器"
+            "{}",
+            crate::i18n::t().session.api_wallpaper_foreign
         );
         let response = self
             .send(
@@ -1201,7 +1255,8 @@ impl ServerApi {
         }
         anyhow::ensure!(
             response.body.len() <= farwing_protocol::limits::MAX_WALLPAPER_BYTES,
-            "壁纸图片超出大小限制"
+            "{}",
+            crate::i18n::t().session.api_wallpaper_too_large
         );
         Ok(response.body)
     }
@@ -1324,7 +1379,8 @@ impl ServerApi {
                         .session_id
                         .as_deref()
                         .is_some_and(farwing_protocol::ids::is_uuid),
-                "服务器未返回有效的会话"
+                "{}",
+                crate::i18n::t().session.api_no_session
             );
         } else {
             ticket.validate()?;
@@ -1334,7 +1390,7 @@ impl ServerApi {
 
     /// A fresh ticket for an existing session (reconnect after a lost socket).
     pub async fn refresh_session_ticket(&self, session_id: &str) -> Result<RealtimeTicket> {
-        anyhow::ensure!(farwing_protocol::ids::is_uuid(session_id), "会话标识无效");
+        anyhow::ensure!(farwing_protocol::ids::is_uuid(session_id), "{}", crate::i18n::t().session.api_session_id_invalid);
         let ticket: wire::SessionTicket = self
             .call(
                 Method::POST,
@@ -1384,7 +1440,8 @@ impl ServerApi {
             .await?;
         anyhow::ensure!(
             farwing_protocol::ids::is_uuid(&pending.request_id),
-            "协助请求标识无效"
+            "{}",
+            crate::i18n::t().session.api_assist_id_invalid
         );
         Ok(pending)
     }
@@ -1395,7 +1452,7 @@ impl ServerApi {
         request_id: &str,
         key_confirm: String,
     ) -> Result<AssistJoined> {
-        anyhow::ensure!(farwing_protocol::ids::is_uuid(request_id), "协助请求标识无效");
+        anyhow::ensure!(farwing_protocol::ids::is_uuid(request_id), "{}", crate::i18n::t().session.api_assist_id_invalid);
         let joined: wire::AssistJoin = self
             .call(
                 Method::POST,
@@ -1409,7 +1466,7 @@ impl ServerApi {
     }
 
     pub(crate) async fn assist_cancel(&self, request_id: &str) -> Result<()> {
-        anyhow::ensure!(farwing_protocol::ids::is_uuid(request_id), "协助请求标识无效");
+        anyhow::ensure!(farwing_protocol::ids::is_uuid(request_id), "{}", crate::i18n::t().session.api_assist_id_invalid);
         self.call::<IgnoredAny>(
             Method::POST,
             &path::assist_request(request_id, "cancel"),
@@ -1521,7 +1578,7 @@ impl ServerApi {
     }
 
     async fn host_assist_reply(&self, request_id: &str, action: &str, body: Body) -> Result<()> {
-        anyhow::ensure!(farwing_protocol::ids::is_uuid(request_id), "协助请求标识无效");
+        anyhow::ensure!(farwing_protocol::ids::is_uuid(request_id), "{}", crate::i18n::t().session.api_assist_id_invalid);
         self.call::<IgnoredAny>(
             Method::POST,
             &path::assist_request(request_id, action),
@@ -1623,7 +1680,7 @@ impl ServerApi {
             .await
             .map_err(|error| ApiFailure::network(&error))?;
         if response.body.len() > MAX_RESPONSE_BYTES {
-            bail!("Farwing 服务器响应过大");
+            bail!("{}", crate::i18n::t().session.api_response_too_large);
         }
         Ok(response)
     }
@@ -1645,7 +1702,7 @@ impl ServerApi {
             .identity
             .as_ref()
             .filter(|identity| identity.registered())
-            .context("本机设备尚未在服务器登记")?;
+            .context(crate::i18n::t().session.api_not_registered)?;
         let timestamp = signed_now_ms();
         let signature = identity.sign(&farwing_protocol::crypto::request_message(
             method.as_str(),
@@ -1655,7 +1712,7 @@ impl ServerApi {
         ));
         headers.insert(
             HeaderName::from_static(farwing_protocol::headers::DEVICE_ID),
-            HeaderValue::from_str(&identity.device_id).context("设备标识无效")?,
+            HeaderValue::from_str(&identity.device_id).context(crate::i18n::t().session.api_device_id_invalid)?,
         );
         headers.insert(
             HeaderName::from_static(farwing_protocol::headers::TIMESTAMP),
@@ -1663,10 +1720,10 @@ impl ServerApi {
         );
         headers.insert(
             HeaderName::from_static(farwing_protocol::headers::SIGNATURE),
-            HeaderValue::from_str(&signature).context("设备签名无效")?,
+            HeaderValue::from_str(&signature).context(crate::i18n::t().session.api_signature_invalid)?,
         );
         if auth == Auth::Session {
-            let bearer = self.bearer.as_ref().context("尚未登录")?;
+            let bearer = self.bearer.as_ref().context(crate::i18n::t().common.signed_out)?;
             headers.insert(AUTHORIZATION, bearer.clone());
         }
         Ok(headers)

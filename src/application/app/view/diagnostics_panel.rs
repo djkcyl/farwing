@@ -296,8 +296,8 @@ impl DeviceCenterApp {
         ui.separator();
         diagnostics_row(ui, text.server_readback, &value(&snapshot.readback));
         diagnostics_row(ui, text.read_back_at, &time(snapshot.readback_at));
-        for (label, detail) in &snapshot.server_details {
-            diagnostics_row(ui, label, detail);
+        for (row, detail) in &snapshot.server_details {
+            diagnostics_row(ui, row.label(), detail);
         }
         ui.separator();
         diagnostics_row(ui, text.wallpaper, &value(&snapshot.wallpaper));

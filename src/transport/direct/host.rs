@@ -523,7 +523,11 @@ impl Shared {
                     decision = &mut asked, if !ours => match decision {
                         Decision::Trust => ours = true,
                         Decision::Unavailable(reason) => {
-                            return Err(refuse(ErrorCode::AssistUnavailable, reason));
+                            return Err(refuse_with(
+                                ErrorCode::AssistUnavailable,
+                                "nobody can answer",
+                                serde_json::json!({ "reason": reason }),
+                            ));
                         }
                         Decision::Reject | Decision::Allow => {
                             declined(self);
@@ -744,7 +748,13 @@ impl Shared {
                         key,
                     });
                 }
-                Decision::Unavailable(reason) => return Err(refuse(ErrorCode::AssistUnavailable, reason)),
+                Decision::Unavailable(reason) => {
+                    return Err(refuse_with(
+                        ErrorCode::AssistUnavailable,
+                        "nobody can answer",
+                        serde_json::json!({ "reason": reason }),
+                    ));
+                }
                 Decision::Reject => return Err(refuse(ErrorCode::AssistRejected, "connection declined")),
             }
         }

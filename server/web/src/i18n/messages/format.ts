@@ -91,8 +91,8 @@ export const en: typeof zh = {
   relations: {
     own: 'Same account',
     friend: 'Friend',
-    assist: 'Guest',
-    trusted: 'Trusted guest',
+    assist: 'Visitor',
+    trusted: 'Trusted visitor',
   },
   purposes: {
     desktop: 'Remote desktop',

@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn both_languages_have_arguments_in_place() {
         for language in Language::ALL {
-            let text = (messages(language).common.failed)("x");
+            let text = (messages(language).session.host_enable_failed)("x");
             assert!(text.contains('x'), "{text}");
         }
     }

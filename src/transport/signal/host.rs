@@ -2,6 +2,7 @@
 //! device is one participant with its own media peer (`docs/protocol/v2-design.md`
 //! §4). Participants never displace each other; the display layout is shared.
 use super::*;
+use crate::i18n::t;
 use crate::features::host::desktop;
 use crate::features::host::peer::Peer;
 use farwing_protocol::realtime::{
@@ -47,7 +48,13 @@ struct Participant {
 }
 
 /// Host status while the server cannot be reached but direct connections can.
-const DIRECT_ONLY: &str = "服务器暂不可用，仅接受直连";
+
+/// The "direct connections only" notice, in whichever language it was set.
+fn is_direct_only(message: &str) -> bool {
+    crate::i18n::Language::ALL
+        .iter()
+        .any(|language| crate::i18n::messages(*language).session.host_direct_only == message)
+}
 
 /// Tell the server whether this host accepts connections. An unreachable
 /// server holds requests until it returns; that must not hold this session
@@ -127,9 +134,9 @@ impl Session {
                     Ok(()) => {
                         if let Some(lease) = lease
                             && lease.requested()
-                            && client.host.status().message == DIRECT_ONLY
+                            && is_direct_only(&client.host.status().message)
                         {
-                            lease.update(true, false, "等待连接");
+                            lease.update(true, false, t().features.host_waiting);
                         }
                     }
                     Err(error) => {
@@ -208,7 +215,11 @@ impl Session {
             Event::Power(crate::features::host::power::Event::Ready(result)) => {
                 let operation = async {
                     let request = result?;
-                    anyhow::ensure!(request.valid() && self.client.is_active(), "电源请求已取消");
+                    anyhow::ensure!(
+                        request.valid() && self.client.is_active(),
+                        "{}",
+                        t().features.power_request_cancelled
+                    );
                     self.client.host.begin_power()?;
                     // Tell every participant first, so its viewer waits for the
                     // host to come back instead of reporting a closed session.
@@ -231,8 +242,8 @@ impl Session {
                         .spawn(move || {
                             let _ = completed.send(request.execute(&client));
                         })
-                        .context("无法启动电源执行线程")?;
-                    result.await.context("电源执行任务中断")??;
+                        .context(t().session.power_start_failed)?;
+                    result.await.context(t().session.power_interrupted)??;
                     tracing::info!(?action, "Windows accepted remote power request");
                     Ok::<(), anyhow::Error>(())
                 }
@@ -255,7 +266,7 @@ impl Session {
                     if !lease.requested() {
                         return Ok(());
                     }
-                    lease.update(false, false, "正在启用被控…");
+                    lease.update(false, false, t().features.host_enabling);
                     // Without a server, only direct connections reach this host.
                     let offline = self.client.offline();
                     let published = if offline {
@@ -265,7 +276,15 @@ impl Session {
                     };
                     match published {
                         Ok(()) if lease.requested() && self.client.is_active() => {
-                            lease.update(true, false, if offline { "等待直连" } else { "等待连接" });
+                            lease.update(
+                                true,
+                                false,
+                                if offline {
+                                    t().session.host_waiting_direct
+                                } else {
+                                    t().features.host_waiting
+                                },
+                            );
                             self.authorization = Some(lease);
                             tracing::info!(
                                 elapsed_ms = started.elapsed().as_millis(),
@@ -284,18 +303,18 @@ impl Session {
                                     .is_some_and(|code| code.retryable()) =>
                         {
                             tracing::warn!(error = %format!("{error:#}"), "server unreachable; host access enabled for direct connections");
-                            lease.update(true, false, DIRECT_ONLY);
+                            lease.update(true, false, t().session.host_direct_only);
                             self.authorization = Some(lease);
                             self.republish = true;
                         }
                         Err(error) => {
                             let _ = publish(&self.client, false, WITHDRAW_WAIT).await;
-                            lease.update(false, false, "被控服务暂不可用");
-                            lease.fail(format!("无法启用被控：{error:#}"));
+                            lease.update(false, false, t().session.host_service_unavailable);
+                            lease.fail((t().session.host_enable_failed)(&format!("{error:#}")));
                         }
                     }
                 } else {
-                    self.client.host.update(false, false, "已禁止被控");
+                    self.client.host.update(false, false, t().features.host_disabled);
                     if self.client.offline() {
                         return Ok(());
                     }
@@ -304,7 +323,7 @@ impl Session {
                             self.client.host.update(
                                 false,
                                 false,
-                                format!("已禁止被控，在线状态更新失败：{error:#}"),
+                                (t().session.host_disabled_unpublished)(&format!("{error:#}")),
                             );
                         }
                     }
@@ -399,7 +418,7 @@ impl Session {
                 tracing::warn!(error=%format!("{error:#}"),"host connection preparation failed");
                 participant
                     .granted
-                    .fail(format!("无法建立被控连接：{error:#}"));
+                    .fail((t().session.host_session_failed)(&format!("{error:#}")));
                 // A local display/codec failure belongs to this incoming
                 // connection; it must not tear down the presence connection.
                 self.remove(&sid, signal, Some(reason::MEDIA_FAILED)).await;
@@ -547,7 +566,10 @@ impl Session {
                 if let Err(error) = self.incoming(envelope, signal).await {
                     tracing::warn!(error = %format!("{error:#}"), "host incoming session refused");
                     if !sid.is_empty() {
-                        let why = if error.to_string().contains("上限") {
+                        let why = if error
+                            .chain()
+                            .any(|cause| cause.is::<crate::features::host::ParticipantLimit>())
+                        {
                             reason::HOST_CLOSED
                         } else {
                             reason::MEDIA_FAILED
@@ -1002,7 +1024,7 @@ impl Session {
                 active_encoder: None,
             },
         );
-        authorization.update(true, false, "正在准备被控画面…");
+        authorization.update(true, false, t().session.host_preparing_screen);
         Ok(())
     }
 
@@ -1111,7 +1133,7 @@ impl Session {
         if let Some(peer) = participant.peer.take() {
             peer.close().await;
         }
-        participant.granted.update(true, false, "等待连接");
+        participant.granted.update(true, false, t().features.host_waiting);
         tracing::info!(
             participant = %participant.participant_id,
             remaining = self.participants.len(),

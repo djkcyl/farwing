@@ -295,7 +295,7 @@ export const en: typeof zh = {
     device: 'Device',
     platform: 'Platform',
     account: 'Account',
-    connectId: 'Connect ID',
+    connectId: 'Short ID',
     status: 'Status',
     lastSeen: 'Last online',
     created: 'Created',
@@ -414,7 +414,7 @@ export const en: typeof zh = {
     newPasswordOf: (name) => `New password for ${name}:`,
   },
   devices: {
-    searchPlaceholder: 'Name, ID, connect ID, account, IP',
+    searchPlaceholder: 'Name, ID, short ID, account, IP',
     all: (n) => `All ${n}`,
     online: (n) => `Online ${n}`,
     hosts: (n) => `Hosts ${n}`,

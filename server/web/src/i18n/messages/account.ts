@@ -155,7 +155,7 @@ export const zh = {
 
 export const en: typeof zh = {
   deviceId: 'Device ID',
-  connectId: 'Connect ID',
+  connectId: 'Short ID',
   name: 'Name',
   version: 'Version',
   username: 'Username',
@@ -221,8 +221,8 @@ export const en: typeof zh = {
     editNote: 'Edit note',
     deleteTitle: (id) => `Delete ${id}?`,
     added: 'Added to favorites',
-    badConnectId: 'A connect ID has 9 digits',
-    duplicate: 'This connect ID is already a favorite',
+    badConnectId: 'A short ID has 9 digits',
+    duplicate: 'This short ID is already a favorite',
   },
   friends: {
     presets: 'Presets',
