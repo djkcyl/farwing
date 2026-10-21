@@ -475,6 +475,9 @@ impl DeviceCenterApp {
         ui.spacing_mut().item_spacing.y = 0.0;
         let mut back = false;
         let mut refresh = false;
+        // Renaming, removing and refreshing go through the server.
+        let blocker = self.blocker();
+        let reason = blocker.map(|b| b.reason());
         let mut ports = false;
         let mut files = false;
         let mut diagnostics = false;
@@ -508,16 +511,19 @@ impl DeviceCenterApp {
             )
             .clicked();
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                refresh = ui
-                    .add_enabled(
-                        self.detail_pending.as_deref() != Some(&id),
-                        egui::Button::new(if self.detail_pending.as_deref() == Some(&id) {
-                            t().center.refreshing
-                        } else {
-                            t().center.refresh_details
-                        }),
-                    )
-                    .clicked();
+                let button = ui.add_enabled(
+                    self.detail_pending.as_deref() != Some(&id) && reason.is_none(),
+                    egui::Button::new(if self.detail_pending.as_deref() == Some(&id) {
+                        t().center.refreshing
+                    } else {
+                        t().center.refresh_details
+                    }),
+                );
+                refresh = match reason {
+                    Some(reason) => button.on_disabled_hover_text(reason),
+                    None => button,
+                }
+                .clicked();
             });
         });
         if self.center_ui.edit.is_none()
@@ -609,6 +615,7 @@ impl DeviceCenterApp {
             detail
                 .as_ref()
                 .and_then(|result| result.as_ref().err())
+                .filter(|_| !self.server_unreachable)
                 .map(String::as_str),
         );
         crate::ui::controls::observe_notice(
@@ -619,7 +626,8 @@ impl DeviceCenterApp {
             self.catalog
                 .as_ref()
                 .and_then(|c| c.details.get(&id))
-                .and_then(|d| d.refresh_error.as_deref()),
+                .and_then(|d| d.refresh_error.as_deref())
+                .filter(|_| !self.server_unreachable),
         );
         crate::ui::controls::page_scroll(("device-details-page", &id)).show(ui, |ui| {
             let width = ui.available_width();
@@ -927,10 +935,13 @@ impl DeviceCenterApp {
                 let value = fields
                     .and_then(|d| d.details.iter().find(|(row, _)| *row == hardware.row()))
                     .map(|(_, v)| v.as_str())
-                    .unwrap_or(if detail.is_none() {
-                        text.reading
-                    } else {
+                    .unwrap_or(if detail.is_some() {
                         text.not_provided
+                    } else if self.server_unreachable {
+                        // Read once the server is back.
+                        "—"
+                    } else {
+                        text.reading
                     });
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(left, canvas.top() + info_y + 28.0 + i as f32 * row_h),
@@ -997,16 +1008,18 @@ impl DeviceCenterApp {
                     super::remote_diagnostics::button_label(diagnostic_state.as_ref());
                 footer.spacing_mut().item_spacing.x = 16.0;
                 footer.add_enabled_ui(!self.mutation_pending && !self.logout_pending, |ui| {
-                    if detail_button(
+                    let rename = detail_button(
                         ui,
                         text.rename_device,
                         Glyph::Edit,
-                        true,
+                        reason.is_none(),
                         vec2(footer_width(ui, text.rename_device), theme::CONTROL_HEIGHT),
                         ButtonTone::Normal,
-                    )
-                    .clicked()
-                    {
+                    );
+                    if let Some(reason) = reason {
+                        rename.clone().on_disabled_hover_text(reason);
+                    }
+                    if rename.clicked() {
                         edit = Some(EditAction::Rename);
                     }
                     if has_diagnostics {
@@ -1032,17 +1045,21 @@ impl DeviceCenterApp {
                         {
                             exit_account = true;
                         }
-                    } else if detail_button(
-                        ui,
-                        text.remove_from_account,
-                        Glyph::Trash,
-                        true,
-                        vec2(footer_width(ui, text.remove_from_account), theme::CONTROL_HEIGHT),
-                        ButtonTone::Danger,
-                    )
-                    .clicked()
-                    {
-                        edit = Some(EditAction::Remove);
+                    } else {
+                        let remove = detail_button(
+                            ui,
+                            text.remove_from_account,
+                            Glyph::Trash,
+                            reason.is_none(),
+                            vec2(footer_width(ui, text.remove_from_account), theme::CONTROL_HEIGHT),
+                            ButtonTone::Danger,
+                        );
+                        if let Some(reason) = reason {
+                            remove.clone().on_disabled_hover_text(reason);
+                        }
+                        if remove.clicked() {
+                            edit = Some(EditAction::Remove);
+                        }
                     }
                 });
             }

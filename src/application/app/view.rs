@@ -18,6 +18,7 @@ mod components;
 mod connect;
 mod device_details;
 mod device_visuals;
+mod device_list;
 mod devices;
 mod diagnostic_export;
 mod diagnostics_panel;
@@ -115,6 +116,10 @@ impl CenterUi {
         }
         self.detail_id = Some(id);
         self.page = Page::DeviceDetails;
+    }
+    /// The device whose details are open.
+    pub(super) fn detail_id(&self) -> Option<&str> {
+        self.detail_id.as_deref()
     }
     pub(super) fn close_details(&mut self) {
         if self.page == Page::DeviceDetails {
@@ -383,10 +388,23 @@ fn form_row_content(
 ) {
     ui.horizontal(|ui| {
         let label_width = (ui.available_width() - 258.0).max(160.0);
+        let measure = |text: &str, size: f32| {
+            ui.painter()
+                .layout(text.to_owned(), FontId::proportional(size), TEXT, label_width)
+                .size()
+                .y
+        };
+        let mut text_height = measure(label, crate::ui::theme::BODY);
+        if !hint.is_empty() {
+            text_height += ui.spacing().item_spacing.y + measure(hint, crate::ui::theme::SMALL);
+        }
+        let height = (text_height + 16.0).max(52.0);
         ui.allocate_ui_with_layout(
-            vec2(label_width, 52.0),
+            vec2(label_width, height),
             egui::Layout::top_down(Align::Min),
             |ui| {
+                ui.set_min_size(vec2(label_width, height));
+                ui.add_space(((height - text_height) / 2.0).floor());
                 ui.label(RichText::new(label).size(crate::ui::theme::BODY));
                 if !hint.is_empty() {
                     ui.label(
@@ -402,13 +420,12 @@ fn form_row_content(
 }
 
 fn section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(20.0);
+    ui.add_space(14.0);
     ui.label(
         RichText::new(title)
             .size(crate::ui::theme::SECTION)
             .strong(),
     );
-    ui.add_space(8.0);
 }
 
 /// The sign-in card: the brand on top, the current step below.
@@ -531,7 +548,12 @@ impl DeviceCenterApp {
                 if self.center_ui.page == Page::DeviceDetails && !locked {
                     egui::Margin::ZERO
                 } else {
-                    egui::Margin::symmetric(28, 24)
+                    egui::Margin {
+                        left: 28,
+                        right: 28,
+                        top: 24,
+                        bottom: 0,
+                    }
                 },
             ))
             .show(ui, |ui| {
@@ -773,6 +795,13 @@ impl DeviceCenterApp {
                 (text.no_public_release)(prerelease_offered).to_owned(),
                 None,
             ),
+            // The server's state is on the left of the bar already.
+            State::Failed(_) if self.server_unreachable => (
+                current.clone(),
+                MUTED,
+                (text.current_version)(&current),
+                None,
+            ),
             State::Failed(error) => (
                 format!("{current} !"),
                 AMBER,
@@ -800,8 +829,9 @@ impl DeviceCenterApp {
         };
         let checking = matches!(self.updates.state, State::Checking);
         let wait = self.updates.retry_wait();
-        let enabled = !checking && (destination.is_some() || wait == 0);
-        if !checking && destination.is_none() && wait > 0 {
+        let enabled =
+            !checking && (destination.is_some() || (wait == 0 && !self.server_unreachable));
+        if !checking && destination.is_none() && wait > 0 && !self.server_unreachable {
             hint.push('\n');
             hint.push_str(&(text.check_again_in)(wait));
         }
@@ -978,38 +1008,6 @@ impl DeviceCenterApp {
             .truncate(),
         )
         .on_hover_text(text);
-    }
-
-    fn empty_state(&mut self, ui: &mut egui::Ui, title: &str, action: Option<&str>) -> bool {
-        ui.add_space(56.0);
-        ui.vertical_centered(|ui| {
-            let (rect, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
-            paint_icon(ui.painter(), rect, Icon::Monitor, MUTED);
-            ui.add_space(10.0);
-            ui.label(
-                RichText::new(title)
-                    .size(crate::ui::theme::DIALOG_TITLE)
-                    .strong(),
-            );
-            let clicked = action.is_some_and(|label| {
-                ui.add_space(16.0);
-                ui.add(crate::ui::controls::secondary(label)).clicked()
-            });
-            if self.devices.is_none() && !self.refresh_pending {
-                ui.add_space(16.0);
-                if ui
-                    .add_enabled(
-                        !self.login_running && !self.logout_pending && !self.has_viewers(),
-                        primary(t().common.refresh),
-                    )
-                    .clicked()
-                {
-                    self.request_refresh();
-                }
-            }
-            clicked
-        })
-        .inner
     }
 
     pub(super) fn draw_dialogs(&mut self, ctx: &egui::Context) {

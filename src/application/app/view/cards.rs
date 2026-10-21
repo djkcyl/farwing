@@ -89,7 +89,7 @@ pub(super) fn section_heading(
     count: Option<usize>,
     actions: impl FnOnce(&mut egui::Ui),
 ) {
-    ui.add_space(22.0);
+    ui.add_space(14.0);
     ui.horizontal(|ui| {
         ui.label(RichText::new(title).size(theme::SECTION).strong());
         if let Some(count) = count {
@@ -97,7 +97,6 @@ pub(super) fn section_heading(
         }
         ui.with_layout(egui::Layout::right_to_left(Align::Center), actions);
     });
-    ui.add_space(8.0);
 }
 
 /// A small rounded label.
@@ -146,30 +145,6 @@ pub(super) enum Tone {
 }
 
 /// A one-line message across the page.
-/// A banner with one action on its right; true when it was clicked.
-pub(super) fn banner_action(ui: &mut egui::Ui, text: &str, tone: Tone, action: &str) -> bool {
-    let color = match tone {
-        Tone::Success => GREEN,
-        Tone::Warning => AMBER,
-    };
-    let mut clicked = false;
-    egui::Frame::new()
-        .fill(color.gamma_multiply(0.1))
-        .stroke(Stroke::new(1.0, color.gamma_multiply(0.45)))
-        .corner_radius(theme::CONTROL_RADIUS)
-        .inner_margin(egui::Margin::symmetric(12, 4))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(text).color(color));
-                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    clicked = ui.button(action).clicked();
-                });
-            });
-        });
-    clicked
-}
-
 pub(super) fn banner(ui: &mut egui::Ui, text: &str, tone: Tone) {
     let color = match tone {
         Tone::Success => GREEN,
@@ -371,18 +346,37 @@ pub(super) fn paint_lock(painter: &egui::Painter, center: egui::Pos2, size: f32,
 
 /// What a feature needs before it can be used and the ways to get there.
 /// Returns the action chosen; the first one is the primary.
-pub(super) fn locked(ui: &mut egui::Ui, title: &str, actions: &[&str]) -> Option<usize> {
+pub(super) fn locked(
+    ui: &mut egui::Ui,
+    title: &str,
+    detail: Option<&str>,
+    offline: bool,
+    actions: &[&str],
+) -> Option<usize> {
     let mut chosen = None;
     card().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.add_space(12.0);
         ui.vertical_centered(|ui| {
             let (rect, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
+            let color = if offline { AMBER } else { BLUE };
             ui.painter()
-                .circle_filled(rect.center(), 20.0, BLUE.gamma_multiply(0.14));
-            paint_lock(ui.painter(), rect.center(), 18.0, BLUE);
+                .circle_filled(rect.center(), 20.0, color.gamma_multiply(0.14));
+            if offline {
+                paint_icon(
+                    ui.painter(),
+                    egui::Rect::from_center_size(rect.center(), vec2(22.0, 22.0)),
+                    Icon::Refresh,
+                    color,
+                );
+            } else {
+                paint_lock(ui.painter(), rect.center(), 18.0, color);
+            }
             ui.add_space(8.0);
             ui.label(RichText::new(title).size(theme::SECTION).strong());
+            if let Some(detail) = detail {
+                ui.label(RichText::new(detail).size(theme::SMALL).color(MUTED));
+            }
             ui.set_max_width(520.0);
             if actions.is_empty() {
                 return;

@@ -47,10 +47,16 @@ pub const ACCENT: Color32 = theme::ACCENT;
 
 /// Pages use the whole remaining viewport for both scrolling and content.
 /// Preserve page IDs so each page retains independent scrolling state.
+/// A page's scrolling body. It runs to the bottom of the window; the end
+/// of its contents keeps a margin there.
 pub(crate) fn page_scroll(id: impl egui::AsIdSalt) -> egui::ScrollArea {
     egui::ScrollArea::vertical()
         .id_salt(id)
         .auto_shrink([false, false])
+        .content_margin(egui::Margin {
+            bottom: 24,
+            ..egui::Margin::ZERO
+        })
 }
 
 pub(crate) fn paint_file_icon(p: &egui::Painter, r: egui::Rect, color: Color32, folder: bool) {

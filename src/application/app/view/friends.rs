@@ -1,5 +1,6 @@
 //! Friends: adding friends, answering requests, and what each friend may do
 //! on this account's devices.
+use super::access::{Blocker, server_button};
 use super::cards::{self, Tone};
 use super::*;
 use crate::application::app::friends::{FriendOperation, GrantEditor};
@@ -108,6 +109,7 @@ impl DeviceCenterApp {
             self.friends.message = None;
         }
         let data = self.friends.data.clone();
+        let blocker = self.blocker();
         crate::ui::controls::page_scroll("friends-page").show(ui, |ui| {
             let loading = self.friends.loading;
             let busy = self.friends.busy;
@@ -117,34 +119,49 @@ impl DeviceCenterApp {
                 Page::Friends.title(),
                 "",
                 |ui| {
-                    refresh = ui
-                        .add_enabled(!loading, crate::ui::controls::secondary(t().common.refresh))
-                        .clicked();
-                    if loading || busy {
-                        ui.spinner();
+                    if blocker.is_none() && (loading || busy) {
+                        ui.add_sized(
+                            [theme::CONTROL_HEIGHT, theme::CONTROL_HEIGHT],
+                            egui::Spinner::new().size(18.0),
+                        );
+                    } else if blocker.is_none() {
+                        refresh = assist_components::glyph(ui, Icon::Refresh, t().common.refresh, MUTED)
+                            .clicked();
+                    } else {
+                        ui.allocate_exact_size(
+                            vec2(theme::CONTROL_HEIGHT, theme::CONTROL_HEIGHT),
+                            Sense::hover(),
+                        );
                     }
                 },
             );
             if refresh {
                 self.request_friends(FriendOperation::Refresh);
             }
-            self.add_friend_card(ui);
-            ui.add_space(10.0);
+            // Nothing to add friends to until the list can be read.
+            if data.is_some() || blocker.is_none() {
+                self.add_friend_card(ui, blocker);
+            }
             if let Some((message, _)) = &self.friends.message {
                 cards::banner(ui, message, Tone::Success);
             }
             if let Some(error) = &self.friends.error
                 && self.friends.editor.is_none()
+                && blocker.is_none()
             {
                 cards::banner(ui, error, Tone::Warning);
             }
             let Some(data) = data else {
-                if loading {
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        detail(ui, t().center.loading_friends);
-                    });
+                match blocker {
+                    Some(blocker) => self.blocked_state(ui, blocker),
+                    None if loading => {
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            detail(ui, t().center.loading_friends);
+                        });
+                    }
+                    None => {}
                 }
                 return;
             };
@@ -155,7 +172,7 @@ impl DeviceCenterApp {
         self.friend_confirmations(ui.ctx());
     }
 
-    fn add_friend_card(&mut self, ui: &mut egui::Ui) {
+    fn add_friend_card(&mut self, ui: &mut egui::Ui, blocker: Option<Blocker>) {
         let mut submit = false;
         cards::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -171,18 +188,23 @@ impl DeviceCenterApp {
                 if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     submit = true;
                 }
-                if ui
-                    .add_enabled(
-                        !self.friends.busy && !self.friends.add_username.trim().is_empty(),
-                        primary(t().center.send_request),
-                    )
-                    .clicked()
+                if server_button(
+                    ui,
+                    blocker,
+                    !self.friends.busy && !self.friends.add_username.trim().is_empty(),
+                    primary(t().center.send_request),
+                )
+                .clicked()
                 {
                     submit = true;
                 }
             });
         });
-        if submit && !self.friends.busy && !self.friends.add_username.trim().is_empty() {
+        if submit
+            && blocker.is_none()
+            && !self.friends.busy
+            && !self.friends.add_username.trim().is_empty()
+        {
             let username = std::mem::take(&mut self.friends.add_username);
             self.request_friends(FriendOperation::Add(username.trim().to_owned()));
         }
@@ -196,6 +218,7 @@ impl DeviceCenterApp {
         let text = &t().center;
         cards::section_heading(ui, text.pending_requests, Some(pending), |_| {});
         let busy = self.friends.busy;
+        let blocker = self.blocker();
         for request in &data.incoming {
             let mut answer = None;
             person_card(
@@ -203,11 +226,10 @@ impl DeviceCenterApp {
                 &request.user,
                 |ui| detail(ui, &(text.request_received)(&cards::when(request.created_at))),
                 |ui| {
-                    if ui.add_enabled(!busy, primary(text.accept)).clicked() {
+                    if server_button(ui, blocker, !busy, primary(text.accept)).clicked() {
                         answer = Some(true);
                     }
-                    if ui
-                        .add_enabled(!busy, crate::ui::controls::secondary(text.decline))
+                    if server_button(ui, blocker, !busy, crate::ui::controls::secondary(text.decline))
                         .clicked()
                     {
                         answer = Some(false);
@@ -225,8 +247,7 @@ impl DeviceCenterApp {
                 &request.user,
                 |ui| detail(ui, &(text.request_sent)(&cards::when(request.created_at))),
                 |ui| {
-                    cancel = ui
-                        .add_enabled(!busy, crate::ui::controls::secondary(text.withdraw))
+                    cancel = server_button(ui, blocker, !busy, crate::ui::controls::secondary(text.withdraw))
                         .clicked();
                 },
             );

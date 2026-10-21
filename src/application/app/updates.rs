@@ -138,6 +138,14 @@ impl UpdateCheck {
         }
     }
 
+    /// Check again at once after a failed check: the server is back.
+    pub fn retry_failed(&mut self, ctx: &egui::Context) {
+        if matches!(self.state, State::Failed(_)) {
+            self.retry_at = Instant::now();
+            self.request(ctx);
+        }
+    }
+
     pub fn poll(&mut self) {
         let Some(rx) = &self.pending else {
             return;

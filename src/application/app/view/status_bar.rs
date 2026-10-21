@@ -121,10 +121,7 @@ impl DeviceCenterApp {
             && link(ui, action)
         {
             match state {
-                ServerState::NotSet => {
-                    self.center_ui.page = Page::Settings;
-                    self.center_ui.settings_tab = settings::SettingsTab::Account;
-                }
+                ServerState::NotSet => self.sign_in(),
                 _ => self.reconnect(),
             }
         }

@@ -148,25 +148,25 @@ impl Manager {
             self.error = Some(format!("{e:#}"));
         }
     }
+    /// The page's buttons, laid out right to left on its title row.
+    pub fn header_actions(&mut self, ui: &mut egui::Ui) {
+        if self.graphs {
+            return;
+        }
+        if ui.button(t().features.plugin_folder).clicked()
+            && let Err(e) = root().and_then(|p| open_folder(&p))
+        {
+            self.error = Some(e.to_string());
+        }
+        if ui
+            .add_enabled(self.edit.is_none(), egui::Button::new(t().common.refresh))
+            .clicked()
+        {
+            self.refresh();
+        }
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            if !self.graphs {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(t().features.plugin_folder).clicked()
-                        && let Err(e) = root().and_then(|p| open_folder(&p))
-                    {
-                        self.error = Some(e.to_string());
-                    }
-                    if ui
-                        .add_enabled(self.edit.is_none(), egui::Button::new(t().common.refresh))
-                        .clicked()
-                    {
-                        self.refresh();
-                    }
-                });
-            }
-        });
-        ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.graphs, false, t().features.plugin_installed);
             ui.selectable_value(&mut self.graphs, true, t().features.plugin_graphs);

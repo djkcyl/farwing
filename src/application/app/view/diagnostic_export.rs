@@ -8,7 +8,40 @@ pub(super) struct ExportUi {
     error: Option<String>,
 }
 impl DeviceCenterApp {
-    pub(super) fn diagnostic_export(&mut self, ui: &mut egui::Ui) {
+    /// Export (and cancel), right to left on a title row.
+    pub(super) fn diagnostic_export_button(&mut self, ui: &mut egui::Ui) {
+        let text = &t().settings;
+        let state = &self.center_ui.logs.export;
+        let running = state.task.is_some();
+        let start = ui
+            .add_enabled(
+                !running,
+                egui::Button::new(if running {
+                    text.exporting
+                } else {
+                    text.export_diagnostics
+                }),
+            )
+            .clicked();
+        if let Some(task) = &state.task
+            && ui.button(t().common.cancel).clicked()
+        {
+            task.cancel();
+        }
+        if start {
+            let input = self.diagnostic_bundle_input();
+            let state = &mut self.center_ui.logs.export;
+            state.error = None;
+            state.result = None;
+            match Task::start(input, ui.ctx().clone()) {
+                Ok(task) => state.task = Some(task),
+                Err(e) => state.error = Some((text.export_failed)(&format!("{e:#}"))),
+            }
+        }
+    }
+
+    /// How the export goes, or how it went: nothing while there is none.
+    pub(super) fn diagnostic_export_status(&mut self, ui: &mut egui::Ui) {
         let text = &t().settings;
         let state = &mut self.center_ui.logs.export;
         if let Some(task) = &state.task {
@@ -30,34 +63,16 @@ impl DeviceCenterApp {
                 }
             }
         }
-        let start = ui
-            .horizontal(|ui| {
-                let clicked = ui
-                    .add_enabled(
-                        state.task.is_none(),
-                        egui::Button::new(if state.task.is_some() {
-                            text.exporting
-                        } else {
-                            text.export_diagnostics
-                        }),
-                    )
-                    .clicked();
-                if let Some(task) = &state.task {
-                    if ui.button(t().common.cancel).clicked() {
-                        task.cancel();
-                    }
-                }
-                if let Some(result) = &state.result {
-                    ui.label((text.exported)(result.logs, result.warnings > 0));
-                    if ui.link(t().app.open_folder).clicked() {
-                        if let Err(e) = crate::diagnostics::bundle::open_folder(&result.path) {
-                            state.error = Some(format!("{e:#}"));
-                        }
-                    }
-                }
-                clicked
-            })
-            .inner;
+        if let Some(result) = &state.result {
+            let mut open = false;
+            ui.horizontal(|ui| {
+                ui.label((text.exported)(result.logs, result.warnings > 0));
+                open = ui.link(t().app.open_folder).clicked();
+            });
+            if open && let Err(e) = crate::diagnostics::bundle::open_folder(&result.path) {
+                state.error = Some(format!("{e:#}"));
+            }
+        }
         if let Some(task) = &state.task {
             let progress = task.progress();
             ui.add(
@@ -72,16 +87,6 @@ impl DeviceCenterApp {
         }
         if let Some(error) = &state.error {
             ui.colored_label(theme::RED, error);
-        }
-        if start {
-            let input = self.diagnostic_bundle_input();
-            let state = &mut self.center_ui.logs.export;
-            state.error = None;
-            state.result = None;
-            match Task::start(input, ui.ctx().clone()) {
-                Ok(task) => state.task = Some(task),
-                Err(e) => state.error = Some((text.export_failed)(&format!("{e:#}"))),
-            }
         }
     }
     fn diagnostic_bundle_input(&self) -> Input {

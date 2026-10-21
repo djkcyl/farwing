@@ -1,35 +1,22 @@
-//! Shared device-list presentation. Selection and actions always use device IDs.
+//! The "我的设备" tab: this account's computers, then this device and the
+//! account's other logins. Selection and actions always use device IDs.
+use super::device_list::{self, Order, StateFilter, Tile};
 use super::*;
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-enum Filter {
-    #[default]
-    All,
-    Online,
-    Offline,
-}
-
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-enum Sort {
-    Status,
-    #[default]
-    Name,
-}
-
-impl Sort {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Status => t().center.online_first,
-            Self::Name => t().center.by_name,
-        }
-    }
+/// Search, filter and order of one device list.
+#[derive(Default)]
+pub(super) struct TabState {
+    pub search: String,
+    pub filter: StateFilter,
+    pub order: Order,
 }
 
 #[derive(Default)]
 pub(super) struct ListUi {
-    search: String,
-    filter: Filter,
-    sort: Sort,
+    pub mine: TabState,
+    pub shared: TabState,
+    pub nearby: String,
+    pub recent: String,
     /// The section with this device and the account's other logins.
     others_open: bool,
 }
@@ -91,63 +78,14 @@ impl DeviceCenterApp {
             .map(|(_, d)| (d.clone(), d.device_id == catalog.groups.current_device_id))
             .collect();
         // This device first, then by name.
-        devices.sort_by(|(a, a_current), (b, b_current)| {
-            b_current
-                .cmp(a_current)
-                .then_with(|| a.list_order(b))
-        });
+        devices.sort_by(|(a, a_current), (b, b_current)| b_current.cmp(a_current).then_with(|| a.list_order(b)));
         devices
     }
 
     /// The "我的设备" tab of the device page: this account's computers.
     pub(super) fn own_devices_tab(&mut self, ui: &mut egui::Ui) {
         let rows = self.device_entries();
-        let count = rows.as_ref().map_or(0, Vec::len);
-        let online = rows
-            .as_ref()
-            .map_or(0, |r| r.iter().filter(|e| e.device.is_connected()).count());
-        let offline = rows.as_ref().map_or(0, |r| {
-            r.iter()
-                .filter(|e| e.device.is_offline())
-                .count()
-        });
-        let state = &mut self.center_ui.device_list;
         let text = &t().center;
-        ui.horizontal(|ui| {
-            let width = (ui.available_width() - 182.0).max(140.0);
-            ui.add_sized(
-                [width, 36.0],
-                singleline_input(&mut state.search).hint_text(text.search_devices),
-            );
-            if ui
-                .add_enabled(!state.search.is_empty(), egui::Button::new(text.clear))
-                .clicked()
-            {
-                state.search.clear();
-            }
-            egui::ComboBox::from_id_salt("device-sort")
-                .width(108.0)
-                .selected_text(state.sort.label())
-                .show_ui(ui, |ui| {
-                    for sort in [Sort::Status, Sort::Name] {
-                        ui.selectable_value(&mut state.sort, sort, sort.label());
-                    }
-                });
-        });
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            for (filter, label, n) in [
-                (Filter::All, text.all, count),
-                (Filter::Online, t().common.online, online),
-                (Filter::Offline, t().common.offline, offline),
-            ] {
-                ui.selectable_value(&mut state.filter, filter, format!("{label}  {n}"));
-            }
-        });
-        let query = state.search.trim().to_lowercase();
-        let filter = state.filter;
-        let sort = state.sort;
-        ui.add_space(16.0);
         self.alert(ui);
         crate::ui::controls::observe_notice(
             ui.ctx(),
@@ -157,74 +95,64 @@ impl DeviceCenterApp {
             self.catalog_error.as_deref(),
         );
         let Some(mut rows) = rows else {
-            self.empty_state(ui, text.loading_devices, None);
+            match self.blocker() {
+                Some(blocker) => self.blocked_state(ui, blocker),
+                None => device_list::empty(ui, text.loading_devices),
+            }
             return;
         };
+        {
+            let all: Vec<&DeviceInfo> = rows.iter().map(|e| &e.device).collect();
+            let state = &mut self.center_ui.device_list.mine;
+            device_list::toolbar(ui, &mut state.search, |ui| {
+                Order::combo(ui, "mine-order", &mut state.order);
+                StateFilter::combo(ui, "mine-filter", &mut state.filter, &all);
+            });
+        }
+        let count = rows.len();
+        let state = &self.center_ui.device_list.mine;
+        let query = state.search.trim().to_lowercase();
+        let (filter, order) = (state.filter, state.order);
         rows.retain(|e| {
             let d = &e.device;
-            let visible = match filter {
-                Filter::All => true,
-                Filter::Online => d.is_connected(),
-                Filter::Offline => d.is_offline(),
-            };
-            visible
-                && (query.is_empty()
-                    || [
-                        display_alias(d),
-                        &d.device_id,
-                        &d.platform_label(),
-                        &d.version_name,
-                    ]
-                    .iter()
-                    .any(|value| value.to_lowercase().contains(&query)))
+            filter.keeps(d)
+                && device_list::matches(
+                    &query,
+                    &[display_alias(d), &d.device_id, &d.platform_label(), &d.version_name],
+                )
         });
-        rows.sort_by(|a, b| {
-            (if sort == Sort::Status {
-                b.device.is_connected().cmp(&a.device.is_connected())
-            } else {
-                std::cmp::Ordering::Equal
-            })
-            .then_with(|| a.device.list_order(&b.device))
-        });
+        rows.sort_by(|a, b| order.compare(&a.device, &b.device));
         let others = self.other_devices();
         let mut picked = None;
-        let mut clear_filters = false;
         crate::ui::controls::page_scroll("device-list").show(ui, |ui| {
             if rows.is_empty() {
-                clear_filters = self.empty_state(
+                device_list::empty(
                     ui,
                     if count == 0 {
                         text.no_computers
                     } else {
                         text.no_matching_devices
                     },
-                    (count > 0).then_some(text.clear_filters),
                 );
             }
             for entry in &rows {
                 let selected = self.selected_device_id.as_deref() == Some(&entry.device.device_id);
                 if let Some(action) = ui
                     .push_id(&entry.device.device_id, |ui| {
-                        row(ui, entry, selected, &mut self.center_ui.wallpapers)
+                        own_row(ui, entry, selected, &mut self.center_ui.wallpapers)
                     })
                     .inner
                 {
                     picked = Some((entry.device.device_id.clone(), action));
                 }
-                ui.add_space(6.0);
             }
             if !others.is_empty() {
-                ui.add_space(18.0);
+                ui.add_space(10.0);
                 if let Some(id) = self.other_devices_section(ui, &others) {
                     picked = Some((id, Action::Details));
                 }
             }
         });
-        if clear_filters {
-            let state = &mut self.center_ui.device_list;
-            state.search.clear();
-            state.filter = Filter::All;
-        }
         if let Some((id, action)) = picked {
             match action {
                 Action::Details => self.open_details(id),
@@ -250,7 +178,7 @@ impl DeviceCenterApp {
         let open = &mut self.center_ui.device_list.others_open;
         let text = &t().center;
         let (rect, response) =
-            ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+            ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
         response.widget_info(|| {
             egui::WidgetInfo::selected(
@@ -289,256 +217,126 @@ impl DeviceCenterApp {
         if !*open {
             return None;
         }
-        ui.add_space(4.0);
         let mut picked = None;
         for (device, current) in devices {
             let status = self.device_status(device);
+            let chips: Vec<(&str, Color32)> = if *current {
+                vec![(text.page_this_device, theme::ACCENT)]
+            } else {
+                Vec::new()
+            };
+            let detail = detail_line(device);
+            let mut details = false;
             let clicked = ui
                 .push_id(&device.device_id, |ui| {
-                    super::cards::card().show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            let (icon, _) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::hover());
-                            device_visuals::system_icon(ui.painter(), icon, device.platform);
-                            ui.vertical(|ui| {
-                                ui.spacing_mut().item_spacing.y = 3.0;
-                                ui.horizontal(|ui| {
-                                    ui.add(
-                                        egui::Label::new(RichText::new(display_alias(device)).strong())
-                                            .truncate(),
-                                    );
-                                    if *current {
-                                        super::cards::chip(ui, text.page_this_device, theme::ACCENT);
-                                    }
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "{} · ID {} · {}",
-                                            device.platform_label(),
-                                            crate::account::api::device_id_text(&device.device_id),
-                                            if device.version_name.is_empty() {
-                                                text.unknown_version
-                                            } else {
-                                                &device.version_name
-                                            }
-                                        ))
-                                        .size(crate::ui::theme::SMALL)
-                                        .color(MUTED),
-                                    );
-                                    if !*current {
-                                        ui.label(
-                                            RichText::new(status.label())
-                                                .size(crate::ui::theme::SMALL)
-                                                .color(status.color()),
-                                        );
-                                    }
-                                });
-                            });
-                            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                                ui.add(crate::ui::controls::secondary(t().common.details)).clicked()
-                            })
-                            .inner
-                        })
-                        .inner
-                    })
-                    .inner
+                    device_list::row(
+                        ui,
+                        &device_list::Row {
+                            title: display_alias(device),
+                            tile: Tile::Platform(device.platform),
+                            status: (!*current).then(|| (status.label(), status.color())),
+                            chips: &chips,
+                            grants: None,
+                            detail: &detail,
+                            selected: false,
+                        },
+                        |ui| {
+                            details = ui
+                                .add(crate::ui::controls::secondary(t().common.details))
+                                .clicked();
+                        },
+                    )
                 })
                 .inner;
-            if clicked {
+            if clicked || details {
                 picked = Some(device.device_id.clone());
             }
-            ui.add_space(6.0);
         }
         picked
     }
 }
 
-fn row(
+/// "ID … · Windows · 0.1.0": the line under a device's name.
+pub(super) fn detail_line(device: &DeviceInfo) -> String {
+    format!(
+        "ID {} · {} · {}",
+        crate::account::api::device_id_text(&device.device_id),
+        device.platform_label(),
+        if device.version_name.is_empty() {
+            t().center.unknown_version
+        } else {
+            &device.version_name
+        }
+    )
+}
+
+fn own_row(
     ui: &mut egui::Ui,
     entry: &Entry,
     selected: bool,
     wallpapers: &mut crate::application::wallpaper::Wallpapers,
 ) -> Option<Action> {
     let device = &entry.device;
-    let wide = ui.available_width() >= 760.0;
-    let (rect, response) = ui.allocate_exact_size(
-        vec2(ui.available_width(), if wide { 88.0 } else { 124.0 }),
-        Sense::click(),
-    );
-    if !ui.is_rect_visible(rect) {
-        return None;
-    }
     let texture = wallpapers.texture(ui.ctx(), &device.device_id, &device.wallpaper_url);
-    let fill = if selected {
-        crate::ui::theme::SELECTED
-    } else if response.hovered() {
-        crate::ui::theme::HOVER
-    } else {
-        SURFACE
-    };
-    let p = ui.painter();
-    p.rect_filled(rect, 8.0, fill);
-    p.rect_stroke(
-        rect,
-        8.0,
-        Stroke::new(
-            1.0,
-            if selected {
-                crate::ui::theme::BORDER_FOCUS
-            } else {
-                LINE
-            },
-        ),
-        egui::StrokeKind::Inside,
-    );
-    let preview = egui::Rect::from_min_size(rect.min + vec2(14.0, 12.0), vec2(116.0, 64.0));
-    device_visuals::wallpaper(ui, preview, texture.as_ref(), device.platform);
-    let icon =
-        egui::Rect::from_min_size(preview.right_bottom() - vec2(29.0, 29.0), vec2(26.0, 26.0));
-    ui.painter().rect_filled(icon, 5.0, BG);
-    device_visuals::system_icon(ui.painter(), icon.shrink(3.0), device.platform);
     let text = &t().center;
-    // Room for the actions, also with the longer English labels.
-    let actions_x = rect.right() - if entry.viewing { 226.0 } else { 100.0 };
-    let status_x = if wide {
-        actions_x - 120.0
+    let chips: Vec<(&str, Color32)> = if entry.current {
+        vec![(text.page_this_device, theme::ACCENT)]
     } else {
-        rect.left() + 148.0
+        Vec::new()
     };
-    let metadata_x = if wide {
-        status_x - 154.0
-    } else {
-        rect.left() + 260.0
-    };
-    let name_right = if wide {
-        metadata_x - 16.0
-    } else {
-        actions_x - 12.0
-    };
-    let mut name = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_max(
-        rect.min + vec2(148.0, 13.0),
-        egui::pos2(name_right, rect.top() + 82.0),
-    )));
-    name.add(
-        egui::Label::new(
-            RichText::new(display_alias(device))
-                .size(crate::ui::theme::SECTION)
-                .strong(),
-        )
-        .truncate(),
-    )
-    .on_hover_text(display_alias(device));
-    name.add(
-        egui::Label::new(
-            RichText::new((text.device_id_line)(
-                entry.current,
-                &crate::account::api::device_id_text(&device.device_id),
-            ))
-            .size(crate::ui::theme::TINY)
-            .color(MUTED),
-        )
-        .truncate(),
-    )
-    .on_hover_text(&device.device_id);
-    let status_rect = egui::Rect::from_min_size(
-        egui::pos2(status_x, rect.top() + if wide { 30.0 } else { 89.0 }),
-        crate::ui::theme::DEVICE_STATUS_SIZE.into(),
-    );
-    crate::ui::controls::device_status_badge(
-        ui,
-        status_rect,
-        entry.status.label(),
-        entry.status.color(),
-    );
-    let mut metadata = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_max(
-        egui::pos2(metadata_x, rect.top() + if wide { 22.0 } else { 94.0 }),
-        egui::pos2(
-            if wide {
-                status_x - 12.0
-            } else {
-                rect.right() - 14.0
-            },
-            rect.bottom() - 8.0,
-        ),
-    )));
-    if wide {
-        metadata.label(RichText::new(device.platform_label()).size(crate::ui::theme::COMPACT_TEXT));
-        metadata.add(
-            egui::Label::new(
-                RichText::new(if device.version_name.is_empty() {
-                    text.unknown_version
-                } else {
-                    &device.version_name
-                })
-                .size(crate::ui::theme::TINY)
-                .color(MUTED),
-            )
-            .truncate(),
-        );
-    } else {
-        metadata.add(
-            egui::Label::new(
-                RichText::new(format!(
-                    "{} · {}",
-                    device.platform_label(),
-                    if device.version_name.is_empty() {
-                        text.unknown_version
-                    } else {
-                        &device.version_name
-                    }
-                ))
-                .size(crate::ui::theme::TINY)
-                .color(MUTED),
-            )
-            .truncate(),
-        );
-    }
+    let detail = detail_line(device);
     let mut action = None;
-    let mut buttons = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(egui::Rect::from_min_max(
-                egui::pos2(actions_x, rect.top() + 12.0),
-                egui::pos2(
-                    rect.right() - 14.0,
-                    rect.top() + if wide { 76.0 } else { 70.0 },
-                ),
-            ))
-            .layout(egui::Layout::right_to_left(Align::Center)),
+    let clicked = device_list::row(
+        ui,
+        &device_list::Row {
+            title: display_alias(device),
+            tile: Tile::Wallpaper {
+                texture: texture.as_ref(),
+                platform: device.platform,
+            },
+            status: Some((entry.status.label(), entry.status.color())),
+            chips: &chips,
+            grants: None,
+            detail: &detail,
+            selected,
+        },
+        |ui| {
+            if entry.viewing {
+                let connect = ui.add_enabled(
+                    entry.connect_issue.is_none(),
+                    primary(if entry.own_session {
+                        text.opened
+                    } else {
+                        t().common.connect
+                    }),
+                );
+                let audio = ui
+                    .add_enabled_ui(entry.connect_issue.is_none(), |ui| {
+                        crate::ui::controls::audio_output_button(
+                            ui,
+                            text.audio_only_connect,
+                            crate::ui::theme::CONTROL_HEIGHT,
+                        )
+                    })
+                    .inner;
+                if let Some(issue) = &entry.connect_issue {
+                    connect.clone().on_disabled_hover_text(issue);
+                    audio.clone().on_disabled_hover_text(issue);
+                }
+                if connect.clicked() {
+                    action = Some(Action::Connect);
+                }
+                if audio.clicked() {
+                    action = Some(Action::Audio);
+                }
+            }
+            if ui
+                .add(crate::ui::controls::secondary(t().common.details))
+                .clicked()
+            {
+                action = Some(Action::Details);
+            }
+        },
     );
-    if entry.viewing {
-        let button = buttons.add_enabled(
-            entry.connect_issue.is_none(),
-            primary(if entry.own_session {
-                text.opened
-            } else {
-                t().common.connect
-            }),
-        );
-        if button.clicked() {
-            action = Some(Action::Connect);
-        }
-        let audio = buttons
-            .add_enabled_ui(entry.connect_issue.is_none(), |ui| {
-                crate::ui::controls::audio_output_button(
-                    ui,
-                    text.audio_only_connect,
-                    crate::ui::theme::CONTROL_HEIGHT,
-                )
-            })
-            .inner;
-        if audio.clicked() {
-            action = Some(Action::Audio);
-        }
-        if let Some(issue) = &entry.connect_issue {
-            audio.on_disabled_hover_text(issue);
-        }
-        if let Some(issue) = &entry.connect_issue {
-            button.on_disabled_hover_text(issue);
-        }
-    }
-    if buttons.button(t().common.details).clicked() {
-        action = Some(Action::Details);
-    }
-    action.or_else(|| response.clicked().then_some(Action::Details))
+    action.or_else(|| clicked.then_some(Action::Details))
 }

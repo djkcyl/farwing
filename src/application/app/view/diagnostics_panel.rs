@@ -26,8 +26,7 @@ pub(super) struct ViewState {
 
 impl DeviceCenterApp {
     pub(super) fn diagnostics_page(&mut self, ui: &mut egui::Ui) {
-        self.diagnostic_export(ui);
-        ui.add_space(12.0);
+        self.diagnostic_export_status(ui);
         crate::ui::controls::page_scroll("center-diagnostics-scroll").show(ui, |ui| {
             self.diagnostics_panel(ui);
         });

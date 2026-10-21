@@ -94,24 +94,15 @@ pub(crate) struct Center {
 
     // ------------------------------------------------- without an account
     pub set_up_server_and_sign_in: &'static str,
-    pub sign_in_for_friends: &'static str,
-    pub sign_in_to_use: &'static str,
-    pub nearby_devices: &'static str,
 
     // ------------------------------------------------------- devices page
     pub enter_target: &'static str,
     pub unrecognized_target: &'static str,
     pub no_permissions: &'static str,
-    /// Seconds until the next attempt.
-    pub banner_unreachable_in: fn(u64) -> String,
-    pub banner_unreachable: &'static str,
-    pub connecting_server: &'static str,
     pub tab_mine: &'static str,
     pub tab_friends: &'static str,
     pub tab_nearby: &'static str,
     pub tab_recent: &'static str,
-    pub sign_in_for_shared: &'static str,
-    pub sign_in_for_own: &'static str,
     pub target_hint: &'static str,
     pub access_code: &'static str,
     pub ask_for_approval: &'static str,
@@ -294,18 +285,14 @@ pub(crate) struct Center {
     pub online_first: &'static str,
     pub by_name: &'static str,
     pub search_devices: &'static str,
-    pub clear: &'static str,
     pub all: &'static str,
     pub device_list_not_updated: &'static str,
     pub loading_devices: &'static str,
     pub no_computers: &'static str,
     pub no_matching_devices: &'static str,
-    pub clear_filters: &'static str,
     pub this_and_other_devices: &'static str,
     pub device_count: fn(usize) -> String,
     pub unknown_version: &'static str,
-    /// Whether it is this device, and its ID.
-    pub device_id_line: fn(bool, &str) -> String,
     pub audio_only_connect: &'static str,
 
     // ----------------------------------------------------- device details
@@ -495,22 +482,14 @@ pub(crate) const ZH_CN: Center = Center {
     connect_to_device: "连接其他设备",
 
     set_up_server_and_sign_in: "设置服务器并登录",
-    sign_in_for_friends: "登录后使用好友",
-    sign_in_to_use: "登录后使用",
-    nearby_devices: "附近的设备",
 
     enter_target: "请输入设备 ID、短号或地址",
     unrecognized_target: "无法识别设备 ID、短号或地址",
     no_permissions: "无权限",
-    banner_unreachable_in: |seconds| format!("无法连接服务器 · {seconds} 秒后重连"),
-    banner_unreachable: "无法连接服务器 · 正在重连",
-    connecting_server: "正在连接服务器",
     tab_mine: "我的设备",
     tab_friends: "好友共享",
     tab_nearby: "附近",
     tab_recent: "最近与收藏",
-    sign_in_for_shared: "登录后查看好友共享的设备",
-    sign_in_for_own: "登录后查看我的设备",
     target_hint: "设备 ID、短号或地址",
     access_code: "访问码",
     ask_for_approval: "不使用访问码，由对方确认",
@@ -683,23 +662,14 @@ pub(crate) const ZH_CN: Center = Center {
     online_first: "在线优先",
     by_name: "名称排序",
     search_devices: "搜索设备",
-    clear: "清除",
     all: "全部",
     device_list_not_updated: "设备列表未更新",
     loading_devices: "正在加载设备列表…",
     no_computers: "暂无可连接的电脑",
     no_matching_devices: "无匹配的设备",
-    clear_filters: "清除搜索和筛选",
     this_and_other_devices: "本机与其他登录设备",
     device_count: |count| format!("{count} 台"),
     unknown_version: "版本未知",
-    device_id_line: |current, id| {
-        if current {
-            format!("本机 · ID {id}")
-        } else {
-            format!("ID {id}")
-        }
-    },
     audio_only_connect: "仅音频连接",
 
     not_provided: "未提供",
@@ -890,24 +860,14 @@ pub(crate) const EN: Center = Center {
     connect_to_device: "Connect to a device",
 
     set_up_server_and_sign_in: "Set up a server and sign in",
-    sign_in_for_friends: "Sign in to use friends",
-    sign_in_to_use: "Sign in to use this page",
-    nearby_devices: "Nearby devices",
 
     enter_target: "Enter a device ID, short ID or address",
     unrecognized_target: "Unrecognized device ID, short ID or address",
     no_permissions: "No permissions",
-    banner_unreachable_in: |seconds| {
-        format!("Can't connect to the server · Reconnecting in {seconds} s")
-    },
-    banner_unreachable: "Can't connect to the server · Reconnecting",
-    connecting_server: "Connecting to the server",
     tab_mine: "My devices",
     tab_friends: "Shared by friends",
     tab_nearby: "Nearby",
     tab_recent: "Recent and favorites",
-    sign_in_for_shared: "Sign in to see devices shared by friends",
-    sign_in_for_own: "Sign in to see your devices",
     target_hint: "Device ID, short ID or address",
     access_code: "Access code",
     ask_for_approval: "No access code, ask for approval",
@@ -1080,13 +1040,11 @@ pub(crate) const EN: Center = Center {
     online_first: "Online first",
     by_name: "By name",
     search_devices: "Search devices",
-    clear: "Clear",
     all: "All",
     device_list_not_updated: "Device list not updated",
     loading_devices: "Loading devices…",
     no_computers: "No computers to connect to",
     no_matching_devices: "No matching devices",
-    clear_filters: "Clear search and filters",
     this_and_other_devices: "This device and other signed-in devices",
     device_count: |count| {
         if count == 1 {
@@ -1096,13 +1054,6 @@ pub(crate) const EN: Center = Center {
         }
     },
     unknown_version: "Unknown version",
-    device_id_line: |current, id| {
-        if current {
-            format!("This device · ID {id}")
-        } else {
-            format!("ID {id}")
-        }
-    },
     audio_only_connect: "Connect audio only",
 
     not_provided: "Not available",

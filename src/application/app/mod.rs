@@ -437,6 +437,11 @@ impl DeviceCenterApp {
                         if self.detail_pending.as_deref() == Some(id.as_str()) {
                             self.detail_pending = None;
                         }
+                        // Unanswered while the server is away: asked again
+                        // once it is back.
+                        if result.is_err() && self.server_unreachable {
+                            continue;
+                        }
                         self.extra_details.insert(id, result);
                     }
                 }
@@ -596,6 +601,10 @@ impl DeviceCenterApp {
                         if self.assist.last_list_error.is_some() {
                             self.request_assist_refresh();
                         }
+                        self.updates.retry_failed(ctx);
+                        if let Some(id) = self.center_ui.detail_id() {
+                            self.request_details(id.to_owned());
+                        }
                     }
                 }
                 GuiEvent::AssistLists(generation, result) => {
@@ -615,7 +624,7 @@ impl DeviceCenterApp {
                             }
                             self.assist.lists = Some(lists);
                         }
-                        // The banner already says the server is away.
+                        // The status bar already says the server is away.
                         Err(error) if self.server_unreachable => {
                             self.assist.last_list_error = Some(error);
                         }
@@ -833,6 +842,11 @@ impl DeviceCenterApp {
     fn open_details(&mut self, id: String) {
         self.selected_device_id = Some(id.clone());
         self.center_ui.open_details(id.clone());
+        self.request_details(id);
+    }
+
+    /// Ask the server for a device's details unless they are known.
+    fn request_details(&mut self, id: String) {
         if self
             .catalog
             .as_ref()

@@ -1,3 +1,4 @@
+use super::access::{Blocker, server_button};
 use super::*;
 use crate::application::app::updates::State;
 use crate::i18n::t;
@@ -168,13 +169,14 @@ impl DeviceCenterApp {
 
     fn about_updates(&mut self, ui: &mut egui::Ui) {
         let text = &t().settings;
+        let away = self.blocker() == Some(Blocker::Unreachable);
         crate::ui::controls::observe_notice(
             ui.ctx(),
             "client-update-error",
             text.update_check_failed,
             crate::ui::controls::DialogIcon::Error,
             match &self.updates.state {
-                State::Failed(error) => Some(error.as_str()),
+                State::Failed(error) if !away => Some(error.as_str()),
                 _ => None,
             },
         );
@@ -184,6 +186,7 @@ impl DeviceCenterApp {
             State::Current => ((text.update_current)(beta), GREEN, None),
             State::Ahead => ((text.update_ahead)(beta), MUTED, None),
             State::NoRelease => ((text.update_none)(beta), MUTED, None),
+            State::Failed(_) if away => (Blocker::Unreachable.reason().into(), MUTED, None),
             State::Failed(_) => (text.update_check_failed.into(), MUTED, None),
             State::Available {
                 version,
@@ -214,9 +217,10 @@ impl DeviceCenterApp {
         let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::hover());
         let mut row_ui = ui.new_child(egui::UiBuilder::new().max_rect(row));
         row_ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-            let response = ui.add_enabled(enabled, primary(button));
+            let blocker = (away && destination.is_none()).then_some(Blocker::Unreachable);
+            let response = server_button(ui, blocker, enabled, primary(button));
             clicked = response.clicked();
-            if !enabled && !checking {
+            if !enabled && !checking && blocker.is_none() {
                 response.on_disabled_hover_text((text.check_again_in)(wait));
             }
             ui.with_layout(egui::Layout::top_down(Align::Min), |ui| {

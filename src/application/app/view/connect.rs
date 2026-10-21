@@ -3,7 +3,9 @@
 //! filtered — this account's computers, devices friends share, devices on
 //! the local network, and devices connected to before. A device is known by
 //! the same ID in every list; how it is reached is chosen automatically.
+use super::access::{Blocker, server_button};
 use super::cards::{self, Tone};
+use super::device_list::{self, Order, StateFilter, Tile};
 use super::*;
 use crate::account::assist::{SavedDevice, SavedKind};
 use crate::application::app::assist::{DeletePrompt, FavoriteEditor};
@@ -37,73 +39,6 @@ fn detail(ui: &mut egui::Ui, text: &str) {
     ui.add(egui::Label::new(RichText::new(text).size(theme::SMALL).color(MUTED)).wrap());
 }
 
-/// A card for one device: icon, name with chips, detail lines, actions.
-pub(super) fn device_card(
-    ui: &mut egui::Ui,
-    id: &str,
-    name: &str,
-    chips: &[(&str, Color32)],
-    lines: &[String],
-    actions: impl FnOnce(&mut egui::Ui),
-) {
-    device_card_with(ui, id, name, chips, None, lines, actions);
-}
-
-/// [`device_card`], with what the device may do as icons after the chips.
-pub(super) fn device_card_with(
-    ui: &mut egui::Ui,
-    id: &str,
-    name: &str,
-    chips: &[(&str, Color32)],
-    grants: Option<&[String]>,
-    lines: &[String],
-    actions: impl FnOnce(&mut egui::Ui),
-) {
-    ui.push_id(id, |ui| {
-        cards::card().show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                let (icon, _) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::hover());
-                ui.painter().rect_filled(icon, 6.0, BG);
-                paint_icon(ui.painter(), icon.shrink(6.0), Icon::Monitor, MUTED);
-                ui.add_space(2.0);
-                ui.vertical(|ui| {
-                    ui.set_max_width((ui.available_width() - 230.0).max(160.0));
-                    ui.spacing_mut().item_spacing.y = 3.0;
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Label::new(RichText::new(name).strong()).truncate());
-                        for (text, color) in chips {
-                            cards::chip(ui, text, *color);
-                        }
-                        if let Some(grants) = grants {
-                            cards::caps_icons(ui, grants, t().center.no_permissions);
-                        }
-                    });
-                    for line in lines {
-                        ui.add(
-                            egui::Label::new(RichText::new(line).size(theme::SMALL).color(MUTED))
-                                .truncate(),
-                        );
-                    }
-                });
-                ui.with_layout(egui::Layout::right_to_left(Align::Center), actions);
-            });
-        });
-    });
-    ui.add_space(6.0);
-}
-
-/// An empty list explained in a card.
-pub(super) fn empty_card(ui: &mut egui::Ui, title: &str, hint: &str) {
-    cards::card().show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.label(RichText::new(title).strong());
-        if !hint.is_empty() {
-            detail(ui, hint);
-        }
-    });
-}
-
 /// One device in the "最近与收藏" tab.
 struct RecentRow {
     title: String,
@@ -132,6 +67,7 @@ impl DeviceCenterApp {
             self.direct.scan_continuously(ui.ctx());
         }
         let tab = self.direct.tab;
+        let blocker = self.blocker();
         let mut refresh = false;
         cards::page_header(
             ui,
@@ -140,28 +76,32 @@ impl DeviceCenterApp {
             |ui| {
                 self.active_view(ui);
                 let busy = match tab {
-                    DeviceTab::Mine | DeviceTab::Friends => self.refresh_pending,
+                    DeviceTab::Mine | DeviceTab::Friends => blocker.is_none() && self.refresh_pending,
                     // Searching goes on quietly; only the first round shows.
                     DeviceTab::Nearby => {
                         let lan = self.direct.lan();
                         lan.scanning && lan.found.is_none()
                     }
-                    DeviceTab::Recent => self.assist.loading,
+                    DeviceTab::Recent => blocker.is_none() && self.assist.loading,
                 };
+                // What comes from the server refreshes while it answers.
                 let enabled = match tab {
-                    DeviceTab::Mine | DeviceTab::Friends => access == Access::Account,
-                    DeviceTab::Recent | DeviceTab::Nearby => true,
+                    DeviceTab::Mine | DeviceTab::Friends | DeviceTab::Recent => blocker.is_none(),
+                    DeviceTab::Nearby => true,
                 };
                 if busy {
                     ui.add_sized(
                         [theme::CONTROL_HEIGHT, theme::CONTROL_HEIGHT],
                         egui::Spinner::new().size(18.0),
                     );
-                } else if enabled
-                    && assist_components::glyph(ui, Icon::Refresh, t().common.refresh, MUTED)
-                        .clicked()
-                {
-                    refresh = true;
+                } else if enabled {
+                    refresh = assist_components::glyph(ui, Icon::Refresh, t().common.refresh, MUTED)
+                        .clicked();
+                } else {
+                    ui.allocate_exact_size(
+                        vec2(theme::CONTROL_HEIGHT, theme::CONTROL_HEIGHT),
+                        Sense::hover(),
+                    );
                 }
             },
         );
@@ -173,17 +113,6 @@ impl DeviceCenterApp {
             }
         }
         self.connect_bar(ui);
-        if self.server_unreachable {
-            let text = match self.next_reconnect(ui.ctx()) {
-                Some(seconds) => (t().center.banner_unreachable_in)(seconds),
-                None => t().center.banner_unreachable.to_owned(),
-            };
-            if cards::banner_action(ui, &text, Tone::Warning, t().center.reconnect_now) {
-                self.reconnect();
-            }
-        } else if self.cached_devices {
-            cards::banner(ui, t().center.connecting_server, Tone::Warning);
-        }
         if let Some((message, _)) = &self.direct.message {
             cards::banner(ui, message, Tone::Success);
         }
@@ -229,41 +158,12 @@ impl DeviceCenterApp {
         ui.add_space(12.0);
         match self.direct.tab {
             DeviceTab::Mine | DeviceTab::Friends if access != Access::Account => {
-                let friends = self.direct.tab == DeviceTab::Friends;
-                match cards::locked(
-                    ui,
-                    if friends {
-                        text.sign_in_for_shared
-                    } else {
-                        text.sign_in_for_own
-                    },
-                    &[self.sign_in_label(), text.nearby_devices],
-                ) {
-                    Some(0) => self.sign_in(),
-                    Some(_) => {
-                        self.direct.tab = DeviceTab::Nearby;
-                        self.direct.tab_chosen = true;
-                        self.direct.scan(ui.ctx());
-                    }
-                    None => {}
-                }
+                self.blocked_state(ui, blocker.unwrap_or(Blocker::SignedOut));
             }
             DeviceTab::Mine => self.own_devices_tab(ui),
-            DeviceTab::Friends => {
-                crate::ui::controls::page_scroll("friend-devices").show(ui, |ui| {
-                    self.friend_devices_tab(ui);
-                });
-            }
-            DeviceTab::Nearby => {
-                crate::ui::controls::page_scroll("nearby-devices").show(ui, |ui| {
-                    self.nearby_tab(ui);
-                });
-            }
-            DeviceTab::Recent => {
-                crate::ui::controls::page_scroll("recent-devices").show(ui, |ui| {
-                    self.recent_tab(ui, access);
-                });
-            }
+            DeviceTab::Friends => self.friend_devices_tab(ui),
+            DeviceTab::Nearby => self.nearby_tab(ui),
+            DeviceTab::Recent => self.recent_tab(ui, access),
         }
     }
 
@@ -445,43 +345,87 @@ impl DeviceCenterApp {
     }
 
     fn friend_devices_tab(&mut self, ui: &mut egui::Ui) {
-        let shared = self
-            .devices
-            .as_ref()
-            .map(|list| list.shared.clone())
-            .unwrap_or_default();
-        if shared.is_empty() {
-            empty_card(ui, t().center.no_shared_devices, "");
+        let Some(shared) = self.devices.as_ref().map(|list| list.shared.clone()) else {
+            match self.blocker() {
+                Some(blocker) => self.blocked_state(ui, blocker),
+                None => device_list::empty(ui, t().center.loading_devices),
+            }
             return;
+        };
+        {
+            let all: Vec<&DeviceInfo> = shared.iter().collect();
+            let state = &mut self.center_ui.device_list.shared;
+            device_list::toolbar(ui, &mut state.search, |ui| {
+                Order::combo(ui, "shared-order", &mut state.order);
+                StateFilter::combo(ui, "shared-filter", &mut state.filter, &all);
+            });
         }
-        // Grouped by owner; owners and their devices by name, then ID.
-        let mut shared = shared;
-        shared.sort_by(DeviceInfo::list_order);
-        let mut owners: Vec<(String, Vec<DeviceInfo>)> = Vec::new();
-        for device in shared {
-            let owner = device
+        let text = &t().center;
+        let owner_of = |device: &DeviceInfo| {
+            device
                 .owner
                 .as_ref()
-                .map_or_else(|| t().center.friend.to_owned(), |o| o.display_name().to_owned());
+                .map_or_else(|| text.friend.to_owned(), |o| o.display_name().to_owned())
+        };
+        let state = &self.center_ui.device_list.shared;
+        let query = state.search.trim().to_lowercase();
+        let (filter, order) = (state.filter, state.order);
+        let total = shared.len();
+        let mut shared: Vec<DeviceInfo> = shared
+            .into_iter()
+            .filter(|d| {
+                filter.keeps(d)
+                    && device_list::matches(
+                        &query,
+                        &[display_alias(d), &d.device_id, &d.platform_label(), &owner_of(d)],
+                    )
+            })
+            .collect();
+        shared.sort_by(|a, b| order.compare(a, b));
+        // Grouped by owner, owners by name; devices keep the chosen order.
+        let mut owners: Vec<(String, Vec<DeviceInfo>)> = Vec::new();
+        for device in shared {
+            let owner = owner_of(&device);
             match owners.iter_mut().find(|(name, _)| *name == owner) {
                 Some((_, list)) => list.push(device),
                 None => owners.push((owner, vec![device])),
             }
         }
         owners.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()).then_with(|| a.0.cmp(&b.0)));
-        let nearby = self.direct.nearby();
+        let nearby: Vec<String> = self
+            .direct
+            .nearby()
+            .into_iter()
+            .map(|h| h.announce.device_id)
+            .collect();
         let mut picked = None;
-        for (owner, devices) in owners {
-            cards::section_heading(ui, &(t().center.shared_by)(&owner), Some(devices.len()), |_| {});
-            for device in &devices {
-                if nearby.iter().any(|h| h.announce.device_id == device.device_id) {
-                    cards::chip(ui, t().center.on_lan, GREEN);
-                }
-                if let Some(action) = self.friend_device_row(ui, device) {
-                    picked = Some((device.device_id.clone(), action));
+        crate::ui::controls::page_scroll("friend-devices").show(ui, |ui| {
+            if owners.is_empty() {
+                device_list::empty(
+                    ui,
+                    if total == 0 {
+                        text.no_shared_devices
+                    } else {
+                        text.no_matching_devices
+                    },
+                );
+            }
+            for (index, (owner, devices)) in owners.iter().enumerate() {
+                device_list::heading(
+                    ui,
+                    &(text.shared_by)(owner),
+                    Some(devices.len()),
+                    index == 0,
+                    |_| {},
+                );
+                for device in devices {
+                    let on_lan = nearby.contains(&device.device_id);
+                    if let Some(action) = self.shared_row(ui, device, on_lan) {
+                        picked = Some((device.device_id.clone(), action));
+                    }
                 }
             }
-        }
+        });
         match picked {
             Some((id, super::friends::DeviceAction::Connect)) => {
                 self.selected_device_id = Some(id);
@@ -492,28 +436,92 @@ impl DeviceCenterApp {
         }
     }
 
+    /// One device a friend shares, as in every other device list.
+    fn shared_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        device: &DeviceInfo,
+        on_lan: bool,
+    ) -> Option<super::friends::DeviceAction> {
+        use super::friends::DeviceAction;
+        let status = self.device_status(device);
+        let issue = self.viewer_action_issue(device);
+        let open = self.viewer_for_device(&device.device_id).is_some();
+        let selected = self.selected_device_id.as_deref() == Some(&device.device_id);
+        let texture =
+            self.center_ui
+                .wallpapers
+                .texture(ui.ctx(), &device.device_id, &device.wallpaper_url);
+        let chips: Vec<(&str, Color32)> = if on_lan {
+            vec![(t().center.on_lan, GREEN)]
+        } else {
+            Vec::new()
+        };
+        let detail = super::devices::detail_line(device);
+        let mut action = None;
+        let clicked = ui
+            .push_id(&device.device_id, |ui| {
+                device_list::row(
+                    ui,
+                    &device_list::Row {
+                        title: display_alias(device),
+                        tile: Tile::Wallpaper {
+                            texture: texture.as_ref(),
+                            platform: device.platform,
+                        },
+                        status: Some((status.label(), status.color())),
+                        chips: &chips,
+                        grants: Some(&device.granted),
+                        detail: &detail,
+                        selected,
+                    },
+                    |ui| {
+                        let connect = ui.add_enabled(
+                            issue.is_none(),
+                            primary(if open {
+                                t().center.opened
+                            } else {
+                                t().common.connect
+                            }),
+                        );
+                        let connect = match &issue {
+                            Some(issue) => connect.on_disabled_hover_text(issue),
+                            None => connect,
+                        };
+                        if connect.clicked() {
+                            action = Some(DeviceAction::Connect);
+                        }
+                        if ui
+                            .add(crate::ui::controls::secondary(t().common.details))
+                            .clicked()
+                        {
+                            action = Some(DeviceAction::Details);
+                        }
+                    },
+                )
+            })
+            .inner;
+        action.or_else(|| clicked.then_some(DeviceAction::Details))
+    }
+
     fn nearby_tab(&mut self, ui: &mut egui::Ui) {
+        device_list::toolbar(ui, &mut self.center_ui.device_list.nearby, |_| {});
         let (first_scan, error) = {
             let lan = self.direct.lan();
             (lan.scanning && lan.found.is_none(), lan.error.clone())
         };
-        let found = self.direct.nearby();
-        if first_scan {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                detail(ui, t().center.searching_lan);
-            });
-            ui.add_space(6.0);
-        }
-        if let Some(error) = error {
-            cards::banner(ui, &error, Tone::Warning);
-        }
-        if found.is_empty() {
-            if !first_scan {
-                empty_card(ui, t().center.no_nearby_devices, "");
-            }
-            return;
-        }
+        let query = self.center_ui.device_list.nearby.trim().to_lowercase();
+        let all = self.direct.nearby();
+        let total = all.len();
+        let found: Vec<_> = all
+            .into_iter()
+            .filter(|h| {
+                device_list::matches(
+                    &query,
+                    &[&h.announce.name, &h.announce.device_id, &h.target().to_string()],
+                )
+            })
+            .collect();
         let own = store::own_devices_account()
             .map(|account| store::own_devices(&account))
             .unwrap_or_default();
@@ -537,91 +545,119 @@ impl DeviceCenterApp {
             Pair(String, String, String),
         }
         let mut picked = None;
-        for host in found {
-            let announce = &host.announce;
-            let target = host.target().to_string();
-            let methods = |m: &str| announce.methods.iter().any(|x| x == m);
-            let friend = shared.iter().find(|d| d.device_id == announce.device_id);
-            let owner_chip;
-            let mut chips: Vec<(&str, Color32)> = Vec::new();
-            // It lets this device in by its key: no code, no confirmation.
-            let admits = store::known_host(&announce.device_id).is_some_and(|h| h.trusted);
-            let trusted = trusting.iter().find(|d| d.device_id == announce.device_id);
-            let paired = trusted.is_some_and(|d| d.paired) || (admits && trusted.is_some());
-            let own_device = own.iter().any(|d| d.device_id == announce.device_id);
-            if own_device {
-                chips.push((text.this_account, GREEN));
-            } else if let Some(device) = friend {
-                owner_chip = (text.shared_by)(
-                    device
-                        .owner
-                        .as_ref()
-                        .map_or(text.friend, |o| o.display_name()),
-                );
-                chips.push((owner_chip.as_str(), AMBER));
-            } else if paired {
-                chips.push((text.paired, GREEN));
-            } else if admits {
-                chips.push((text.trusts_this_device, BLUE));
-            } else {
-                chips.push((
-                    if methods(farwing_protocol::direct::method::ASSIST) {
-                        text.code_or_approval
-                    } else {
-                        text.access_code_off
-                    },
-                    MUTED,
-                ));
+        crate::ui::controls::page_scroll("nearby-devices").show(ui, |ui| {
+            if let Some(error) = &error {
+                cards::banner(ui, error, Tone::Warning);
+                ui.add_space(8.0);
             }
-            let accepts_code = methods(farwing_protocol::direct::method::ASSIST);
-            device_card(
-                ui,
-                &announce.device_id,
-                &announce.name,
-                &chips,
-                &[
-                    format!("{target} · Farwing {}", announce.version),
-                    format!("ID {}", crate::account::api::device_id_text(&announce.device_id)),
-                ],
-                |ui| {
-                    if own_device || admits {
-                        if ui.add(primary(t().common.connect)).clicked() {
-                            picked = Some(Pick::Key(target.clone(), announce.name.clone()));
-                        }
-                    } else if let Some(device) = friend {
-                        // It takes friends' keys directly (also while the
-                        // server cannot be reached); otherwise through it.
-                        let direct = methods(farwing_protocol::direct::method::FRIEND);
-                        if ui.add(primary(t().common.connect)).clicked() {
-                            picked = Some(if direct {
-                                Pick::Key(target.clone(), announce.name.clone())
-                            } else {
-                                Pick::Server(device.device_id.clone())
-                            });
-                        }
-                    } else if ui.add_enabled(accepts_code, primary(t().common.connect)).clicked() {
-                        picked = Some(Pick::Code(target.clone(), announce.name.clone()));
-                    }
-                    if !own_device
-                        && friend.is_none()
-                        && !paired
-                        && ui
-                            .add_enabled(!pairing, crate::ui::controls::secondary(text.pair))
-                            .clicked()
-                    {
-                        // Two devices may share a name: show which one.
-                        picked = Some(Pick::Pair(
-                            target.clone(),
-                            announce.device_id.clone(),
-                            (text.name_with_id)(
-                                &announce.name,
-                                &crate::account::api::device_id_text(&announce.device_id),
-                            ),
-                        ));
-                    }
-                },
-            );
-        }
+            if found.is_empty() {
+                device_list::empty(
+                    ui,
+                    if first_scan {
+                        text.searching_lan
+                    } else if total == 0 {
+                        text.no_nearby_devices
+                    } else {
+                        text.no_matching_devices
+                    },
+                );
+                return;
+            }
+            for host in &found {
+                let announce = &host.announce;
+                let target = host.target().to_string();
+                let methods = |m: &str| announce.methods.iter().any(|x| x == m);
+                let friend = shared.iter().find(|d| d.device_id == announce.device_id);
+                let owner_chip;
+                let mut chips: Vec<(&str, Color32)> = Vec::new();
+                // It lets this device in by its key: no code, no confirmation.
+                let admits = store::known_host(&announce.device_id).is_some_and(|h| h.trusted);
+                let trusted = trusting.iter().find(|d| d.device_id == announce.device_id);
+                let paired = trusted.is_some_and(|d| d.paired) || (admits && trusted.is_some());
+                let own_device = own.iter().any(|d| d.device_id == announce.device_id);
+                if own_device {
+                    chips.push((text.this_account, GREEN));
+                } else if let Some(device) = friend {
+                    owner_chip = (text.shared_by)(
+                        device
+                            .owner
+                            .as_ref()
+                            .map_or(text.friend, |o| o.display_name()),
+                    );
+                    chips.push((owner_chip.as_str(), AMBER));
+                } else if paired {
+                    chips.push((text.paired, GREEN));
+                } else if admits {
+                    chips.push((text.trusts_this_device, BLUE));
+                } else {
+                    chips.push((
+                        if methods(farwing_protocol::direct::method::ASSIST) {
+                            text.code_or_approval
+                        } else {
+                            text.access_code_off
+                        },
+                        MUTED,
+                    ));
+                }
+                let accepts_code = methods(farwing_protocol::direct::method::ASSIST);
+                let detail = format!(
+                    "ID {} · {target} · Farwing {}",
+                    crate::account::api::device_id_text(&announce.device_id),
+                    announce.version
+                );
+                ui.push_id(&announce.device_id, |ui| {
+                    device_list::row(
+                        ui,
+                        &device_list::Row {
+                            title: &announce.name,
+                            tile: Tile::Platform(announce.platform),
+                            status: Some((t().common.online, GREEN)),
+                            chips: &chips,
+                            grants: None,
+                            detail: &detail,
+                            selected: false,
+                        },
+                        |ui| {
+                            if own_device || admits {
+                                if ui.add(primary(t().common.connect)).clicked() {
+                                    picked = Some(Pick::Key(target.clone(), announce.name.clone()));
+                                }
+                            } else if let Some(device) = friend {
+                                // It takes friends' keys directly (also while the
+                                // server cannot be reached); otherwise through it.
+                                let direct = methods(farwing_protocol::direct::method::FRIEND);
+                                if ui.add(primary(t().common.connect)).clicked() {
+                                    picked = Some(if direct {
+                                        Pick::Key(target.clone(), announce.name.clone())
+                                    } else {
+                                        Pick::Server(device.device_id.clone())
+                                    });
+                                }
+                            } else if ui.add_enabled(accepts_code, primary(t().common.connect)).clicked() {
+                                picked = Some(Pick::Code(target.clone(), announce.name.clone()));
+                            }
+                            if !own_device
+                                && friend.is_none()
+                                && !paired
+                                && ui
+                                    .add_enabled(!pairing, crate::ui::controls::secondary(text.pair))
+                                    .clicked()
+                            {
+                                // Two devices may share a name: show which one.
+                                picked = Some(Pick::Pair(
+                                    target.clone(),
+                                    announce.device_id.clone(),
+                                    (text.name_with_id)(
+                                        &announce.name,
+                                        &crate::account::api::device_id_text(&announce.device_id),
+                                    ),
+                                ));
+                            }
+                        },
+                    );
+                });
+            }
+        });
         match picked {
             Some(Pick::Key(target, name)) => self.connect_address(&target, "", false, Some(&name)),
             Some(Pick::Server(id)) => {
@@ -736,6 +772,7 @@ impl DeviceCenterApp {
     /// account's assistance history on the server) and favourites.
     fn recent_tab(&mut self, ui: &mut egui::Ui, access: Access) {
         let account = access == Access::Account;
+        let blocker = self.blocker();
         // Devices this one trusts: with one that trusts this device too, paired.
         let trusting: Vec<String> = self
             .direct_host_state()
@@ -744,90 +781,28 @@ impl DeviceCenterApp {
         let available = !self.assist.busy && !self.logout_pending && !self.mutation_pending;
         let lists = self.assist.lists.clone().unwrap_or_default();
         let text = &t().center;
-        if account {
-            let mut add = false;
-            cards::section_heading(ui, text.favorites, Some(lists.favorites.len()), |ui| {
-                add = ui
-                    .add_enabled(available, crate::ui::controls::secondary(text.add_favorite))
-                    .clicked();
-            });
-            if add {
-                self.assist.favorite_editor = Some(FavoriteEditor {
-                    id: String::new(),
-                    remark: String::new(),
-                    editing: false,
-                    code: String::new(),
-                    code_changed: false,
-                });
-            }
-            if lists.favorites.is_empty() {
-                empty_card(
+        let mut add = false;
+        device_list::toolbar(ui, &mut self.center_ui.device_list.recent, |ui| {
+            if account {
+                add = server_button(
                     ui,
-                    if self.assist.loading && self.assist.lists.is_none() {
-                        text.loading_favorites
-                    } else {
-                        text.no_favorites
-                    },
-                    "",
-                );
-            }
-            let mut favorites = lists.favorites.clone();
-            favorites.sort_by(|a, b| {
-                crate::account::api::list_order(
-                    a.title(),
-                    &a.publisher_device_id,
-                    b.title(),
-                    &b.publisher_device_id,
+                    blocker,
+                    available,
+                    crate::ui::controls::secondary(text.add_favorite),
                 )
-                .then_with(|| a.connect_id.cmp(&b.connect_id))
+                .clicked();
+            }
+        });
+        if add {
+            self.assist.favorite_editor = Some(FavoriteEditor {
+                id: String::new(),
+                remark: String::new(),
+                editing: false,
+                code: String::new(),
+                code_changed: false,
             });
-            let mut connect = None;
-            for item in &favorites {
-                let id = crate::account::api::key_id_text(&item.public_key);
-                let mut edit = false;
-                let mut remove = false;
-                device_card(
-                    ui,
-                    &item.publisher_device_id,
-                    item.title(),
-                    &[(text.favorite, AMBER)],
-                    &[(text.favorite_line)(
-                        &assist_components::grouped_id(&item.connect_id),
-                        &id,
-                    )],
-                    |ui| {
-                        if ui.add_enabled(available, primary(t().common.connect)).clicked() {
-                            connect = Some(item.connect_id.clone());
-                        }
-                        remove = ui
-                            .add_enabled(
-                                available,
-                                crate::ui::controls::secondary(text.remove_favorite),
-                            )
-                            .clicked();
-                        edit = ui
-                            .add_enabled(available, crate::ui::controls::secondary(text.edit))
-                            .clicked();
-                    },
-                );
-                if edit {
-                    self.assist.favorite_editor = Some(FavoriteEditor {
-                        id: item.connect_id.clone(),
-                        remark: item.remark.clone(),
-                        editing: true,
-                        code: item.saved_code.clone(),
-                        code_changed: false,
-                    });
-                }
-                if remove {
-                    self.assist.delete_prompt =
-                        Some(DeletePrompt::Device(SavedKind::Favorites, item.clone()));
-                }
-            }
-            if let Some(number) = connect {
-                self.request_assist_connect(number, String::new());
-            }
         }
+        let query = self.center_ui.device_list.recent.trim().to_lowercase();
         // This device's record and the account's history, once per device.
         let mut rows: Vec<RecentRow> = Vec::new();
         for host in store::known_hosts() {
@@ -873,93 +848,215 @@ impl DeviceCenterApp {
             )
             .then_with(|| a.address.cmp(&b.address))
         });
-        let mut clear = false;
-        cards::section_heading(ui, text.recent_connections, Some(rows.len()), |ui| {
-            if account && !lists.recent.is_empty() {
-                clear = ui
-                    .add_enabled(
+        let recent_total = rows.len();
+        rows.retain(|row| {
+            device_list::matches(
+                &query,
+                &[
+                    &row.title,
+                    row.device_id.as_deref().unwrap_or_default(),
+                    row.short_number.as_deref().unwrap_or_default(),
+                    row.address.as_deref().unwrap_or_default(),
+                ],
+            )
+        });
+        let mut favorites = lists.favorites.clone();
+        favorites.sort_by(|a, b| {
+            crate::account::api::list_order(
+                a.title(),
+                &a.publisher_device_id,
+                b.title(),
+                &b.publisher_device_id,
+            )
+            .then_with(|| a.connect_id.cmp(&b.connect_id))
+        });
+        let favorites_total = favorites.len();
+        favorites.retain(|item| {
+            device_list::matches(
+                &query,
+                &[item.title(), &item.publisher_device_id, &item.connect_id],
+            )
+        });
+        enum Pick {
+            Connect(RecentRow),
+            ConnectFavorite(String),
+            EditFavorite(SavedDevice),
+            RemoveFavorite(SavedDevice),
+            Favorite(SavedDevice),
+            Forget(String, Option<SavedDevice>),
+            ClearHistory,
+        }
+        let mut picked = None;
+        crate::ui::controls::page_scroll("recent-devices").show(ui, |ui| {
+            if account {
+                device_list::heading(ui, text.favorites, Some(favorites_total), true, |_| {});
+                if favorites.is_empty() {
+                    device_list::empty(
+                        ui,
+                        if self.assist.lists.is_none() {
+                            blocker.map_or(text.loading_favorites, |b| b.reason())
+                        } else if favorites_total == 0 {
+                            text.no_favorites
+                        } else {
+                            text.no_matching_devices
+                        },
+                    );
+                }
+                for item in &favorites {
+                    let detail = (text.favorite_line)(
+                        &assist_components::grouped_id(&item.connect_id),
+                        &crate::account::api::key_id_text(&item.public_key),
+                    );
+                    ui.push_id(("favorite", &item.connect_id), |ui| {
+                        device_list::row(
+                            ui,
+                            &device_list::Row {
+                                title: item.title(),
+                                tile: Tile::Generic,
+                                status: None,
+                                chips: &[],
+                                grants: None,
+                                detail: &detail,
+                                selected: false,
+                            },
+                            |ui| {
+                                if server_button(ui, blocker, available, primary(t().common.connect))
+                                    .clicked()
+                                {
+                                    picked = Some(Pick::ConnectFavorite(item.connect_id.clone()));
+                                }
+                                if server_button(
+                                    ui,
+                                    blocker,
+                                    available,
+                                    crate::ui::controls::secondary(text.remove_favorite),
+                                )
+                                .clicked()
+                                {
+                                    picked = Some(Pick::RemoveFavorite(item.clone()));
+                                }
+                                if server_button(
+                                    ui,
+                                    blocker,
+                                    available,
+                                    crate::ui::controls::secondary(text.edit),
+                                )
+                                .clicked()
+                                {
+                                    picked = Some(Pick::EditFavorite(item.clone()));
+                                }
+                            },
+                        );
+                    });
+                }
+            }
+            device_list::heading(ui, text.recent_connections, Some(recent_total), !account, |ui| {
+                if account
+                    && !lists.recent.is_empty()
+                    && server_button(
+                        ui,
+                        blocker,
                         available,
                         crate::ui::controls::secondary(text.clear_server_history),
                     )
-                    .clicked();
-            }
-        });
-        if clear {
-            self.assist.delete_prompt = Some(DeletePrompt::Recent);
-        }
-        if rows.is_empty() {
-            empty_card(ui, text.no_history, "");
-            return;
-        }
-        enum Pick {
-            Connect(RecentRow),
-            Favorite(SavedDevice),
-            Forget(String, Option<SavedDevice>),
-        }
-        let mut picked = None;
-        for row in rows {
-            let mut chips: Vec<(&str, Color32)> = Vec::new();
-            if row.trusted {
-                let paired = row.device_id.as_ref().is_some_and(|id| trusting.contains(id));
-                chips.push(if paired {
-                    (text.paired, GREEN)
-                } else {
-                    (text.trusts_this_device, BLUE)
-                });
-            }
-            if row.saved.as_ref().is_some_and(|s| s.is_favorite) {
-                chips.push((text.favorite, AMBER));
-            }
-            let mut first = Vec::new();
-            if let Some(address) = &row.address {
-                first.push((text.address_line)(address));
-            }
-            if let Some(number) = &row.short_number {
-                first.push((text.short_number_line)(&assist_components::grouped_id(number)));
-            }
-            first.push((text.last_connected)(&cards::when(row.last)));
-            let mut lines = vec![first.join(" · ")];
-            if let Some(id) = &row.device_id {
-                lines.push(format!("ID {}", crate::account::api::device_id_text(id)));
-            }
-            let key = row
-                .device_id
-                .clone()
-                .or_else(|| row.short_number.clone())
-                .unwrap_or_default();
-            let title = if row.title.is_empty() {
-                row.short_number.clone().unwrap_or_else(|| text.unnamed_device.into())
-            } else {
-                row.title.clone()
-            };
-            let mut action = None;
-            device_card(ui, &key, &title, &chips, &lines, |ui| {
-                if ui.add_enabled(available, primary(t().common.connect)).clicked() {
-                    action = Some(0);
-                }
-                if ui
-                    .add_enabled(available, crate::ui::controls::secondary(t().common.delete))
                     .clicked()
                 {
-                    action = Some(1);
-                }
-                if let Some(saved) = &row.saved
-                    && account
-                    && !saved.is_favorite
-                    && ui
-                        .add_enabled(available, crate::ui::controls::secondary(text.add_to_favorites))
-                        .clicked()
-                {
-                    action = Some(2);
+                    picked = Some(Pick::ClearHistory);
                 }
             });
-            match action {
-                Some(0) => picked = Some(Pick::Connect(row)),
-                Some(1) => picked = Some(Pick::Forget(key, row.saved.clone())),
-                Some(2) => picked = row.saved.clone().map(Pick::Favorite),
-                _ => {}
+            if rows.is_empty() {
+                device_list::empty(
+                    ui,
+                    if recent_total == 0 {
+                        text.no_history
+                    } else {
+                        text.no_matching_devices
+                    },
+                );
+                return;
             }
-        }
+            for row in rows {
+                let mut chips: Vec<(&str, Color32)> = Vec::new();
+                if row.trusted {
+                    let paired = row.device_id.as_ref().is_some_and(|id| trusting.contains(id));
+                    chips.push(if paired {
+                        (text.paired, GREEN)
+                    } else {
+                        (text.trusts_this_device, BLUE)
+                    });
+                }
+                if row.saved.as_ref().is_some_and(|s| s.is_favorite) {
+                    chips.push((text.favorite, AMBER));
+                }
+                let mut parts = Vec::new();
+                if let Some(id) = &row.device_id {
+                    parts.push(format!("ID {}", crate::account::api::device_id_text(id)));
+                }
+                if let Some(address) = &row.address {
+                    parts.push((text.address_line)(address));
+                }
+                if let Some(number) = &row.short_number {
+                    parts.push((text.short_number_line)(&assist_components::grouped_id(number)));
+                }
+                parts.push((text.last_connected)(&cards::when(row.last)));
+                let detail = parts.join(" · ");
+                let key = row
+                    .device_id
+                    .clone()
+                    .or_else(|| row.short_number.clone())
+                    .unwrap_or_default();
+                let title = if row.title.is_empty() {
+                    row.short_number.clone().unwrap_or_else(|| text.unnamed_device.into())
+                } else {
+                    row.title.clone()
+                };
+                let mut action = None;
+                ui.push_id(("recent", &key), |ui| {
+                    device_list::row(
+                        ui,
+                        &device_list::Row {
+                            title: &title,
+                            tile: Tile::Generic,
+                            status: None,
+                            chips: &chips,
+                            grants: None,
+                            detail: &detail,
+                            selected: false,
+                        },
+                        |ui| {
+                            if ui.add_enabled(available, primary(t().common.connect)).clicked() {
+                                action = Some(0);
+                            }
+                            if ui
+                                .add_enabled(available, crate::ui::controls::secondary(t().common.delete))
+                                .clicked()
+                            {
+                                action = Some(1);
+                            }
+                            if let Some(saved) = &row.saved
+                                && account
+                                && !saved.is_favorite
+                                && server_button(
+                                    ui,
+                                    blocker,
+                                    available,
+                                    crate::ui::controls::secondary(text.add_to_favorites),
+                                )
+                                .clicked()
+                            {
+                                action = Some(2);
+                            }
+                        },
+                    );
+                });
+                match action {
+                    Some(0) => picked = Some(Pick::Connect(row)),
+                    Some(1) => picked = Some(Pick::Forget(key, row.saved.clone())),
+                    Some(2) => picked = row.saved.clone().map(Pick::Favorite),
+                    _ => {}
+                }
+            }
+        });
         match picked {
             Some(Pick::Connect(row)) => {
                 match (&row.device_id, &row.address, row.trusted) {
@@ -978,6 +1075,19 @@ impl DeviceCenterApp {
                         }
                     }
                 }
+            }
+            Some(Pick::ConnectFavorite(number)) => self.request_assist_connect(number, String::new()),
+            Some(Pick::EditFavorite(item)) => {
+                self.assist.favorite_editor = Some(FavoriteEditor {
+                    id: item.connect_id.clone(),
+                    remark: item.remark.clone(),
+                    editing: true,
+                    code: item.saved_code.clone(),
+                    code_changed: false,
+                });
+            }
+            Some(Pick::RemoveFavorite(item)) => {
+                self.assist.delete_prompt = Some(DeletePrompt::Device(SavedKind::Favorites, item));
             }
             Some(Pick::Favorite(item)) => {
                 self.assist.favorite_editor = Some(FavoriteEditor {
@@ -998,6 +1108,7 @@ impl DeviceCenterApp {
                     self.direct.note(t().center.record_deleted);
                 }
             }
+            Some(Pick::ClearHistory) => self.assist.delete_prompt = Some(DeletePrompt::Recent),
             None => {}
         }
     }

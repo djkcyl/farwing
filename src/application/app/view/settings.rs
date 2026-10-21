@@ -114,7 +114,19 @@ impl DeviceCenterApp {
                 .max_rect(content)
                 .layout(egui::Layout::top_down(Align::Min)),
             |ui| {
-                ui.label(RichText::new(tab.label()).size(theme::TITLE).strong());
+                ui.horizontal(|ui| {
+                    ui.set_min_height(theme::CONTROL_HEIGHT);
+                    ui.label(RichText::new(tab.label()).size(theme::TITLE).strong());
+                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| match tab {
+                        SettingsTab::Plugins => self.center_ui.plugins.header_actions(ui),
+                        SettingsTab::Diagnostics => self.diagnostic_export_button(ui),
+                        SettingsTab::Logs => {
+                            self.log_folder_button(ui);
+                            self.diagnostic_export_button(ui);
+                        }
+                        _ => {}
+                    });
+                });
                 ui.add_space(14.0);
                 self.alert(ui);
                 match tab {
@@ -181,11 +193,12 @@ impl DeviceCenterApp {
 
         section(ui, text.section_server);
         let server = crate::account::server::ServerConfig::load().ok().flatten();
+        let state = self.server_state().label();
         let mut change = false;
         form_row(
             ui,
             server.as_ref().map_or(text.not_set, |server| server.origin()),
-            "",
+            state,
             |ui| {
                 change = ui
                     .add_enabled(!self.logout_pending, crate::ui::controls::secondary(text.change_server))
@@ -365,6 +378,29 @@ impl DeviceCenterApp {
                     }
                 },
             );
+            form_row(
+                ui,
+                text.route,
+                "",
+                |ui| {
+                    egui::ComboBox::from_id_salt("center-route")
+                        .width(238.0)
+                        .selected_text(self.media.transport.label())
+                        .show_ui(ui, |ui| {
+                            for choice in [
+                                TransportChoice::Auto,
+                                TransportChoice::P2p,
+                                TransportChoice::Relay,
+                            ] {
+                                ui.selectable_value(
+                                    &mut self.media.transport,
+                                    choice,
+                                    choice.label(),
+                                );
+                            }
+                        });
+                },
+            );
             let restriction = super::media_preferences::limits_title(
                 self.media.decoder.mode,
                 self.media
@@ -414,29 +450,6 @@ impl DeviceCenterApp {
                             });
                     });
                 });
-            form_row(
-                ui,
-                text.route,
-                "",
-                |ui| {
-                    egui::ComboBox::from_id_salt("center-route")
-                        .width(238.0)
-                        .selected_text(self.media.transport.label())
-                        .show_ui(ui, |ui| {
-                            for choice in [
-                                TransportChoice::Auto,
-                                TransportChoice::P2p,
-                                TransportChoice::Relay,
-                            ] {
-                                ui.selectable_value(
-                                    &mut self.media.transport,
-                                    choice,
-                                    choice.label(),
-                                );
-                            }
-                        });
-                },
-            );
         });
         if self.media != original_media {
             if let Err(error) = crate::media::preferences::save(self.media) {

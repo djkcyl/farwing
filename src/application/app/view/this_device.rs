@@ -3,7 +3,7 @@
 //! and addresses; the access code; the devices it trusts; the account's
 //! devices and friends; and who is connected now.
 use super::cards::{self, Tone};
-use super::connect::{device_card_with, empty_card};
+use super::device_list::{self, Tile};
 use super::*;
 use crate::application::app::controlled_caption::ParticipantAction;
 use crate::transport::direct::managed::{self, Action, HostDirect};
@@ -15,6 +15,8 @@ fn detail(ui: &mut egui::Ui, text: &str) {
 /// The identity card's columns: what a row is, its value, what that means.
 const LABEL_COLUMN: f32 = 72.0;
 const VALUE_COLUMN: f32 = 260.0;
+/// Room at the end of a row for its action.
+const ACTION_COLUMN: f32 = 180.0;
 
 /// The label column's width: at least [`LABEL_COLUMN`], wide enough for
 /// every label in the current language.
@@ -54,15 +56,16 @@ fn field(
                 ui.label(RichText::new(label).color(MUTED));
             },
         );
+        let width = (ui.available_width() - ACTION_COLUMN).max(VALUE_COLUMN);
         ui.allocate_ui_with_layout(
-            vec2(VALUE_COLUMN, theme::CONTROL_HEIGHT),
+            vec2(width, theme::CONTROL_HEIGHT),
             egui::Layout::left_to_right(Align::Center).with_main_wrap(true),
             |ui| {
-                ui.set_min_size(vec2(VALUE_COLUMN, theme::CONTROL_HEIGHT));
+                ui.set_min_size(vec2(width, theme::CONTROL_HEIGHT));
                 value(ui);
             },
         );
-        meaning(ui);
+        ui.with_layout(egui::Layout::right_to_left(Align::Center), meaning);
     });
 }
 
@@ -230,7 +233,7 @@ impl DeviceCenterApp {
                     Some((_, settings)) if !allowed && settings.direct => {
                         detail(ui, text.not_accepting_connections);
                     }
-                    Some((Some(port), _)) => {
+                    Some((Some(port), settings)) => {
                         if addresses.is_empty() {
                             detail(ui, text.no_lan_address);
                         }
@@ -249,21 +252,21 @@ impl DeviceCenterApp {
                                 text.address_copied,
                             );
                         }
+                        ui.add_space(4.0);
+                        detail(ui, &(text.direct_port)(port, settings.lan_discovery));
                     }
                     Some((None, settings)) if !settings.direct => detail(ui, text.direct_off),
                     Some((None, _)) => detail(ui, text.turning_on_direct),
                     None => detail(ui, text.reading),
                 },
-                |ui| match lan {
-                    Some((Some(port), settings)) if allowed || !settings.direct => {
-                        detail(ui, &(text.direct_port)(port, settings.lan_discovery));
-                    }
-                    Some((None, settings)) if !settings.direct => {
+                |ui| {
+                    if let Some((None, settings)) = lan
+                        && !settings.direct
+                    {
                         open_network = ui
                             .add(crate::ui::controls::secondary(text.direct_settings))
                             .clicked();
                     }
-                    _ => {}
                 },
             );
             if let Some(reach) = self.center_ui.components.reach() {
@@ -306,7 +309,7 @@ impl DeviceCenterApp {
         let text = &t().center;
         cards::section_heading(ui, text.trusted_devices, Some(trusted.len()), |_| {});
         if trusted.is_empty() {
-            empty_card(ui, text.no_trusted_devices, "");
+            device_list::empty(ui, text.no_trusted_devices);
             return;
         }
         for device in trusted {
@@ -317,35 +320,39 @@ impl DeviceCenterApp {
             let mut edit = false;
             let mut remove = false;
             let paired_chip = [(text.paired, GREEN)];
-            device_card_with(
-                ui,
-                &device.device_id,
-                &device.name,
-                if paired { &paired_chip[..] } else { &[] },
-                Some(&device.grants),
-                &[
-                    format!("ID {}", crate::account::api::device_id_text(&device.device_id)),
-                    (text.trusted_since)(
-                        &cards::when(device.trusted_at),
-                        &if device.last_seen > 0 {
-                            cards::when(device.last_seen)
-                        } else {
-                            text.never.into()
-                        },
-                    ),
-                ],
-                |ui| {
-                    remove = ui
-                        .add_enabled(
-                            !self.direct.sending,
-                            crate::ui::controls::secondary(t().common.remove),
-                        )
-                        .clicked();
-                    edit = ui
-                        .add_enabled(!self.direct.sending, primary(text.permissions))
-                        .clicked();
-                },
+            let detail = format!(
+                "ID {} · {}",
+                crate::account::api::device_id_text(&device.device_id),
+                (text.trusted_since)(
+                    &cards::when(device.trusted_at),
+                    &if device.last_seen > 0 {
+                        cards::when(device.last_seen)
+                    } else {
+                        text.never.into()
+                    },
+                ),
             );
+            let sending = self.direct.sending;
+            ui.push_id(&device.device_id, |ui| {
+                device_list::row(
+                    ui,
+                    &device_list::Row {
+                        title: &device.name,
+                        tile: Tile::Generic,
+                        status: None,
+                        chips: if paired { &paired_chip[..] } else { &[] },
+                        grants: Some(&device.grants),
+                        detail: &detail,
+                        selected: false,
+                    },
+                    |ui| {
+                        edit = ui.add_enabled(!sending, primary(text.permissions)).clicked();
+                        remove = ui
+                            .add_enabled(!sending, crate::ui::controls::secondary(t().common.remove))
+                            .clicked();
+                    },
+                );
+            });
             if edit {
                 self.direct.editing =
                     Some((device.device_id.clone(), device.name.clone(), device.grants.clone()));
@@ -365,11 +372,12 @@ impl DeviceCenterApp {
             ui.set_width(ui.available_width());
             if access == Access::Account {
                 ui.horizontal(|ui| {
+                    ui.set_min_height(theme::CONTROL_HEIGHT);
                     ui.label(RichText::new(text.other_account_devices).strong());
                     cards::chip(ui, text.full_control, GREEN);
                 });
-                ui.add_space(8.0);
                 ui.horizontal(|ui| {
+                    ui.set_min_height(theme::CONTROL_HEIGHT);
                     ui.label(RichText::new(text.friends).strong());
                     cards::chip(ui, text.as_granted, AMBER);
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
@@ -424,11 +432,13 @@ impl DeviceCenterApp {
     }
 
     fn limits_card(&mut self, ui: &mut egui::Ui) {
-        cards::section_heading(ui, t().center.limits, None, |_| {});
+        ui.add_space(14.0);
         let mut open = false;
         cards::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
+                ui.set_min_height(theme::CONTROL_HEIGHT);
+                ui.label(RichText::new(t().center.limits).strong());
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                     open = ui
                         .add(crate::ui::controls::secondary(t().center.host_settings))

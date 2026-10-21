@@ -24,6 +24,21 @@ fn level_picker(ui: &mut egui::Ui, id: &str, level: &mut Level) {
 }
 
 impl DeviceCenterApp {
+    /// Opens the log folder; for the page's title row.
+    pub(super) fn log_folder_button(&mut self, ui: &mut egui::Ui) {
+        let Some(snapshot) = logging::snapshot() else {
+            return;
+        };
+        if ui
+            .button(t().settings.open_log_folder)
+            .on_hover_text(snapshot.directory.display().to_string())
+            .clicked()
+            && let Err(e) = logging::open_directory()
+        {
+            self.center_ui.logs.message = Some((false, format!("{e:#}")));
+        }
+    }
+
     pub(super) fn logs_page(&mut self, ui: &mut egui::Ui) {
         let text = &t().settings;
         let Some(snapshot) = logging::snapshot() else {
@@ -38,21 +53,7 @@ impl DeviceCenterApp {
             state.draft = Some(snapshot.settings.clone());
             state.baseline = Some(snapshot.settings.clone());
         }
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .button(text.open_log_folder)
-                    .on_hover_text(snapshot.directory.display().to_string())
-                    .clicked()
-                    && let Err(e) = logging::open_directory()
-                {
-                    state.message = Some((false, format!("{e:#}")));
-                }
-            });
-        });
-        ui.add_space(8.0);
-        self.diagnostic_export(ui);
-        ui.add_space(8.0);
+        self.diagnostic_export_status(ui);
         let state = &mut self.center_ui.logs;
         ui.horizontal(|ui| {
             if ui.add(primary(t().common.save)).clicked() {
@@ -109,7 +110,6 @@ impl DeviceCenterApp {
         if snapshot.dropped != 0 {
             ui.label(RichText::new((text.logs_dropped)(snapshot.dropped)).color(AMBER));
         }
-        ui.add_space(8.0);
         ui.separator();
         crate::ui::controls::page_scroll("log-settings-scroll").show(ui, |ui| {
             let draft = state.draft.as_mut().unwrap();

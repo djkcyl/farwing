@@ -18,6 +18,40 @@ pub(super) enum Access {
     Account,
 }
 
+/// Why something that needs the server cannot be used now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Blocker {
+    NoServer,
+    SignedOut,
+    Unreachable,
+}
+
+impl Blocker {
+    /// Why, in a word or two: the same text everywhere.
+    pub(super) fn reason(self) -> &'static str {
+        match self {
+            Self::NoServer => t().center.status_no_server,
+            Self::SignedOut => t().common.signed_out,
+            Self::Unreachable => t().center.status_unreachable,
+        }
+    }
+}
+
+/// A button for something that needs the server: disabled, with the reason
+/// on hover, while that cannot work.
+pub(super) fn server_button(
+    ui: &mut egui::Ui,
+    blocker: Option<Blocker>,
+    enabled: bool,
+    button: impl egui::Widget,
+) -> egui::Response {
+    let response = ui.add_enabled(enabled && blocker.is_none(), button);
+    match blocker {
+        Some(blocker) => response.on_disabled_hover_text(blocker.reason()),
+        None => response,
+    }
+}
+
 impl Page {
     /// The page is only for an account. Accepting assistance works for
     /// guests; assisting others is gated on that page itself.
@@ -88,25 +122,47 @@ impl DeviceCenterApp {
         self.open_sign_in(step);
     }
 
-    /// A page for an account only: why, and how to get there.
+    /// What keeps account features from working now; `None` when they do.
+    pub(super) fn blocker(&mut self) -> Option<Blocker> {
+        use super::status_bar::ServerState;
+        match self.server_state() {
+            ServerState::NotSet => Some(Blocker::NoServer),
+            ServerState::SignedOut => Some(Blocker::SignedOut),
+            ServerState::Unreachable => Some(Blocker::Unreachable),
+            ServerState::Connecting | ServerState::Online => None,
+        }
+    }
+
+    /// The one placeholder for anything that needs the server: why, and
+    /// the way out.
+    pub(super) fn blocked_state(&mut self, ui: &mut egui::Ui, blocker: Blocker) {
+        let (detail, actions) = match blocker {
+            Blocker::NoServer => (None, vec![t().center.status_set_up_server]),
+            Blocker::SignedOut => (None, vec![t().common.sign_in]),
+            // While an attempt is under way there is nothing to press.
+            Blocker::Unreachable => match self.next_reconnect(ui.ctx()) {
+                Some(seconds) => (
+                    Some((t().center.reconnect_in)(seconds)),
+                    vec![t().center.reconnect_now],
+                ),
+                None => (Some(t().center.reconnecting.to_owned()), Vec::new()),
+            },
+        };
+        let offline = blocker == Blocker::Unreachable;
+        if cards::locked(ui, blocker.reason(), detail.as_deref(), offline, &actions).is_some() {
+            match blocker {
+                Blocker::NoServer | Blocker::SignedOut => self.sign_in(),
+                Blocker::Unreachable => self.reconnect(),
+            }
+        }
+    }
+
+    /// A page for an account only, while that is not available.
     pub(super) fn locked_page(&mut self, ui: &mut egui::Ui) {
         let page = self.center_ui.page;
-        let title = match page {
-            Page::Friends => t().center.sign_in_for_friends,
-            _ => t().center.sign_in_to_use,
-        };
         cards::page_header(ui, page.title(), "", |_| {});
-        let primary = self.sign_in_label();
-        match cards::locked(ui, title, &[primary, t().center.nearby_devices]) {
-            Some(0) => self.sign_in(),
-            Some(_) => {
-                self.center_ui.page = Page::Devices;
-                self.direct.tab = super::super::direct::DeviceTab::Nearby;
-                self.direct.tab_chosen = true;
-                self.direct.scan(ui.ctx());
-            }
-            None => {}
-        }
+        let blocker = self.blocker().unwrap_or(Blocker::SignedOut);
+        self.blocked_state(ui, blocker);
     }
 
     /// The account footer while not signed in: what is set up, and sign-in.
