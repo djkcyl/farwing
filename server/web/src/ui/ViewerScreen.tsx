@@ -753,6 +753,10 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
   );
   const box = video.current && videoSize[0] ? contentBox(video.current, scale) : undefined;
   const playing = state === 'playing';
+  // Panels about the session close with it.
+  useEffect(() => {
+    if (state === 'ended') setPanel('none');
+  }, [state]);
   const overlayText = ending ? ending.message() : state === 'playing' ? '' : t.viewer.states[state];
   const others = (people?.participants ?? []).filter((p) => !p.you);
   const controller = people?.participants.find((p) => p.id === people.controlling);
@@ -790,7 +794,8 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
               : subtitle}
           </div>
         </div>
-        <div className="viewer-tools">
+        {/* Open menus close when the picture stops (their contents no longer apply). */}
+        <div className="viewer-tools" key={playing ? 'playing' : 'stopped'}>
           {screens && screens.screens.length > 1 && (
             <Menu
               label={t.viewer.screen.display}
