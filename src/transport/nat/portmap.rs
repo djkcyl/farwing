@@ -740,8 +740,17 @@ async fn maintain(
     emit: Emit,
     reflexive: Arc<Mutex<Vec<SocketAddrV4>>>,
     stop: CancellationToken,
+    outcome: Arc<Mutex<String>>,
 ) {
+    let record = |text: String| {
+        let mut outcome = outcome.lock().unwrap_or_else(|e| e.into_inner());
+        // A published mapping outranks a failure on another port.
+        if !outcome.contains(':') || text.contains(':') {
+            *outcome = text;
+        }
+    };
     let publish = |lease: &Lease| {
+        record(format!("{} {}", lease.protocol(), lease.external));
         if reflexive
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -767,6 +776,7 @@ async fn maintain(
         Ok(lease) => lease,
         Err(error) => {
             tracing::debug!(error = %format!("{error:#}"), %gateway, "no gateway port mapping");
+            record("no gateway mapping".into());
             return;
         }
     };
@@ -812,6 +822,8 @@ pub(super) struct Session {
     state: Mutex<(Vec<u16>, Vec<tokio::task::JoinHandle<()>>)>,
     /// srflx addresses the agent published.
     reflexive: Arc<Mutex<Vec<SocketAddrV4>>>,
+    /// What became of the mappings, for the connection summary.
+    outcome: Arc<Mutex<String>>,
 }
 
 impl Session {
@@ -821,7 +833,15 @@ impl Session {
             stop: CancellationToken::new(),
             state: Mutex::new((Vec::new(), Vec::new())),
             reflexive: Arc::default(),
+            outcome: Arc::new(Mutex::new(
+                if enabled { "not attempted" } else { "off" }.into(),
+            )),
         }
+    }
+
+    /// `off`, `not attempted`, `no gateway mapping` or `<protocol> <external address>`.
+    pub(super) fn outcome(&self) -> String {
+        self.outcome.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Map the port of a private UDP/IPv4 host candidate on the default
@@ -868,6 +888,7 @@ impl Session {
             emit.clone(),
             self.reflexive.clone(),
             self.stop.clone(),
+            self.outcome.clone(),
         )));
     }
 

@@ -162,6 +162,7 @@ pub(crate) struct Traversal {
     local: Mutex<Option<NatInfo>>,
     remote: Mutex<Option<NatInfo>>,
     mappings: portmap::Session,
+    summarized: std::sync::atomic::AtomicBool,
 }
 
 impl Traversal {
@@ -176,6 +177,7 @@ impl Traversal {
             local: Mutex::new(local),
             remote: Mutex::new(None),
             mappings: portmap::Session::new(settings.port_mapping),
+            summarized: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -254,6 +256,29 @@ impl Traversal {
     /// an extra srflx candidate through `emit`.
     pub(crate) fn local_candidate(&self, candidate: &RTCIceCandidateInit, emit: &Emit) {
         self.mappings.observe(candidate, emit);
+    }
+
+    /// Log once how this connection went: both sides' NAT behaviour,
+    /// whether ports were predicted, the gateway mapping and the path the
+    /// connection ended on (`route`: `LAN`, `P2P`, `relay`…; empty when
+    /// unknown). Diagnostic bundles carry it with the logs.
+    pub(crate) fn summarize(&self, route: &str, pair: &str) {
+        if self.summarized.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let local = self.local().unwrap_or_default();
+        let remote = self.remote();
+        tracing::info!(
+            route = if route.is_empty() { "-" } else { route },
+            pair = if pair.is_empty() { "-" } else { pair },
+            local_nat = %local.encode(),
+            remote_nat = %remote.map_or_else(|| "-".to_owned(), |r| r.encode()),
+            aggressive_punching = self.settings.aggressive_punching,
+            predicted = self.settings.aggressive_punching
+                && remote.is_some_and(|r| should_predict(&local, &r)),
+            gateway_mapping = %self.mappings.outcome(),
+            "connection path summary"
+        );
     }
 
     /// Delete gateway mappings (bounded wait).

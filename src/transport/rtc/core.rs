@@ -168,10 +168,45 @@ impl ConnectionCore {
     }
 
     pub async fn close(&self) -> Result<()> {
+        self.summarize().await;
         self.control.close().await;
         // Gateway mappings are deleted while the transport closes.
         let (closed, ()) = tokio::join!(self.connection.close(), self.nat.close());
         closed.context("close native peer connection")
+    }
+
+    /// The connection summary, with the path it is on now.
+    pub async fn summarize(&self) {
+        let pair = self
+            .connection
+            .sctp()
+            .transport()
+            .ice_transport()
+            .get_selected_candidate_pair()
+            .await;
+        match pair {
+            Some(pair) => {
+                let route = super::connection_route(
+                    pair.local.typ,
+                    &pair.local.address,
+                    pair.remote.typ,
+                    &pair.remote.address,
+                );
+                let relay = [&pair.local.relay_protocol, &pair.remote.relay_protocol]
+                    .into_iter()
+                    .find(|p| !p.is_empty())
+                    .map(|p| format!(" via {p}"))
+                    .unwrap_or_default();
+                self.nat.summarize(
+                    route,
+                    &format!(
+                        "{}/{} {}{relay}",
+                        pair.local.typ, pair.remote.typ, pair.local.protocol
+                    ),
+                );
+            }
+            None => self.nat.summarize("", "never connected"),
+        }
     }
 
     pub async fn configure_ice(
@@ -192,6 +227,7 @@ impl ConnectionCore {
     /// transport. A role may await this task before joining its native workers.
     pub fn close_detached(&mut self) -> Option<tokio::task::JoinHandle<()>> {
         // Mapping tasks delete their gateway mappings on their own.
+        self.nat.summarize("", "");
         self.nat.close_detached();
         if self.cleanup_started
             || (self.connection.connection_state() == RTCPeerConnectionState::Closed
