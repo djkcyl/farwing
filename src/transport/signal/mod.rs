@@ -993,6 +993,7 @@ impl SignalSession {
                         network.connected(peer.can_switch_ice_network());
                         network.observe_route(peer.selected_is_relay().await);
                     }
+                    peer.report_media_to_ice().await;
                 }
                 _ = async {
                     match ice_restart_at {

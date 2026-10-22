@@ -15,6 +15,7 @@ pub mod agent_stats;
 pub mod agent_transport;
 mod allocator;
 mod gather_owner;
+mod load_test;
 mod local_port;
 pub(crate) mod network_catalog;
 mod punch;
@@ -484,6 +485,17 @@ impl Agent {
     /// Returns the selected pair or nil if there is none
     pub fn get_selected_candidate_pair(&self) -> Option<Arc<CandidatePair>> {
         self.internal.agent_conn.get_selected_pair()
+    }
+
+    /// The application's cumulative media counters (packets expected and
+    /// arrived on its main stream, bytes received). The controlling agent judges the
+    /// selected path's loss by them (`candidate::path_quality`).
+    pub fn report_media(&self, expected: u64, arrived: u64, bytes: u64) {
+        *self
+            .internal
+            .media_counts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some((expected, arrived, bytes));
     }
 
     /// Both sides' NAT mappings as measured by the application, for probe

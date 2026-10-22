@@ -14,6 +14,7 @@ use stun::textattrs::*;
 use tokio::time::Duration;
 
 use crate::agent::agent_internal::*;
+use crate::candidate::path_quality::{better, Measure, HOLD, PROBE_INTERVAL, TRIAL};
 use crate::candidate::*;
 use crate::control::*;
 use crate::priority::*;
@@ -119,6 +120,75 @@ trait ControlledSelector {
         remote: &Arc<dyn Candidate + Send + Sync>,
         remote_addr: SocketAddr,
     );
+}
+
+/// The controlling agent's path choice (`AgentInternal::choose_path`).
+#[derive(Default)]
+pub(crate) struct PathChoice {
+    /// Consecutive one-second verdicts for `holding`.
+    pub(crate) hold: u32,
+    holding: std::sync::Weak<CandidatePair>,
+    decided_at: u64,
+    /// The path a retry came from, and when the retry's trial ends.
+    trial: Option<(std::sync::Weak<CandidatePair>, u64)>,
+    /// A relay chosen over a better-ranked path.
+    pinned: Option<std::sync::Weak<CandidatePair>>,
+    /// A load test of the alternative under way.
+    load: Option<LoadTest>,
+}
+
+/// A load test the peer is sending over `pair` (`load_test`).
+struct LoadTest {
+    pair: std::sync::Weak<CandidatePair>,
+    until: u64,
+    total: u32,
+    rate_kbps: u32,
+}
+
+impl LoadTest {
+    fn of(&self, pair: &Arc<CandidatePair>) -> bool {
+        self.pair
+            .upgrade()
+            .is_some_and(|tested| Arc::ptr_eq(&tested, pair))
+    }
+}
+
+impl PathChoice {
+    fn pinned(&self, pair: &Arc<CandidatePair>) -> bool {
+        self.pinned
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .is_some_and(|pinned| Arc::ptr_eq(&pinned, pair))
+    }
+
+    /// `pair` is where a retry on trial came from.
+    fn trial_from(&mut self, pair: &Arc<CandidatePair>, now: u64) -> bool {
+        if self.trial.as_ref().is_some_and(|(_, until)| now >= *until) {
+            self.trial = None;
+        }
+        self.trial
+            .as_ref()
+            .and_then(|(from, _)| from.upgrade())
+            .is_some_and(|from| Arc::ptr_eq(&from, pair))
+    }
+
+    /// Count a verdict for `pair`; true once it has held for [`HOLD`].
+    fn holds(&mut self, pair: &Arc<CandidatePair>) -> bool {
+        if !self
+            .holding
+            .upgrade()
+            .is_some_and(|holding| Arc::ptr_eq(&holding, pair))
+        {
+            self.holding = Arc::downgrade(pair);
+            self.hold = 0;
+        }
+        self.hold += 1;
+        if self.hold < HOLD {
+            return false;
+        }
+        self.hold = 0;
+        true
+    }
 }
 
 impl AgentInternal {
@@ -596,15 +666,16 @@ impl AgentInternal {
         let Some(current) = selected else {
             return true;
         };
-        // A path left for being degraded stays out while the current one works.
+        // A relay chosen over a better-ranked path for its measured quality
+        // stays while it works; `choose_path` decides when to leave it.
         if self.is_controlling.load(Ordering::SeqCst)
             && !Arc::ptr_eq(current, proposed)
-            && proposed
-                .quality
-                .lock()
-                .expect("path quality poisoned")
-                .avoided(CandidatePair::now_nanos())
             && self.ice_writable(current)
+            && self
+                .path_choice
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pinned(current)
         {
             return false;
         }
@@ -630,10 +701,10 @@ impl AgentInternal {
                     <= current.smoothed_round_trip_ms.load(Ordering::Relaxed))
     }
 
-    /// The selected direct path keeps passing consent checks but loses many
-    /// of them, or is far slower than the relay: move to a healthy relay
-    /// backup and avoid the direct path for a while (`PathQuality`).
-    async fn leave_degraded_path(&self, pairs: &[Arc<CandidatePair>], now: u64) {
+    /// Keep the session on the cheaper of the selected path and its
+    /// alternative of the other kind (direct ↔ relay), by measured RTT and
+    /// loss (`candidate::path_quality`). Probes the alternative meanwhile.
+    async fn choose_path(&self, pairs: &[Arc<CandidatePair>], now: u64) {
         let relayed = |pair: &CandidatePair| {
             pair.local_candidate().candidate_type() == CandidateType::Relay
                 || pair.remote.candidate_type() == CandidateType::Relay
@@ -641,40 +712,284 @@ impl AgentInternal {
         let Some(selected) = self.agent_conn.get_selected_pair() else {
             return;
         };
-        if relayed(&selected) {
+        if !self.ice_writable(&selected) {
+            // A failing path is left by the ordinary rules.
             return;
         }
-        // Backup relays are pinged rarely and carry no data, so "receiving"
-        // says nothing; a writable relay with its last check answered is
-        // healthy.
-        let Some(backup) = pairs
+        let on_relay = relayed(&selected);
+        let alternative = pairs
             .iter()
             .filter(|pair| {
-                relayed(pair)
+                relayed(pair) != on_relay
                     && !pair.pruned.load(Ordering::Relaxed)
                     && self.ice_writable(pair)
                     && self.ice_ready_to_send(pair)
-                    && pair.consecutive_unanswered_checks.load(Ordering::Relaxed) == 0
             })
             .min_by_key(|pair| pair.smoothed_round_trip_ms.load(Ordering::Relaxed))
-        else {
+            .cloned();
+        if let Some(alternative) = alternative
+            .as_ref()
+            .filter(|pair| pair.age_since(&pair.last_check_sent_nanos) >= PROBE_INTERVAL)
+        {
+            // Outside the consent-check pacing, which serves the selected path.
+            alternative.note_check_sent();
+            ControllingSelector::ping_candidate(self, &alternative.local_port, &alternative.remote)
+                .await;
+        }
+        {
+            let mut choice = self.path_choice.lock().unwrap_or_else(|e| e.into_inner());
+            if now.saturating_sub(choice.decided_at) < Duration::from_secs(1).as_nanos() as u64 {
+                return;
+            }
+            choice.decided_at = now;
+            if alternative.is_none() {
+                choice.hold = 0;
+            }
+        }
+        let Some(alternative) = alternative else {
+            log::debug!(
+                target: "webrtc_ice::agent::path",
+                "path choice: no usable {} path besides {selected}",
+                if on_relay { "direct" } else { "relay" }
+            );
             return;
         };
-        let outstanding = selected.outstanding_ping_times().len() as u64;
-        let relay_rtt = backup.smoothed_round_trip_ms.load(Ordering::Relaxed);
-        let verdict = {
-            let mut quality = selected.quality.lock().expect("path quality poisoned");
-            let reason = quality.degraded(now, outstanding, relay_rtt);
-            reason.map(|reason| (reason, quality.avoid(now)))
+        let in_flight = |pair: &CandidatePair| {
+            let rtt = u64::from(pair.smoothed_round_trip_ms.load(Ordering::Relaxed).min(1000));
+            let recent = Duration::from_millis(2 * rtt + 100).as_nanos() as u64;
+            pair.outstanding_ping_times()
+                .iter()
+                .filter(|sent| now.saturating_sub(**sent) < recent)
+                .count() as u64
         };
-        let Some((reason, avoid)) = verdict else {
-            return;
+        let current = selected
+            .quality
+            .lock()
+            .expect("path quality poisoned")
+            .measure(now, in_flight(&selected));
+        let (measured, blocked, was_left) = {
+            let quality = alternative.quality.lock().expect("path quality poisoned");
+            (
+                quality.measure(now, in_flight(&alternative)),
+                quality.blocked(now),
+                quality.was_left(now),
+            )
         };
-        log::info!(
-            "selected path degraded ({reason}); using relay {backup} and avoiding {selected} for {}s",
-            avoid.as_secs()
+        log::debug!(
+            target: "webrtc_ice::agent::path",
+            "path choice: {selected} {current:?} against {alternative} {measured:?}{}",
+            if blocked { " (not retried yet)" } else { "" }
         );
-        self.set_selected_pair(Some(Arc::clone(backup))).await;
+        // A load test of the alternative: still running, finished, or about
+        // a path that is no longer the alternative.
+        let finished = {
+            let mut choice = self.path_choice.lock().unwrap_or_else(|e| e.into_inner());
+            match choice.load.take() {
+                Some(test) if !test.of(&alternative) => {
+                    self.end_load_test();
+                    None
+                }
+                Some(test) if now < test.until => {
+                    choice.load = Some(test);
+                    return;
+                }
+                other => other,
+            }
+        };
+        if let Some(test) = finished {
+            let received = self.end_load_test();
+            let loss = 1.0 - (f64::from(received) / f64::from(test.total.max(1))).min(1.0);
+            let Some(probed) = measured else {
+                return;
+            };
+            let loaded = Measure {
+                loss: Some(loss),
+                media: true,
+                ..probed
+            };
+            let verdict = current.and_then(|current| better(&current, &loaded, !relayed(&alternative)));
+            match verdict {
+                Some(reason) => {
+                    let reason = format!(
+                        "{reason}; load test at {} kbps lost {:.1}%",
+                        test.rate_kbps,
+                        loss * 100.0
+                    );
+                    self.switch_path(&selected, &alternative, current, reason, false, was_left, now)
+                        .await;
+                }
+                None if loaded.lossy_under_load() => {
+                    let span = alternative
+                        .quality
+                        .lock()
+                        .expect("path quality poisoned")
+                        .left(now);
+                    log::info!(
+                        target: "webrtc_ice::agent::path",
+                        "path load test of {alternative}: {received}/{} packets at {} kbps ({:.1}% lost); staying on {selected}, not retrying for {}s",
+                        test.total,
+                        test.rate_kbps,
+                        loss * 100.0,
+                        span.as_secs()
+                    );
+                }
+                None => log::info!(
+                    target: "webrtc_ice::agent::path",
+                    "path load test of {alternative}: {:.1}% lost at {} kbps; staying on {selected}",
+                    loss * 100.0,
+                    test.rate_kbps
+                ),
+            }
+            return;
+        }
+        let decision = {
+            let mut choice = self.path_choice.lock().unwrap_or_else(|e| e.into_inner());
+            let reason = current
+                .zip(measured)
+                .and_then(|(current, measured)| {
+                    better(&current, &measured, !relayed(&alternative))
+                });
+            // A trial of a retried path falls back to where it came from,
+            // even if that path is itself waiting out a retry.
+            let fallback = choice.trial_from(&alternative, now);
+            match reason.filter(|_| fallback || !blocked) {
+                None => {
+                    choice.hold = 0;
+                    None
+                }
+                // Falling back from a failed trial needs no second opinion.
+                Some(_) if !fallback && !choice.holds(&alternative) => None,
+                Some(reason) => Some((reason, fallback)),
+            }
+        };
+        let Some((reason, fallback)) = decision else {
+            return;
+        };
+        // Light checks cannot tell whether a path a carrier throttles under
+        // load has recovered: load-test a direct path (and a relay the
+        // session left for its loss) before moving onto it.
+        let local = alternative.local_candidate();
+        let udp = local.network_type().is_udp()
+            && alternative.remote.network_type().is_udp()
+            && (local.relay_protocol().is_empty()
+                || local.relay_protocol().eq_ignore_ascii_case("udp"));
+        if !fallback && udp && (!relayed(&alternative) || was_left) {
+            let session_kbps = selected
+                .quality
+                .lock()
+                .expect("path quality poisoned")
+                .media_kbps(now);
+            self.start_load_test(&alternative, session_kbps, now).await;
+            return;
+        }
+        self.switch_path(&selected, &alternative, current, reason, fallback, was_left, now)
+            .await;
+    }
+
+    /// Ask the peer for a load test over `alternative` (`load_test`), at half
+    /// the session's bitrate.
+    async fn start_load_test(&self, alternative: &Arc<CandidatePair>, session_kbps: Option<u32>, now: u64) {
+        let tag = {
+            let credentials = self.ufrag_pwd.lock().await;
+            super::punch::Probe::derive(
+                &credentials.local_ufrag,
+                &credentials.local_pwd,
+                &credentials.remote_ufrag,
+                &credentials.remote_pwd,
+            )
+            .map(|probe| probe.tag())
+        };
+        let (Some(tag), Some(conn)) = (tag, alternative.local_port.get_conn().cloned()) else {
+            return;
+        };
+        let request = super::load_test::Request {
+            id: rand::random::<u32>() | 1,
+            rate_kbps: (session_kbps.unwrap_or(0) / 2)
+                .clamp(super::load_test::MIN_KBPS, super::load_test::MAX_KBPS),
+            duration_ms: super::load_test::DURATION.as_millis() as u32,
+            size: super::load_test::SIZE,
+        };
+        *self.load_receiving.lock().unwrap_or_else(|e| e.into_inner()) = Some((tag, request.id));
+        self.load_received.store(0, Ordering::Relaxed);
+        {
+            let mut choice = self.path_choice.lock().unwrap_or_else(|e| e.into_inner());
+            choice.load = Some(LoadTest {
+                pair: Arc::downgrade(alternative),
+                // Room for the request and the last packets to arrive.
+                until: now + (super::load_test::DURATION + Duration::from_millis(1500)).as_nanos() as u64,
+                total: request.total(),
+                rate_kbps: request.rate_kbps,
+            });
+            choice.hold = 0;
+        }
+        log::info!(
+            target: "webrtc_ice::agent::path",
+            "path load test of {alternative}: {} kbps for {} ms",
+            request.rate_kbps,
+            request.duration_ms
+        );
+        let packet = request.encode(&tag);
+        // The peer ignores repeats of the same request.
+        for _ in 0..3 {
+            let _ = conn.send_to(&packet, alternative.remote.addr()).await;
+        }
+    }
+
+    /// Stop counting a load test; returns the packets that arrived.
+    fn end_load_test(&self) -> u32 {
+        self.load_receiving
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        self.load_received.swap(0, Ordering::Relaxed)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn switch_path(
+        &self,
+        selected: &Arc<CandidatePair>,
+        alternative: &Arc<CandidatePair>,
+        current: Option<Measure>,
+        reason: String,
+        fallback: bool,
+        was_left: bool,
+        now: u64,
+    ) {
+        let relayed = alternative.local_candidate().candidate_type() == CandidateType::Relay
+            || alternative.remote.candidate_type() == CandidateType::Relay;
+        let retry = {
+            let mut choice = self.path_choice.lock().unwrap_or_else(|e| e.into_inner());
+            choice.trial = if !fallback && was_left {
+                Some((Arc::downgrade(selected), now + TRIAL.as_nanos() as u64))
+            } else {
+                None
+            };
+            choice.pinned = relayed.then(|| Arc::downgrade(alternative));
+            choice.hold = 0;
+            choice.trial.is_some()
+        };
+        let left_for = current
+            .filter(|current| current.lossy_under_load())
+            .map(|_| {
+                selected
+                    .quality
+                    .lock()
+                    .expect("path quality poisoned")
+                    .left(now)
+            });
+        log::info!(
+            target: "webrtc_ice::agent::path",
+            "path switch: {reason}; {selected} -> {alternative}{}{}",
+            if fallback { " (trial failed)" } else if retry { " (retry)" } else { "" },
+            left_for.map_or_else(String::new, |span| format!(
+                "; not retrying the old path for {}s",
+                span.as_secs()
+            ))
+        );
+        self.set_selected_pair(Some(Arc::clone(alternative))).await;
+        // Nominate it now rather than at its next consent check.
+        self.ping_candidate(&alternative.local_port, &alternative.remote)
+            .await;
     }
 
     pub(super) async fn ice_on_nonselected_payload(&self, pair: &Arc<CandidatePair>) {
@@ -720,12 +1035,16 @@ impl AgentInternal {
             }
         }
         let now = CandidatePair::now_nanos();
+        let selected = self.agent_conn.get_selected_pair();
+        let media = *self.media_counts.lock().unwrap_or_else(|e| e.into_inner());
         for pair in &pairs {
+            let carries = selected.as_ref().is_some_and(|s| Arc::ptr_eq(s, pair));
             pair.quality.lock().expect("path quality poisoned").sample(
                 now,
                 pair.requests_sent.load(Ordering::Relaxed),
                 pair.responses_received.load(Ordering::Relaxed),
                 pair.smoothed_round_trip_ms.load(Ordering::Relaxed),
+                media.filter(|_| carries),
             );
         }
         // SortConnectionsAndUpdateState switches before pruning.
@@ -738,7 +1057,7 @@ impl AgentInternal {
             }
         }
         if self.is_controlling.load(Ordering::SeqCst) {
-            self.leave_degraded_path(&pairs, now).await;
+            self.choose_path(&pairs, now).await;
         }
         let selected = self.agent_conn.get_selected_pair();
         if let Some(selected) = selected.as_ref().filter(|selected| {

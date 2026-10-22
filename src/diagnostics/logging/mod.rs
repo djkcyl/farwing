@@ -170,9 +170,9 @@ impl Settings {
             }
         }
         let mut directives = format!(
-            // Hole-punch decisions (a few lines per session) go with the
-            // application's own.
-            "{},farwing={app},farwing_codec={app},farwing_h264={app},farwing_av1={app},webrtc_ice::agent::punch={app}",
+            // Hole-punch and path-switch decisions (a few lines per session)
+            // go with the application's own.
+            "{},farwing={app},farwing_codec={app},farwing_h264={app},farwing_av1={app},webrtc_ice::agent::punch={app},webrtc_ice::agent::path={app}",
             self.dependencies.directive(),
             app = self.application.directive()
         );

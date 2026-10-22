@@ -209,6 +209,17 @@ pub struct AgentInternal {
     /// sort-and-switch pass observes one coherent state snapshot.
     pub(crate) controller_serial: Mutex<()>,
     pub(crate) last_ping_sent_nanos: AtomicU64,
+    /// The application's media counters (packets expected, arrived), for
+    /// the selected path's loss.
+    pub(crate) media_counts: std::sync::Mutex<Option<(u64, u64, u64)>>,
+    /// The controlling agent's choice between direct and relay paths.
+    pub(crate) path_choice: std::sync::Mutex<super::agent_selector::PathChoice>,
+    /// The load test this agent asked for (tag, id), and packets received.
+    pub(crate) load_receiving: std::sync::Mutex<Option<([u8; 8], u32)>>,
+    pub(crate) load_received: AtomicU32,
+    /// A load test this agent is sending, and the last request it took.
+    load_sending: Arc<AtomicBool>,
+    load_last_request: AtomicU32,
     /// The last binding request could not leave the socket (for example no
     /// route from that interface): it did not use the pacing slot.
     pub(crate) ping_send_failed: AtomicBool,
@@ -310,6 +321,12 @@ impl AgentInternal {
             connection_state: AtomicU8::new(ConnectionState::New as u8),
             controller_serial: Mutex::new(()),
             last_ping_sent_nanos: AtomicU64::new(0),
+            media_counts: std::sync::Mutex::new(None),
+            path_choice: std::sync::Mutex::default(),
+            load_receiving: std::sync::Mutex::new(None),
+            load_received: AtomicU32::new(0),
+            load_sending: Arc::new(AtomicBool::new(false)),
+            load_last_request: AtomicU32::new(0),
             ping_send_failed: AtomicBool::new(false),
             ping_send_failures: AtomicU32::new(0),
             ever_had_pair: AtomicBool::new(false),
@@ -2313,6 +2330,62 @@ impl AgentInternal {
         }
     }
 
+    /// The peer asks for a load test of the path `packet` came over: send it,
+    /// if the tag is this session's and the address answers its checks.
+    async fn load_test_requested(
+        &self,
+        c: &Arc<dyn Candidate + Send + Sync>,
+        packet: &[u8],
+        src_addr: SocketAddr,
+    ) {
+        let Some((tag, request)) = super::load_test::Request::decode(packet) else {
+            return;
+        };
+        let expected = {
+            let credentials = self.ufrag_pwd.lock().await;
+            super::punch::Probe::derive(
+                &credentials.local_ufrag,
+                &credentials.local_pwd,
+                &credentials.remote_ufrag,
+                &credentials.remote_pwd,
+            )
+            .map(|probe| probe.tag())
+        };
+        if expected != Some(tag) {
+            return;
+        }
+        let consent = Duration::from_secs(30);
+        let Some(pair) = self.find_port_connection(c, src_addr).await else {
+            return;
+        };
+        if pair.age_since(&pair.last_check_received_nanos) > consent
+            && pair.age_since(&pair.last_check_response_nanos) > consent
+        {
+            return;
+        }
+        if self.load_last_request.swap(request.id, Ordering::AcqRel) == request.id
+            || self.load_sending.swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        let Some(conn) = c.get_conn().cloned() else {
+            self.load_sending.store(false, Ordering::Release);
+            return;
+        };
+        let direct = c.candidate_type() != CandidateType::Relay
+            && pair.remote.candidate_type() != CandidateType::Relay;
+        let lose = if direct {
+            super::load_test::dev_direct_loss()
+        } else {
+            0.0
+        };
+        let sending = Arc::clone(&self.load_sending);
+        self.spawn_io(async move {
+            super::load_test::send(conn, src_addr, tag, request, lose).await;
+            sending.store(false, Ordering::Release);
+        });
+    }
+
     /// The session's probes when `packet` is this session's probe request.
     pub(super) async fn punch_request(&self, packet: &[u8]) -> Option<super::punch::Probe> {
         if !super::punch::Probe::looks_like_request(packet) {
@@ -2335,6 +2408,20 @@ impl AgentInternal {
         src_addr: SocketAddr,
         received_at: std::time::Instant,
     ) {
+        if buf.first() == Some(&0x06) {
+            if let Some((tag, id)) = super::load_test::data_header(buf) {
+                if *self.load_receiving.lock().unwrap_or_else(|e| e.into_inner())
+                    == Some((tag, id))
+                {
+                    self.load_received.fetch_add(1, Ordering::Relaxed);
+                }
+                return;
+            }
+            if super::load_test::looks_like_request(buf) {
+                self.load_test_requested(c, buf, src_addr).await;
+                return;
+            }
+        }
         if let Some(probe) = self.punch_request(buf).await {
             let _serial = self.controller_serial.lock().await;
             if self.agent_conn.done.load(Ordering::Acquire) {

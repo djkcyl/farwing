@@ -138,6 +138,8 @@ const DRAIN_INITIAL: f64 = 0.4;
 struct Network {
     /// `FARWING_HOST_LINK`: emulated link to this viewer (measurements).
     link: Option<Arc<super::link::Link>>,
+    /// The selected path is direct (not relayed).
+    direct: AtomicBool,
     pacer: tokio::sync::Mutex<Pacer>,
     drain: Mutex<Drain>,
     /// Cinema mode: always spread frames over most of the interval.
@@ -200,6 +202,35 @@ struct Shared {
     format_epoch: AtomicU64,
     repair_header: AtomicU64,
 }
+impl Network {
+    /// `FARWING_DEV_DIRECT_LOSS=<percent>[,<unix seconds>]`: lose that share
+    /// of media while the session is on a direct path (until that time, when
+    /// given), as a carrier throttling P2P flows would (connectivity checks
+    /// pass; the ICE agent's path load tests lose as much); for testing path
+    /// switching.
+    fn direct_loss(&self) -> bool {
+        static SPEC: std::sync::OnceLock<(f64, Option<std::time::SystemTime>)> =
+            std::sync::OnceLock::new();
+        let (share, until) = *SPEC.get_or_init(|| {
+            let value = std::env::var("FARWING_DEV_DIRECT_LOSS").unwrap_or_default();
+            let mut fields = value.split(',').map(str::trim);
+            let share = fields
+                .next()
+                .and_then(|percent| percent.parse::<f64>().ok())
+                .map_or(0.0, |percent| (percent / 100.0).clamp(0.0, 1.0));
+            let until = fields
+                .next()
+                .and_then(|seconds| seconds.parse::<u64>().ok())
+                .map(|seconds| std::time::UNIX_EPOCH + Duration::from_secs(seconds));
+            (share, until)
+        });
+        share > 0.0
+            && until.is_none_or(|until| std::time::SystemTime::now() < until)
+            && self.direct.load(Ordering::Acquire)
+            && rand::random::<f64>() < share
+    }
+}
+
 impl std::ops::Deref for Shared {
     type Target = Network;
     fn deref(&self) -> &Self::Target {
@@ -218,6 +249,7 @@ impl Transport {
         let rate = bounds.initial;
         let connection = Arc::new(Network {
             link: super::link::Link::from_environment(),
+            direct: AtomicBool::new(false),
             pacer: tokio::sync::Mutex::new(Pacer {
                 at: Instant::now(),
                 debt: 0.0,
@@ -456,6 +488,7 @@ impl Transport {
     }
     pub(crate) fn selected_route(&self, route: &'static str) {
         *lock(&self.0.route) = Some(route);
+        self.0.direct.store(route != "relay", Ordering::Release);
     }
     /// The kind of the selected route, once chosen.
     pub(crate) fn route_class(&self) -> Option<&'static str> {
@@ -929,12 +962,16 @@ impl Transport {
         } else {
             None
         };
-        let size = match self.0.link.as_ref() {
-            Some(link) => link.send(parent, &packet, attributes, self.overhead()),
-            None => tokio::select! {
-                _=self.0.cancel.cancelled()=>return Err(Error::ErrIoEOF),
-                result=parent.write(&packet, attributes)=>result?,
-            },
+        let size = if self.0.direct_loss() {
+            packet.marshal_size()
+        } else {
+            match self.0.link.as_ref() {
+                Some(link) => link.send(parent, &packet, attributes, self.overhead()),
+                None => tokio::select! {
+                    _=self.0.cancel.cancelled()=>return Err(Error::ErrIoEOF),
+                    result=parent.write(&packet, attributes)=>result?,
+                },
+            }
         };
         if size > 0 {
             if size + self.overhead() > 1500 {
@@ -1846,10 +1883,14 @@ impl RTPWriter for AudioWriter {
         };
         // Audio shares the transport-wide sequence: it takes the same
         // emulated link, or it would overtake delayed video and look like loss.
-        let size = match shared.link.as_ref() {
-            Some(link) => link.send(&self.parent, &packet, attributes, self.transport.overhead()),
-            None => {
-                tokio::select! { _=shared.cancel.cancelled()=>return Err(Error::ErrIoEOF), result=self.parent.write(&packet,attributes)=>result? }
+        let size = if shared.direct_loss() {
+            packet.marshal_size()
+        } else {
+            match shared.link.as_ref() {
+                Some(link) => link.send(&self.parent, &packet, attributes, self.transport.overhead()),
+                None => {
+                    tokio::select! { _=shared.cancel.cancelled()=>return Err(Error::ErrIoEOF), result=self.parent.write(&packet,attributes)=>result? }
+                }
             }
         };
         if size > 0 {

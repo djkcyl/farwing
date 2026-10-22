@@ -95,6 +95,15 @@ impl RTCIceTransport {
         None
     }
 
+    /// The application's cumulative media counters (packets expected and
+    /// arrived, bytes received), for the agent's choice between direct and
+    /// relay paths.
+    pub async fn report_media(&self, expected: u64, arrived: u64, bytes: u64) {
+        if let Some(agent) = self.gatherer.get_agent().await {
+            agent.report_media(expected, arrived, bytes);
+        }
+    }
+
     /// Both sides' measured NAT mappings, for the agent's probe punching.
     pub async fn set_nat_mappings(
         &self,

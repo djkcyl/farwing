@@ -208,6 +208,8 @@ Farwing.exe dev video --device-id <ID> [--seconds 60] [--codec h264|h265|av1] [-
 
 弱网下被控在测得丢包后，用画面没用到的带宽发送 RS-FEC 修复包，让主控不等重传就补回丢失的包（[farwing-protocol.md](protocol/farwing-protocol.md) §6.4）；网络正常或带宽被画面用满时不发。对比时可在被控端设 `FARWING_FEC=0` 关闭（只在被控端有效，主控端没有这个开关）。播放窗口关闭时的日志中 `fec_packets_received` / `fec_packets_recovered` 是收到的修复包与用它们补回的包数。
 
+要在本机看直连与中继的自动切换，在被控端设 `FARWING_DEV_DIRECT_LOSS=<百分比>[,<Unix 时间（秒）>]`：会话在直连上时丢掉这么多媒体包和切回前的压测包（连通检查不丢，像运营商对 P2P 流量做 QoS），切到中继后不再丢；给出时间时只丢到那一刻，用来看网络恢复后切回直连。主控日志的 `path switch` 行记录每次切换；主控加 `--log-level "info,webrtc_ice::agent::path=debug"` 可看到每秒的测量值。需要服务器提供 TURN。
+
 被控探测可用带宽时用高精度定时器按 2 ms 节拍发送探测包；对比原来的发送方式可在被控端设 `FARWING_PROBE_PACING=0`。`connect` 另有测量用的隐藏参数 `--dev-auto-quality <2–4>`：自动画质从指定档位开始，不使用也不保存观看端记住的档位，让每次测量从同一档位开始。
 
 量浏览器观看者的丢包恢复时，可以在被控端设环境变量 `FARWING_HOST_VIDEO_LOSS=N,M`：每个视频轨跳过发送的第 N 帧及之后每第 M 帧（关键帧除外），这些包占用序号但不发送、也不留作重传，接收端修不回来。

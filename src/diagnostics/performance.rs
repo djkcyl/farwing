@@ -175,6 +175,9 @@ struct PerformanceInner {
     started_at: Instant,
     received_bytes: AtomicU64,
     expected_packets: AtomicU64,
+    /// All tracks' primary packets expected and arrived, and RTP bytes
+    /// received (kept by the session).
+    session_packets: (AtomicU64, AtomicU64, AtomicU64),
     arrived_packets: AtomicU64,
     final_lost_packets: AtomicU64,
     rtp_jitter_micros: AtomicU64,
@@ -591,6 +594,7 @@ impl PerformanceMonitor {
                 started_at: now,
                 received_bytes: AtomicU64::new(0),
                 expected_packets: AtomicU64::new(0),
+                session_packets: (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)),
                 arrived_packets: AtomicU64::new(0),
                 final_lost_packets: AtomicU64::new(0),
                 rtp_jitter_micros: AtomicU64::new(0),
@@ -712,6 +716,8 @@ impl PerformanceMonitor {
         self.inner
             .received_bytes
             .fetch_add(bytes as u64, Ordering::Relaxed);
+        let session = self.session.as_ref().unwrap_or(&self.inner);
+        session.session_packets.2.fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
     /// One packet arrived on the primary media SSRC (padding included, not
@@ -721,6 +727,20 @@ impl PerformanceMonitor {
             .expected_packets
             .fetch_add(expected, Ordering::Relaxed);
         self.inner.arrived_packets.fetch_add(1, Ordering::Relaxed);
+        let session = self.session.as_ref().unwrap_or(&self.inner);
+        session.session_packets.0.fetch_add(expected, Ordering::Relaxed);
+        session.session_packets.1.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Primary video packets known to be sent, those that arrived, and RTP
+    /// bytes received, over all tracks of the session.
+    pub(crate) fn media_counts(&self) -> (u64, u64, u64) {
+        let session = self.session.as_ref().unwrap_or(&self.inner);
+        (
+            session.session_packets.0.load(Ordering::Relaxed),
+            session.session_packets.1.load(Ordering::Relaxed),
+            session.session_packets.2.load(Ordering::Relaxed),
+        )
     }
 
     pub(crate) fn set_nack_state(&self, outstanding: usize, final_lost_packets: u64) {
@@ -1506,20 +1526,12 @@ impl PerformanceMonitor {
         use health::Observation;
         let fresh = Duration::from_secs(1);
         let rate_fresh = Duration::from_millis(1500);
-        let stall = rendered_at
-            .zip(received_at)
-            .filter(|(rendered, received)| received > rendered)
-            .filter(|(_, received)| {
-                now.saturating_duration_since(*received) < Duration::from_millis(500)
-            })
-            .filter(|_| self.inner.presentation_started.load(Ordering::Relaxed))
-            .and_then(|(rendered, received)| {
-                Observation::new(
-                    received.duration_since(rendered).as_secs_f64() * 1000.0,
-                    Some(received),
-                    fresh,
-                )
-            });
+        let stall = health::presentation_stall(
+            now,
+            rendered_at,
+            received_at,
+            self.inner.presentation_started.load(Ordering::Relaxed),
+        );
         snapshot.health = mutex_lock(&self.inner.health).update(
             now,
             self.inner.presentation_epoch.load(Ordering::Relaxed),

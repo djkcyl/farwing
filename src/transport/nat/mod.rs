@@ -345,6 +345,13 @@ pub(crate) fn start() {
     discovery::start();
 }
 
+/// The vendored ICE agent's choice between direct and relay paths, tested
+/// here: the vendored crate's own tests do not run in this workspace.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../vendor/webrtc-ice/src/candidate/path_quality.rs"]
+mod path_quality;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -132,6 +132,33 @@ impl Observation {
     }
 }
 
+/// How long received frames have waited for presentation: the time from
+/// the last presentation to the latest frame received after it, observed
+/// when that frame arrived (while the stream is live), or none at all when
+/// every received frame has been presented.
+pub(super) fn presentation_stall(
+    now: Instant,
+    rendered_at: Option<Instant>,
+    received_at: Option<Instant>,
+    started: bool,
+) -> Option<Observation> {
+    let rendered = rendered_at.filter(|_| started)?;
+    let fresh = Duration::from_secs(1);
+    match received_at {
+        Some(received) if received > rendered => {
+            (now.saturating_duration_since(received) < Duration::from_millis(500)).then(|| {
+                Observation::new(
+                    received.duration_since(rendered).as_secs_f64() * 1000.0,
+                    Some(received),
+                    fresh,
+                )
+            })?
+        }
+        // Nothing waits: the presenter keeps up.
+        _ => Observation::new(0.0, Some(now), fresh),
+    }
+}
+
 #[derive(Default)]
 struct Slot {
     observed_at: Option<Instant>,
@@ -272,6 +299,25 @@ mod tests {
         let mut observations = [None; 6];
         observations[Metric::FrameDelay as usize] = Some(observation);
         health.update(observation.at, 1, observations, 0, 0)
+    }
+
+    #[test]
+    fn a_presenter_that_keeps_up_is_rated() {
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        // Every received frame presented: rated, no stall.
+        let caught_up = presentation_stall(at(1000), Some(at(990)), Some(at(980)), true).unwrap();
+        assert_eq!(caught_up.value, 0.0);
+        assert_eq!(caught_up.level(Metric::PresentationStall), Level::Normal);
+        // A frame waits: the gap since the last presentation.
+        let waiting = presentation_stall(at(1000), Some(at(400)), Some(at(990)), true).unwrap();
+        assert_eq!(waiting.value, 590.0);
+        assert_eq!(waiting.level(Metric::PresentationStall), Level::Bad);
+        // A stream that stopped long ago with a frame left over says nothing.
+        assert!(presentation_stall(at(2000), Some(at(400)), Some(at(990)), true).is_none());
+        // Before the first presentation, nothing to rate.
+        assert!(presentation_stall(at(1000), None, Some(at(990)), true).is_none());
+        assert!(presentation_stall(at(1000), Some(at(990)), Some(at(980)), false).is_none());
     }
 
     #[test]

@@ -389,6 +389,19 @@ impl NativePeer {
         self.p2p_only.store(false, Ordering::Release);
     }
 
+    /// Hand the video loss counters to ICE, which weighs the selected
+    /// path's loss against its alternative (direct or relay).
+    pub(crate) async fn report_media_to_ice(&self) {
+        let (expected, arrived, bytes) = self.performance.media_counts();
+        self.core
+            .connection
+            .sctp()
+            .transport()
+            .ice_transport()
+            .report_media(expected, arrived, bytes)
+            .await;
+    }
+
     /// Whether the selected path goes through a relay.
     pub(crate) async fn selected_is_relay(&self) -> bool {
         self.core

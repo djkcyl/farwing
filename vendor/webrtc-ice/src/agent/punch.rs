@@ -83,6 +83,11 @@ impl Probe {
         Some(Self { request, response })
     }
 
+    /// The session's tag (also carried by path load tests).
+    pub fn tag(&self) -> [u8; 8] {
+        self.request[4..].try_into().expect("8-byte tag")
+    }
+
     /// Cheap pre-check on the receive path before deriving the tag.
     pub fn looks_like_request(packet: &[u8]) -> bool {
         packet.len() == PROBE_LEN && packet[..4] == REQUEST_MAGIC
