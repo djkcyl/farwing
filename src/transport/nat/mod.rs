@@ -104,12 +104,17 @@ impl NatInfo {
         info
     }
 
-    /// The peer's attribute in a remote SDP, if it sent one.
-    pub(crate) fn from_sdp(sdp: &str) -> Option<Self> {
-        let prefix = format!("a={ATTRIBUTE}:");
-        sdp.lines()
-            .find_map(|line| line.trim_end().strip_prefix(prefix.as_str()))
-            .map(Self::decode)
+    /// The mapping as the ICE agent's probe punching plans with it.
+    fn punch_mapping(&self) -> webrtc::ice::agent::NatMapping {
+        use webrtc::ice::agent::NatMapping;
+        match self.mapping {
+            Behavior::Unknown => NatMapping::Unknown,
+            Behavior::EndpointIndependent => NatMapping::Cone,
+            _ if self.port_delta != 0 => {
+                NatMapping::Linear(self.port_delta.clamp(-64, 64) as i16)
+            }
+            _ => NatMapping::Random,
+        }
     }
 
     /// The side accepts a peer's new mapping without predicting it: ICE
@@ -121,6 +126,20 @@ impl NatInfo {
                 Behavior::EndpointIndependent | Behavior::AddressDependent
             )
     }
+}
+
+fn attribute_value(sdp: &str) -> Option<&str> {
+    let prefix = format!("a={ATTRIBUTE}:");
+    sdp.lines()
+        .find_map(|line| line.trim_end().strip_prefix(prefix.as_str()))
+}
+
+/// Whether the attribute's sender takes probe punching (`punch=off` when it
+/// turned aggressive punching off).
+fn takes_probes(value: &str) -> bool {
+    !value
+        .split(';')
+        .any(|field| field.trim().eq_ignore_ascii_case("punch=off"))
 }
 
 /// Whether predicting the remote's ports can help: the remote's mapping is
@@ -161,6 +180,8 @@ pub(crate) struct Traversal {
     settings: Settings,
     local: Mutex<Option<NatInfo>>,
     remote: Mutex<Option<NatInfo>>,
+    /// The peer takes probe punching (its attribute has no `punch=off`).
+    remote_probes: std::sync::atomic::AtomicBool,
     mappings: portmap::Session,
     summarized: std::sync::atomic::AtomicBool,
 }
@@ -176,6 +197,7 @@ impl Traversal {
             settings,
             local: Mutex::new(local),
             remote: Mutex::new(None),
+            remote_probes: std::sync::atomic::AtomicBool::new(true),
             mappings: portmap::Session::new(settings.port_mapping),
             summarized: std::sync::atomic::AtomicBool::new(false),
         })
@@ -191,8 +213,8 @@ impl Traversal {
 
     /// The attribute line for a local offer or answer. A newer cached result
     /// (e.g. after a network change before an ICE restart) replaces the
-    /// snapshot. With aggressive punching off, `delta=0` asks the peer not
-    /// to predict this side's ports either.
+    /// snapshot. With aggressive punching off, `delta=0;punch=off` asks the
+    /// peer neither to predict this side's ports nor to probe them.
     pub(crate) fn attribute(&self) -> String {
         let mut info = {
             let mut local = self.local.lock().unwrap_or_else(|e| e.into_inner());
@@ -203,23 +225,46 @@ impl Traversal {
         };
         if !self.settings.aggressive_punching {
             info.port_delta = 0;
+            return format!("a={ATTRIBUTE}:{};punch=off", info.encode());
         }
         format!("a={ATTRIBUTE}:{}", info.encode())
     }
 
     /// Record the peer's attribute from its offer or answer.
     pub(crate) fn remote_description(&self, sdp: &str) {
-        let Some(info) = NatInfo::from_sdp(sdp) else {
+        let Some(value) = attribute_value(sdp) else {
             return;
         };
+        let info = NatInfo::decode(value);
+        let probes = takes_probes(value);
         let local = self.local().unwrap_or_default();
         tracing::info!(
             local = %local.encode(),
             remote = %info.encode(),
             predict = self.settings.aggressive_punching && should_predict(&local, &info),
+            peer_takes_probes = probes,
             "peer NAT behaviour"
         );
         *self.remote.lock().unwrap_or_else(|e| e.into_inner()) = Some(info);
+        self.remote_probes
+            .store(probes, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Both sides' mappings for the ICE agent's probe punching, and whether
+    /// the peer takes probes. The agent only probes with aggressive
+    /// punching on (`rtc::core`).
+    pub(crate) fn punch_plan(
+        &self,
+    ) -> (
+        webrtc::ice::agent::NatMapping,
+        webrtc::ice::agent::NatMapping,
+        bool,
+    ) {
+        (
+            self.local().unwrap_or_default().punch_mapping(),
+            self.remote().unwrap_or_default().punch_mapping(),
+            self.remote_probes.load(std::sync::atomic::Ordering::Acquire),
+        )
     }
 
     /// Predicted candidates to add after a real remote candidate. Empty
@@ -276,6 +321,8 @@ impl Traversal {
             aggressive_punching = self.settings.aggressive_punching,
             predicted = self.settings.aggressive_punching
                 && remote.is_some_and(|r| should_predict(&local, &r)),
+            probing = self.settings.aggressive_punching
+                && self.remote_probes.load(std::sync::atomic::Ordering::Acquire),
             gateway_mapping = %self.mappings.outcome(),
             "connection path summary"
         );
@@ -323,10 +370,10 @@ mod tests {
         );
         let sdp = "v=0\r\na=x-farwing-nat:mapping=adm;filtering=apdm;delta=1\r\nm=audio 9\r\n";
         assert_eq!(
-            NatInfo::from_sdp(sdp),
+            attribute_value(sdp).map(NatInfo::decode),
             Some(info(AddressDependent, AddressAndPortDependent, 1))
         );
-        assert_eq!(NatInfo::from_sdp("v=0\r\n"), None);
+        assert_eq!(attribute_value("v=0\r\n"), None);
     }
 
     #[test]
@@ -343,6 +390,33 @@ mod tests {
         assert_eq!(
             sdp,
             "v=0\r\ns=-\r\na=x-farwing-nat:mapping=apdm;filtering=apdm;delta=1\r\nm=audio 9\r\na=mid:0\r\n"
+        );
+    }
+
+    #[test]
+    fn punch_opt_out_and_mappings() {
+        use webrtc::ice::agent::NatMapping;
+        let sdp = "v=0\r\na=x-farwing-nat:mapping=apdm;filtering=apdm;delta=0;punch=off\r\n";
+        let value = attribute_value(sdp).unwrap();
+        assert!(!takes_probes(value));
+        // The opt-out does not disturb the behaviour fields.
+        assert_eq!(
+            NatInfo::decode(value),
+            info(AddressAndPortDependent, AddressAndPortDependent, 0)
+        );
+        assert!(takes_probes("mapping=eim;filtering=eim;delta=0"));
+        assert_eq!(NatInfo::default().punch_mapping(), NatMapping::Unknown);
+        assert_eq!(
+            info(EndpointIndependent, AddressAndPortDependent, 0).punch_mapping(),
+            NatMapping::Cone
+        );
+        assert_eq!(
+            info(AddressAndPortDependent, AddressAndPortDependent, -2).punch_mapping(),
+            NatMapping::Linear(-2)
+        );
+        assert_eq!(
+            info(AddressDependent, AddressDependent, 0).punch_mapping(),
+            NatMapping::Random
         );
     }
 

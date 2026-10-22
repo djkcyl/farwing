@@ -471,15 +471,6 @@ impl Session {
             let Some(peer) = participant.peer.as_ref() else {
                 continue;
             };
-            if let Some(attempt) = peer.network_change() {
-                signal.send(Self::setting(
-                    &sid,
-                    SessionSetting::NetworkSwitch {
-                        transport_type: network::RELAY,
-                        attempt_switch_type: attempt,
-                    },
-                ))?;
-            }
             // Each participant is told about its own encoders.
             {
                 let metadata: Vec<_> = peer
@@ -873,7 +864,6 @@ impl Session {
         };
         let task_cancel = cancel.clone();
         let relay = incoming.force_relay;
-        let network = crate::features::host::network::Policy::from_network(&incoming.network);
         let sid = session_id.clone();
         // A direct session's ICE binds the endpoint's UDP ports (§12.3).
         self.preparations.spawn(crate::transport::direct::with_session_ports(direct_ports, async move {
@@ -979,7 +969,6 @@ impl Session {
                     config,
                     options.control_screen_reports(),
                     negotiated,
-                    network,
                     deferred,
                     extensions.audio_control,
                     extensions.annotation,

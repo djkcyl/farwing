@@ -701,10 +701,7 @@ async fn guest_registration_and_restrictions() {
         .await
         .err(401, "unauthorized");
     let cfg = srv.get("/api/v2/config", &g).await.ok().clone();
-    assert_eq!(
-        cfg["network"],
-        serde_json::to_value(farwing_protocol::api::NetworkPolicy::default()).unwrap()
-    );
+    assert!(cfg.get("network").is_none());
     assert!(cfg.get("input").is_none());
     assert_eq!(cfg["bitrate_limit_mbps"], Value::Null);
     let (_gw, hello) = srv.presence(&g).await;

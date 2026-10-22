@@ -124,12 +124,6 @@ pub(crate) struct Viewer {
     pub section_media: &'static str,
     /// Value, cinema buffer in ms
     pub with_cinema_buffer: fn(&str, f64) -> String,
-    pub route_switching: &'static str,
-    /// Route, attempts, successes
-    pub route_switching_value: fn(&str, u64, u64) -> String,
-    pub route_udp_relay: &'static str,
-    pub route_tls_relay: &'static str,
-    pub route_direct: &'static str,
     pub ingress_queue: &'static str,
     /// Packets, peak
     pub ingress_queue_value: fn(u64, u64) -> String,
@@ -535,13 +529,6 @@ pub(crate) const ZH_CN: Viewer = Viewer {
     section_playback: "解码与呈现",
     section_media: "媒体与切换",
     with_cinema_buffer: |value, ms| format!("{value} · 含观影缓冲 {ms:.0} ms"),
-    route_switching: "自动切路",
-    route_switching_value: |route, attempts, successes| {
-        format!("{route} · 尝试 {attempts} / 成功 {successes}")
-    },
-    route_udp_relay: "UDP 中转",
-    route_tls_relay: "TLS 中转",
-    route_direct: "直连",
     ingress_queue: "入口队列",
     ingress_queue_value: |packets, peak| format!("{packets} 包 · 峰值 {peak}"),
     pending_nack: "待恢复 NACK",
@@ -913,13 +900,6 @@ pub(crate) const EN: Viewer = Viewer {
     section_playback: "Decoding and presentation",
     section_media: "Media and switching",
     with_cinema_buffer: |value, ms| format!("{value} · incl. {ms:.0} ms cinema buffer"),
-    route_switching: "Route switching",
-    route_switching_value: |route, attempts, successes| {
-        format!("{route} · tried {attempts} / succeeded {successes}")
-    },
-    route_udp_relay: "UDP relay",
-    route_tls_relay: "TLS relay",
-    route_direct: "Direct",
     ingress_queue: "Ingress queue",
     ingress_queue_value: |packets, peak| format!("{packets} packets · peak {peak}"),
     pending_nack: "Pending NACK",

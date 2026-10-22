@@ -94,7 +94,6 @@ farwing-server serve --config /etc/farwing-server/farwing-server.toml
 | `[tls]` | `mode = "tls"`（默认）或 `"proxy"`；`cert`/`key`（PEM）；或 `self_signed = true` 与 `hostnames = [...]` |
 | `[guest] enabled` | 是否允许游客（未登录）设备作为协助被控与网页访客观看，默认 `true`（可在网页端修改）。设备登记本身不受此项限制（新设备只能登录，见下文） |
 | `[turn]` | `mode = "external" | "builtin" | "none"`、`urls`、`shared_secret`、`credential_ttl`（默认 `"12h"`，可写秒数或 `30m`/`12h`/`1d`）、`force_relay`；内置模式另有 `listen_udp`、`listen_tcp`、`public_ip`、`realm`、`relay_bind`、`relay_ip`、`relay_port_min`、`relay_port_max`，以及用于 NAT 类型探测的额外 STUN 端点 `[[turn.stun]]`（见下文） |
-| `[network]` | 会话自动切换中继的阈值（`auto_switch`、`possible_loss`、`possible_latency`、`possible_min_latency`、`force_loss`、`force_latency`），默认值与 `farwing-protocol` 一致；取值不一致时启动日志会告警（被控会回退为 30% / 600 ms） |
 | `[web]` | 网页端：`enabled`（默认 `true`）、`admin_allow`（管理后台的 IP 白名单 CIDR，默认空 = 不限）、`session_idle_minutes`（网页登录空闲过期，默认 30）、`session_max_hours`（网页登录最长有效期，默认 12）、`audit_days`（审计日志保留天数，默认 180） |
 | `[limits]` | 可选覆盖：`heartbeat_ms`、`idle_timeout_ms`、`resume_ttl_s`、`ticket_ttl_s`、`max_frame_bytes`、`max_sdp_bytes`、`max_candidates`、`max_candidate_bytes`、`ws_rate_per_s`、`ws_rate_burst`、`device_init_per_ip_hour`（新密钥登记）、`login_failures_per_ip`、`login_failures_per_user`（均为 15 分钟窗口）、`assist_failures_per_minute`（每账号每协助号未建立会话的尝试数）、`assist_host_reply_ms`（等待被控应答 PAKE）、`assist_decision_wait_ms`（`accept` 长轮询）、`guest_token_ttl_s` |
 

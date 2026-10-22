@@ -2,7 +2,7 @@
 
 pub use crate::api::WolTarget;
 use crate::Platform;
-use crate::api::{Device, NetworkPolicy, Purpose, Relation, UserSummary};
+use crate::api::{Device, Purpose, Relation, UserSummary};
 use crate::error::ErrorBody;
 use crate::session::{ConnectOptions, ConnectType};
 use serde::{Deserialize, Serialize};
@@ -246,8 +246,6 @@ pub struct SessionStarted {
     #[serde(default)]
     pub force_relay: bool,
     #[serde(default)]
-    pub network: NetworkPolicy,
-    #[serde(default)]
     pub host: PeerIdentity,
     #[serde(default)]
     pub relation: Relation,
@@ -321,19 +319,12 @@ pub struct SessionIncoming {
     pub ice_servers: Vec<IceServer>,
     #[serde(default)]
     pub force_relay: bool,
-    #[serde(default)]
-    pub network: NetworkPolicy,
 }
 
-/// ICE network selection carried by SDP messages and network switches.
+/// ICE network selection carried by `rtc.offer` / `rtc.answer`.
 pub mod network {
-    /// Candidate messages. In a restart offer: relay only, TLS as decided by
-    /// the host's latest switch attempt.
-    pub const CANDIDATE: u8 = 0;
     /// Relay only, TURNS preferred (plain TURN when no TURNS is offered).
     pub const RELAY: u8 = 1;
-    /// All candidates (alternate value accepted by hosts).
-    pub const ALL_ALTERNATE: u8 = 2;
     /// All candidates.
     pub const ALL: u8 = 3;
 }
@@ -392,10 +383,6 @@ pub enum SessionSetting {
     },
     SenderInfo {
         infos: Vec<SenderInfo>,
-    },
-    NetworkSwitch {
-        transport_type: u8,
-        attempt_switch_type: u8,
     },
 }
 
@@ -557,11 +544,8 @@ mod tests {
         assert!(text.contains("\"gen\":2"));
         let body: RtcCandidate = decoded.body().unwrap();
         assert_eq!(body.candidate.sdp_mid.as_deref(), Some("0"));
-        let setting = serde_json::to_value(SessionSetting::NetworkSwitch {
-            transport_type: 1,
-            attempt_switch_type: 2,
-        })
-        .unwrap();
-        assert_eq!(setting["kind"], "network_switch");
+        let setting = serde_json::to_value(SessionSetting::SenderInfo { infos: Vec::new() })
+            .unwrap();
+        assert_eq!(setting["kind"], "sender_info");
     }
 }

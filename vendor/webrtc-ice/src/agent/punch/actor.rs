@@ -1,20 +1,24 @@
 //! One owned probe event loop. Timers and temporary sockets are separate from
 //! the media receiver; no media buffering or retry policy is introduced here.
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::future::{poll_fn, Future};
+use std::future::poll_fn;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
-use std::pin::Pin;
 use std::sync::Weak;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, ReadBuf};
-use tokio::net::{TcpSocket, TcpStream, UdpSocket};
+use tokio::io::ReadBuf;
+use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use super::{Coordinator, NatKind, Plan, REQUEST, RESPONSE};
+use super::{Coordinator, NatKind, Plan};
+
+/// Rounds (20 s of probing each, then a pause) before a plan gives up. A
+/// session that stays on a relay stops probing after a few minutes; an ICE
+/// restart plans again.
+const MAX_ROUNDS: u32 = 6;
 
 pub(super) enum Command {
     Start(Plan),
@@ -52,8 +56,6 @@ enum Event {
     Phase(Phase),
     EndRound,
     Resume,
-    FirewallStart,
-    FirewallCheck,
     Tick,
 }
 struct Timer {
@@ -65,23 +67,10 @@ struct ProbeSocket {
     socket: Option<UdpSocket>,
     target: SocketAddr,
 }
-enum Firewall {
-    Connecting(Pin<Box<dyn Future<Output = io::Result<TcpStream>> + Send>>),
-    Done {
-        reachable: bool,
-        socket: Option<TcpStream>,
-    },
-}
-enum FirewallEvent {
-    Connected(usize, io::Result<TcpStream>),
-    Closed(usize),
-    Data,
-}
 enum Next {
     Command(Option<Command>),
     Timer,
     Probe(io::Result<(usize, SocketAddr, usize)>),
-    Firewall(FirewallEvent),
 }
 
 pub(super) struct Actor {
@@ -90,6 +79,7 @@ pub(super) struct Actor {
     plan: Option<Plan>,
     epoch: u64,
     serial: u64,
+    rounds: u32,
     mode: u8,
     backoff: Duration,
     timers: BTreeMap<(Instant, u64), Timer>,
@@ -97,7 +87,6 @@ pub(super) struct Actor {
     pending_targets: VecDeque<SocketAddr>,
     sockets: Vec<ProbeSocket>,
     pending_sockets: VecDeque<usize>,
-    firewall: Vec<Firewall>,
 }
 
 impl Actor {
@@ -108,6 +97,7 @@ impl Actor {
             plan: None,
             epoch: 0,
             serial: 0,
+            rounds: 0,
             mode: 10,
             backoff: Duration::from_secs(5),
             timers: BTreeMap::new(),
@@ -115,7 +105,6 @@ impl Actor {
             pending_targets: VecDeque::new(),
             sockets: Vec::new(),
             pending_sockets: VecDeque::new(),
-            firewall: Vec::new(),
         }
     }
 
@@ -148,8 +137,8 @@ impl Actor {
                     if self.plan.is_some() {
                         self.epoch = self.epoch.wrapping_add(1);
                         self.reset_probes();
-                        self.firewall.clear();
                     }
+                    self.rounds = 0;
                     self.mode = mode(plan.local_kind, plan.remote.kind);
                     self.plan = Some(plan);
                     self.begin_round().await;
@@ -170,7 +159,6 @@ impl Actor {
                     self.probe_received(index, source, &packet[..n])
                 }
                 Next::Probe(Err(error)) => log::debug!("temporary probe socket read: {error}"),
-                Next::Firewall(event) => self.firewall_event(event),
             }
         }
     }
@@ -185,13 +173,11 @@ impl Actor {
             }
         };
         let probes = &self.sockets;
-        let firewall = &mut self.firewall;
         tokio::select! {
             biased;
             command=self.commands.recv()=>Next::Command(command),
             _=timer=>Next::Timer,
             packet=poll_fn(|cx|poll_probe(probes,cx,packet))=>Next::Probe(packet),
-            event=poll_fn(|cx|poll_firewall(firewall,cx))=>Next::Firewall(event),
         }
     }
 
@@ -200,7 +186,13 @@ impl Actor {
             return;
         };
         let controlling = plan.controlling;
-        log::info!("punch round: epoch={} mode={}", self.epoch, self.mode);
+        self.rounds += 1;
+        log::info!(
+            "punch round {}: epoch={} mode={}",
+            self.rounds,
+            self.epoch,
+            self.mode
+        );
         // Blocks only the punch thread for these two modes. The
         // enclosing owner can still cancel this async wait during shutdown.
         if self.mode == 3 || self.mode == 5 {
@@ -254,7 +246,6 @@ impl Actor {
             self.phase(self.epoch, phase).await;
         }
         self.schedule(Duration::from_secs(20), Event::EndRound);
-        self.schedule(Duration::from_secs(10), Event::FirewallStart);
         self.tick();
     }
 
@@ -271,6 +262,11 @@ impl Actor {
         match timer.event {
             Event::EndRound => {
                 self.epoch = self.epoch.wrapping_add(1);
+                if self.rounds >= MAX_ROUNDS {
+                    self.reset_probes();
+                    log::info!("punch stopped after {} rounds without a direct path", self.rounds);
+                    return;
+                }
                 log::info!(
                     "punch round ended; next round in {}ms",
                     self.backoff.as_millis()
@@ -279,8 +275,6 @@ impl Actor {
             }
             Event::Resume => self.begin_round().await,
             Event::Tick => self.tick(),
-            Event::FirewallStart => self.start_firewall().await,
-            Event::FirewallCheck => self.check_firewall(),
             Event::Phase(_) => unreachable!(),
         }
     }
@@ -402,13 +396,13 @@ impl Actor {
         if self.pending_targets.is_empty() {
             self.pending_targets.extend(self.targets.iter().copied());
         }
+        let Some(plan) = self.plan.as_ref() else {
+            return;
+        };
+        let request = plan.probe.request;
         if let Some(target) = self.pending_targets.pop_front() {
-            if let Some(base) = self
-                .plan
-                .as_ref()
-                .and_then(|plan| plan.base.canonical.get_conn())
-            {
-                if let Err(error) = base.try_send_to(&REQUEST, target) {
+            if let Some(base) = plan.base.canonical.get_conn() {
+                if let Err(error) = base.try_send_to(&request, target) {
                     log::trace!("base probe to {target}: {error}");
                 }
             }
@@ -419,7 +413,7 @@ impl Actor {
         if let Some(index) = self.pending_sockets.pop_front() {
             if let Some(probe) = self.sockets.get(index) {
                 if let Some(socket) = &probe.socket {
-                    if let Err(error) = socket.try_send_to(&REQUEST, probe.target) {
+                    if let Err(error) = socket.try_send_to(&request, probe.target) {
                         log::trace!("temporary probe to {}: {error}", probe.target);
                     }
                 }
@@ -431,135 +425,29 @@ impl Actor {
     }
 
     fn probe_received(&mut self, index: usize, source: SocketAddr, packet: &[u8]) {
-        if packet != REQUEST && packet != RESPONSE {
+        let Some(probe) = self.plan.as_ref().map(|plan| plan.probe.clone()) else {
+            return;
+        };
+        if packet != probe.request && packet != probe.response {
             log::trace!(
                 "probe socket ignored {} bytes from {source}",
                 packet.len()
             );
             return;
         }
-        let Some(probe) = self.sockets.get_mut(index) else {
+        let Some(slot) = self.sockets.get_mut(index) else {
             return;
         };
-        let Some(socket) = probe.socket.take() else {
+        let Some(socket) = slot.socket.take() else {
             return;
         };
-        if packet == REQUEST {
-            let _ = socket.try_send_to(&RESPONSE, source);
+        if packet == probe.request {
+            let _ = socket.try_send_to(&probe.response, source);
         }
         let local = socket.local_addr();
         drop(socket); // Release the OS binding BEFORE posting the promotion.
         if let (Ok(local), Some(coordinator)) = (local, self.coordinator.upgrade()) {
             coordinator.promote(local.port(), source);
-        }
-    }
-
-    async fn start_firewall(&mut self) {
-        self.firewall.clear();
-        let Some(local) = self.plan.as_ref().and_then(|plan| plan.local_bind) else {
-            self.schedule(Duration::from_secs(5), Event::FirewallCheck);
-            return;
-        };
-        // Fixed endpoints, not DNS queries and not proxy setup.
-        for remote in [
-            SocketAddr::from(([119, 29, 29, 29], 53)),
-            SocketAddr::from(([223, 5, 5, 5], 53)),
-        ] {
-            let socket = if local.is_ipv4() {
-                TcpSocket::new_v4()
-            } else {
-                TcpSocket::new_v6()
-            };
-            let Ok(socket) = socket else {
-                continue;
-            };
-            if let Err(error) = socket.bind(SocketAddr::new(local, 0)) {
-                log::debug!("firewall probe bind: {error}");
-                continue;
-            }
-            let mut connecting = Box::pin(socket.connect(remote));
-            let initial = poll_fn(|cx| {
-                Poll::Ready(match connecting.as_mut().poll(cx) {
-                    Poll::Ready(result) => Some(result),
-                    Poll::Pending => None,
-                })
-            })
-            .await;
-            match initial {
-                Some(Ok(socket)) => {
-                    let _ = socket.set_nodelay(true);
-                    self.firewall.push(Firewall::Done {
-                        reachable: true,
-                        socket: Some(socket),
-                    });
-                }
-                Some(Err(error)) => log::debug!("firewall probe could not be created: {error}"),
-                None => self.firewall.push(Firewall::Connecting(connecting)),
-            }
-        }
-        self.schedule(Duration::from_secs(5), Event::FirewallCheck);
-    }
-
-    fn firewall_event(&mut self, event: FirewallEvent) {
-        match event {
-            FirewallEvent::Connected(index, result) => {
-                log::debug!(
-                    "firewall probe completion: endpoint_index={index} connected={}",
-                    result.is_ok()
-                );
-                let state = match result {
-                    Ok(socket) => {
-                        let _ = socket.set_nodelay(true);
-                        Firewall::Done {
-                            reachable: true,
-                            socket: Some(socket),
-                        }
-                    }
-                    Err(error) => {
-                        let blocked = matches!(
-                            error.kind(),
-                            io::ErrorKind::ConnectionReset
-                                | io::ErrorKind::ConnectionRefused
-                                | io::ErrorKind::TimedOut
-                        );
-                        log::debug!("firewall probe ended: {error}; blocked={blocked}");
-                        Firewall::Done {
-                            reachable: !blocked,
-                            socket: None,
-                        }
-                    }
-                };
-                self.firewall[index] = state;
-            }
-            FirewallEvent::Closed(index) => {
-                if let Firewall::Done { socket, .. } = &mut self.firewall[index] {
-                    socket.take();
-                }
-            }
-            FirewallEvent::Data => {}
-        }
-    }
-
-    fn check_firewall(&mut self) {
-        let tested = !self.firewall.is_empty();
-        let reachable = self.firewall.iter().any(|probe| {
-            matches!(
-                probe,
-                Firewall::Done {
-                    reachable: true,
-                    ..
-                }
-            )
-        });
-        log::debug!(
-            "firewall reachability result: attempts={} reachable={reachable}",
-            self.firewall.len()
-        );
-        self.firewall.clear();
-        if tested && !reachable {
-            self.epoch = self.epoch.wrapping_add(1);
-            // This is stats only. Do not disconnect the room.
-            log::info!("punch stopped by firewall reachability result; current media transport retained");
         }
     }
 }
@@ -579,35 +467,6 @@ fn poll_probe(
                 Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
                 Poll::Pending => {}
             }
-        }
-    }
-    Poll::Pending
-}
-
-fn poll_firewall(probes: &mut [Firewall], cx: &mut Context<'_>) -> Poll<FirewallEvent> {
-    for (index, probe) in probes.iter_mut().enumerate() {
-        match probe {
-            Firewall::Connecting(connecting) => {
-                if let Poll::Ready(result) = connecting.as_mut().poll(cx) {
-                    return Poll::Ready(FirewallEvent::Connected(index, result));
-                }
-            }
-            Firewall::Done {
-                socket: Some(socket),
-                ..
-            } => {
-                let mut bytes = [0; 128];
-                let mut buffer = ReadBuf::new(&mut bytes);
-                match Pin::new(socket).poll_read(cx, &mut buffer) {
-                    Poll::Ready(Ok(())) if buffer.filled().is_empty() => {
-                        return Poll::Ready(FirewallEvent::Closed(index))
-                    }
-                    Poll::Ready(Ok(())) => return Poll::Ready(FirewallEvent::Data),
-                    Poll::Ready(Err(_)) => return Poll::Ready(FirewallEvent::Closed(index)),
-                    Poll::Pending => {}
-                }
-            }
-            _ => {}
         }
     }
     Poll::Pending

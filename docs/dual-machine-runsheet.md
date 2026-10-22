@@ -241,6 +241,8 @@
 | 15.5 | 在 C 的防火墙封锁出站 UDP | 走 TURN TCP / TLS 中继，画面正常 | |
 | 15.7 | 服务端配置两个 IP 或两个端口，查看 C 日志的 NAT 探测结果 | 映射 / 过滤行为与网络实际情况一致 | |
 | 15.9 | 关闭“激进打洞”，两端在对称型 NAT 后 | 不做端口预测与探测打洞，直接走中继 | |
+| 15.10 | 只在一端关闭“激进打洞”，两端在对称型 NAT 后 | 两端日志的 `connection path summary` 都是 `probing=false`；直接走中继 | |
+| 15.11 | 两端都开启“激进打洞”，一端在对称型 NAT 后、另一端在家庭宽带 | 两端日志出现 `NAT groups`（其中 `measured=` 为双方测得的映射）与 `punch round`；打通时出现 `punch promoted private UDP Port`，否则最多 6 轮后出现 `punch stopped after 6 rounds`；记录结果 | |
 | 17.2 | 在不转发组播的网络（部分路由器 / 访客网络）上重复 17.1 | 通过广播仍能发现 | |
 | 17.12 | （已转发端口）路由器转发 TCP 28890 与 UDP 28890，C 从外网用 H 的公网 IP / 域名直连 | 连接成功；C 日志显示选中的候选对使用拨号地址派生的 srflx 候选 | |
 | N9 | 15.1 的连接中观看动态画面与拖动窗口 | H 日志 `host selected transport path` 为 `route="P2P"`（或 `relay`）且 `mtu=1280`；没有偶发的约 0.1 秒顿挫 | |

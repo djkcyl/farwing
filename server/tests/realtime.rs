@@ -197,7 +197,7 @@ async fn full_session_flow_relay_and_endings() {
     assert_eq!(d["options"]["screen_id"], -1);
     assert_eq!(d["capability"], json!({"codecs": ["h265"]}));
     assert_eq!(d["force_relay"], false);
-    assert_eq!(d["network"]["possible_latency"], 300);
+    assert!(d.get("network").is_none());
     let ice = d["ice_servers"].as_array().unwrap();
     assert_eq!(ice.len(), 2);
     assert!(

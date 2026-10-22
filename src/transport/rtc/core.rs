@@ -133,6 +133,17 @@ impl ConnectionCore {
     /// already carries.
     pub async fn remote_description_installed(&self, sdp: &str) {
         self.nat.remote_description(sdp);
+        let (local, remote, peer_allows) = self.nat.punch_plan();
+        if let Err(error) = self
+            .connection
+            .sctp()
+            .transport()
+            .ice_transport()
+            .set_nat_mappings(local, remote, peer_allows)
+            .await
+        {
+            tracing::debug!(%error, "probe punching plan not handed to ICE");
+        }
         for predicted in self.nat.sdp_predictions(sdp) {
             if let Err(error) = self.connection.add_ice_candidate(predicted).await {
                 tracing::debug!(%error, "discarded predicted remote ICE candidate");

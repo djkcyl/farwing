@@ -5560,6 +5560,7 @@ dependencies = [
  "log",
  "portable-atomic",
  "rand 0.9.5",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

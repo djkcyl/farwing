@@ -18,6 +18,7 @@ mod gather_owner;
 mod local_port;
 pub(crate) mod network_catalog;
 mod punch;
+pub use punch::NatMapping;
 mod shared_socket;
 pub(crate) mod tcp_port;
 
@@ -483,6 +484,12 @@ impl Agent {
     /// Returns the selected pair or nil if there is none
     pub fn get_selected_candidate_pair(&self) -> Option<Arc<CandidatePair>> {
         self.internal.agent_conn.get_selected_pair()
+    }
+
+    /// Both sides' NAT mappings as measured by the application, for probe
+    /// punching; `peer_allows` is false when the peer turned it off.
+    pub fn set_nat_mappings(&self, local: NatMapping, remote: NatMapping, peer_allows: bool) {
+        self.internal.punch.set_measured(local, remote, peer_allows);
     }
 
     pub fn is_controlling(&self) -> bool {

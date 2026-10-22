@@ -19,7 +19,6 @@ mod hevc;
 pub(crate) mod input;
 mod keyframe;
 pub(crate) mod microphone;
-pub(crate) mod network;
 pub(crate) mod parameters;
 pub(crate) mod participants;
 pub(crate) mod peer;

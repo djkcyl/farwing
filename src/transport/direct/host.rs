@@ -813,7 +813,6 @@ impl Shared {
             capability: start.capability,
             ice_servers: Vec::new(),
             force_relay: false,
-            network: Default::default(),
         };
         let (sender, mut outgoing) = mpsc::unbounded_channel();
         self.router.register(&sid, sender);
@@ -827,7 +826,6 @@ impl Shared {
             session_id: sid.clone(),
             ice_servers: Vec::new(),
             force_relay: false,
-            network: Default::default(),
             host: PeerIdentity {
                 device_id: self.local.identity.device_id.clone(),
                 public_key: self.local.identity.public_key(),

@@ -313,7 +313,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 
 ### 3.9 配置与更新
 
-- `GET /config`：`{bitrate_limit_mbps: u32 | null, network: NetworkPolicy}`。`NetworkPolicy = {auto_switch, possible_loss, possible_latency, possible_min_latency, force_loss, force_latency}`（默认 `true, 5, 300, 200, 15, 500`）为自动切换中继的阈值；被控仅在 `force_loss ≥ 10`、`force_latency ≥ 200`、`possible_min_latency ≥ 200`、`5 ≤ possible_loss ≤ force_loss`、`possible_min_latency ≤ possible_latency ≤ force_latency` 时采用，否则回退为 30% / 600 ms。
+- `GET /config`：`{bitrate_limit_mbps: u32 | null}`。
 - `GET /updates/{platform}`：管理员发布的版本公告（网页端“客户端更新”或管理接口，不在配置文件中）`{version, prerelease, published_at, notes, url}`；`beta` 渠道同时包含 `stable` 条目，取 `published_at` 最新者；未配置或平台未知时 `{latest: null}`。
 
 ### 3.10 会话入场
@@ -456,7 +456,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `rtc.offer` | C→S→H | 带 `sid`、`gen` | `{attempt_id, restart, network, sdp}` |
 | `rtc.answer` | H→S→C | 带 `sid`、`gen` | `{attempt_id, restart, network, sdp}` |
 | `rtc.candidate` | 双向 | 带 `sid` | `{attempt_id, candidate: {candidate, sdpMid, sdpMLineIndex, usernameFragment}}` |
-| `session.setting` | H→S→C | 带 `sid` | `{kind: "capability", capability}` / `{kind: "sender_info", infos: [{video_track_index, capture_impl, encoder_impl}]}` / `{kind: "network_switch", transport_type, attempt_switch_type}` |
+| `session.setting` | H→S→C | 带 `sid` | `{kind: "capability", capability}` / `{kind: "sender_info", infos: [{video_track_index, capture_impl, encoder_impl}]}` |
 | `session.permissions` | S→H、S→C | 带 `sid` | `{grants: [caps]}` |
 | `session.end` | H→S | 被控在线连接，带 `sid` | `{reason}` |
 | `session.leave` | C→S | 承载该会话的在线连接，带 `sid` | `{}` |
@@ -469,11 +469,11 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `power.request` | S→H | 在线连接 | `{request_id, action, requester, requester_device}` |
 | `wol.wake` | S→协助设备 | 在线连接 | `{request_id, target: {mac, inner_ip, subnet_mask}}` |
 
-- `SessionStarted`（`session.start` 的 `ack`）：`{participant_id, session_id, ice_servers, force_relay, network: NetworkPolicy, host: {device_id, public_key}, relation, grants}`。
-- `SessionIncoming`：`{participant_id, attempt_id, purpose, connect_type: "account"|"assist", relation: "own"|"friend"|"trusted"|"assist", grants, controller: ControllerInfo, options, capability, ice_servers, force_relay, network}`。目的、类型、关系、授予的能力与主控身份以服务端为准；`options` 中的同类信息不作授权依据。经服务端时 `own`、`friend` 的 `connect_type` 为 `account`，`trusted`、`assist` 为 `assist`（§3.11）。`grants`：本账号设备为全部能力，好友为生效授权，受信任设备与访客为空：被控对 `trusted` 重新核对本机受信任设备记录（设备 ID 与公钥都须匹配，否则拒绝）并套用为它记录的能力，对 `assist` 套用访客默认权限。
+- `SessionStarted`（`session.start` 的 `ack`）：`{participant_id, session_id, ice_servers, force_relay, host: {device_id, public_key}, relation, grants}`。
+- `SessionIncoming`：`{participant_id, attempt_id, purpose, connect_type: "account"|"assist", relation: "own"|"friend"|"trusted"|"assist", grants, controller: ControllerInfo, options, capability, ice_servers, force_relay}`。目的、类型、关系、授予的能力与主控身份以服务端为准；`options` 中的同类信息不作授权依据。经服务端时 `own`、`friend` 的 `connect_type` 为 `account`，`trusted`、`assist` 为 `assist`（§3.11）。`grants`：本账号设备为全部能力，好友为生效授权，受信任设备与访客为空：被控对 `trusted` 重新核对本机受信任设备记录（设备 ID 与公钥都须匹配，否则拒绝）并套用为它记录的能力，对 `assist` 套用访客默认权限。
 - `ControllerInfo`：`{device_id, alias, user_id, username, nickname, platform, version, public_key, caps_limit?}`；无账号的主控 `user_id`、`username`、`nickname` 为空。`caps_limit` 是服务端规定的能力上限：网页主控（`platform: "web"`）总是带（服务器设置“网页端可以使用的功能”），被控对所有关系的授权都按它裁剪；原生主控不带，不受此限制。
 - `IceServer`：`{urls, username, credential}`。TURN 凭据为 TURN REST 临时凭据：`username = "<过期 Unix 秒>:<session_id>"`，`credential = base64(HMAC-SHA1(shared_secret, username))`，默认 12 小时。NAT 探测端点以无凭据的 `stun:` 地址附加在列表中。
-- `network`（用于 `rtc.offer`/`rtc.answer` 与 `network_switch.transport_type`）：`3` 全部候选；`1` 仅中继，优先 TURNS（无 TURNS 时用 TURN）；`2` 全部候选（被控接受的替代值）；`0` 用于候选消息，在重启 offer 中表示“仅中继，按被控最近一次切换尝试决定是否要求 TLS”。`attempt_switch_type`：`2` 中继且优先 TLS，`3` 自动。
+- `network`（`rtc.offer`/`rtc.answer`）：`3` 全部候选；`1` 仅中继，优先 TURNS（无 TURNS 时用 TURN）。主控在观看窗口切换线路时以重启 offer 发送；被控按它重新配置 ICE，其他取值不改配置。中继与直连之间的自动切换由 ICE 按实测路径质量完成（§7.5），不经信令。
 - `session.start.purpose` 只供直连端点使用（§8.4），服务端忽略它。
 
 **客户端约定的载荷（服务端只校验大小并转发）**
@@ -758,7 +758,7 @@ offer 与 answer 都在会话级加入：
 a=x-farwing-nat:mapping=<eim|adm|apdm|unknown>;filtering=<eim|adm|apdm|unknown>;delta=<i32>
 ```
 
-无结果时发送 `unknown/unknown/0`；关闭“激进打洞”时 `delta=0`。映射不是 `adm`/`apdm` 时接收方把 `delta` 视为 0。ICE 重启时随新描述更新。SDP 对服务端不透明。
+无结果时发送 `unknown/unknown/0`；关闭“激进打洞”时 `delta=0` 并追加 `;punch=off`（对端因此既不预测本端端口，也不向本端做探测打洞）。映射不是 `adm`/`apdm` 时接收方把 `delta` 视为 0；不认识的字段忽略。ICE 重启时随新描述更新。SDP 对服务端不透明。
 
 ### 7.3 端口预测
 
@@ -768,7 +768,16 @@ a=x-farwing-nat:mapping=<eim|adm|apdm|unknown>;filtering=<eim|adm|apdm|unknown>;
 
 ICE 代理在默认路由上发布私网 UDP/IPv4 主机候选后，为该端口向网关申请映射（每会话最多 2 个），依次尝试 PCP（MAP，端口 5351）、NAT-PMP、UPnP-IGD（`WANIPConnection:2/1` 或 `WANPPPConnection:1` 的 `AddPortMapping`）。外部地址为公网地址时，以 srflx 候选（类型偏好 100、沿用主机候选的本地偏好、`raddr/rport` 为主机地址）经正常候选通道发给对端；与已发布的 srflx 相同或为私网/共享地址时不发布。租约 2 小时，半程续期，会话关闭时删除（最多等 2 秒）。
 
-### 7.5 其他
+### 7.5 探测打洞
+
+两端都开启“激进打洞”（对端属性无 `punch=off`）时，ICE 代理在收集开始 5 秒后若仍未选中直连路径，按双方的映射规划探测：
+
+- 映射：`eim` 为锥形；`adm`/`apdm` 且 `delta ≠ 0` 为线性（步长 `delta`）；`adm`/`apdm` 且 `delta = 0` 为随机；`unknown` 时按该端的 srflx 候选推断（同一本地端口在至少两个 STUN 服务器上映射相同为锥形，多个映射端口等差为线性，否则为随机，只有一个 STUN 服务器时不推断）。
+- 规划按双方类型选择：向对端最近的映射端口及其线性后继发送、从多个临时本地端口发送，或（对端为随机时）向随机端口发送。每轮 20 秒，之后暂停 5 秒（两端都是随机时 120 秒），最多 6 轮；选中直连后停止；ICE 重启后重新规划。
+- 探测报文为 12 字节 UDP：请求 `06 46 57 71`（`\x06FWq`）、应答 `06 46 57 72`（`\x06FWr`），后接 8 字节标记。标记为 `SHA-256("farwing punch probe\n" ‖ A ‖ "\n" ‖ B)` 的第 0–7 字节（请求）与第 8–15 字节（应答），A、B 为双方的 `ufrag:pwd`，按字节序较小者在前，因此两端算出相同的报文；ICE 重启后随凭据变化。首字节不在 RFC 7983 的任何分流范围内。
+- 收到本会话的探测请求的端口回复应答；收到请求或应答的临时端口成为本端的一个主机候选，与发出方地址组成候选对，之后按普通 ICE 连通性检查（带消息完整性）建立。标记不符的报文按普通非 STUN 流量处理（丢弃）。
+
+### 7.6 其他
 
 - 中继候选对保持同意检查作为备份；直连路径劣化（丢包或 RTT 明显高于中继）时由控制方改用中继，被放弃的路径回避 60 秒起、最长 10 分钟。
 - 主机候选优先级中 IPv6 网络偏好高于 IPv4，IPv6 主机候选优先于 IPv4 主机与 srflx 候选。
@@ -815,7 +824,7 @@ ICE 代理在默认路由上发布私网 UDP/IPv4 主机候选后，为该端口
 
 ### 8.4 直连会话
 
-- 主控发送 `session.start{attempt_id, options, capability, purpose}`（带 `id`）。被控生成 `session_id` 与 `participant_id`，以 `ack: SessionStarted`（`ice_servers` 为空、`network` 为默认、`host` 为被控身份、`relation`、`grants`）回复，并把它作为一条 `session.incoming`（`connect_type`：访客为 `assist`，`own`、`friend`、`trusted` 为 `account`）交给与服务端会话共用的被控会话管理；被控照常按目的检查所需能力。
+- 主控发送 `session.start{attempt_id, options, capability, purpose}`（带 `id`）。被控生成 `session_id` 与 `participant_id`，以 `ack: SessionStarted`（`ice_servers` 为空、`host` 为被控身份、`relation`、`grants`）回复，并把它作为一条 `session.incoming`（`connect_type`：访客为 `assist`，`own`、`friend`、`trusted` 为 `account`）交给与服务端会话共用的被控会话管理；被控照常按目的检查所需能力。
 - `rtc.offer`/`rtc.answer`/`rtc.candidate` 与经服务端时相同；SDP 照常带 `a=x-farwing-identity`，使用访问码的会话另带 `a=x-farwing-pake`（K 为本次 PAKE 的密钥）。
 - 被控结束参与者时向主控发 `session.ended{reason}`；主控断开或发 `session.end` 时被控以 `controller_left` 结束该参与者；被控停止直连时主控收到 `session.ended{host_closed}` 或连接断开。
 

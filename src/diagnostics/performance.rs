@@ -11,9 +11,6 @@ pub(crate) mod health;
 pub struct PerformanceSnapshot {
     pub(crate) health: health::Assessment,
     pub connection: String,
-    pub network_switch_phase: u8,
-    pub network_switch_attempts: u64,
-    pub network_switch_successes: u64,
     pub decoder: String,
     pub video_codec: String,
     pub video_format: String,
@@ -222,9 +219,6 @@ struct PerformanceInner {
     presentation_queue_frames: AtomicU64,
     presentation_queue_peak_frames: AtomicU64,
     connection: RwLock<String>,
-    network_switch_phase: AtomicU64,
-    network_switch_attempts: AtomicU64,
-    network_switch_successes: AtomicU64,
     decoder: RwLock<String>,
     video_codec: RwLock<String>,
     video_format: RwLock<String>,
@@ -641,9 +635,6 @@ impl PerformanceMonitor {
                 presentation_queue_frames: AtomicU64::new(0),
                 presentation_queue_peak_frames: AtomicU64::new(0),
                 connection: RwLock::new(crate::i18n::t().session.perf_connecting.to_owned()),
-                network_switch_phase: AtomicU64::new(0),
-                network_switch_attempts: AtomicU64::new(0),
-                network_switch_successes: AtomicU64::new(0),
                 decoder: RwLock::new(crate::i18n::t().session.perf_waiting_video.to_owned()),
                 video_codec: RwLock::new(crate::i18n::t().session.perf_waiting_negotiation.to_owned()),
                 video_format: RwLock::new(crate::i18n::t().session.perf_waiting_parameter_sets.to_owned()),
@@ -1077,26 +1068,6 @@ impl PerformanceMonitor {
         *write_lock(&self.inner.connection) = connection.into();
     }
 
-    /// Record the host network-switch state machine transition.
-    /// Phase 0 is direct, 1 is UDP relay, and 2 is TLS relay.
-    pub(crate) fn record_network_switch_attempt(&self, attempt_switch_type: u8) {
-        self.inner
-            .network_switch_phase
-            .store(u64::from(attempt_switch_type), Ordering::Relaxed);
-        self.inner
-            .network_switch_attempts
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(crate) fn record_network_switch_success(&self, attempt_switch_type: u8) {
-        self.inner
-            .network_switch_phase
-            .store(u64::from(attempt_switch_type), Ordering::Relaxed);
-        self.inner
-            .network_switch_successes
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
     pub(crate) fn set_decoder(&self, decoder: impl Into<String>) {
         *write_lock(&self.inner.decoder) = decoder.into();
     }
@@ -1424,9 +1395,6 @@ impl PerformanceMonitor {
         let mut snapshot = PerformanceSnapshot {
             health: health::Assessment::default(),
             connection: read_lock(&common.connection).clone(),
-            network_switch_phase: common.network_switch_phase.load(Ordering::Relaxed) as u8,
-            network_switch_attempts: common.network_switch_attempts.load(Ordering::Relaxed),
-            network_switch_successes: common.network_switch_successes.load(Ordering::Relaxed),
             decoder: read_lock(&self.inner.decoder).clone(),
             video_codec: read_lock(&self.inner.video_codec).clone(),
             video_format: read_lock(&self.inner.video_format).clone(),

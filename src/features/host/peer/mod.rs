@@ -120,7 +120,6 @@ impl Peer {
         initial: VideoConfig,
         control_screens: bool,
         negotiated: Arc<super::format::Negotiated>,
-        network: super::network::Policy,
         deferred: Option<screens::Deferred>,
         audio_control: bool,
         annotation_extension: bool,
@@ -135,7 +134,6 @@ impl Peer {
     ) -> Result<Self> {
         let audio_only = deferred.is_some() && !data_only;
         let handle = owner.with_cancellation(cancel.clone());
-        tracing::info!(?network, "host network switch policy");
         let initial_quality = if initial.quality == 5 {
             initial.auto_quality
         } else {
@@ -175,7 +173,6 @@ impl Peer {
             handle.clone(),
             cancel.clone(),
             initial_bounds,
-            network,
         );
         let mut registry = webrtc::interceptor::registry::Registry::new();
         registry.add(Box::new(transport.clone()));
@@ -610,7 +607,7 @@ impl Peer {
                     remote_relay_protocol=%pair.remote.relay_protocol,
                     route, mtu, "host selected transport path");
                 route_transport.route_changed();
-                route_transport.selected_route(&pair, route);
+                route_transport.selected_route(route);
                 let transport = route_transport.clone();
                 Box::pin(async move {
                     let ip = if pair
@@ -927,15 +924,13 @@ impl Peer {
     }
 
     async fn restart_network(&self, network_type: u8) -> Result<()> {
-        // The answerer policy is distinct from the controller switch API.
-        let (relay, tls) = match network_type {
-            0 => (true, self.transport.network_attempt() == 2),
-            1 => (true, true),
-            2 | 3 => (false, false),
-            _ => anyhow::bail!("无效的ICE网络类型"),
+        let relay = match network_type {
+            farwing_protocol::realtime::network::RELAY => true,
+            farwing_protocol::realtime::network::ALL => false,
+            _ => anyhow::bail!("invalid ICE network type {network_type}"),
         };
         let mut servers = self.ice_servers.clone();
-        if tls {
+        if relay {
             let mut turns = servers.clone();
             for server in &mut turns {
                 server
@@ -958,7 +953,7 @@ impl Peer {
         };
         self.core.configure_ice(servers, policy).await?;
         self.relay_only.store(relay, Ordering::Release);
-        tracing::info!(network_type, relay, tls, "host ICE restart policy applied");
+        tracing::info!(network_type, relay, "host ICE restart policy applied");
         Ok(())
     }
     pub(crate) async fn local_candidate(
@@ -1125,13 +1120,6 @@ impl Peer {
     }
     pub(crate) fn ended(&self) -> bool {
         self.cancel.is_cancelled()
-    }
-    pub(crate) fn network_change(&self) -> Option<u8> {
-        if self.ended() {
-            None
-        } else {
-            self.transport.network_change()
-        }
     }
     pub(crate) async fn close(mut self) {
         if self.started.elapsed() >= super::bandwidth::MIN_SESSION

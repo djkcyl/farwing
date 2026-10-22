@@ -181,7 +181,6 @@ WS 消息上限为 `max_frame_bytes × 2`（`server/src/ws.rs:98-107`）。
   "ice_servers":[{"urls":["stun:x:3478"],"username":"","credential":""},
                  {"urls":["turn:x:3478?transport=udp","turns:x:5349"],"username":"<exp>:<sid>","credential":"<b64>"}],
   "force_relay":false,
-  "network":{"auto_switch":true,"possible_loss":5,"possible_latency":300,"possible_min_latency":200,"force_loss":15,"force_latency":500},
   "host":{"device_id":"<16 位 base32>","public_key":"<base64url 32 字节>"},
   "relation":"own","grants":["view","audio"]}}
 ```
@@ -353,7 +352,7 @@ function fingerprints(sdp: string): string[] {
 
 | type | data | 处理 |
 |---|---|---|
-| `session.setting` | `{kind:"capability", capability: DeviceCapability}` / `{kind:"sender_info", infos:[{video_track_index, capture_impl, encoder_impl}]}` / `{kind:"network_switch", transport_type, attempt_switch_type}`（`realtime.rs:369-383`） | 可全部忽略。`capability` 是被控编码能力，可用于界面展示，且可能早于 answer 到达（`host.rs:372`）。`network_switch` 是被控建议改走中继，原生会做 ICE 重启（`network=1`，`mod.rs:985-1019`）；浏览器不实现也不影响推流 |
+| `session.setting` | `{kind:"capability", capability: DeviceCapability}` / `{kind:"sender_info", infos:[{video_track_index, capture_impl, encoder_impl}]}` | 可全部忽略。`capability` 是被控编码能力，可用于界面展示，且可能早于 answer 到达（`host.rs:372`）。 |
 | `session.permissions` | `{grants:[…]}`（`realtime.rs:403-408`） | 只用于展示；生效的能力以对端 `PERMISSIONS` 帧为准 |
 | `session.ended` | `{reason}`，原因见 `realtime.rs:385-401` | 会话结束，随后以 4004 关闭（`server/src/hub.rs:810-817`） |
 | `error` | `ErrorBody`，`re` 对应请求的 `id` | 见 §2.5、§2.7 |

@@ -84,7 +84,7 @@
 | 音质调整 | UU 音质消息 | `AUDIO_QUALITY` 帧 | 往返测试通过；未端到端 |
 | 麦克风 | — | 同一 WebRTC 会话的音频发送 | 已协商；需虚拟声卡 |
 | 电源与唤醒 | UU 电源接口、UU 路由器唤醒 | `/devices/{id}/power` + `power.request`；同网设备代发 WoL | 请求和拒绝链路已验证；未实际执行；WoL 仅服务端测试 |
-| 网络策略 / 自动中继 | UU 下发阈值 | `/config` 的 `network`；`session.setting` network_switch | 配置下发已验证；未人为制造丢包 |
+| 网络策略 / 自动中继 | UU 下发阈值，被控要求主控切中继 | 已删除；ICE 按实测路径质量在直连与中继之间切换（v2-design §11） | 未人为制造丢包 |
 | 后台服务 / 无人值守 | OpenUUYC 服务身份 | `FarwingHostService`，DPAPI 保险库，仅限默认 profile | 未验证（需管理员授权） |
 | 安装 / 更新 / 卸载 | UU 与 OpenUUYC 路径、发布源 | `%ProgramFiles%\Farwing`，卸载项 `Farwing`；更新源 `/updates/windows` | 更新通知已验证；安装和卸载未验证 |
 | 驱动 | OpenUUYC 预编译驱动 | Farwing 硬件 ID / GUID，源码保留；嵌入可选，仓库不带二进制 | 未构建（无 WDK 和签名证书） |

@@ -146,33 +146,6 @@ fn report_negotiation(reporter: Option<NegotiationReporter<'_>>, event: Negotiat
     }
 }
 
-/// Tracks completion of a received switch request for diagnostics. Duplicate
-/// suppression belongs to the remote sender-side monitor, not this state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PendingNetworkSwitch {
-    attempt_switch_type: u8,
-}
-
-fn relay_protocol_is_tls(protocol: &str) -> bool {
-    protocol.eq_ignore_ascii_case("tls")
-}
-
-fn selected_transport_matches_switch(
-    selected: Option<(bool, String, String)>,
-    attempt_switch_type: u8,
-) -> bool {
-    let Some((is_relay, local_protocol, remote_protocol)) = selected else {
-        return false;
-    };
-    if !is_relay {
-        return false;
-    }
-    match attempt_switch_type {
-        2 => relay_protocol_is_tls(&local_protocol) && relay_protocol_is_tls(&remote_protocol),
-        _ => true,
-    }
-}
-
 fn apply_device_capability(
     capability: crate::protocol::capability::DeviceCapability,
     control: &ControlSessionInfo,
@@ -477,7 +450,6 @@ impl SignalSession {
             session_id: started.session_id,
             ice_servers: started.ice_servers,
             force_relay: started.force_relay,
-            network: started.network,
             attempt_id,
             local_capability: decoder_support,
         };
@@ -611,12 +583,11 @@ impl SignalSession {
         &mut self,
         info: &ControlSessionInfo,
         peer: &NativePeer,
-        transport_type: u8,
-        attempt_switch_type: u8,
+        relay: bool,
     ) -> Result<()> {
-        peer.switch_ice_network(transport_type, attempt_switch_type)
-            .await?;
-        self.restart_ice(info, peer, transport_type).await
+        peer.switch_ice_network(relay).await?;
+        self.restart_ice(info, peer, if relay { network::RELAY } else { network::ALL })
+            .await
     }
 
     fn send_candidate(
@@ -845,7 +816,6 @@ impl SignalSession {
         let mut local_candidates = peer.as_ref().map(|peer| peer.local_ice_candidates());
         let mut local_candidate_stream_open = local_candidates.is_some();
         let mut active_ice_network_type = network::ALL;
-        let mut pending_network_switch = None::<PendingNetworkSwitch>;
         // Level 1 of recovery: a path that stays disconnected this long gets
         // an in-session ICE restart (`docs/protocol/v2-design.md` §11).
         const ICE_RESTART_AFTER: Duration = Duration::from_secs(2);
@@ -906,14 +876,11 @@ impl SignalSession {
                         network.fail(crate::i18n::t().session.route_relay_required);
                         continue;
                     }
-                    // Relay requested: TURN with TLS preferred (relay, attempt 2).
-                    // Automatic: all candidates (all, attempt 3).
-                    let (transport_type, attempt) = if relay { (network::RELAY, 2) } else { (network::ALL, 3) };
-                    match self.apply_network_switch(info, peer, transport_type, attempt).await {
+                    // Relay: TURNS preferred. Otherwise all candidates.
+                    match self.apply_network_switch(info, peer, relay).await {
                         Ok(()) => {
                             peer.accept_manual_network_policy();
-                            active_ice_network_type = transport_type;
-                            pending_network_switch = None;
+                            active_ice_network_type = if relay { network::RELAY } else { network::ALL };
                             network.submitted(relay);
                             tracing::info!(relay, "manual network policy submitted");
                         }
@@ -1012,41 +979,6 @@ impl SignalSession {
                                             tracing::debug!(?infos, "host sender info received");
                                             peer.performance_monitor().set_remote_senders(infos);
                                         }
-                                        Some(SettingEvent::SwitchNetwork { transport_type, attempt_switch_type }) => {
-                                            if !peer.allows_network_switch() {
-                                                tracing::debug!("ignored network switch because the user selected P2P-only transport");
-                                                continue;
-                                            }
-                                            if transport_type == network::CANDIDATE {
-                                                tracing::warn!(transport_type, attempt_switch_type, "ignored invalid network switch");
-                                                continue;
-                                            }
-                                            if !peer.can_switch_ice_network() {
-                                                tracing::debug!(
-                                                    ice_state = %peer.ice_connection_state(),
-                                                    peer_state = %peer.connection_state(),
-                                                    "ignored network switch until the current ICE connection is established"
-                                                );
-                                                continue;
-                                            }
-                                            if let Err(error) = self
-                                                .apply_network_switch(info, peer, transport_type, attempt_switch_type)
-                                                .await
-                                            {
-                                                tracing::warn!(
-                                                    %error,
-                                                    transport_type,
-                                                    attempt_switch_type,
-                                                    "ICE network switch attempt failed; keeping the old selected path"
-                                                );
-                                                pending_network_switch = None;
-                                                continue;
-                                            }
-                                            peer.performance_monitor()
-                                                .record_network_switch_attempt(attempt_switch_type);
-                                            active_ice_network_type = transport_type;
-                                            pending_network_switch = Some(PendingNetworkSwitch { attempt_switch_type });
-                                        }
                                         None => {}
                                     }
                                 }
@@ -1057,20 +989,9 @@ impl SignalSession {
                 }
                 _ = network_switch_check.tick(), if peer.is_some() => {
                     let peer = peer.as_ref().expect("controller peer exists");
-                    let selected = peer.selected_transport().await;
                     if let Some(network) = &network_control {
                         network.connected(peer.can_switch_ice_network());
-                        network.observe_route(selected.as_ref().is_some_and(|s| s.0));
-                    }
-                    let Some(pending) = pending_network_switch else { continue; };
-                    if selected_transport_matches_switch(selected, pending.attempt_switch_type) {
-                        tracing::info!(
-                            attempt_switch_type = pending.attempt_switch_type,
-                            "ICE network switch converged on the requested relay path"
-                        );
-                        peer.performance_monitor()
-                            .record_network_switch_success(pending.attempt_switch_type);
-                        pending_network_switch = None;
+                        network.observe_route(peer.selected_is_relay().await);
                     }
                 }
                 _ = async {
@@ -1132,7 +1053,6 @@ impl SignalSession {
                             ice_restarts = 0;
                         }
                         Some(RTCPeerConnectionState::Disconnected) => {
-                            pending_network_switch = None;
                             ice_restart_at.get_or_insert(tokio::time::Instant::now() + ICE_RESTART_AFTER);
                             tracing::warn!(
                                 "native WebRTC peer connection temporarily disconnected; restarting ICE if it does not recover"

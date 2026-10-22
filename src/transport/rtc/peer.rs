@@ -368,10 +368,6 @@ impl NativePeer {
         }
     }
 
-    pub(crate) fn allows_network_switch(&self) -> bool {
-        !self.p2p_only.load(Ordering::Acquire)
-    }
-
     pub(crate) fn configure_network_control(
         &self,
         transport: TransportChoice,
@@ -393,22 +389,19 @@ impl NativePeer {
         self.p2p_only.store(false, Ordering::Release);
     }
 
-    pub(crate) async fn selected_transport(&self) -> Option<(bool, String, String)> {
-        let pair = self
-            .core
+    /// Whether the selected path goes through a relay.
+    pub(crate) async fn selected_is_relay(&self) -> bool {
+        self.core
             .connection
             .sctp()
             .transport()
             .ice_transport()
             .get_selected_candidate_pair()
-            .await?;
-        let is_relay = pair.local.typ == RTCIceCandidateType::Relay
-            || pair.remote.typ == RTCIceCandidateType::Relay;
-        Some((
-            is_relay,
-            pair.local.relay_protocol,
-            pair.remote.relay_protocol,
-        ))
+            .await
+            .is_some_and(|pair| {
+                pair.local.typ == RTCIceCandidateType::Relay
+                    || pair.remote.typ == RTCIceCandidateType::Relay
+            })
     }
 
     pub(crate) async fn selected_route_details(&self) -> Option<String> {
@@ -450,14 +443,9 @@ impl NativePeer {
         ))
     }
 
-    pub(crate) async fn switch_ice_network(
-        &self,
-        transport_type: u8,
-        attempt_switch_type: u8,
-    ) -> Result<()> {
-        if transport_type == 0 {
-            bail!("unsupported ICE transport type {transport_type}");
-        }
+    /// Relay only (TURNS preferred, plain TURN when the server offers no
+    /// TURNS), or all candidates.
+    pub(crate) async fn switch_ice_network(&self, relay: bool) -> Result<()> {
         let select = |scheme: &str| {
             self.ice_servers
                 .iter()
@@ -470,8 +458,8 @@ impl NativePeer {
                 })
                 .collect::<Vec<_>>()
         };
-        let mut tls_only = transport_type != 3 && attempt_switch_type == 2;
-        let selected_servers = if tls_only {
+        let mut tls_only = relay;
+        let selected_servers = if relay {
             let turns = select("turns:");
             if turns.is_empty() {
                 // A self-hosted server may offer TURN without TLS. Relay over
@@ -485,16 +473,16 @@ impl NativePeer {
         } else {
             self.ice_servers.clone()
         };
-        if selected_servers.is_empty() && transport_type != 3 {
+        if selected_servers.is_empty() && relay {
             bail!(
                 "control ACK did not provide a {} server",
                 if tls_only { "TURNS" } else { "usable ICE" }
             );
         }
-        let policy = if transport_type == 3 {
-            RTCIceTransportPolicy::All
-        } else {
+        let policy = if relay {
             RTCIceTransportPolicy::Relay
+        } else {
+            RTCIceTransportPolicy::All
         };
         self.core
             .configure_ice(
@@ -503,9 +491,7 @@ impl NativePeer {
             )
             .await?;
         tracing::info!(
-            transport_type,
-            attempt_switch_type,
-            relay_transport = if transport_type == 3 {
+            relay_transport = if !relay {
                 "automatic"
             } else if tls_only {
                 "TURNS only"

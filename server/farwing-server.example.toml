@@ -110,18 +110,6 @@ force_relay = false
 # listen = "198.51.100.20:3480"
 # public = "198.51.100.20:3480"
 
-[network]
-# Thresholds for automatic switching to relay (loss %, latency ms). Hosts only
-# honor them when force_loss >= 10, force_latency >= 200,
-# possible_min_latency >= 200, 5 <= possible_loss <= force_loss and
-# possible_min_latency <= possible_latency <= force_latency.
-auto_switch = true
-possible_loss = 5
-possible_latency = 300
-possible_min_latency = 200
-force_loss = 15
-force_latency = 500
-
 [limits]
 # Optional overrides (defaults shown).
 # heartbeat_ms = 20000

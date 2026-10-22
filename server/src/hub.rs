@@ -10,7 +10,7 @@
 use crate::crypto::{new_token, new_uuid, token_hash};
 use crate::db::{self, now_ms, now_s};
 use crate::ice::IceProvider;
-use farwing_protocol::api::{NetworkPolicy, Participant, Purpose, Relation};
+use farwing_protocol::api::{Participant, Purpose, Relation};
 use farwing_protocol::ids;
 use farwing_protocol::realtime::{
     ControllerInfo, Envelope, Hello, Limits, PeerIdentity, Ping, ResumeRefreshAck, Role,
@@ -186,7 +186,6 @@ pub struct HubConfig {
     pub limits: Limits,
     pub max_candidate_bytes: usize,
     pub force_relay: bool,
-    pub network: NetworkPolicy,
 }
 
 /// Input of [`Hub::create_session`].
@@ -1350,7 +1349,6 @@ impl Hub {
             capability: start.capability,
             ice_servers: self.ice.servers(&sid),
             force_relay: self.cfg.force_relay,
-            network: self.cfg.network.clone(),
         };
         host_conn.send(&Envelope::new(types::SESSION_INCOMING, incoming).with_sid(&sid));
         conn.send(&Envelope::ack(
@@ -1360,7 +1358,6 @@ impl Hub {
                 session_id: sid.clone(),
                 ice_servers: self.ice.servers(&sid),
                 force_relay: self.cfg.force_relay,
-                network: self.cfg.network.clone(),
                 host: PeerIdentity {
                     device_id: s.host_device_id.clone(),
                     public_key: s.host_public_key.clone(),

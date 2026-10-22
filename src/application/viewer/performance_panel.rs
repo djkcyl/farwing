@@ -241,19 +241,6 @@ fn network(ui: &mut Ui, s: &PerformanceSnapshot) {
     let t = &t().viewer;
     controls::metric_pair(
         ui,
-        t.route_switching,
-        (t.route_switching_value)(
-            match s.network_switch_phase {
-                1 => t.route_udp_relay,
-                2 => t.route_tls_relay,
-                _ => t.route_direct,
-            },
-            s.network_switch_attempts,
-            s.network_switch_successes,
-        ),
-    );
-    controls::metric_pair(
-        ui,
         t.ingress_queue,
         (t.ingress_queue_value)(s.ingress_queue_packets, s.ingress_queue_peak_packets),
     );

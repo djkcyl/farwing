@@ -52,7 +52,6 @@ pub async fn server_info(State(app): State<App>) -> Json<ServerInfo> {
 pub async fn client_config(State(app): State<App>, _auth: AnyAuth) -> Json<ClientConfig> {
     Json(ClientConfig {
         bitrate_limit_mbps: app.settings.read().bitrate_limit_mbps,
-        network: app.cfg.network.clone(),
     })
 }
 

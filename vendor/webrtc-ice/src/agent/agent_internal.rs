@@ -2313,6 +2313,21 @@ impl AgentInternal {
         }
     }
 
+    /// The session's probes when `packet` is this session's probe request.
+    pub(super) async fn punch_request(&self, packet: &[u8]) -> Option<super::punch::Probe> {
+        if !super::punch::Probe::looks_like_request(packet) {
+            return None;
+        }
+        let credentials = self.ufrag_pwd.lock().await;
+        super::punch::Probe::derive(
+            &credentials.local_ufrag,
+            &credentials.local_pwd,
+            &credentials.remote_ufrag,
+            &credentials.remote_pwd,
+        )
+        .filter(|probe| packet == probe.request)
+    }
+
     pub(super) async fn handle_inbound_candidate_msg(
         self: &Arc<Self>,
         c: &Arc<dyn Candidate + Send + Sync>,
@@ -2320,7 +2335,7 @@ impl AgentInternal {
         src_addr: SocketAddr,
         received_at: std::time::Instant,
     ) {
-        if buf == super::punch::REQUEST {
+        if let Some(probe) = self.punch_request(buf).await {
             let _serial = self.controller_serial.lock().await;
             if self.agent_conn.done.load(Ordering::Acquire) {
                 return;
@@ -2333,11 +2348,9 @@ impl AgentInternal {
             if unknown || udp_port {
                 if let Some(conn) = c.get_conn() {
                     if udp_port {
-                        let _ = conn.try_send_to(&super::punch::RESPONSE, src_addr);
+                        let _ = conn.try_send_to(&probe.response, src_addr);
                     } else {
-                        let _ = conn
-                            .send_control_to(&super::punch::RESPONSE, src_addr)
-                            .await;
+                        let _ = conn.send_control_to(&probe.response, src_addr).await;
                     }
                 }
                 if unknown {

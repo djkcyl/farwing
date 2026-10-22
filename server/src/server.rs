@@ -45,7 +45,6 @@ fn hub_config(cfg: &Config) -> HubConfig {
         },
         max_candidate_bytes: l.max_candidate_bytes,
         force_relay: cfg.turn.force_relay,
-        network: cfg.network.clone(),
     }
 }
 

@@ -1,5 +1,12 @@
-//! An enhanced hole-punching coordinator, not a generic ICE algorithm.
-//! Selects a plan, then promotes private Ports.
+//! Farwing probe punching (`docs/protocol/v2-design.md` §11), not a generic
+//! ICE algorithm. Five seconds into gathering, when no direct path is
+//! selected, both peers plan from each side's NAT mapping (as measured by
+//! the application and exchanged in `a=x-farwing-nat`, else guessed from
+//! srflx candidates), probe each other's mapped ports, and promote a
+//! private socket that hears the peer into an ICE host candidate.
+//!
+//! Probes carry a tag derived from both peers' ICE credentials, so only the
+//! peer of this session can make a port answer or promote a socket.
 mod actor;
 
 use std::collections::{BTreeMap, HashSet};
@@ -26,8 +33,76 @@ use crate::candidate::{
 use crate::url::SchemeType;
 use crate::util::{ice_candidate_priority, ice_network_cost};
 
-pub(super) const REQUEST: [u8; 4] = [0x05, 0x84, 0x95, 0x04];
-pub(super) const RESPONSE: [u8; 4] = [0xfe, 0x73, 0xa4, 0xc6];
+/// First bytes of a probe and its answer: outside every range RFC 7983
+/// demultiplexes (STUN, DTLS, TURN channels, RTP/RTCP).
+const REQUEST_MAGIC: [u8; 4] = [0x06, b'F', b'W', b'q'];
+const RESPONSE_MAGIC: [u8; 4] = [0x06, b'F', b'W', b'r'];
+const PROBE_LEN: usize = 12;
+
+/// The probe and answer datagrams of one ICE credential generation: magic
+/// plus 8 bytes of SHA-256 over both peers' ufrag and password (in a fixed
+/// order, so both peers derive the same bytes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Probe {
+    pub request: [u8; PROBE_LEN],
+    pub response: [u8; PROBE_LEN],
+}
+
+impl Probe {
+    pub fn derive(
+        local_ufrag: &str,
+        local_pwd: &str,
+        remote_ufrag: &str,
+        remote_pwd: &str,
+    ) -> Option<Self> {
+        if [local_ufrag, local_pwd, remote_ufrag, remote_pwd]
+            .iter()
+            .any(|value| value.is_empty())
+        {
+            return None;
+        }
+        // ICE characters exclude ':' and '\n'.
+        let local = format!("{local_ufrag}:{local_pwd}");
+        let remote = format!("{remote_ufrag}:{remote_pwd}");
+        let (first, second) = if local <= remote {
+            (local, remote)
+        } else {
+            (remote, local)
+        };
+        let digest = ring::digest::digest(
+            &ring::digest::SHA256,
+            format!("farwing punch probe\n{first}\n{second}").as_bytes(),
+        );
+        let digest = digest.as_ref();
+        let mut request = [0; PROBE_LEN];
+        request[..4].copy_from_slice(&REQUEST_MAGIC);
+        request[4..].copy_from_slice(&digest[..8]);
+        let mut response = [0; PROBE_LEN];
+        response[..4].copy_from_slice(&RESPONSE_MAGIC);
+        response[4..].copy_from_slice(&digest[8..16]);
+        Some(Self { request, response })
+    }
+
+    /// Cheap pre-check on the receive path before deriving the tag.
+    pub fn looks_like_request(packet: &[u8]) -> bool {
+        packet.len() == PROBE_LEN && packet[..4] == REQUEST_MAGIC
+    }
+}
+
+/// One side's NAT mapping as the application measured it (RFC 5780), for
+/// planning probe punching.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NatMapping {
+    /// Not measured: planned from the side's srflx candidates instead.
+    #[default]
+    Unknown,
+    /// Endpoint-independent mapping.
+    Cone,
+    /// Dependent mapping whose new ports advance by this step.
+    Linear(i16),
+    /// Dependent mapping without a consistent step.
+    Random,
+}
 
 struct Allocation {
     generation: u32,
@@ -88,7 +163,27 @@ struct Group {
 }
 
 impl Group {
-    fn classify(mut candidates: Vec<LocalCandidate>, server_count: usize) -> Self {
+    fn classify(
+        candidates: Vec<LocalCandidate>,
+        server_count: usize,
+        measured: NatMapping,
+    ) -> Self {
+        let (kind, step) = match measured {
+            NatMapping::Unknown => return Self::guess(candidates, server_count),
+            NatMapping::Cone => (NatKind::Cone, 0),
+            NatMapping::Linear(step) => (NatKind::Linear, step as u16),
+            NatMapping::Random => (NatKind::Random, 0),
+        };
+        Self {
+            candidates,
+            kind,
+            step,
+        }
+    }
+
+    /// From the srflx candidates alone: one mapping seen by two or more STUN
+    /// servers is a cone; several mappings are linear or random.
+    fn guess(mut candidates: Vec<LocalCandidate>, server_count: usize) -> Self {
         let mut step = 0;
         let kind = match candidates.len() {
             0 => NatKind::None,
@@ -156,6 +251,25 @@ struct Plan {
     remote: Group,
     local_kind: NatKind,
     controlling: bool,
+    probe: Probe,
+}
+
+/// Both sides' measured mappings and whether the peer takes probes.
+#[derive(Clone, Copy, Debug)]
+struct Measured {
+    local: NatMapping,
+    remote: NatMapping,
+    peer_allows: bool,
+}
+
+impl Default for Measured {
+    fn default() -> Self {
+        Self {
+            local: NatMapping::Unknown,
+            remote: NatMapping::Unknown,
+            peer_allows: true,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -164,9 +278,21 @@ pub(super) struct Coordinator {
     target: StdMutex<Option<Target>>,
     actor: StdMutex<Option<mpsc::UnboundedSender<actor::Command>>>,
     running: AtomicBool,
+    measured: StdMutex<Measured>,
 }
 
 impl Coordinator {
+    /// The application's NAT measurements for this session (refreshed with
+    /// every remote description). `peer_allows` is false when the peer
+    /// turned probe punching off: then this side does not probe it either.
+    pub fn set_measured(&self, local: NatMapping, remote: NatMapping, peer_allows: bool) {
+        *self.measured.lock().expect("punch measurements poisoned") = Measured {
+            local,
+            remote,
+            peer_allows,
+        };
+    }
+
     pub fn register(
         self: &Arc<Self>,
         params: &GatherCandidatesInternalParams,
@@ -221,13 +347,27 @@ impl Coordinator {
         let Some(agent) = allocation.agent.upgrade() else {
             return;
         };
+        let measured = *self.measured.lock().expect("punch measurements poisoned");
+        if !measured.peer_allows {
+            log::info!("probe punching skipped: the peer turned it off");
+            return;
+        }
         let serial = agent.controller_serial.lock().await;
-        {
+        let probe = {
             let current = agent.ufrag_pwd.lock().await;
             if current.local_ufrag != snapshot.username || current.local_pwd != snapshot.password {
                 return;
             }
-        }
+            let Some(probe) = Probe::derive(
+                &current.local_ufrag,
+                &current.local_pwd,
+                &current.remote_ufrag,
+                &current.remote_pwd,
+            ) else {
+                return;
+            };
+            probe
+        };
         // Native role starts as unspecified. Do not classify
         // a pre-start Agent as controlled merely because its bool is false.
         if !agent.ice_role_assigned.load(Ordering::Acquire) {
@@ -268,13 +408,25 @@ impl Coordinator {
                     .push(candidate.clone());
             }
         }
+        // The measurement covers the default route; it stands for every
+        // group of that side.
         let local = local
             .into_iter()
-            .map(|(key, values)| (key, Group::classify(values, allocation.stun_servers)))
+            .map(|(key, values)| {
+                (
+                    key,
+                    Group::classify(values, allocation.stun_servers, measured.local),
+                )
+            })
             .collect::<Vec<_>>();
         let remote = remote
             .into_iter()
-            .map(|(key, values)| (key, Group::classify(values, allocation.stun_servers)))
+            .map(|(key, values)| {
+                (
+                    key,
+                    Group::classify(values, allocation.stun_servers, measured.remote),
+                )
+            })
             .collect::<Vec<_>>();
         let controlling = agent.is_controlling.load(Ordering::Acquire);
         let mut choices = Vec::new();
@@ -303,11 +455,14 @@ impl Coordinator {
                 && pair.remote.candidate_type() != CandidateType::Relay
         });
         log::info!(
-            "NAT groups: local={:?}/{} remote={:?}/{} score={} direct={direct}",
+            "NAT groups: local={:?}/{} remote={:?}/{} step={} measured={:?}/{:?} score={} direct={direct}",
             l.kind,
             l.candidates.len(),
             r.kind,
             r.candidates.len(),
+            r.step as i16,
+            measured.local,
+            measured.remote,
             score
         );
         if direct {
@@ -327,6 +482,7 @@ impl Coordinator {
             remote: (**r).clone(),
             local_kind: l.kind,
             controlling,
+            probe,
         };
         drop(serial);
         let Some(owner) = allocation.owner.upgrade() else {
@@ -522,5 +678,29 @@ impl Coordinator {
                 log::warn!("punch Port promotion failed: {error}");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_is_shared_and_bound_to_credentials() {
+        let a = Probe::derive("ufA", "passwordA", "ufB", "passwordB").unwrap();
+        let b = Probe::derive("ufB", "passwordB", "ufA", "passwordA").unwrap();
+        // Both peers derive the same datagrams.
+        assert_eq!(a, b);
+        assert!(Probe::looks_like_request(&a.request));
+        assert!(!Probe::looks_like_request(&a.response));
+        assert_ne!(a.request[4..], a.response[4..]);
+        // Another session (an ICE restart) has other tags.
+        let restarted = Probe::derive("ufA2", "passwordA2", "ufB", "passwordB").unwrap();
+        assert_ne!(a.request, restarted.request);
+        // Without the peer's credentials there is no probe.
+        assert!(Probe::derive("ufA", "passwordA", "", "").is_none());
+        // Other traffic never matches the cheap check.
+        assert!(!Probe::looks_like_request(&[0x00, 0x01, 0x00, 0x00]));
+        assert!(!Probe::looks_like_request(&a.request[..4]));
     }
 }

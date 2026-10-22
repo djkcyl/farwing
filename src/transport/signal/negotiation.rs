@@ -1,7 +1,6 @@
 //! Session negotiation payloads exchanged over the realtime plane.
 use crate::diagnostics::performance::RemoteSenderInfo;
 use anyhow::{Context as _, Result};
-use farwing_protocol::api::NetworkPolicy;
 use farwing_protocol::realtime::{
     Envelope, IceServer, RtcCandidate, RtcDescription, SessionSetting, types,
 };
@@ -22,7 +21,6 @@ pub struct ControlSessionInfo {
     pub session_id: String,
     pub ice_servers: Vec<IceServer>,
     pub force_relay: bool,
-    pub network: NetworkPolicy,
     /// This controller's attempt ID (`session.start`).
     pub attempt_id: String,
     pub(crate) local_capability: crate::protocol::capability::DeviceCapability,
@@ -35,7 +33,6 @@ impl std::fmt::Debug for ControlSessionInfo {
             .field("session_id", &"***REDACTED***")
             .field("ice_server_count", &self.ice_servers.len())
             .field("force_relay", &self.force_relay)
-            .field("network", &self.network)
             .finish_non_exhaustive()
     }
 }
@@ -43,10 +40,6 @@ impl std::fmt::Debug for ControlSessionInfo {
 pub(super) enum SettingEvent {
     DeviceCapability(crate::protocol::capability::DeviceCapability),
     SenderInfo(Vec<RemoteSenderInfo>),
-    SwitchNetwork {
-        transport_type: u8,
-        attempt_switch_type: u8,
-    },
 }
 
 /// The peer's SDP is not bound to its device identity: the session is ended
@@ -89,13 +82,6 @@ pub(super) fn parse_setting(
                 })
                 .collect(),
         ),
-        SessionSetting::NetworkSwitch {
-            transport_type,
-            attempt_switch_type,
-        } => SettingEvent::SwitchNetwork {
-            transport_type,
-            attempt_switch_type,
-        },
     }))
 }
 

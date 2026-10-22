@@ -467,43 +467,6 @@ pub struct Grants {
 #[serde(default)]
 pub struct ClientConfig {
     pub bitrate_limit_mbps: Option<u32>,
-    pub network: NetworkPolicy,
-}
-
-/// Network auto-switch policy handed to both peers of a session.
-///
-/// Hosts apply the force thresholds only when the whole group is consistent:
-/// `force_loss >= 10`, `force_latency >= 200`, `possible_min_latency >= 200`,
-/// `5 <= possible_loss <= force_loss` and
-/// `possible_min_latency <= possible_latency <= force_latency`; otherwise they
-/// fall back to 30 % loss / 600 ms.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct NetworkPolicy {
-    pub auto_switch: bool,
-    /// Loss percentage that suggests switching to relay.
-    pub possible_loss: u32,
-    /// Latency (ms) that suggests switching to relay.
-    pub possible_latency: u32,
-    /// Minimum latency (ms) below which latency alone never suggests a switch.
-    pub possible_min_latency: u32,
-    /// Loss percentage that forces switching to relay.
-    pub force_loss: u32,
-    /// Latency (ms) that forces switching to relay.
-    pub force_latency: u32,
-}
-
-impl Default for NetworkPolicy {
-    fn default() -> Self {
-        Self {
-            auto_switch: true,
-            possible_loss: 5,
-            possible_latency: 300,
-            possible_min_latency: 200,
-            force_loss: 15,
-            force_latency: 500,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

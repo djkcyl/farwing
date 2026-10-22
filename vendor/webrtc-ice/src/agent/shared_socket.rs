@@ -134,10 +134,13 @@ impl SharedUdpSocket {
                             }
                                 continue;
                             }
-                            if !port.ready.load(Ordering::Acquire) && packet == super::punch::REQUEST {
+                            if !port.ready.load(Ordering::Acquire) {
                                 // The unactivated UDPPort can reply, but has
                                 // not yet bound the P2P unknown-address callback.
-                                let _ = socket.try_send_to(&super::punch::RESPONSE, source);
+                                let Some(agent) = agent.upgrade() else { break; };
+                                if let Some(probe) = agent.punch_request(packet).await {
+                                    let _ = socket.try_send_to(&probe.response, source);
+                                }
                                 continue;
                             }
                             if port.ready.load(Ordering::Acquire) {

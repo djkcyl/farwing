@@ -158,7 +158,6 @@ struct Network {
     /// included).
     path_mtu: AtomicU64,
     srtp_overhead: AtomicU64,
-    automatic: Mutex<super::network::AutoSwitch>,
     counts: [AtomicU64; 4],
     streams: Mutex<Vec<std::sync::Weak<Shared>>>,
     bindings: Mutex<HashMap<u32, std::sync::Weak<Shared>>>,
@@ -215,7 +214,6 @@ impl Transport {
         lease: Lease,
         cancel: CancellationToken,
         bounds: super::parameters::Bounds,
-        policy: super::network::Policy,
     ) -> Self {
         let rate = bounds.initial;
         let connection = Arc::new(Network {
@@ -246,7 +244,6 @@ impl Transport {
             network_overhead: AtomicU64::new(28),
             path_mtu: AtomicU64::new(1280),
             srtp_overhead: AtomicU64::new(16),
-            automatic: Mutex::new(super::network::AutoSwitch::new(policy)),
             counts: std::array::from_fn(|_| AtomicU64::new(0)),
             streams: Mutex::default(),
             bindings: Mutex::default(),
@@ -365,7 +362,6 @@ impl Transport {
         super::allocation::share(&lock(&self.0.allocations), self.0.index, target, view)
     }
     pub(crate) fn pause(&self) {
-        lock(&self.0.automatic).remove(self.0.index);
         let bounds = {
             let mut streams = lock(&self.0.allocations);
             if streams.remove(&self.0.index).is_none() {
@@ -458,13 +454,8 @@ impl Transport {
             .collect();
         *lock(&self.0.rtx_types) = types;
     }
-    pub(crate) fn selected_route(
-        &self,
-        pair: &webrtc::ice_transport::ice_candidate_pair::RTCIceCandidatePair,
-        route: &'static str,
-    ) {
+    pub(crate) fn selected_route(&self, route: &'static str) {
         *lock(&self.0.route) = Some(route);
-        lock(&self.0.automatic).route(pair);
     }
     /// The kind of the selected route, once chosen.
     pub(crate) fn route_class(&self) -> Option<&'static str> {
@@ -475,7 +466,6 @@ impl Transport {
             return;
         }
         self.rtt(rtt);
-        lock(&self.0.automatic).report(self.0.index, loss, rtt);
         let mut drain = lock(&self.0.drain);
         let now = Instant::now();
         // `loss` is the RTCP fraction lost in 1/256 units; 5/256 is about 2 %.
@@ -492,18 +482,6 @@ impl Transport {
     /// Cinema mode spreads each frame over most of its interval.
     pub(crate) fn smooth(&self, smooth: bool) {
         self.0.smooth.store(smooth, Ordering::Relaxed);
-    }
-    pub(crate) fn network_change(&self) -> Option<u8> {
-        if !self.active() {
-            return None;
-        }
-        lock(&self.0.automatic).tick(self.0.network.load(Ordering::Acquire), Instant::now())
-    }
-    pub(crate) fn network_attempt(&self) -> u8 {
-        lock(&self.0.automatic).attempt()
-    }
-    pub(crate) fn quality(&self, automatic: bool, quality: i32, settings_changed: bool) {
-        lock(&self.0.automatic).quality(self.0.index, automatic, quality, settings_changed);
     }
     fn overhead(&self) -> usize {
         self.network_overhead() + self.0.srtp_overhead.load(Ordering::Relaxed) as usize
@@ -550,9 +528,7 @@ impl Transport {
         lock(&self.0.history).primary.is_some()
     }
     pub(crate) fn network(&self, available: bool) {
-        if self.0.network.swap(available, Ordering::AcqRel) != available {
-            lock(&self.0.automatic).reset_samples();
-        }
+        self.0.network.store(available, Ordering::Release);
         lock(&self.0.controller).network(available);
         for stream in self.streams() {
             lock(&stream.0.budget).network(available);
@@ -561,7 +537,6 @@ impl Transport {
     }
     pub(crate) fn route_changed(&self) {
         lock(&self.0.controller).route_changed();
-        lock(&self.0.automatic).reset_samples();
         for stream in self.streams() {
             lock(&stream.0.budget).reset(true);
             lock(&stream.0.fec_blocks).clear();
@@ -1827,7 +1802,6 @@ impl Transport {
         }
     }
     fn clear_stream(&self) {
-        lock(&self.0.automatic).remove(self.0.index);
         lock(&self.0.budget).reset(false);
         lock(&self.0.fec_blocks).clear();
         *lock(&self.0.fec) = None;

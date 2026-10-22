@@ -129,7 +129,7 @@ impl AgentInternal {
         let _serial = self.controller_serial.lock().await;
         let pairs = self.agent_conn.checklist.lock().await;
         for pair in pairs.iter() {
-            self.refresh_uu_pair_state(pair);
+            self.refresh_pair_state(pair);
         }
         let selected = self.agent_conn.get_selected_pair();
         let weak = selected
@@ -157,7 +157,7 @@ impl AgentInternal {
             .max(pair.last_check_response_nanos.load(Ordering::Relaxed))
     }
 
-    fn refresh_uu_pair_state(&self, pair: &CandidatePair) {
+    fn refresh_pair_state(&self, pair: &CandidatePair) {
         use crate::agent::agent_config::{
             ICE_INACTIVE_TIMEOUT, ICE_UNWRITABLE_MIN_CHECKS, ICE_UNWRITABLE_TIMEOUT,
         };
@@ -495,7 +495,7 @@ impl AgentInternal {
                 >= self.ice_active_writable_ping_interval(pair, false)
     }
 
-    fn prune_uu_connections(&self, pairs: &[Arc<CandidatePair>], selected: &Arc<CandidatePair>) {
+    fn prune_connections(&self, pairs: &[Arc<CandidatePair>], selected: &Arc<CandidatePair>) {
         if !self.ice_connected(selected)
             || !self.ice_writable(selected)
             || !self.ice_receiving(selected)
@@ -688,11 +688,11 @@ impl AgentInternal {
         }
     }
 
-    async fn run_uu_controller(&self) {
+    async fn run_controller(&self) {
         use crate::agent::agent_config::{ICE_STRONG_PING_INTERVAL, ICE_WEAK_PING_INTERVAL};
         let mut pairs = self.agent_conn.checklist.lock().await.clone();
         for pair in &pairs {
-            self.refresh_uu_pair_state(pair);
+            self.refresh_pair_state(pair);
         }
         let dead = pairs
             .iter()
@@ -745,7 +745,7 @@ impl AgentInternal {
             self.is_controlling.load(Ordering::SeqCst)
                 || selected.remote_nomination.load(Ordering::Relaxed) != 0
         }) {
-            self.prune_uu_connections(&pairs, selected);
+            self.prune_connections(&pairs, selected);
         }
         let active = pairs
             .iter()
@@ -946,7 +946,7 @@ impl ControllingSelector for AgentInternal {
     async fn start(&self) {}
 
     async fn contact_candidates(&self) {
-        self.run_uu_controller().await;
+        self.run_controller().await;
     }
 
     async fn ping_candidate(
@@ -1076,7 +1076,7 @@ impl ControlledSelector for AgentInternal {
     async fn start(&self) {}
 
     async fn contact_candidates(&self) {
-        self.run_uu_controller().await;
+        self.run_controller().await;
     }
 
     async fn ping_candidate(

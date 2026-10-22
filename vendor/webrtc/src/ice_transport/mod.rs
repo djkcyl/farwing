@@ -95,6 +95,20 @@ impl RTCIceTransport {
         None
     }
 
+    /// Both sides' measured NAT mappings, for the agent's probe punching.
+    pub async fn set_nat_mappings(
+        &self,
+        local: ice::agent::NatMapping,
+        remote: ice::agent::NatMapping,
+        peer_allows: bool,
+    ) -> Result<()> {
+        self.ensure_gatherer().await?;
+        if let Some(agent) = self.gatherer.get_agent().await {
+            agent.set_nat_mappings(local, remote, peer_allows);
+        }
+        Ok(())
+    }
+
     pub(crate) async fn selected_pair_rtt(&self) -> Option<std::time::Duration> {
         self.gatherer
             .get_agent()

@@ -1,7 +1,6 @@
 //! Server configuration (TOML).
 
 use anyhow::{Context, Result, anyhow, bail};
-use farwing_protocol::api::NetworkPolicy;
 use ipnet::IpNet;
 use serde::{Deserialize, Deserializer};
 use std::net::{IpAddr, SocketAddr};
@@ -36,8 +35,6 @@ pub struct Config {
     pub guest: GuestConfig,
     #[serde(default)]
     pub turn: TurnConfig,
-    #[serde(default)]
-    pub network: NetworkPolicy,
     #[serde(default)]
     pub limits: LimitsConfig,
     #[serde(default)]
@@ -610,20 +607,6 @@ impl Config {
     /// Warnings about values that are accepted but probably unintended.
     pub fn warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
-        let n = &self.network;
-        let consistent = n.force_loss >= 10
-            && n.force_latency >= 200
-            && n.possible_min_latency >= 200
-            && n.possible_loss >= 5
-            && n.possible_loss <= n.force_loss
-            && n.possible_min_latency <= n.possible_latency
-            && n.possible_latency <= n.force_latency;
-        if !consistent {
-            out.push(
-                "[network] thresholds are inconsistent; hosts will fall back to 30% / 600 ms"
-                    .to_owned(),
-            );
-        }
         stun_warnings(&self.turn, &mut out);
         out
     }
@@ -827,18 +810,6 @@ force_relay = false
 # listen = "198.51.100.20:3480"
 # public = "198.51.100.20:3480"
 
-[network]
-# Thresholds for automatic switching to relay (loss %, latency ms). Hosts only
-# honor them when force_loss >= 10, force_latency >= 200,
-# possible_min_latency >= 200, 5 <= possible_loss <= force_loss and
-# possible_min_latency <= possible_latency <= force_latency.
-auto_switch = true
-possible_loss = 5
-possible_latency = 300
-possible_min_latency = 200
-force_loss = 15
-force_latency = 500
-
 [limits]
 # Optional overrides (defaults shown).
 # heartbeat_ms = 20000
@@ -902,7 +873,6 @@ mod tests {
             "farwing-server.example.toml is out of date with CONFIG_TEMPLATE"
         );
         let cfg = Config::from_toml_str(&rendered, Path::new(".")).unwrap();
-        assert_eq!(cfg.network, NetworkPolicy::default());
         assert!(cfg.warnings().is_empty());
         assert_eq!(cfg.turn.credential_ttl, Duration::from_secs(43200));
         assert_eq!(

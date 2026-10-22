@@ -467,7 +467,6 @@ pub(super) fn capture_loop(
             tracing::info!(quality = auto.quality(), "automatic quality tier settled");
         }
         if wanted.sending && wanted.capturing {
-            transport.quality(automatic.is_some(), wanted.quality, changed);
             transport.configure(bounds);
         } else {
             transport.pause();
