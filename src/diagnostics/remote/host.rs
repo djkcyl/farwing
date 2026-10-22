@@ -231,11 +231,14 @@ impl Host {
                 _ = job.cancelled() => return Err(before(anyhow::anyhow!(crate::i18n::t().session.diag_export_stopped))),
                 _ = tick.tick() => {
                     let progress = task.progress();
+                    let (stage, index, count) = progress.step.key();
                     self.send(frame(0, 0, Body::Progress(Progress {
                         stream,
-                        stage: progress.stage,
+                        stage: stage.into(),
                         completed: progress.completed,
                         total: progress.total,
+                        index,
+                        count,
                     })))
                     .await
                     .map_err(before)?;

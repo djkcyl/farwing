@@ -36,12 +36,19 @@ struct Request {
 struct Progress {
     #[prost(uint32, tag = "1")]
     stream: u32,
+    /// The step's key ([`crate::diagnostics::bundle::Step::key`]); the
+    /// receiver words it.
     #[prost(string, tag = "2")]
     stage: String,
     #[prost(uint64, tag = "3")]
     completed: u64,
     #[prost(uint64, tag = "4")]
     total: u64,
+    /// `packing_logs`: which log (from 1), of how many.
+    #[prost(uint32, tag = "5")]
+    index: u32,
+    #[prost(uint32, tag = "6")]
+    count: u32,
 }
 /// Response to [`Request`]: the archive follows on the request's stream.
 #[derive(Clone, PartialEq, Message)]
@@ -107,6 +114,7 @@ enum Received {
     Push(Body),
     Request(u32, Body),
     Response(u32, Body),
+    /// A refused request, with the error's code ([`farwing_protocol::peer::error_code`]).
     Failure(u32, String),
 }
 
@@ -118,7 +126,7 @@ fn decode(bytes: &[u8]) -> Result<Option<Received>> {
     if header.is_response() && header.is_error() {
         let error = farwing_protocol::peer::PeerError::decode(body)
             .context(crate::i18n::t().session.rdiag_error_reply_invalid)?;
-        return Ok(Some(Received::Failure(header.request_id, error.message)));
+        return Ok(Some(Received::Failure(header.request_id, error.code)));
     }
     let message = DiagnosticsMessage::decode(body)
         .context(crate::i18n::t().session.rdiag_message_invalid)?
@@ -166,7 +174,7 @@ mod tests {
             Some(Received::Response(4, ready))
         );
         let refused = peer::error_response(FrameType::Diagnostics, 4, "forbidden", "no");
-        assert_eq!(decode(&refused).unwrap(), Some(Received::Failure(4, "no".into())));
+        assert_eq!(decode(&refused).unwrap(), Some(Received::Failure(4, "forbidden".into())));
         let status = frame(0, 0, Body::Status(Status { allowed: true }));
         assert_eq!(
             decode(&status).unwrap(),

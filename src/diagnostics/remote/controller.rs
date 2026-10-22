@@ -84,6 +84,7 @@ impl Controller {
         s.view.warnings = 0;
         s.view.progress = bundle::Progress {
             stage: crate::i18n::t().session.rdiag_waiting_remote.into(),
+            step: bundle::Step::Other,
             completed: 0,
             total: 0,
         };
@@ -110,11 +111,15 @@ impl Controller {
                         v.warnings = warnings;
                         v.progress = bundle::Progress {
                             stage: crate::i18n::t().session.rdiag_saved.into(),
+                            step: bundle::Step::Other,
                             completed: 1,
                             total: 1,
                         }
                     }
-                    Err(e) => v.error = Some(format!("{e:#}")),
+                    Err(e) => {
+                        tracing::warn!(error = %format!("{e:#}"), "remote diagnostics failed");
+                        v.error = Some(e.to_string());
+                    }
                 }
             });
             let mut s = lock(&owner.0);
@@ -246,18 +251,30 @@ async fn download(
                     owner.update(generation, |v| {
                         v.phase = Phase::Preparing;
                         v.progress = bundle::Progress {
-                            stage: progress.stage,
+                            stage: bundle::Step::text_of(&progress.stage, progress.index, progress.count),
+                            step: bundle::Step::Other,
                             completed: progress.completed,
                             total: progress.total,
                         };
                     });
                 }
             }
+            // The host's words stay in its log; these are ours.
             Incoming::Message(Received::Push(Body::Failed(failed))) if failed.stream == stream => {
-                anyhow::bail!("{}", failed.message)
+                anyhow::bail!("{}", crate::i18n::t().session.diag_transfer_stopped)
             }
-            Incoming::Message(Received::Failure(other, message)) if other == id => {
-                anyhow::bail!("{message}")
+            Incoming::Message(Received::Failure(other, code)) if other == id => {
+                use farwing_protocol::peer::error_code;
+                let text = &crate::i18n::t().session;
+                anyhow::bail!(
+                    "{}",
+                    match code.as_str() {
+                        error_code::UNSUPPORTED => text.diag_unsupported,
+                        error_code::FORBIDDEN => text.diag_forbidden,
+                        error_code::BUSY => text.diag_busy,
+                        _ => text.rdiag_remote_incomplete,
+                    }
+                )
             }
             Incoming::Message(Received::Response(other, Body::Ready(value))) if other == id => {
                 ensure!(
@@ -274,6 +291,7 @@ async fn download(
                     v.warnings = value.warnings as usize;
                     v.progress = bundle::Progress {
                         stage: crate::i18n::t().session.rdiag_downloading.into(),
+                        step: bundle::Step::Other,
                         completed: window.received(),
                         total: value.size,
                     }
@@ -320,6 +338,7 @@ async fn download(
         v.phase = Phase::Saving;
         v.progress = bundle::Progress {
             stage: crate::i18n::t().session.rdiag_saving.into(),
+            step: bundle::Step::Other,
             completed: 0,
             total: 0,
         }

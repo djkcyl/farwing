@@ -50,6 +50,7 @@ pub(crate) fn start(
             busy: true,
             progress: super::bundle::Progress {
                 stage: crate::i18n::t().session.rdiag_connecting.into(),
+                step: super::bundle::Step::Other,
                 completed: 0,
                 total: 0,
             },
@@ -156,7 +157,7 @@ async fn collect(wire: &Controller, job: &Job, started: &mut bool) -> Result<Sna
         let snapshot = wire.snapshot();
         if !snapshot.busy {
             if let Some(error) = &snapshot.error {
-                return Err(anyhow::anyhow!(error.clone()).context(crate::i18n::t().session.rdiag_fetch_incomplete));
+                return Err(anyhow::anyhow!((crate::i18n::t().session.rdiag_fetch_failed)(error)));
             }
             ensure!(snapshot.path.is_some(), "{}", crate::i18n::t().session.rdiag_remote_incomplete);
             return Ok(snapshot);

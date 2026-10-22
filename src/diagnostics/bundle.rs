@@ -31,13 +31,57 @@ pub(crate) struct Input {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Progress {
     pub stage: String,
+    /// What `stage` says, for sending to another device (which words it).
+    #[serde(skip)]
+    pub step: Step,
     pub completed: u64,
     pub total: u64,
+}
+
+/// The steps of preparing a bundle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Step {
+    #[default]
+    Other,
+    Collecting,
+    ReadingHardware,
+    CheckingComponents,
+    /// Log `index` (from 1) of `count`.
+    PackingLogs { index: u32, count: u32 },
+    Finishing,
+}
+
+impl Step {
+    /// The key sent for this step, and its log numbers.
+    pub(crate) fn key(self) -> (&'static str, u32, u32) {
+        match self {
+            Self::Other => ("", 0, 0),
+            Self::Collecting => ("collecting", 0, 0),
+            Self::ReadingHardware => ("reading_hardware", 0, 0),
+            Self::CheckingComponents => ("checking_components", 0, 0),
+            Self::PackingLogs { index, count } => ("packing_logs", index, count),
+            Self::Finishing => ("finishing", 0, 0),
+        }
+    }
+
+    /// A received step in the interface language.
+    pub(crate) fn text_of(key: &str, index: u32, count: u32) -> String {
+        let text = &crate::i18n::t().session;
+        match key {
+            "collecting" => text.diag_collecting.into(),
+            "reading_hardware" => text.diag_reading_hardware.into(),
+            "checking_components" => text.diag_checking_components.into(),
+            "packing_logs" => (text.diag_packing_logs)(index as usize, count as usize),
+            "finishing" => text.diag_finishing.into(),
+            _ => text.rdiag_waiting_remote.into(),
+        }
+    }
 }
 impl Default for Progress {
     fn default() -> Self {
         Self {
             stage: crate::i18n::t().session.diag_collecting.into(),
+            step: Step::Collecting,
             completed: 0,
             total: 0,
         }
@@ -252,7 +296,11 @@ fn export(
     }
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
     candidates.dedup_by(|a, b| a.1 == b.1);
-    progress.lock().unwrap_or_else(|e| e.into_inner()).stage = crate::i18n::t().session.diag_reading_hardware.into();
+    {
+        let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+        progress.stage = crate::i18n::t().session.diag_reading_hardware.into();
+        progress.step = Step::ReadingHardware;
+    }
     // Hardware collection is read-only and does not enumerate windows or capture content.
     if let Ok(h) = crate::platform::windows::device_profile::Hardware::read() {
         input.private_values.push(h.name);
@@ -273,6 +321,7 @@ fn export(
         cancelled(cancel)?;
         *progress.lock().unwrap_or_else(|e| e.into_inner()) = Progress {
             stage: crate::i18n::t().session.diag_checking_components.into(),
+            step: Step::CheckingComponents,
             completed: components.len() as u64,
             total: 4,
         };
@@ -332,6 +381,10 @@ fn export(
             cancelled(cancel)?;
             *progress.lock().unwrap_or_else(|e| e.into_inner()) = Progress {
                 stage: (crate::i18n::t().session.diag_packing_logs)(index + 1, source_count),
+                step: Step::PackingLogs {
+                    index: (index + 1) as u32,
+                    count: source_count as u32,
+                },
                 completed,
                 total,
             };
@@ -418,6 +471,7 @@ fn export(
         cancelled(cancel)?;
         *progress.lock().unwrap_or_else(|e| e.into_inner()) = Progress {
             stage: crate::i18n::t().session.diag_finishing.into(),
+            step: Step::Finishing,
             completed: 0,
             total: 0,
         };
