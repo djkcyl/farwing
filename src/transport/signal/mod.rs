@@ -862,6 +862,15 @@ impl SignalSession {
         let watching_network = _network_watcher.is_some();
         let mut network_changed = false;
         let mut network_at = watching_network.then(crate::transport::nat::route::fingerprint);
+        // A restart that must happen even on the same default path (after
+        // the system resumed, or one the signaling socket was down for).
+        let mut forced_restart = false;
+        // The restart came due while the signaling socket was down: run it
+        // once the socket is back.
+        let mut restart_on_reopen = false;
+        if peer.is_some() {
+            crate::platform::windows::host_lifecycle::watch_resume();
+        }
         let network_control = peer
             .as_ref()
             .map(|peer| peer.stream_control_handle().network_control());
@@ -944,6 +953,15 @@ impl SignalSession {
                     match incoming {
                         Incoming::Opened(hello) => {
                             self.hello = *hello;
+                            use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+                            if let Some(peer) = peer.as_ref()
+                                && (std::mem::take(&mut restart_on_reopen)
+                                    || peer.connection_state() == RTCPeerConnectionState::Disconnected)
+                            {
+                                tracing::info!("signaling is back; restarting ICE");
+                                forced_restart = true;
+                                ice_restart_at = Some(tokio::time::Instant::now() + Duration::from_millis(200));
+                            }
                         }
                         Incoming::Message(envelope) => {
                             let Some(peer) = peer.as_ref() else { continue; };
@@ -1065,7 +1083,7 @@ impl SignalSession {
                     let peer = peer.as_ref().expect("controller peer exists");
                     use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
                     // Only a different default path counts as a network change.
-                    let forced = std::mem::take(&mut network_changed) && {
+                    let forced = (std::mem::take(&mut network_changed) && {
                         let now = Some(crate::transport::nat::route::fingerprint());
                         let moved = now != network_at;
                         if moved {
@@ -1073,11 +1091,12 @@ impl SignalSession {
                         }
                         network_at = now;
                         moved
-                    };
-                    if (forced || peer.connection_state() == RTCPeerConnectionState::Disconnected)
-                        && self.transport.is_connected()
-                        && ice_restarts < 3
-                    {
+                    }) | std::mem::take(&mut forced_restart);
+                    let needed = forced || peer.connection_state() == RTCPeerConnectionState::Disconnected;
+                    if needed && !self.transport.is_connected() {
+                        tracing::info!("ICE restart waits for signaling");
+                        restart_on_reopen = true;
+                    } else if needed && ice_restarts < 3 {
                         ice_restarts += 1;
                         let info = control.as_ref().expect("controller control info exists");
                         match self.restart_ice(info, peer, active_ice_network_type).await {
@@ -1089,6 +1108,11 @@ impl SignalSession {
                             Err(error) => tracing::warn!(%error, "ICE restart failed; waiting for ICE"),
                         }
                     }
+                }
+                _ = crate::platform::windows::host_lifecycle::RESUMED.notified(), if peer.is_some() => {
+                    tracing::info!("system resumed; checking the connection");
+                    forced_restart = true;
+                    ice_restart_at.get_or_insert(tokio::time::Instant::now() + ICE_RESTART_AFTER);
                 }
                 _ = network_changes.notify.notified(), if watching_network => {
                     // Checked once the burst of notifications settles.

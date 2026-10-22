@@ -22,6 +22,10 @@ pub(crate) enum Event {
 
 static HANDLER: std::sync::OnceLock<fn(Event)> = std::sync::OnceLock::new();
 static STARTED: AtomicBool = AtomicBool::new(false);
+static POWER_REGISTERED: std::sync::Once = std::sync::Once::new();
+/// Woken when the system resumes from sleep (for a viewer: its network
+/// paths may be gone). Waiters must be waiting when it fires.
+pub(crate) static RESUMED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 /// How long the suspend notification is held so a just-queued frame leaves
 /// before the network goes down.
@@ -38,6 +42,9 @@ unsafe extern "system" fn power_callback(
         PBT_APMRESUMEAUTOMATIC => Event::Resumed,
         _ => return 0,
     };
+    if event == Event::Resumed {
+        RESUMED.notify_waiters();
+    }
     if let Some(handler) = HANDLER.get() {
         handler(event);
         if event == Event::Suspending {
@@ -55,22 +62,7 @@ pub(crate) fn start(handler: fn(Event)) {
         return;
     }
     let _ = HANDLER.set(handler);
-    // The registration lives as long as the process.
-    let parameters = Box::leak(Box::new(DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
-        Callback: Some(power_callback),
-        Context: std::ptr::null_mut(),
-    }));
-    let mut registration = std::ptr::null_mut();
-    let status = unsafe {
-        PowerRegisterSuspendResumeNotification(
-            DEVICE_NOTIFY_CALLBACK,
-            HANDLE((parameters as *mut DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS).cast()),
-            &mut registration,
-        )
-    };
-    if status.is_err() {
-        tracing::warn!(?status, "suspend notifications unavailable");
-    }
+    register_power();
     let spawned = std::thread::Builder::new()
         .name("farwing-session-watch".into())
         .spawn(|| {
@@ -90,4 +82,31 @@ pub(crate) fn start(handler: fn(Event)) {
     if let Err(error) = spawned {
         tracing::warn!(%error, "session watcher unavailable");
     }
+}
+
+/// Subscribe to suspend and resume notifications once per process (the
+/// registration lives as long as the process).
+fn register_power() {
+    POWER_REGISTERED.call_once(|| {
+        let parameters = Box::leak(Box::new(DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
+            Callback: Some(power_callback),
+            Context: std::ptr::null_mut(),
+        }));
+        let mut registration = std::ptr::null_mut();
+        let status = unsafe {
+            PowerRegisterSuspendResumeNotification(
+                DEVICE_NOTIFY_CALLBACK,
+                HANDLE((parameters as *mut DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS).cast()),
+                &mut registration,
+            )
+        };
+        if status.is_err() {
+            tracing::warn!(?status, "suspend notifications unavailable");
+        }
+    });
+}
+
+/// Make [`RESUMED`] fire in this process (a viewer that is not a host).
+pub(crate) fn watch_resume() {
+    register_power();
 }
