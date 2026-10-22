@@ -93,7 +93,7 @@ async fn association(
                                 lock(&stats).received+=data.len() as u64;
                             }
                             Inbound::Reset(reset) if reset.code == wire::code::CLOSED => return Ok(()),
-                            Inbound::Reset(reset) => anyhow::bail!(wire::describe(reset.code, &reset.message)),
+                            Inbound::Reset(reset) => anyhow::bail!(wire::describe(reset.code)),
                             _ => anyhow::bail!("{}", t().features.mapping_udp_invalid_message),
                         }
                     }
@@ -102,13 +102,7 @@ async fn association(
         }=>result
     };
     if let Some(id) = opened {
-        transport
-            .reset(
-                id,
-                wire::code::CLOSED,
-                result.as_ref().err().map(ToString::to_string).unwrap_or_default(),
-            )
-            .await;
+        transport.reset(id, wire::code::CLOSED).await;
     }
     let mut state = lock(&stats);
     state.connections = state.connections.saturating_sub(1);

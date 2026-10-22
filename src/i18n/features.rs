@@ -374,8 +374,6 @@ pub(crate) struct Features {
     pub mapping_protocol_error: &'static str,
     pub mapping_closed: &'static str,
     pub mapping_target_failed: &'static str,
-    /// reason, message from the other side
-    pub mapping_reason_detail: fn(&str, &str) -> String,
     // port mapping: transport
     pub mapping_invalid_stream: &'static str,
     pub mapping_unsupported_protocol: &'static str,
@@ -1250,6 +1248,8 @@ pub(crate) struct Features {
     pub transfer_state_failed: &'static str,
     pub transfer_state_done: &'static str,
     pub transfer_cancelled: &'static str,
+    /// reason (ours), detail (the other side's words)
+    pub transfer_failure_detail: fn(&str, &str) -> String,
     pub transfer_state_skipped: &'static str,
     // controller service (file_transfer/service.rs)
     pub transfer_command_queue_full: &'static str,
@@ -1823,7 +1823,6 @@ pub(crate) const ZH_CN: Features = Features {
     mapping_protocol_error: "端口转发协议错误",
     mapping_closed: "转发已关闭",
     mapping_target_failed: "目标连接失败",
-    mapping_reason_detail: |reason, message| format!("{reason}：{message}"),
     // port mapping: transport
     mapping_invalid_stream: "转发编号无效",
     mapping_unsupported_protocol: "不支持的转发协议",
@@ -2634,6 +2633,7 @@ pub(crate) const ZH_CN: Features = Features {
     transfer_state_failed: "失败",
     transfer_state_done: "已完成",
     transfer_cancelled: "已取消",
+    transfer_failure_detail: |reason, detail| format!("{reason}：{detail}"),
     transfer_state_skipped: "已跳过",
     // controller service (file_transfer/service.rs)
     transfer_command_queue_full: "操作队列已满",
@@ -3194,7 +3194,6 @@ pub(crate) const EN: Features = Features {
     mapping_protocol_error: "Port forwarding protocol error",
     mapping_closed: "Forwarding closed",
     mapping_target_failed: "Couldn't connect to the target",
-    mapping_reason_detail: |reason, message| format!("{reason}: {message}"),
     // port mapping: transport
     mapping_invalid_stream: "Invalid forwarding ID",
     mapping_unsupported_protocol: "Unsupported forwarding protocol",
@@ -4011,6 +4010,7 @@ pub(crate) const EN: Features = Features {
     transfer_state_failed: "Failed",
     transfer_state_done: "Completed",
     transfer_cancelled: "Cancelled",
+    transfer_failure_detail: |reason, detail| format!("{reason}: {detail}"),
     transfer_state_skipped: "Skipped",
     // controller service (file_transfer/service.rs)
     transfer_command_queue_full: "Operation queue is full",

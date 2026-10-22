@@ -242,6 +242,7 @@ export const zh = {
       9: '已取消',
     },
     failed: (code: number) => `文件传输失败（${code}）`,
+    withDetail: (reason: string, detail: string) => `${reason}：${detail}`,
     badReply: '对方回复格式错误',
     outOfOrder: '文件条目顺序错误',
     saveFailed: (error: string) => `保存失败：${error}`,
@@ -252,6 +253,7 @@ export const zh = {
     /** An upload of several files, named by the first. */
     manyFiles: (first: string, files: number) => `${first} 等 ${files} 个文件`,
     /** Known folders in the root list (`icon`). */
+    localDisk: '本地磁盘',
     folders: {
       document: '文档',
       desktop: '桌面',
@@ -538,6 +540,7 @@ export const en: typeof zh = {
       9: 'Cancelled',
     },
     failed: (code) => `File transfer failed (${code})`,
+    withDetail: (reason, detail) => `${reason}: ${detail}`,
     badReply: 'Invalid reply from the host',
     outOfOrder: 'File entries out of order',
     saveFailed: (error) => `Couldn't save: ${error}`,
@@ -546,6 +549,7 @@ export const en: typeof zh = {
     zipTooManyItems: 'Too many items for a ZIP file',
     zipTooLarge: 'ZIP file exceeds 4 GB',
     manyFiles: (first, files) => `${first} and ${files - 1} more`,
+    localDisk: 'Local Disk',
     folders: {
       document: 'Documents',
       desktop: 'Desktop',

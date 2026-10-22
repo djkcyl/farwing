@@ -172,7 +172,12 @@ export function FilesPanel({
           entries.map((e) => {
             const opens = e.kind === EntryKind.DIR || e.kind === EntryKind.DISK;
             const folders = t.viewer.files.folders as Record<string, string>;
-            const label = atRoot && e.kind === EntryKind.DIR ? (folders[e.icon] ?? e.name) : e.name;
+            const label =
+              e.kind === EntryKind.DISK
+                ? `${t.viewer.files.localDisk} ${e.name}`
+                : atRoot && e.kind === EntryKind.DIR
+                  ? (folders[e.icon] ?? e.name)
+                  : e.name;
             return (
               <div key={`${e.kind}:${e.name}:${e.path}`} className={`files-row ${e.hidden ? 'faint' : ''}`}>
                 <button

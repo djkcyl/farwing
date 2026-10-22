@@ -371,6 +371,7 @@ pub(crate) struct System {
     pub driver_audio_restore_defaults_failed: &'static str,
     // file_locations.rs
     pub location_documents: &'static str,
+    pub local_disk: &'static str,
     pub location_desktop: &'static str,
     pub location_pictures: &'static str,
     pub location_videos: &'static str,
@@ -1031,6 +1032,7 @@ pub(crate) const ZH_CN: System = System {
     location_videos: "视频",
     location_music: "音乐",
     location_downloads: "下载",
+    local_disk: "本地磁盘",
     // components/suite.rs
     service_invalid_install_record: "服务安装记录无效",
     service_installed: "服务已安装",
@@ -1669,6 +1671,7 @@ pub(crate) const EN: System = System {
     location_videos: "Videos",
     location_music: "Music",
     location_downloads: "Downloads",
+    local_disk: "Local Disk",
     // components/suite.rs
     service_invalid_install_record: "Invalid service installation record",
     service_installed: "Service installed",

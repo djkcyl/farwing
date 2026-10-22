@@ -33,6 +33,11 @@ pub(crate) mod code {
     pub const PROTOCOL: i32 = 7;
     /// The forwarding ended normally on one side (closed, cancelled).
     pub const CLOSED: i32 = 8;
+    /// The target resolves only to addresses that are never connected to
+    /// (unspecified, multicast, broadcast).
+    pub const NOT_UNICAST: i32 = 9;
+    /// The host's owner turned port forwarding off.
+    pub const TURNED_OFF: i32 = 10;
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -75,11 +80,9 @@ pub(crate) struct Open {
 pub(crate) struct OpenResult {
     #[prost(uint32, tag = "1")]
     pub stream: u32,
-    /// One of [`code`].
+    /// One of [`code`]; the receiver words it.
     #[prost(int32, tag = "2")]
     pub code: i32,
-    #[prost(string, tag = "3")]
-    pub message: String,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -94,11 +97,9 @@ pub(crate) struct Data {
 pub(crate) struct Reset {
     #[prost(uint32, tag = "1")]
     pub stream: u32,
-    /// One of [`code`].
+    /// One of [`code`]; the receiver words it.
     #[prost(int32, tag = "2")]
     pub code: i32,
-    #[prost(string, tag = "3")]
-    pub message: String,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -201,10 +202,10 @@ pub(crate) fn decode_flow(bytes: &[u8]) -> Result<Option<crate::transport::trans
     Ok((flow.channel == crate::transport::transfer::channel::TUNNEL).then_some(flow))
 }
 
-/// Human-readable outcome of an `Open`.
-pub(crate) fn describe(code: i32, message: &str) -> String {
+/// Human-readable outcome of an `Open`, or reason of a `Reset`.
+pub(crate) fn describe(code: i32) -> String {
     let text = &t().features;
-    let reason = match code {
+    match code {
         code::OK => text.mapping_succeeded,
         code::REFUSED => text.mapping_target_refused,
         code::UNREACHABLE => text.mapping_target_unreachable,
@@ -214,13 +215,11 @@ pub(crate) fn describe(code: i32, message: &str) -> String {
         code::LIMIT => text.mapping_host_limit,
         code::PROTOCOL => text.mapping_protocol_error,
         code::CLOSED => text.mapping_closed,
+        code::NOT_UNICAST => text.mapping_target_not_unicast,
+        code::TURNED_OFF => text.mapping_host_turned_off,
         _ => text.mapping_target_failed,
-    };
-    if message.is_empty() {
-        reason.to_owned()
-    } else {
-        (text.mapping_reason_detail)(reason, message)
     }
+    .to_owned()
 }
 
 #[cfg(test)]

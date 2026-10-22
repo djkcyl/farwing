@@ -158,7 +158,6 @@ impl Transport {
             let _ = stream.inbound.send(Inbound::Reset(wire::Reset {
                 stream: stream.id,
                 code: wire::code::CLOSED,
-                message: String::new(),
             }));
         }
         self.wake();
@@ -259,10 +258,10 @@ impl Transport {
                 if let Err(error) = window.receive(received, data.data.len()) {
                     drop(window);
                     stream.stop.cancel();
+                    tracing::debug!(stream = stream.id, error = %format!("{error:#}"), "port flow window violated");
                     let _ = stream.inbound.send(Inbound::Reset(wire::Reset {
                         stream: stream.id,
                         code: wire::code::PROTOCOL,
-                        message: error.to_string(),
                     }));
                     return Ok(None);
                 }
@@ -330,21 +329,17 @@ impl Transport {
     }
     /// End every stream on both sides: the peer is told before local state
     /// goes, so its listeners close their connections instead of stalling.
-    pub(crate) async fn reset_all_remote(&self, code: i32, message: &str) {
+    pub(crate) async fn reset_all_remote(&self, code: i32) {
         let streams: Vec<u32> = lock(&self.streams).values().map(|s| s.id).collect();
         for stream in streams {
-            self.reset(stream, code, message).await;
+            self.reset(stream, code).await;
         }
         self.reset_all();
     }
-    pub(crate) async fn reset(&self, stream: u32, code: i32, message: impl Into<String>) {
+    pub(crate) async fn reset(&self, stream: u32, code: i32) {
         let _ = tokio::time::timeout(
             Duration::from_secs(2),
-            self.send(Body::Reset(wire::Reset {
-                stream,
-                code,
-                message: message.into(),
-            })),
+            self.send(Body::Reset(wire::Reset { stream, code })),
         )
         .await;
     }
@@ -426,8 +421,8 @@ impl Transport {
             .context(t().features.mapping_ended)?;
         match answer {
             Inbound::Opened(result) if result.code == wire::code::OK => Ok((stream, inbound)),
-            Inbound::Opened(result) => anyhow::bail!(wire::describe(result.code, &result.message)),
-            Inbound::Reset(reset) => anyhow::bail!(wire::describe(reset.code, &reset.message)),
+            Inbound::Opened(result) => anyhow::bail!(wire::describe(result.code)),
+            Inbound::Reset(reset) => anyhow::bail!(wire::describe(reset.code)),
             _ => anyhow::bail!("{}", t().features.mapping_handshake_out_of_order),
         }
     }
@@ -475,7 +470,7 @@ impl Transport {
                     )
                 }) => matches!(result, Ok(Ok(true))),
             };
-        self.reset(stream.id, wire::code::CLOSED, "").await;
+        self.reset(stream.id, wire::code::CLOSED).await;
         ProbeStatus::Reachable { millis, http }
     }
 
@@ -505,9 +500,9 @@ impl Transport {
             } => result,
         };
         if let Some(id) = opened
-            && let Err(error) = &result
+            && result.is_err()
         {
-            self.reset(id, wire::code::CLOSED, error.to_string()).await;
+            self.reset(id, wire::code::CLOSED).await;
         }
         let mut state = lock(&stats);
         state.connections = state.connections.saturating_sub(1);
@@ -558,7 +553,7 @@ pub(crate) async fn pump(
                 Inbound::Reset(reset) if reset.code == wire::code::CLOSED => {
                     anyhow::bail!("{}", t().features.mapping_peer_closed)
                 }
-                Inbound::Reset(reset) => anyhow::bail!(wire::describe(reset.code, &reset.message)),
+                Inbound::Reset(reset) => anyhow::bail!(wire::describe(reset.code)),
                 Inbound::Opened(_) | Inbound::Datagram(_) => anyhow::bail!("{}", t().features.mapping_duplicate_handshake),
             }
         }

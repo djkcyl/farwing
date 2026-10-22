@@ -34,13 +34,16 @@ const DOWNLOAD_WINDOW = 16 * 1024 * 1024;
 const READ_BLOCK = 2 * 1024 * 1024;
 const WHOLE_TRANSFER = 0xffffffff;
 
-/// A host file error (`FileErrorCode`): the host's own words when it gives
-/// them, else ours for the code.
+/// A host file error (`FileErrorCode`) in our words for the code. The
+/// host's own text (in its language) is kept only where the code says
+/// little (I/O and protocol errors), after ours. `local`: our own words.
 export class FileError extends Error {
   code: number;
-  constructor(code: number, message?: string) {
+  constructor(code: number, detail?: string, local?: string) {
     const m = t().viewer.files;
-    super(message || (m.errors as Record<number, string>)[code] || m.failed(code));
+    const reason = (m.errors as Record<number, string>)[code] || m.failed(code);
+    const extra = (detail ?? '').trim().slice(0, 300);
+    super(local || ((code === 1 || code === 6) && extra ? m.withDetail(reason, extra) : reason));
     this.code = code;
   }
 }
@@ -151,7 +154,7 @@ function reply(body: Uint8Array, tag: number): Fields {
   const failed = f.message(26);
   if (failed) throw new FileError(failed.int32(1), failed.string(2));
   const m = f.message(tag);
-  if (!m) throw new FileError(1, t().viewer.files.badReply);
+  if (!m) throw new FileError(1, undefined, t().viewer.files.badReply);
   return m;
 }
 
@@ -260,6 +263,7 @@ export class FileTransfer {
       if (error instanceof PeerRequestError) {
         throw new FileError(
           error.code === 'forbidden' ? 2 : 1,
+          undefined,
           error.code === 'timeout' ? t().viewer.peer.noResponse : undefined,
         );
       }
@@ -505,7 +509,7 @@ export class FileTransfer {
       if (down.failed || down.cancelled) return;
       const item = down.items[c.entry];
       try {
-        if (!item || c.entry < down.current) throw new FileError(1, t().viewer.files.outOfOrder);
+        if (!item || c.entry < down.current) throw new FileError(1, undefined, t().viewer.files.outOfOrder);
         if (c.entry !== down.current) {
           down.current = c.entry;
           await down.target.entry(item);
@@ -514,7 +518,9 @@ export class FileTransfer {
         if (c.last) await down.target.finish();
       } catch (error) {
         down.failed =
-          error instanceof FileError ? error : new FileError(6, t().viewer.files.saveFailed((error as Error).message));
+          error instanceof FileError
+            ? error
+            : new FileError(6, undefined, t().viewer.files.saveFailed((error as Error).message));
         down.settle?.(down.failed);
         void this.cancel(c.stream);
         return;

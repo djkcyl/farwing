@@ -284,7 +284,7 @@ async fn next(transfer: &mut Registration) -> Result<Inbound> {
 
 /// A failed `ItemDone` as an error naming the item.
 fn item_failure(done: &wire::ItemDone, items: &[FileInfo]) -> anyhow::Error {
-    let failure = wire::Failure::new(done.error_code, done.message.clone());
+    let failure = wire::Failure::received(done.error_code, &done.message);
     match items.get(done.entry as usize) {
         Some(item) => anyhow::Error::new(failure).context((t().features.transfer_item_failed)(&item.rel_path)),
         None => failure.into(),

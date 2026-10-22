@@ -139,7 +139,7 @@ pub(crate) async fn run(
                 // The owner changed the permission: tell the controller.
                 receiver
                     .transport
-                    .reset_all_remote(wire::code::FORBIDDEN, t().features.mapping_host_turned_off)
+                    .reset_all_remote(wire::code::TURNED_OFF)
                     .await;
             }
             restart(&mut jobs);
@@ -167,15 +167,16 @@ pub(crate) async fn run(
                 }
                 if request.generation!=generation || request.policy!=policy.1 {continue;}
                 let open=request.open;
+                // The controller is told the code; this host keeps its own words.
                 let denied=if !receiver.permitted(generation,policy.1) {Some((wire::code::FORBIDDEN,t().features.mapping_not_allowed_here.to_owned()))}
                     else if let Err(error)=open.validate() {Some((wire::code::PROTOCOL,error.to_string()))}
                     else if receiver.transport.contains(open.stream) {Some((wire::code::PROTOCOL,t().features.mapping_duplicate_stream.to_owned()))}
-                    else if jobs.len()>=MAX_STREAMS {Some((wire::code::LIMIT,String::new()))}
+                    else if jobs.len()>=MAX_STREAMS {Some((wire::code::LIMIT,wire::describe(wire::code::LIMIT)))}
                     else {None};
-                if let Some((code,message))=denied {
-                    lock(&stats).error=Some(wire::describe(code,&message));
+                if let Some((code,local))=denied {
+                    lock(&stats).error=Some(local);
                     // Bounded rejection in this actor; never spawn one task per invalid request.
-                    let _=tokio::time::timeout(Duration::from_secs(2),receiver.transport.send(Body::OpenResult(wire::OpenResult{stream:open.stream,code,message}))).await;
+                    let _=tokio::time::timeout(Duration::from_secs(2),receiver.transport.send(Body::OpenResult(wire::OpenResult{stream:open.stream,code}))).await;
                     continue;
                 }
                 let registered=receiver.transport.register(open.stream,stop.child_token());
@@ -199,6 +200,7 @@ pub(crate) async fn run(
 /// Resolve the requested target on this host, in resolver order. Unspecified,
 /// multicast and broadcast addresses are never connected to.
 async fn resolve(open: &wire::Open) -> std::result::Result<Vec<SocketAddr>, (i32, String)> {
+    // `(code, this host's own words)`.
     let host = open.host.trim().trim_start_matches('[').trim_end_matches(']');
     let port = u16::try_from(open.port).map_err(|_| (wire::code::PROTOCOL, String::new()))?;
     let candidates: Vec<SocketAddr> = match host.parse::<IpAddr>() {
@@ -244,24 +246,16 @@ async fn serve(
     let transport = receiver.transport.clone();
     let id = open.stream;
     lock(&stats).connections += 1;
-    let answer = |code: i32, message: String| {
+    let answer = |code: i32| {
         let transport = transport.clone();
-        async move {
-            transport
-                .send(Body::OpenResult(wire::OpenResult {
-                    stream: id,
-                    code,
-                    message,
-                }))
-                .await
-        }
+        async move { transport.send(Body::OpenResult(wire::OpenResult { stream: id, code })).await }
     };
     let result = async {
         let targets = match resolve(&open).await {
             Ok(targets) => targets,
-            Err((code, message)) => {
-                answer(code, message.clone()).await?;
-                anyhow::bail!(wire::describe(code, &message));
+            Err((code, local)) => {
+                answer(code).await?;
+                anyhow::bail!(local);
             }
         };
         ensure!(receiver.permitted(generation, policy), "{}", t().features.mapping_permission_expired);
@@ -282,11 +276,11 @@ async fn serve(
             {
                 Ok(socket) => socket,
                 Err(error) => {
-                    answer(connect_code(&error), error.to_string()).await?;
+                    answer(connect_code(&error)).await?;
                     return Err(error.into());
                 }
             };
-            answer(wire::code::OK, String::new()).await?;
+            answer(wire::code::OK).await?;
             tracing::debug!(stream = id, %target, "host UDP forwarding opened");
             let mut buffer = vec![0; 65_536];
             loop {
@@ -325,11 +319,11 @@ async fn serve(
             // `127.0.0.1` for a service listening on IPv4 only).
             socket = tokio::time::timeout(CONNECT_TIMEOUT, crate::transport::happy_eyeballs::connect(&targets)) => match socket {
                 Err(_) => {
-                    answer(wire::code::TIMEOUT, String::new()).await?;
+                    answer(wire::code::TIMEOUT).await?;
                     anyhow::bail!("{}", t().features.mapping_target_timeout);
                 }
                 Ok(Err(error)) => {
-                    answer(connect_code(&error), error.to_string()).await?;
+                    answer(connect_code(&error)).await?;
                     return Err(error.into());
                 }
                 Ok(Ok(socket)) => socket,
@@ -337,7 +331,7 @@ async fn serve(
         };
         socket.set_nodelay(true)?;
         ensure!(receiver.permitted(generation, policy), "{}", t().features.mapping_permission_expired);
-        answer(wire::code::OK, String::new()).await?;
+        answer(wire::code::OK).await?;
         tracing::debug!(stream = id, target = ?socket.peer_addr().ok(), "host TCP forwarding opened");
         let relay = Mutex::new(RuleStatus::default());
         let result = pump(&transport, &stream, inbound, socket, &relay).await;
@@ -350,7 +344,7 @@ async fn serve(
     .await;
     if let Err(error) = &result {
         if receiver.generation.load(Ordering::Acquire) == generation {
-            transport.reset(id, wire::code::CLOSED, error.to_string()).await;
+            transport.reset(id, wire::code::CLOSED).await;
         }
         lock(&stats).error = Some(error.to_string());
     }

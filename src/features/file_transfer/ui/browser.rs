@@ -635,7 +635,7 @@ pub(super) fn show(
                 };
                 let response = files::file_row(
                     ui,
-                    &e.name,
+                    &display_name(e),
                     &modified,
                     &if e.entry_type < 4 {
                         "—".into()
@@ -743,4 +743,26 @@ fn breadcrumbs(path: &str, root: &str) -> Vec<(String, String)> {
         result.push((segment.into(), current.clone()));
     }
     result
+}
+
+/// An entry's name in this side's language: drives and the common
+/// locations of a listing's root are named here (a host sends its own
+/// language's names).
+fn display_name(e: &FileEntry) -> std::borrow::Cow<'_, str> {
+    use crate::features::file_transfer::model::entry;
+    let names = &t().system;
+    let location = match e.icon_type.as_str() {
+        "document" => names.location_documents,
+        "desktop" => names.location_desktop,
+        "picture" => names.location_pictures,
+        "video" => names.location_videos,
+        "music" => names.location_music,
+        "download" => names.location_downloads,
+        _ => "",
+    };
+    match e.entry_type {
+        entry::DRIVE => format!("{} {}", names.local_disk, e.name).into(),
+        entry::DIRECTORY if !location.is_empty() => location.into(),
+        _ => e.name.as_str().into(),
+    }
 }

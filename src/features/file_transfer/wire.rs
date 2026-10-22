@@ -383,6 +383,19 @@ impl Failure {
             message: message.into(),
         }
     }
+
+    /// A failure the other side reported, worded here from its code. Its
+    /// own text (in its language) is kept only where the code says little
+    /// (I/O and protocol errors), after ours.
+    pub(crate) fn received(code: i32, detail: &str) -> Self {
+        let detail: String = detail.trim().chars().take(300).collect();
+        let message = if matches!(code, code::IO | code::PROTOCOL) && !detail.is_empty() {
+            (t().features.transfer_failure_detail)(&describe(code), &detail)
+        } else {
+            String::new()
+        };
+        Self { code, message }
+    }
 }
 
 impl std::fmt::Display for Failure {
@@ -399,7 +412,7 @@ impl std::error::Error for Failure {}
 
 impl From<Failed> for Failure {
     fn from(value: Failed) -> Self {
-        Self::new(value.code, value.message)
+        Self::received(value.code, &value.message)
     }
 }
 
