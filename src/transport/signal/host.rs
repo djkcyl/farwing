@@ -903,6 +903,14 @@ impl Session {
                         }),
                     )
                 } else {
+                    // Measurement aid: a slow preparation (an encoder check
+                    // after a display change takes 10–15 s).
+                    if let Some(ms) = std::env::var("FARWING_DEV_HOST_PREPARE_MS")
+                        .ok()
+                        .and_then(|v| v.parse::<u64>().ok())
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(ms.min(60_000))).await;
+                    }
                     let screen = displays.prepare(options.clone()).await?;
                     display_ms = preparation_started.elapsed().as_millis();
                     // Load the GPU driver while the peer connection is prepared.

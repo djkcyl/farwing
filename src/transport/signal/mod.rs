@@ -31,6 +31,11 @@ use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
 const CONTROL_TIMEOUT: Duration =
     Duration::from_millis(farwing_protocol::timing::REQUEST_TIMEOUT_MS as u64);
+/// The host answers once its screen and encoder are ready; a host that
+/// must check its encoders again (a new display or resolution) takes
+/// 10–15 s before answering.
+const WEBRTC_ANSWER_TIMEOUT: Duration = Duration::from_secs(40);
+/// After the answer, the connection itself.
 const WEBRTC_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 pub(crate) mod host;
 pub(crate) mod identity;
@@ -536,14 +541,31 @@ impl SignalSession {
             .send(self.rtc_offer(info, offer, false, network::ALL)?)?;
         report_negotiation(reporter, NegotiationEvent::OfferSent);
 
-        match timeout(
-            WEBRTC_CONNECT_TIMEOUT,
-            self.exchange_ice(info, peer, &mut local_candidates, &mut progress, reporter),
-        )
-        .await
-        {
+        // Two deadlines: the host's answer, then the connection from it.
+        let (answered_tx, mut answered) = tokio::sync::watch::channel(false);
+        let result = {
+            let exchange =
+                self.exchange_ice(info, peer, &mut local_candidates, &mut progress, reporter, &answered_tx);
+            tokio::pin!(exchange);
+            let deadline = tokio::time::sleep(WEBRTC_ANSWER_TIMEOUT);
+            tokio::pin!(deadline);
+            loop {
+                tokio::select! {
+                    result = &mut exchange => break Ok(result),
+                    _ = &mut deadline => break Err(()),
+                    changed = answered.changed(), if !*answered.borrow() => {
+                        if changed.is_ok() && *answered.borrow() {
+                            deadline
+                                .as_mut()
+                                .reset(tokio::time::Instant::now() + WEBRTC_CONNECT_TIMEOUT);
+                        }
+                    }
+                }
+            }
+        };
+        match result {
             Ok(result) => result,
-            Err(_) => {
+            Err(()) => {
                 let ice = peer.ice_diagnostics().await;
                 tracing::error!(
                     peer_state = %peer.connection_state(),
@@ -555,7 +577,7 @@ impl SignalSession {
                     "WebRTC connection timed out"
                 );
                 Err(SignalFailure::Peer(format!(
-                    "WebRTC did not connect within 12 seconds (peer: {}, ICE: {}, local candidates sent: {}, remote rtc events: {}, answer installed: {}; {})",
+                    "WebRTC did not connect in time (peer: {}, ICE: {}, local candidates sent: {}, remote rtc events: {}, answer installed: {}; {})",
                     peer.connection_state(),
                     peer.ice_connection_state(),
                     progress.local_candidates_sent,
@@ -640,6 +662,7 @@ impl SignalSession {
         local_candidates: &mut tokio::sync::broadcast::Receiver<Option<RTCIceCandidateInit>>,
         progress: &mut NegotiationProgress,
         reporter: Option<NegotiationReporter<'_>>,
+        answered: &tokio::sync::watch::Sender<bool>,
     ) -> Result<()> {
         use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
@@ -712,6 +735,7 @@ impl SignalSession {
                                 }
                                 answer_installed = true;
                                 progress.answer_installed = true;
+                                answered.send_replace(true);
                                 report_negotiation(reporter, NegotiationEvent::AnswerInstalled);
                             }
                             Some(RemoteRtc::Candidate(candidate)) if answer_installed => {

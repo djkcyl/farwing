@@ -70,6 +70,10 @@ interface RtcDescription {
 
 export type ViewerState = 'connecting' | 'negotiating' | 'waiting_media' | 'playing' | 'reconnecting' | 'ended';
 
+/// The host's answer, then the connection from it.
+const ANSWER_TIMEOUT_MS = 40_000;
+const CONNECT_TIMEOUT_MS = 15_000;
+
 /// How a session ended.
 export interface Ending {
   /// `session.ended` reason, or `network`, `identity`, `incompatible`.
@@ -499,6 +503,12 @@ export class Viewer {
       { sid: this.sid, gen: this.gen },
     );
     this.log(`offer gen=${this.gen}${restart ? ' restart' : ''}`);
+    // The host answers once its screen and encoder are ready (a host that
+    // must check its encoders again takes 10–15 s); then the connection.
+    this.armNegotiation(pc, ANSWER_TIMEOUT_MS);
+  }
+
+  private armNegotiation(pc: RTCPeerConnection, ms: number) {
     window.clearTimeout(this.negotiateTimer);
     this.negotiateTimer = window.setTimeout(() => {
       if (pc.connectionState !== 'connected') {
@@ -508,7 +518,7 @@ export class Viewer {
           recoverable: true,
         });
       }
-    }, 20000);
+    }, ms);
   }
 
   private async onAnswer(envelope: Envelope<RtcDescription>) {
@@ -543,6 +553,7 @@ export class Viewer {
       return;
     }
     this.remoteSet = true;
+    if (this.pc && this.pc.connectionState !== 'connected') this.armNegotiation(this.pc, CONNECT_TIMEOUT_MS);
     this.descriptorAccepted = hasDependencyDescriptor(data.sdp);
     this.startAcknowledgements();
     this.log(
