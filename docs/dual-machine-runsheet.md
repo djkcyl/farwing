@@ -25,7 +25,7 @@
 | --- | --- | --- | --- |
 | P1 | 两台 Windows 10/11 x64，记录各自的 Windows 版本、显卡、显示器（分辨率、缩放、刷新率、是否 HDR）、键盘布局与输入法 | — | |
 | P2 | 部署同次构建的 Farwing Server（`server\target\release\farwing-server.exe`），配置至少一个 `[[turn.stun]]`；第 3 批的 15.7 需要两个 IP 或两个端口。服务端不迁移数据库：旧数据库（其他结构版本）会被拒绝启动，移走后从空数据库开始，重新创建账号 | 服务端正常启动 | |
-| P3 | 两台都用同一个程序：第十一版测试包（`temp\release\Farwing-0.1.0-test-20261022k`）的 `Farwing-v0.1.0-windows-x86_64.exe`，用 `certutil -hashfile <文件> SHA256` 核对，前 16 位为 `5cab8995e9b590ac`（关于页都显示 0.1.0，只能靠哈希区分）。H 上已经装过服务的，运行这个文件更新已安装版本。新旧版本之间不能配对 | 哈希一致 | |
+| P3 | 两台都用同一个程序：第十二版测试包（`temp\release\Farwing-0.1.0-test-20261022l`）的 `Farwing-v0.1.0-windows-x86_64.exe`，用 `certutil -hashfile <文件> SHA256` 核对，前 16 位为 `3f8aeef30c731ab0`（关于页都显示 0.1.0，只能靠哈希区分）。H 上已经装过服务的，运行这个文件更新已安装版本。新旧版本之间不能配对 | 哈希一致 | |
 | P4（1.1） | H、C 都便携运行：第一步“连接服务器”填写服务端地址（自签证书时核对指纹），第二步登录 alice | 设备中心互相出现对方；`Farwing.exe devices` 列出两台 | |
 | P5（21.1、21.3） | H 设备中心“安装服务”：勾选“允许服务发送 Ctrl+Alt+Del”，核对证书指纹 `6CC0CF35FED805B5652161468A6D313B873F6E91` | 服务安装成功；设备管理器中“Farwing Input”“Farwing Virtual Display Adapter”无感叹号，驱动签名者为 Farwing Drivers | |
 | P6（可选） | 已开启测试签名时：H“设置 → 后台服务与驱动 → 虚拟声卡 → 安装驱动”（驱动版本 1.0.0.2，已装过的点“更新驱动”） | 虚拟声卡安装成功 | |
