@@ -172,7 +172,8 @@ location / {
 
 “服务器设置 → 中转与探测”（`turn.mode`）：
 
-- **内置（`builtin`，默认）**：内置 STUN/TURN（webrtc-rs `turn` crate），同样使用上述 REST 凭据校验（过期即拒绝）。需要公网 IP（`public_ip`，写入中继候选；网页上可一键填入本机地址）；监听默认 UDP 与 TCP `0.0.0.0:3478`，中转端口范围默认 49160–49200，`relay_bind`（中继套接字绑定地址，默认 `0.0.0.0`）、`relay_ip`（默认等于 `public_ip`）。`urls` 留空时自动生成 `stun:`/`turn:` 地址。内置实现暂不支持 TURNS（TLS）与 IPv6 中继。
+- **内置（`builtin`，默认）**：内置 STUN/TURN（webrtc-rs `turn` crate），同样使用上述 REST 凭据校验（过期即拒绝）。需要公网 IP（`public_ip`，写入中继候选；网页上可一键填入本机地址）；监听默认 UDP 与 TCP `0.0.0.0:3478`、TLS `0.0.0.0:5349`（`listen_tls`，可改端口，使用网页端的证书；反向代理模式下没有证书，不提供 TLS 中转），中转端口范围默认 49160–49200，`relay_bind`（中继套接字绑定地址，默认 `0.0.0.0`）、`relay_ip`（默认等于 `public_ip`）。`urls` 留空时自动生成 `stun:`/`turn:`/`turns:` 地址：TLS 地址用公开地址的域名（证书上的名字），公开地址是 IP 时用公网 IP。关闭“提供中转”（`relay = false`）时只运行 NAT 探测端点，客户端只拿到 STUN 地址。内置实现暂不支持 IPv6 中继。
+  客户端按实测在直连、UDP 中转、TCP / TLS 中转之间选择（`docs/protocol/v2-design.md` §11）；Farwing 客户端连接 TLS 中转时不校验证书（中转凭据另有签名，媒体端到端加密），浏览器只在证书受信任（上传或自动申请）时使用它。
 - **外部（`external`）**：使用 coturn 等，配置要点：
 
   ```
@@ -188,8 +189,6 @@ location / {
   ```
 
   在“共享密钥”中填入与 coturn 相同的密钥，`urls` 写客户端可达的地址，例如 `stun:turn.example.com:3478`、`turn:turn.example.com:3478?transport=udp`、`turn:turn.example.com:3478?transport=tcp`（如配置了 coturn TLS，可加 `turns:turn.example.com:5349?transport=tcp`）。
-- **不提供（`none`）**：只下发 `urls` 中的 `stun:` 地址，不签发中继凭据（NAT 打洞失败时无法中继）。
-
 “强制中转”（`force_relay`）要求客户端只使用中继候选。
 
 ### NAT 类型探测（`turn.stun`）
@@ -226,10 +225,10 @@ location / {
 |------|------|------|
 | 监听地址（默认 8443） | TCP | HTTPS 控制面、WSS 实时面与网页端（反向代理模式下由代理对外开放 443） |
 | 3478 | UDP + TCP | STUN/TURN（内置中转或 coturn） |
+| 5349 | TCP | TLS 中转（内置中转的 `listen_tls`，或 coturn 的 TURNS） |
 | 中转端口范围（默认 49160–49200） | UDP | TURN 中继 |
 | 3479、3480（NAT 探测端点） | UDP | 内置模式的 NAT 类型探测 |
 | 80 | TCP | 仅自动申请证书使用 HTTP-01 时 |
-| 5349 | TCP | 仅当 coturn 启用 TURNS 时 |
 
 ## Docker 与 Compose
 

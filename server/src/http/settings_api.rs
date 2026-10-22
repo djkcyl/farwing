@@ -105,6 +105,7 @@ pub struct TlsView {
 pub struct RelayView {
     pub turn_udp: Option<String>,
     pub turn_tcp: Option<String>,
+    pub turn_tls: Option<String>,
     pub stun: Vec<String>,
     /// `stun:` URLs clients get for NAT discovery.
     pub nat_discovery: Vec<String>,
@@ -132,6 +133,7 @@ pub fn view(app: &App) -> SettingsView {
         relay: RelayView {
             turn_udp: relay.turn_udp.map(|a| a.to_string()),
             turn_tcp: relay.turn_tcp.map(|a| a.to_string()),
+            turn_tls: relay.turn_tls.map(|a| a.to_string()),
             stun: relay.stun_udp.iter().map(|a| a.to_string()).collect(),
             nat_discovery: app.nat_discovery.read().clone(),
             local_ipv4: crate::config::local_ipv4().map(|ip| ip.to_string()),

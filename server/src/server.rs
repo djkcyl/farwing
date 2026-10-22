@@ -25,6 +25,7 @@ pub struct RunningServer {
     pub fingerprint: Option<String>,
     pub turn_udp: Option<SocketAddr>,
     pub turn_tcp: Option<SocketAddr>,
+    pub turn_tls: Option<SocketAddr>,
     /// Bound addresses of the NAT discovery endpoints (builtin relay).
     pub stun_udp: Vec<SocketAddr>,
     /// The one-time setup code while no administrator exists.
@@ -70,7 +71,7 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
     } else {
         None
     };
-    let (hub, channels) = Hub::new(runtime::hub_config(&cfg), IceProvider::new(&cfg.turn));
+    let (hub, channels) = Hub::new(runtime::hub_config(&cfg), IceProvider::new(&cfg.turn, None));
     let app: App = Arc::new(AppState {
         settings: crate::settings::Settings::new(cfg),
         db: db.clone(),
@@ -205,6 +206,7 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
         fingerprint: started.fingerprint,
         turn_udp: started.relay.turn_udp,
         turn_tcp: started.relay.turn_tcp,
+        turn_tls: started.relay.turn_tls,
         stun_udp: started.relay.stun_udp,
         setup_code,
         control: started.control,

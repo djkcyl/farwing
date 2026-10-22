@@ -931,20 +931,13 @@ impl Peer {
         };
         let mut servers = self.ice_servers.clone();
         if relay {
-            let mut turns = servers.clone();
-            for server in &mut turns {
+            // Every relay transport; the controlling side measures which.
+            for server in &mut servers {
                 server
                     .urls
-                    .retain(|url| url.to_ascii_lowercase().contains("turns:"));
+                    .retain(|url| url.to_ascii_lowercase().starts_with("turn"));
             }
-            turns.retain(|server| !server.urls.is_empty());
-            if turns.is_empty() {
-                // A self-hosted server may offer TURN without TLS; relay over
-                // plain TURN instead of failing the requested relay path.
-                tracing::info!("no TURNS server offered; host relay restart uses TURN");
-            } else {
-                servers = turns;
-            }
+            servers.retain(|server| !server.urls.is_empty());
         }
         let policy = if relay {
             RTCIceTransportPolicy::Relay

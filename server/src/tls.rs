@@ -107,6 +107,18 @@ pub fn server_config(slot: Arc<CertSlot>) -> Result<Arc<rustls::ServerConfig>> {
     Ok(Arc::new(config))
 }
 
+/// The rustls configuration of TURN over TLS: the web certificate, no ALPN
+/// (clients offer none or `stun.turn`).
+pub fn turns_config(slot: Arc<CertSlot>) -> Result<Arc<rustls::ServerConfig>> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+        .context("TLS versions")?
+        .with_no_client_auth()
+        .with_cert_resolver(slot);
+    Ok(Arc::new(config))
+}
+
 /// What the TLS settings resolve to.
 pub struct Prepared {
     pub resolver: Arc<dyn ResolvesServerCert>,

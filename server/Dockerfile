@@ -44,5 +44,5 @@ USER farwing:farwing
 ENV FARWING_DATA_DIR=/var/lib/farwing-server FARWING_LISTEN=0.0.0.0:8443
 VOLUME ["/var/lib/farwing-server"]
 # HTTPS + WSS and the web console; builtin TURN; NAT discovery; relay ports.
-EXPOSE 8443/tcp 3478/udp 3478/tcp 3479-3480/udp 49160-49200/udp
+EXPOSE 8443/tcp 3478/udp 3478/tcp 5349/tcp 3479-3480/udp 49160-49200/udp
 ENTRYPOINT ["/usr/local/bin/farwing-server"]

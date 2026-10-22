@@ -997,7 +997,7 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", t().v
                                 let mut relay = snapshot.network.relay_enabled;
                                 let response = ui
                                     .add_enabled_ui(snapshot.network.available, |ui| {
-                                        switch_row(ui, t().viewer.fast_relay_beta, &mut relay)
+                                        switch_row(ui, t().viewer.use_relay, &mut relay)
                                     })
                                     .inner;
                                 if response.changed() {

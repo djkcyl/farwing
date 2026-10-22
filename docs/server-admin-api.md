@@ -60,6 +60,7 @@ curl -k -H "X-Farwing-Protocol: 2" -H "content-type: application/json" $S/api/v2
 ```
 
 - `settings` 与 `PUT /admin/settings` 相同（部分设置，叠加在当前设置上）；可选 `certificate: {cert_pem, key_pem}` 同时上传证书（`tls.mode` 设为 `provided`）。初始化中改动监听地址或反向代理模式时直接生效，不需要确认。
+- 可选 `token: {name, scope, expires_days?, allow?}`：同时为新管理员签发一个 API 令牌，在返回的 `token` 中（只显示一次），不用浏览器也能继续管理。恢复管理员（下文）同样可以带 `token`。
 - 码错误或过期：`403 setup_code_invalid`（每个地址 15 分钟内最多 10 次）；已初始化：`409 setup_done`。
 - 之后 `GET /api/v2/setup` 返回 `{"state": "done"}`；运行 `setup-code` 之后返回 `{"state": "recovery"}`。
 
@@ -89,7 +90,7 @@ curl "${H[@]}" $S/api/v2/admin/settings
 | `listen_locked` | 监听地址由 `--listen` 指定 |
 | `data_dir` | 数据目录 |
 | `tls` | `fingerprint`（当前证书 SHA-256 指纹，反向代理模式为空）、`acme`（自动证书状态）、`provided`（已上传证书） |
-| `relay` | 内置中转实际绑定的地址：`turn_udp`、`turn_tcp`、`stun`；`nat_discovery`（发给客户端的 NAT 探测地址）；`local_ipv4`（建议的本机地址） |
+| `relay` | 内置中转实际绑定的地址：`turn_udp`、`turn_tcp`、`turn_tls`、`stun`；`nat_discovery`（发给客户端的 NAT 探测地址）；`local_ipv4`（建议的本机地址） |
 | `setup` | 尚未初始化 |
 | `listen_pending` | 待确认的监听地址变更：`{url, confirm_by}`，否则为空 |
 
@@ -169,12 +170,14 @@ curl "${H[@]}" -X POST $S/api/v2/admin/settings/relay-secret
 | `tls.mode` | `self_signed` | `self_signed`、`provided`（上传的证书）、`acme`（自动申请）、`proxy`（明文 HTTP，由反向代理提供 TLS） |
 | `tls.hostnames` | 本机名称与地址 | 自签证书包含的名称（另加 `public_url` 的主机名）；名称变化时重新生成证书 |
 | `tls.acme` | | `domains`（空 = `public_url` 的主机名）、`contact`、`directory`（`letsencrypt`、`letsencrypt-staging` 或目录 URL）、`challenge`（`auto`、`tls-alpn-01`、`http-01`）、`http_listen`（HTTP-01 与跳转）、`ca_root`（私有 CA 根证书路径）、`agree_tos`（必须为 `true`） |
-| `turn.mode` | `builtin` | `builtin`（内置 STUN/TURN）、`external`（coturn 等，`use-auth-secret`）、`none`（只有 STUN） |
+| `turn.mode` | `builtin` | `builtin`（内置 STUN/TURN）、`external`（coturn 等，`use-auth-secret`） |
+| `turn.relay` | `true` | 内置模式提供中转；关闭时只运行 NAT 探测端点 |
 | `turn.urls` | `[]` | 发给客户端的 `stun:`/`turn:` 地址；内置模式留空时自动生成 |
 | `turn.shared_secret` | 随机 | TURN REST 凭据的共享密钥（读取时为空） |
 | `turn.credential_ttl` | `43200` | 中转凭据有效期（秒） |
 | `turn.force_relay` | `false` | 要求客户端只用中转 |
 | `turn.listen_udp`、`turn.listen_tcp` | `0.0.0.0:3478` | 内置 TURN 的监听地址（可为空） |
+| `turn.listen_tls` | `0.0.0.0:5349` | 内置 TLS 中转的监听地址（可为空；使用网页端的证书，反向代理模式下不启动） |
 | `turn.public_ip` | 空 | 内置中转写入候选的公网 IP（内置模式必填） |
 | `turn.relay_bind`、`turn.relay_ip` | `0.0.0.0`、空 | 中转套接字绑定地址、对外地址（默认等于 `public_ip`） |
 | `turn.relay_port_min`、`turn.relay_port_max` | `49160`、`49200` | 中转端口范围 |

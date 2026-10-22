@@ -128,7 +128,12 @@ pub async fn overview(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Js
             Some(crate::tls::Presented::Acme(acme)) => Some(acme.status()),
             _ => None,
         },
-        turn_mode: format!("{:?}", settings.turn.mode).to_lowercase(),
+        turn_mode: match (settings.turn.mode, settings.turn.relay) {
+            (crate::config::TurnMode::External, _) => "external",
+            (crate::config::TurnMode::Builtin, true) => "builtin",
+            (crate::config::TurnMode::Builtin, false) => "stun",
+        }
+        .to_owned(),
         nat_discovery: app.nat_discovery.read().clone(),
         db_bytes,
         accounts,

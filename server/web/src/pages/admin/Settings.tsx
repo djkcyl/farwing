@@ -65,6 +65,7 @@ function fieldLabel(m: M, field: string): string {
     'turn.public_ip': m.publicIp,
     'turn.listen_udp': m.listenUdp,
     'turn.listen_tcp': m.listenTcp,
+    'turn.listen_tls': m.listenTls,
     'turn.relay_port_min': m.relayPorts,
     'turn.relay_port_max': m.relayPorts,
     'turn.relay_bind': m.relayBind,
@@ -545,8 +546,11 @@ function Relay({ view, onApplied }: { view: SettingsView; onApplied(v: Applied):
           <Segmented<TurnMode>
             value={draft.mode}
             onChange={(mode) => set({ mode })}
-            options={(['builtin', 'external', 'none'] as const).map((v) => ({ value: v, label: m.turnModes[v] }))}
+            options={(['builtin', 'external'] as const).map((v) => ({ value: v, label: m.turnModes[v] }))}
           />
+          {draft.mode === 'builtin' && (
+            <Switch checked={draft.relay} onChange={(relay) => set({ relay })} label={m.relayEnabled} />
+          )}
           {draft.mode === 'builtin' && (
             <div className="grid grid-2">
               <Field label={m.publicIp} group>
@@ -581,6 +585,9 @@ function Relay({ view, onApplied }: { view: SettingsView; onApplied(v: Applied):
               </Field>
               <Field label={m.listenTcp}>
                 <AddressInput value={draft.listen_tcp} onChange={(listen_tcp) => set({ listen_tcp })} />
+              </Field>
+              <Field label={m.listenTls}>
+                <AddressInput value={draft.listen_tls} onChange={(listen_tls) => set({ listen_tls })} />
               </Field>
               <Field label={m.relayBind}>
                 <Input
@@ -631,7 +638,7 @@ function Relay({ view, onApplied }: { view: SettingsView; onApplied(v: Applied):
               </Field>
             </div>
           )}
-          {draft.mode !== 'none' && (
+          {(draft.mode === 'external' || draft.relay) && (
             <div className="stack-sm">
               <Switch
                 checked={draft.force_relay}
@@ -721,6 +728,13 @@ function Relay({ view, onApplied }: { view: SettingsView; onApplied(v: Applied):
           <Row label={m.listenTcp}>
             {relay.turn_tcp ? (
               <span className="mono small">{relay.turn_tcp}</span>
+            ) : (
+              <span className="muted">{m.stopped}</span>
+            )}
+          </Row>
+          <Row label={m.listenTls}>
+            {relay.turn_tls ? (
+              <span className="mono small">{relay.turn_tls}</span>
             ) : (
               <span className="muted">{m.stopped}</span>
             )}

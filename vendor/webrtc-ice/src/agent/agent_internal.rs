@@ -247,6 +247,9 @@ pub struct AgentInternal {
 
     // the following variables won't be changed after init_with_defaults()
     pub(crate) insecure_skip_verify: bool,
+    /// Relay-only gathering (the viewer's "use relay"): rank TLS relays
+    /// first, then TCP, then UDP, until measurement says otherwise.
+    pub(crate) relay_stream_first: AtomicBool,
     pub(crate) max_binding_requests: u16,
     pub(crate) max_outstanding_pings: Option<u16>,
     pub(crate) host_acceptance_min_wait: Duration,
@@ -332,6 +335,7 @@ impl AgentInternal {
             ever_had_pair: AtomicBool::new(false),
             ever_writable: AtomicBool::new(false),
             insecure_skip_verify: config.insecure_skip_verify,
+            relay_stream_first: AtomicBool::new(false),
 
             started_ch_tx: Mutex::new(Some(started_ch_tx)),
 
@@ -2044,6 +2048,10 @@ impl AgentInternal {
         let Some(pair) = self.find_port_connection(local, remote).await else {
             return false;
         };
+        let lose = super::load_test::dev_path_loss(super::agent_selector::path_class(&pair));
+        if lose > 0.0 && rand::random::<f64>() < lose {
+            return true;
+        }
         pair.remote.seen(false);
         // This signals only an actual transition.
         if pair.note_payload_received(super::agent_config::ICE_RECEIVING_TIMEOUT) {
@@ -2330,6 +2338,23 @@ impl AgentInternal {
         }
     }
 
+    /// `FARWING_DEV_PATH_LOSS`: drop this packet for the kind of path it
+    /// came over.
+    async fn dev_path_drop(
+        &self,
+        c: &Arc<dyn Candidate + Send + Sync>,
+        src_addr: SocketAddr,
+    ) -> bool {
+        if std::env::var_os("FARWING_DEV_PATH_LOSS").is_none() {
+            return false;
+        }
+        let Some(pair) = self.find_port_connection(c, src_addr).await else {
+            return false;
+        };
+        let lose = super::load_test::dev_path_loss(super::agent_selector::path_class(&pair));
+        lose > 0.0 && rand::random::<f64>() < lose
+    }
+
     /// The peer asks for a load test of the path `packet` came over: send it,
     /// if the tag is this session's and the address answers its checks.
     async fn load_test_requested(
@@ -2410,6 +2435,9 @@ impl AgentInternal {
     ) {
         if buf.first() == Some(&0x06) {
             if let Some((tag, id)) = super::load_test::data_header(buf) {
+                if self.dev_path_drop(c, src_addr).await {
+                    return;
+                }
                 if *self.load_receiving.lock().unwrap_or_else(|e| e.into_inner())
                     == Some((tag, id))
                 {

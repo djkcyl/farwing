@@ -20,8 +20,10 @@ fn host_text(ip: IpAddr) -> String {
     }
 }
 
-/// URLs advertised for the builtin server when none are configured.
-pub fn builtin_urls(cfg: &TurnConfig) -> Vec<String> {
+/// URLs advertised for the builtin server when none are configured: its
+/// listeners in `cfg` (the ports actually bound), TURN over TLS under
+/// `tls_host` (a name on the certificate) or else the public IP.
+pub fn builtin_urls(cfg: &TurnConfig, tls_host: Option<&str>) -> Vec<String> {
     let Some(ip) = cfg.public_ip.or(cfg.relay_ip) else {
         return Vec::new();
     };
@@ -34,22 +36,29 @@ pub fn builtin_urls(cfg: &TurnConfig) -> Vec<String> {
     if let Some(tcp) = cfg.listen_tcp {
         out.push(format!("turn:{host}:{}?transport=tcp", tcp.port()));
     }
+    if let Some(tls) = cfg.listen_tls {
+        let host = tls_host.map_or(host.clone(), str::to_owned);
+        out.push(format!("turns:{host}:{}?transport=tcp", tls.port()));
+    }
     out
 }
 
 impl IceProvider {
-    pub fn new(cfg: &TurnConfig) -> Self {
+    /// The servers for `cfg`; `tls_host` as in [`builtin_urls`].
+    pub fn new(cfg: &TurnConfig, tls_host: Option<&str>) -> Self {
         let urls = if cfg.mode == TurnMode::Builtin && cfg.urls.is_empty() {
-            builtin_urls(cfg)
+            builtin_urls(cfg, tls_host)
         } else {
             cfg.urls.clone()
         };
         let (turn_urls, stun_urls): (Vec<_>, Vec<_>) = urls
             .into_iter()
             .partition(|u| u.starts_with("turn:") || u.starts_with("turns:"));
-        let (turn_urls, secret) = match cfg.mode {
-            TurnMode::None => (Vec::new(), String::new()),
-            _ => (turn_urls, cfg.shared_secret.clone()),
+        let relay = cfg.mode == TurnMode::External || cfg.relay;
+        let (turn_urls, secret) = if relay {
+            (turn_urls, cfg.shared_secret.clone())
+        } else {
+            (Vec::new(), String::new())
         };
         Self {
             stun_urls,
@@ -121,7 +130,7 @@ mod tests {
             shared_secret: "s3cret".into(),
             ..TurnConfig::default()
         };
-        let p = IceProvider::new(&cfg);
+        let p = IceProvider::new(&cfg, None);
         let servers = p.servers("sid-1");
         assert_eq!(servers.len(), 2);
         assert_eq!(servers[0].urls, vec!["stun:t.example:3478".to_string()]);
@@ -137,15 +146,42 @@ mod tests {
     }
 
     #[test]
-    fn none_mode_is_stun_only() {
+    fn builtin_without_relay_is_stun_only() {
         let cfg = TurnConfig {
-            mode: TurnMode::None,
-            urls: vec!["stun:stun.example:3478".into()],
+            relay: false,
+            shared_secret: "s".into(),
+            listen_udp: None,
+            listen_tcp: None,
+            listen_tls: None,
+            public_ip: Some("203.0.113.10".parse().unwrap()),
             ..TurnConfig::default()
         };
-        let servers = IceProvider::new(&cfg).servers("x");
+        let p = IceProvider::new(&cfg, None)
+            .with_stun_endpoints(&["203.0.113.10:3479".parse().unwrap()]);
+        assert!(!p.has_turn());
+        let servers = p.servers("x");
         assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].urls, ["stun:203.0.113.10:3479"]);
         assert!(servers[0].credential.is_empty());
+    }
+
+    #[test]
+    fn turn_over_tls_uses_the_certificate_name() {
+        let cfg = TurnConfig {
+            shared_secret: "s".into(),
+            public_ip: Some("203.0.113.10".parse().unwrap()),
+            ..TurnConfig::default()
+        };
+        let urls = |host| IceProvider::new(&cfg, host).servers("x")[1].urls.clone();
+        assert_eq!(
+            urls(None),
+            [
+                "turn:203.0.113.10:3478?transport=udp",
+                "turn:203.0.113.10:3478?transport=tcp",
+                "turns:203.0.113.10:5349?transport=tcp"
+            ]
+        );
+        assert_eq!(urls(Some("farwing.example.com"))[2], "turns:farwing.example.com:5349?transport=tcp");
     }
 
     #[test]
@@ -155,6 +191,7 @@ mod tests {
             shared_secret: "s".into(),
             listen_udp: Some("0.0.0.0:3478".parse().unwrap()),
             listen_tcp: Some("0.0.0.0:3478".parse().unwrap()),
+            listen_tls: None,
             public_ip: Some("203.0.113.10".parse().unwrap()),
             ..TurnConfig::default()
         };
@@ -167,7 +204,7 @@ mod tests {
         .iter()
         .map(|a| a.parse().unwrap())
         .collect();
-        let servers = IceProvider::new(&cfg)
+        let servers = IceProvider::new(&cfg, None)
             .with_stun_endpoints(&extra)
             .servers("x");
         assert_eq!(servers.len(), 2);

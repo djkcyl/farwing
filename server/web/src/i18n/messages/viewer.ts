@@ -236,7 +236,7 @@ export const zh = {
     paths: {
       lan: '局域网直连',
       p2p: 'P2P 直连',
-      relay: '经服务器中继',
+      relay: '经服务器中转',
     },
   },
   files: {

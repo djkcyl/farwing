@@ -62,13 +62,21 @@ async fn external_turn_rest_credentials() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn stun_only_mode() {
+async fn builtin_without_relay_offers_stun_only() {
     let srv = start_with(|c| {
-        c.turn.mode = TurnMode::None;
-        c.turn.urls = vec!["stun:stun.test:3478".into()];
-        c.turn.shared_secret.clear();
+        c.turn.mode = TurnMode::Builtin;
+        c.turn.relay = false;
+        c.turn.urls.clear();
+        c.turn.public_ip = Some("127.0.0.1".parse().unwrap());
+        c.turn.stun = vec![farwing_server::config::StunEndpoint {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            public: None,
+        }];
     })
     .await;
+    let s = srv.server.as_ref().unwrap();
+    assert!(s.turn_udp.is_none() && s.turn_tls.is_none());
+    let stun = s.stun_udp[0];
     let info = srv
         .send(srv.raw(reqwest::Method::GET, "/api/v2/server"))
         .await;
@@ -77,27 +85,30 @@ async fn stun_only_mode() {
     for body in [&incoming, &ack] {
         assert_eq!(
             body["ice_servers"],
-            json!([{"urls": ["stun:stun.test:3478"], "username": "", "credential": ""}])
+            json!([{"urls": [format!("stun:{stun}")], "username": "", "credential": ""}])
         );
     }
     srv.shutdown().await;
 }
 
-async fn builtin_server() -> (TestServer, SocketAddr, SocketAddr) {
+async fn builtin_server() -> (TestServer, SocketAddr, SocketAddr, SocketAddr) {
     let srv = start_with(|c| {
         c.turn.mode = TurnMode::Builtin;
         c.turn.urls.clear();
         c.turn.shared_secret = "builtin-secret".into();
         c.turn.listen_udp = Some("127.0.0.1:0".parse().unwrap());
         c.turn.listen_tcp = Some("127.0.0.1:0".parse().unwrap());
+        c.turn.listen_tls = Some("127.0.0.1:0".parse().unwrap());
         c.turn.public_ip = Some("127.0.0.1".parse().unwrap());
         c.turn.relay_bind = "127.0.0.1".parse().unwrap();
+        c.turn.stun.clear();
     })
     .await;
     let s = srv.server.as_ref().unwrap();
     let udp = s.turn_udp.unwrap();
     let tcp = s.turn_tcp.unwrap();
-    (srv, udp, tcp)
+    let tls = s.turn_tls.unwrap();
+    (srv, udp, tcp, tls)
 }
 
 async fn turn_client(
@@ -155,7 +166,7 @@ async fn allocate_and_relay(client: &Client) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn builtin_turn_udp_allocation() {
-    let (srv, udp, _tcp) = builtin_server().await;
+    let (srv, udp, _tcp, tls) = builtin_server().await;
     // Credentials as issued to a session.
     let (sid, incoming, _ack) = srv.ice_for_session().await;
     let ice = incoming["ice_servers"].as_array().unwrap();
@@ -163,6 +174,12 @@ async fn builtin_turn_udp_allocation() {
         ice.iter()
             .flat_map(|s| s["urls"].as_array().unwrap())
             .any(|u| u.as_str().unwrap().starts_with("turn:127.0.0.1:")),
+        "{ice:?}"
+    );
+    assert!(
+        ice.iter()
+            .flat_map(|s| s["urls"].as_array().unwrap())
+            .any(|u| u.as_str().unwrap() == format!("turns:127.0.0.1:{}?transport=tcp", tls.port())),
         "{ice:?}"
     );
     let turn_entry = ice.iter().find(|s| s["username"] != "").unwrap();
@@ -194,13 +211,40 @@ async fn builtin_turn_udp_allocation() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn builtin_turn_tcp_allocation() {
-    let (srv, _udp, tcp) = builtin_server().await;
+    let (srv, _udp, tcp, _tls) = builtin_server().await;
     let username = format!("{}:tcp-test", farwing_server::db::now_s() + 600);
     let password = hmac_b64("builtin-secret", &username);
     let stream = TcpStream::connect(tcp).await.unwrap();
-    let conn = farwing_server::turn_server::TcpTurnConn::from_stream(stream).unwrap();
+    let conn = farwing_server::turn_server::StreamTurnConn::from_tcp(stream).unwrap();
     let client = turn_client(conn, tcp, &username, &password).await;
     allocate_and_relay(&client).await;
+    client.close().await.ok();
+    srv.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn builtin_turn_tls_allocation() {
+    let (srv, _udp, _tcp, tls) = builtin_server().await;
+    let username = format!("{}:tls-test", farwing_server::db::now_s() + 600);
+    let password = hmac_b64("builtin-secret", &username);
+    let tcp = TcpStream::connect(tls).await.unwrap();
+    let local = tcp.local_addr().unwrap();
+    // The web certificate (the test client trusts exactly it).
+    let stream = tokio_rustls::TlsConnector::from(Arc::clone(&srv.tls))
+        .connect("127.0.0.1".try_into().unwrap(), tcp)
+        .await
+        .expect("TLS handshake with the web certificate");
+    let conn = farwing_server::turn_server::StreamTurnConn::new(stream, local, tls);
+    let client = turn_client(conn, tls, &username, &password).await;
+    allocate_and_relay(&client).await;
+    client.close().await.ok();
+    // A plain TCP client is not answered on the TLS port.
+    let username = format!("{}:plain", farwing_server::db::now_s() + 600);
+    let stream = TcpStream::connect(tls).await.unwrap();
+    let conn = farwing_server::turn_server::StreamTurnConn::from_tcp(stream).unwrap();
+    let client = turn_client(conn, tls, &username, &hmac_b64("builtin-secret", &username)).await;
+    let res = tokio::time::timeout(Duration::from_secs(15), client.allocate()).await;
+    assert!(!matches!(res, Ok(Ok(_))), "plain TCP must not allocate on the TLS port");
     client.close().await.ok();
     srv.shutdown().await;
 }

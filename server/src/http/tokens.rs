@@ -61,13 +61,13 @@ fn invalid(field: &str, message: &str) -> ApiError {
     ))
 }
 
-/// `POST /api/v2/admin/tokens`
-pub async fn create(
-    State(app): State<App>,
-    admin: AdminAuth,
-    JsonBody(req): JsonBody<NewToken>,
-) -> ApiResult<Json<Created>> {
-    login_only(&admin)?;
+/// Refuse an invalid token request.
+pub fn check(req: &NewToken) -> ApiResult<()> {
+    checked(req).map(|_| ())
+}
+
+/// A checked token request: its name and networks.
+fn checked(req: &NewToken) -> ApiResult<(String, Vec<String>)> {
     let name = req.name.trim().to_owned();
     if name.is_empty() || name.chars().count() > NAME_MAX {
         return Err(invalid("name", "the name must be 1-64 characters"));
@@ -90,29 +90,42 @@ pub async fn create(
                 .map_err(|_| invalid("allow", "not a network address"))
         })
         .collect::<ApiResult<_>>()?;
+    Ok((name, allow))
+}
+
+/// Store a new token of `user_id` for `req` (checked); the token, shown
+/// once, and its row.
+pub async fn issue(app: &App, user_id: &str, req: &NewToken) -> ApiResult<Created> {
+    let (name, allow) = checked(req)?;
     let token = crate::crypto::new_token(PREFIX);
     let hash = crate::crypto::token_hash(&token);
     let id = crate::crypto::new_uuid();
     let expires_at = req
         .expires_days
         .map(|d| crate::db::now_s() + i64::from(d) * 86_400);
-    let (tid, uid, scope, n, a) = (
-        id.clone(),
-        admin.user().id.clone(),
-        req.scope.clone(),
-        name.clone(),
-        allow.clone(),
-    );
+    let (tid, uid, scope) = (id.clone(), user_id.to_owned(), req.scope.clone());
     let info = app
         .db
         .call(move |c| {
-            webdb::create_admin_token(c, &tid, &n, &hash, &scope, &a, &uid, expires_at)?;
+            webdb::create_admin_token(c, &tid, &name, &hash, &scope, &allow, &uid, expires_at)?;
             webdb::admin_tokens(c)
         })
         .await?
         .into_iter()
         .find(|t| t.id == id)
         .ok_or_else(ApiError::internal)?;
+    Ok(Created { token, info })
+}
+
+/// `POST /api/v2/admin/tokens`
+pub async fn create(
+    State(app): State<App>,
+    admin: AdminAuth,
+    JsonBody(req): JsonBody<NewToken>,
+) -> ApiResult<Json<Created>> {
+    login_only(&admin)?;
+    let created = issue(&app, &admin.user().id, &req).await?;
+    let name = created.info.name.clone();
     super::admin_api::log(
         &app,
         &admin,
@@ -121,7 +134,7 @@ pub async fn create(
         json!({ "scope": req.scope, "expires_days": req.expires_days }),
     )
     .await;
-    Ok(Json(Created { token, info }))
+    Ok(Json(created))
 }
 
 /// `DELETE /api/v2/admin/tokens/{id}`

@@ -343,6 +343,11 @@ impl Hub {
         *self.ice.write() = ice;
     }
 
+    /// Relay (TURN) credentials are issued.
+    pub fn has_turn(&self) -> bool {
+        self.ice.read().has_turn()
+    }
+
     fn persist(&self, job: PersistJob) {
         let _ = self.persist.send(job);
     }

@@ -3,6 +3,7 @@
 //! server's console.
 
 use super::settings_api::{self, Certificate, SettingsView};
+use super::tokens::NewToken;
 use super::{App, ClientIp, JsonBody};
 use crate::error::{ApiError, ApiResult};
 use crate::webdb;
@@ -90,6 +91,10 @@ pub struct SetupRequest {
     #[serde(default)]
     pub certificate: Option<Certificate>,
     pub admin: Admin,
+    /// Also issue an administration API token of the new administrator
+    /// (for setting up without a browser).
+    #[serde(default)]
+    pub token: Option<NewToken>,
 }
 
 #[derive(Serialize)]
@@ -97,6 +102,9 @@ pub struct SetupDone {
     pub outcome: crate::runtime::Outcome,
     #[serde(flatten)]
     pub view: SettingsView,
+    /// The requested API token, shown once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 /// `POST /api/v2/setup`: settings and the first administrator.
@@ -115,6 +123,9 @@ pub async fn complete(
     check_code(&app, ip, &req.code).await?;
     super::me::username_rule(&req.admin.username)?;
     super::me::password_rule(&req.admin.password)?;
+    if let Some(token) = &req.token {
+        super::tokens::check(token)?;
+    }
     if let Some(c) = &req.certificate {
         settings_api::store_certificate(&app, c)?;
     }
@@ -159,9 +170,14 @@ pub async fn complete(
     )
     .await;
     tracing::info!(admin = %name, "server set up");
+    let token = match &req.token {
+        Some(token) => Some(super::tokens::issue(&app, &user_id, token).await?.token),
+        None => None,
+    };
     Ok(Json(SetupDone {
         outcome,
         view: settings_api::view(&app),
+        token,
     }))
 }
 
@@ -170,6 +186,9 @@ pub struct RecoverRequest {
     pub code: String,
     pub username: String,
     pub password: String,
+    /// Also issue an administration API token of this administrator.
+    #[serde(default)]
+    pub token: Option<NewToken>,
 }
 
 /// `POST /api/v2/setup/recover`: make `username` an administrator with
@@ -189,8 +208,14 @@ pub async fn recover(
     check_code(&app, ip, &req.code).await?;
     super::me::username_rule(&req.username)?;
     super::me::password_rule(&req.password)?;
+    if let Some(token) = &req.token {
+        super::tokens::check(token)?;
+    }
     let RecoverRequest {
-        username, password, ..
+        username,
+        password,
+        token,
+        ..
     } = req;
     let name = username.clone();
     let _permit = app.password_slots.acquire().await;
@@ -227,5 +252,8 @@ pub async fn recover(
     )
     .await;
     tracing::warn!(admin = %name, "administrator recovered with a setup code");
-    Ok(Json(json!({})))
+    Ok(Json(match token {
+        Some(token) => json!({ "token": super::tokens::issue(&app, &user_id, &token).await?.token }),
+        None => json!({}),
+    }))
 }

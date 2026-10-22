@@ -22,7 +22,7 @@ struct State {
     connected: bool,
     round_trip: Option<(Duration, Instant)>,
     forced: bool,
-    has_turns: bool,
+    has_relay: bool,
     last_request: Option<Instant>,
     waiting_since: Option<Instant>,
     notice_until: Option<Instant>,
@@ -42,11 +42,11 @@ impl NetworkControl {
         }
     }
 
-    pub(crate) fn configure(&self, relay: bool, forced: bool, has_turns: bool) {
+    pub(crate) fn configure(&self, relay: bool, forced: bool, has_relay: bool) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.view.relay_enabled = relay;
         state.forced = forced;
-        state.has_turns = has_turns;
+        state.has_relay = has_relay;
     }
 
     pub(crate) fn connected(&self, connected: bool) {
@@ -78,7 +78,7 @@ impl NetworkControl {
             Some(t().features.network_media_not_connected)
         } else if state.forced {
             Some(t().features.network_relay_required)
-        } else if !state.has_turns && !state.view.relay_enabled {
+        } else if !state.has_relay && !state.view.relay_enabled {
             Some(t().features.network_no_relay)
         } else {
             None
@@ -102,7 +102,7 @@ impl NetworkControl {
         if state.forced && !relay {
             bail!("{}", t().features.network_relay_required);
         }
-        if relay && !state.has_turns {
+        if relay && !state.has_relay {
             bail!("{}", t().features.network_no_relay);
         }
         if state

@@ -459,6 +459,14 @@ impl StunEndpoints {
     pub fn public_addrs(&self) -> &[SocketAddr] {
         &self.publics
     }
+
+    /// Stop serving and release the ports (a restart binds them again).
+    pub async fn close(mut self) {
+        for t in std::mem::take(&mut self.tasks) {
+            t.abort();
+            let _ = t.await;
+        }
+    }
 }
 
 impl Drop for StunEndpoints {

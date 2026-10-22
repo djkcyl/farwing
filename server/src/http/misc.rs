@@ -38,7 +38,7 @@ pub async fn server_info(State(app): State<App>) -> Json<ServerInfo> {
         },
         features: ServerFeatures {
             guest_hosts: app.cfg().guest.enabled,
-            turn: crate::ice::IceProvider::new(&app.cfg().turn).has_turn(),
+            turn: app.hub.has_turn(),
             force_relay: app.cfg().turn.force_relay,
             updates,
             friends: true,

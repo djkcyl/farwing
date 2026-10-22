@@ -288,6 +288,14 @@ impl Agent {
             gather_owner: Arc::new(gather_owner::GatherOwner::default()),
         };
 
+        agent.internal.relay_stream_first.store(
+            *agent
+                .candidate_types
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                == [CandidateType::Relay],
+            Ordering::Release,
+        );
         agent.internal.start_on_connection_state_change_routine(
             chan_state_rx,
             chan_candidate_rx,
@@ -523,6 +531,10 @@ impl Agent {
     /// generation may use. Existing candidates and the selected connection are
     /// deliberately retained until a newer generation is nominated.
     pub fn set_gathering_configuration(&self, candidate_types: Vec<CandidateType>, urls: Vec<Url>) {
+        self.internal.relay_stream_first.store(
+            candidate_types == [CandidateType::Relay],
+            Ordering::Release,
+        );
         *self
             .candidate_types
             .write()

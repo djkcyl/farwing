@@ -952,6 +952,17 @@ async fn allocate_relay(
     let mut actual_url = url.clone();
     actual_url.host = server.ip().to_string();
     actual_url.port = server.port();
+    // UDP relays rank first, unless gathering is relay-only, where TLS
+    // (least often throttled) is tried first; `choose_path` then measures.
+    let stream_first = params
+        .agent_internal
+        .relay_stream_first
+        .load(std::sync::atomic::Ordering::Acquire);
+    let protocol_rank = match (protocol, stream_first) {
+        ("udp", false) | ("tls", true) => 2,
+        ("tcp", _) => 1,
+        _ => 0,
+    };
     let finish = async {
         let address = allocation.local_addr()?;
         let candidate: LocalCandidate = Arc::new(
@@ -962,11 +973,7 @@ async fn allocate_relay(
                     port: address.port(),
                     component: COMPONENT_RTP,
                     priority: ice_candidate_priority(
-                        match protocol {
-                            "udp" => 2,
-                            "tcp" => 1,
-                            _ => 0,
-                        },
+                        protocol_rank,
                         interface.network_preference,
                         address.ip(),
                         preference,

@@ -52,6 +52,7 @@ tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "net", "sig
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 turn = "0.17.2"
+tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12", "logging"] }
 url = "2.5"
 uuid = { version = "1.18", features = ["v4"] }
 webrtc-util = { version = "0.17", default-features = false, features = ["conn", "vnet"] }
@@ -61,7 +62,6 @@ reqwest = { version = "0.13.5", default-features = false, features = ["json", "r
 # Independent STUN decoder for the NAT discovery tests (same version as `turn` uses).
 stun = "0.17.2"
 tempfile = "3"
-tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12", "logging"] }
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 
 [profile.release]

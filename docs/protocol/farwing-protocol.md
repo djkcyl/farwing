@@ -476,7 +476,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 - `SessionIncoming`：`{participant_id, attempt_id, purpose, connect_type: "account"|"assist", relation: "own"|"friend"|"trusted"|"assist", grants, controller: ControllerInfo, options, capability, ice_servers, force_relay}`。目的、类型、关系、授予的能力与主控身份以服务端为准；`options` 中的同类信息不作授权依据。经服务端时 `own`、`friend` 的 `connect_type` 为 `account`，`trusted`、`assist` 为 `assist`（§3.11）。`grants`：本账号设备为全部能力，好友为生效授权，受信任设备与访客为空：被控对 `trusted` 重新核对本机受信任设备记录（设备 ID 与公钥都须匹配，否则拒绝）并套用为它记录的能力，对 `assist` 套用访客默认权限。
 - `ControllerInfo`：`{device_id, alias, user_id, username, nickname, platform, version, public_key, caps_limit?}`；无账号的主控 `user_id`、`username`、`nickname` 为空。`caps_limit` 是服务端规定的能力上限：网页主控（`platform: "web"`）总是带（服务器设置“网页端可以使用的功能”），被控对所有关系的授权都按它裁剪；原生主控不带，不受此限制。
 - `IceServer`：`{urls, username, credential}`。TURN 凭据为 TURN REST 临时凭据：`username = "<过期 Unix 秒>:<session_id>"`，`credential = base64(HMAC-SHA1(shared_secret, username))`，默认 12 小时。NAT 探测端点以无凭据的 `stun:` 地址附加在列表中。
-- `network`（`rtc.offer`/`rtc.answer`）：`3` 全部候选；`1` 仅中继，优先 TURNS（无 TURNS 时用 TURN）。主控在观看窗口切换线路时以重启 offer 发送；被控按它重新配置 ICE，其他取值不改配置。中继与直连之间的自动切换由 ICE 按实测路径质量完成（§7.5），不经信令。
+- `network`（`rtc.offer`/`rtc.answer`）：`3` 全部候选；`1` 仅中继（服务器提供的全部中转方式：UDP、TCP、TLS）。主控在观看窗口切换线路时以重启 offer 发送；被控按它重新配置 ICE，其他取值不改配置。中继与直连之间的自动切换由 ICE 按实测路径质量完成（§7.5），不经信令。
 - `session.start.purpose` 只供直连端点使用（§8.4），服务端忽略它。
 
 **客户端约定的载荷（服务端只校验大小并转发）**
@@ -782,7 +782,8 @@ ICE 代理在默认路由上发布私网 UDP/IPv4 主机候选后，为该端口
 
 ### 7.6 其他
 
-- 中继候选对保持同意检查作为备份。控制方按“代价 = RTT + 25 ms ×（丢包 % − 1）”在直连与中继之间选择：当前路径的丢包按收到的媒体计，另一条按每 250 ms 一次的连通检查计；中继代价低出 max(30 ms, 25%) 时切到中继，直连代价不高于中继时切回，判断连续 3 秒成立才切换。因媒体丢包离开的路径 60 秒起（反复时翻倍，最长 10 分钟）内不再尝试；切到直连（或重新尝试这样的中继）之前先压测（§7.7），切过去后有 30 秒试用期，不行立即退回（v2-design §11）。
+- 中继候选对保持同意检查作为备份。控制方把路径分为三类——直连、UDP 中转、TCP / TLS 中转（按本端到中转服务器一段的协议）——按“代价 = RTT + 25 ms ×（丢包 % − 1）”选择：当前路径的丢包按收到的媒体计，其他两类各取 RTT 最低的一条，按每 250 ms 一次的连通检查计；另一条中转的代价低出 max(30 ms, 25%) 时切过去，直连代价不高于当前中转时切回直连，几条都满足时取代价最低的，判断连续 3 秒成立才切换。因媒体丢包离开的路径 60 秒起（反复时翻倍，最长 10 分钟）内不再尝试；切到直连（或重新尝试这样的 UDP 中转）之前先压测（§7.7），切过去后有 30 秒试用期，不行立即退回（v2-design §11）。
+- 只用中转（观看窗口“使用中转”，`network = 1`）时 ICE 只收集中转候选，TLS 中转排在最前，TCP、UDP 其次；之后同样按实测代价在 UDP 与 TCP / TLS 中转之间选择。
 - 主机候选优先级中 IPv6 网络偏好高于 IPv4，IPv6 主机候选优先于 IPv4 主机与 srflx 候选。
 - 设置：每个 profile 的 `network.json` 中 `aggressive_punching` 与 `port_mapping`（默认开启），主控与被控在会话开始时读取。
 

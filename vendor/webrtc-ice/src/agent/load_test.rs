@@ -96,15 +96,13 @@ pub(super) fn looks_like_request(packet: &[u8]) -> bool {
     packet.len() == REQUEST_LEN && packet[..4] == REQUEST_MAGIC
 }
 
-/// `FARWING_DEV_DIRECT_LOSS=<percent>[,<unix seconds>]`: the share of a
-/// test over a direct path that is lost on purpose (until that time, when
-/// given), as the application loses that share of its media there (a
-/// carrier throttling P2P flows); for testing path switching.
-pub(super) fn dev_direct_loss() -> f64 {
-    static SPEC: std::sync::OnceLock<(f64, Option<std::time::SystemTime>)> =
-        std::sync::OnceLock::new();
-    let (share, until) = *SPEC.get_or_init(|| {
-        let value = std::env::var("FARWING_DEV_DIRECT_LOSS").unwrap_or_default();
+type LossSpec = (f64, Option<std::time::SystemTime>);
+
+/// `<percent>[,<unix seconds>]` from `var`: a share lost on purpose, until
+/// that time when given.
+fn dev_loss(spec: &'static std::sync::OnceLock<LossSpec>, var: &str) -> f64 {
+    let (share, until) = *spec.get_or_init(|| {
+        let value = std::env::var(var).unwrap_or_default();
         let mut fields = value.split(',').map(str::trim);
         let share = fields
             .next()
@@ -121,6 +119,59 @@ pub(super) fn dev_direct_loss() -> f64 {
     } else {
         share
     }
+}
+
+/// `FARWING_DEV_DIRECT_LOSS=<percent>[,<unix seconds>]` (the host): the
+/// share of a test over a direct path that is lost on purpose, as the
+/// application loses that share of its media there (a carrier throttling
+/// P2P flows); for testing path switching.
+pub(super) fn dev_direct_loss() -> f64 {
+    static SPEC: std::sync::OnceLock<LossSpec> = std::sync::OnceLock::new();
+    dev_loss(&SPEC, "FARWING_DEV_DIRECT_LOSS")
+}
+
+/// `FARWING_DEV_PATH_LOSS=<kind>:<percent>[,<kind>:<percent>…][,until:<unix seconds>]`
+/// (the controlling viewer), kinds `direct`, `udp-relay`, `stream-relay`:
+/// the share of media and test traffic arriving over a path of that kind
+/// that is dropped (connectivity checks pass), as a carrier throttling it
+/// would; for testing path switching.
+pub(crate) fn dev_path_loss(class: crate::candidate::path_quality::PathClass) -> f64 {
+    use crate::candidate::path_quality::PathClass;
+    static SPEC: std::sync::OnceLock<([f64; 3], Option<std::time::SystemTime>)> =
+        std::sync::OnceLock::new();
+    let (shares, until) = SPEC.get_or_init(|| {
+        let mut shares = [0.0; 3];
+        let mut until = None;
+        let value = std::env::var("FARWING_DEV_PATH_LOSS").unwrap_or_default();
+        for field in value.split(',').map(str::trim) {
+            let Some((kind, number)) = field.split_once(':') else {
+                continue;
+            };
+            let Ok(number) = number.trim().parse::<f64>() else {
+                continue;
+            };
+            let slot = match kind.trim() {
+                "direct" => 0,
+                "udp-relay" => 1,
+                "stream-relay" => 2,
+                "until" => {
+                    until = Some(std::time::UNIX_EPOCH + Duration::from_secs(number as u64));
+                    continue;
+                }
+                _ => continue,
+            };
+            shares[slot] = (number / 100.0).clamp(0.0, 1.0);
+        }
+        (shares, until)
+    });
+    if until.is_some_and(|until| std::time::SystemTime::now() >= until) {
+        return 0.0;
+    }
+    shares[match class {
+        PathClass::Direct => 0,
+        PathClass::UdpRelay => 1,
+        PathClass::StreamRelay => 2,
+    }]
 }
 
 /// Send the requested test over `conn` to `target`, paced over its duration;

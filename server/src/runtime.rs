@@ -160,12 +160,13 @@ pub fn hub_config(cfg: &Config) -> HubConfig {
 }
 
 /// Settings of the builtin relay and discovery endpoints that need a
-/// restart when they change.
-fn relay_key(t: &TurnConfig) -> impl PartialEq + use<> {
+/// restart when they change (TURN over TLS needs the web certificate, which
+/// a reverse proxy holds instead).
+fn relay_key(cfg: &Config) -> impl PartialEq + use<> {
+    let t = &cfg.turn;
     (
-        t.mode,
-        t.listen_udp,
-        t.listen_tcp,
+        (t.mode, t.relay),
+        (t.listen_udp, t.listen_tcp, t.listen_tls),
         t.public_ip,
         t.realm.clone(),
         t.relay_bind,
@@ -173,12 +174,24 @@ fn relay_key(t: &TurnConfig) -> impl PartialEq + use<> {
         (t.relay_port_min, t.relay_port_max),
         t.shared_secret.clone(),
         t.stun.clone(),
+        cfg.tls.mode == TlsMode::Proxy,
     )
 }
 
-/// The builtin relay can run with these settings.
+/// The builtin relay (or, with `relay` off, its discovery endpoints) can
+/// run with these settings.
 fn relay_ready(t: &TurnConfig) -> bool {
-    t.mode == TurnMode::Builtin && t.builtin_public_ip().is_some() && t.listen_udp.is_some()
+    t.mode == TurnMode::Builtin && t.builtin_public_ip().is_some()
+}
+
+/// The host clients reach TURN over TLS at: the public URL's name (on the
+/// certificate), else the public IP.
+fn tls_host(cfg: &Config) -> Option<String> {
+    let url = url::Url::parse(&cfg.public_url).ok()?;
+    match url.host()? {
+        url::Host::Domain(name) => Some(name.to_owned()),
+        _ => None,
+    }
 }
 
 /// What the HTTPS listener depends on.
@@ -224,6 +237,7 @@ struct Pending {
 pub struct RelayAddrs {
     pub turn_udp: Option<SocketAddr>,
     pub turn_tcp: Option<SocketAddr>,
+    pub turn_tls: Option<SocketAddr>,
     pub stun_udp: Vec<SocketAddr>,
 }
 
@@ -321,7 +335,7 @@ impl Components {
             None => None,
         };
         components
-            .start_relay(&cfg.turn)
+            .start_relay(&cfg)
             .await
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
         components.reconfigure_hub(&cfg);
@@ -352,6 +366,7 @@ impl Components {
         RelayAddrs {
             turn_udp: self.turn.as_ref().map(|t| t.udp_addr()),
             turn_tcp: self.turn.as_ref().and_then(|t| t.tcp_addr()),
+            turn_tls: self.turn.as_ref().and_then(|t| t.tls_addr()),
             stun_udp: self
                 .stun
                 .as_ref()
@@ -408,12 +423,15 @@ impl Components {
         if let Some(turn) = self.turn.take() {
             turn.close().await;
         }
-        self.stun = None;
+        if let Some(stun) = self.stun.take() {
+            stun.close().await;
+        }
     }
 
-    /// Start the builtin relay and discovery endpoints for `t` (nothing
+    /// Start the builtin relay and discovery endpoints for `cfg` (nothing
     /// when not ready).
-    async fn start_relay(&mut self, t: &TurnConfig) -> Result<(), ApplyError> {
+    async fn start_relay(&mut self, cfg: &Config) -> Result<(), ApplyError> {
+        let t = &cfg.turn;
         if !relay_ready(t) {
             if t.mode == TurnMode::Builtin {
                 tracing::info!("builtin relay waits for this server's public address");
@@ -427,16 +445,28 @@ impl Components {
                     .map_err(|e| unavailable("turn.stun", format!("{e:#}")))?,
             );
         }
-        match turn_server::start(t).await {
+        if !t.relay || t.listen_udp.is_none() {
+            return Ok(());
+        }
+        let tls = (cfg.tls.mode != TlsMode::Proxy)
+            .then(|| tls::turns_config(Arc::clone(&self.slot)))
+            .transpose()
+            .map_err(|e| unavailable("turn.listen_tls", format!("{e:#}")))?;
+        match turn_server::start(t, tls).await {
             Ok(turn) => self.turn = Some(turn),
             Err(e) => {
-                self.stun = None;
-                let field = if format!("{e:#}").contains("TCP") {
+                if let Some(stun) = self.stun.take() {
+                    stun.close().await;
+                }
+                let text = format!("{e:#}");
+                let field = if text.contains("TURN TLS") {
+                    "turn.listen_tls"
+                } else if text.contains("TURN TCP") {
                     "turn.listen_tcp"
                 } else {
                     "turn.listen_udp"
                 };
-                return Err(unavailable(field, format!("{e:#}")));
+                return Err(unavailable(field, text));
             }
         }
         Ok(())
@@ -444,14 +474,16 @@ impl Components {
 
     fn reconfigure_hub(&self, cfg: &Config) {
         let stun_public = self.stun.as_ref().map_or(&[][..], |s| s.public_addrs());
-        // Advertise the ports actually bound (a configured port 0 binds any).
+        // Advertise what the builtin relay actually runs (a configured port
+        // 0 binds any).
         let mut turn = cfg.turn.clone();
         let bound = self.relay_addrs();
-        if bound.turn_udp.is_some() || bound.turn_tcp.is_some() {
+        if turn.mode == TurnMode::Builtin {
             turn.listen_udp = bound.turn_udp;
             turn.listen_tcp = bound.turn_tcp;
+            turn.listen_tls = bound.turn_tls;
         }
-        let ice = IceProvider::new(&turn).with_stun_endpoints(stun_public);
+        let ice = IceProvider::new(&turn, tls_host(cfg).as_deref()).with_stun_endpoints(stun_public);
         *self.app.nat_discovery.write() = stun_public
             .iter()
             .map(|addr| match addr {
@@ -574,11 +606,11 @@ impl Components {
         } else {
             None
         };
-        if relay_key(&new.turn) != relay_key(&old.turn) {
+        if relay_key(&new) != relay_key(&old) {
             self.stop_relay().await;
-            if let Err(e) = self.start_relay(&new.turn).await {
+            if let Err(e) = self.start_relay(&new).await {
                 // Back to the relay that ran before.
-                let _ = self.start_relay(&old.turn).await;
+                let _ = self.start_relay(&old).await;
                 return Err(e);
             }
             outcome.relay_restarted = relay_ready(&new.turn) || relay_ready(&old.turn);

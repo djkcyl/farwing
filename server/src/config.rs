@@ -247,8 +247,6 @@ pub enum TurnMode {
     Builtin,
     /// coturn (or compatible) with `use-auth-secret`.
     External,
-    /// STUN only, no relay credentials.
-    None,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -265,8 +263,13 @@ pub struct TurnConfig {
     pub credential_ttl: Duration,
     pub force_relay: bool,
     // ---- builtin only
+    /// Relay through this server; off, it offers STUN only (the NAT
+    /// discovery endpoints).
+    pub relay: bool,
     pub listen_udp: Option<SocketAddr>,
     pub listen_tcp: Option<SocketAddr>,
+    /// TURN over TLS, with the web certificate (not behind a reverse proxy).
+    pub listen_tls: Option<SocketAddr>,
     pub public_ip: Option<IpAddr>,
     pub realm: String,
     /// Local address relay sockets bind to.
@@ -450,8 +453,10 @@ impl Default for TurnConfig {
             shared_secret: String::new(),
             credential_ttl: Duration::from_secs(12 * 3600),
             force_relay: false,
+            relay: true,
             listen_udp: any(3478),
             listen_tcp: any(3478),
+            listen_tls: any(5349),
             public_ip: None,
             realm: "farwing".to_owned(),
             relay_bind: IpAddr::from([0, 0, 0, 0]),
@@ -615,9 +620,12 @@ impl Config {
                         "the relay secret is missing",
                     ));
                 }
-                let primary = turn.listen_udp.ok_or_else(|| {
-                    SettingError::required("turn.listen_udp", "the relay needs a UDP port")
-                })?;
+                if turn.relay && turn.listen_udp.is_none() {
+                    return Err(SettingError::required(
+                        "turn.listen_udp",
+                        "the relay needs a UDP port",
+                    ));
+                }
                 if turn.builtin_public_ip().is_none() {
                     return Err(SettingError::required(
                         "turn.public_ip",
@@ -639,34 +647,36 @@ impl Config {
                     }
                     _ => {}
                 }
-                if let Some(tcp) = turn.listen_tcp
-                    && tcp.port() == self.listen.port()
-                    && tcp.port() != 0
-                    && (tcp.ip() == self.listen.ip()
-                        || tcp.ip().is_unspecified()
-                        || self.listen.ip().is_unspecified())
-                {
-                    return Err(SettingError::new(
-                        "turn.listen_tcp",
-                        "conflict",
-                        "the relay's TCP port is the web port",
-                    ));
+                // TCP ports must differ from each other and from the web port.
+                let tcp_ports = [
+                    ("turn.listen_tls", turn.listen_tls),
+                    ("turn.listen_tcp", turn.listen_tcp),
+                ];
+                for (field, addr) in tcp_ports {
+                    let Some(addr) = addr else { continue };
+                    let others = std::iter::once(self.listen).chain(
+                        tcp_ports
+                            .iter()
+                            .filter(|(other, _)| *other != field)
+                            .filter_map(|(_, a)| *a),
+                    );
+                    for other in others {
+                        if addr.port() != 0
+                            && addr.port() == other.port()
+                            && (addr.ip() == other.ip()
+                                || addr.ip().is_unspecified()
+                                || other.ip().is_unspecified())
+                        {
+                            return Err(SettingError::new(
+                                field,
+                                "conflict",
+                                format!("{addr} is used by another listener"),
+                            ));
+                        }
+                    }
                 }
                 validate_stun(turn)
                     .map_err(|e| SettingError::new("turn.stun", "invalid", format!("{e:#}")))?;
-                let _ = primary;
-            }
-            TurnMode::None => {
-                if turn
-                    .urls
-                    .iter()
-                    .any(|u| u.starts_with("turn:") || u.starts_with("turns:"))
-                {
-                    return Err(SettingError::invalid(
-                        "turn.urls",
-                        "without a relay only stun: URLs are allowed",
-                    ));
-                }
             }
         }
         if turn.credential_ttl.is_zero() {

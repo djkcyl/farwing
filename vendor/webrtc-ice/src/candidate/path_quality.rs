@@ -1,5 +1,10 @@
 //! Measured quality of candidate pairs, for the controlling agent's choice
-//! between the selected path and its alternative (direct ↔ relay).
+//! among three kinds of path ([`PathClass`]): direct, relayed over UDP, and
+//! relayed over TCP or TLS (this side's leg to the relay server; the relay
+//! forwards over UDP either way). A stream relay only stalls when its own
+//! leg loses packets, and carriers that throttle UDP rarely touch TLS, so
+//! neither relay is preferred by rule: the session uses the cheapest by
+//! measurement, and the best path of each other kind stays probed.
 //!
 //! Each pair keeps a once-a-second series of its check counters, its smoothed
 //! RTT and, while selected, the application's media counters (packets
@@ -12,11 +17,13 @@
 //!
 //! so a few percent of loss weighs like a few dozen milliseconds of extra
 //! delay, and heavy loss outweighs any detour. The selected path's loss is
-//! measured on its media; the alternative carries none and is probed with
-//! connectivity checks four times a second. The session moves to a relay
-//! that is cheaper by max(30 ms, 25 %), and back to a direct path that is no
-//! more expensive than the relay (direct paths spare the server), once the
-//! verdict has held for three seconds in a row.
+//! measured on its media; the alternatives carry none and are probed with
+//! connectivity checks four times a second. The session moves to another
+//! relay, or from a direct path to a relay, that is cheaper by
+//! max(30 ms, 25 %), and back to a direct path that is no more expensive
+//! than the relay (direct paths spare the server), once the verdict has held
+//! for three seconds in a row. Among several alternatives that qualify, the
+//! cheapest wins.
 //!
 //! Probes understate what a path loses under load (a carrier that throttles
 //! a heavy P2P flow drops few small checks), so a path left for its loss is
@@ -64,6 +71,39 @@ const RETRY_MAX: u64 = 600 * SECOND;
 /// A path left again this long after its last departure starts over at
 /// [`RETRY_BASE`].
 const STRIKE_RESET: u64 = 600 * SECOND;
+
+/// The kinds of path the session chooses among.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PathClass {
+    Direct,
+    /// Relayed, this side's leg over UDP.
+    UdpRelay,
+    /// Relayed, this side's leg over TCP or TLS.
+    StreamRelay,
+}
+
+impl PathClass {
+    /// A pair's class from whether either end is a relay candidate and this
+    /// side's relay transport (`udp`, `tcp`, `tls`; empty when this side's
+    /// candidate is not the relay).
+    pub(crate) fn of(relayed: bool, local_relay_protocol: &str) -> Self {
+        if !relayed {
+            Self::Direct
+        } else if local_relay_protocol.is_empty() || local_relay_protocol.eq_ignore_ascii_case("udp") {
+            Self::UdpRelay
+        } else {
+            Self::StreamRelay
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::UdpRelay => "UDP relay",
+            Self::StreamRelay => "TCP/TLS relay",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 struct Sample {
@@ -132,6 +172,24 @@ pub(crate) fn better(current: &Measure, alternative: &Measure, preferred: bool) 
             alternative.describe()
         )
     })
+}
+
+/// Which of `alternatives` (their measures, and whether each is
+/// `preferred`, a direct path) should carry the session instead of
+/// `current`: the cheapest of those [`better`] accepts, with its reason.
+pub(crate) fn cheapest_better(
+    current: &Measure,
+    alternatives: &[(Option<Measure>, bool)],
+) -> Option<(usize, String)> {
+    alternatives
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (measure, preferred))| {
+            let measure = measure.as_ref()?;
+            better(current, measure, *preferred).map(|reason| (i, measure.cost(), reason))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _, reason)| (i, reason))
 }
 
 #[derive(Default, Debug)]
@@ -392,6 +450,46 @@ mod tests {
         assert!(to_direct(measure(60, 0.0, true), measure(20, 0.05, false)).is_none());
         // A relay that loses under load gives way to a slower clean path.
         assert!(to_direct(measure(40, 0.06, true), measure(90, 0.0, false)).is_some());
+    }
+
+    #[test]
+    fn classes() {
+        assert_eq!(PathClass::of(false, ""), PathClass::Direct);
+        assert_eq!(PathClass::of(true, "udp"), PathClass::UdpRelay);
+        // Only the peer's candidate is a relay: this side's leg is UDP.
+        assert_eq!(PathClass::of(true, ""), PathClass::UdpRelay);
+        assert_eq!(PathClass::of(true, "tcp"), PathClass::StreamRelay);
+        assert_eq!(PathClass::of(true, "TLS"), PathClass::StreamRelay);
+    }
+
+    #[test]
+    fn the_cheapest_qualifying_alternative_wins() {
+        // UDP throttled on the direct path: both relays qualify, the TLS one
+        // (no loss) is cheaper than the UDP one (loses like the direct path).
+        let direct = measure(30, 0.15, true);
+        let udp_relay = Some(measure(50, 0.12, false));
+        let tls_relay = Some(measure(70, 0.0, false));
+        assert_eq!(
+            cheapest_better(&direct, &[(udp_relay, false), (tls_relay, false)]).map(|(i, _)| i),
+            Some(1)
+        );
+        // On the TLS relay: a clean UDP relay at the same delay is no better
+        // than the margin; a much faster one takes over.
+        let on_tls = measure(70, 0.0, true);
+        assert!(cheapest_better(&on_tls, &[(Some(measure(60, 0.0, false)), false)]).is_none());
+        assert_eq!(
+            cheapest_better(&on_tls, &[(Some(measure(30, 0.0, false)), false)]).map(|(i, _)| i),
+            Some(0)
+        );
+        // A direct path as costly as the relay (preferred) and a faster UDP
+        // relay both qualify: the cheaper wins.
+        let picked = cheapest_better(
+            &on_tls,
+            &[(Some(measure(40, 0.0, false)), false), (Some(measure(70, 0.0, false)), true)],
+        );
+        assert_eq!(picked.map(|(i, _)| i), Some(0));
+        // Unknown measures never qualify.
+        assert!(cheapest_better(&direct, &[(None, false), (None, true)]).is_none());
     }
 
     #[test]

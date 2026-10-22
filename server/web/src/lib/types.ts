@@ -284,7 +284,7 @@ export interface LiveSession {
 }
 
 export type TlsMode = 'self_signed' | 'provided' | 'acme' | 'proxy';
-export type TurnMode = 'builtin' | 'external' | 'none';
+export type TurnMode = 'builtin' | 'external';
 export type AcmeChallenge = 'auto' | 'tls-alpn-01' | 'http-01';
 
 /// Limits and timeouts (`limits` in the settings).
@@ -343,8 +343,10 @@ export interface ServerSettings {
     shared_secret: string;
     credential_ttl: number;
     force_relay: boolean;
+    relay: boolean;
     listen_udp: string | null;
     listen_tcp: string | null;
+    listen_tls: string | null;
     public_ip: string | null;
     realm: string;
     relay_bind: string;
@@ -378,6 +380,7 @@ export interface SettingsView {
   relay: {
     turn_udp: string | null;
     turn_tcp: string | null;
+    turn_tls: string | null;
     stun: string[];
     nat_discovery: string[];
     local_ipv4: string | null;

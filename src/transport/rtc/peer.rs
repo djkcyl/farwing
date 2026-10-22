@@ -373,15 +373,15 @@ impl NativePeer {
         transport: TransportChoice,
         server_forced: bool,
     ) {
-        let has_turns = self
+        let has_relay = self
             .ice_servers
             .iter()
             .flat_map(|server| &server.urls)
-            .any(|url| url.to_ascii_lowercase().contains("turns:"));
+            .any(|url| url.to_ascii_lowercase().starts_with("turn"));
         self.stream_control_handle().network_control().configure(
             transport == TransportChoice::Relay,
             server_forced,
-            has_turns,
+            has_relay,
         );
     }
 
@@ -456,41 +456,26 @@ impl NativePeer {
         ))
     }
 
-    /// Relay only (TURNS preferred, plain TURN when the server offers no
-    /// TURNS), or all candidates.
+    /// Relay only, over every relay transport the server offers (TLS
+    /// ranked first until measured, `webrtc_ice` `relay_stream_first`), or
+    /// all candidates.
     pub(crate) async fn switch_ice_network(&self, relay: bool) -> Result<()> {
-        let select = |scheme: &str| {
+        let selected_servers = if relay {
             self.ice_servers
                 .iter()
                 .filter_map(|server| {
                     let mut selected = server.clone();
                     selected
                         .urls
-                        .retain(|url| url.to_ascii_lowercase().starts_with(scheme));
+                        .retain(|url| url.to_ascii_lowercase().starts_with("turn"));
                     (!selected.urls.is_empty()).then_some(selected)
                 })
                 .collect::<Vec<_>>()
-        };
-        let mut tls_only = relay;
-        let selected_servers = if relay {
-            let turns = select("turns:");
-            if turns.is_empty() {
-                // A self-hosted server may offer TURN without TLS. Relay over
-                // plain TURN rather than refusing the requested relay path.
-                tls_only = false;
-                tracing::info!("no TURNS server offered; relay switch uses TURN");
-                select("turn")
-            } else {
-                turns
-            }
         } else {
             self.ice_servers.clone()
         };
         if selected_servers.is_empty() && relay {
-            bail!(
-                "control ACK did not provide a {} server",
-                if tls_only { "TURNS" } else { "usable ICE" }
-            );
+            bail!("control ACK did not provide a relay server");
         }
         let policy = if relay {
             RTCIceTransportPolicy::Relay
@@ -504,13 +489,7 @@ impl NativePeer {
             )
             .await?;
         tracing::info!(
-            relay_transport = if !relay {
-                "automatic"
-            } else if tls_only {
-                "TURNS only"
-            } else {
-                "relay, UDP preferred"
-            },
+            relay_transport = if relay { "relay, TLS first" } else { "automatic" },
             "ICE network switch configuration applied"
         );
         Ok(())

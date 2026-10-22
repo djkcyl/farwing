@@ -238,7 +238,7 @@ function SetupForm({ info }: { info: SetupInfo }) {
         <Segmented<TurnMode>
           value={turn}
           onChange={setTurn}
-          options={(['builtin', 'external', 'none'] as const).map((v) => ({ value: v, label: s.turnModes[v] }))}
+          options={(['builtin', 'external'] as const).map((v) => ({ value: v, label: s.turnModes[v] }))}
         />
         {turn === 'builtin' && (
           <Field label={s.publicIp}>

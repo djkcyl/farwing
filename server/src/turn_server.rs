@@ -10,8 +10,7 @@ use std::any::Any;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
@@ -61,8 +60,9 @@ pub struct BuiltinTurn {
     udp: Server,
     udp_addr: SocketAddr,
     tcp_addr: Option<SocketAddr>,
-    tcp_task: Option<JoinHandle<()>>,
-    tcp_stop: Arc<Notify>,
+    tls_addr: Option<SocketAddr>,
+    stream_tasks: Vec<JoinHandle<()>>,
+    stream_stop: Arc<Notify>,
 }
 
 impl BuiltinTurn {
@@ -74,14 +74,23 @@ impl BuiltinTurn {
         self.tcp_addr
     }
 
+    pub fn tls_addr(&self) -> Option<SocketAddr> {
+        self.tls_addr
+    }
+
+    /// Stop serving and release the ports (a restart binds them again).
     pub async fn close(self) {
-        self.tcp_stop.notify_waiters();
-        if let Some(t) = self.tcp_task {
+        self.stream_stop.notify_waiters();
+        for t in self.stream_tasks {
             t.abort();
+            let _ = t.await;
         }
         let _ = self.udp.close().await;
     }
 }
+
+/// How long a TURN-over-TLS client has to finish its handshake.
+const TLS_HANDSHAKE: Duration = Duration::from_secs(10);
 
 fn relay_generator(cfg: &TurnConfig) -> Box<dyn RelayAddressGenerator + Send + Sync> {
     let relay_ip: IpAddr = cfg
@@ -125,9 +134,14 @@ async fn new_server(
     .map_err(|e| anyhow::anyhow!("starting TURN server: {e}"))
 }
 
-pub async fn start(cfg: &TurnConfig) -> Result<BuiltinTurn> {
+/// Start the relay for `cfg`; TURN over TLS (`listen_tls`) only with `tls`,
+/// the web certificate's configuration.
+pub async fn start(
+    cfg: &TurnConfig,
+    tls: Option<Arc<rustls::ServerConfig>>,
+) -> Result<BuiltinTurn> {
     let auth = Arc::new(RestAuthHandler::new(cfg.shared_secret.clone()));
-    let listen_udp = cfg.listen_udp.context("[turn] listen_udp missing")?;
+    let listen_udp = cfg.listen_udp.context("turn.listen_udp missing")?;
     let udp = UdpSocket::bind(listen_udp)
         .await
         .with_context(|| format!("binding TURN UDP {listen_udp}"))?;
@@ -135,16 +149,20 @@ pub async fn start(cfg: &TurnConfig) -> Result<BuiltinTurn> {
     let server = new_server(cfg, Arc::new(udp), Arc::clone(&auth)).await?;
     tracing::info!(%udp_addr, "builtin TURN listening (UDP)");
 
-    let tcp_stop = Arc::new(Notify::new());
-    let (tcp_addr, tcp_task) = match cfg.listen_tcp {
-        Some(addr) => {
+    let stream_stop = Arc::new(Notify::new());
+    let mut stream_tasks = Vec::new();
+    let listen = |addr: SocketAddr, tls: Option<Arc<rustls::ServerConfig>>| {
+        let cfg = cfg.clone();
+        let auth = Arc::clone(&auth);
+        let stop = Arc::clone(&stream_stop);
+        async move {
+            let what = if tls.is_some() { "TLS" } else { "TCP" };
             let listener = TcpListener::bind(addr)
                 .await
-                .with_context(|| format!("binding TURN TCP {addr}"))?;
+                .with_context(|| format!("binding TURN {what} {addr}"))?;
             let local = listener.local_addr()?;
-            tracing::info!(tcp_addr = %local, "builtin TURN listening (TCP)");
-            let cfg = cfg.clone();
-            let stop = Arc::clone(&tcp_stop);
+            tracing::info!(addr = %local, "builtin TURN listening ({what})");
+            let acceptor = tls.map(tokio_rustls::TlsAcceptor::from);
             let task = tokio::spawn(async move {
                 loop {
                     let accepted = tokio::select! {
@@ -155,69 +173,119 @@ pub async fn start(cfg: &TurnConfig) -> Result<BuiltinTurn> {
                         tokio::time::sleep(Duration::from_millis(50)).await;
                         continue;
                     };
-                    let cfg = cfg.clone();
-                    let auth = Arc::clone(&auth);
+                    let (cfg, auth, acceptor) = (cfg.clone(), Arc::clone(&auth), acceptor.clone());
                     tokio::spawn(async move {
-                        if let Err(e) = serve_tcp(stream, peer, &cfg, auth).await {
-                            tracing::debug!(%peer, error = %e, "TURN TCP connection ended");
+                        if let Err(e) = serve_stream(stream, peer, acceptor, &cfg, auth).await {
+                            tracing::debug!(%peer, error = %format!("{e:#}"), "TURN {what} connection ended");
                         }
                     });
                 }
             });
-            (Some(local), Some(task))
+            anyhow::Ok((local, task))
         }
-        None => (None, None),
+    };
+    let tcp_addr = match cfg.listen_tcp {
+        Some(addr) => {
+            let (local, task) = listen(addr, None).await?;
+            stream_tasks.push(task);
+            Some(local)
+        }
+        None => None,
+    };
+    let tls_addr = match (cfg.listen_tls, tls) {
+        (Some(addr), Some(tls)) => match listen(addr, Some(tls)).await {
+            Ok((local, task)) => {
+                stream_tasks.push(task);
+                Some(local)
+            }
+            Err(e) => {
+                stream_stop.notify_waiters();
+                for t in stream_tasks {
+                    t.abort();
+                }
+                let _ = server.close().await;
+                return Err(e);
+            }
+        },
+        _ => None,
     };
     Ok(BuiltinTurn {
         udp: server,
         udp_addr,
         tcp_addr,
-        tcp_task,
-        tcp_stop,
+        tls_addr,
+        stream_tasks,
+        stream_stop,
     })
 }
 
-/// One TURN server instance per TCP client connection (the webrtc-rs server is
-/// packet oriented; [`TcpTurnConn`] frames STUN/ChannelData over the stream).
-async fn serve_tcp(
+/// One TURN server instance per TCP or TLS client connection (the webrtc-rs
+/// server is packet oriented; [`StreamTurnConn`] frames STUN/ChannelData
+/// over the stream).
+async fn serve_stream(
     stream: TcpStream,
     peer: SocketAddr,
+    tls: Option<tokio_rustls::TlsAcceptor>,
     cfg: &TurnConfig,
     auth: Arc<RestAuthHandler>,
 ) -> Result<()> {
-    let conn = TcpTurnConn::from_stream(stream)?;
-    debug_assert_eq!(conn.remote, peer);
+    stream.set_nodelay(true).ok();
+    let local = stream.local_addr()?;
+    let conn = match tls {
+        Some(acceptor) => {
+            let stream = tokio::time::timeout(TLS_HANDSHAKE, acceptor.accept(stream))
+                .await
+                .context("TLS handshake timed out")?
+                .context("TLS handshake")?;
+            StreamTurnConn::new(stream, local, peer)
+        }
+        None => StreamTurnConn::new(stream, local, peer),
+    };
     let server = new_server(cfg, Arc::clone(&conn) as Arc<dyn Conn + Send + Sync>, auth).await?;
     conn.wait_closed().await;
     let _ = server.close().await;
     Ok(())
 }
 
-/// Packet view of a TURN-over-TCP stream (RFC 5766 §2.1 / §11.5 framing).
-pub struct TcpTurnConn {
-    reader: Mutex<OwnedReadHalf>,
-    writer: Mutex<OwnedWriteHalf>,
+type BoxedStream = Box<dyn TurnStream>;
+trait TurnStream: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> TurnStream for T {}
+
+/// Packet view of a TURN stream over TCP or TLS (RFC 5766 §2.1 / §11.5
+/// framing).
+pub struct StreamTurnConn {
+    reader: Mutex<ReadHalf<BoxedStream>>,
+    writer: Mutex<WriteHalf<BoxedStream>>,
     local: SocketAddr,
     remote: SocketAddr,
     closed: AtomicBool,
     closed_notify: Notify,
 }
 
-impl TcpTurnConn {
-    /// Wrap a connected TCP stream (server or client side).
-    pub fn from_stream(stream: TcpStream) -> std::io::Result<Arc<Self>> {
-        stream.set_nodelay(true).ok();
-        let local = stream.local_addr()?;
-        let remote = stream.peer_addr()?;
-        let (r, w) = stream.into_split();
-        Ok(Arc::new(TcpTurnConn {
+impl StreamTurnConn {
+    /// Wrap a connected stream (server or client side).
+    pub fn new(
+        stream: impl AsyncRead + AsyncWrite + Send + Unpin + 'static,
+        local: SocketAddr,
+        remote: SocketAddr,
+    ) -> Arc<Self> {
+        let (r, w) = tokio::io::split(Box::new(stream) as BoxedStream);
+        Arc::new(StreamTurnConn {
             reader: Mutex::new(r),
             writer: Mutex::new(w),
             local,
             remote,
             closed: AtomicBool::new(false),
             closed_notify: Notify::new(),
-        }))
+        })
+    }
+
+    /// Wrap a connected TCP stream.
+    pub fn from_tcp(stream: TcpStream) -> std::io::Result<Arc<Self>> {
+        stream.set_nodelay(true).ok();
+        let local = stream.local_addr()?;
+        let remote = stream.peer_addr()?;
+        Ok(Self::new(stream, local, remote))
     }
 
     fn mark_closed(&self) {
@@ -265,7 +333,7 @@ impl TcpTurnConn {
 }
 
 #[async_trait]
-impl Conn for TcpTurnConn {
+impl Conn for StreamTurnConn {
     async fn connect(&self, _addr: SocketAddr) -> webrtc_util::Result<()> {
         Err(webrtc_util::Error::Other("connect not supported".into()))
     }

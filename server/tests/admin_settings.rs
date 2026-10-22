@@ -7,6 +7,14 @@ use common::*;
 use reqwest::Method;
 use serde_json::{Value, json};
 
+fn free_udp_port() -> u16 {
+    std::net::UdpSocket::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -48,10 +56,15 @@ async fn setup_opens_the_server_once() {
     r.err_reason(400, "bad_request", "setting_invalid");
     assert_eq!(r.body["error"]["details"]["field"], "bitrate_limit_mbps");
 
-    let done = srv
-        .send(srv.raw(Method::POST, "/api/v2/setup").json(&request(&code, PASSWORD)))
-        .await;
+    let mut last = request(&code, PASSWORD);
+    last["token"] = json!({"name": "provision", "scope": "admin"});
+    let done = srv.send(srv.raw(Method::POST, "/api/v2/setup").json(&last)).await;
     assert_eq!(done.ok()["settings"]["instance_name"], "Lab");
+    // The token works without a browser.
+    let token = done.ok()["token"].as_str().unwrap().to_owned();
+    srv.admin_call(Method::GET, "/api/v2/admin/settings", &token, None)
+        .await
+        .ok();
     assert_eq!(done.ok()["setup"], false);
     let info = srv.send(srv.raw(Method::GET, "/api/v2/setup")).await;
     assert_eq!(info.ok(), &json!({"state": "done"}));
@@ -217,6 +230,7 @@ async fn the_builtin_relay_starts_and_stops_with_the_settings() {
         "urls": [],
         "listen_udp": "127.0.0.1:0",
         "listen_tcp": null,
+        "listen_tls": "127.0.0.1:0",
         "public_ip": "127.0.0.1",
         "relay_bind": "127.0.0.1",
     }}))
@@ -237,11 +251,26 @@ async fn the_builtin_relay_starts_and_stops_with_the_settings() {
     let view = srv.admin_call(Method::GET, "/api/v2/admin/settings", &token, None).await;
     assert_eq!(view.ok()["relay"]["turn_udp"], udp.as_str());
 
+    // Fixed ports are bound again on every restart.
+    let fixed = |port: u16| format!("127.0.0.1:{port}");
+    let (udp_port, tls_port, stun_port) = (free_udp_port(), free_port(), free_udp_port());
+    put(json!({"turn": {
+        "listen_udp": fixed(udp_port),
+        "listen_tls": fixed(tls_port),
+        "stun": [{"listen": fixed(stun_port), "public": null}],
+    }}))
+    .await
+    .ok();
     // A new secret restarts the relay.
-    let r = srv
-        .admin_call(Method::POST, "/api/v2/admin/settings/relay-secret", &token, None)
-        .await;
-    assert_eq!(r.ok()["outcome"]["relay_restarted"], true);
+    for _ in 0..2 {
+        let r = srv
+            .admin_call(Method::POST, "/api/v2/admin/settings/relay-secret", &token, None)
+            .await;
+        assert_eq!(r.ok()["outcome"]["relay_restarted"], true);
+        assert_eq!(r.ok()["relay"]["turn_udp"], fixed(udp_port));
+        assert_eq!(r.ok()["relay"]["turn_tls"], fixed(tls_port));
+        assert_eq!(r.ok()["relay"]["stun"], json!([fixed(stun_port)]));
+    }
     assert_ne!(srv.app().cfg().turn.shared_secret, "test-shared-secret");
 
     let r = put(json!({"turn": {"mode": "external", "urls": ["turn:turn.test:3478"]}})).await;

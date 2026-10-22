@@ -99,7 +99,7 @@ SDP gzip'd as binary attachments. Events:
 - Presence: Global mutex `OpenUUYC.Presence.{client_id}`; room retry 1-5s random,
   doubling to max_reconnect_delta (300s).
 - ICE servers only from control ACK / be-controlled. P2P keeps only stun:,
-  Relay => ICE policy relay; switch_network: (1,2)=relay TURNS, (3,3)=all.
+  Relay => ICE policy relay; switch_network: (1,2)=relay TURNS, (3,3)=all. (Farwing: relay-only uses every relay transport, TLS ranked first.)
 - SDP munging: a=x-uuremote-mix-kcp:2, 5 recvonly video transceivers.
 
 ## 4. Peer business protocol (data channels)
