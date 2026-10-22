@@ -923,8 +923,10 @@ pub(super) fn show_stream_control_window(
                         for value in std::iter::once(None)
                             .chain(crate::media::CodecPreference::PREFERRED.into_iter().map(Some)) {
                             if menu_row(ui, value.map_or(t().viewer.follow_global, |value| value.label()), "", Some(codec == value), true, false).clicked()
-                                && codec != value {
-                                handle.set_codec_preference(value);
+                                && codec != value
+                                && let Err(error) = handle.set_codec_preference(value)
+                            {
+                                state.local_error = Some(error.to_string());
                             }
                         }
                     }

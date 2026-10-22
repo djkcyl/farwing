@@ -282,8 +282,7 @@ impl Negotiated {
                     codec: c,
                     chroma: row.chroma_sampling,
                     depth: row.bit_depth,
-                }) && (self.dual.preferred_codec.is_some()
-                    || codec.is_none_or(|wanted| wanted == c))
+                }) && codec.is_none_or(|wanted| wanted == c)
             }) && self.choices.iter().any(|choice| {
                 choice.capability.format.codec.wire() == row.video_codec
                     && choice.capability.format.chroma == row.chroma_sampling

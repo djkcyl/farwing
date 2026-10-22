@@ -219,7 +219,9 @@ pub(crate) fn run_connecting_viewer_window(
 
 pub(crate) enum ViewerWindowEvent {
     Close,
-    Listening(AudioView),
+    /// Audio only; the device's name (a window opened by device ID shows
+    /// the ID until it is known).
+    Listening(AudioView, String),
     Playing(Box<NativeViewerSession>),
     Reconnect {
         alias: String,
@@ -246,6 +248,12 @@ pub(super) struct ConnectionProgressApp {
 }
 
 impl ConnectionProgressApp {
+    /// The device's name, once known.
+    pub(super) fn set_alias(&mut self, alias: String) {
+        if !alias.is_empty() {
+            self.alias = alias;
+        }
+    }
     /// Keep the recovered session's last picture behind the progress.
     pub(super) fn set_last_frame(&mut self, image: egui::ColorImage) {
         self.last_frame = Some(image);

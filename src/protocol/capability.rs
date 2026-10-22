@@ -76,6 +76,9 @@ pub(crate) struct DualCapability {
     pub frame_quality_capability: Vec<FrameQualityCapability>,
     #[serde(skip)]
     preferred_hardware: Vec<FrameQualityCapability>,
+    /// The host's own preference, used when this side has none.
+    #[serde(skip)]
+    remote_preferred_codec: Option<i32>,
 }
 
 impl DualCapability {
@@ -172,16 +175,25 @@ impl DualCapability {
                 }
             }
         }
+        let remote_preferred_codec = remote.preferred_codec.filter(|c| matches!(c, 1 | 2 | 5));
         Self {
             preferred_codec: local
                 .preferred_codec
                 .filter(|c| matches!(c, 1 | 2 | 5))
-                .or(remote.preferred_codec.filter(|c| matches!(c, 1 | 2 | 5))),
+                .or(remote_preferred_codec),
+            remote_preferred_codec,
             remote_display_info: remote.display_info,
             local_display_info: local.display_info.clone(),
             frame_quality_capability: rows,
             preferred_hardware,
         }
+    }
+
+    /// Prefer `codec` (1, 2 or 5) from now on; `None` follows the host.
+    pub(crate) fn prefer(&mut self, codec: Option<i32>) {
+        self.preferred_codec = codec
+            .filter(|c| matches!(c, 1 | 2 | 5))
+            .or(self.remote_preferred_codec);
     }
 
     pub(crate) fn exact(

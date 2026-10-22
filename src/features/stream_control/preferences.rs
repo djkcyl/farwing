@@ -25,12 +25,41 @@ impl StreamControlHandle {
         self.display_aspect(track).unwrap_or(size)
     }
 
-    pub(crate) fn set_codec_preference(&self, codec: Option<crate::media::CodecPreference>) {
+    /// Remember this device's codec preference and switch the running
+    /// stream to it when both sides support it (`None` follows the global
+    /// setting). The shared stream of several viewers keeps its codec.
+    pub(crate) fn set_codec_preference(&self, codec: Option<crate::media::CodecPreference>) -> Result<()> {
         let mut state = lock(&self.shared);
-        if state.device_preferences.codec != codec {
-            state.device_preferences.codec = codec;
-            self.publish_device_preferences(&mut state);
+        if state.device_preferences.codec == codec {
+            return Ok(());
         }
+        state.device_preferences.codec = codec;
+        self.publish_device_preferences(&mut state);
+        let effective = codec.unwrap_or_else(|| {
+            crate::media::preferences::load()
+                .map(|options| options.codec)
+                .unwrap_or_default()
+        });
+        let Some(capability) = state.capability.as_mut() else {
+            return Ok(());
+        };
+        capability.prefer(effective.preferred());
+        if self.participants.shared_view() {
+            return Ok(());
+        }
+        let settings = state.settings;
+        let before = state.baseline.codec_type;
+        let selected = super::settings::validate_format(
+            &state,
+            settings.quality,
+            settings.true_color,
+            settings.hdr,
+        )?;
+        if selected.is_none_or(|row| row.video_codec == before) {
+            return Ok(());
+        }
+        self.apply_settings_inner(&mut state, settings, None, true)?;
+        Ok(())
     }
 
     pub(crate) fn device_preferences(&self) -> DevicePreferences {

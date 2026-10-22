@@ -440,8 +440,12 @@ impl ConnectingWindowsRunner {
             }
             match event {
                 ViewerWindowEvent::Close => self.close_requested = true,
-                ViewerWindowEvent::Listening(audio) => {
+                ViewerWindowEvent::Listening(audio, alias) => {
                     let window = self.window.as_ref().context(t().viewer.audio_window_closed)?;
+                    if !alias.is_empty() && alias != self.alias {
+                        self.alias = alias.clone();
+                        window.set_title(&format!("{}{}", crate::VIEWER_TITLE_PREFIX, alias));
+                    }
                     self.audio_restore_geometry.get_or_insert_with(|| {
                         (
                             window.inner_size(),
@@ -450,10 +454,12 @@ impl ConnectingWindowsRunner {
                         )
                     });
                     configure_audio_window(window, false);
-                    self.connecting
+                    let connecting = self
+                        .connecting
                         .as_mut()
-                        .context(t().viewer.audio_view_not_ready)?
-                        .audio = Some(audio);
+                        .context(t().viewer.audio_view_not_ready)?;
+                    connecting.progress.set_alias(alias);
+                    connecting.audio = Some(audio);
                     window.request_redraw();
                 }
                 ViewerWindowEvent::Playing(session) => self.start_playing(*session)?,

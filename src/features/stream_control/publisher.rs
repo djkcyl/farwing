@@ -466,14 +466,13 @@ pub(crate) fn apply_capture_setting(
     next.auto_quality = auto_quality(setting.auto_frame_quality);
     next.revision = next.revision.wrapping_add(1);
     next.configured = true;
+    // The codec the controller asks for (it changes when its user picks
+    // another); the host's choice where that one is not available here.
     let codec = crate::features::host::format::Codec::from_wire(setting.codec_type);
-    if codec.is_none() || next.requested_codec.is_some() {
-        next.requested_codec = codec;
-    }
+    next.requested_codec = codec;
     let selected = if setting.codec_type == 0 || codec.is_some() {
-        negotiated.apply(
+        negotiated.apply_requested(
             &mut next,
-            codec,
             if setting.chroma_format == 3 { 3 } else { 1 },
             setting.enable_hdr,
             (screen.width, screen.height),

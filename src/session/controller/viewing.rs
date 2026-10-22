@@ -368,7 +368,7 @@ pub(super) async fn run_viewer_connection_owner(
             };
             if audio_only {
                 reporter(ConnectionProgress::ready(t().session.connected_audio_only));
-                viewer_sender.send(ViewerWindowEvent::Listening(crate::application::viewer::AudioView::new(session_control.clone(), None)))
+                viewer_sender.send(ViewerWindowEvent::Listening(crate::application::viewer::AudioView::new(session_control.clone(), None), resolved.summary.alias.clone()))
                     .map_err(|_| anyhow!("{}", t().session.error_audio_window_closed))?;
             }
             if update_attempt {tracing::info!("media resumed after controlled update");update_started=None;}
@@ -432,11 +432,11 @@ pub(super) async fn run_viewer_connection_owner(
                             let _ = session_control.set_video_enabled(false).await;
                             audio_only = true;
                             session_control.request_audio_only(true);
-                            viewer_sender.send(ViewerWindowEvent::Listening(crate::application::viewer::AudioView::new(session_control.clone(), Some((t().session.error_media_switch_failed)(&format!("{error:#}")))))).map_err(|_| anyhow!("{}", t().session.error_media_window_closed))?;
+                            viewer_sender.send(ViewerWindowEvent::Listening(crate::application::viewer::AudioView::new(session_control.clone(), Some((t().session.error_media_switch_failed)(&format!("{error:#}")))), resolved.summary.alias.clone())).map_err(|_| anyhow!("{}", t().session.error_media_window_closed))?;
                         } else {
                             audio_only = wanted;
                             if wanted {
-                                viewer_sender.send(ViewerWindowEvent::Listening(crate::application::viewer::AudioView::new(session_control.clone(), None)))
+                                viewer_sender.send(ViewerWindowEvent::Listening(crate::application::viewer::AudioView::new(session_control.clone(), None), resolved.summary.alias.clone()))
                                     .map_err(|_| anyhow!("{}", t().session.error_audio_window_closed))?;
                             }
                         }

@@ -174,9 +174,21 @@ impl StreamControlHandle {
 
     pub(super) fn apply_settings_target(
         &self,
+        state: &mut StreamControlState,
+        settings: StreamControlSettings,
+        screen: Option<i32>,
+    ) -> Result<i64> {
+        self.apply_settings_inner(state, settings, screen, false)
+    }
+
+    /// `reselect`: choose the format again even if nothing else changed
+    /// (the preferred codec did).
+    pub(super) fn apply_settings_inner(
+        &self,
         mut state: &mut StreamControlState,
         settings: StreamControlSettings,
         screen: Option<i32>,
+        reselect: bool,
     ) -> Result<i64> {
         {
             expire_cursor_request(&mut state);
@@ -215,7 +227,8 @@ impl StreamControlHandle {
                     t().features.stream_color_unsupported
                 );
             }
-            let selected = if color_changed
+            let selected = if reselect
+                || color_changed
                 || hdr_changed
                 || (quality_changed && !matches!(settings.quality, StreamQuality::Custom))
             {
