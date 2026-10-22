@@ -87,7 +87,7 @@ farwing-server edge --join <加入链接>                      以边缘节点�
 
 ### 4.1 单机默认
 
-- 内置中继默认开启：STUN / TURN UDP 3478、TURN TCP 3478、**TURN TLS 5349**（复用 HTTPS 的证书；可另设 443）、中继端口 49160–49200、NAT 探测 3479–3480。
+- 内置中继默认开启：STUN / TURN UDP 3478、TURN TCP 3478、**TURN TLS 5349**（端口可自定义；复用 HTTPS 的证书）、中继端口 49160–49200、NAT 探测 3479–3480。
 - `external` 模式（coturn）保留为可选：已有 coturn 的部署填写地址与共享密钥；`none` 删除（只要不想提供中继，关闭内置中继即可）。
 - 客户端拿到的 ICE 服务器：STUN（含探测端口）、TURN UDP / TCP / TLS。TURN TLS 可用后，观看窗口的“高速中转连接”随之可用。
 - 自签名证书时：原生客户端按服务器指纹校验 TURN TLS（与 HTTPS 相同）；浏览器不接受自签名的 TURN TLS，网页端只能用 UDP / TCP 中继。用 ACME 证书时两者都可以。
