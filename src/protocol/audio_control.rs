@@ -20,10 +20,32 @@ pub(crate) enum Message {
         kbps: u32,
         effective_bps: u32,
     },
+    /// `reason`: one of [`reason`]; the receiver words it.
     Rejected {
         request: u64,
-        message: String,
+        reason: String,
     },
+}
+
+/// Why a quality request was not applied.
+pub(crate) mod reason {
+    /// Not one of the offered rates.
+    pub const INVALID_QUALITY: &str = "invalid_quality";
+    /// Desktop audio is not allowed in this session.
+    pub const NOT_ALLOWED: &str = "not_allowed";
+    /// The session has no audio track.
+    pub const NOT_NEGOTIATED: &str = "not_negotiated";
+}
+
+/// A rejection's reason in the interface language.
+pub(crate) fn reason_text(reason: &str) -> &'static str {
+    let t = crate::i18n::t();
+    match reason {
+        reason::INVALID_QUALITY => t.session.audio_quality_required,
+        reason::NOT_ALLOWED => t.features.audio_not_allowed,
+        reason::NOT_NEGOTIATED => t.features.audio_track_not_negotiated,
+        _ => t.features.audio_quality_not_applied,
+    }
 }
 use crate::protocol::peer::{self, FrameType};
 

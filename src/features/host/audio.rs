@@ -178,13 +178,17 @@ impl Audio {
         let Message::Set { request, kbps } = message else {
             anyhow::bail!("unexpected audio control message");
         };
-        let result = (|| -> anyhow::Result<_> {
-            crate::media::audio::encoder::Quality { kbps }.validate()?;
-            anyhow::ensure!(self.allowed(), "{}", t().features.audio_not_allowed);
+        use audio_control::reason;
+        let result = (|| -> Result<_, &'static str> {
+            if (crate::media::audio::encoder::Quality { kbps }).validate().is_err() {
+                return Err(reason::INVALID_QUALITY);
+            }
+            if !self.allowed() {
+                return Err(reason::NOT_ALLOWED);
+            }
             self.0.remote_quality.store(kbps, Ordering::Relaxed);
             self.0.wake.notify_one();
-            self.quality_status()
-                .ok_or_else(|| anyhow::anyhow!(t().features.audio_track_not_negotiated))
+            self.quality_status().ok_or(reason::NOT_NEGOTIATED)
         })();
         Ok(Some(audio_control::encode(match result {
             Ok((revision, quality, config)) => Message::Applied {
@@ -193,9 +197,9 @@ impl Audio {
                 kbps: quality.kbps,
                 effective_bps: config.bitrate,
             },
-            Err(error) => Message::Rejected {
+            Err(reason) => Message::Rejected {
                 request,
-                message: error.to_string(),
+                reason: reason.into(),
             },
         })))
     }

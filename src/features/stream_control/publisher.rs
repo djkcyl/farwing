@@ -79,11 +79,7 @@ pub(crate) fn microphone_event(state: i32) -> Vec<u8> {
 
 /// `HOST_EVENT` announcing a locally confirmed update of this host.
 pub(crate) fn update_started() -> Vec<u8> {
-    crate::protocol::host_event::encode(
-        crate::protocol::host_event::kind::UPDATING,
-        0,
-        t().features.stream_host_updating_farwing,
-    )
+    crate::protocol::host_event::encode(crate::protocol::host_event::kind::UPDATING, 0, "")
 }
 
 /// Session kinds of [`ConnectOptions::kind`], from the server-stated purpose.

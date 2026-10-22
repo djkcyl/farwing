@@ -135,6 +135,23 @@ const HELLO_VIDEO: Record<VideoCodecId, string> = {
   [VideoCodec.AV1]: 'video.av1',
 };
 
+/// Why the host kept control, from its code (`control_turn.rs` `refusal`).
+function refusalText(code: number, holder: string): string {
+  const m = t().viewer.control;
+  switch (code) {
+    case 1:
+      return m.notAvailable;
+    case 2:
+      return m.noPermission;
+    case 3:
+      return m.otherControlling(holder || m.otherParticipant);
+    case 4:
+      return m.notAutomaticShared;
+    default:
+      return m.refused;
+  }
+}
+
 /// Why a session ended, in words for the page (`realtime.rs` `EndReason`);
 /// '' when the connection to the server was lost.
 export function endText(reason: string): string {
@@ -914,8 +931,7 @@ export class Viewer {
     try {
       const m = fpp.parseSession(await this.request(fpp.Type.SESSION, fpp.turnRequest(true, automatic)));
       const held = m.kind === 'turn_result' && m.held;
-      // The host's own words when it gives them.
-      message = m.kind === 'turn_result' && !held ? m.message || t().viewer.control.refused : undefined;
+      message = m.kind === 'turn_result' && !held ? refusalText(m.refusal, m.holder) : undefined;
       this.controlHeld = held;
       this.wantControl = held;
       if (held) this.input.start();

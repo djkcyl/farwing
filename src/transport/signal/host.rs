@@ -228,7 +228,7 @@ impl Session {
                         crate::features::host::power::Action::Reboot => (kind::RESTARTING, 90_000),
                         crate::features::host::power::Action::Shutdown => (kind::SHUTTING_DOWN, 0),
                     };
-                    crate::features::host::participants::broadcast_host_event(event, downtime, "");
+                    crate::features::host::participants::broadcast_host_event(event, downtime);
                     tokio::time::sleep(Duration::from_millis(400)).await;
                     self.end_all(signal, reason::HOST_CLOSED).await;
                     // Keep the presence access lease: Windows may cancel shutdown for

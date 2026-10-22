@@ -132,8 +132,8 @@ fn lifecycle(event: crate::platform::windows::host_lifecycle::Event) {
         return;
     }
     match event {
-        Event::Suspending => broadcast_host_event(kind::SLEEPING, 0, ""),
-        Event::SessionSwitched => broadcast_host_event(kind::SESSION_SWITCH, 5_000, ""),
+        Event::Suspending => broadcast_host_event(kind::SLEEPING, 0),
+        Event::SessionSwitched => broadcast_host_event(kind::SESSION_SWITCH, 5_000),
         Event::Resumed => {}
     }
 }
@@ -262,12 +262,12 @@ pub(crate) fn subscribe() -> (watch::Receiver<u64>, watch::Receiver<u64>) {
 
 /// Announce a host lifecycle event (`HOST_EVENT`, `docs/protocol/v2-design.md`
 /// §10) to every participant, e.g. before a restart ends their sessions.
-pub(crate) fn broadcast_host_event(kind: i32, expected_downtime_ms: u32, message: &str) {
-    publish_host_event(kind, expected_downtime_ms, message, None);
+pub(crate) fn broadcast_host_event(kind: i32, expected_downtime_ms: u32) {
+    publish_host_event(kind, expected_downtime_ms, "", None);
 }
 
-fn publish_host_event(kind: i32, expected_downtime_ms: u32, message: &str, except: Option<u64>) {
-    let frame = crate::protocol::host_event::encode(kind, expected_downtime_ms, message);
+fn publish_host_event(kind: i32, expected_downtime_ms: u32, actor: &str, except: Option<u64>) {
+    let frame = crate::protocol::host_event::encode(kind, expected_downtime_ms, actor);
     {
         let mut event = HUB.event.lock().unwrap_or_else(|p| p.into_inner());
         let sequence = event.as_ref().map_or(1, |(sequence, _, _)| sequence + 1);
@@ -279,15 +279,10 @@ fn publish_host_event(kind: i32, expected_downtime_ms: u32, message: &str, excep
 /// Participant `actor` changed the host's displays; the others are told
 /// (`DISPLAY_CHANGING`) why their picture is about to change.
 pub(crate) fn display_changed(actor: Option<u64>, nickname: &str) {
-    let who = if nickname.trim().is_empty() {
-        t().features.host_other_participant
-    } else {
-        nickname.trim()
-    };
     publish_host_event(
         crate::protocol::host_event::kind::DISPLAY_CHANGING,
         2_000,
-        &(t().features.host_display_changed_by)(who),
+        nickname.trim(),
         actor,
     );
 }

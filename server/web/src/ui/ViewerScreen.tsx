@@ -116,7 +116,7 @@ function colorOf(p: Participant | undefined, id: string): string {
   return `#${value.toString(16).padStart(6, '0')}`;
 }
 
-/// A host event as a banner (the host's own words when it gives them).
+/// A host event as a banner, from its kind.
 function hostEventText(e: HostEvent): string {
   const m = messagesNow().viewer.hostEvents;
   switch (e.kind) {
@@ -131,9 +131,9 @@ function hostEventText(e: HostEvent): string {
     case HostEventKind.SESSION_SWITCH:
       return m.sessionSwitch;
     case HostEventKind.DISPLAY_CHANGING:
-      return e.message || m.displayChanging;
+      return e.actor ? m.displayChangedBy(e.actor.slice(0, 40)) : m.displayChanging;
     default:
-      return e.message || m.changed;
+      return m.changed;
   }
 }
 
@@ -341,7 +341,11 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
           pointers: setPointers,
           hostEvent: (e) => setBanner(hostEventText(e)),
           audio: (a) => {
-            if (a.kind === 'rejected') toast(a.message ?? messagesNow().viewer.screen.audioRejected, 'red');
+            if (a.kind === 'rejected') {
+              const m = messagesNow().viewer.screen;
+              const reasons: Record<string, string> = m.audioReasons;
+              toast(reasons[a.reason ?? ''] ?? m.audioRejected, 'red');
+            }
             if (a.kbps) setAudioKbps(a.kbps);
           },
           codecs: (common, hostPreferred) => {
@@ -910,7 +914,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
           {inkAllowed && ink.available && (
             <Menu label={t.viewer.annotation.title} icon="edit">
               <MenuItem selected={ink.enabled} onClick={() => void toggleInk()}>
-                {ink.enabled ? t.viewer.annotation.turnOff : t.viewer.annotation.turnOn}
+                {t.viewer.annotation.turnOn}
               </MenuItem>
               {ink.enabled && shown && (
                 <>

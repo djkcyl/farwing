@@ -402,13 +402,13 @@ impl StreamControlHandle {
                     Some((Instant::now(), t().features.stream_host_going_offline.into()));
             }
             kind::DISPLAY_CHANGING => {
-                let message = event.message.trim();
+                let actor: String = event.actor.trim().chars().take(40).collect();
                 state.remote_notice = Some((
                     Instant::now(),
-                    if message.is_empty() {
+                    if actor.is_empty() {
                         t().features.stream_host_display_changing.into()
                     } else {
-                        message.chars().take(80).collect()
+                        (t().features.host_display_changed_by)(&actor)
                     },
                 ));
             }

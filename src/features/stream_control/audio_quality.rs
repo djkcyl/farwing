@@ -215,10 +215,11 @@ impl StreamControlHandle {
                     state.error = None;
                 }
             }
-            Message::Rejected { request, message } => {
+            Message::Rejected { request, reason } => {
                 if state.pending.as_ref().is_some_and(|p| p.id == request) {
                     state.pending = None;
-                    state.error = Some(message);
+                    state.error =
+                        Some(crate::protocol::audio_control::reason_text(&reason).to_owned());
                     state.desired = state.confirmed;
                 }
             }

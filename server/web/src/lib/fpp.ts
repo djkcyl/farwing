@@ -241,7 +241,8 @@ export type SessionMessage =
   | { kind: 'quality'; value: Quality }
   | { kind: 'capture_setting_result'; errors: number[] }
   | { kind: 'display_result'; code: number }
-  | { kind: 'turn_result'; held: boolean; message: string }
+  /** `refusal`: `src/features/stream_control/control_turn.rs` `refusal`; `holder`: who holds control. */
+  | { kind: 'turn_result'; held: boolean; refusal: number; holder: string }
   | { kind: 'microphone_result'; code: number }
   | { kind: 'microphone_state'; state: number }
   | { kind: 'other'; tag: number };
@@ -294,7 +295,7 @@ export function parseSession(body: Uint8Array): SessionMessage {
   const display = f.message(21);
   if (display) return { kind: 'display_result', code: display.int32(1) };
   const turn = f.message(23);
-  if (turn) return { kind: 'turn_result', held: turn.bool(1), message: turn.string(2) };
+  if (turn) return { kind: 'turn_result', held: turn.bool(1), refusal: turn.int32(3), holder: turn.string(4) };
   const microphone = f.message(22);
   if (microphone) return { kind: 'microphone_result', code: microphone.int32(1) };
   const state = f.message(3);
@@ -546,7 +547,8 @@ export function parsePermissions(body: Uint8Array): string[] {
 export interface HostEvent {
   kind: number;
   downtimeMs: number;
-  message: string;
+  /** DISPLAY_CHANGING: who changed the displays (nickname; may be empty). */
+  actor: string;
 }
 
 export const HostEventKind = {
@@ -560,7 +562,7 @@ export const HostEventKind = {
 
 export function parseHostEvent(body: Uint8Array): HostEvent {
   const f = new Fields(body);
-  return { kind: f.int32(1), downtimeMs: f.uint32(2), message: f.string(3) };
+  return { kind: f.int32(1), downtimeMs: f.uint32(2), actor: f.string(3) };
 }
 
 export interface AudioState {
@@ -569,7 +571,8 @@ export interface AudioState {
   revision?: number;
   kbps?: number;
   effective_bps?: number;
-  message?: string;
+  /** `rejected`: `src/protocol/audio_control.rs` `reason`. */
+  reason?: string;
 }
 
 export function parseJson<T>(body: Uint8Array): T | undefined {

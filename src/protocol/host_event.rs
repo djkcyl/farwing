@@ -15,8 +15,11 @@ pub(crate) struct HostEvent {
     /// How long the host expects to be unavailable; 0 when unknown.
     #[prost(uint32, tag = "2")]
     pub expected_downtime_ms: u32,
+    /// `DISPLAY_CHANGING`: the nickname of the participant who changed the
+    /// displays (empty when unknown). The receiver words every event in its
+    /// own language.
     #[prost(string, tag = "3")]
-    pub message: String,
+    pub actor: String,
 }
 
 #[allow(dead_code)]
@@ -31,13 +34,13 @@ pub(crate) mod kind {
     pub const DISPLAY_CHANGING: i32 = 6;
 }
 
-pub(crate) fn encode(kind: i32, expected_downtime_ms: u32, message: impl Into<String>) -> Vec<u8> {
+pub(crate) fn encode(kind: i32, expected_downtime_ms: u32, actor: impl Into<String>) -> Vec<u8> {
     peer::message(
         FrameType::HostEvent,
         &HostEvent {
             kind,
             expected_downtime_ms,
-            message: message.into(),
+            actor: actor.into(),
         },
     )
 }
