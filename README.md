@@ -21,14 +21,7 @@ Farwing 不连接、不依赖 UU 官方服务、官方客户端或官方凭据�
 
 ## 快速开始
 
-1. 部署服务端并创建账号（详见 [server/README.md](server/README.md)）：
-
-   ```sh
-   farwing-server init --config farwing-server.toml --public-url https://farwing.example.com:8443
-   farwing-server --config farwing-server.toml user create admin --admin
-   farwing-server --config farwing-server.toml user create alice
-   farwing-server serve --config farwing-server.toml
-   ```
+1. 部署服务端（详见 [server/README.md](server/README.md)）：运行 `farwing-server`，用浏览器打开 `https://<服务器>:8443/setup`，输入控制台打印的初始化码，创建管理员并完成设置，然后在网页端创建账号或生成邀请码。
 
    浏览器打开 `https://farwing.example.com:8443/` 即为网页端：管理员可以在“管理”中创建账号、生成邀请码、查看设备与会话、发布客户端更新；所有账号可以管理设备与好友，并在浏览器中连接自己或好友共享的设备（按授权观看与控制）。
 

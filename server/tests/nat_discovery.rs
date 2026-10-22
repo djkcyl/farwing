@@ -180,6 +180,7 @@ async fn server(endpoints: Vec<StunEndpoint>) -> TestServer {
         c.turn.urls.clear();
         c.turn.shared_secret = "builtin-secret".into();
         c.turn.listen_udp = Some(sa("127.0.0.1:0"));
+        c.turn.listen_tcp = None;
         c.turn.public_ip = Some("127.0.0.1".parse().unwrap());
         c.turn.relay_bind = "127.0.0.1".parse().unwrap();
         c.turn.stun = endpoints;

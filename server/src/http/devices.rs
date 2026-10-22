@@ -267,7 +267,7 @@ pub async fn init(
     app.limiter
         .take(
             &format!("init:{ip}"),
-            app.cfg.limits.device_init_per_ip_hour,
+            app.cfg().limits.device_init_per_ip_hour,
             Duration::from_secs(3600),
         )
         .map_err(ApiError::rate_limited)?;
@@ -536,7 +536,7 @@ fn sniff_image(data: &[u8]) -> Option<&'static str> {
 }
 
 fn wallpaper_path(app: &App, device_id: &str) -> std::path::PathBuf {
-    app.cfg.wallpaper_dir().join(device_id)
+    app.cfg().wallpaper_dir().join(device_id)
 }
 
 /// `PUT /api/v2/devices/self/wallpaper` (raw PNG/JPEG/BMP body).
@@ -550,7 +550,7 @@ pub async fn put_wallpaper(
         return Err(ApiError::bad_request("wallpaper must be PNG, JPEG or BMP"));
     };
     let etag = sha256_hex(&body);
-    let dir = app.cfg.wallpaper_dir();
+    let dir = app.cfg().wallpaper_dir();
     let path = wallpaper_path(&app, &auth.device.id);
     let tmp = dir.join(format!(
         "{}.tmp-{}",

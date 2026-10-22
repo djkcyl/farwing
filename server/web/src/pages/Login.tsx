@@ -10,12 +10,22 @@ import { LangSwitch } from '../ui/LangSwitch';
 import { BrandMark } from '../ui/Shell';
 import { instanceText } from '../lib/format';
 
-export function AuthFrame({ title, children, foot }: { title: string; children: ReactNode; foot?: ReactNode }) {
+export function AuthFrame({
+  title,
+  children,
+  foot,
+  wide,
+}: {
+  title: string;
+  children: ReactNode;
+  foot?: ReactNode;
+  wide?: boolean;
+}) {
   const { info } = useAuth();
   return (
     <div className="auth-page">
       <LangSwitch className="lang-corner" />
-      <div className="auth-card">
+      <div className={`auth-card ${wide ? 'wide' : ''}`}>
         <div className="auth-brand">
           <BrandMark size={40} />
           <div>

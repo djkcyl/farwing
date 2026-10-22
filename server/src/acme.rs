@@ -52,7 +52,7 @@ impl ResolvesServerCert for Resolver {
     }
 }
 
-fn certified_key(chain: Vec<CertificateDer<'static>>, key: &PrivateKeyDer<'_>) -> Result<Arc<CertifiedKey>> {
+pub(crate) fn certified_key(chain: Vec<CertificateDer<'static>>, key: &PrivateKeyDer<'_>) -> Result<Arc<CertifiedKey>> {
     let signing = rustls::crypto::ring::sign::any_supported_type(key)
         .map_err(|e| anyhow!("unsupported certificate key: {e}"))?;
     Ok(Arc::new(CertifiedKey::new(chain, signing)))

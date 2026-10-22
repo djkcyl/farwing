@@ -57,14 +57,12 @@ export default function Audit() {
           setApplied({ kind, actor: actor.trim() });
         }}
       >
-        <Select value={kind} onChange={(e) => setKind(e.target.value)} style={{ width: lang === 'en' ? 260 : 180 }}>
-          <option value="">{m.allKinds}</option>
-          {auditKinds().map(([k, v]) => (
-            <option key={k} value={k}>
-              {v}
-            </option>
-          ))}
-        </Select>
+        <Select
+          value={kind}
+          onChange={setKind}
+          width={lang === 'en' ? 260 : 180}
+          options={[{ value: '', label: m.allKinds }, ...auditKinds().map(([k, v]) => ({ value: k, label: v }))]}
+        />
         <Input
           value={actor}
           onChange={(e) => setActor(e.target.value)}

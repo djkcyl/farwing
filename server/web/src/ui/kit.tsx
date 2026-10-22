@@ -1,14 +1,18 @@
 // The console's own components, styled to match the Farwing client
 // (`styles.css`).
 import {
+  useCallback,
+  useEffect,
   useId,
+  useRef,
   useState,
   type ButtonHTMLAttributes,
+  type CSSProperties,
   type InputHTMLAttributes,
   type ReactNode,
-  type SelectHTMLAttributes,
 } from 'react';
 import { useT } from '../i18n/react';
+import { useDismiss } from './dismiss';
 import { Icon, type IconName } from './icons';
 
 type Variant = 'primary' | 'default' | 'ghost' | 'danger';
@@ -60,32 +64,232 @@ export function Input({ className = '', ...rest }: InputHTMLAttributes<HTMLInput
   return <input {...rest} id={rest.id ?? id} className={`input ${className}`} />;
 }
 
-export function Select({ className = '', children, ...rest }: SelectHTMLAttributes<HTMLSelectElement>) {
+export interface Option<T> {
+  value: T;
+  label: ReactNode;
+}
+
+/// One of several values, from the console's own menu.
+export function Select<T extends string | number>({
+  value,
+  options,
+  onChange,
+  width,
+  disabled,
+}: {
+  value: T;
+  options: Option<NoInfer<T>>[];
+  onChange(value: NoInfer<T>): void;
+  width?: number;
+  disabled?: boolean;
+}) {
   const id = useId();
+  const [open, setOpen] = useState(false);
+  // Fixed to the window: a dialog's scrolling body would clip it.
+  const [place, setPlace] = useState<CSSProperties>();
+  const close = useCallback(() => setOpen(false), []);
+  const ref = useDismiss(open, close);
+  const button = useRef<HTMLButtonElement>(null);
+  const current = options.find((o) => o.value === value);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: Event) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('scroll', away, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('scroll', away, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [open, close, ref]);
+  function toggle() {
+    const r = button.current?.getBoundingClientRect();
+    if (open || !r) {
+      setOpen(false);
+      return;
+    }
+    const below = window.innerHeight - r.bottom;
+    const up = below < 240 && r.top > below;
+    setPlace({
+      position: 'fixed',
+      left: r.left,
+      right: 'auto',
+      minWidth: r.width,
+      top: up ? 'auto' : r.bottom + 6,
+      bottom: up ? window.innerHeight - r.top + 6 : 'auto',
+      maxHeight: (up ? r.top : below) - 16,
+    });
+    setOpen(true);
+  }
   return (
-    <select {...rest} id={rest.id ?? id} className={`input select ${className}`}>
-      {children}
-    </select>
+    <div className="select-wrap" ref={ref} style={width ? { width } : undefined}>
+      <button
+        type="button"
+        id={id}
+        ref={button}
+        className="input select select-button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={toggle}
+      >
+        <span className="ellipsis">{current?.label}</span>
+      </button>
+      {open && (
+        <div className="menu select-menu" role="listbox" style={place}>
+          {options.map((o) => (
+            <button
+              key={String(o.value)}
+              type="button"
+              role="option"
+              aria-selected={o.value === value}
+              className={`menu-item ${o.value === value ? 'selected' : ''}`}
+              onClick={() => {
+                onChange(o.value);
+                setOpen(false);
+              }}
+            >
+              <span className="menu-check">{o.value === value && <Icon name="check" size={14} />}</span>
+              <span className="grow">{o.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
+/// A few values side by side, one of them chosen.
+export function Segmented<T extends string>({
+  value,
+  options,
+  onChange,
+  disabled,
+}: {
+  value: T;
+  options: Option<NoInfer<T>>[];
+  onChange(value: NoInfer<T>): void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="segmented" role="radiogroup">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={o.value === value}
+          disabled={disabled}
+          className={o.value === value ? 'active' : ''}
+          onClick={() => onChange(o.value)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/// A labelled control. `group`: several controls (or buttons) under one
+/// label, which then labels none of them.
 export function Field({
   label,
   hint,
   error,
+  group,
   children,
 }: {
   label: ReactNode;
   hint?: ReactNode;
   error?: ReactNode;
+  group?: boolean;
   children: ReactNode;
 }) {
-  return (
-    <label className="field">
-      <span className="field-label">{label}</span>
+  const id = useId();
+  const content = (
+    <>
+      <span className="field-label" id={group ? id : undefined}>
+        {label}
+      </span>
       {children}
       {error ? <span className="field-error">{error}</span> : hint ? <span className="field-hint">{hint}</span> : null}
-    </label>
+    </>
+  );
+  return group ? (
+    <div className="field" role="group" aria-labelledby={id}>
+      {content}
+    </div>
+  ) : (
+    <label className="field">{content}</label>
+  );
+}
+
+/// A list edited as text, one item per line.
+export function LinesInput({
+  value,
+  onChange,
+  rows = 3,
+  placeholder,
+}: {
+  value: string[];
+  onChange(value: string[]): void;
+  rows?: number;
+  placeholder?: string;
+}) {
+  const id = useId();
+  const [text, setText] = useState(value.join('\n'));
+  return (
+    <textarea
+      id={id}
+      className="input mono-input"
+      rows={Math.max(rows, text.split('\n').length)}
+      value={text}
+      placeholder={placeholder}
+      spellCheck={false}
+      onChange={(e) => {
+        setText(e.target.value);
+        onChange(
+          e.target.value
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean),
+        );
+      }}
+    />
+  );
+}
+
+/// A button choosing a text file; its name is shown once chosen.
+export function FilePick({
+  label,
+  accept,
+  onText,
+}: {
+  label: string;
+  accept?: string;
+  onText(text: string, name: string): void;
+}) {
+  const [name, setName] = useState('');
+  return (
+    <span className="row gap-sm">
+      <label className="btn btn-default btn-md file-pick">
+        <input
+          type="file"
+          accept={accept}
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            e.target.value = '';
+            if (!file) return;
+            setName(file.name);
+            onText(await file.text(), file.name);
+          }}
+        />
+        <Icon name="upload" size={16} />
+        <span>{label}</span>
+      </label>
+      {name && <span className="small muted ellipsis">{name}</span>}
+    </span>
   );
 }
 

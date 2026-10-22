@@ -35,6 +35,7 @@ const zhCodes = {
   registration_disabled: '服务器未开放注册',
   internal: '服务器内部错误',
   unavailable: '服务不可用',
+  setup_required: '服务器尚未初始化',
   network: '无法连接服务器',
   unknown: '未知错误',
 };
@@ -67,6 +68,7 @@ const enCodes: Codes = {
   registration_disabled: 'Registration is closed on this server',
   internal: 'Internal server error',
   unavailable: 'Service unavailable',
+  setup_required: 'This server has not been set up',
   network: "Can't connect to the server",
   unknown: 'Unknown error',
 };
@@ -105,10 +107,11 @@ const zhReasons = {
   update_version_invalid: '版本号无效',
   update_url_invalid: '下载地址应为 http(s) 链接',
   update_notes_too_long: '说明过长',
-  instance_name_invalid: (max: Param) => `实例名称应为 1–${max ?? 64} 个字符`,
-  bitrate_limit_invalid: (min: Param, max: Param) =>
-    min === undefined || max === undefined ? '码率上限无效' : `码率上限应为 ${min}–${max} Mbit/s`,
-  web_caps_invalid: '网页端能力须包含观看，且仅限网页端支持的能力',
+  setting_invalid: '设置无效',
+  setup_code_invalid: '初始化码错误或已过期',
+  setup_done: '服务器已初始化',
+  admin_login_required: '需要管理员登录操作',
+  nothing_to_confirm: '没有待确认的更改',
   self_friend: '不能添加自己为好友',
   self_connect: '不能连接本机',
   // Devices, permissions and sessions
@@ -175,10 +178,11 @@ const enReasons: Reasons = {
   update_version_invalid: 'Invalid version',
   update_url_invalid: 'Download URL must be an http(s) link',
   update_notes_too_long: 'Notes are too long',
-  instance_name_invalid: (max) => `Instance name must be 1–${max ?? 64} characters`,
-  bitrate_limit_invalid: (min, max) =>
-    min === undefined || max === undefined ? 'Invalid bitrate limit' : `Bitrate limit must be ${min}–${max} Mbit/s`,
-  web_caps_invalid: 'Browser capabilities must include viewing and only supported ones',
+  setting_invalid: 'Invalid setting',
+  setup_code_invalid: 'The setup code is wrong or has expired',
+  setup_done: 'This server is already set up',
+  admin_login_required: 'An administrator must sign in to do this',
+  nothing_to_confirm: 'Nothing waits for confirmation',
   self_friend: "Can't add yourself as a friend",
   self_connect: "Can't connect a device to itself",
   not_own_device: 'Only your own devices can be managed',
@@ -230,7 +234,6 @@ export function reasonMessage(lang: Lang, reason: string, details?: ErrorDetails
     case 'password_too_short':
       return entry(param(details, 'min'), undefined);
     case 'invite_uses_invalid':
-    case 'bitrate_limit_invalid':
       return entry(param(details, 'min'), param(details, 'max'));
     case 'code_locked':
       return entry(param(details, 'minutes'), undefined);

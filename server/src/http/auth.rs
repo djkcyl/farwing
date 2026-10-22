@@ -156,8 +156,8 @@ pub async fn device_from_parts(app: &App, parts: &mut Parts) -> ApiResult<Device
         .unwrap_or("/");
     // Behind a reverse proxy that strips the public URL's path prefix the
     // client signed the prefixed path.
-    let prefixed = (!app.path_prefix.is_empty())
-        .then(|| format!("{}{path_and_query}", app.path_prefix));
+    let path_prefix = app.path_prefix();
+    let prefixed = (!path_prefix.is_empty()).then(|| format!("{path_prefix}{path_and_query}"));
     let valid = std::iter::once(path_and_query)
         .chain(prefixed.as_deref())
         .any(|path| {
@@ -246,9 +246,10 @@ fn revoked() -> ApiError {
 /// (`[web]` in the configuration).
 fn web_lifetime(app: &App, device: &DeviceRow) -> Option<(i64, i64)> {
     (device.platform == farwing_protocol::Platform::Web).then(|| {
+        let cfg = app.cfg();
         (
-            i64::from(app.cfg.web.session_idle_minutes.max(1)) * 60,
-            i64::from(app.cfg.web.session_max_hours.max(1)) * 3600,
+            i64::from(cfg.web.session_idle_minutes.max(1)) * 60,
+            i64::from(cfg.web.session_max_hours.max(1)) * 3600,
         )
     })
 }
@@ -259,16 +260,79 @@ fn web_live(tok: &db::AccessTokenRow, now: i64, idle: i64, max: i64) -> bool {
 
 /// An administrator (`docs/web-console.md` §4.2): an account with the
 /// `admin` role, from an allowed network, whose login passed the second
-/// factor when TOTP is enabled.
+/// factor when TOTP is enabled; or an administration API token
+/// (`Authorization: Bearer fwa_…`, no signature) created by one.
 pub struct AdminAuth {
-    pub account: AccountAuth,
+    pub user: UserRow,
     pub ip: std::net::IpAddr,
+    /// The API token used (ID, name), when not a signed-in login.
+    pub token: Option<(String, String)>,
 }
 
 impl AdminAuth {
     pub fn user(&self) -> &UserRow {
-        &self.account.user
+        &self.user
     }
+}
+
+fn admin_required() -> ApiError {
+    ApiError::reason(
+        ErrorCode::Forbidden,
+        reason::ADMIN_REQUIRED,
+        "administrator role required",
+    )
+}
+
+/// The administration API token in `Authorization`, checked.
+async fn admin_token(
+    app: &App,
+    token: &str,
+    method: &axum::http::Method,
+    ip: std::net::IpAddr,
+) -> ApiResult<AdminAuth> {
+    if !ids::is_token(token, super::tokens::PREFIX) {
+        return Err(ApiError::unauthorized());
+    }
+    let hash = token_hash(token);
+    let row = app
+        .db
+        .call(move |c| crate::webdb::admin_token_by_hash(c, &hash))
+        .await?
+        .ok_or_else(ApiError::unauthorized)?;
+    let now = db::now_s();
+    if row.revoked_at.is_some() || row.expires_at.is_some_and(|e| e <= now) {
+        return Err(revoked());
+    }
+    let networks: Vec<ipnet::IpNet> = row.allow.iter().filter_map(|a| a.parse().ok()).collect();
+    if !networks.is_empty() && !networks.iter().any(|n| n.contains(&ip)) {
+        return Err(ApiError::reason(
+            ErrorCode::Forbidden,
+            reason::ADMIN_NETWORK_DENIED,
+            "this token is not allowed from this address",
+        ));
+    }
+    if row.scope != crate::webdb::SCOPE_ADMIN
+        && !matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD)
+    {
+        return Err(ApiError::forbidden("this token can only read"));
+    }
+    let (creator, id) = (row.created_by.clone(), row.id.clone());
+    let ip_text = ip.to_string();
+    let user = app
+        .db
+        .call(move |c| {
+            crate::webdb::touch_admin_token(c, &id, &ip_text)?;
+            let user = db::get_user(c, &creator)?;
+            let role = crate::webdb::role(c, &creator)?;
+            Ok(user.filter(|u| !u.disabled && role == crate::webdb::ROLE_ADMIN))
+        })
+        .await?
+        .ok_or_else(revoked)?;
+    Ok(AdminAuth {
+        user,
+        ip,
+        token: Some((row.id, row.name)),
+    })
 }
 
 impl FromRequestParts<App> for AdminAuth {
@@ -279,13 +343,19 @@ impl FromRequestParts<App> for AdminAuth {
             .get::<super::ClientIp>()
             .map(|c| c.0)
             .ok_or_else(ApiError::internal)?;
-        let allow = &app.cfg.web.admin_allow;
+        let allow = app.cfg().web.admin_allow.clone();
         if !allow.is_empty() && !allow.iter().any(|n| n.contains(&ip)) {
             return Err(ApiError::reason(
                 ErrorCode::Forbidden,
                 reason::ADMIN_NETWORK_DENIED,
                 "admin console not allowed from this address",
             ));
+        }
+        if !is_signed(&parts.headers)
+            && let Some(token) = bearer(&parts.headers)
+            && token.starts_with(super::tokens::PREFIX)
+        {
+            return admin_token(app, &token.to_owned(), &parts.method, ip).await;
         }
         let account = AccountAuth::from_request_parts(parts, app).await?;
         let (uid, hash) = (account.user.id.clone(), account.token_hash.clone());
@@ -300,11 +370,7 @@ impl FromRequestParts<App> for AdminAuth {
             })
             .await?;
         if role != crate::webdb::ROLE_ADMIN {
-            return Err(ApiError::reason(
-                ErrorCode::Forbidden,
-                reason::ADMIN_REQUIRED,
-                "administrator role required",
-            ));
+            return Err(admin_required());
         }
         if totp.is_some() && mfa.is_none() {
             return Err(ApiError::reason(
@@ -313,7 +379,11 @@ impl FromRequestParts<App> for AdminAuth {
                 "two-step verification required",
             ));
         }
-        Ok(AdminAuth { account, ip })
+        Ok(AdminAuth {
+            user: account.user,
+            ip,
+            token: None,
+        })
     }
 }
 
@@ -395,7 +465,7 @@ impl FromRequestParts<App> for AnyAuth {
 }
 
 pub async fn guest_for_device(app: &App, token: &str, device: &DeviceRow) -> ApiResult<String> {
-    if !app.settings.read().guests || !ids::is_token(token, ids::GUEST_TOKEN_PREFIX) {
+    if !app.cfg().guest.enabled || !ids::is_token(token, ids::GUEST_TOKEN_PREFIX) {
         return Err(ApiError::unauthorized());
     }
     let hash = token_hash(token);
@@ -421,9 +491,10 @@ pub async fn guest_for_device(app: &App, token: &str, device: &DeviceRow) -> Api
 pub async fn link_auth_valid(app: &App, device_id: &str, auth: &LinkAuth) -> bool {
     let device_id = device_id.to_owned();
     let auth = auth.clone();
-    let guest_enabled = app.settings.read().guests;
-    let web_idle = i64::from(app.cfg.web.session_idle_minutes.max(1)) * 60;
-    let web_max = i64::from(app.cfg.web.session_max_hours.max(1)) * 3600;
+    let cfg = app.cfg();
+    let guest_enabled = cfg.guest.enabled;
+    let web_idle = i64::from(cfg.web.session_idle_minutes.max(1)) * 60;
+    let web_max = i64::from(cfg.web.session_max_hours.max(1)) * 3600;
     app.db
         .call(move |c| {
             Ok(match &auth {

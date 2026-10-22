@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 fn promote(srv: &TestServer, username: &str) {
-    farwing_server::admin::user_set_role(&srv.cfg, username, true).unwrap();
+    srv.promote(username);
 }
 
 /// A browser (platform `web`) signed in as `username`.
@@ -162,8 +162,16 @@ async fn last_administrator_and_self_are_protected() {
     srv.delete(&format!("/api/v2/admin/users/{root_id}"), &root)
         .await
         .err_reason(400, "bad_request", "self_delete");
-    // The command line refuses too.
-    assert!(farwing_server::admin::user_set_role(&srv.cfg, "root", false).is_err());
+    // So does an administration token.
+    let token = srv.admin_token("admin");
+    srv.admin_call(
+        Method::PATCH,
+        &format!("/api/v2/admin/users/{root_id}"),
+        &token,
+        Some(json!({"admin": false})),
+    )
+    .await
+    .err_reason(400, "bad_request", "last_admin");
 
     // With a second administrator, the first may be demoted by the second.
     srv.call(Method::PATCH, &format!("/api/v2/admin/users/{bob_id}"), &root, Some(json!({"admin": true})))
@@ -358,21 +366,32 @@ async fn settings_and_announcements_apply_at_once() {
     promote(&srv, "root");
     let root = browser(&srv, "root").await;
 
-    let mut runtime = srv.get("/api/v2/admin/settings", &root).await.ok()["runtime"].clone();
-    runtime["instance_name"] = json!("Lab");
-    runtime["bitrate_limit_mbps"] = json!(40);
-    srv.put("/api/v2/admin/settings", &root, runtime.clone()).await.ok();
+    let view = srv.get("/api/v2/admin/settings", &root).await;
+    assert_eq!(view.ok()["settings"]["turn"]["shared_secret"], "", "secrets are not shown");
+    assert_eq!(view.ok()["turn_secret_set"], true);
+    srv.put(
+        "/api/v2/admin/settings",
+        &root,
+        json!({"instance_name": "Lab", "bitrate_limit_mbps": 40}),
+    )
+    .await
+    .ok();
     let info = srv.get("/api/v2/server", &root).await;
     assert_eq!(info.ok()["server"]["instance_name"], "Lab");
     assert_eq!(srv.get("/api/v2/config", &root).await.ok()["bitrate_limit_mbps"], 40);
-    runtime["bitrate_limit_mbps"] = json!(0);
-    let r = srv.put("/api/v2/admin/settings", &root, runtime).await;
-    r.err_reason(400, "bad_request", "bitrate_limit_invalid");
-    assert_eq!((r.body["error"]["details"]["min"].as_u64(), r.body["error"]["details"]["max"].as_u64()), (Some(1), Some(10_000)));
-    let audit = srv.get("/api/v2/admin/audit?kind=settings.save", &root).await;
+    let r = srv
+        .put("/api/v2/admin/settings", &root, json!({"bitrate_limit_mbps": 0}))
+        .await;
+    r.err_reason(400, "bad_request", "setting_invalid");
+    assert_eq!(r.body["error"]["details"]["field"], "bitrate_limit_mbps");
+    assert_eq!(r.body["error"]["details"]["problem"], "out_of_range");
+    // The refused change left the settings as they were, secret included.
+    assert_eq!(srv.get("/api/v2/config", &root).await.ok()["bitrate_limit_mbps"], 40);
+    assert_eq!(srv.app().cfg().turn.shared_secret, "test-shared-secret");
+    let audit = srv.get("/api/v2/admin/audit?kind=settings.update", &root).await;
     let detail: serde_json::Value =
         serde_json::from_str(audit.ok()[0]["detail"].as_str().unwrap()).unwrap();
-    assert_eq!(detail, json!({"instance_name": "Lab", "bitrate_limit_mbps": 40}));
+    assert_eq!(detail, json!({"groups": ["bitrate_limit_mbps", "instance_name"]}));
 
     srv.post(
         "/api/v2/admin/updates",
@@ -426,19 +445,20 @@ async fn browser_logins_expire_sooner_and_web_caps_limit_browsers() {
     assert!(r.ok()["target"]["granted"].as_array().unwrap().contains(&json!("ports")));
 
     // The administrator makes the web view-only.
-    let mut runtime = srv.get("/api/v2/admin/settings", &web).await.ok()["runtime"].clone();
-    assert_eq!(runtime["web_caps"].as_array().unwrap().len(), 7);
-    runtime["web_caps"] = json!(["audio", "view", "ports"]);
-    srv.put("/api/v2/admin/settings", &web, runtime.clone())
+    let settings = srv.get("/api/v2/admin/settings", &web).await.ok()["settings"].clone();
+    assert_eq!(settings["web"]["caps"].as_array().unwrap().len(), 7);
+    srv.put("/api/v2/admin/settings", &web, json!({"web": {"caps": ["audio", "view", "ports"]}}))
         .await
         .err(400, "bad_request");
-    runtime["web_caps"] = json!(["audio"]);
-    srv.put("/api/v2/admin/settings", &web, runtime.clone())
-        .await
-        .err_reason(400, "bad_request", "web_caps_invalid");
-    runtime["web_caps"] = json!(["audio", "view"]);
-    let saved = srv.put("/api/v2/admin/settings", &web, runtime).await;
-    assert_eq!(saved.ok()["web_caps"], json!(["view", "audio"]));
+    let r = srv
+        .put("/api/v2/admin/settings", &web, json!({"web": {"caps": ["audio"]}}))
+        .await;
+    r.err_reason(400, "bad_request", "setting_invalid");
+    assert_eq!(r.body["error"]["details"]["field"], "web.caps");
+    let saved = srv
+        .put("/api/v2/admin/settings", &web, json!({"web": {"caps": ["audio", "view"]}}))
+        .await;
+    assert_eq!(saved.ok()["settings"]["web"]["caps"], json!(["view", "audio"]));
     srv.post("/api/v2/sessions", &web, json!({"target_device_id": host.id, "purpose": "files"}))
         .await
         .err(403, "forbidden");

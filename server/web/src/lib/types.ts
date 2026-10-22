@@ -283,16 +283,134 @@ export interface LiveSession {
   controller_alias: string;
 }
 
-export interface RuntimeSettings {
+export type TlsMode = 'self_signed' | 'provided' | 'acme' | 'proxy';
+export type TurnMode = 'builtin' | 'external' | 'none';
+export type AcmeChallenge = 'auto' | 'tls-alpn-01' | 'http-01';
+
+/// Limits and timeouts (`limits` in the settings).
+export interface LimitsSettings {
+  heartbeat_ms: number;
+  idle_timeout_ms: number;
+  resume_ttl_s: number;
+  ticket_ttl_s: number;
+  max_frame_bytes: number;
+  max_sdp_bytes: number;
+  max_candidates: number;
+  max_candidate_bytes: number;
+  ws_rate_per_s: number;
+  ws_rate_burst: number;
+  device_init_per_ip_hour: number;
+  login_failures_per_ip: number;
+  login_failures_per_user: number;
+  assist_failures_per_minute: number;
+  assist_host_reply_ms: number;
+  assist_decision_wait_ms: number;
+  guest_token_ttl_s: number;
+}
+
+export interface StunEndpoint {
+  listen: string;
+  public: string | null;
+}
+
+/// The server's settings (`docs/server-admin-api.md`); secrets are empty
+/// when read.
+export interface ServerSettings {
+  listen: string;
+  public_url: string;
   instance_name: string;
-  guests: boolean;
-  registration: boolean;
+  trusted_proxies: string[];
   bitrate_limit_mbps: number | null;
-  /// What browsers may do at most (always with `view`).
-  web_caps: string[];
+  log: string;
+  registration: boolean;
+  tls: {
+    mode: TlsMode;
+    hostnames: string[];
+    acme: {
+      domains: string[];
+      contact: string;
+      directory: string;
+      challenge: AcmeChallenge;
+      http_listen: string | null;
+      ca_root: string | null;
+      agree_tos: boolean;
+    };
+  };
+  guest: { enabled: boolean };
+  turn: {
+    mode: TurnMode;
+    urls: string[];
+    shared_secret: string;
+    credential_ttl: number;
+    force_relay: boolean;
+    listen_udp: string | null;
+    listen_tcp: string | null;
+    public_ip: string | null;
+    realm: string;
+    relay_bind: string;
+    relay_ip: string | null;
+    relay_port_min: number | null;
+    relay_port_max: number | null;
+    stun: StunEndpoint[];
+  };
+  limits: LimitsSettings;
+  web: {
+    enabled: boolean;
+    admin_allow: string[];
+    session_idle_minutes: number;
+    session_max_hours: number;
+    audit_days: number;
+    caps: string[];
+  };
+}
+
+export interface ListenPending {
+  url: string;
+  confirm_by: number;
 }
 
 export interface SettingsView {
-  runtime: RuntimeSettings;
-  config: Record<string, unknown>;
+  settings: ServerSettings;
+  turn_secret_set: boolean;
+  listen_locked: boolean;
+  data_dir: string;
+  tls: { fingerprint: string | null; acme: AcmeStatus | null; provided: boolean };
+  relay: {
+    turn_udp: string | null;
+    turn_tcp: string | null;
+    stun: string[];
+    nat_discovery: string[];
+    local_ipv4: string | null;
+  };
+  setup: boolean;
+  listen_pending: ListenPending | null;
+}
+
+/// What saving settings did.
+export interface Outcome {
+  listen_url: string | null;
+  confirm_by: number | null;
+  fingerprint_changed: boolean;
+  relay_restarted: boolean;
+}
+
+export type Applied = SettingsView & { outcome: Outcome };
+
+export interface SetupInfo {
+  state: 'setup' | 'recovery' | 'done';
+  current?: SettingsView;
+}
+
+export interface AdminToken {
+  id: string;
+  name: string;
+  scope: 'read' | 'admin';
+  allow: string[];
+  created_by: string;
+  created_by_name: string;
+  created_at: number;
+  expires_at: number | null;
+  last_used_at: number | null;
+  last_used_ip: string;
+  revoked_at: number | null;
 }

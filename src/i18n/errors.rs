@@ -32,6 +32,7 @@ pub(crate) struct Errors {
     pub registration_disabled: &'static str,
     pub internal: &'static str,
     pub unavailable: &'static str,
+    pub setup_required: &'static str,
     pub network: &'static str,
     pub unknown: &'static str,
 
@@ -73,11 +74,11 @@ pub(crate) struct Errors {
     pub update_version_invalid: &'static str,
     pub update_url_invalid: &'static str,
     pub update_notes_too_long: &'static str,
-    /// The longest instance name.
-    pub instance_name_invalid: fn(u64) -> String,
-    /// Lowest and highest limit in Mbit/s.
-    pub bitrate_limit_invalid: fn(u64, u64) -> String,
-    pub web_caps_invalid: &'static str,
+    pub setting_invalid: &'static str,
+    pub setup_code_invalid: &'static str,
+    pub setup_done: &'static str,
+    pub admin_login_required: &'static str,
+    pub nothing_to_confirm: &'static str,
     pub self_friend: &'static str,
     pub self_connect: &'static str,
 
@@ -140,6 +141,7 @@ impl Errors {
             ErrorCode::RegistrationDisabled => self.registration_disabled,
             ErrorCode::Internal => self.internal,
             ErrorCode::Unavailable => self.unavailable,
+            ErrorCode::SetupRequired => self.setup_required,
             ErrorCode::Network => self.network,
             ErrorCode::Unknown => self.unknown,
         }
@@ -181,11 +183,11 @@ impl Errors {
             reason::UPDATE_VERSION_INVALID => text(self.update_version_invalid),
             reason::UPDATE_URL_INVALID => text(self.update_url_invalid),
             reason::UPDATE_NOTES_TOO_LONG => text(self.update_notes_too_long),
-            reason::INSTANCE_NAME_INVALID => n("max").map(self.instance_name_invalid),
-            reason::BITRATE_LIMIT_INVALID => {
-                Some((self.bitrate_limit_invalid)(n("min")?, n("max")?))
-            }
-            reason::WEB_CAPS_INVALID => text(self.web_caps_invalid),
+            reason::SETTING_INVALID => text(self.setting_invalid),
+            reason::SETUP_CODE_INVALID => text(self.setup_code_invalid),
+            reason::SETUP_DONE => text(self.setup_done),
+            reason::ADMIN_LOGIN_REQUIRED => text(self.admin_login_required),
+            reason::NOTHING_TO_CONFIRM => text(self.nothing_to_confirm),
             reason::SELF_FRIEND => text(self.self_friend),
             reason::SELF_CONNECT => text(self.self_connect),
             reason::NOT_OWN_DEVICE => text(self.not_own_device),
@@ -249,6 +251,7 @@ pub(crate) const ZH_CN: Errors = Errors {
     registration_disabled: "服务器未开放注册",
     internal: "服务器内部错误",
     unavailable: "服务不可用",
+    setup_required: "服务器尚未初始化",
     network: "无法连接服务器",
     unknown: "未知错误",
 
@@ -283,9 +286,11 @@ pub(crate) const ZH_CN: Errors = Errors {
     update_version_invalid: "版本号无效",
     update_url_invalid: "下载地址应为 http(s) 链接",
     update_notes_too_long: "说明过长",
-    instance_name_invalid: |max| format!("实例名称应为 1–{max} 个字符"),
-    bitrate_limit_invalid: |min, max| format!("码率上限应为 {min}–{max} Mbit/s"),
-    web_caps_invalid: "网页端能力须包含观看，且仅限网页端支持的能力",
+    setting_invalid: "设置无效",
+    setup_code_invalid: "初始化码错误或已过期",
+    setup_done: "服务器已初始化",
+    admin_login_required: "需要管理员登录操作",
+    nothing_to_confirm: "没有待确认的更改",
     self_friend: "不能添加自己为好友",
     self_connect: "不能连接本机",
 
@@ -341,6 +346,7 @@ pub(crate) const EN: Errors = Errors {
     registration_disabled: "Registration is closed on this server",
     internal: "Internal server error",
     unavailable: "Service unavailable",
+    setup_required: "This server has not been set up",
     network: "Can't connect to the server",
     unknown: "Unknown error",
 
@@ -375,9 +381,11 @@ pub(crate) const EN: Errors = Errors {
     update_version_invalid: "Invalid version",
     update_url_invalid: "Download URL must be an http(s) link",
     update_notes_too_long: "Notes are too long",
-    instance_name_invalid: |max| format!("Instance name must be 1–{max} characters"),
-    bitrate_limit_invalid: |min, max| format!("Bitrate limit must be {min}–{max} Mbit/s"),
-    web_caps_invalid: "Browser capabilities must include viewing and only supported ones",
+    setting_invalid: "Invalid setting",
+    setup_code_invalid: "The setup code is wrong or has expired",
+    setup_done: "This server is already set up",
+    admin_login_required: "An administrator must sign in to do this",
+    nothing_to_confirm: "Nothing waits for confirmation",
     self_friend: "Can't add yourself as a friend",
     self_connect: "Can't connect a device to itself",
 

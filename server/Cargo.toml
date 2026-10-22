@@ -40,7 +40,6 @@ ipnet = { version = "2.11", features = ["serde"] }
 parking_lot = "0.12"
 rand = "0.9"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
-rpassword = "7.4"
 rusqlite = { version = "0.37", features = ["bundled"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -50,7 +49,6 @@ sha2 = "0.10"
 subtle = "2.6"
 thiserror = "2"
 tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "fs", "io-util"] }
-toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 turn = "0.17.2"

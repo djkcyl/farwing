@@ -34,10 +34,12 @@ const ADMIN_ROUTES: [string, Page][] = [
   ['/admin/sessions', page(() => import('./pages/admin/Sessions'))],
   ['/admin/updates', page(() => import('./pages/admin/Updates'))],
   ['/admin/settings', page(() => import('./pages/admin/Settings'))],
+  ['/admin/tokens', page(() => import('./pages/admin/Tokens'))],
   ['/admin/audit', page(() => import('./pages/admin/Audit'))],
 ];
 
 const ViewPage = page(() => import('./pages/View'));
+const SetupPage = page(() => import('./pages/Setup'));
 const VisitPage = page(() => import('./pages/Visit'));
 
 function find(routes: [string, Page][], path: string): [Page, Record<string, string>] | undefined {
@@ -67,6 +69,13 @@ function Routes() {
     return (
       <Suspense fallback={<Loading />}>
         <VisitPage params={{}} />
+      </Suspense>
+    );
+  }
+  if (path === '/setup' || auth.status === 'setup') {
+    return (
+      <Suspense fallback={<Loading />}>
+        <SetupPage params={{}} />
       </Suspense>
     );
   }

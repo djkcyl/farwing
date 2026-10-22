@@ -614,15 +614,18 @@ async fn device_changed_pushes_and_unbind_closes_presence() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn admin_cli_revocation_applies_to_running_server() {
+async fn admin_api_revocation_applies_at_once() {
     let srv = start().await;
-    srv.create_user("carol");
+    let carol = srv.create_user("carol");
     let a = srv.account_device("carol", "A", true).await;
     let (mut ws, _) = srv.presence(&a).await;
+    let token = srv.admin_token("admin");
+    let user = format!("/api/v2/admin/users/{carol}");
 
-    farwing_server::admin::user_set_disabled(&srv.cfg, "carol", true).unwrap();
+    srv.admin_call(Method::PATCH, &user, &token, Some(json!({"disabled": true})))
+        .await
+        .ok();
     srv.get("/api/v2/me", &a).await.err(401, "session_revoked");
-    // The running server picks up the change and closes the presence link.
     assert_eq!(ws.expect_close(&[]).await, Some(4003));
     let mut again = a.clone();
     again.access = None;
@@ -634,16 +637,25 @@ async fn admin_cli_revocation_applies_to_running_server() {
     .await
     .err(401, "unauthorized");
 
-    farwing_server::admin::user_set_disabled(&srv.cfg, "carol", false).unwrap();
+    srv.admin_call(Method::PATCH, &user, &token, Some(json!({"disabled": false})))
+        .await
+        .ok();
     srv.login(&mut again, "carol").await;
     let (mut ws, _) = srv.presence(&again).await;
-    farwing_server::admin::user_passwd(&srv.cfg, "carol", "another-password").unwrap();
+    srv.admin_call(
+        Method::POST,
+        &format!("{user}/password"),
+        &token,
+        Some(json!({"password": "another-password"})),
+    )
+    .await
+    .ok();
     assert_eq!(ws.expect_close(&[]).await, Some(4003));
     srv.get("/api/v2/me", &again)
         .await
         .err(401, "session_revoked");
 
-    // device remove from the CLI.
+    // Unbinding a device.
     let mut b = again.clone();
     b.access = None;
     let r = srv
@@ -655,15 +667,18 @@ async fn admin_cli_revocation_applies_to_running_server() {
         .await;
     b.access = Some(r.ok()["access_token"].as_str().unwrap().to_owned());
     let (mut ws, _) = srv.presence(&b).await;
-    farwing_server::admin::device_remove(&srv.cfg, &b.id).unwrap();
+    srv.admin_call(
+        Method::DELETE,
+        &format!("/api/v2/admin/devices/{}", b.id),
+        &token,
+        None,
+    )
+    .await
+    .ok();
     assert_eq!(ws.expect_close(&[]).await, Some(4003));
     srv.get("/api/v2/me", &b).await.err(401, "session_revoked");
-    farwing_server::admin::session_list(&srv.cfg).unwrap();
-    farwing_server::admin::device_list(&srv.cfg, Some("carol")).unwrap();
-    farwing_server::admin::user_list(&srv.cfg).unwrap();
-    farwing_server::admin::friend_list(&srv.cfg, "carol").unwrap();
-    assert!(farwing_server::admin::user_create(&srv.cfg, "short", None, "1234567").is_err());
-    farwing_server::admin::user_delete(&srv.cfg, "carol").unwrap();
+    srv.admin_call(Method::GET, "/api/v2/admin/sessions", &token, None).await.ok();
+    srv.admin_call(Method::DELETE, &user, &token, None).await.ok();
     srv.shutdown().await;
 }
 
@@ -993,46 +1008,39 @@ async fn proxy_mode_serves_plain_http_behind_tls_proxy() {
 
 #[test]
 fn self_signed_certificate_is_generated_once_and_reused() {
+    use farwing_server::config::{Config, TlsMode};
     farwing_server::tls::install_crypto_provider();
     let dir = tempfile::tempdir().unwrap();
-    let data = dir
-        .path()
-        .join("d")
-        .display()
-        .to_string()
-        .replace('\\', "/");
-    let base = |tls: &str| {
-        format!(
-            "listen = \"127.0.0.1:0\"\npublic_url = \"https://farwing.test:8443\"\ndata_dir = \"{data}\"\n[tls]\n{tls}\n"
-        )
+    let mut cfg = Config::initial(dir.path().join("d"), "127.0.0.1:0".parse().unwrap());
+    cfg.public_url = "https://farwing.test:8443".into();
+    cfg.tls.mode = TlsMode::SelfSigned;
+    cfg.tls.hostnames = vec!["farwing.test".into()];
+    let fp = |cfg: &Config| {
+        farwing_server::tls::prepare(cfg)
+            .unwrap()
+            .unwrap()
+            .presented
+            .fingerprint()
     };
-    let cfg = farwing_server::Config::from_toml_str(
-        &base("self_signed = true\nhostnames = [\"farwing.test\"]"),
-        dir.path(),
-    )
-    .unwrap();
-    let a = farwing_server::tls::load(&cfg).unwrap().unwrap();
-    let b = farwing_server::tls::load(&cfg).unwrap().unwrap();
-    assert_eq!(a.fingerprint, b.fingerprint);
-    assert_eq!(a.fingerprint.len(), 95);
-    // The same files work as an explicit cert/key pair.
-    let cfg = farwing_server::Config::from_toml_str(
-        &base(&format!(
-            "cert = \"{data}/tls/cert.pem\"\nkey = \"{data}/tls/key.pem\""
-        )),
-        dir.path(),
-    )
-    .unwrap();
-    let c = farwing_server::tls::load(&cfg).unwrap().unwrap();
-    assert_eq!(a.fingerprint, c.fingerprint);
-    // Invalid configurations are rejected.
-    let bad_scheme = "listen = \"127.0.0.1:0\"\npublic_url = \"http://x\"\ndata_dir = \"d\"\n[tls]\nmode = \"proxy\"\n";
-    assert!(farwing_server::Config::from_toml_str(bad_scheme, dir.path()).is_err());
-    let no_cert = "listen = \"127.0.0.1:0\"\npublic_url = \"https://x\"\ndata_dir = \"d\"\n";
-    assert!(farwing_server::Config::from_toml_str(no_cert, dir.path()).is_err());
-    // Unknown keys are rejected.
-    let unknown = "listen = \"127.0.0.1:0\"\npublic_url = \"https://x\"\ndata_dir = \"d\"\n[tls]\nmode = \"proxy\"\n[input]\nkeylock_optimize = true\n";
-    assert!(farwing_server::Config::from_toml_str(unknown, dir.path()).is_err());
+    let a = fp(&cfg);
+    assert_eq!(a, fp(&cfg));
+    assert_eq!(a.len(), 95);
+    // A new name needs a new certificate.
+    cfg.tls.hostnames.push("other.test".into());
+    let b = fp(&cfg);
+    assert_ne!(a, b);
+    // The same files work as an uploaded certificate.
+    let tls = cfg.tls_dir();
+    let cert = std::fs::read_to_string(tls.join("cert.pem")).unwrap();
+    let key = std::fs::read_to_string(tls.join("key.pem")).unwrap();
+    assert_eq!(farwing_server::tls::store_provided(&tls, &cert, &key).unwrap(), b);
+    cfg.tls.mode = TlsMode::Provided;
+    assert_eq!(fp(&cfg), b);
+    // A key of another certificate is refused.
+    let other = rcgen::generate_simple_self_signed(vec!["x.test".into()]).unwrap();
+    let wrong = other.signing_key.serialize_pem();
+    assert!(farwing_server::tls::store_provided(&tls, &cert, &wrong).is_err());
+    assert!(farwing_server::tls::store_provided(&tls, "junk", &key).is_err());
 }
 
 #[test]

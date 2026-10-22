@@ -150,7 +150,7 @@ async fn run(app: App, socket: WebSocket, start: Start, ip: IpAddr) {
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let idle_sleep = tokio::time::sleep(idle);
     tokio::pin!(idle_sleep);
-    let mut bucket = TokenBucket::new(cfg.limits.rate_per_s, app.cfg.limits.ws_rate_burst);
+    let mut bucket = TokenBucket::new(cfg.limits.rate_per_s, app.cfg().limits.ws_rate_burst);
     let max_frame = cfg.limits.max_frame_bytes;
 
     let mut close_with: Option<(u16, String)> = None;

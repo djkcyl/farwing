@@ -1,48 +1,108 @@
-//! Server configuration (TOML).
+//! Server settings (`docs/protocol/deployment-design.md` §2). They live in
+//! the database as one JSON document, are edited in the web console or
+//! through the administration API, and are applied while the server runs
+//! (`crate::runtime`). Only the data directory and an optional fixed
+//! listen address come from the command line.
 
 use anyhow::{Context, Result, anyhow, bail};
 use ipnet::IpNet;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Why a setting was refused: the field (dotted path) and a problem code the
+/// web console translates, with an English explanation for logs and curl.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SettingError {
+    pub field: String,
+    /// `required`, `invalid`, `out_of_range`, `conflict` or `unavailable`.
+    pub problem: &'static str,
+    pub message: String,
+}
+
+impl SettingError {
+    pub fn new(field: &str, problem: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            field: field.to_owned(),
+            problem,
+            message: message.into(),
+        }
+    }
+    fn required(field: &str, message: impl Into<String>) -> Self {
+        Self::new(field, "required", message)
+    }
+    fn invalid(field: &str, message: impl Into<String>) -> Self {
+        Self::new(field, "invalid", message)
+    }
+    fn range(field: &str, message: impl Into<String>) -> Self {
+        Self::new(field, "out_of_range", message)
+    }
+}
+
+impl std::fmt::Display for SettingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.field, self.message)
+    }
+}
+
+impl std::error::Error for SettingError {}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// Database, wallpapers, certificates (`--data-dir`); not a setting.
+    #[serde(skip)]
+    pub data_dir: PathBuf,
     /// Socket address of the HTTPS/WSS listener.
     pub listen: SocketAddr,
+    /// `listen` was fixed by `--listen` / `FARWING_LISTEN` and cannot be
+    /// changed online.
+    #[serde(skip)]
+    pub listen_locked: bool,
     /// Public `https://` base URL used to build realtime endpoints.
     pub public_url: String,
-    /// Directory for the SQLite database, wallpapers and generated certificates.
-    pub data_dir: PathBuf,
-    /// Name shown in `GET /api/v2/server`.
-    #[serde(default = "default_instance_name")]
+    /// Name shown in `GET /api/v2/server` and the web console.
     pub instance_name: String,
     /// Peers (CIDRs) whose `X-Forwarded-For` header is honored.
-    #[serde(default)]
     pub trusted_proxies: Vec<IpNet>,
     /// Session bitrate cap handed to clients.
-    #[serde(default)]
     pub bitrate_limit_mbps: Option<u32>,
     /// `tracing` filter directive, e.g. `info` or `farwing_server=debug`.
     /// `RUST_LOG` overrides it.
-    #[serde(default)]
-    pub log: Option<String>,
-    #[serde(default)]
+    pub log: String,
+    /// Accounts may be registered with an invitation code.
+    pub registration: bool,
     pub tls: TlsConfig,
-    #[serde(default)]
     pub guest: GuestConfig,
-    #[serde(default)]
     pub turn: TurnConfig,
-    #[serde(default)]
     pub limits: LimitsConfig,
-    #[serde(default)]
     pub web: WebConfig,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            data_dir: PathBuf::from("data"),
+            listen: SocketAddr::from(([0, 0, 0, 0], 8443)),
+            listen_locked: false,
+            public_url: "https://localhost:8443".to_owned(),
+            instance_name: "farwing".to_owned(),
+            trusted_proxies: Vec::new(),
+            bitrate_limit_mbps: None,
+            log: "info".to_owned(),
+            registration: false,
+            tls: TlsConfig::default(),
+            guest: GuestConfig::default(),
+            turn: TurnConfig::default(),
+            limits: LimitsConfig::default(),
+            web: WebConfig::default(),
+        }
+    }
+}
+
 /// The web console (`docs/web-console.md`).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WebConfig {
     /// Serve the web console at `/` (the API is always available).
@@ -55,6 +115,9 @@ pub struct WebConfig {
     pub session_max_hours: u32,
     /// Days the audit log is kept.
     pub audit_days: u32,
+    /// What browser controllers may do at most: a subset of `caps::WEB`
+    /// with `view`; `["view", "audio"]` makes the web view-only.
+    pub caps: Vec<String>,
 }
 
 impl Default for WebConfig {
@@ -65,40 +128,41 @@ impl Default for WebConfig {
             session_idle_minutes: 30,
             session_max_hours: 12,
             audit_days: 180,
+            caps: farwing_protocol::caps::WEB
+                .iter()
+                .map(|c| (*c).to_owned())
+                .collect(),
         }
     }
 }
 
-fn default_instance_name() -> String {
-    "farwing".to_owned()
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TlsMode {
-    /// Terminate TLS in the server (certificate files or self-signed).
+    /// A certificate generated by the server (clients pin its fingerprint).
     #[default]
-    Tls,
+    SelfSigned,
+    /// A certificate and key uploaded by the administrator
+    /// (`<data>/tls/provided-*.pem`).
+    Provided,
+    /// A certificate obtained and renewed automatically from an ACME CA.
+    Acme,
     /// Plain HTTP behind a TLS-terminating reverse proxy.
     Proxy,
-    /// Terminate TLS here with a certificate obtained and renewed
-    /// automatically from an ACME CA (`[tls.acme]`).
-    Acme,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TlsConfig {
     pub mode: TlsMode,
-    pub cert: Option<PathBuf>,
-    pub key: Option<PathBuf>,
-    pub self_signed: bool,
+    /// Extra names on the self-signed certificate (the host of
+    /// `public_url` is always included).
     pub hostnames: Vec<String>,
     pub acme: AcmeConfig,
 }
 
 /// How the ACME CA verifies that this server controls the domain.
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AcmeChallenge {
     /// TLS-ALPN-01 when `public_url` uses port 443, else HTTP-01 when
     /// `http_listen` is set.
@@ -114,7 +178,7 @@ pub enum AcmeChallenge {
     Http01,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AcmeConfig {
     /// Names on the certificate; empty = the host of `public_url`.
@@ -162,9 +226,10 @@ impl AcmeConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GuestConfig {
+    /// Devices without an account may host and connect (guests, visitors).
     pub enabled: bool,
 }
 
@@ -174,27 +239,29 @@ impl Default for GuestConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnMode {
+    /// Embedded STUN/TURN server.
+    #[default]
+    Builtin,
     /// coturn (or compatible) with `use-auth-secret`.
     External,
-    /// Embedded STUN/TURN server.
-    Builtin,
     /// STUN only, no relay credentials.
-    #[default]
     None,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TurnConfig {
     pub mode: TurnMode,
-    /// ICE server URLs handed to clients (`stun:`, `turn:`, `turns:`).
+    /// ICE server URLs handed to clients (`stun:`, `turn:`, `turns:`);
+    /// external mode, or to override the builtin server's.
     pub urls: Vec<String>,
-    /// TURN REST shared secret (coturn `static-auth-secret`).
+    /// TURN REST shared secret (coturn `static-auth-secret`); generated at
+    /// setup, never shown.
     pub shared_secret: String,
-    #[serde(deserialize_with = "de_duration")]
+    #[serde(with = "secs")]
     pub credential_ttl: Duration,
     pub force_relay: bool,
     // ---- builtin only
@@ -208,12 +275,12 @@ pub struct TurnConfig {
     pub relay_ip: Option<IpAddr>,
     pub relay_port_min: Option<u16>,
     pub relay_port_max: Option<u16>,
-    /// Extra STUN endpoints for NAT behaviour discovery (`[[turn.stun]]`).
+    /// Extra STUN endpoints for NAT behaviour discovery.
     pub stun: Vec<StunEndpoint>,
 }
 
 /// An extra STUN Binding endpoint of the builtin server (RFC 5780).
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct StunEndpoint {
     /// Local UDP address to bind.
@@ -242,6 +309,18 @@ impl TurnConfig {
     }
 }
 
+/// Durations stored as whole seconds.
+mod secs {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+    pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u64(d.as_secs())
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
+        Ok(Duration::from_secs(u64::deserialize(d)?))
+    }
+}
+
 /// Whether two UDP listen addresses cannot both be bound.
 fn listen_conflict(a: SocketAddr, b: SocketAddr) -> bool {
     a.port() != 0
@@ -250,7 +329,7 @@ fn listen_conflict(a: SocketAddr, b: SocketAddr) -> bool {
         && (a.ip() == b.ip() || a.ip().is_unspecified() || b.ip().is_unspecified())
 }
 
-/// Checks `[[turn.stun]]` in builtin mode.
+/// Checks the extra STUN endpoints in builtin mode.
 fn validate_stun(turn: &TurnConfig) -> Result<()> {
     let primary = turn.listen_udp.context("[turn] listen_udp missing")?;
     // Known public addresses (port 0 is only resolved when binding).
@@ -364,225 +443,218 @@ fn stun_warnings(turn: &TurnConfig, out: &mut Vec<String>) {
 
 impl Default for TurnConfig {
     fn default() -> Self {
+        let any = |port| Some(SocketAddr::from(([0, 0, 0, 0], port)));
         Self {
-            mode: TurnMode::None,
+            mode: TurnMode::Builtin,
             urls: Vec::new(),
             shared_secret: String::new(),
             credential_ttl: Duration::from_secs(12 * 3600),
             force_relay: false,
-            listen_udp: None,
-            listen_tcp: None,
+            listen_udp: any(3478),
+            listen_tcp: any(3478),
             public_ip: None,
             realm: "farwing".to_owned(),
             relay_bind: IpAddr::from([0, 0, 0, 0]),
             relay_ip: None,
-            relay_port_min: None,
-            relay_port_max: None,
-            stun: Vec::new(),
+            relay_port_min: Some(49160),
+            relay_port_max: Some(49200),
+            stun: [3479, 3480]
+                .into_iter()
+                .map(|port| StunEndpoint {
+                    listen: SocketAddr::from(([0, 0, 0, 0], port)),
+                    public: None,
+                })
+                .collect(),
         }
     }
 }
 
-/// Optional overrides of protocol limits, timers and rate limits.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct LimitsConfig {
-    pub heartbeat_ms: u32,
-    pub idle_timeout_ms: u32,
-    pub resume_ttl_s: u64,
-    pub ticket_ttl_s: u64,
-    pub max_frame_bytes: usize,
-    pub max_sdp_bytes: usize,
-    pub max_candidates: usize,
-    pub max_candidate_bytes: usize,
-    pub ws_rate_per_s: u32,
-    pub ws_rate_burst: u32,
-    /// New anonymous/bound devices per source IP and hour.
-    pub device_init_per_ip_hour: u32,
-    /// Failed logins per source IP per 15 minutes.
-    pub login_failures_per_ip: u32,
-    /// Failed logins per username per 15 minutes.
-    pub login_failures_per_user: u32,
-    /// Assistance attempts per (account, connect_id) and minute that do not
-    /// end in a session.
-    pub assist_failures_per_minute: u32,
-    /// Wait for a host to answer the PAKE of `assist/join`.
-    pub assist_host_reply_ms: u64,
-    /// Long poll of `assist/requests/{id}/accept` (key check and confirmation).
-    pub assist_decision_wait_ms: u64,
-    pub guest_token_ttl_s: u64,
-}
-
-impl Default for LimitsConfig {
-    fn default() -> Self {
-        use farwing_protocol::{limits, timing};
-        Self {
-            heartbeat_ms: timing::HEARTBEAT_MS,
-            idle_timeout_ms: timing::IDLE_TIMEOUT_MS,
-            resume_ttl_s: limits::RESUME_TTL_SECONDS,
-            ticket_ttl_s: limits::TICKET_TTL_SECONDS,
-            max_frame_bytes: limits::MAX_WS_FRAME,
-            max_sdp_bytes: limits::MAX_SDP_BYTES,
-            max_candidates: limits::MAX_CANDIDATES,
-            max_candidate_bytes: limits::MAX_CANDIDATE_BYTES,
-            ws_rate_per_s: limits::WS_RATE_PER_SECOND,
-            ws_rate_burst: limits::WS_RATE_BURST,
-            device_init_per_ip_hour: 30,
-            login_failures_per_ip: 20,
-            login_failures_per_user: 10,
-            assist_failures_per_minute: 10,
-            assist_host_reply_ms: limits::ASSIST_HOST_REPLY_WAIT_MS,
-            assist_decision_wait_ms: limits::ASSIST_DECISION_WAIT_MS,
-            guest_token_ttl_s: 24 * 3600,
-        }
-    }
-}
-
-/// Accepts integer seconds or a string such as `"12h"`, `"30m"`, `"90s"`, `"1d"`.
-fn de_duration<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Raw {
-        Secs(u64),
-        Text(String),
-    }
-    match Raw::deserialize(d)? {
-        Raw::Secs(s) => Ok(Duration::from_secs(s)),
-        Raw::Text(t) => parse_duration(&t).map_err(serde::de::Error::custom),
-    }
-}
-
-pub fn parse_duration(text: &str) -> Result<Duration> {
-    let t = text.trim();
-    if t.is_empty() {
-        bail!("empty duration");
-    }
-    let split = t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len());
-    let (num, unit) = t.split_at(split);
-    let n: u64 = num
-        .parse()
-        .with_context(|| format!("invalid duration {t:?}"))?;
-    let mult = match unit.trim() {
-        "" | "s" => 1,
-        "m" => 60,
-        "h" => 3600,
-        "d" => 86400,
-        other => bail!("invalid duration unit {other:?} (use s, m, h or d)"),
-    };
-    Ok(Duration::from_secs(n * mult))
-}
+const INSTANCE_NAME_MAX: usize = 64;
+const BITRATE: std::ops::RangeInclusive<u32> = 1..=10_000;
 
 impl Config {
-    /// Load and validate a config file. Relative paths inside the file are
-    /// resolved against the file's directory.
-    pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading config {}", path.display()))?;
-        let mut cfg: Config =
-            toml::from_str(&text).with_context(|| format!("parsing config {}", path.display()))?;
-        let base = path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-        cfg.resolve_paths(&base);
-        cfg.validate()?;
-        Ok(cfg)
-    }
-
-    pub fn from_toml_str(text: &str, base: &Path) -> Result<Self> {
-        let mut cfg: Config = toml::from_str(text)?;
-        cfg.resolve_paths(base);
-        cfg.validate()?;
-        Ok(cfg)
-    }
-
-    fn resolve_paths(&mut self, base: &Path) {
-        let fix = |p: &mut PathBuf| {
-            if p.is_relative() {
-                *p = base.join(&*p);
-            }
-        };
-        fix(&mut self.data_dir);
-        if let Some(p) = self.tls.cert.as_mut() {
-            fix(p);
+    /// The settings of a server that has not been set up yet: listen on
+    /// `listen`, a self-signed certificate for this machine's names, the
+    /// builtin relay waiting for its public address.
+    pub fn initial(data_dir: PathBuf, listen: SocketAddr) -> Self {
+        let local = local_ipv4();
+        let host = local.map_or_else(|| "localhost".to_owned(), |ip| ip.to_string());
+        let mut hostnames = vec!["localhost".to_owned(), "127.0.0.1".to_owned()];
+        if let Some(ip) = local {
+            hostnames.push(ip.to_string());
         }
-        if let Some(p) = self.tls.key.as_mut() {
-            fix(p);
+        if let Some(name) = machine_name() {
+            hostnames.push(name);
         }
-        if let Some(p) = self.tls.acme.ca_root.as_mut() {
-            fix(p);
+        Self {
+            data_dir,
+            listen,
+            public_url: format!("https://{host}:{}", listen.port()),
+            tls: TlsConfig {
+                hostnames,
+                ..TlsConfig::default()
+            },
+            turn: TurnConfig {
+                shared_secret: crate::crypto::new_shared_secret(),
+                ..TurnConfig::default()
+            },
+            ..Self::default()
         }
     }
 
-    pub fn validate(&self) -> Result<()> {
+    /// Check the settings as a whole; the first problem found.
+    pub fn validate(&self) -> Result<(), SettingError> {
         let url = url::Url::parse(&self.public_url)
-            .with_context(|| format!("public_url {:?} is not a URL", self.public_url))?;
+            .map_err(|_| SettingError::invalid("public_url", "public_url is not a URL"))?;
         if url.scheme() != "https" {
-            bail!("public_url must use https:// (also in tls.mode = \"proxy\")");
+            return Err(SettingError::invalid(
+                "public_url",
+                "public_url must use https:// (also behind a reverse proxy)",
+            ));
         }
-        if url.host_str().is_none() {
-            bail!("public_url has no host");
+        if url.host_str().is_none_or(str::is_empty) {
+            return Err(SettingError::invalid("public_url", "public_url has no host"));
+        }
+        let name = self.instance_name.trim();
+        if name.is_empty() || name.chars().count() > INSTANCE_NAME_MAX {
+            return Err(SettingError::range(
+                "instance_name",
+                format!("instance_name must be 1-{INSTANCE_NAME_MAX} characters"),
+            ));
+        }
+        if self.bitrate_limit_mbps.is_some_and(|n| !BITRATE.contains(&n)) {
+            return Err(SettingError::range(
+                "bitrate_limit_mbps",
+                "bitrate_limit_mbps must be 1-10000",
+            ));
+        }
+        if tracing_subscriber::EnvFilter::try_new(&self.log).is_err() {
+            return Err(SettingError::invalid("log", "log is not a valid filter"));
+        }
+        let caps = &self.web.caps;
+        if !caps.iter().any(|c| c == farwing_protocol::caps::VIEW)
+            || caps
+                .iter()
+                .any(|c| !farwing_protocol::caps::WEB.contains(&c.as_str()))
+        {
+            return Err(SettingError::invalid(
+                "web.caps",
+                "web.caps must include view and only browser capabilities",
+            ));
+        }
+        let web = &self.web;
+        for (field, value) in [
+            ("web.session_idle_minutes", web.session_idle_minutes),
+            ("web.session_max_hours", web.session_max_hours),
+            ("web.audit_days", web.audit_days),
+        ] {
+            if value == 0 {
+                return Err(SettingError::range(field, format!("{field} must be positive")));
+            }
         }
         match self.tls.mode {
-            TlsMode::Proxy => {}
-            TlsMode::Tls => {
-                if !self.tls.self_signed && (self.tls.cert.is_none() || self.tls.key.is_none()) {
-                    bail!("[tls] needs cert and key, or self_signed = true, or mode = \"proxy\"");
-                }
-            }
+            TlsMode::SelfSigned | TlsMode::Provided | TlsMode::Proxy => {}
             TlsMode::Acme => {
                 let acme = &self.tls.acme;
                 if !acme.agree_tos {
-                    bail!(
-                        "[tls.acme] agree_tos = true is required: it confirms that you accept the \
-                         terms of service of the CA ({})",
-                        acme.directory_url()
-                    );
+                    return Err(SettingError::required(
+                        "tls.acme.agree_tos",
+                        format!(
+                            "the terms of service of the CA ({}) must be accepted",
+                            acme.directory_url()
+                        ),
+                    ));
                 }
                 let domains = self.acme_domains();
                 if domains.is_empty() {
-                    bail!("[tls.acme] needs domains (or a host name in public_url)");
+                    return Err(SettingError::required(
+                        "tls.acme.domains",
+                        "ACME needs a domain name (or one in public_url)",
+                    ));
                 }
-                for d in &domains {
-                    if d.parse::<IpAddr>().is_ok() || !d.contains('.') {
-                        bail!("[tls.acme] {d:?} is not a public domain name");
-                    }
+                if let Some(d) = domains
+                    .iter()
+                    .find(|d| d.parse::<IpAddr>().is_ok() || !d.contains('.'))
+                {
+                    return Err(SettingError::invalid(
+                        "tls.acme.domains",
+                        format!("{d:?} is not a public domain name"),
+                    ));
                 }
-                url::Url::parse(&acme.directory_url())
-                    .with_context(|| format!("[tls.acme] directory {:?}", acme.directory))?;
-                self.acme_challenge()?;
+                if url::Url::parse(&acme.directory_url()).is_err() {
+                    return Err(SettingError::invalid(
+                        "tls.acme.directory",
+                        "the ACME directory is not a URL",
+                    ));
+                }
+                self.acme_challenge().map_err(|e| {
+                    SettingError::new("tls.acme.challenge", "invalid", format!("{e:#}"))
+                })?;
             }
         }
         let turn = &self.turn;
         match turn.mode {
             TurnMode::External => {
                 if turn.shared_secret.is_empty() {
-                    bail!("[turn] mode = \"external\" needs shared_secret");
+                    return Err(SettingError::required(
+                        "turn.shared_secret",
+                        "the external relay needs its shared secret",
+                    ));
                 }
                 if turn.urls.is_empty() {
-                    bail!("[turn] mode = \"external\" needs urls");
+                    return Err(SettingError::required(
+                        "turn.urls",
+                        "the external relay needs its URLs",
+                    ));
                 }
             }
             TurnMode::Builtin => {
                 if turn.shared_secret.is_empty() {
-                    bail!("[turn] mode = \"builtin\" needs shared_secret");
+                    return Err(SettingError::required(
+                        "turn.shared_secret",
+                        "the relay secret is missing",
+                    ));
                 }
-                if turn.listen_udp.is_none() {
-                    bail!("[turn] mode = \"builtin\" needs listen_udp");
-                }
-                if turn.public_ip.is_none() && turn.relay_ip.is_none() {
-                    bail!("[turn] mode = \"builtin\" needs public_ip");
+                let primary = turn.listen_udp.ok_or_else(|| {
+                    SettingError::required("turn.listen_udp", "the relay needs a UDP port")
+                })?;
+                if turn.builtin_public_ip().is_none() {
+                    return Err(SettingError::required(
+                        "turn.public_ip",
+                        "the relay needs this server's public IP address",
+                    ));
                 }
                 match (turn.relay_port_min, turn.relay_port_max) {
                     (Some(a), Some(b)) if a == 0 || b < a => {
-                        bail!("[turn] relay_port_min/relay_port_max are invalid")
+                        return Err(SettingError::invalid(
+                            "turn.relay_port_min",
+                            "the relay port range is invalid",
+                        ));
                     }
                     (Some(_), None) | (None, Some(_)) => {
-                        bail!("[turn] set both relay_port_min and relay_port_max")
+                        return Err(SettingError::required(
+                            "turn.relay_port_max",
+                            "set both ends of the relay port range",
+                        ));
                     }
                     _ => {}
                 }
-                validate_stun(turn)?;
+                if let Some(tcp) = turn.listen_tcp
+                    && tcp.port() == self.listen.port()
+                    && tcp.port() != 0
+                    && (tcp.ip() == self.listen.ip()
+                        || tcp.ip().is_unspecified()
+                        || self.listen.ip().is_unspecified())
+                {
+                    return Err(SettingError::new(
+                        "turn.listen_tcp",
+                        "conflict",
+                        "the relay's TCP port is the web port",
+                    ));
+                }
+                validate_stun(turn)
+                    .map_err(|e| SettingError::new("turn.stun", "invalid", format!("{e:#}")))?;
+                let _ = primary;
             }
             TurnMode::None => {
                 if turn
@@ -590,16 +662,25 @@ impl Config {
                     .iter()
                     .any(|u| u.starts_with("turn:") || u.starts_with("turns:"))
                 {
-                    bail!("[turn] mode = \"none\" only allows stun: urls");
+                    return Err(SettingError::invalid(
+                        "turn.urls",
+                        "without a relay only stun: URLs are allowed",
+                    ));
                 }
             }
         }
         if turn.credential_ttl.is_zero() {
-            bail!("[turn] credential_ttl must be positive");
+            return Err(SettingError::range(
+                "turn.credential_ttl",
+                "credential_ttl must be positive",
+            ));
         }
         let l = &self.limits;
         if l.heartbeat_ms == 0 || l.idle_timeout_ms == 0 || l.ws_rate_per_s == 0 {
-            bail!("[limits] timers and rates must be positive");
+            return Err(SettingError::range(
+                "limits",
+                "timers and rates must be positive",
+            ));
         }
         Ok(())
     }
@@ -692,167 +773,95 @@ impl Config {
     }
 }
 
+
+/// Optional overrides of protocol limits, timers and rate limits.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LimitsConfig {
+    pub heartbeat_ms: u32,
+    pub idle_timeout_ms: u32,
+    pub resume_ttl_s: u64,
+    pub ticket_ttl_s: u64,
+    pub max_frame_bytes: usize,
+    pub max_sdp_bytes: usize,
+    pub max_candidates: usize,
+    pub max_candidate_bytes: usize,
+    pub ws_rate_per_s: u32,
+    pub ws_rate_burst: u32,
+    /// New anonymous/bound devices per source IP and hour.
+    pub device_init_per_ip_hour: u32,
+    /// Failed logins per source IP per 15 minutes.
+    pub login_failures_per_ip: u32,
+    /// Failed logins per username per 15 minutes.
+    pub login_failures_per_user: u32,
+    /// Assistance attempts per (account, connect_id) and minute that do not
+    /// end in a session.
+    pub assist_failures_per_minute: u32,
+    /// Wait for a host to answer the PAKE of `assist/join`.
+    pub assist_host_reply_ms: u64,
+    /// Long poll of `assist/requests/{id}/accept` (key check and confirmation).
+    pub assist_decision_wait_ms: u64,
+    pub guest_token_ttl_s: u64,
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        use farwing_protocol::{limits, timing};
+        Self {
+            heartbeat_ms: timing::HEARTBEAT_MS,
+            idle_timeout_ms: timing::IDLE_TIMEOUT_MS,
+            resume_ttl_s: limits::RESUME_TTL_SECONDS,
+            ticket_ttl_s: limits::TICKET_TTL_SECONDS,
+            max_frame_bytes: limits::MAX_WS_FRAME,
+            max_sdp_bytes: limits::MAX_SDP_BYTES,
+            max_candidates: limits::MAX_CANDIDATES,
+            max_candidate_bytes: limits::MAX_CANDIDATE_BYTES,
+            ws_rate_per_s: limits::WS_RATE_PER_SECOND,
+            ws_rate_burst: limits::WS_RATE_BURST,
+            device_init_per_ip_hour: 30,
+            login_failures_per_ip: 20,
+            login_failures_per_user: 10,
+            assist_failures_per_minute: 10,
+            assist_host_reply_ms: limits::ASSIST_HOST_REPLY_WAIT_MS,
+            assist_decision_wait_ms: limits::ASSIST_DECISION_WAIT_MS,
+            guest_token_ttl_s: 24 * 3600,
+        }
+    }
+}
+
 /// Map `windows`/`win` etc. to the canonical platform name.
 pub fn normalize_platform(p: &str) -> Option<&'static str> {
     farwing_protocol::Platform::parse(p).map(farwing_protocol::Platform::as_str)
 }
 
-/// The commented configuration written by `farwing-server init`.
-pub const CONFIG_TEMPLATE: &str = r#"# Farwing Server configuration.
-# Relative paths are resolved against the directory of this file.
-
-# Address of the HTTPS + WSS listener.
-listen = "0.0.0.0:8443"
-
-# Public https:// URL clients use to reach this server. The realtime endpoint
-# is derived from it: wss://<host>[:port]/api/v2/ws. It must be https even when
-# a reverse proxy terminates TLS (tls.mode = "proxy").
-public_url = "{public_url}"
-
-# Data directory: SQLite database (farwing.db), wallpapers/ and tls/.
-data_dir = "{data_dir}"
-
-# Name shown to clients in GET /api/v2/server.
-instance_name = "farwing"
-
-# Reverse proxies (CIDRs) whose X-Forwarded-For header is trusted for the
-# client IP (rate limits, Wake-on-LAN network matching).
-trusted_proxies = []
-
-# Optional session bitrate cap (Mbit/s) handed to clients.
-# bitrate_limit_mbps = 50
-
-# Log filter (RUST_LOG overrides it). Secrets, SDP and ICE candidates are never logged.
-log = "info"
-
-[tls]
-# mode = "tls"   : terminate TLS here (default)
-# mode = "proxy" : plain HTTP on `listen`, behind a TLS-terminating reverse proxy
-# mode = "acme"  : terminate TLS here with a certificate obtained and renewed
-#                  automatically (Let's Encrypt or another ACME CA, see [tls.acme])
-mode = "tls"
-# Either a certificate chain and private key in PEM format ...
-# cert = "/etc/farwing/fullchain.pem"
-# key = "/etc/farwing/privkey.pem"
-# ... or a self-signed certificate generated on first start into data_dir/tls.
-# Its SHA-256 fingerprint is logged at startup so clients can pin it.
-self_signed = true
-hostnames = ["{host}"]
-
-# [tls.acme]  (mode = "acme"; browsers and clients then trust the certificate
-# without pinning). The CA must reach this server under the domain name:
-# tls-alpn-01 needs port 443 (public_url on 443), http-01 needs port 80.
-# Names on the certificate (default: the host of public_url):
-# domains = ["{host}"]
-# contact = "admin@example.com" # optional, for expiry notices
-# directory = "letsencrypt"     # or "letsencrypt-staging", or a directory URL
-# challenge = "auto"            # "tls-alpn-01", "http-01" or "auto"
-# http_listen = "0.0.0.0:80"    # http-01 and redirect from http:// to public_url
-# agree_tos = true              # required: accept the CA's terms of service
-
-[guest]
-# Allow devices without an account (guest hosts and visitors). Can also be
-# changed in the web console (Settings).
-enabled = true
-
-[web]
-# Serve the web console at / (user center, administration, browser viewing).
-enabled = true
-# Networks allowed to use the administration pages, e.g. ["192.168.0.0/16"];
-# empty = any network (administrators can enable TOTP).
-admin_allow = []
-# Browser logins expire after this many idle minutes, and after this many hours.
-session_idle_minutes = 30
-session_max_hours = 12
-# Days the audit log is kept.
-audit_days = 180
-
-[turn]
-# mode = "external": coturn (or compatible) with use-auth-secret / static-auth-secret
-# mode = "builtin" : embedded STUN/TURN server (listen_udp, public_ip, ...)
-# mode = "none"    : STUN only, no relay
-mode = "external"
-urls = [
-  "stun:{host}:3478",
-  "turn:{host}:3478?transport=udp",
-  "turn:{host}:3478?transport=tcp",
-]
-# Shared secret for TURN REST credentials (coturn static-auth-secret).
-shared_secret = "{turn_secret}"
-# Lifetime of issued TURN credentials ("12h", "30m", or seconds).
-credential_ttl = "12h"
-# Ask clients to use relayed candidates only.
-force_relay = false
-# ---- builtin only:
-# listen_udp = "0.0.0.0:3478"
-# listen_tcp = "0.0.0.0:3478"
-# public_ip = "203.0.113.10"
-# realm = "farwing"
-# relay_bind = "0.0.0.0"
-# relay_port_min = 49160
-# relay_port_max = 49200
-# With builtin mode and empty `urls`, stun:/turn: URLs are derived from
-# public_ip and the listen ports.
-# Extra STUN endpoints for NAT behaviour discovery (RFC 5780, builtin only).
-# Each answers Binding requests with RESPONSE-ORIGIN and honors CHANGE-REQUEST;
-# clients get them as additional stun: URLs. Two ports on one IP allow the
-# "change port" tests; the same two ports on a second public IP enable
-# OTHER-ADDRESS and all tests. Keep these entries at the end of [turn].
-# public defaults to public_ip and the listen port.
-# [[turn.stun]]
-# listen = "203.0.113.10:3479"
-# [[turn.stun]]
-# listen = "203.0.113.10:3480"
-# [[turn.stun]]
-# listen = "198.51.100.20:3479"
-# public = "198.51.100.20:3479"
-# [[turn.stun]]
-# listen = "198.51.100.20:3480"
-# public = "198.51.100.20:3480"
-
-[limits]
-# Optional overrides (defaults shown).
-# heartbeat_ms = 20000
-# idle_timeout_ms = 60000
-# resume_ttl_s = 300
-# ticket_ttl_s = 60
-# max_frame_bytes = 1048576
-# max_sdp_bytes = 1048576
-# max_candidates = 256
-# max_candidate_bytes = 2048
-# ws_rate_per_s = 200
-# ws_rate_burst = 400
-# device_init_per_ip_hour = 30
-# login_failures_per_ip = 20
-# login_failures_per_user = 10
-# assist_failures_per_minute = 10
-# assist_host_reply_ms = 10000
-# assist_decision_wait_ms = 65000
-# guest_token_ttl_s = 86400
-"#;
-
-/// Render [`CONFIG_TEMPLATE`]. The TLS hostname and TURN host are derived
-/// from `public_url`.
-pub fn render_template(public_url: &str, data_dir: &str, turn_secret: &str) -> String {
-    let host = url::Url::parse(public_url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.trim_matches(['[', ']']).to_owned()))
-        .unwrap_or_else(|| "localhost".to_owned());
-    CONFIG_TEMPLATE
-        .replace("{host}", &toml_escape(&host))
-        .replace("{public_url}", &toml_escape(public_url))
-        .replace("{data_dir}", &toml_escape(data_dir))
-        .replace("{turn_secret}", &toml_escape(turn_secret))
+/// The IPv4 address of the default route (no packet is sent).
+pub fn local_ipv4() -> Option<IpAddr> {
+    // A proxy's virtual adapter may hold the default route with an address
+    // from 198.18.0.0/15 (reserved for benchmarks): the LAN adapter is then
+    // found through the route to a private network.
+    ["192.0.2.1", "192.168.255.254", "10.255.255.254", "172.31.255.254"]
+        .into_iter()
+        .filter_map(|target| {
+            let socket = std::net::UdpSocket::bind(("0.0.0.0", 0)).ok()?;
+            socket.connect((target, 9)).ok()?;
+            socket.local_addr().ok().map(|a| a.ip())
+        })
+        .find(|ip| match ip {
+            IpAddr::V4(v4) => {
+                !v4.is_unspecified() && !v4.is_loopback() && (v4.octets()[0], v4.octets()[1] & 0xfe) != (198, 18)
+            }
+            IpAddr::V6(_) => false,
+        })
 }
 
-fn toml_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+/// This machine's host name, if the environment says.
+fn machine_name() -> Option<String> {
+    ["COMPUTERNAME", "HOSTNAME"]
+        .iter()
+        .filter_map(|v| std::env::var(v).ok())
+        .map(|n| n.trim().to_ascii_lowercase())
+        .find(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
 }
-
-/// Values used for the checked-in `farwing-server.example.toml`.
-pub const EXAMPLE_PUBLIC_URL: &str = "https://farwing.example.com:8443";
-pub const EXAMPLE_DATA_DIR: &str = "./data";
-pub const EXAMPLE_TURN_SECRET: &str = "CHANGE-ME-run-farwing-server-init-to-generate-a-secret";
 
 pub fn parse_listen(text: &str) -> Result<SocketAddr> {
     text.parse()
@@ -863,21 +872,90 @@ pub fn parse_listen(text: &str) -> Result<SocketAddr> {
 mod tests {
     use super::*;
 
+    fn builtin() -> Config {
+        Config {
+            public_url: "https://farwing.example.com:8443".into(),
+            turn: TurnConfig {
+                shared_secret: "s".into(),
+                public_ip: Some("203.0.113.10".parse().unwrap()),
+                stun: Vec::new(),
+                ..TurnConfig::default()
+            },
+            ..Config::default()
+        }
+    }
+
+    fn with_stun(endpoints: &[(&str, Option<&str>)]) -> Config {
+        let mut cfg = builtin();
+        cfg.turn.stun = endpoints
+            .iter()
+            .map(|(listen, public)| StunEndpoint {
+                listen: sa(listen),
+                public: public.map(sa),
+            })
+            .collect();
+        cfg
+    }
+
+    fn sa(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+
     #[test]
-    fn example_file_matches_template_and_parses() {
-        let rendered = render_template(EXAMPLE_PUBLIC_URL, EXAMPLE_DATA_DIR, EXAMPLE_TURN_SECRET);
-        let file = include_str!("../farwing-server.example.toml");
+    fn defaults_and_round_trip() {
+        let cfg = Config::initial(PathBuf::from("d"), sa("0.0.0.0:8443"));
+        assert_eq!(cfg.turn.mode, TurnMode::Builtin);
+        assert!(!cfg.turn.shared_secret.is_empty());
+        // Not usable until the public address is known.
+        assert_eq!(cfg.validate().unwrap_err().field, "turn.public_ip");
+        let mut cfg = cfg;
+        cfg.turn.public_ip = Some("203.0.113.10".parse().unwrap());
+        cfg.validate().unwrap();
+        assert!(cfg.warnings().is_empty(), "{:?}", cfg.warnings());
+        // Stored as JSON without the data directory.
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(!json.contains("data_dir"));
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.turn, cfg.turn);
+        assert_eq!(back.turn.credential_ttl, Duration::from_secs(43200));
+        assert!(serde_json::from_str::<Config>(r#"{"unknown": 1}"#).is_err());
+    }
+
+    #[test]
+    fn field_errors() {
+        let field = |f: &dyn Fn(&mut Config)| {
+            let mut cfg = builtin();
+            f(&mut cfg);
+            cfg.validate().map_err(|e| (e.field, e.problem))
+        };
+        assert_eq!(field(&|_| {}), Ok(()));
         assert_eq!(
-            rendered.replace("\r\n", "\n"),
-            file.replace("\r\n", "\n"),
-            "farwing-server.example.toml is out of date with CONFIG_TEMPLATE"
+            field(&|c| c.public_url = "http://x".into()),
+            Err(("public_url".into(), "invalid"))
         );
-        let cfg = Config::from_toml_str(&rendered, Path::new(".")).unwrap();
-        assert!(cfg.warnings().is_empty());
-        assert_eq!(cfg.turn.credential_ttl, Duration::from_secs(43200));
         assert_eq!(
-            cfg.ws_endpoint(),
-            "wss://farwing.example.com:8443/api/v2/ws"
+            field(&|c| c.instance_name = " ".into()),
+            Err(("instance_name".into(), "out_of_range"))
+        );
+        assert_eq!(
+            field(&|c| c.bitrate_limit_mbps = Some(0)),
+            Err(("bitrate_limit_mbps".into(), "out_of_range"))
+        );
+        assert_eq!(
+            field(&|c| c.web.caps = vec!["audio".into()]),
+            Err(("web.caps".into(), "invalid"))
+        );
+        assert_eq!(
+            field(&|c| c.turn.listen_tcp = Some(sa("0.0.0.0:8443"))),
+            Err(("turn.listen_tcp".into(), "conflict"))
+        );
+        assert_eq!(
+            field(&|c| c.tls.mode = TlsMode::Acme),
+            Err(("tls.acme.agree_tos".into(), "required"))
+        );
+        assert_eq!(
+            field(&|c| c.log = "[".into()),
+            Err(("log".into(), "invalid"))
         );
     }
 
@@ -886,54 +964,18 @@ mod tests {
         assert_eq!(normalize_platform("Win"), Some("windows"));
         assert_eq!(normalize_platform("linux"), Some("linux"));
         assert_eq!(normalize_platform("tv"), None);
-        let mut cfg = Config::from_toml_str(
-            &render_template(EXAMPLE_PUBLIC_URL, EXAMPLE_DATA_DIR, EXAMPLE_TURN_SECRET),
-            Path::new("."),
-        )
-        .unwrap();
+        let mut cfg = builtin();
         assert_eq!(cfg.public_path_prefix(), "");
+        assert_eq!(cfg.ws_endpoint(), "wss://farwing.example.com:8443/api/v2/ws");
         cfg.public_url = "https://example.com/farwing/".into();
         assert_eq!(cfg.public_path_prefix(), "/farwing");
     }
 
-    /// A builtin-mode configuration with `extra` appended to `[turn]`.
-    fn builtin_with(extra: &str) -> Result<Config> {
-        let text = format!(
-            r#"
-listen = "0.0.0.0:8443"
-public_url = "https://farwing.example.com:8443"
-data_dir = "./data"
-[tls]
-self_signed = true
-[turn]
-mode = "builtin"
-shared_secret = "s"
-listen_udp = "0.0.0.0:3478"
-public_ip = "203.0.113.10"
-{extra}
-"#
-        );
-        Config::from_toml_str(&text, Path::new("."))
-    }
-
-    fn sa(s: &str) -> SocketAddr {
-        s.parse().unwrap()
-    }
-
     #[test]
     fn stun_endpoints() {
-        let cfg = builtin_with(
-            r#"
-[[turn.stun]]
-listen = "0.0.0.0:3479"
-[[turn.stun]]
-listen = "0.0.0.0:3480"
-public = "203.0.113.10:4480"
-"#,
-        )
-        .unwrap();
+        let cfg = with_stun(&[("0.0.0.0:3479", None), ("0.0.0.0:3480", Some("203.0.113.10:4480"))]);
+        cfg.validate().unwrap();
         let t = &cfg.turn;
-        assert_eq!(t.stun.len(), 2);
         assert_eq!(t.stun_public(&t.stun[0], 0), Some(sa("203.0.113.10:3479")));
         assert_eq!(t.stun_public(&t.stun[1], 0), Some(sa("203.0.113.10:4480")));
         assert!(cfg.warnings().is_empty(), "{:?}", cfg.warnings());
@@ -945,92 +987,71 @@ public = "203.0.113.10:4480"
         assert_eq!(t.stun_public(&ep, 5000), Some(sa("203.0.113.10:5000")));
 
         // A complete set on two public IPs behind 1:1 NAT.
-        let square = r#"
-[[turn.stun]]
-listen = "10.0.0.5:3479"
-[[turn.stun]]
-listen = "10.0.0.5:3480"
-[[turn.stun]]
-listen = "10.0.0.6:3479"
-public = "198.51.100.20:3479"
-[[turn.stun]]
-listen = "10.0.0.6:3480"
-public = "198.51.100.20:3480"
-"#;
-        let cfg = builtin_with(square).unwrap();
+        let square = [
+            ("10.0.0.5:3479", None),
+            ("10.0.0.5:3480", None),
+            ("10.0.0.6:3479", Some("198.51.100.20:3479")),
+            ("10.0.0.6:3480", Some("198.51.100.20:3480")),
+        ];
+        let cfg = with_stun(&square);
+        cfg.validate().unwrap();
         assert!(cfg.warnings().is_empty(), "{:?}", cfg.warnings());
         // Without the last corner the others cannot send OTHER-ADDRESS.
-        let three = &square[..square.rfind("[[turn.stun]]").unwrap()];
-        let w = builtin_with(three).unwrap().warnings();
+        let w = with_stun(&square[..3]).warnings();
         assert_eq!(w.len(), 3, "{w:?}");
         assert!(w[0].contains("no OTHER-ADDRESS"), "{w:?}");
         // A global listen IP without public is probably a second public IP.
-        let w = builtin_with("[[turn.stun]]\nlisten = \"198.51.100.20:3479\"")
-            .unwrap()
-            .warnings();
+        let w = with_stun(&[("198.51.100.20:3479", None)]).warnings();
         assert!(w.len() == 1 && w[0].contains("set public"), "{w:?}");
         // Ignored (with a warning) in other modes.
-        let mut cfg = Config::from_toml_str(
-            &render_template(EXAMPLE_PUBLIC_URL, EXAMPLE_DATA_DIR, EXAMPLE_TURN_SECRET),
-            Path::new("."),
-        )
-        .unwrap();
-        cfg.turn.stun.push(ep);
+        let mut cfg = with_stun(&[("0.0.0.0:3479", None)]);
+        cfg.turn.mode = TurnMode::External;
+        cfg.turn.urls = vec!["turn:t.example:3478".into()];
         assert!(cfg.warnings().iter().any(|w| w.contains("only served")));
     }
 
     #[test]
     fn invalid_stun_endpoints() {
-        let err = |extra: &str| match builtin_with(extra) {
-            Ok(_) => panic!("accepted: {extra}"),
-            Err(e) => format!("{e:#}"),
+        let err = |eps: &[(&str, Option<&str>)]| match with_stun(eps).validate() {
+            Ok(()) => panic!("accepted: {eps:?}"),
+            Err(e) => {
+                assert_eq!(e.field, "turn.stun");
+                e.message
+            }
         };
-        let one = |listen: &str, public: &str| {
-            let public = if public.is_empty() {
-                String::new()
-            } else {
-                format!("public = \"{public}\"")
-            };
-            format!("[[turn.stun]]\nlisten = \"{listen}\"\n{public}\n")
-        };
-        let cases = [
-            (one("0.0.0.0:3478", ""), "conflicts with listen_udp"),
-            (one("10.0.0.5:3478", ""), "conflicts with listen_udp"),
+        let cases: [(&[(&str, Option<&str>)], &str); 10] = [
+            (&[("0.0.0.0:3478", None)], "conflicts with listen_udp"),
+            (&[("10.0.0.5:3478", None)], "conflicts with listen_udp"),
             (
-                one("10.0.0.5:3479", "") + &one("0.0.0.0:3479", "198.51.100.20:3479"),
+                &[("10.0.0.5:3479", None), ("0.0.0.0:3479", Some("198.51.100.20:3479"))],
                 "conflicts with [[turn.stun]]",
             ),
-            (one("0.0.0.0:3479", "203.0.113.10:0"), "not a usable address"),
-            (one("0.0.0.0:3479", "0.0.0.0:3479"), "not a usable address"),
-            (one("[::]:3479", ""), "same address family"),
-            (one("0.0.0.0:3479", "[2001:db8::1]:3479"), "same address family"),
-            (one("0.0.0.0:3479", "203.0.113.10:3478"), "already used by listen_udp"),
+            (&[("0.0.0.0:3479", Some("203.0.113.10:0"))], "not a usable address"),
+            (&[("0.0.0.0:3479", Some("0.0.0.0:3479"))], "not a usable address"),
+            (&[("[::]:3479", None)], "same address family"),
+            (&[("0.0.0.0:3479", Some("[2001:db8::1]:3479"))], "same address family"),
+            (&[("0.0.0.0:3479", Some("203.0.113.10:3478"))], "already used by listen_udp"),
             (
-                one("10.0.0.5:3479", "") + &one("10.0.0.6:3479", ""),
+                &[("10.0.0.5:3479", None), ("10.0.0.6:3479", None)],
                 "already used by [[turn.stun]] listen = \"10.0.0.5:3479\"",
             ),
             (
-                one("0.0.0.0:3479", "") + &one("10.0.0.6:3480", "198.51.100.20:3480"),
+                &[("0.0.0.0:3479", None), ("10.0.0.6:3480", Some("198.51.100.20:3480"))],
                 "must listen on a specific local IP",
             ),
-            ("[[turn.stun]]\nlisten = \"0.0.0.0:3479\"\nport = 1\n".to_owned(), "unknown field"),
         ];
-        for (extra, expected) in cases {
-            let e = err(&extra);
-            assert!(e.contains(expected), "{extra}\n=> {e}");
+        for (eps, expected) in cases {
+            let e = err(eps);
+            assert!(e.contains(expected), "{eps:?}\n=> {e}");
         }
         // Distinct families and ports, and port 0 (bound at start), are fine.
-        let ok = one("0.0.0.0:3479", "")
-            + &one("[::]:3479", "[2001:db8::1]:3479")
-            + &one("127.0.0.1:0", "")
-            + &one("127.0.0.1:0", "");
-        builtin_with(&ok).unwrap();
-    }
-
-    #[test]
-    fn durations() {
-        assert_eq!(parse_duration("12h").unwrap(), Duration::from_secs(43200));
-        assert_eq!(parse_duration("90").unwrap(), Duration::from_secs(90));
-        assert!(parse_duration("1y").is_err());
+        with_stun(&[
+            ("0.0.0.0:3479", None),
+            ("[::]:3479", Some("[2001:db8::1]:3479")),
+            ("127.0.0.1:0", None),
+            ("127.0.0.1:0", None),
+        ])
+        .validate()
+        .unwrap();
     }
 }

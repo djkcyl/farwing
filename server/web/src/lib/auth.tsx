@@ -13,7 +13,7 @@ import {
 } from './api';
 import type { Me, Security, WebInfo } from './types';
 
-export type AuthStatus = 'loading' | 'offline' | 'signed_out' | 'second_factor' | 'signed_in';
+export type AuthStatus = 'loading' | 'offline' | 'setup' | 'signed_out' | 'second_factor' | 'signed_in';
 
 interface AuthState {
   status: AuthStatus;
@@ -39,7 +39,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: 'loading' });
 
   const load = useCallback(async (): Promise<void> => {
-    const info = await call<WebInfo>('GET', '/api/v2/web/info', undefined, { sign: false }).catch(() => undefined);
+    let info: WebInfo | undefined;
+    try {
+      info = await call<WebInfo>('GET', '/api/v2/web/info', undefined, { sign: false });
+    } catch (error) {
+      // A new server: only its setup page answers.
+      if (error instanceof ApiError && error.code === 'setup_required') {
+        setState({ status: 'setup' });
+        return;
+      }
+    }
     if (!hasToken()) {
       setState({ status: 'signed_out', info });
       return;

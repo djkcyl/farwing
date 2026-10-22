@@ -5,7 +5,7 @@ Farwing Client 是 Farwing 的 Windows 客户端，可作为主控（观看、�
 ## 1. 准备
 
 - Windows 10/11 x64。
-- 一台可访问的 Farwing Server（部署见 [server/README.md](../server/README.md)），以及管理员为你创建的账号（`farwing-server user create <用户名>`）。
+- 一台可访问的 Farwing Server（部署见 [server/README.md](../server/README.md)），以及管理员在网页端为你创建的账号（或邀请码注册）。
 - 服务器使用自签名证书时，向管理员索取证书 SHA-256 指纹（服务器启动日志会打印）。
 
 ## 2. 首次登录（图形界面）

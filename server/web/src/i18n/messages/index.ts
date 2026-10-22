@@ -8,6 +8,7 @@ import * as common from './common';
 import * as devices from './devices';
 import * as format from './format';
 import * as nav from './nav';
+import * as setup from './setup';
 import * as viewer from './viewer';
 
 const zh = {
@@ -18,6 +19,7 @@ const zh = {
   devices: devices.zh,
   account: account.zh,
   admin: admin.zh,
+  setup: setup.zh,
   viewer: viewer.zh,
 };
 
@@ -31,6 +33,7 @@ const en: Messages = {
   devices: devices.en,
   account: account.en,
   admin: admin.en,
+  setup: setup.en,
   viewer: viewer.en,
 };
 

@@ -30,7 +30,7 @@ pub async fn login(
     let username = req.username.trim().to_owned();
     let ip_key = format!("login-ip:{ip}");
     let user_key = format!("login-user:{}", username.to_lowercase());
-    let limits = &app.cfg.limits;
+    let limits = &app.cfg().limits;
     // Count the attempt before verifying, so parallel guesses cannot all
     // pass the limit; a successful login returns the IP slot.
     app.limiter
@@ -222,7 +222,7 @@ pub async fn guest_session(
     State(app): State<App>,
     dev: DeviceAuth,
 ) -> ApiResult<Json<GuestSession>> {
-    if !app.settings.read().guests {
+    if !app.cfg().guest.enabled {
         return Err(ApiError::reason(
             ErrorCode::Forbidden,
             reason::GUESTS_DISABLED,
@@ -231,7 +231,7 @@ pub async fn guest_session(
     }
     let token = new_token(ids::GUEST_TOKEN_PREFIX);
     let hash = token_hash(&token);
-    let expires_at = db::now_s() + app.cfg.limits.guest_token_ttl_s as i64;
+    let expires_at = db::now_s() + app.cfg().limits.guest_token_ttl_s as i64;
     let id = dev.device.id.clone();
     app.db
         .call(move |c| db::insert_guest_token(c, &hash, &id, expires_at))

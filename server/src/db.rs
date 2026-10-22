@@ -33,7 +33,7 @@ pub fn now_ms() -> i64 {
 
 /// Schema version of [`SCHEMA`]. A database of any other version is refused;
 /// there is no migration (see [`open_connection`]).
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (
@@ -160,12 +160,18 @@ CREATE TABLE IF NOT EXISTS grants (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS grants_key ON grants(owner_user, grantee_user, IFNULL(device_id, ''));
 CREATE INDEX IF NOT EXISTS grants_grantee ON grants(grantee_user);
-CREATE TABLE IF NOT EXISTS admin_events (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind       TEXT NOT NULL,
-    user_id    TEXT,
-    device_id  TEXT,
-    created_at INTEGER NOT NULL
+CREATE TABLE IF NOT EXISTS admin_tokens (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    token_hash   TEXT NOT NULL UNIQUE,
+    scope        TEXT NOT NULL,
+    allow        TEXT NOT NULL DEFAULT '',
+    created_by   TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    expires_at   INTEGER,
+    last_used_at INTEGER,
+    last_used_ip TEXT NOT NULL DEFAULT '',
+    revoked_at   INTEGER
 );
 CREATE TABLE IF NOT EXISTS invites (
     id          TEXT PRIMARY KEY,
@@ -242,7 +248,7 @@ impl Db {
         .context("database error")
     }
 
-    /// Synchronous access (admin CLI, startup).
+    /// Synchronous access (startup).
     pub fn with<T>(&self, f: impl FnOnce(&mut Connection) -> R<T>) -> anyhow::Result<T> {
         let mut guard = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         f(&mut guard).context("database error")
@@ -1557,59 +1563,6 @@ pub fn set_power_result(c: &Connection, id: &str, code: i32, message: &str, stat
 }
 
 // ============================================================ admin events
-
-/// Change made by the admin CLI that the running server must apply to live
-/// connections.
-#[derive(Clone, Debug)]
-pub struct AdminEvent {
-    pub id: i64,
-    pub kind: String,
-    pub user_id: Option<String>,
-    pub device_id: Option<String>,
-}
-
-pub const EVENT_REVOKE_USER: &str = "revoke_user";
-pub const EVENT_REVOKE_DEVICE: &str = "revoke_device";
-
-pub fn insert_event(
-    c: &Connection,
-    kind: &str,
-    user_id: Option<&str>,
-    device_id: Option<&str>,
-) -> R<()> {
-    c.execute(
-        "INSERT INTO admin_events (kind, user_id, device_id, created_at) VALUES (?1, ?2, ?3, ?4)",
-        params![kind, user_id, device_id, now_s()],
-    )?;
-    Ok(())
-}
-
-pub fn max_event_id(c: &Connection) -> R<i64> {
-    c.query_row("SELECT COALESCE(MAX(id), 0) FROM admin_events", [], |r| {
-        r.get(0)
-    })
-}
-
-pub fn events_after(c: &Connection, id: i64) -> R<Vec<AdminEvent>> {
-    let mut st = c.prepare(
-        "SELECT id, kind, user_id, device_id FROM admin_events WHERE id > ?1 ORDER BY id LIMIT 500",
-    )?;
-    let rows = st
-        .query_map([id], |r| {
-            Ok(AdminEvent {
-                id: r.get(0)?,
-                kind: r.get(1)?,
-                user_id: r.get(2)?,
-                device_id: r.get(3)?,
-            })
-        })?
-        .collect::<R<Vec<_>>>()?;
-    c.execute(
-        "DELETE FROM admin_events WHERE created_at < ?1",
-        [now_s() - 86400],
-    )?;
-    Ok(rows)
-}
 
 #[cfg(test)]
 mod tests {

@@ -1,113 +1,76 @@
-//! Settings an administrator can change online (`docs/web-console.md` §6):
-//! stored in the database, they override the configuration file's values
-//! until the next change. Everything else stays in the configuration file.
+//! The settings in force: the current snapshot every request reads, its
+//! storage in the database and the notification components subscribe to
+//! (`docs/protocol/deployment-design.md` §2.3, §3).
 
 use crate::config::Config;
-use crate::error::{ApiError, ApiResult};
-use farwing_protocol::ErrorCode;
-use farwing_protocol::error::reason;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use anyhow::{Context, Result};
+use parking_lot::RwLock;
+use rusqlite::Connection;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::watch;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeSettings {
-    /// Name shown in `GET /api/v2/server` and the web console.
-    pub instance_name: String,
-    /// Devices without an account may host and connect (guests, visitors).
-    pub guests: bool,
-    /// Accounts may be registered with an invitation code.
-    pub registration: bool,
-    /// Session bitrate cap handed to clients.
-    pub bitrate_limit_mbps: Option<u32>,
-    /// What browser controllers may do at most (a subset of `caps::WEB`
-    /// with `view`); `["view", "audio"]` makes the web view-only.
-    pub web_caps: Vec<String>,
+/// The settings document in the `settings` table.
+const KEY: &str = "server_config";
+
+pub struct Settings {
+    current: RwLock<Arc<Config>>,
+    changed: watch::Sender<Arc<Config>>,
 }
 
-fn web_caps_default() -> Vec<String> {
-    farwing_protocol::caps::WEB.iter().map(|c| (*c).to_owned()).collect()
-}
-
-impl RuntimeSettings {
-    pub fn from_config(cfg: &Config) -> Self {
+impl Settings {
+    pub fn new(cfg: Config) -> Self {
+        let cfg = Arc::new(cfg);
+        let (changed, _) = watch::channel(Arc::clone(&cfg));
         Self {
-            instance_name: cfg.instance_name.clone(),
-            guests: cfg.guest.enabled,
-            registration: false,
-            bitrate_limit_mbps: cfg.bitrate_limit_mbps,
-            web_caps: web_caps_default(),
+            current: RwLock::new(cfg),
+            changed,
         }
     }
 
-    /// The configuration's values with the stored overrides applied.
-    pub fn load(cfg: &Config, stored: &HashMap<String, String>) -> Self {
-        let mut s = Self::from_config(cfg);
-        if let Some(v) = stored.get("instance_name") {
-            s.instance_name = v.clone();
-        }
-        if let Some(v) = stored.get("guests") {
-            s.guests = v == "true";
-        }
-        if let Some(v) = stored.get("registration") {
-            s.registration = v == "true";
-        }
-        if let Some(v) = stored.get("bitrate_limit_mbps") {
-            s.bitrate_limit_mbps = v.parse().ok().filter(|n| *n > 0);
-        }
-        if let Some(v) = stored.get("web_caps") {
-            let caps: Vec<String> = v.split(',').filter(|c| !c.is_empty()).map(str::to_owned).collect();
-            let candidate = Self { web_caps: caps, ..s.clone() };
-            if candidate.validate().is_ok() {
-                s = candidate;
-            }
-        }
-        s
+    /// The settings in force.
+    pub fn get(&self) -> Arc<Config> {
+        Arc::clone(&self.current.read())
     }
 
-    /// Key-value pairs to store.
-    pub fn pairs(&self) -> Vec<(&'static str, String)> {
-        vec![
-            ("instance_name", self.instance_name.clone()),
-            ("guests", self.guests.to_string()),
-            ("registration", self.registration.to_string()),
-            (
-                "bitrate_limit_mbps",
-                self.bitrate_limit_mbps.map(|n| n.to_string()).unwrap_or_default(),
-            ),
-            ("web_caps", self.web_caps.join(",")),
-        ]
+    pub fn subscribe(&self) -> watch::Receiver<Arc<Config>> {
+        self.changed.subscribe()
     }
 
-    pub fn validate(&self) -> ApiResult<()> {
-        const NAME_MAX: usize = 64;
-        const BITRATE: std::ops::RangeInclusive<u32> = 1..=10_000;
-        let name = self.instance_name.trim();
-        if name.is_empty() || name.chars().count() > NAME_MAX {
-            return Err(ApiError::reason(
-                ErrorCode::BadRequest,
-                reason::INSTANCE_NAME_INVALID,
-                "instance_name must be 1-64 characters",
-            )
-            .with_detail("max", NAME_MAX));
-        }
-        if self.bitrate_limit_mbps.is_some_and(|n| !BITRATE.contains(&n)) {
-            return Err(ApiError::reason(
-                ErrorCode::BadRequest,
-                reason::BITRATE_LIMIT_INVALID,
-                "bitrate_limit_mbps must be 1-10000",
-            )
-            .with_detail("min", *BITRATE.start())
-            .with_detail("max", *BITRATE.end()));
-        }
-        if !self.web_caps.iter().any(|c| c == farwing_protocol::caps::VIEW)
-            || self.web_caps.iter().any(|c| !farwing_protocol::caps::WEB.contains(&c.as_str()))
-        {
-            return Err(ApiError::reason(
-                ErrorCode::BadRequest,
-                reason::WEB_CAPS_INVALID,
-                "web_caps must include view and only browser capabilities",
-            ));
-        }
-        Ok(())
+    /// Put `cfg` in force (already validated and applied by the components).
+    pub fn replace(&self, cfg: Config) -> Arc<Config> {
+        let cfg = Arc::new(cfg);
+        *self.current.write() = Arc::clone(&cfg);
+        self.changed.send_replace(Arc::clone(&cfg));
+        cfg
     }
+}
+
+/// The stored settings, or the initial ones (then stored) on first start.
+/// `listen` (`--listen`) fixes the listen address.
+pub fn load(c: &Connection, data_dir: &Path, listen: Option<SocketAddr>) -> Result<Config> {
+    let stored = crate::webdb::settings(c)?.remove(KEY);
+    let mut cfg = match stored {
+        Some(json) => serde_json::from_str::<Config>(&json)
+            .context("the stored settings cannot be read")?,
+        None => {
+            let cfg = Config::initial(
+                data_dir.to_path_buf(),
+                listen.unwrap_or_else(|| Config::default().listen),
+            );
+            save(c, &cfg)?;
+            cfg
+        }
+    };
+    cfg.data_dir = data_dir.to_path_buf();
+    if let Some(listen) = listen {
+        cfg.listen = listen;
+        cfg.listen_locked = true;
+    }
+    Ok(cfg)
+}
+
+pub fn save(c: &Connection, cfg: &Config) -> crate::db::R<()> {
+    crate::webdb::set_setting(c, KEY, &serde_json::to_string(cfg).expect("serializable"))
 }

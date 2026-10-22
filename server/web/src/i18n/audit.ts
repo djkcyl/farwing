@@ -6,8 +6,11 @@
 //   {"invite": "<note>"}                                    register
 //   {"admin": true}                                         user.create
 //   {"admin": false, "disabled": true}                      user.update (changed fields)
-//   {"instance_name": "Lab", "guests": false, "registration": true,
-//    "bitrate_limit_mbps": 40 | null, "web_caps": ["view"]}  settings.save (changed fields)
+//   {"groups": ["instance_name", "turn"]}                   settings.update (changed groups)
+//   {"fingerprint": "AB:…"}                                 settings.certificate
+//   {"secrets": true}                                       settings.export
+//   {"scope": "read", "expires_days": 30 | null}            token.create
+//   {"token": "<name>"}                                     added when an API token did it
 //
 // Anything else (entries written before, keys this version does not know)
 // is shown as it is.
@@ -17,38 +20,36 @@ import { messages } from './messages';
 
 const zh = {
   separator: '；',
-  on: '开',
-  off: '关',
   yes: '是',
   no: '否',
   createdAdmin: '管理员',
   admin: (on: boolean): string => (on ? '设为管理员' : '取消管理员'),
   disabled: (on: boolean): string => (on ? '禁用' : '启用'),
   invite: (note: string) => `邀请码：${note}`,
-  instanceName: (name: string) => `实例名称：${name}`,
-  guests: (state: string) => `游客：${state}`,
-  registration: (state: string) => `邀请码注册：${state}`,
-  bitrateLimit: (mbps: number | null) => `码率上限：${mbps === null ? '不限' : `${mbps} Mbit/s`}`,
-  webCaps: (caps: string) => `网页端可用功能：${caps || '无'}`,
+  groups: (names: string) => `修改：${names}`,
+  fingerprint: (fp: string) => `指纹：${fp}`,
+  secrets: (on: boolean): string => (on ? '含密钥' : '不含密钥'),
+  scope: (scope: string) => `权限：${scope}`,
+  expiresDays: (days: number | null) => `有效期：${days === null ? '永久' : `${days} 天`}`,
+  token: (name: string) => `API 令牌：${name}`,
 };
 
 type Texts = typeof zh;
 
 const en: Texts = {
   separator: '; ',
-  on: 'On',
-  off: 'Off',
   yes: 'Yes',
   no: 'No',
   createdAdmin: 'Administrator',
   admin: (on) => (on ? 'Made administrator' : 'Administrator removed'),
   disabled: (on) => (on ? 'Disabled' : 'Enabled'),
   invite: (note) => `Invitation: ${note}`,
-  instanceName: (name) => `Instance name: ${name}`,
-  guests: (state) => `Guests: ${state}`,
-  registration: (state) => `Registration by invitation: ${state}`,
-  bitrateLimit: (mbps) => `Bitrate limit: ${mbps === null ? 'Unlimited' : `${mbps} Mbit/s`}`,
-  webCaps: (caps) => `Features available on the web: ${caps || 'None'}`,
+  groups: (names) => `Changed: ${names}`,
+  fingerprint: (fp) => `Fingerprint: ${fp}`,
+  secrets: (on) => (on ? 'With secrets' : 'Without secrets'),
+  scope: (scope) => `Access: ${scope}`,
+  expiresDays: (days) => `Valid for: ${days === null ? 'No expiry' : `${days} days`}`,
+  token: (name) => `API token: ${name}`,
 };
 
 const TEXTS: Record<Lang, Texts> = { 'zh-CN': zh, en };
@@ -66,7 +67,7 @@ function field(
   all: Record<string, unknown>,
 ): string | undefined {
   const t = TEXTS[lang];
-  const onOff = (v: boolean) => (v ? t.on : t.off);
+  const m = messages[lang];
   switch (key) {
     case 'reason':
       return typeof value === 'string' ? (reasonMessage(lang, value) ?? value) : raw(value);
@@ -77,23 +78,26 @@ function field(
       return typeof value === 'boolean' ? t.disabled(value) : raw(value);
     case 'invite':
       return typeof value === 'string' && value ? t.invite(value) : undefined;
-    case 'instance_name':
-      return t.instanceName(raw(value));
-    case 'guests':
-      return typeof value === 'boolean' ? t.guests(onOff(value)) : raw(value);
-    case 'registration':
-      return typeof value === 'boolean' ? t.registration(onOff(value)) : raw(value);
-    case 'bitrate_limit_mbps':
-      return value === null || typeof value === 'number' ? t.bitrateLimit(value) : raw(value);
-    case 'web_caps': {
+    case 'groups': {
       if (!Array.isArray(value)) break;
-      const m = messages[lang].format;
-      const names: Record<string, string> = m.caps;
-      return t.webCaps(value.map((c) => names[String(c)] ?? String(c)).join(m.listSeparator));
+      const names = m.admin.settings.groups;
+      return t.groups(value.map((g) => names[String(g)] ?? String(g)).join(m.format.listSeparator));
     }
+    case 'fingerprint':
+      return t.fingerprint(raw(value));
+    case 'secrets':
+      return typeof value === 'boolean' ? t.secrets(value) : raw(value);
+    case 'scope': {
+      const scopes: Record<string, string> = m.admin.tokens.scopes;
+      return t.scope(scopes[raw(value)] ?? raw(value));
+    }
+    case 'expires_days':
+      return value === null || typeof value === 'number' ? t.expiresDays(value) : raw(value);
+    case 'token':
+      return t.token(raw(value));
     // A login: the device, its platform and its ID.
     case 'device': {
-      const platforms: Record<string, string> = messages[lang].format.platforms;
+      const platforms: Record<string, string> = m.format.platforms;
       const platform = raw(all.platform ?? '');
       const id = raw(all.device_id ?? '').replace(/(.{4})(?=.)/g, '$1 ');
       return [raw(value), platforms[platform] ?? platform, id && `ID ${id}`].filter(Boolean).join(' · ');

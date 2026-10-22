@@ -150,6 +150,9 @@ code,
 .grid-2 {
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
 }
+.grid-3 {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
 .grid-stats {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 }
@@ -451,6 +454,77 @@ textarea.input {
   background-repeat: no-repeat;
   background-position: right 10px center;
 }
+/* Numbers are typed; no browser spinner. */
+.input[type='number'] {
+  appearance: textfield;
+}
+.input[type='number']::-webkit-inner-spin-button,
+.input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.icon-spacer {
+  width: 30px;
+  flex: none;
+}
+.mono-input {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 13px;
+}
+.file-pick input {
+  display: none;
+}
+.select-wrap {
+  position: relative;
+  min-width: 0;
+}
+.select-button {
+  display: flex;
+  align-items: center;
+  text-align: left;
+  cursor: pointer;
+}
+.select-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.select-wrap .menu.select-menu {
+  left: 0;
+  right: auto;
+  min-width: 100%;
+}
+.segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  align-self: flex-start;
+}
+.segmented button {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.segmented button:hover:not(:disabled) {
+  color: var(--text);
+}
+.segmented button.active {
+  background: var(--active);
+  color: var(--text);
+}
+.segmented button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .input.code {
   font-family: 'Cascadia Mono', Consolas, monospace;
   letter-spacing: 0.25em;
@@ -739,6 +813,10 @@ html[lang='en'] .search {
 .alert svg {
   flex: none;
   margin-top: 2px;
+}
+.alert > div {
+  flex: 1;
+  min-width: 0;
 }
 .alert-red {
   background: rgba(241, 125, 132, 0.08);
@@ -1050,6 +1128,9 @@ table.table {
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+.auth-card.wide {
+  max-width: 560px;
 }
 .auth-brand {
   display: flex;

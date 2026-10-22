@@ -6,7 +6,7 @@ import { call, errorText } from '../../lib/api';
 import { sitePath } from '../../lib/base';
 import { dateTime } from '../../lib/format';
 import { Link } from '../../lib/router';
-import type { AccountSummary, Invite, InviteUse, RuntimeSettings } from '../../lib/types';
+import type { AccountSummary, Invite, InviteUse, SettingsView } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
 import {
   Alert,
@@ -99,13 +99,11 @@ function CreateInvite({ open, onClose, onCreated }: { open: boolean; onClose(): 
           />
         </Field>
         <Field label={m.validity}>
-          <Select value={hours} onChange={(e) => setHours(Number(e.target.value))}>
-            {VALIDITY.map((h) => (
-              <option key={h} value={h}>
-                {h ? m.days(h / 24) : m.noExpiry}
-              </option>
-            ))}
-          </Select>
+          <Select
+            value={hours}
+            onChange={setHours}
+            options={VALIDITY.map((h) => ({ value: h, label: h ? m.days(h / 24) : m.noExpiry }))}
+          />
         </Field>
         <Checkbox checked={autoFriend} onChange={setAutoFriend} label={m.autoFriend} />
       </form>
@@ -160,7 +158,7 @@ export default function Invites() {
   const { confirm, toast } = useOverlay();
   const { data, error, reload } = useApi<Invite[]>('/api/v2/admin/invites');
   const users = useApi<AccountSummary[]>('/api/v2/admin/users');
-  const settings = useApi<{ runtime: RuntimeSettings }>('/api/v2/admin/settings');
+  const settings = useApi<SettingsView>('/api/v2/admin/settings');
   const [creating, setCreating] = useState(false);
   const [code, setCode] = useState<string>();
   const [viewing, setViewing] = useState<Invite>();
@@ -177,7 +175,7 @@ export default function Invites() {
           </Button>
         }
       />
-      {settings.data && !settings.data.runtime.registration && (
+      {settings.data && !settings.data.settings.registration && (
         <Alert tone="amber">
           <Link to="/admin/settings">{m.registrationOff[0]}</Link>
           {m.registrationOff[1]}

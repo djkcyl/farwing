@@ -82,19 +82,24 @@ function Editor({ value, onClose, onSaved }: { value: Announcement | undefined; 
         {error && <Alert>{error}</Alert>}
         <div className="grid grid-2">
           <Field label={m.platform}>
-            <Select value={form.platform} onChange={(e) => set({ platform: e.target.value })}>
-              {['windows', 'macos', 'linux', 'android', 'ios'].map((p) => (
-                <option key={p} value={p}>
-                  {platformText(p)}
-                </option>
-              ))}
-            </Select>
+            <Select
+              value={form.platform}
+              onChange={(platform) => set({ platform })}
+              options={['windows', 'macos', 'linux', 'android', 'ios'].map((p) => ({
+                value: p,
+                label: platformText(p),
+              }))}
+            />
           </Field>
           <Field label={m.channel}>
-            <Select value={form.channel} onChange={(e) => set({ channel: e.target.value })}>
-              <option value="stable">{m.stableOption}</option>
-              <option value="beta">{m.betaOption}</option>
-            </Select>
+            <Select
+              value={form.channel}
+              onChange={(channel) => set({ channel })}
+              options={[
+                { value: 'stable', label: m.stableOption },
+                { value: 'beta', label: m.betaOption },
+              ]}
+            />
           </Field>
         </div>
         <Field label={m.version}>

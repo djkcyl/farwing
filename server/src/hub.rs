@@ -224,8 +224,8 @@ struct HubState {
 }
 
 pub struct Hub {
-    cfg: HubConfig,
-    ice: IceProvider,
+    cfg: parking_lot::RwLock<HubConfig>,
+    ice: parking_lot::RwLock<IceProvider>,
     state: Mutex<HubState>,
     events: UnboundedSender<HubEvent>,
     persist: UnboundedSender<PersistJob>,
@@ -319,8 +319,8 @@ impl Hub {
         let (persist, persist_rx) = unbounded_channel();
         (
             Arc::new(Hub {
-                cfg,
-                ice,
+                cfg: parking_lot::RwLock::new(cfg),
+                ice: parking_lot::RwLock::new(ice),
                 state: Mutex::new(HubState::default()),
                 events,
                 persist,
@@ -332,8 +332,15 @@ impl Hub {
         )
     }
 
-    pub fn config(&self) -> &HubConfig {
-        &self.cfg
+    /// Limits and timers for new links and sessions.
+    pub fn config(&self) -> HubConfig {
+        self.cfg.read().clone()
+    }
+
+    /// New limits and ICE servers (settings changed).
+    pub fn reconfigure(&self, cfg: HubConfig, ice: IceProvider) {
+        *self.cfg.write() = cfg;
+        *self.ice.write() = ice;
     }
 
     fn persist(&self, job: PersistJob) {
@@ -419,7 +426,7 @@ impl Hub {
             token_hash(&token),
             Ticket {
                 admission,
-                expires: Instant::now() + self.cfg.ticket_ttl,
+                expires: Instant::now() + self.cfg.read().ticket_ttl,
             },
         );
         token
@@ -457,7 +464,7 @@ impl Hub {
             .and_then(|id| st.links.get(id))
             .is_some_and(|l| {
                 l.detached_at
-                    .is_none_or(|t| t.elapsed() < self.cfg.resume_ttl)
+                    .is_none_or(|t| t.elapsed() < self.cfg.read().resume_ttl)
             })
     }
 
@@ -470,9 +477,9 @@ impl Hub {
                 epoch: link.epoch,
                 session_id: link.session_id.clone(),
                 resume_token: resume_token.to_owned(),
-                heartbeat_ms: self.cfg.heartbeat_ms,
-                idle_timeout_ms: self.cfg.idle_timeout_ms,
-                limits: self.cfg.limits.clone(),
+                heartbeat_ms: self.cfg.read().heartbeat_ms,
+                idle_timeout_ms: self.cfg.read().idle_timeout_ms,
+                limits: self.cfg.read().limits.clone(),
                 resumed,
                 server_time_ms: now_ms(),
             },
@@ -602,7 +609,7 @@ impl Hub {
             conn.close(close::INVALID_TICKET, "invalid resume token");
             return None;
         };
-        let ttl = self.cfg.resume_ttl;
+        let ttl = self.cfg.read().resume_ttl;
         let link = st.links.get_mut(&link_id).expect("resume index consistent");
         if link.detached_at.is_some_and(|t| t.elapsed() >= ttl) {
             conn.close(close::INVALID_TICKET, "resume token expired");
@@ -700,7 +707,7 @@ impl Hub {
             created_at_s: now_s(),
             state: SessState::Ticketed,
             controller_link: None,
-            ticket_deadline: Some(Instant::now() + self.cfg.ticket_ttl),
+            ticket_deadline: Some(Instant::now() + self.cfg.read().ticket_ttl),
             attempt_id: None,
             cand_to_host: 0,
             cand_to_controller: 0,
@@ -748,7 +755,7 @@ impl Hub {
         auth: LinkAuth,
     ) -> Result<(SessionView, String), ErrorCode> {
         let mut st = self.state.lock();
-        let ttl = self.cfg.ticket_ttl;
+        let ttl = self.cfg.read().ticket_ttl;
         let s = st
             .sessions
             .get_mut(sid)
@@ -1065,7 +1072,7 @@ impl Hub {
         let now = Instant::now();
         let mut st = self.state.lock();
         st.tickets.retain(|_, t| t.expires > now);
-        let ttl = self.cfg.resume_ttl;
+        let ttl = self.cfg.read().resume_ttl;
         let expired: Vec<String> = st
             .links
             .values()
@@ -1347,8 +1354,8 @@ impl Hub {
             controller: s.controller.clone(),
             options: start.options,
             capability: start.capability,
-            ice_servers: self.ice.servers(&sid),
-            force_relay: self.cfg.force_relay,
+            ice_servers: self.ice.read().servers(&sid),
+            force_relay: self.cfg.read().force_relay,
         };
         host_conn.send(&Envelope::new(types::SESSION_INCOMING, incoming).with_sid(&sid));
         conn.send(&Envelope::ack(
@@ -1356,8 +1363,8 @@ impl Hub {
             SessionStarted {
                 participant_id: s.participant_id.clone(),
                 session_id: sid.clone(),
-                ice_servers: self.ice.servers(&sid),
-                force_relay: self.cfg.force_relay,
+                ice_servers: self.ice.read().servers(&sid),
+                force_relay: self.cfg.read().force_relay,
                 host: PeerIdentity {
                     device_id: s.host_device_id.clone(),
                     public_key: s.host_public_key.clone(),
@@ -1425,7 +1432,8 @@ impl Hub {
             conn.send(&err_env(re, ErrorCode::Conflict, "session not started"));
             return;
         };
-        let limits = &self.cfg.limits;
+        let limits = self.cfg.read().limits.clone();
+        let limits = &limits;
         match kind {
             types::RTC_OFFER | types::RTC_ANSWER => {
                 let Ok(d) = env.body::<RtcDescription>() else {
@@ -1451,7 +1459,7 @@ impl Hub {
                     return;
                 }
                 let size = serde_json::to_string(&c.candidate).map_or(usize::MAX, |s| s.len());
-                if size > self.cfg.max_candidate_bytes {
+                if size > self.cfg.read().max_candidate_bytes {
                     conn.send(&err_env(
                         re,
                         ErrorCode::PayloadTooLarge,

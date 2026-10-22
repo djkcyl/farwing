@@ -1,6 +1,5 @@
 /target/
 /data/
-/farwing-server.toml
 .env
 # The repository root ignores *.md except an allowlist; keep this README.
 !/README.md

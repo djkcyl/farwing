@@ -1,9 +1,10 @@
 // The interface language: 简体中文 / English, each in its own language,
 // chosen from the console's own menu.
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { LANGS } from '../i18n/lang';
 import { useLang, useT } from '../i18n/react';
 import { Icon } from './icons';
+import { useDismiss } from './dismiss';
 
 /// `compact`: the globe alone, as an icon button, its menu opening upwards
 /// (the account bar at the bottom of the sidebar).
@@ -11,22 +12,8 @@ export function LangSwitch({ className = '', compact = false }: { className?: st
   const t = useT();
   const [lang, setLang] = useLang();
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const away = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const escape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    window.addEventListener('mousedown', away);
-    window.addEventListener('keydown', escape);
-    return () => {
-      window.removeEventListener('mousedown', away);
-      window.removeEventListener('keydown', escape);
-    };
-  }, [open]);
+  const close = useCallback(() => setOpen(false), []);
+  const ref = useDismiss(open, close);
   const current = LANGS.find((l) => l.id === lang);
   return (
     <div className={`lang-switch ${className}`} ref={ref}>

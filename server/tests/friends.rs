@@ -259,7 +259,6 @@ async fn friend_requests_lifecycle_and_pushes() {
     srv.delete(&format!("/api/v2/friends/{}", t.bob_id), &t.alice)
         .await
         .err(404, "not_found");
-    farwing_server::admin::friend_list(&srv.cfg, "alice").unwrap();
     t.srv.shutdown().await;
 }
 

@@ -2,15 +2,13 @@
 #
 #   sudo useradd --system --home-dir /var/lib/farwing-server --shell /usr/sbin/nologin farwing
 #   sudo install -m 0755 target/release/farwing-server /usr/local/bin/
-#   sudo install -d -m 0750 -o root -g farwing /etc/farwing-server
-#   sudo farwing-server init --config /etc/farwing-server/farwing-server.toml \
-#        --public-url https://farwing.example.com:8443 --data-dir /var/lib/farwing-server
-#   sudo chgrp farwing /etc/farwing-server/farwing-server.toml && sudo chmod 0640 /etc/farwing-server/farwing-server.toml
 #   sudo cp deploy/farwing-server.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now farwing-server
+#   journalctl -u farwing-server | grep "setup code"    # then open https://<host>:8443/setup
 #
-# Admin commands must run as the service user (database ownership):
-#   sudo -u farwing farwing-server --config /etc/farwing-server/farwing-server.toml user create alice
+# Everything else is set up in the web console. A new setup code (recovering
+# an administrator) is printed by, as the service user:
+#   sudo -u farwing farwing-server --data-dir /var/lib/farwing-server setup-code
 
 [Unit]
 Description=Farwing Server (self-hosted remote desktop backend)
@@ -22,8 +20,8 @@ Wants=network-online.target
 Type=simple
 User=farwing
 Group=farwing
-Environment=FARWING_CONFIG=/etc/farwing-server/farwing-server.toml
-ExecStart=/usr/local/bin/farwing-server serve
+Environment=FARWING_DATA_DIR=/var/lib/farwing-server
+ExecStart=/usr/local/bin/farwing-server
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM

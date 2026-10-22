@@ -11,7 +11,7 @@
 | 网页观看能连谁 | 本账号与好友共享的设备（账号身份），以及短号 / 设备 ID + 访问码或对方确认的访客观看（无需账号） |
 | 前端 | React + TypeScript + Vite，组件自绘，外观与客户端一致（客户端的深色配色） |
 | 账号产生 | 管理员创建；可选邀请码注册（默认关闭） |
-| 后台访问 | 默认不限 IP（配置里可加白名单）；管理员可开启 TOTP 二次验证 |
+| 后台访问 | 默认不限 IP（设置里可加白名单）；管理员可开启 TOTP 二次验证 |
 
 ## 2. 实施前的状况
 
@@ -26,7 +26,7 @@
 - `server/build-web.ps1` / `build-web.sh`：`npm ci` → `npm run check` → `npm run build` → `cargo build --release --locked`。Dockerfile 增加 Node 构建阶段。
 - 同一端口、同一 TLS：`/` 为网页（前端路由），接口仍在 `/api/v2/*`（没有另设 `/api/v2/web/*` 前缀，见 §8）。
 - 带路径前缀的反向代理：页面使用 `<base href>` 与相对资源路径，服务端按 `public_url` 的路径写入 `<base>`；前端的接口、路由与实时连接都相对于它。
-- 配置 `[web]`：`enabled`（默认开）、`admin_allow`（后台 IP 白名单）、`session_idle_minutes`（30）、`session_max_hours`（12）、`audit_days`（180）。
+- 设置 `web`：`enabled`（默认开）、`admin_allow`（后台 IP 白名单）、`session_idle_minutes`（30）、`session_max_hours`（12）、`audit_days`（180）、`caps`（§7.1）。
 - 响应头：CSP `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' wss: ws:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`，以及 `X-Frame-Options: DENY`、`nosniff`、`Referrer-Policy: no-referrer`、`Permissions-Policy`。
 
 ## 4. 账号、登录与安全
@@ -43,15 +43,15 @@
 
 ### 4.2 角色与二次验证
 
-- `users.role`：`user` / `admin`。第一个管理员由命令行产生：`user create <名> --admin` 或 `user promote <名>`；网页上与命令行都不能取消最后一个管理员，网页上不能降级、禁用或删除自己。
+- `users.role`：`user` / `admin`。第一个管理员在初始化页 `/setup` 创建（凭服务端控制台打印的一次性初始化码，见 `server/README.md`“首次启动”）；不能取消或禁用最后一个管理员，网页上不能降级、禁用或删除自己。管理员账号丢失时，服务器上运行 `farwing-server setup-code` 得到恢复码，在 `/setup` 把某个账号设为管理员并重设密码（关闭其二次验证、吊销其登录）。
 - 管理接口要求：管理员角色、来源地址在 `admin_allow` 内（为空则不限）、开启 TOTP 时本次登录已通过第二步（`access_tokens.mfa_at`）。
-- TOTP（RFC 6238，30 秒，6 位，SHA-1，前后各容忍一步）：只有管理员可以开启（密码确认 → 扫码 → 输入验证码），同时生成 10 个一次性恢复码（只存哈希）；开启后网页登录需要第二步。命令行 `user reset-totp <名>` 或其他管理员在后台重置。客户端登录没有第二步，TOTP 保护的是管理后台。
+- TOTP（RFC 6238，30 秒，6 位，SHA-1，前后各容忍一步）：只有管理员可以开启（密码确认 → 扫码 → 输入验证码），同时生成 10 个一次性恢复码（只存哈希）；开启后网页登录需要第二步。其他管理员在后台重置，或用恢复码（见上）。客户端登录没有第二步，TOTP 保护的是管理后台。
 - 管理员的敏感操作需要二次确认（删除账号需输入用户名），全部写入审计日志。
 
 ### 4.3 邀请码
 
 - 管理员生成：可用次数（1–1000 或不限）、有效期（1 天 / 7 天 / 30 天 / 永久）、备注、注册后是否自动与邀请人成为好友。邀请码（`XXXX-XXXX-XXXX`）只显示一次，只存哈希，可作废，记录每次使用（账号、时间、IP）。
-- 注册页 `/register?code=…`；用户名与密码规则同命令行。设置“邀请码注册”默认关闭；关闭时注册页与接口都不可用。
+- 注册页 `/register?code=…`；用户名 1–64 个字符，密码至少 8 个字符。设置“邀请码注册”默认关闭；关闭时注册页与接口都不可用。
 
 ## 5. 用户中心
 
@@ -75,7 +75,8 @@
 | 全部设备 | 全部 / 在线 / 可被控 / 未登录账号；设备 ID、短号、名称、平台与版本、所属账号、在线、注册 IP 与时间、最近在线；断开连接、解绑账号 |
 | 会话 | 每 3 秒刷新：被控、主控、关系、用途、状态、开始时间；结束会话 |
 | 客户端更新 | 发布、编辑、删除更新公告（平台、渠道、版本、说明、下载地址、预发布），保存在数据库；更新公告只在这里（或管理接口）管理，配置文件中没有对应的段 |
-| 服务器设置 | 在线可改：实例名称、游客功能、邀请码注册、码率上限、网页端可以使用的功能（§7.1）（保存在数据库，覆盖配置文件，立即生效）；其余配置只读显示（密钥隐藏），标注“修改需编辑配置文件并重启” |
+| 服务器设置 | 全部设置，分为基本、证书、中转与探测、账号与网页端、限额与超时、备份六组，各组单独保存并在运行中生效（见 [server-admin-api.md](server-admin-api.md)）：监听地址改动要在 60 秒内确认，否则自动恢复；证书可上传或自动申请；更换中转密钥；导出 / 导入 |
+| API 令牌 | 为脚本与 curl 创建管理接口令牌（只读或管理、有效期、允许的网络），只显示一次，可吊销 |
 | 审计日志 | 管理员操作、网页与客户端登录（含失败）、二次验证、邀请码注册；按类型、操作者筛选，向前翻页；按 `audit_days` 每小时清理。详情列保存为 JSON（如 `{"reason":"login_failed"}`、`{"admin":true,"disabled":false}`、`{"guests":false}`），由网页端按当前语言显示 |
 
 与提案的差异：
@@ -90,7 +91,7 @@
 
 见 §4.1。网页主控的权限与客户端完全相同（本账号设备全部、好友按授权、访客与受信任设备按被控的模板与记录），再与服务器的“网页端可以使用的功能”求交集：
 
-- 在线设置 `web_caps`（“服务器设置”页，默认是浏览器能用的全部：观看、键鼠、剪贴板、文件、声音、麦克风、批注；端口转发、关机、显示设置、诊断网页用不到，不能勾选）。只勾“观看画面”和“接收声音”即回到只看不控。
+- 设置 `web.caps`（“服务器设置 → 账号与网页端”，默认是浏览器能用的全部：观看、键鼠、剪贴板、文件、声音、麦克风、批注；端口转发、关机、显示设置、诊断网页用不到，不能勾选）。只勾“观看画面”和“接收声音”即回到只看不控。
 - 服务端对网页主控总是把这个上限放在主控信息 `ControllerInfo.caps_limit` 中（`session.incoming` 与 `assist.join` 都带），创建会话、好友改授权（`regrant`）时按它裁剪。
 - 被控完全按服务端给的 `caps_limit` 执行，不另设按平台的上限；在 `session.incoming`、会话中的权限变更（`SESSION_PERMISSIONS`）、“允许并信任”三处按它裁剪：服务器的限制也作用于被控做主的访客与受信任会话。即使网页代码被改，也拿不到更多权限。
 - 修改设置只影响之后建立的连接。
@@ -162,7 +163,7 @@ Chrome / Edge 120+、Firefox 128+、Safari 17+（WebRTC、数据通道、H.264 �
 
 ## 8. 数据与接口
 
-schema 4（数据库结构的当前版本；新数据库直接按它创建，没有迁移，其他版本的数据库拒绝启动）：
+schema 5（数据库结构的当前版本；新数据库直接按它创建，没有迁移，其他版本的数据库拒绝启动）：
 
 | 表 / 列 | 内容 |
 | --- | --- |
@@ -170,7 +171,8 @@ schema 4（数据库结构的当前版本；新数据库直接按它创建，没
 | `users.totp_secret`、`totp_enabled_at`、`totp_recovery` | TOTP 密钥、开启时间与恢复码哈希 |
 | `access_tokens.mfa_at` | 这次登录通过第二步的时间（网页会话没有单独的表，网页登录就是平台为 `web` 的设备登录） |
 | `invites`、`invite_uses` | 邀请码（哈希、创建者、备注、次数、过期、作废、自动加好友）与使用记录 |
-| `settings` | 在线可改的设置（键值），覆盖配置文件 |
+| `settings` | 服务器设置（键 `server_config`，一份 JSON 文档；没有配置文件）与一次性初始化码的哈希 |
+| `admin_tokens` | 管理接口令牌（哈希、名称、权限、允许的网络、创建者、有效期、最近使用、吊销） |
 | `update_announcements` | 更新公告（只在网页端或管理接口中管理） |
 | `audit_log` | 时间、操作者、类型、对象、详情、结果、IP |
 
@@ -179,7 +181,8 @@ schema 4（数据库结构的当前版本；新数据库直接按它创建，没
 - 公开：`GET /api/v2/web/info`（实例名、版本、地址、证书指纹、是否开放注册与游客、客户端下载）。
 - 登录与注册：`POST /api/v2/auth/login`（既有）、`POST /api/v2/auth/totp`、`POST /api/v2/auth/register`、`POST /api/v2/auth/logout`。
 - 本人：`PATCH /api/v2/me`、`GET /api/v2/me/security`、`POST /api/v2/me/password`、`POST /api/v2/me/totp/{setup,enable,disable}`；设备、好友、授权、收藏、登录沿用客户端接口。
-- 管理：`/api/v2/admin/{overview, users[/{id}[/password | /totp/reset]], invites[/{id}[/uses]], devices[/{id}[/disconnect]], sessions[/{id}], updates[/{id}], settings, audit}`。`PUT …/settings` 须带全部在线设置（包括 `web_caps`，没有默认值）。
+- 管理：`/api/v2/admin/{overview, users[/{id}[/password | /totp/reset]], invites[/{id}[/uses]], devices[/{id}[/disconnect]], sessions[/{id}], updates[/{id}], settings[/listen/confirm | /listen/revert | /certificate | /export | /import | /relay-secret], tokens[/{id}], audit}`，也接受 API 令牌（`Authorization: Bearer fwa_…`，不签名），见 [server-admin-api.md](server-admin-api.md)。
+- 初始化：`GET`/`POST /api/v2/setup`、`POST /api/v2/setup/recover`（不需登录，凭初始化码）。未初始化时其他接口返回 `503 setup_required`。
 - 观看与控制：`POST /api/v2/sessions`、访客 `POST /api/v2/assist/join` 与 `…/accept`（既有），实时通道新增子协议入场；`ControllerInfo` 新增可选字段 `caps_limit`。
 
 测试：服务端集成测试 `server/tests/web.rs`（管理员角色与 IP 白名单、TOTP 与恢复码、最后一个管理员与自身保护、账号管理与审计、邀请码次数与作废、在线设置与更新公告、网页登录提前过期与网页端能力上限、错误密码不算登录失效、浏览器子协议入场、页面安全头）；前端单元测试（Vitest：对端协议编解码与两份简报中的字节示例——输入、控制权、麦克风、剪贴板、文件、分片——SPAKE2 测试向量、设备 ID 推导、DTLS 指纹）；协议 crate 的 `caps_limit` 测试（上限只来自服务端，原生主控不带上限）。

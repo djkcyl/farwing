@@ -7,7 +7,6 @@ use super::{App, JsonBody};
 use crate::crypto::{new_uuid, sha256_hex};
 use crate::db::{self, DeviceRow};
 use crate::error::{ApiError, ApiResult};
-use crate::settings::RuntimeSettings;
 use crate::webdb::{self, AccountSummary, Announcement, AuditEntry, Invite, InviteUse};
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -19,7 +18,19 @@ use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 
 /// Record an administrator's change; `detail` as in [`audit`].
-async fn log(app: &App, admin: &AdminAuth, kind: &str, target: &str, detail: Value) {
+pub async fn log(app: &App, admin: &AdminAuth, kind: &str, target: &str, detail: Value) {
+    let detail = match &admin.token {
+        Some((_, name)) => {
+            let mut detail = match detail {
+                Value::Object(map) => map,
+                Value::Null => Map::new(),
+                other => Map::from_iter([("detail".to_owned(), other)]),
+            };
+            detail.insert("token".to_owned(), Value::String(name.clone()));
+            Value::Object(detail)
+        }
+        None => detail,
+    };
     audit(
         app,
         Some((&admin.user().id, &admin.user().username)),
@@ -49,7 +60,7 @@ fn random_password() -> String {
                 }
             })
             .collect();
-        if crate::admin::check_password(&text).is_ok() {
+        if crate::accounts::check_password(&text).is_ok() {
             return text;
         }
     }
@@ -95,7 +106,7 @@ pub async fn overview(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Js
             ))
         })
         .await?;
-    let db_path = app.cfg.db_path();
+    let db_path = app.cfg().db_path();
     let db_bytes = ["", "-wal"]
         .iter()
         .filter_map(|suffix| {
@@ -105,19 +116,20 @@ pub async fn overview(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Js
         })
         .sum();
     let sessions = app.hub.live_sessions();
-    let settings = app.settings.read().clone();
+    let settings = app.cfg();
+    let presented = app.tls.read().clone();
     Ok(Json(Overview {
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        instance_name: settings.instance_name,
-        public_url: app.cfg.public_url.clone(),
+        instance_name: settings.instance_name.clone(),
+        public_url: settings.public_url.clone(),
         uptime_s: app.started_at.elapsed().as_secs(),
-        tls_fingerprint: app.tls.as_ref().map(|t| t.fingerprint()),
-        acme: match &app.tls {
+        tls_fingerprint: presented.as_ref().map(|t| t.fingerprint()),
+        acme: match &presented {
             Some(crate::tls::Presented::Acme(acme)) => Some(acme.status()),
             _ => None,
         },
-        turn_mode: format!("{:?}", app.cfg.turn.mode).to_lowercase(),
-        nat_discovery: app.nat_discovery.clone(),
+        turn_mode: format!("{:?}", settings.turn.mode).to_lowercase(),
+        nat_discovery: app.nat_discovery.read().clone(),
         db_bytes,
         accounts,
         admins,
@@ -125,7 +137,7 @@ pub async fn overview(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Js
         devices_online: app.hub.online_devices().len(),
         sessions_connected: sessions.iter().filter(|s| s.connected).count(),
         sessions: sessions.len(),
-        guests: settings.guests,
+        guests: settings.guest.enabled,
         registration: settings.registration,
         recent,
     }))
@@ -792,116 +804,6 @@ pub async fn delete_update(
         .await?;
     log(&app, &admin, "update.delete", &id, Value::Null).await;
     Ok(Json(Empty {}))
-}
-
-// ================================================================ settings
-
-#[derive(Serialize)]
-pub struct SettingsView {
-    /// Changeable online.
-    pub runtime: RuntimeSettings,
-    /// The configuration file (secrets hidden), read-only.
-    pub config: serde_json::Value,
-}
-
-fn config_view(app: &App) -> serde_json::Value {
-    let c = &app.cfg;
-    serde_json::json!({
-        "listen": c.listen.to_string(),
-        "public_url": c.public_url,
-        "data_dir": c.data_dir.display().to_string(),
-        "trusted_proxies": c.trusted_proxies.iter().map(|n| n.to_string()).collect::<Vec<_>>(),
-        "tls": {
-            "mode": format!("{:?}", c.tls.mode).to_lowercase(),
-            "cert": c.tls.cert.as_ref().map(|p| p.display().to_string()),
-            "self_signed": c.tls.self_signed,
-            "hostnames": c.tls.hostnames,
-            "acme_domains": (c.tls.mode == crate::config::TlsMode::Acme).then(|| c.acme_domains()),
-            "acme_directory": (c.tls.mode == crate::config::TlsMode::Acme).then(|| c.tls.acme.directory_url()),
-            "acme_http_listen": c.tls.acme.http_listen.map(|a| a.to_string()),
-        },
-        "turn": {
-            "mode": format!("{:?}", c.turn.mode).to_lowercase(),
-            "urls": c.turn.urls,
-            // Whether one is set; the secret itself is never shown.
-            "shared_secret": !c.turn.shared_secret.is_empty(),
-            "credential_ttl_s": c.turn.credential_ttl.as_secs(),
-            "force_relay": c.turn.force_relay,
-            "listen_udp": c.turn.listen_udp.map(|a| a.to_string()),
-            "listen_tcp": c.turn.listen_tcp.map(|a| a.to_string()),
-            "public_ip": c.turn.public_ip.map(|a| a.to_string()),
-            "relay_ports": [c.turn.relay_port_min, c.turn.relay_port_max],
-            "stun": c.turn.stun.iter().map(|s| s.listen.to_string()).collect::<Vec<_>>(),
-        },
-        "web": {
-            "enabled": c.web.enabled,
-            "admin_allow": c.web.admin_allow.iter().map(|n| n.to_string()).collect::<Vec<_>>(),
-            "session_idle_minutes": c.web.session_idle_minutes,
-            "session_max_hours": c.web.session_max_hours,
-            "audit_days": c.web.audit_days,
-        },
-        "limits": {
-            "login_failures_per_ip": c.limits.login_failures_per_ip,
-            "login_failures_per_user": c.limits.login_failures_per_user,
-            "device_init_per_ip_hour": c.limits.device_init_per_ip_hour,
-            "assist_failures_per_minute": c.limits.assist_failures_per_minute,
-            "guest_token_ttl_s": c.limits.guest_token_ttl_s,
-        },
-    })
-}
-
-/// `GET /api/v2/admin/settings`
-pub async fn settings(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Json<SettingsView>> {
-    Ok(Json(SettingsView {
-        runtime: app.settings.read().clone(),
-        config: config_view(&app),
-    }))
-}
-
-/// `PUT /api/v2/admin/settings`
-pub async fn set_settings(
-    State(app): State<App>,
-    admin: AdminAuth,
-    JsonBody(mut req): JsonBody<RuntimeSettings>,
-) -> ApiResult<Json<RuntimeSettings>> {
-    req.instance_name = req.instance_name.trim().to_owned();
-    // Store the web limit in the canonical order, without duplicates.
-    req.web_caps = farwing_protocol::caps::WEB
-        .iter()
-        .filter(|c| req.web_caps.iter().any(|w| w == *c))
-        .map(|c| (*c).to_owned())
-        .chain(req.web_caps.iter().filter(|w| !farwing_protocol::caps::WEB.contains(&w.as_str())).cloned())
-        .collect();
-    req.validate()?;
-    let pairs = req.pairs();
-    app.db
-        .call(move |c| {
-            for (k, v) in &pairs {
-                webdb::set_setting(c, k, v)?;
-            }
-            Ok(())
-        })
-        .await?;
-    let before = std::mem::replace(&mut *app.settings.write(), req.clone());
-    // The changed settings with their new values (`null` bitrate: no limit).
-    let mut changes = Map::new();
-    if before.instance_name != req.instance_name {
-        changes.insert("instance_name".into(), req.instance_name.clone().into());
-    }
-    if before.guests != req.guests {
-        changes.insert("guests".into(), req.guests.into());
-    }
-    if before.registration != req.registration {
-        changes.insert("registration".into(), req.registration.into());
-    }
-    if before.bitrate_limit_mbps != req.bitrate_limit_mbps {
-        changes.insert("bitrate_limit_mbps".into(), json!(req.bitrate_limit_mbps));
-    }
-    if before.web_caps != req.web_caps {
-        changes.insert("web_caps".into(), json!(req.web_caps));
-    }
-    log(&app, &admin, "settings.save", "", changes_detail(changes)).await;
-    Ok(Json(req))
 }
 
 fn last_admin() -> ApiError {

@@ -10,6 +10,9 @@ pub mod me;
 pub mod misc;
 pub mod power;
 pub mod sessions;
+pub mod settings_api;
+pub mod setup;
+pub mod tokens;
 pub mod web_static;
 
 use crate::assist::AssistRegistry;
@@ -35,28 +38,55 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub struct AppState {
-    pub cfg: Arc<Config>,
+    /// The settings in force (`AppState::cfg`).
+    pub settings: crate::settings::Settings,
     pub db: Db,
     pub hub: Arc<Hub>,
     pub assist: AssistRegistry,
     pub limiter: WindowLimiter,
     /// Request signatures already used (replay protection).
     pub replay: auth::ReplayCache,
-    /// Path of `public_url` (e.g. `/farwing`), empty at the root. Signatures
-    /// over the prefixed path are accepted behind prefix-stripping proxies.
-    pub path_prefix: String,
     /// Bounds concurrent Argon2 verifications (memory and CPU heavy).
     pub password_slots: tokio::sync::Semaphore,
-    pub endpoints: Vec<String>,
-    /// `stun:` URLs of the NAT discovery endpoints (`[[turn.stun]]`).
-    pub nat_discovery: Vec<String>,
-    /// Settings changed online, over the configuration file's values.
-    pub settings: parking_lot::RwLock<crate::settings::RuntimeSettings>,
+    /// `stun:` URLs of the NAT discovery endpoints.
+    pub nat_discovery: parking_lot::RwLock<Vec<String>>,
+    /// Bound addresses of the builtin relay and discovery endpoints.
+    pub relay: parking_lot::RwLock<crate::runtime::RelayAddrs>,
     pub started_at: Instant,
-    /// SHA-256 fingerprint of the TLS certificate (when TLS ends here).
     /// The certificate presented by the TLS listener (`None` behind a
     /// TLS-terminating proxy).
-    pub tls: Option<crate::tls::Presented>,
+    pub tls: parking_lot::RwLock<Option<crate::tls::Presented>>,
+    /// No administrator exists yet: only the setup is open.
+    pub setup_pending: std::sync::atomic::AtomicBool,
+    /// A listen change waiting for confirmation.
+    pub listen_pending: parking_lot::RwLock<Option<crate::runtime::ListenPending>>,
+    /// The task that applies settings (`crate::runtime`).
+    pub control: std::sync::OnceLock<crate::runtime::Control>,
+}
+
+impl AppState {
+    /// The settings in force.
+    pub fn cfg(&self) -> Arc<Config> {
+        self.settings.get()
+    }
+
+    /// Path of `public_url` (e.g. `/farwing`), empty at the root. Signatures
+    /// over the prefixed path are accepted behind prefix-stripping proxies.
+    pub fn path_prefix(&self) -> String {
+        self.cfg().public_path_prefix()
+    }
+
+    pub fn endpoints(&self) -> Vec<String> {
+        vec![self.cfg().ws_endpoint()]
+    }
+
+    pub fn setup_pending(&self) -> bool {
+        self.setup_pending.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn control(&self) -> &crate::runtime::Control {
+        self.control.get().expect("runtime started")
+    }
 }
 
 pub type App = Arc<AppState>;
@@ -240,7 +270,7 @@ async fn common_layer(State(app): State<App>, mut req: Request, next: Next) -> R
         .get::<ConnectInfo<SocketAddr>>()
         .map(|c| c.0.ip())
         .unwrap_or(IpAddr::from([127, 0, 0, 1]));
-    let ip = client_ip(peer, req.headers(), &app.cfg.trusted_proxies);
+    let ip = client_ip(peer, req.headers(), &app.cfg().trusted_proxies);
     req.extensions_mut().insert(ClientIp(ip));
     let method = req.method().clone();
     let path = req.uri().path().to_owned();
@@ -260,8 +290,16 @@ async fn common_layer(State(app): State<App>, mut req: Request, next: Next) -> R
     } else {
         None
     };
-    let mut resp = match version_error {
-        Some(e) => e.into_response(),
+    // Until the setup, only the setup and the server description answer.
+    let setup_error = (app.setup_pending()
+        && path.starts_with("/api/")
+        && path != path::SERVER
+        && !path.starts_with(setup::PATH))
+        .then(|| {
+            ApiError::new(ErrorCode::SetupRequired, "this server has not been set up").into_response()
+        });
+    let mut resp = match version_error.map(IntoResponse::into_response).or(setup_error) {
+        Some(e) => e,
         None => match buffer_signed_body(req).await {
             Ok(req) => next.run(req).await,
             Err(e) => e.into_response(),
@@ -368,8 +406,33 @@ pub fn router(app: App) -> Router {
         )
         .route(
             "/api/v2/admin/settings",
-            get(admin_api::settings).put(admin_api::set_settings),
+            get(settings_api::get).put(settings_api::put),
         )
+        .route(
+            "/api/v2/admin/settings/listen/confirm",
+            post(settings_api::confirm_listen),
+        )
+        .route(
+            "/api/v2/admin/settings/listen/revert",
+            post(settings_api::revert_listen),
+        )
+        .route(
+            "/api/v2/admin/settings/certificate",
+            put(settings_api::put_certificate),
+        )
+        .route("/api/v2/admin/settings/export", get(settings_api::export))
+        .route("/api/v2/admin/settings/import", post(settings_api::import))
+        .route(
+            "/api/v2/admin/settings/relay-secret",
+            post(settings_api::rotate_relay_secret),
+        )
+        .route(
+            "/api/v2/admin/tokens",
+            get(tokens::list).post(tokens::create),
+        )
+        .route("/api/v2/admin/tokens/{id}", delete(tokens::revoke))
+        .route(setup::PATH, get(setup::info).post(setup::complete))
+        .route("/api/v2/setup/recover", post(setup::recover))
         .route("/api/v2/admin/audit", get(admin_api::audit_log))
         .route(path::GUEST_SESSION, post(account::guest_session))
         .route(path::DEVICES, get(devices::list))

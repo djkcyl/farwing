@@ -314,6 +314,112 @@ pub fn set_setting(c: &Connection, key: &str, value: &str) -> R<()> {
     Ok(())
 }
 
+pub fn delete_setting(c: &Connection, key: &str) -> R<()> {
+    c.execute("DELETE FROM settings WHERE key = ?1", [key])?;
+    Ok(())
+}
+
+// ============================================================== admin tokens
+
+/// An administration API token (`Authorization: Bearer fwa_…`).
+#[derive(Clone, Debug, Serialize)]
+pub struct AdminToken {
+    pub id: String,
+    pub name: String,
+    /// `read` (GET only) or `admin`.
+    pub scope: String,
+    /// Networks the token may be used from (CIDRs); empty = any.
+    pub allow: Vec<String>,
+    pub created_by: String,
+    pub created_by_name: String,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    pub last_used_at: Option<i64>,
+    pub last_used_ip: String,
+    pub revoked_at: Option<i64>,
+}
+
+pub const SCOPE_READ: &str = "read";
+pub const SCOPE_ADMIN: &str = "admin";
+
+fn admin_token_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AdminToken> {
+    let allow: String = r.get(3)?;
+    Ok(AdminToken {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        scope: r.get(2)?,
+        allow: allow
+            .split(',')
+            .filter(|a| !a.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        created_by: r.get(4)?,
+        created_by_name: r.get(5)?,
+        created_at: r.get(6)?,
+        expires_at: r.get(7)?,
+        last_used_at: r.get(8)?,
+        last_used_ip: r.get(9)?,
+        revoked_at: r.get(10)?,
+    })
+}
+
+const ADMIN_TOKEN_COLUMNS: &str = "t.id, t.name, t.scope, t.allow, t.created_by,     COALESCE(u.username, ''), t.created_at, t.expires_at, t.last_used_at, t.last_used_ip,     t.revoked_at";
+
+#[allow(clippy::too_many_arguments)]
+pub fn create_admin_token(
+    c: &Connection,
+    id: &str,
+    name: &str,
+    hash: &str,
+    scope: &str,
+    allow: &[String],
+    created_by: &str,
+    expires_at: Option<i64>,
+) -> R<()> {
+    c.execute(
+        "INSERT INTO admin_tokens (id, name, token_hash, scope, allow, created_by, created_at, expires_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![id, name, hash, scope, allow.join(","), created_by, now_s(), expires_at],
+    )?;
+    Ok(())
+}
+
+pub fn admin_tokens(c: &Connection) -> R<Vec<AdminToken>> {
+    let mut st = c.prepare(&format!(
+        "SELECT {ADMIN_TOKEN_COLUMNS} FROM admin_tokens t LEFT JOIN users u ON u.id = t.created_by
+         ORDER BY t.created_at DESC"
+    ))?;
+    st.query_map([], admin_token_row)?.collect()
+}
+
+/// The token with this hash, with whether it may still be used.
+pub fn admin_token_by_hash(c: &Connection, hash: &str) -> R<Option<AdminToken>> {
+    c.query_row(
+        &format!(
+            "SELECT {ADMIN_TOKEN_COLUMNS} FROM admin_tokens t LEFT JOIN users u ON u.id = t.created_by
+             WHERE t.token_hash = ?1"
+        ),
+        [hash],
+        admin_token_row,
+    )
+    .optional()
+}
+
+pub fn touch_admin_token(c: &Connection, id: &str, ip: &str) -> R<()> {
+    c.execute(
+        "UPDATE admin_tokens SET last_used_at = ?2, last_used_ip = ?3 WHERE id = ?1",
+        params![id, now_s(), ip],
+    )?;
+    Ok(())
+}
+
+pub fn revoke_admin_token(c: &Connection, id: &str) -> R<usize> {
+    c.execute(
+        "UPDATE admin_tokens SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
+        params![id, now_s()],
+    )
+}
+
 // =================================================================== updates
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

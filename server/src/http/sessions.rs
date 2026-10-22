@@ -31,7 +31,7 @@ pub async fn presence_ticket(
     );
     Ok(Json(PresenceTicket {
         ticket,
-        endpoints: app.endpoints.clone(),
+        endpoints: app.endpoints(),
         connect_timeout_ms: timing::CONNECT_TIMEOUT_MS,
         retry_delay_ms: timing::RETRY_DELAY_MS,
         max_reconnect_delay_s: timing::MAX_RECONNECT_DELAY_S,
@@ -49,7 +49,7 @@ pub fn session_ticket(
     SessionTicket {
         session_id,
         ticket,
-        endpoints: app.endpoints.clone(),
+        endpoints: app.endpoints(),
         connect_timeout_ms: timing::CONNECT_TIMEOUT_MS,
         retry_delay_ms: timing::RETRY_DELAY_MS,
         target: SessionTarget {
@@ -62,7 +62,7 @@ pub fn session_ticket(
             granted,
             public_key: target.public_key.clone(),
         },
-        bitrate_limit_mbps: app.settings.read().bitrate_limit_mbps,
+        bitrate_limit_mbps: app.cfg().bitrate_limit_mbps,
     }
 }
 
@@ -74,7 +74,7 @@ pub fn controller_info(app: &App, auth: &AccountAuth) -> ControllerInfo {
 /// the server's web limit, which hosts apply to whatever they grant.
 pub fn device_controller_info(app: &App, device: &DeviceRow, user: Option<&db::UserRow>) -> ControllerInfo {
     ControllerInfo {
-        caps_limit: (device.platform == Platform::Web).then(|| app.settings.read().web_caps.clone()),
+        caps_limit: (device.platform == Platform::Web).then(|| app.cfg().web.caps.clone()),
         device_id: device.id.clone(),
         alias: device.alias.clone(),
         user_id: user.map(|u| u.id.clone()).unwrap_or_default(),

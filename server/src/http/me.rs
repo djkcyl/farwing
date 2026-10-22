@@ -71,23 +71,23 @@ pub fn failure(reason: &'static str) -> Value {
     json!({ "reason": reason })
 }
 
-/// The command line's username rule.
+/// The username rule.
 pub fn username_rule(name: &str) -> ApiResult<()> {
-    crate::admin::validate_username(name).map_err(|e| {
+    crate::accounts::validate_username(name).map_err(|e| {
         ApiError::reason(ErrorCode::BadRequest, reason::USERNAME_INVALID, e.to_string())
-            .with_detail("max", crate::admin::MAX_USERNAME_LEN)
+            .with_detail("max", crate::accounts::MAX_USERNAME_LEN)
     })
 }
 
-/// The command line's password rule.
+/// The password rule.
 pub fn password_rule(password: &str) -> ApiResult<()> {
-    crate::admin::check_password(password).map_err(|e| {
-        if password.chars().count() > crate::admin::MAX_PASSWORD_LEN {
+    crate::accounts::check_password(password).map_err(|e| {
+        if password.chars().count() > crate::accounts::MAX_PASSWORD_LEN {
             ApiError::reason(ErrorCode::BadRequest, reason::PASSWORD_TOO_LONG, e.to_string())
-                .with_detail("max", crate::admin::MAX_PASSWORD_LEN)
+                .with_detail("max", crate::accounts::MAX_PASSWORD_LEN)
         } else {
             ApiError::reason(ErrorCode::BadRequest, reason::PASSWORD_TOO_SHORT, e.to_string())
-                .with_detail("min", crate::admin::MIN_PASSWORD_LEN)
+                .with_detail("min", crate::accounts::MIN_PASSWORD_LEN)
         }
     })
 }
@@ -121,14 +121,14 @@ pub async fn info(State(app): State<App>) -> ApiResult<Json<WebInfo>> {
             downloads.push(a);
         }
     }
-    let settings = app.settings.read().clone();
+    let settings = app.cfg();
     Ok(Json(WebInfo {
-        instance_name: settings.instance_name,
+        instance_name: settings.instance_name.clone(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        public_url: app.cfg.public_url.clone(),
-        tls_fingerprint: app.tls.as_ref().map(|t| t.fingerprint()),
+        public_url: settings.public_url.clone(),
+        tls_fingerprint: app.tls.read().as_ref().map(|t| t.fingerprint()),
         registration: settings.registration,
-        guests: settings.guests,
+        guests: settings.guest.enabled,
         downloads,
     }))
 }
@@ -292,7 +292,7 @@ pub async fn totp_setup(
             "two-step verification is for administrators",
         ));
     }
-    let issuer = format!("Farwing {}", app.settings.read().instance_name);
+    let issuer = format!("Farwing {}", app.cfg().instance_name);
     Ok(Json(TotpSetup {
         uri: crate::totp::uri(&secret, &issuer, &auth.user.username),
         secret,
@@ -434,7 +434,7 @@ pub async fn verify_login(
 ) -> ApiResult<Json<Empty>> {
     let key = format!("totp-user:{}", auth.user.id);
     app.limiter
-        .take(&key, app.cfg.limits.login_failures_per_user, Duration::from_secs(15 * 60))
+        .take(&key, app.cfg().limits.login_failures_per_user, Duration::from_secs(15 * 60))
         .map_err(ApiError::rate_limited)?;
     let actor = Some((auth.user.id.as_str(), auth.user.username.as_str()));
     if !second_factor(&app, &auth.user.id, &req.code).await? {
@@ -468,7 +468,7 @@ pub async fn register(
     dev: DeviceAuth,
     JsonBody(req): JsonBody<RegisterRequest>,
 ) -> ApiResult<Json<LoginResponse>> {
-    if !app.settings.read().registration {
+    if !app.cfg().registration {
         return Err(ApiError::new(
             ErrorCode::RegistrationDisabled,
             "registration is closed on this server",

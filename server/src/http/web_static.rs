@@ -92,7 +92,7 @@ pub async fn serve(State(app): State<App>, method: Method, uri: Uri, headers: He
     if path.starts_with("/api/") || !(method == Method::GET || method == Method::HEAD) {
         return crate::error::ApiError::not_found().into_response();
     }
-    if !app.cfg.web.enabled {
+    if !app.cfg().web.enabled {
         return (StatusCode::NOT_FOUND, "web console disabled").into_response();
     }
     // Hashed build output never changes; everything else is revalidated.
@@ -121,7 +121,7 @@ pub async fn serve(State(app): State<App>, method: Method, uri: Uri, headers: He
     // A client-side route: the application's page, with its base set to the
     // public URL's path (a reverse proxy may serve the server under it).
     let page = match find("/index.html") {
-        Some(page) => with_base(page, &app.path_prefix),
+        Some(page) => with_base(page, &app.path_prefix()),
         None => NOT_BUILT.as_bytes().to_vec(),
     };
     let response = (

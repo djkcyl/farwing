@@ -15,6 +15,7 @@ export const zh = {
   sessions: '会话',
   updates: '客户端更新',
   settings: '服务器设置',
+  tokens: 'API 令牌',
   audit: '审计日志',
 };
 
@@ -33,5 +34,6 @@ export const en: typeof zh = {
   sessions: 'Sessions',
   updates: 'Client updates',
   settings: 'Server settings',
+  tokens: 'API tokens',
   audit: 'Audit log',
 };

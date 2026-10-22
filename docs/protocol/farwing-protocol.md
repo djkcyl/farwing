@@ -189,6 +189,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `rate_limited` | 429 | 是 | `details.retry_after_ms` |
 | `internal` | 500 | 是 | |
 | `unavailable` | 503 | 是 | 服务端正在关闭 |
+| `setup_required` | 503 | | 服务端尚未初始化（还没有管理员），只有 `GET /server` 与初始化接口应答（[server-admin-api.md](../server-admin-api.md) §3） |
 | `network` | — | 是 | 仅客户端本地：请求未送达或无响应 |
 
 写操作结果不确定时客户端不自动重放。
@@ -244,6 +245,8 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `DELETE /assist/saved/recent` | 账号 | — | `{}` |
 | `DELETE /assist/saved/{kind}/{device_id}` | 账号 | — | `{}` |
 | `GET /ws` | 入场券或恢复令牌（§4.1） | — | WebSocket 升级 |
+
+网页端与管理接口（`/web/info`、`/me/*`、`/admin/*`、`/setup*`）见 [web-console.md](../web-console.md) §8 与 [server-admin-api.md](../server-admin-api.md)。
 
 ### 3.5 服务器信息
 

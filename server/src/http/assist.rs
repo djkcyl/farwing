@@ -86,7 +86,7 @@ fn host_info(host: &DeviceRow) -> AssistHost {
 }
 
 fn host_wait(app: &App) -> Duration {
-    Duration::from_millis(app.cfg.limits.assist_host_reply_ms)
+    Duration::from_millis(app.cfg().limits.assist_host_reply_ms)
 }
 
 /// The controller, for rate limits and request ownership: its account, or
@@ -169,7 +169,7 @@ pub async fn join(
     app.limiter
         .take(
             &key,
-            app.cfg.limits.assist_failures_per_minute,
+            app.cfg().limits.assist_failures_per_minute,
             Duration::from_secs(60),
         )
         .map_err(ApiError::rate_limited)?;
@@ -264,7 +264,7 @@ pub async fn accept(
     if req.key_confirm.len() > MAX_PAKE_TEXT {
         return Err(ApiError::bad_request("invalid key_confirm"));
     }
-    let wait = Duration::from_millis(app.cfg.limits.assist_decision_wait_ms);
+    let wait = Duration::from_millis(app.cfg().limits.assist_decision_wait_ms);
     let mode = app.assist.mode(&rid);
     let Some((parties, rx)) = app
         .assist

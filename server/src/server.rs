@@ -1,15 +1,19 @@
-//! Server assembly: database, hub, background tasks, listeners.
+//! Server assembly: settings, database, hub, background tasks and the
+//! components that apply settings (`runtime`).
 
-use crate::config::{Config, TurnMode};
+use crate::config::Config;
 use crate::db::{self, Db};
 use crate::http::{self, App, AppState};
-use crate::hub::{Hub, HubConfig, HubEvent, PersistJob};
+use crate::hub::{Hub, HubEvent, PersistJob};
 use crate::ice::IceProvider;
-use crate::{stun_server, tls, turn_server};
+use crate::runtime::{self, Components, Control};
+use crate::tls;
 use anyhow::{Context, Result};
-use farwing_protocol::realtime::{AssistCancelled, DeviceChangeKind, Envelope, Limits, types};
+use farwing_protocol::realtime::{AssistCancelled, DeviceChangeKind, Envelope, types};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
@@ -21,101 +25,73 @@ pub struct RunningServer {
     pub fingerprint: Option<String>,
     pub turn_udp: Option<SocketAddr>,
     pub turn_tcp: Option<SocketAddr>,
-    /// Bound addresses of the `[[turn.stun]]` endpoints (builtin mode).
+    /// Bound addresses of the NAT discovery endpoints (builtin relay).
     pub stun_udp: Vec<SocketAddr>,
-    handle: axum_server::Handle<SocketAddr>,
-    server_task: JoinHandle<std::io::Result<()>>,
+    /// The one-time setup code while no administrator exists.
+    pub setup_code: Option<String>,
+    control: Control,
+    runtime: JoinHandle<()>,
     tasks: Vec<JoinHandle<()>>,
-    turn: Option<turn_server::BuiltinTurn>,
-    stun: Option<stun_server::StunEndpoints>,
 }
 
-fn hub_config(cfg: &Config) -> HubConfig {
-    let l = &cfg.limits;
-    HubConfig {
-        heartbeat_ms: l.heartbeat_ms,
-        idle_timeout_ms: l.idle_timeout_ms,
-        resume_ttl: Duration::from_secs(l.resume_ttl_s),
-        ticket_ttl: Duration::from_secs(l.ticket_ttl_s),
-        limits: Limits {
-            max_frame_bytes: l.max_frame_bytes,
-            max_sdp_bytes: l.max_sdp_bytes,
-            max_candidates: l.max_candidates,
-            rate_per_s: l.ws_rate_per_s,
-        },
-        max_candidate_bytes: l.max_candidate_bytes,
-        force_relay: cfg.turn.force_relay,
+/// Replaces the process's log filter (set by the binary).
+static LOG_RELOAD: OnceLock<Box<dyn Fn(&str) + Send + Sync>> = OnceLock::new();
+
+pub fn set_log_reloader(f: impl Fn(&str) + Send + Sync + 'static) {
+    let _ = LOG_RELOAD.set(Box::new(f));
+}
+
+pub(crate) fn reload_log(directive: &str) {
+    if let Some(f) = LOG_RELOAD.get() {
+        f(directive);
     }
 }
 
-/// Start the server. `listener` (already bound) is used instead of
-/// `cfg.listen` when given (tests bind port 0 first).
+/// Start the server with `cfg` (stored as the settings in force).
+/// `listener` (already bound) is used instead of `cfg.listen` when given
+/// (tests bind port 0 first).
 pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Result<RunningServer> {
     tls::install_crypto_provider();
     for w in cfg.warnings() {
         tracing::warn!("{w}");
     }
     std::fs::create_dir_all(&cfg.data_dir)
-        .with_context(|| format!("creating data_dir {}", cfg.data_dir.display()))?;
+        .with_context(|| format!("creating the data directory {}", cfg.data_dir.display()))?;
     std::fs::create_dir_all(cfg.wallpaper_dir())?;
     let db = Db::open(&cfg.db_path())?;
     let stale = db.with(|c| db::end_open_sessions(c, "server_restart"))?;
     if stale > 0 {
         tracing::info!(stale, "closed sessions left open by a previous run");
     }
-    let last_event = db.with(|c| db::max_event_id(c))?;
-
-    // NAT behaviour discovery endpoints; clients get them as stun: URLs.
-    let stun = if cfg.turn.mode == TurnMode::Builtin && !cfg.turn.stun.is_empty() {
-        Some(stun_server::start(&cfg.turn).await?)
+    db.with(|c| crate::settings::save(c, &cfg))?;
+    let needs_setup = db.with(|c| crate::setup::needs_setup(c))?;
+    let setup_code = if needs_setup {
+        Some(db.with(|c| crate::setup::new_code(c))?)
     } else {
         None
     };
-    let stun_public = stun.as_ref().map_or(&[][..], |s| s.public_addrs());
-    let ice = IceProvider::new(&cfg.turn).with_stun_endpoints(stun_public);
-    let stun_udp = stun
-        .as_ref()
-        .map(|s| s.local_addrs().to_vec())
-        .unwrap_or_default();
-    let (hub, channels) = Hub::new(hub_config(&cfg), ice);
-    let tls = tls::load(&cfg)?;
-    let stored = db.with(|c| crate::webdb::settings(c))?;
-    let settings = crate::settings::RuntimeSettings::load(&cfg, &stored);
-    let cfg = Arc::new(cfg);
+    let (hub, channels) = Hub::new(runtime::hub_config(&cfg), IceProvider::new(&cfg.turn));
     let app: App = Arc::new(AppState {
-        cfg: Arc::clone(&cfg),
+        settings: crate::settings::Settings::new(cfg),
         db: db.clone(),
         hub: Arc::clone(&hub),
         assist: Default::default(),
         limiter: Default::default(),
         replay: Default::default(),
-        path_prefix: cfg.public_path_prefix(),
         password_slots: tokio::sync::Semaphore::new(
             std::thread::available_parallelism().map_or(2, |n| n.get().clamp(1, 4)),
         ),
-        endpoints: vec![cfg.ws_endpoint()],
-        nat_discovery: stun_public
-            .iter()
-            .map(|addr| match addr {
-                std::net::SocketAddr::V4(v4) => format!("stun:{}:{}", v4.ip(), v4.port()),
-                std::net::SocketAddr::V6(v6) => format!("stun:[{}]:{}", v6.ip(), v6.port()),
-            })
-            .collect(),
-        settings: parking_lot::RwLock::new(settings),
+        nat_discovery: Default::default(),
+        relay: Default::default(),
         started_at: std::time::Instant::now(),
-        tls: tls.as_ref().map(|t| match &t.acme {
-            Some(acme) => tls::Presented::Acme(Arc::clone(acme)),
-            None => tls::Presented::Fixed(t.fingerprint.clone()),
-        }),
+        tls: Default::default(),
+        setup_pending: AtomicBool::new(needs_setup),
+        listen_pending: parking_lot::RwLock::new(None),
+        control: OnceLock::new(),
     });
-
-    let turn = if cfg.turn.mode == TurnMode::Builtin {
-        Some(turn_server::start(&cfg.turn).await?)
-    } else {
-        None
-    };
-    let turn_udp = turn.as_ref().map(|t| t.udp_addr());
-    let turn_tcp = turn.as_ref().and_then(|t| t.tcp_addr());
+    let router = http::router(Arc::clone(&app));
+    let started = Components::start(Arc::clone(&app), router, listener).await?;
+    let _ = app.control.set(started.control.clone());
 
     let mut tasks = Vec::new();
     // Ordered persistence of session state.
@@ -185,36 +161,14 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
             }
         }));
     }
-    // Changes made by the admin CLI while the server runs.
+    // Audit log retention (`web.audit_days`).
     {
         let app = Arc::clone(&app);
         tasks.push(tokio::spawn(async move {
-            let mut last = last_event;
-            let mut tick = tokio::time::interval(Duration::from_secs(1));
-            loop {
-                tick.tick().await;
-                let events = match app.db.call(move |c| db::events_after(c, last)).await {
-                    Ok(e) => e,
-                    Err(e) => {
-                        tracing::warn!(error = %format!("{e:#}"), "reading admin events failed");
-                        continue;
-                    }
-                };
-                for ev in events {
-                    last = ev.id;
-                    apply_admin_event(&app, ev).await;
-                }
-            }
-        }));
-    }
-    // Audit log retention (`[web] audit_days`).
-    {
-        let app = Arc::clone(&app);
-        tasks.push(tokio::spawn(async move {
-            let keep = i64::from(app.cfg.web.audit_days.max(1)) * 86_400;
             let mut tick = tokio::time::interval(Duration::from_secs(3600));
             loop {
                 tick.tick().await;
+                let keep = i64::from(app.cfg().web.audit_days.max(1)) * 86_400;
                 match app
                     .db
                     .call(move |c| crate::webdb::prune_audit(c, keep))
@@ -228,145 +182,35 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
         }));
     }
 
-    let router = http::router(Arc::clone(&app));
-    let listener = match listener {
-        Some(l) => l,
-        None => std::net::TcpListener::bind(cfg.listen)
-            .with_context(|| format!("binding {}", cfg.listen))?,
-    };
-    listener.set_nonblocking(true)?;
-    let addr = listener.local_addr()?;
-    let handle = axum_server::Handle::<SocketAddr>::new();
-    let make = router.into_make_service_with_connect_info::<SocketAddr>();
-    let fingerprint = tls.as_ref().map(|t| t.fingerprint.clone());
-    let acme = tls.as_ref().and_then(|t| t.acme.clone());
-    let server_task = match tls {
-        Some(material) => {
-            tracing::info!(
-                cert = %material.cert_path.display(),
-                sha256_fingerprint = %material.fingerprint,
-                "TLS certificate loaded"
-            );
-            let rustls = axum_server::tls_rustls::RustlsConfig::from_config(material.config);
-            // Without TCP_NODELAY the second small realtime message of a
-            // burst (an answer and its ICE candidates) waits for the peer's
-            // delayed ACK, tens of milliseconds.
-            let acceptor = axum_server::tls_rustls::RustlsAcceptor::new(rustls)
-                .acceptor(axum_server::accept::NoDelayAcceptor::new());
-            let server = axum_server::from_tcp(listener)?
-                .acceptor(acceptor)
-                .handle(handle.clone());
-            tokio::spawn(server.serve(make))
-        }
-        None => {
-            tracing::info!("TLS terminated by a reverse proxy (tls.mode = \"proxy\")");
-            let server = axum_server::from_tcp(listener)?
-                .acceptor(axum_server::accept::NoDelayAcceptor::new())
-                .handle(handle.clone());
-            tokio::spawn(server.serve(make))
-        }
-    };
-    // ACME: obtain and renew once the TLS listener answers TLS-ALPN-01; the
-    // plain-HTTP listener answers HTTP-01 and redirects to public_url.
-    if let Some(acme) = acme {
-        if let Some(http) = cfg.tls.acme.http_listen {
-            let listener = tokio::net::TcpListener::bind(http)
-                .await
-                .with_context(|| format!("binding [tls.acme] http_listen {http}"))?;
-            tracing::info!(listen = %http, "HTTP listener for ACME challenges and redirects");
-            let router = crate::acme::http_router(Arc::clone(&acme));
-            tasks.push(tokio::spawn(async move {
-                if let Err(e) = axum::serve(listener, router).await {
-                    tracing::warn!(error = %e, "HTTP listener stopped");
-                }
-            }));
-        }
-        tasks.push(tokio::spawn(acme.run()));
-    }
+
+    let cfg = app.cfg();
     tracing::info!(
-        listen = %addr,
+        listen = %started.addr,
         public_url = %cfg.public_url,
         endpoint = %cfg.ws_endpoint(),
         turn = ?cfg.turn.mode,
-        guests = app.settings.read().guests,
+        guests = cfg.guest.enabled,
         "Farwing Server {} started",
         env!("CARGO_PKG_VERSION")
     );
-    Ok(RunningServer {
-        addr,
-        app,
-        fingerprint,
-        turn_udp,
-        turn_tcp,
-        stun_udp,
-        handle,
-        server_task,
-        tasks,
-        turn,
-        stun,
-    })
-}
-
-async fn apply_admin_event(app: &App, ev: db::AdminEvent) {
-    match ev.kind.as_str() {
-        db::EVENT_REVOKE_USER => {
-            if let Some(uid) = ev.user_id.as_deref() {
-                tracing::info!(user_id = uid, "admin: revoking user sessions");
-                app.hub.revoke_user(uid);
-            }
-        }
-        db::EVENT_REVOKE_DEVICE => {
-            let Some(did) = ev.device_id.clone() else {
-                return;
-            };
-            tracing::info!(device_id = %did, "admin: revoking device");
-            app.hub.revoke_device(&did);
-            // The CLI already unbound the device (and dropped its grants):
-            // tell the former owner's devices and the owner's friends.
-            let Some(owner) = ev.user_id.clone() else {
-                return;
-            };
-            let (id, uid) = (did.clone(), owner.clone());
-            let Ok((Some(row), Some(owner_row), friends)) = app
-                .db
-                .call(move |c| {
-                    Ok((
-                        db::get_device(c, &id)?,
-                        db::get_user(c, &uid)?,
-                        db::friend_ids(c, &uid)?,
-                    ))
-                })
-                .await
-            else {
-                return;
-            };
-            let mut device = http::devices::build_device(app, &row, &http::devices::Viewer::Owner);
-            device.status = farwing_protocol::api::STATUS_OFFLINE.to_owned();
-            device.participants.clear();
-            let env = Envelope::new(
-                types::DEVICE_CHANGED,
-                farwing_protocol::realtime::DeviceChanged {
-                    kind: DeviceChangeKind::Removed,
-                    device,
-                    shared: false,
-                },
-            );
-            http::devices::send_to_user(app, &owner, Some(&did), &env).await;
-            let summary = http::devices::user_summary(&owner_row);
-            for friend in friends {
-                http::devices::push_shared(
-                    app,
-                    &friend,
-                    &row,
-                    &summary,
-                    Vec::new(),
-                    DeviceChangeKind::Removed,
-                )
-                .await;
-            }
-        }
-        other => tracing::warn!(kind = other, "unknown admin event"),
+    if let Some(code) = &setup_code {
+        tracing::info!(
+            "This server has not been set up. Open https://<this server>:{}/setup and enter the setup code {code} (valid for 24 hours).",
+            started.addr.port()
+        );
     }
+    Ok(RunningServer {
+        addr: started.addr,
+        app,
+        fingerprint: started.fingerprint,
+        turn_udp: started.relay.turn_udp,
+        turn_tcp: started.relay.turn_tcp,
+        stun_udp: started.relay.stun_udp,
+        setup_code,
+        control: started.control,
+        runtime: started.task,
+        tasks,
+    })
 }
 
 impl RunningServer {
@@ -376,16 +220,11 @@ impl RunningServer {
         self.app.hub.shutdown();
         // Give connection tasks a moment to flush their close frames.
         tokio::time::sleep(Duration::from_millis(200)).await;
-        self.handle.graceful_shutdown(Some(Duration::from_secs(5)));
-        let _ = tokio::time::timeout(Duration::from_secs(10), self.server_task).await;
+        self.control.shutdown().await;
+        let _ = tokio::time::timeout(Duration::from_secs(10), self.runtime).await;
         for t in self.tasks {
             t.abort();
         }
-        if let Some(turn) = self.turn {
-            turn.close().await;
-        }
-        // Dropping the STUN endpoints stops them.
-        drop(self.stun);
         tracing::info!("stopped");
     }
 }
@@ -412,8 +251,16 @@ pub async fn shutdown_signal() {
     }
 }
 
-/// `farwing-server serve`.
-pub async fn serve(cfg: Config) -> Result<()> {
+/// Run the server from the settings stored in `data_dir` until Ctrl-C or
+/// SIGTERM. `listen` fixes the listen address.
+pub async fn serve(data_dir: PathBuf, listen: Option<SocketAddr>) -> Result<()> {
+    std::fs::create_dir_all(&data_dir)
+        .with_context(|| format!("creating the data directory {}", data_dir.display()))?;
+    let cfg = {
+        let conn = db::open_connection(&data_dir.join("farwing.db"))?;
+        crate::settings::load(&conn, &data_dir, listen)?
+    };
+    reload_log(&cfg.log);
     let server = start(cfg, None).await?;
     shutdown_signal().await;
     server.shutdown().await;

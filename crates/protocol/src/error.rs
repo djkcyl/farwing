@@ -33,6 +33,8 @@ pub enum ErrorCode {
     RegistrationDisabled,
     Internal,
     Unavailable,
+    /// The server has not been set up: only its setup page answers.
+    SetupRequired,
     /// Client-local: the request did not reach the server or no response was
     /// received. Never sent on the wire by a server.
     Network,
@@ -69,6 +71,7 @@ impl ErrorCode {
             Self::RegistrationDisabled => "registration_disabled",
             Self::Internal => "internal",
             Self::Unavailable => "unavailable",
+            Self::SetupRequired => "setup_required",
             Self::Network => "network",
             Self::Unknown => "unknown",
         }
@@ -98,7 +101,7 @@ impl ErrorCode {
             Self::PayloadTooLarge => 413,
             Self::ProtocolUnsupported => 426,
             Self::RateLimited => 429,
-            Self::Unavailable => 503,
+            Self::Unavailable | Self::SetupRequired => 503,
             Self::Internal | Self::Network | Self::Unknown => 500,
         }
     }
@@ -228,12 +231,18 @@ pub mod reason {
     pub const UPDATE_VERSION_INVALID: &str = "update_version_invalid";
     pub const UPDATE_URL_INVALID: &str = "update_url_invalid";
     pub const UPDATE_NOTES_TOO_LONG: &str = "update_notes_too_long";
-    /// `max`: the longest instance name.
-    pub const INSTANCE_NAME_INVALID: &str = "instance_name_invalid";
-    /// `min`, `max`: the allowed limit in Mbit/s.
-    pub const BITRATE_LIMIT_INVALID: &str = "bitrate_limit_invalid";
-    /// Browser capabilities without `view`, or with one browsers lack.
-    pub const WEB_CAPS_INVALID: &str = "web_caps_invalid";
+    /// A setting was refused; `details`: `{field, problem}` where
+    /// `problem` is `required`, `invalid`, `out_of_range`, `conflict`,
+    /// `unavailable` (a port or file cannot be used) or `locked`.
+    pub const SETTING_INVALID: &str = "setting_invalid";
+    /// The setup or recovery code is wrong or has expired.
+    pub const SETUP_CODE_INVALID: &str = "setup_code_invalid";
+    /// The server is already set up.
+    pub const SETUP_DONE: &str = "setup_done";
+    /// Only a signed-in administrator, not an API token, may do this.
+    pub const ADMIN_LOGIN_REQUIRED: &str = "admin_login_required";
+    /// No listen change waits for confirmation.
+    pub const NOTHING_TO_CONFIRM: &str = "nothing_to_confirm";
     pub const SELF_FRIEND: &str = "self_friend";
     /// A device connecting to (or assisting) itself.
     pub const SELF_CONNECT: &str = "self_connect";
@@ -318,9 +327,11 @@ pub mod reason {
         UPDATE_VERSION_INVALID,
         UPDATE_URL_INVALID,
         UPDATE_NOTES_TOO_LONG,
-        INSTANCE_NAME_INVALID,
-        BITRATE_LIMIT_INVALID,
-        WEB_CAPS_INVALID,
+        SETTING_INVALID,
+        SETUP_CODE_INVALID,
+        SETUP_DONE,
+        ADMIN_LOGIN_REQUIRED,
+        NOTHING_TO_CONFIRM,
         SELF_FRIEND,
         SELF_CONNECT,
         NOT_OWN_DEVICE,

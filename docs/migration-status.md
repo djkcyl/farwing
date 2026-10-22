@@ -14,7 +14,7 @@
   - `b`：无窗口被控 `host --allow`，账号 alice；
   - `c`：其他账号 bob；
   - `d`：未登录、未配置服务器。
-- 账号由管理员 CLI 创建：`farwing-server user create alice/bob --password-stdin`。
+- 账号由管理员创建（当时用命令行；现在在网页端或管理接口中创建）。
 
 自动化测试：
 
@@ -137,10 +137,9 @@
 
 ```powershell
 # 服务端（Windows 下同样可用）
-farwing-server init --config e2e.toml --public-url https://localhost:18443 --data-dir ./data
-# 编辑 e2e.toml：listen = "127.0.0.1:18443"；[turn] mode = "builtin"，listen_udp/listen_tcp/public_ip/relay_bind 用本机局域网 IP
-farwing-server --config e2e.toml user create alice --password-stdin < alice.pw
-farwing-server --config e2e.toml serve        # 启动日志打印证书指纹
+farwing-server --data-dir ./data --listen 127.0.0.1:18443   # 控制台打印初始化码与证书指纹
+# 浏览器打开 https://localhost:18443/setup（或 POST /api/v2/setup，见 docs/server-admin-api.md §3）：
+# 创建管理员；turn.public_ip、listen_udp/listen_tcp/relay_bind 用本机局域网 IP；然后在网页端创建 alice
 
 # 客户端（两个 profile）
 Farwing.exe --profile a server set localhost:18443 --pin <指纹>

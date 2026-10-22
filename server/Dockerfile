@@ -37,13 +37,12 @@ RUN apt-get update \
  && groupadd --system --gid 10001 farwing \
  && useradd --system --uid 10001 --gid farwing --home-dir /var/lib/farwing-server \
       --shell /usr/sbin/nologin farwing \
- && mkdir -p /var/lib/farwing-server /etc/farwing-server \
+ && mkdir -p /var/lib/farwing-server \
  && chown farwing:farwing /var/lib/farwing-server
 COPY --from=build /usr/local/bin/farwing-server /usr/local/bin/farwing-server
 USER farwing:farwing
-ENV FARWING_CONFIG=/etc/farwing-server/farwing-server.toml
+ENV FARWING_DATA_DIR=/var/lib/farwing-server FARWING_LISTEN=0.0.0.0:8443
 VOLUME ["/var/lib/farwing-server"]
-# HTTPS + WSS; builtin TURN (only when [turn] mode = "builtin").
-EXPOSE 8443/tcp 3478/udp 3478/tcp
+# HTTPS + WSS and the web console; builtin TURN; NAT discovery; relay ports.
+EXPOSE 8443/tcp 3478/udp 3478/tcp 3479-3480/udp 49160-49200/udp
 ENTRYPOINT ["/usr/local/bin/farwing-server"]
-CMD ["serve"]

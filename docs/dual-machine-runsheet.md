@@ -22,7 +22,7 @@
 | 编号 | 步骤 | 预期 | 结果 |
 | --- | --- | --- | --- |
 | P1 | 记录两台的 Windows 版本、显卡、显示器（分辨率、缩放、刷新率、是否 HDR）、键盘布局与输入法、网络（有线 / Wi-Fi） | — | |
-| P2 | 在两台都能访问的电脑上部署服务端：把 `farwing-server.exe` 与 `部署服务端.ps1` 放进一个空目录，运行 `部署服务端.ps1 -Address <服务器地址> -PublicIp <服务器公网 IPv4>`（只在局域网测试时两者都填服务器的局域网 IP），按提示设置 admin、alice、bob 的密码；放行脚本最后列出的端口，再运行 `.\farwing-server.exe serve --config farwing-server.toml` | 启动日志有 `builtin TURN listening`、两行 `STUN endpoint listening (UDP)` 与证书指纹 | |
+| P2 | 在两台都能访问的电脑上部署服务端（测试包 README“一、部署服务端”）：运行 `farwing-server.exe`，浏览器打开 `https://<服务器地址>:8443/setup` 输入窗口中的初始化码，设置 admin、公开地址与中转公网 IP，再在网页端“账号”中创建 alice 与 bob；放行 README 列出的端口 | 完成初始化后日志有 `builtin TURN listening`、两行 `STUN endpoint listening (UDP)`；网页“服务器设置 → 中转与探测 → 运行状态”显示 UDP/TCP 监听地址 | |
 | P3 | H、C 都运行 `Farwing-v0.1.0-windows-x86_64.exe`，先用 `certutil -hashfile <文件> SHA256` 核对前 16 位为 `5021992fcf2875bf`。首次运行时 Windows 防火墙询问网络访问，选“允许”（专用网络） | — | |
 | P4 | 两台都在“连接服务器”填 `<服务器地址>:8443`（核对证书指纹），登录 alice | 设备中心互相出现对方且在线 | |
 | P5 | H 侧边栏“安装服务”，勾选“允许服务发送 Ctrl+Alt+Del”，核对驱动证书指纹 `6CC0CF35FED805B5652161468A6D313B873F6E91` | 安装成功；设备管理器中“Farwing Input”“Farwing Virtual Display Adapter”无感叹号 | |

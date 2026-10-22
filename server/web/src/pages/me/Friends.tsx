@@ -216,20 +216,20 @@ function GrantsEditor({
                         ID <span className="mono">{deviceIdText(d.device_id)}</span> · {shareSummary(effective)}
                       </div>
                     </div>
-                    <Select
+                    <Select<Mode>
                       value={mode}
-                      style={{ width: 120 }}
-                      onChange={(e) => {
-                        const next = e.target.value as Mode;
+                      width={120}
+                      onChange={(next) => {
                         if (next === 'default') setDevice(d.device_id, undefined);
                         else if (next === 'hidden') setDevice(d.device_id, []);
                         else setDevice(d.device_id, grants.default.length ? [...grants.default] : [...DEFAULT_FRIEND]);
                       }}
-                    >
-                      <option value="default">{m.followDefault}</option>
-                      <option value="custom">{m.custom}</option>
-                      <option value="hidden">{m.notShared}</option>
-                    </Select>
+                      options={[
+                        { value: 'default', label: m.followDefault },
+                        { value: 'custom', label: m.custom },
+                        { value: 'hidden', label: m.notShared },
+                      ]}
+                    />
                   </div>
                   {mode === 'custom' && (
                     <CapsEditor value={grants.devices[d.device_id]} onChange={(v) => setDevice(d.device_id, v)} />

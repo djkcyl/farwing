@@ -34,15 +34,15 @@ pub async fn server_info(State(app): State<App>) -> Json<ServerInfo> {
         server: ServerIdentity {
             name: "Farwing Server".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
-            instance_name: app.settings.read().instance_name.clone(),
+            instance_name: app.cfg().instance_name.clone(),
         },
         features: ServerFeatures {
-            guest_hosts: app.settings.read().guests,
-            turn: crate::ice::IceProvider::new(&app.cfg.turn).has_turn(),
-            force_relay: app.cfg.turn.force_relay,
+            guest_hosts: app.cfg().guest.enabled,
+            turn: crate::ice::IceProvider::new(&app.cfg().turn).has_turn(),
+            force_relay: app.cfg().turn.force_relay,
             updates,
             friends: true,
-            nat_discovery: app.nat_discovery.clone(),
+            nat_discovery: app.nat_discovery.read().clone(),
         },
         time_ms: crate::db::now_ms(),
     })
@@ -51,7 +51,7 @@ pub async fn server_info(State(app): State<App>) -> Json<ServerInfo> {
 /// `GET /api/v2/config`
 pub async fn client_config(State(app): State<App>, _auth: AnyAuth) -> Json<ClientConfig> {
     Json(ClientConfig {
-        bitrate_limit_mbps: app.settings.read().bitrate_limit_mbps,
+        bitrate_limit_mbps: app.cfg().bitrate_limit_mbps,
     })
 }
 

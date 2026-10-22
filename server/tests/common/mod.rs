@@ -90,6 +90,51 @@ pub async fn start() -> TestServer {
 }
 
 pub async fn start_with(customize: impl FnOnce(&mut Config)) -> TestServer {
+    start_opts(customize, true).await
+}
+
+/// A server that has not been set up (no administrator): only the setup
+/// answers. Its setup code is in `server.setup_code`.
+pub async fn start_unset() -> TestServer {
+    start_opts(|_| {}, false).await
+}
+
+/// The administrator every set-up test server has.
+pub const ADMIN: &str = "root";
+
+pub fn test_config(dir: &std::path::Path, port: u16) -> Config {
+    use farwing_server::config::{LimitsConfig, TlsConfig, TlsMode, TurnConfig, TurnMode};
+    Config {
+        data_dir: dir.join("data"),
+        listen: "127.0.0.1:0".parse().unwrap(),
+        public_url: format!("https://127.0.0.1:{port}"),
+        instance_name: "test".into(),
+        trusted_proxies: vec!["127.0.0.1/32".parse().unwrap()],
+        tls: TlsConfig {
+            mode: TlsMode::SelfSigned,
+            hostnames: vec!["127.0.0.1".into(), "localhost".into()],
+            ..TlsConfig::default()
+        },
+        turn: TurnConfig {
+            mode: TurnMode::External,
+            urls: vec![
+                "stun:turn.test:3478".into(),
+                "turn:turn.test:3478?transport=udp".into(),
+                "turn:turn.test:3478?transport=tcp".into(),
+            ],
+            shared_secret: "test-shared-secret".into(),
+            stun: Vec::new(),
+            ..TurnConfig::default()
+        },
+        limits: LimitsConfig {
+            device_init_per_ip_hour: 100000,
+            ..LimitsConfig::default()
+        },
+        ..Config::default()
+    }
+}
+
+async fn start_opts(customize: impl FnOnce(&mut Config), set_up: bool) -> TestServer {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_test_writer()
@@ -97,38 +142,18 @@ pub async fn start_with(customize: impl FnOnce(&mut Config)) -> TestServer {
     let dir = tempfile::tempdir().unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let data = dir
-        .path()
-        .join("data")
-        .display()
-        .to_string()
-        .replace('\\', "/");
-    let text = format!(
-        r#"
-listen = "127.0.0.1:0"
-public_url = "https://127.0.0.1:{port}"
-data_dir = "{data}"
-instance_name = "test"
-trusted_proxies = ["127.0.0.1/32"]
-
-[tls]
-self_signed = true
-hostnames = ["127.0.0.1", "localhost"]
-
-[turn]
-mode = "external"
-urls = ["stun:turn.test:3478", "turn:turn.test:3478?transport=udp", "turn:turn.test:3478?transport=tcp"]
-shared_secret = "test-shared-secret"
-
-[limits]
-device_init_per_ip_hour = 100000
-"#
-    );
-    let mut cfg = Config::from_toml_str(&text, dir.path()).unwrap();
+    let mut cfg = test_config(dir.path(), port);
     customize(&mut cfg);
+    if set_up {
+        std::fs::create_dir_all(&cfg.data_dir).unwrap();
+        let c = farwing_server::db::open_connection(&cfg.db_path()).unwrap();
+        let id = farwing_server::accounts::create_user(&c, ADMIN, None, PASSWORD).unwrap();
+        farwing_server::webdb::set_role(&c, &id, farwing_server::webdb::ROLE_ADMIN).unwrap();
+    }
     let server = farwing_server::start(cfg.clone(), Some(listener))
         .await
         .expect("server starts");
+    assert_eq!(server.setup_code.is_some(), !set_up);
 
     // Trust exactly the generated self-signed certificate.
     let proxy = cfg.tls.mode == farwing_server::config::TlsMode::Proxy;
@@ -324,14 +349,64 @@ impl TestServer {
         self.call(Method::DELETE, path, dev, None).await
     }
 
+    /// Create an account (the administrator `root` already exists).
     pub fn create_user(&self, username: &str) -> String {
-        farwing_server::admin::user_create(
-            &self.cfg,
+        let c = farwing_server::db::open_connection(&self.cfg.db_path()).unwrap();
+        if let Some(user) = farwing_server::db::get_user_by_name(&c, username).unwrap() {
+            return user.id;
+        }
+        farwing_server::accounts::create_user(
+            &c,
             username,
             Some(&format!("{username}-nick")),
             PASSWORD,
         )
         .unwrap()
+    }
+
+    /// Make `username` an administrator.
+    pub fn promote(&self, username: &str) {
+        let c = farwing_server::db::open_connection(&self.cfg.db_path()).unwrap();
+        let user = farwing_server::db::get_user_by_name(&c, username)
+            .unwrap()
+            .unwrap();
+        farwing_server::webdb::set_role(&c, &user.id, farwing_server::webdb::ROLE_ADMIN).unwrap();
+    }
+
+    /// An administration API token (`scope`: `read` or `admin`) of `root`.
+    pub fn admin_token(&self, scope: &str) -> String {
+        let c = farwing_server::db::open_connection(&self.cfg.db_path()).unwrap();
+        let root = farwing_server::db::get_user_by_name(&c, ADMIN).unwrap().unwrap();
+        let token = farwing_server::crypto::new_token("fwa_");
+        farwing_server::webdb::create_admin_token(
+            &c,
+            &farwing_server::crypto::new_uuid(),
+            "test",
+            &farwing_server::crypto::token_hash(&token),
+            scope,
+            &[],
+            &root.id,
+            None,
+        )
+        .unwrap();
+        token
+    }
+
+    /// An administration API request with `token` (no device signature).
+    pub async fn admin_call(
+        &self,
+        method: Method,
+        path: &str,
+        token: &str,
+        body: Option<Value>,
+    ) -> Resp {
+        let mut b = self
+            .raw(method, path)
+            .header("authorization", format!("Bearer {token}"));
+        if let Some(body) = body {
+            b = b.json(&body);
+        }
+        self.send(b).await
     }
 
     /// `POST /devices/init` body for `key` with a fresh proof.

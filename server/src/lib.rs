@@ -2,8 +2,8 @@
 //! credentials for Farwing (Farwing Protocol v2, see
 //! `docs/protocol/farwing-protocol.md` and `docs/protocol/v2-design.md`).
 
+pub mod accounts;
 pub mod acme;
-pub mod admin;
 pub mod assist;
 pub mod config;
 pub mod crypto;
@@ -13,8 +13,10 @@ pub mod http;
 pub mod hub;
 pub mod ice;
 pub mod ratelimit;
+pub mod runtime;
 pub mod server;
 pub mod settings;
+pub mod setup;
 pub mod stun_server;
 pub mod tls;
 pub mod totp;
