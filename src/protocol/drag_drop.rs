@@ -125,11 +125,64 @@ pub(crate) struct Finished {
     /// 1: drag released into Drop; 2: consumer finished; 3: cancelled; 4: failed.
     #[prost(uint32, tag = "1")]
     pub stage: u32,
+    /// Why it failed: one of [`reason`] (or empty); the receiver words it.
     #[prost(string, tag = "2")]
-    pub message: String,
+    pub reason: String,
     #[prost(uint64, tag = "3")]
     pub bytes_read: u64,
 }
+/// [`Finished::reason`] values.
+pub(crate) mod reason {
+    pub const REMOTE_DISABLED: &str = "remote_disabled";
+    pub const DIRECTION_DENIED: &str = "direction_denied";
+    pub const OUT_NOT_ALLOWED: &str = "out_not_allowed";
+    pub const LAYOUT_CHANGED: &str = "layout_changed";
+    pub const PREPARE_TIMEOUT: &str = "prepare_timeout";
+    pub const RETURN_TIMEOUT: &str = "return_timeout";
+    pub const NOT_ACCEPTED: &str = "not_accepted";
+    /// Anything else; the sender logs why.
+    pub const FAILED: &str = "failed";
+}
+
+fn reason_texts() -> [(&'static str, &'static str); 7] {
+    let text = &crate::i18n::t().features;
+    [
+        (reason::REMOTE_DISABLED, text.drag_remote_disabled),
+        (reason::DIRECTION_DENIED, text.drag_direction_denied),
+        (reason::OUT_NOT_ALLOWED, text.drag_out_not_allowed),
+        (reason::LAYOUT_CHANGED, text.drag_layout_changed),
+        (reason::PREPARE_TIMEOUT, text.drag_prepare_timeout),
+        (reason::RETURN_TIMEOUT, text.drag_return_timeout),
+        (reason::NOT_ACCEPTED, text.drag_not_accepted),
+    ]
+}
+
+/// The reason to send for a failure this side describes as `message` (in
+/// its own language); empty for none.
+pub(crate) fn reason_of(message: &str) -> &'static str {
+    if message.is_empty() {
+        return "";
+    }
+    reason_texts()
+        .into_iter()
+        .find(|(_, text)| *text == message)
+        .map_or(reason::FAILED, |(reason, _)| reason)
+}
+
+/// A received reason in the interface language; `None` for none.
+pub(crate) fn reason_text(reason: &str) -> Option<String> {
+    if reason.is_empty() {
+        return None;
+    }
+    Some(
+        reason_texts()
+            .into_iter()
+            .find(|(key, _)| *key == reason)
+            .map_or(crate::i18n::t().viewer.drag_failed, |(_, text)| text)
+            .to_owned(),
+    )
+}
+
 pub(crate) fn is_packet(bytes: &[u8]) -> bool {
     peer::is_type(bytes, &[FrameType::Drag])
 }
@@ -171,7 +224,7 @@ fn validate(packet: &Packet) -> Result<()> {
             ensure!(p.valid(), "拖放坐标无效")
         }
         Payload::Finished(v) => ensure!(
-            (1..=4).contains(&v.stage) && v.message.chars().count() <= 240,
+            (1..=4).contains(&v.stage) && v.reason.len() <= 64,
             "拖放结果无效"
         ),
         Payload::Feedback(v) => ensure!(v.effect & !COPY == 0, "拖放效果不支持"),

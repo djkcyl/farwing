@@ -693,6 +693,9 @@ impl Actor {
             .and_then(|e| e.offer.as_ref())
             .map_or(0, |o| o.status().bytes_read);
         let message: String = message.chars().take(240).collect();
+        if !message.is_empty() {
+            tracing::info!(drag = id, error = %message, "native file drag failed");
+        }
         if let Some(entry) = self.entries.remove(&id) {
             let mut state = lock(&entry.ticket.snapshot);
             state.stage = match stage {
@@ -707,7 +710,7 @@ impl Actor {
             id,
             Payload::Finished(wire::Finished {
                 stage,
-                message,
+                reason: wire::reason_of(&message).into(),
                 bytes_read,
             }),
             false,
@@ -989,7 +992,7 @@ impl Actor {
                             id,
                             Payload::Finished(wire::Finished {
                                 stage: 1,
-                                message: String::new(),
+                                reason: String::new(),
                                 bytes_read: 0,
                             }),
                             false,
@@ -1327,7 +1330,7 @@ impl Actor {
                         3 => Stage::Cancelled,
                         _ => Stage::Failed,
                     };
-                    state.error = (!result.message.is_empty()).then_some(result.message);
+                    state.error = wire::reason_text(&result.reason);
                     state.effect = 0;
                 }
                 if result.stage != 1 {
