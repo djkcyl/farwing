@@ -63,7 +63,7 @@ webrtc = { path = "vendor/webrtc" }
 webrtc-srtp = "0.17.2"
 yuv = "0.8.17"
 object = { version = "0.37.3", default-features = false, features = ["read_core", "std", "pe"] }
-zip = { version = "8.6.0", default-features = false, features = ["zstd"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
 regex = "1.13.1"
 # LAN discovery needs SO_REUSEADDR before bind.
 socket2 = "0.6"

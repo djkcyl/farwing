@@ -129,6 +129,17 @@ fn section_separator(ui: &mut egui::Ui) {
 
 use crate::ui::controls::menu_row;
 
+/// Whether the host granted `cap` to this participant (until it says,
+/// everything is offered).
+fn granted(handle: &StreamControlHandle, cap: &str) -> bool {
+    handle.granted().is_none_or(|grants| grants.iter().any(|c| c == cap))
+}
+
+/// Why something is unavailable: its permission was not granted.
+fn missing(cap: &str) -> String {
+    (t().viewer.permission_missing)(crate::application::app::friends::cap_label(cap))
+}
+
 fn switch_row(ui: &mut egui::Ui, label: &str, value: &mut bool) -> egui::Response {
     let enabled = ui.is_enabled();
     let (row, mut response) =
@@ -757,16 +768,22 @@ pub(super) fn show_stream_control_window(
                                     }
                                 }
                                 ui.add_space(crate::ui::theme::MENU_GROUP_GAP);
-                                if menu_row(
+                                // What this participant was not granted is shown, disabled, with why.
+                                let display_granted = granted(handle, farwing_protocol::caps::DISPLAY);
+                                let display = menu_row(
                                     ui,
                                     t().viewer.resolution_and_dpi,
                                     t().viewer.this_screen,
                                     None,
-                                    snapshot.display_settings_supported,
+                                    snapshot.display_settings_supported && display_granted,
                                     true,
-                                )
-                                .clicked()
-                                {
+                                );
+                                let display = if display_granted {
+                                    display
+                                } else {
+                                    display.on_disabled_hover_text(missing(farwing_protocol::caps::DISPLAY))
+                                };
+                                if display.clicked() {
                                     state.page = Page::Display;
                                 }
                                 ui.add_space(crate::ui::theme::MENU_GROUP_GAP);
@@ -1037,8 +1054,17 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", t().v
                                     if mic.error.is_some() && menu_row(ui,t().viewer.retry_microphone,"",None,true,false).clicked() {handle.microphone().retry();}
                                 }
                                 let clip = clipboard.snapshot();
-                                let mut enabled = clip.enabled;
-                                if switch_row(ui, t().viewer.clipboard_sync, &mut enabled).changed() {
+                                let clipboard_granted = granted(handle, farwing_protocol::caps::CLIPBOARD);
+                                let mut enabled = clip.enabled && clipboard_granted;
+                                let sync = ui
+                                    .add_enabled_ui(clipboard_granted, |ui| switch_row(ui, t().viewer.clipboard_sync, &mut enabled))
+                                    .inner;
+                                let sync = if clipboard_granted {
+                                    sync
+                                } else {
+                                    sync.on_disabled_hover_text(missing(farwing_protocol::caps::CLIPBOARD))
+                                };
+                                if sync.changed() {
                                     if let Err(error) = handle.set_clipboard_enabled(enabled) {
                                         state.local_error = Some(error.to_string());
                                     }
@@ -1054,9 +1080,13 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", t().viewer.clip
                                 // Manual copy of the host clipboard: also for participants
                                 // without automatic sync (view mode, not controlling).
                                 let pulling = state.clipboard_pull.is_some();
-                                if menu_row(ui, t().viewer.pull_clipboard, if pulling { t().viewer.pulling } else { "" }, None, clip.active && !pulling, false)
-                                    .clicked()
-                                {
+                                let pull = menu_row(ui, t().viewer.pull_clipboard, if pulling { t().viewer.pulling } else { "" }, None, clipboard_granted && clip.active && !pulling, false);
+                                let pull = if clipboard_granted {
+                                    pull
+                                } else {
+                                    pull.on_disabled_hover_text(missing(farwing_protocol::caps::CLIPBOARD))
+                                };
+                                if pull.clicked() {
                                     let result = std::sync::Arc::new(std::sync::Mutex::new(None));
                                     state.clipboard_pull = Some(result.clone());
                                     let clipboard = clipboard.clone();

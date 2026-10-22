@@ -112,7 +112,7 @@ pub(super) async fn execute(
 }
 
 /// Display label of a session capability.
-pub(super) fn cap_label(cap: &str) -> &'static str {
+pub(crate) fn cap_label(cap: &str) -> &'static str {
     use farwing_protocol::caps;
     let text = &t().app;
     match cap {

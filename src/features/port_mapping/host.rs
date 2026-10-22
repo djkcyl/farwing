@@ -221,7 +221,7 @@ async fn resolve(open: &wire::Open) -> std::result::Result<Vec<SocketAddr>, (i32
         })
         .collect();
     if targets.is_empty() {
-        return Err((wire::code::FORBIDDEN, t().features.mapping_target_not_unicast.to_owned()));
+        return Err((wire::code::NOT_UNICAST, t().features.mapping_target_not_unicast.to_owned()));
     }
     Ok(targets)
 }
@@ -250,6 +250,9 @@ async fn serve(
         let transport = transport.clone();
         async move { transport.send(Body::OpenResult(wire::OpenResult { stream: id, code })).await }
     };
+    // A failed open is answered once (`OpenResult`); only an opened stream
+    // is reset when it ends, or the controller sees the reset first.
+    let mut opened = false;
     let result = async {
         let targets = match resolve(&open).await {
             Ok(targets) => targets,
@@ -281,6 +284,7 @@ async fn serve(
                 }
             };
             answer(wire::code::OK).await?;
+            opened = true;
             tracing::debug!(stream = id, %target, "host UDP forwarding opened");
             let mut buffer = vec![0; 65_536];
             loop {
@@ -332,6 +336,7 @@ async fn serve(
         socket.set_nodelay(true)?;
         ensure!(receiver.permitted(generation, policy), "{}", t().features.mapping_permission_expired);
         answer(wire::code::OK).await?;
+        opened = true;
         tracing::debug!(stream = id, target = ?socket.peer_addr().ok(), "host TCP forwarding opened");
         let relay = Mutex::new(RuleStatus::default());
         let result = pump(&transport, &stream, inbound, socket, &relay).await;
@@ -343,7 +348,7 @@ async fn serve(
     }
     .await;
     if let Err(error) = &result {
-        if receiver.generation.load(Ordering::Acquire) == generation {
+        if opened && receiver.generation.load(Ordering::Acquire) == generation {
             transport.reset(id, wire::code::CLOSED).await;
         }
         lock(&stats).error = Some(error.to_string());

@@ -23,7 +23,7 @@ use view::{CenterUi, configure_visuals};
 
 mod assist;
 mod direct;
-mod friends;
+pub(crate) mod friends;
 mod catalog;
 mod controlled_caption;
 pub(crate) mod device_status;

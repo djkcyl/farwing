@@ -378,6 +378,8 @@ pub(crate) struct Viewer {
     pub drag_not_accepted: &'static str,
     pub drag_stopped: &'static str,
     pub drag_failed: &'static str,
+    /// a permission's name
+    pub permission_missing: fn(&str) -> String,
     pub drag_returning: &'static str,
     pub drag_waiting_target: &'static str,
     /// MiB copied
@@ -764,6 +766,7 @@ pub(crate) const ZH_CN: Viewer = Viewer {
     drag_not_accepted: "此处不能接收文件",
     drag_stopped: "拖放已停止",
     drag_failed: "文件拖放失败",
+    permission_missing: |name| format!("无“{name}”权限"),
     drag_returning: "正在交还原拖动…",
     drag_waiting_target: "正在等待目标接收…",
     drag_copying: |mib| format!("正在复制文件 · {mib:.1} MiB"),
@@ -1145,6 +1148,7 @@ pub(crate) const EN: Viewer = Viewer {
     drag_not_accepted: "Files can't be dropped here",
     drag_stopped: "Drag stopped",
     drag_failed: "File drag failed",
+    permission_missing: |name| format!("No \"{name}\" permission"),
     drag_returning: "Returning the drag…",
     drag_waiting_target: "Waiting for the target…",
     drag_copying: |mib| format!("Copying files · {mib:.1} MiB"),

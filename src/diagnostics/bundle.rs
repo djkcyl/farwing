@@ -191,8 +191,9 @@ fn compressed_entry(name: &str, data: &[u8]) -> Result<Vec<u8>> {
     zip.start_file(
         name,
         SimpleFileOptions::default()
-            .compression_method(CompressionMethod::Zstd)
-            .compression_level(Some(3)),
+            // Deflate: every zip tool (and Windows Explorer) opens it.
+            .compression_method(CompressionMethod::Deflated)
+            .compression_level(Some(6)),
     )?;
     zip.write_all(data)?;
     Ok(zip.finish()?.into_inner())
@@ -369,7 +370,7 @@ fn export(
             limit: ARCHIVE_LIMIT,
         };
         archive.required("summary.json", &serde_json::to_vec_pretty(&input.summary)?)?;
-        archive.required("README.txt","本诊断包在日志所在设备生成，ZIP条目使用Zstandard（zstd）压缩，可用支持Zstandard ZIP的解压工具打开。\n日志按源文件编号与原始字节偏移分段，按段名从小到大拼接恢复顺序。最新日志优先，最终包不超过32MiB；没有压缩前总量、文件数或时间范围限制。\n不含配置文件、凭据、剪贴板、截图、壁纸或转储；脱敏与容量省略见manifest.json。分享前可自行查看。\n".as_bytes())?;
+        archive.required("README.txt","本诊断包在日志所在设备生成，为普通 ZIP（Deflate 压缩），可直接打开。\n日志按源文件编号与原始字节偏移分段，按段名从小到大拼接恢复顺序。最新日志优先，最终包不超过32MiB；没有压缩前总量、文件数或时间范围限制。\n不含配置文件、凭据、剪贴板、截图、壁纸或转储；脱敏与容量省略见manifest.json。分享前可自行查看。\n".as_bytes())?;
         let mut logs = 0;
         let mut segments = Vec::new();
         let mut coverage = Vec::new();
@@ -475,7 +476,7 @@ fn export(
             completed: 0,
             total: 0,
         };
-        archive.required("manifest.json",&serde_json::to_vec_pretty(&json!({"created_utc":chrono::Utc::now().to_rfc3339(),"sources":coverage,"segments":segments,"warnings":warnings,"compression":"zstd","compressed_limit":ARCHIVE_LIMIT,"snapshot":"导出开始时的文件长度与界面状态；其他进程仍可能继续写入。","redaction":"脱敏别名仅本包关联；原始协议/认证与非结构化或超长内容不包含。"}))?)?;
+        archive.required("manifest.json",&serde_json::to_vec_pretty(&json!({"created_utc":chrono::Utc::now().to_rfc3339(),"sources":coverage,"segments":segments,"warnings":warnings,"compression":"deflate","compressed_limit":ARCHIVE_LIMIT,"snapshot":"导出开始时的文件长度与界面状态；其他进程仍可能继续写入。","redaction":"脱敏别名仅本包关联；原始协议/认证与非结构化或超长内容不包含。"}))?)?;
         let file = archive.zip.finish()?;
         ensure!(
             file.metadata()?.len() <= ARCHIVE_LIMIT,
