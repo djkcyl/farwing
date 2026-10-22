@@ -14,6 +14,7 @@ import { bitrate, capText, displayName, listText, num } from '../lib/format';
 import type { CursorShape, HostEvent, Participant, ParticipantPointer, Quality, Screens } from '../lib/fpp';
 import { HostEventKind } from '../lib/fpp';
 import { SystemCommand, Usage } from '../lib/input';
+import { PeerRequestError } from '../lib/peerio';
 import { VideoCodec, type VideoCodecId } from '../lib/sdp';
 import { pathText, StatsSampler, type ViewStats } from '../lib/stats';
 import {
@@ -689,7 +690,13 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
         toast(t.viewer.screen.copiedLocally);
       }
     } catch (error) {
-      toast(errorText(error), 'red');
+      const reasons: Record<string, string> = t.viewer.screen.clipboardReasons;
+      toast(
+        error instanceof PeerRequestError
+          ? (reasons[error.message] ?? t.viewer.screen.clipboardFailed)
+          : errorText(error),
+        'red',
+      );
     }
   };
 

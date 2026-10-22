@@ -170,9 +170,46 @@ pub(crate) fn push(body: Body) -> Vec<u8> {
     encode(0, 0, body).pop().expect("a push is one frame")
 }
 
-/// A failed answer to `request_id`.
-pub(crate) fn failure(request_id: u32, code: &str, message: &str) -> Vec<u8> {
-    peer::error_response(FrameType::Clipboard, request_id, code, message)
+/// A failed answer to `request_id`: `reason` is one of [`reason`] (sent as
+/// the error's message), worded by the receiver.
+pub(crate) fn failure(request_id: u32, code: &str, reason: &str) -> Vec<u8> {
+    peer::error_response(FrameType::Clipboard, request_id, code, reason)
+}
+
+/// Why a clipboard request was refused.
+pub(crate) mod reason {
+    /// No clipboard on this side (not running, or not this session's).
+    pub const UNAVAILABLE: &str = "unavailable";
+    pub const PAUSED: &str = "paused";
+    /// Only the host answers a pull.
+    pub const PULL_NOT_SERVED: &str = "pull_not_served";
+    pub const INVALID_REQUEST: &str = "invalid_request";
+    pub const FILES_OFF: &str = "files_off";
+    /// The content is marked as not to be shared.
+    pub const EXCLUDED: &str = "excluded";
+    pub const EMPTY: &str = "empty";
+    /// The offered format can no longer be read.
+    pub const FORMAT_UNAVAILABLE: &str = "format_unavailable";
+    /// The offered files are gone or can no longer be read.
+    pub const FILES_UNAVAILABLE: &str = "files_unavailable";
+    pub const FAILED: &str = "failed";
+}
+
+/// A refusal's reason in the interface language.
+pub(crate) fn reason_text(reason: &str) -> &'static str {
+    let text = &t().features;
+    match reason {
+        reason::UNAVAILABLE => text.clipboard_unavailable,
+        reason::PAUSED => text.clipboard_paused,
+        reason::PULL_NOT_SERVED => text.clipboard_pull_not_served,
+        reason::INVALID_REQUEST => text.clipboard_invalid_request,
+        reason::FILES_OFF => text.clipboard_files_off,
+        reason::EXCLUDED => text.clipboard_excluded,
+        reason::EMPTY => text.clipboard_empty,
+        reason::FORMAT_UNAVAILABLE => text.clipboard_format_not_offered,
+        reason::FILES_UNAVAILABLE => text.clipboard_files_unavailable,
+        _ => text.clipboard_remote_failed,
+    }
 }
 
 fn encode(flags: u8, request_id: u32, body: Body) -> Vec<Vec<u8>> {

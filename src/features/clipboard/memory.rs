@@ -83,7 +83,8 @@ pub(super) fn serve(inner: &Arc<Inner>, store: &Store, epoch: u64, id: u32, body
         _ => Err(anyhow!("{}", t().features.clipboard_invalid_request)),
     };
     if let Err(error) = result {
-        inner.refuse(id, error_code::NOT_FOUND, &error.to_string());
+        tracing::debug!(error = %format!("{error:#}"), "clipboard request refused");
+        inner.refuse(id, error_code::NOT_FOUND, super::wire::reason::FILES_UNAVAILABLE);
     }
 }
 

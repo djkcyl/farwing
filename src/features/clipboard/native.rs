@@ -424,13 +424,14 @@ fn process(command: Command) {
                     s.refuse(
                         id,
                         farwing_protocol::peer::error_code::UNAVAILABLE,
-                        t().features.clipboard_paused,
+                        super::wire::reason::PAUSED,
                     );
                 } else if let Err(e) = serve(&s, epoch, id, body) {
+                    tracing::warn!(error = %format!("{e:#}"), "clipboard request failed");
                     s.refuse(
                         id,
                         farwing_protocol::peer::error_code::INTERNAL,
-                        &e.to_string(),
+                        super::wire::reason::FAILED,
                     );
                     if s.valid(epoch) {
                         s.fail(e.to_string());
@@ -669,7 +670,7 @@ fn pull(s: &Arc<Inner>, epoch: u64, id: u32) -> Result<()> {
     use farwing_protocol::peer::error_code;
     let object = clipboard_retry(|| unsafe { OleGetClipboard() })?;
     if excluded(&object) {
-        s.refuse(id, error_code::FORBIDDEN, t().features.clipboard_excluded);
+        s.refuse(id, error_code::FORBIDDEN, super::wire::reason::EXCLUDED);
         return Ok(());
     }
     let (source, ids) = describe(object)?;
@@ -1165,12 +1166,13 @@ fn serve(s: &Arc<Inner>, epoch: u64, id: u32, body: Body) -> Result<()> {
             match result {
                 Ok(data) if !data.is_empty() => s.respond_data(epoch, id, fetch.stream, data),
                 Ok(_) => {
-                    s.refuse(id, error_code::NOT_FOUND, t().features.clipboard_empty);
+                    s.refuse(id, error_code::NOT_FOUND, super::wire::reason::EMPTY);
                     Ok(())
                 }
                 Err(error) => {
                     tracing::debug!(%error, "clipboard fetch rejected");
-                    s.refuse(id, error_code::NOT_FOUND, &error.to_string());
+                    tracing::debug!(error = %format!("{error:#}"), "clipboard request refused");
+                    s.refuse(id, error_code::NOT_FOUND, super::wire::reason::FORMAT_UNAVAILABLE);
                     Ok(())
                 }
             }
@@ -1213,7 +1215,8 @@ fn serve(s: &Arc<Inner>, epoch: u64, id: u32, body: Body) -> Result<()> {
                 ),
                 Err(error) => {
                     tracing::debug!(%error, "clipboard file list rejected");
-                    s.refuse(id, error_code::NOT_FOUND, &error.to_string());
+                    tracing::debug!(error = %format!("{error:#}"), "clipboard request refused");
+                    s.refuse(id, error_code::NOT_FOUND, super::wire::reason::FILES_UNAVAILABLE);
                     Ok(())
                 }
             }
@@ -1235,14 +1238,15 @@ fn serve(s: &Arc<Inner>, epoch: u64, id: u32, body: Body) -> Result<()> {
                 Ok(data) => s.respond_data(epoch, id, read.stream, data),
                 Err(error) => {
                     tracing::debug!(%error, "clipboard file read rejected");
-                    s.refuse(id, error_code::NOT_FOUND, &error.to_string());
+                    tracing::debug!(error = %format!("{error:#}"), "clipboard request refused");
+                    s.refuse(id, error_code::NOT_FOUND, super::wire::reason::FILES_UNAVAILABLE);
                     Ok(())
                 }
             }
         }
         Body::Pull(_) => pull(s, epoch, id),
         _ => {
-            s.refuse(id, error_code::BAD_REQUEST, t().features.clipboard_invalid_request);
+            s.refuse(id, error_code::BAD_REQUEST, super::wire::reason::INVALID_REQUEST);
             Ok(())
         }
     }

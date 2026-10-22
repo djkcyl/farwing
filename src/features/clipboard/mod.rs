@@ -73,7 +73,7 @@ pub(crate) fn reject_request(bytes: &[u8]) -> Result<Option<Vec<u8>>> {
         wire::failure(
             header.request_id,
             farwing_protocol::peer::error_code::UNAVAILABLE,
-            t().features.clipboard_unavailable,
+            wire::reason::UNAVAILABLE,
         )
     }))
 }
@@ -682,8 +682,9 @@ impl Inner {
     fn respond(&self, epoch: u64, request: u32, body: Body) -> Result<()> {
         self.emit(epoch, wire::response(request, body))
     }
-    fn refuse(&self, request: u32, code: &str, message: &str) {
-        let _ = self.enqueue(Outbound::Cleanup(wire::failure(request, code, message)));
+    /// Refuse `request` for `reason` (one of [`wire::reason`]).
+    fn refuse(&self, request: u32, code: &str, reason: &str) {
+        let _ = self.enqueue(Outbound::Cleanup(wire::failure(request, code, reason)));
     }
     async fn dispatch<F, Fut>(
         &self,
@@ -803,26 +804,22 @@ impl Inner {
             Received::Push(_) => bail!("{}", t().features.clipboard_invalid_push),
             Received::Request(id, body) => {
                 if !self.valid(epoch) {
-                    self.refuse(
-                        id,
-                        farwing_protocol::peer::error_code::UNAVAILABLE,
-                        t().features.clipboard_paused,
-                    );
+                    self.refuse(id, farwing_protocol::peer::error_code::UNAVAILABLE, wire::reason::PAUSED);
                     return Ok(());
                 }
                 let files = matches!(body, Body::ListFiles(_) | Body::ReadFile(_));
                 if matches!(body, Body::Pull(_)) && !self.host_role.load(Ordering::Acquire) {
-                    self.refuse(id, farwing_protocol::peer::error_code::FORBIDDEN, t().features.clipboard_pull_not_served);
+                    self.refuse(id, farwing_protocol::peer::error_code::FORBIDDEN, wire::reason::PULL_NOT_SERVED);
                     return Ok(());
                 }
                 if !matches!(body, Body::Fetch(_) | Body::Pull(_)) && !files {
-                    self.refuse(id, farwing_protocol::peer::error_code::BAD_REQUEST, t().features.clipboard_invalid_request);
+                    self.refuse(id, farwing_protocol::peer::error_code::BAD_REQUEST, wire::reason::INVALID_REQUEST);
                     return Ok(());
                 }
                 if (files && !self.file_allowed())
                     || (self.file_offers.is_some() && !files)
                 {
-                    self.refuse(id, farwing_protocol::peer::error_code::FORBIDDEN, t().features.clipboard_files_off);
+                    self.refuse(id, farwing_protocol::peer::error_code::FORBIDDEN, wire::reason::FILES_OFF);
                     return Ok(());
                 }
                 match &self.backend {
@@ -841,12 +838,8 @@ impl Inner {
                     if let Expect::Data { stream, .. } = p.expect {
                         lock(&self.credit).remove(&stream);
                     }
-                    tracing::debug!(id, code, %message, "remote clipboard request failed");
-                    p.waiter.finish(Err(if message.is_empty() {
-                        t().features.clipboard_remote_failed.into()
-                    } else {
-                        message
-                    }));
+                    tracing::debug!(id, code, reason = %message, "remote clipboard request failed");
+                    p.waiter.finish(Err(wire::reason_text(&message).into()));
                 }
             }
         }
