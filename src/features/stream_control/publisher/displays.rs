@@ -4,7 +4,7 @@ use super::*;
 use crate::features::host::lock;
 use crate::features::host::peer::screens::{ScreenInfo, Screens};
 use crate::features::stream_control::display_topology::PbDisplayResult;
-use crate::features::stream_control::wire::{PbCaptureSettingRequest, SessionBody};
+use crate::features::stream_control::wire::{PbCaptureSettingRequest, SessionBody, setting_reason};
 use std::collections::BTreeMap;
 
 pub(crate) fn screen_states(
@@ -270,7 +270,7 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
                     id,
                     vec![PbError {
                         error_code: -1,
-                        error_message: t().features.stream_display_change_not_allowed.into(),
+                        error_message: setting_reason::DISPLAY_NOT_ALLOWED.into(),
                         ..Default::default()
                     }],
                 ));
@@ -282,7 +282,7 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
                     id,
                     vec![PbError {
                         error_code: -2,
-                        error_message: t().features.stream_host_updating_settings_locked.into(),
+                        error_message: setting_reason::UPDATING.into(),
                         ..Default::default()
                     }],
                 ));
@@ -316,10 +316,10 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
                 match apply_setting(session, screen_id, setting.clone()).await {
                     Ok(mut result) => errors.append(&mut result),
                     Err(error) => {
-                        tracing::warn!(screen_id, %error, "host capture setting rejected");
+                        tracing::warn!(screen_id, error = %format!("{error:#}"), "host capture setting rejected");
                         errors.push(PbError {
                             error_code: -2,
-                            error_message: format!("{error:#}"),
+                            error_message: setting_reason::NOT_APPLIED.into(),
                             ..Default::default()
                         });
                     }
@@ -466,9 +466,10 @@ async fn apply_setting(
                         conversion = true;
                     }
                     Err(error) => {
+                        tracing::warn!(error = %format!("{error:#}"), "super display conversion failed");
                         return Ok(vec![PbError {
                             error_code: -5,
-                            error_message: format!("{error:#}"),
+                            error_message: setting_reason::CONVERSION_FAILED.into(),
                             error_detail: serde_json::json!({"error_code":501}).to_string(),
                         }]);
                     }

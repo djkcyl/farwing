@@ -433,7 +433,7 @@ pub(crate) fn apply_capture_setting(
     {
         errors.push(PbError {
             error_code: -1,
-            error_message: t().features.stream_invalid_scale_limit.into(),
+            error_message: super::wire::setting_reason::INVALID_SCALE_LIMIT.into(),
             ..Default::default()
         });
         return errors;
@@ -514,11 +514,14 @@ pub(crate) fn apply_capture_setting(
             }
             *config = next;
         }
-        Err(error) => errors.push(PbError {
-            error_code: -1,
-            error_message: error.to_string(),
-            ..Default::default()
-        }),
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), "requested format not applied");
+            errors.push(PbError {
+                error_code: -1,
+                error_message: super::wire::setting_reason::UNSUPPORTED_CODEC.into(),
+                ..Default::default()
+            })
+        }
     }
     tracing::info!(
         fps = config.fps,

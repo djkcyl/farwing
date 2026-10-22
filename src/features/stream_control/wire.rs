@@ -403,6 +403,7 @@ pub(crate) struct PbCaptureSettingResponse {
 pub(crate) struct PbError {
     #[prost(int32, tag = "1")]
     pub(crate) error_code: i32,
+    /// One of [`setting_reason`] (or empty); the receiver words it.
     #[prost(string, tag = "2")]
     pub(crate) error_message: String,
     #[prost(string, tag = "3")]
@@ -503,4 +504,18 @@ mod receiver_stats_tests {
         assert_eq!(received.request_id, 0);
         assert!(matches!(received.body, Some(SessionBody::ReceiverStats(_))), "{}", frame.len());
     }
+}
+
+/// Why a capture setting was not applied ([`PbError::error_message`]).
+pub(crate) mod setting_reason {
+    /// The participant may not change the host's displays.
+    pub const DISPLAY_NOT_ALLOWED: &str = "display_not_allowed";
+    /// The host is installing an update.
+    pub const UPDATING: &str = "updating";
+    pub const INVALID_SCALE_LIMIT: &str = "invalid_scale_limit";
+    pub const UNSUPPORTED_CODEC: &str = "unsupported_codec";
+    /// The resolution needs a super display, which could not be made.
+    pub const CONVERSION_FAILED: &str = "conversion_failed";
+    /// Anything else; the host logs why.
+    pub const NOT_APPLIED: &str = "not_applied";
 }

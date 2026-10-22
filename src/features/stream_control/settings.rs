@@ -755,9 +755,7 @@ pub(super) fn apply_capture_setting_response(
                     _ => failures.push(format_pb_error(error)),
                 }
             }
-            CAPTURE_RESULT_FPS_ADJUSTED => notices.push((t().features.stream_fps_reduced)(
-                &format_pb_error(error),
-            )),
+            CAPTURE_RESULT_FPS_ADJUSTED => notices.push(t().features.stream_fps_reduced.into()),
             _ => failures.push(format_pb_error(error)),
         }
     }
@@ -794,16 +792,17 @@ pub(super) fn apply_reported_color(state: &mut StreamControlState, enabled: bool
     }
 }
 
+/// A rejected setting in the interface language, from its reason.
 pub(super) fn format_pb_error(error: PbError) -> String {
-    if error.error_message.is_empty() && error.error_detail.is_empty() {
-        error.error_code.to_string()
-    } else if error.error_detail.is_empty() {
-        format!("{}: {}", error.error_code, error.error_message)
-    } else {
-        format!(
-            "{}: {} ({})",
-            error.error_code, error.error_message, error.error_detail
-        )
+    use super::wire::setting_reason as reason;
+    let text = &t().features;
+    match error.error_message.as_str() {
+        reason::DISPLAY_NOT_ALLOWED => text.stream_display_change_not_allowed.into(),
+        reason::UPDATING => text.stream_host_updating_settings_locked.into(),
+        reason::INVALID_SCALE_LIMIT => text.stream_invalid_scale_limit.into(),
+        reason::UNSUPPORTED_CODEC => text.stream_unsupported_codec.into(),
+        reason::CONVERSION_FAILED => (text.stream_super_screen_failed_code)(501),
+        _ => text.stream_setting_not_applied.into(),
     }
 }
 
