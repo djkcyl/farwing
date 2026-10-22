@@ -1,5 +1,5 @@
-//! `farwing-server` command line: run the server, or print a one-time setup
-//! code. Everything else is done in the web console or through the
+//! `farwing-server` command line: run the server, run an edge relay node,
+//! or print a one-time setup code. Everything else is done in the web console or through the
 //! administration API (`docs/server-admin-api.md`).
 
 use anyhow::{Context, Result};
@@ -32,6 +32,14 @@ enum Command {
     /// administrator exists, and the recovery of an administrator account
     /// afterwards. Valid for 24 hours; replaces any earlier code.
     SetupCode,
+    /// Run as an edge relay node of a control node (the web console's
+    /// "Nodes" page gives the join link).
+    Edge {
+        /// Join with this link first (once; the identity is kept in the
+        /// data directory).
+        #[arg(long)]
+        join: Option<String>,
+    },
 }
 
 fn data_dir(given: Option<PathBuf>) -> Result<PathBuf> {
@@ -88,6 +96,13 @@ fn main() -> Result<()> {
                 "Open https://<this server>/setup to {state}. The code is valid for 24 hours."
             );
             Ok(())
+        }
+        Some(Command::Edge { join }) => {
+            init_logging();
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(farwing_server::edge_node::run(data_dir, join))
         }
         None => {
             init_logging();

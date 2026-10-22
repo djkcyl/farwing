@@ -31,6 +31,7 @@ export default function Sessions() {
                   <th>{m.controller}</th>
                   <th>{m.relation}</th>
                   <th>{m.purpose}</th>
+                  <th>{m.relay}</th>
                   <th>{t.admin.col.status}</th>
                   <th>{m.started}</th>
                   <th />
@@ -55,6 +56,11 @@ export default function Sessions() {
                       </td>
                       <td>{relationText(s.relation)}</td>
                       <td>{purposeText(s.purpose)}</td>
+                      <td className="small">
+                        {[...(s.local_relay ? [m.thisServer] : []), ...s.relay_nodes].join(t.format.listSeparator) || (
+                          <span className="muted">—</span>
+                        )}
+                      </td>
                       <td className="nowrap">
                         {s.connected ? (
                           <Badge tone="green">{m.connected}</Badge>

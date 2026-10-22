@@ -35,6 +35,7 @@ const ADMIN_NAV: NavItem[] = [
   { to: '/admin/devices', label: 'allDevices', icon: 'server' },
   { to: '/admin/sessions', label: 'sessions', icon: 'activity' },
   { to: '/admin/updates', label: 'updates', icon: 'download' },
+  { to: '/admin/nodes', label: 'nodes', icon: 'globe' },
   { to: '/admin/settings', label: 'settings', icon: 'settings' },
   { to: '/admin/tokens', label: 'tokens', icon: 'key' },
   { to: '/admin/audit', label: 'audit', icon: 'log' },

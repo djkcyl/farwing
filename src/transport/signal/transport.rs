@@ -823,6 +823,9 @@ impl Worker {
                                     if let Some(carried) = &self.carried {
                                         carried.opened(&hello);
                                     }
+                                    if !hello.probe_nodes.is_empty() {
+                                        super::node_probe::spawn(hello.probe_nodes.clone(), writer.clone());
+                                    }
                                     let _ = self.packets.send(Ok(Incoming::Opened(Box::new(hello))));
                                 }
                                 types::PING => {

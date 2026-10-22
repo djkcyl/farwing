@@ -119,6 +119,14 @@ pub fn turns_config(slot: Arc<CertSlot>) -> Result<Arc<rustls::ServerConfig>> {
     Ok(Arc::new(config))
 }
 
+/// TURN over TLS with a self-signed certificate for `names` kept in `dir`
+/// (an edge node's: clients do not check relay certificates).
+pub fn self_signed_turns(dir: &Path, names: &[String]) -> Result<Arc<rustls::ServerConfig>> {
+    let (cert, key) = ensure_self_signed(dir, names)?;
+    let (certified, _) = load_pair(&cert, &key)?;
+    turns_config(CertSlot::new(Arc::new(Fixed(certified))))
+}
+
 /// What the TLS settings resolve to.
 pub struct Prepared {
     pub resolver: Arc<dyn ResolvesServerCert>,

@@ -226,6 +226,8 @@ struct HubState {
 pub struct Hub {
     cfg: parking_lot::RwLock<HubConfig>,
     ice: parking_lot::RwLock<IceProvider>,
+    /// Edge relay nodes: per-side relays and the devices' round trips.
+    edges: Arc<crate::edge::EdgeHub>,
     state: Mutex<HubState>,
     events: UnboundedSender<HubEvent>,
     persist: UnboundedSender<PersistJob>,
@@ -314,13 +316,18 @@ pub fn relation_str(r: Relation) -> &'static str {
 }
 
 impl Hub {
-    pub fn new(cfg: HubConfig, ice: IceProvider) -> (Arc<Hub>, HubChannels) {
+    pub fn new(
+        cfg: HubConfig,
+        ice: IceProvider,
+        edges: Arc<crate::edge::EdgeHub>,
+    ) -> (Arc<Hub>, HubChannels) {
         let (events, events_rx) = unbounded_channel();
         let (persist, persist_rx) = unbounded_channel();
         (
             Arc::new(Hub {
                 cfg: parking_lot::RwLock::new(cfg),
                 ice: parking_lot::RwLock::new(ice),
+                edges,
                 state: Mutex::new(HubState::default()),
                 events,
                 persist,
@@ -343,9 +350,17 @@ impl Hub {
         *self.ice.write() = ice;
     }
 
-    /// Relay (TURN) credentials are issued.
+    /// Relay (TURN) credentials are issued (by this server or a node).
     pub fn has_turn(&self) -> bool {
-        self.ice.read().has_turn()
+        self.ice.read().has_turn() || !self.edges.probe_list().is_empty()
+    }
+
+    /// The relays one side of session `sid` gets: this server's, then the
+    /// edge nodes nearest to `device_id`.
+    fn servers_for(&self, sid: &str, device_id: &str) -> Vec<farwing_protocol::realtime::IceServer> {
+        let mut servers = self.ice.read().servers(sid);
+        servers.extend(self.edges.servers_for(sid, device_id));
+        servers
     }
 
     fn persist(&self, job: PersistJob) {
@@ -487,6 +502,11 @@ impl Hub {
                 limits: self.cfg.read().limits.clone(),
                 resumed,
                 server_time_ms: now_ms(),
+                probe_nodes: if link.role == Role::Host {
+                    self.edges.probe_list()
+                } else {
+                    Vec::new()
+                },
             },
         )
     }
@@ -1233,6 +1253,11 @@ impl Hub {
             | types::SESSION_SETTING => self.on_relay(&mut st, link_id, &conn, env),
             types::SESSION_END => self.on_session_end(&mut st, link_id, &conn, env),
             types::SESSION_LEAVE => self.on_session_leave(&mut st, link_id, &conn, env),
+            types::NODES_RTT if role == Role::Host => {
+                if let Ok(report) = env.body::<farwing_protocol::realtime::NodesRtt>() {
+                    self.edges.record_rtt(&link.device_id, report.rtt);
+                }
+            }
             other => {
                 tracing::debug!(kind = other, "unknown realtime message type");
                 conn.send(&err_env(re, ErrorCode::BadRequest, "unknown message type"));
@@ -1359,7 +1384,7 @@ impl Hub {
             controller: s.controller.clone(),
             options: start.options,
             capability: start.capability,
-            ice_servers: self.ice.read().servers(&sid),
+            ice_servers: self.servers_for(&sid, &s.host_device_id),
             force_relay: self.cfg.read().force_relay,
         };
         host_conn.send(&Envelope::new(types::SESSION_INCOMING, incoming).with_sid(&sid));
@@ -1368,7 +1393,7 @@ impl Hub {
             SessionStarted {
                 participant_id: s.participant_id.clone(),
                 session_id: sid.clone(),
-                ice_servers: self.ice.read().servers(&sid),
+                ice_servers: self.servers_for(&sid, &s.controller_device_id),
                 force_relay: self.cfg.read().force_relay,
                 host: PeerIdentity {
                     device_id: s.host_device_id.clone(),

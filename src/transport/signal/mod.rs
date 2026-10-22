@@ -40,6 +40,7 @@ const WEBRTC_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 pub(crate) mod host;
 pub(crate) mod identity;
 pub(crate) mod negotiation;
+mod node_probe;
 pub(crate) mod router;
 mod transport;
 
@@ -289,6 +290,7 @@ impl SignalSession {
             limits: Default::default(),
             resumed: false,
             server_time_ms: 0,
+            probe_nodes: Vec::new(),
         }
     }
 

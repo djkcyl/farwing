@@ -42,7 +42,13 @@ pub async fn server_info(State(app): State<App>) -> Json<ServerInfo> {
             force_relay: app.cfg().turn.force_relay,
             updates,
             friends: true,
-            nat_discovery: app.nat_discovery.read().clone(),
+            nat_discovery: app
+                .nat_discovery
+                .read()
+                .iter()
+                .cloned()
+                .chain(app.edges.nat_discovery())
+                .collect(),
         },
         time_ms: crate::db::now_ms(),
     })

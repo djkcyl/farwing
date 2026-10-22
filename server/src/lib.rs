@@ -8,6 +8,8 @@ pub mod assist;
 pub mod config;
 pub mod crypto;
 pub mod db;
+pub mod edge;
+pub mod edge_node;
 pub mod error;
 pub mod http;
 pub mod hub;

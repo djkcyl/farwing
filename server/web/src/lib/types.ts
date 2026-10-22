@@ -174,6 +174,9 @@ export interface Overview {
   guests: boolean;
   registration: boolean;
   recent: AuditEntry[];
+  relayed_sessions: number;
+  nodes: number;
+  nodes_usable: number;
 }
 
 export interface AcmeStatus {
@@ -281,6 +284,8 @@ export interface LiveSession {
   host_alias: string;
   host_owner: string | null;
   controller_alias: string;
+  local_relay: boolean;
+  relay_nodes: string[];
 }
 
 export type TlsMode = 'self_signed' | 'provided' | 'acme' | 'proxy';
@@ -402,6 +407,57 @@ export type Applied = SettingsView & { outcome: Outcome };
 export interface SetupInfo {
   state: 'setup' | 'recovery' | 'done';
   current?: SettingsView;
+}
+
+export interface NodeHealth {
+  turn_udp: string | null;
+  turn_tcp: string | null;
+  turn_tls: string | null;
+  stun: string[];
+  allocations: number;
+  sessions: string[];
+  relayed_bps: number;
+  cpu_percent: number | null;
+  memory_mb: number | null;
+  error: string | null;
+  version: string;
+}
+
+/// An edge relay node (`/api/v2/admin/nodes`).
+export interface EdgeNode {
+  id: string;
+  name: string;
+  region: string;
+  /// Empty until the node joined.
+  public_key: string;
+  enabled: boolean;
+  settings: {
+    public_ip: string | null;
+    listen_udp: string | null;
+    listen_tcp: string | null;
+    listen_tls: string | null;
+    relay_port_min: number | null;
+    relay_port_max: number | null;
+    relay_bind: string;
+    stun: StunEndpoint[];
+    bandwidth_limit_mbps: number | null;
+  };
+  created_at: number;
+  joined_at: number | null;
+  last_seen_at: number | null;
+  last_ip: string;
+  online: boolean;
+  usable: boolean;
+  connected_at: number | null;
+  address: string | null;
+  health: NodeHealth | null;
+}
+
+export interface JoinCommand {
+  node: EdgeNode;
+  command: string;
+  link: string;
+  expires_at: number;
 }
 
 export interface AdminToken {

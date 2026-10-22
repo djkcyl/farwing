@@ -492,14 +492,24 @@ impl Components {
             })
             .collect();
         self.app.hub.reconfigure(hub_config(cfg), ice);
+        self.app.edges.reconfigure(&cfg.turn);
         *self.app.relay.write() = bound;
     }
 
     async fn run(mut self, mut rx: mpsc::Receiver<Command>) {
+        let mut stats = tokio::time::interval(Duration::from_secs(10));
         loop {
             let deadline = self.pending.as_ref().map(|p| p.deadline);
             let command = tokio::select! {
                 command = rx.recv() => command,
+                _ = stats.tick() => {
+                    let current = match &self.turn {
+                        Some(turn) => turn.stats().await,
+                        None => Default::default(),
+                    };
+                    *self.app.local_relay.write() = current;
+                    continue;
+                }
                 _ = async {
                     match deadline {
                         Some(at) => tokio::time::sleep_until(at).await,
@@ -632,6 +642,9 @@ impl Components {
                 }
             };
             outcome.fingerprint_changed = before != after;
+            if let Some(after) = after.filter(|_| outcome.fingerprint_changed) {
+                self.app.edges.control_fingerprint(&after);
+            }
         }
         self.reconfigure_hub(&new);
         if new.log != old.log {

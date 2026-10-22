@@ -31,7 +31,9 @@ export default function AdminOverview() {
           hint={
             data.sessions > data.sessions_connected
               ? m.sessionsPending(data.sessions - data.sessions_connected)
-              : m.sessionsAllConnected
+              : data.relayed_sessions > 0
+                ? m.sessionsRelayed(data.relayed_sessions)
+                : m.sessionsAllConnected
           }
         />
         <Stat label={m.accounts} value={data.accounts} hint={m.admins(data.admins)} />
@@ -65,6 +67,11 @@ export default function AdminOverview() {
               </Row>
             )}
             <Row label={m.relay}>{(m.turnModes as Record<string, string>)[data.turn_mode] ?? data.turn_mode}</Row>
+            {data.nodes > 0 && (
+              <Row label={m.nodes}>
+                <Link to="/admin/nodes">{m.nodesUsable(data.nodes_usable, data.nodes)}</Link>
+              </Row>
+            )}
             <Row label={m.nat}>
               {data.nat_discovery.length ? (
                 listText(data.nat_discovery)

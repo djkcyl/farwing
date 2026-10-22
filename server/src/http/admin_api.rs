@@ -89,6 +89,10 @@ pub struct Overview {
     pub guests: bool,
     pub registration: bool,
     pub recent: Vec<AuditEntry>,
+    /// Sessions with an allocation on this server's relay or a node's.
+    pub relayed_sessions: usize,
+    pub nodes: usize,
+    pub nodes_usable: usize,
 }
 
 /// `GET /api/v2/admin/overview`
@@ -134,7 +138,23 @@ pub async fn overview(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Js
             (crate::config::TurnMode::Builtin, false) => "stun",
         }
         .to_owned(),
-        nat_discovery: app.nat_discovery.read().clone(),
+        nat_discovery: app
+            .nat_discovery
+            .read()
+            .iter()
+            .cloned()
+            .chain(app.edges.nat_discovery())
+            .collect(),
+        relayed_sessions: {
+            let local = app.local_relay.read().sessions.clone();
+            let edges = app.edges.relayed_sessions();
+            sessions
+                .iter()
+                .filter(|s| local.contains(&s.id) || edges.contains_key(&s.id))
+                .count()
+        },
+        nodes: app.edges.status().len(),
+        nodes_usable: app.edges.status().iter().filter(|n| n.usable).count(),
         db_bytes,
         accounts,
         admins,
@@ -695,11 +715,17 @@ pub struct SessionEntry {
     pub host_alias: String,
     pub host_owner: Option<String>,
     pub controller_alias: String,
+    /// This server's relay carries it.
+    pub local_relay: bool,
+    /// Edge nodes that relay it.
+    pub relay_nodes: Vec<String>,
 }
 
 /// `GET /api/v2/admin/sessions`
 pub async fn sessions(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Json<Vec<SessionEntry>>> {
     let live = app.hub.live_sessions();
+    let local = app.local_relay.read().sessions.clone();
+    let mut edges = app.edges.relayed_sessions();
     let entries = app
         .db
         .call(move |c| {
@@ -718,6 +744,8 @@ pub async fn sessions(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Js
                         .and_then(|d| d.user_id.as_ref())
                         .and_then(|u| owners.get(u).cloned()),
                     controller_alias: controller.map(|d| d.alias).unwrap_or_default(),
+                    local_relay: local.contains(&session.id),
+                    relay_nodes: edges.remove(&session.id).unwrap_or_default(),
                     session,
                 });
             }

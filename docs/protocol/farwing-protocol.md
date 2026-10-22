@@ -246,7 +246,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `DELETE /assist/saved/{kind}/{device_id}` | 账号 | — | `{}` |
 | `GET /ws` | 入场券或恢复令牌（§4.1） | — | WebSocket 升级 |
 
-网页端与管理接口（`/web/info`、`/me/*`、`/admin/*`、`/setup*`）见 [web-console.md](../web-console.md) §8 与 [server-admin-api.md](../server-admin-api.md)。
+中转节点的连接（`/edge/ws`）与管理见 [server-admin-api.md](../server-admin-api.md) §5。网页端与管理接口（`/web/info`、`/me/*`、`/admin/*`、`/setup*`）见 [web-console.md](../web-console.md) §8 与 [server-admin-api.md](../server-admin-api.md)。
 
 ### 3.5 服务器信息
 
@@ -406,6 +406,8 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 ```
 
 恢复时 `resumed: true`：逻辑连接（在线状态、会话、承载关系）保留，但**不**重放断线期间的消息；双方重新发送当前快照（被控重新发送 `session.setting{kind:"capability"}`）。新的被控在线连接（非恢复）取代旧的（旧连接以 `4001` 关闭），递增 `epoch` 并以 `host_offline` 结束旧连接上的被控会话。
+
+在线连接（`role = host`）的 `hello` 可带 `probe_nodes: [{id, stun}]`：服务器的边缘中转节点及其 STUN 端点（`host:port`）。设备向每个端点并行发 3 次 STUN Binding（间隔 100 ms，最多等 2 秒），取最小往返，以 `nodes.rtt {rtt: {<节点 ID>: 毫秒 | null}}` 在同一连接上报告，连接存续期间每 30 分钟重测一次。服务器据此为会话两端各选最近的节点（farwing-protocol 之外的说明见 deployment-design §4.5）；中转凭据的用户名带节点 ID：`<过期>:<会话 ID>:<节点 ID>`。
 
 ### 4.2 信封
 

@@ -55,6 +55,7 @@ This server has not been set up. Open https://<this server>:8443/setup and enter
 | 用法 | 说明 |
 | --- | --- |
 | `farwing-server [--data-dir DIR] [--listen ADDR]` | 运行服务；Ctrl-C / SIGTERM 时优雅退出（通知会话 `server_shutdown`，关闭连接）。数据目录默认为程序旁的 `data/`（环境变量 `FARWING_DATA_DIR`）。`--listen`（`FARWING_LISTEN`）固定网页与接口的监听地址，此时不能在线修改（容器中使用） |
+| `farwing-server edge [--data-dir DIR] [--join LINK]` | 以边缘中转节点运行（见“中转节点”）：第一次带上网页端“中转节点”页给出的加入链接，之后只需 `--data-dir` |
 | `farwing-server setup-code [--data-dir DIR]` | 打印新的一次性初始化码（24 小时有效，取代之前的码）。未初始化时用于 `/setup`；之后用于恢复管理员：在 `/setup` 页输入它，把某个账号设为管理员并重设密码（同时关闭其二次验证、吊销其登录；账号不存在时新建） |
 
 其他管理（账号、设备、会话、好友、设置）都在网页端完成，或用 API 令牌调用管理接口（[`docs/server-admin-api.md`](../docs/server-admin-api.md)）。`setup-code` 直接写数据库，可以在服务运行时执行；请以服务运行的同一系统用户执行（数据库文件权限）。
@@ -218,6 +219,16 @@ location / {
 保存时校验：`listen` 互不冲突（含 `listen_udp`；同端口时通配地址 `0.0.0.0`/`[::]` 与任何地址冲突）、`public` 为可用地址（非 0 端口、非通配、非组播）且与 `listen` 同一地址族、公网地址互不重复；同一地址族中出现多个公网 IP 时，每个端点的 `listen` 必须是具体的本地 IP（通配地址无法保证响应从正确的 IP 发出）。缺少配对、无法发送 `OTHER-ADDRESS`，或 `listen` 是公网 IP 却未写 `public` 时，日志会告警。
 
 部署在 1:1 NAT 之后（如云主机的弹性公网 IP）时，`listen` 写内网 IP、`public` 写对应的公网地址。`CHANGE-REQUEST` 的响应从另一个套接字发出，对 NAT 而言是新的出站流，因此需要静态 1:1 NAT（出站源地址固定映射到 `public`）；仅做端口转发时，响应的源地址可能被改写，`RESPONSE-ORIGIN` 将与实际不符。
+
+## 中转节点
+
+一台服务器即可完整运行（单机部署）。用户分布较广时，可以在各地加几台**边缘中转节点**：它们只提供 STUN、TURN（UDP / TCP / TLS）与 NAT 探测，没有数据库与账号，设置都由本服务器下发（`docs/protocol/deployment-design.md` §4）。
+
+1. 网页端“中转节点” → “添加节点”，填写名称与地区，得到一条加入命令（1 小时内有效，只能用一次）。
+2. 在节点机器上运行它（与本服务器相同的程序）：`farwing-server edge --join "https://<本服务器>/edge/<令牌>#<证书指纹>"`。节点生成自己的密钥、凭指纹核对本服务器（使用受信任的证书时按系统信任校验），身份保存在数据目录的 `edge.json`；以后用 `farwing-server edge --data-dir <目录>` 启动（systemd / Docker 同样）。
+3. 节点与本服务器保持一条签名的 WebSocket（`/api/v2/edge/ws`），断开后自动重连，中转在断开期间照常工作。网页上可以编辑节点的公网 IP（默认取它连接本服务器的地址）、监听端口、中转端口范围与带宽上限，停用、重新加入或移除节点。
+
+客户端在线时测量到各节点的往返时间（STUN，每 30 分钟一次）并上报；每个会话两端各拿到本服务器的中转（开启时）与离自己最近的 2 个可用节点，按实测在直连与各条中转之间选择。节点的中转凭据由中转密钥按节点派生，只在该节点有效；更换中转密钥时所有节点随之更新。概览显示经中转的会话数，会话页标注每个会话经过的中转。节点需要开放的端口与本服务器的中转相同（TCP / UDP 3478、TCP 5349、UDP 3479–3480 与中转端口范围），不需要开放网页端口。
 
 ## 需要开放的端口
 

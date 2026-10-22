@@ -33,7 +33,7 @@ pub fn now_ms() -> i64 {
 
 /// Schema version of [`SCHEMA`]. A database of any other version is refused;
 /// there is no migration (see [`open_connection`]).
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (
@@ -160,6 +160,20 @@ CREATE TABLE IF NOT EXISTS grants (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS grants_key ON grants(owner_user, grantee_user, IFNULL(device_id, ''));
 CREATE INDEX IF NOT EXISTS grants_grantee ON grants(grantee_user);
+CREATE TABLE IF NOT EXISTS edge_nodes (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    region        TEXT NOT NULL DEFAULT '',
+    public_key    TEXT NOT NULL DEFAULT '',
+    join_hash     TEXT UNIQUE,
+    join_expires  INTEGER,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    settings      TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    joined_at     INTEGER,
+    last_seen_at  INTEGER,
+    last_ip       TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS admin_tokens (
     id           TEXT PRIMARY KEY,
     name         TEXT NOT NULL,

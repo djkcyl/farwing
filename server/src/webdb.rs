@@ -605,3 +605,113 @@ mod tests {
         assert_eq!(announcements(&c).unwrap().len(), 1);
     }
 }
+
+// ------------------------------------------------------------- edge nodes
+
+const NODE_COLUMNS: &str = "id, name, region, public_key, enabled, settings, created_at, joined_at, last_seen_at, last_ip";
+
+fn node_row(r: &rusqlite::Row<'_>) -> R<crate::edge::NodeRow> {
+    let settings: String = r.get(5)?;
+    Ok(crate::edge::NodeRow {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        region: r.get(2)?,
+        public_key: r.get(3)?,
+        enabled: r.get::<_, i64>(4)? != 0,
+        settings: serde_json::from_str(&settings).unwrap_or_default(),
+        created_at: r.get(6)?,
+        joined_at: r.get(7)?,
+        last_seen_at: r.get(8)?,
+        last_ip: r.get(9)?,
+    })
+}
+
+pub fn edge_nodes(c: &Connection) -> R<Vec<crate::edge::NodeRow>> {
+    let mut st = c.prepare(&format!("SELECT {NODE_COLUMNS} FROM edge_nodes ORDER BY name, id"))?;
+    st.query_map([], node_row)?.collect()
+}
+
+pub fn edge_node(c: &Connection, id: &str) -> R<Option<crate::edge::NodeRow>> {
+    c.query_row(
+        &format!("SELECT {NODE_COLUMNS} FROM edge_nodes WHERE id = ?1"),
+        [id],
+        node_row,
+    )
+    .optional()
+}
+
+/// A node waiting to join with the token hashing to `join_hash`.
+pub fn create_edge_node(
+    c: &Connection,
+    row: &crate::edge::NodeRow,
+    join_hash: &str,
+    join_expires: i64,
+) -> R<()> {
+    c.execute(
+        "INSERT INTO edge_nodes (id, name, region, join_hash, join_expires, settings, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            row.id,
+            row.name,
+            row.region,
+            join_hash,
+            join_expires,
+            serde_json::to_string(&row.settings).expect("serializable"),
+            row.created_at
+        ],
+    )?;
+    Ok(())
+}
+
+/// Join the node whose unexpired token hashes to `join_hash` with
+/// `public_key`; its ID.
+pub fn join_edge_node(c: &Connection, join_hash: &str, public_key: &str) -> R<Option<String>> {
+    let now = crate::db::now_s();
+    let id: Option<String> = c
+        .query_row(
+            "SELECT id FROM edge_nodes WHERE join_hash = ?1 AND join_expires > ?2",
+            rusqlite::params![join_hash, now],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(id) = &id {
+        c.execute(
+            "UPDATE edge_nodes SET public_key = ?2, join_hash = NULL, join_expires = NULL, joined_at = ?3 WHERE id = ?1",
+            rusqlite::params![id, public_key, now],
+        )?;
+    }
+    Ok(id)
+}
+
+/// A new join token for a node (rejoining with a new identity).
+pub fn rejoin_edge_node(c: &Connection, id: &str, join_hash: &str, join_expires: i64) -> R<usize> {
+    c.execute(
+        "UPDATE edge_nodes SET join_hash = ?2, join_expires = ?3 WHERE id = ?1",
+        rusqlite::params![id, join_hash, join_expires],
+    )
+}
+
+pub fn update_edge_node(c: &Connection, row: &crate::edge::NodeRow) -> R<usize> {
+    c.execute(
+        "UPDATE edge_nodes SET name = ?2, region = ?3, enabled = ?4, settings = ?5 WHERE id = ?1",
+        rusqlite::params![
+            row.id,
+            row.name,
+            row.region,
+            row.enabled as i64,
+            serde_json::to_string(&row.settings).expect("serializable")
+        ],
+    )
+}
+
+pub fn delete_edge_node(c: &Connection, id: &str) -> R<usize> {
+    c.execute("DELETE FROM edge_nodes WHERE id = ?1", [id])
+}
+
+pub fn touch_edge_node(c: &Connection, id: &str, ip: &str) -> R<()> {
+    c.execute(
+        "UPDATE edge_nodes SET last_seen_at = ?2, last_ip = ?3 WHERE id = ?1",
+        rusqlite::params![id, crate::db::now_s(), ip],
+    )?;
+    Ok(())
+}

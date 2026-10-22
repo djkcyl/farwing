@@ -8,6 +8,7 @@ pub mod devices;
 pub mod friends;
 pub mod me;
 pub mod misc;
+pub mod nodes;
 pub mod power;
 pub mod sessions;
 pub mod settings_api;
@@ -60,6 +61,10 @@ pub struct AppState {
     pub setup_pending: std::sync::atomic::AtomicBool,
     /// A listen change waiting for confirmation.
     pub listen_pending: parking_lot::RwLock<Option<crate::runtime::ListenPending>>,
+    /// Edge relay nodes.
+    pub edges: Arc<crate::edge::EdgeHub>,
+    /// What this server's own relay carries (refreshed every ten seconds).
+    pub local_relay: parking_lot::RwLock<crate::turn_server::RelayStats>,
     /// The task that applies settings (`crate::runtime`).
     pub control: std::sync::OnceLock<crate::runtime::Control>,
 }
@@ -431,6 +436,13 @@ pub fn router(app: App) -> Router {
             get(tokens::list).post(tokens::create),
         )
         .route("/api/v2/admin/tokens/{id}", delete(tokens::revoke))
+        .route("/api/v2/admin/nodes", get(nodes::list).post(nodes::create))
+        .route(
+            "/api/v2/admin/nodes/{id}",
+            patch(nodes::update).delete(nodes::remove),
+        )
+        .route("/api/v2/admin/nodes/{id}/rejoin", post(nodes::rejoin))
+        .route("/api/v2/edge/ws", get(nodes::connect))
         .route(setup::PATH, get(setup::info).post(setup::complete))
         .route("/api/v2/setup/recover", post(setup::recover))
         .route("/api/v2/admin/audit", get(admin_api::audit_log))

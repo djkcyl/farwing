@@ -18,6 +18,7 @@ H=(-H "X-Farwing-Protocol: 2" -H "Authorization: Bearer $T")
 | 用法 | 说明 |
 | --- | --- |
 | `farwing-server [--data-dir DIR] [--listen ADDR]` | 运行服务。数据目录默认是程序旁边的 `data/`（环境变量 `FARWING_DATA_DIR`）；`--listen`（`FARWING_LISTEN`）指定网页与接口的监听地址，指定后不能在线修改（容器里用） |
+| `farwing-server edge [--data-dir DIR] [--join LINK]` | 以边缘中转节点运行（第 5 节） |
 | `farwing-server setup-code [--data-dir DIR]` | 打印新的一次性初始化码（24 小时有效，取代之前的码）：服务器未初始化时用于 `/setup`，之后用于恢复管理员 |
 
 日志级别是一项设置；环境变量 `RUST_LOG` 优先于它。
@@ -192,7 +193,25 @@ curl "${H[@]}" -X POST $S/api/v2/admin/settings/relay-secret
 
 未知的键被拒绝（`problem: invalid`，`field: settings`）。
 
-## 5. 其他管理接口
+## 5. 中转节点
+
+```sh
+# 添加：返回加入命令（1 小时内有效）
+curl "${H[@]}" -X POST -H "content-type: application/json" $S/api/v2/admin/nodes -d '{"name": "上海", "region": "cn-east"}'
+# {"node": {...}, "command": "farwing-server edge --join \"https://…/edge/fwj_…#AB:CD:…\"", "link": "…", "expires_at": …}
+
+curl "${H[@]}" $S/api/v2/admin/nodes                       # 列表：连接、健康与统计
+curl "${H[@]}" -X PATCH -H "content-type: application/json" $S/api/v2/admin/nodes/<id> \
+  -d '{"enabled": false, "settings": {"public_ip": "203.0.113.20", "bandwidth_limit_mbps": 500}}'
+curl "${H[@]}" -X POST $S/api/v2/admin/nodes/<id>/rejoin    # 新的加入命令（节点丢失了身份）
+curl "${H[@]}" -X DELETE $S/api/v2/admin/nodes/<id>         # 移除，节点的身份失效
+```
+
+节点设置（`settings`，部分修改，对象逐键合并）：`public_ip`（空 = 节点连接本服务器的地址）、`listen_udp`、`listen_tcp`、`listen_tls`、`relay_port_min`、`relay_port_max`、`relay_bind`、`stun`（同 4.4 的 `turn.*`）、`bandwidth_limit_mbps`（超过后不再分配给新会话）。列表中每个节点另有 `online`、`usable`（在线、启用、30 秒内报告过健康且中转在运行、未超带宽）、`address`、`health`（实际监听地址、`allocations`、有分配的会话 `sessions`、`relayed_bps`、`error`、`version`）。
+
+节点的连接（`GET /api/v2/edge/ws`）：加入时带 `X-Farwing-Join: <令牌>`、`X-Farwing-Node-Key: <新公钥>`，之后带 `X-Farwing-Node: <节点 ID>`；都带 `X-Farwing-Timestamp`（Unix 毫秒）与 `X-Farwing-Signature`（Ed25519 对 `FWEDGE1\n<公钥或节点 ID>\n<时间戳>` 的签名）。本服务器下发 `{"type": "joined"}`、`{"type": "config", "turn": {...}}`（节点的中转设置，`shared_secret` 为节点密钥）、`{"type": "control_fingerprint"}`（证书更换），节点每 10 秒发 `{"type": "health", ...}`。
+
+## 6. 其他管理接口
 
 | 接口 | 说明 |
 | --- | --- |

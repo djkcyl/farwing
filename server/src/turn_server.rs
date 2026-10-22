@@ -24,15 +24,26 @@ use turn::server::config::{ConnConfig, ServerConfig};
 use webrtc_util::Conn;
 use webrtc_util::vnet::net::Net;
 
-/// Validates time-limited TURN REST usernames.
+/// Validates time-limited TURN REST usernames: `<expiry>:<session>` on the
+/// control node, `<expiry>:<session>:<node>` on edge node `node`.
 pub struct RestAuthHandler {
     secret: String,
+    node: Option<String>,
 }
 
 impl RestAuthHandler {
     pub fn new(secret: impl Into<String>) -> Self {
         Self {
             secret: secret.into(),
+            node: None,
+        }
+    }
+
+    /// An edge node's handler: only credentials naming `node`.
+    pub fn for_node(secret: impl Into<String>, node: impl Into<String>) -> Self {
+        Self {
+            secret: secret.into(),
+            node: Some(node.into()),
         }
     }
 }
@@ -44,7 +55,12 @@ impl AuthHandler for RestAuthHandler {
         realm: &str,
         _src_addr: SocketAddr,
     ) -> Result<Vec<u8>, turn::Error> {
-        let expiry_text = username.split_once(':').map_or(username, |(e, _)| e);
+        let mut fields = username.split(':');
+        let expiry_text = fields.next().unwrap_or_default();
+        let named = fields.nth(1);
+        if named != self.node.as_deref() {
+            return Err(turn::Error::Other("credential for another relay".into()));
+        }
         let expiry: i64 = expiry_text
             .parse()
             .map_err(|_| turn::Error::Other("malformed TURN username".into()))?;
@@ -56,8 +72,22 @@ impl AuthHandler for RestAuthHandler {
     }
 }
 
+/// What a relay carries now.
+#[derive(Clone, Debug, Default)]
+pub struct RelayStats {
+    pub allocations: u32,
+    /// Sessions with an allocation (from the credentials' usernames).
+    pub sessions: Vec<String>,
+    /// Bytes relayed so far by the current allocations.
+    pub relayed_bytes: u64,
+}
+
+/// The servers of the TCP and TLS connections, for their statistics.
+type StreamServers = Arc<parking_lot::Mutex<std::collections::HashMap<u64, Arc<Server>>>>;
+
 pub struct BuiltinTurn {
     udp: Server,
+    streams: StreamServers,
     udp_addr: SocketAddr,
     tcp_addr: Option<SocketAddr>,
     tls_addr: Option<SocketAddr>,
@@ -76,6 +106,30 @@ impl BuiltinTurn {
 
     pub fn tls_addr(&self) -> Option<SocketAddr> {
         self.tls_addr
+    }
+
+    pub async fn stats(&self) -> RelayStats {
+        let streams: Vec<Arc<Server>> = self.streams.lock().values().cloned().collect();
+        let mut infos = Vec::new();
+        if let Ok(udp) = self.udp.get_allocations_info(None).await {
+            infos.extend(udp.into_values());
+        }
+        for server in streams {
+            if let Ok(stream) = server.get_allocations_info(None).await {
+                infos.extend(stream.into_values());
+            }
+        }
+        let mut sessions: Vec<String> = infos
+            .iter()
+            .filter_map(|i| i.username.split(':').nth(1).map(str::to_owned))
+            .collect();
+        sessions.sort();
+        sessions.dedup();
+        RelayStats {
+            allocations: infos.len() as u32,
+            sessions,
+            relayed_bytes: infos.iter().map(|i| i.relayed_bytes as u64).sum(),
+        }
     }
 
     /// Stop serving and release the ports (a restart binds them again).
@@ -140,7 +194,16 @@ pub async fn start(
     cfg: &TurnConfig,
     tls: Option<Arc<rustls::ServerConfig>>,
 ) -> Result<BuiltinTurn> {
-    let auth = Arc::new(RestAuthHandler::new(cfg.shared_secret.clone()));
+    start_with(cfg, tls, RestAuthHandler::new(cfg.shared_secret.clone())).await
+}
+
+/// [`start`] with another credential check (an edge node's).
+pub async fn start_with(
+    cfg: &TurnConfig,
+    tls: Option<Arc<rustls::ServerConfig>>,
+    auth: RestAuthHandler,
+) -> Result<BuiltinTurn> {
+    let auth = Arc::new(auth);
     let listen_udp = cfg.listen_udp.context("turn.listen_udp missing")?;
     let udp = UdpSocket::bind(listen_udp)
         .await
@@ -150,11 +213,13 @@ pub async fn start(
     tracing::info!(%udp_addr, "builtin TURN listening (UDP)");
 
     let stream_stop = Arc::new(Notify::new());
+    let streams = StreamServers::default();
     let mut stream_tasks = Vec::new();
     let listen = |addr: SocketAddr, tls: Option<Arc<rustls::ServerConfig>>| {
         let cfg = cfg.clone();
         let auth = Arc::clone(&auth);
         let stop = Arc::clone(&stream_stop);
+        let streams = Arc::clone(&streams);
         async move {
             let what = if tls.is_some() { "TLS" } else { "TCP" };
             let listener = TcpListener::bind(addr)
@@ -174,8 +239,9 @@ pub async fn start(
                         continue;
                     };
                     let (cfg, auth, acceptor) = (cfg.clone(), Arc::clone(&auth), acceptor.clone());
+                    let streams = Arc::clone(&streams);
                     tokio::spawn(async move {
-                        if let Err(e) = serve_stream(stream, peer, acceptor, &cfg, auth).await {
+                        if let Err(e) = serve_stream(stream, peer, acceptor, &cfg, auth, &streams).await {
                             tracing::debug!(%peer, error = %format!("{e:#}"), "TURN {what} connection ended");
                         }
                     });
@@ -211,6 +277,7 @@ pub async fn start(
     };
     Ok(BuiltinTurn {
         udp: server,
+        streams,
         udp_addr,
         tcp_addr,
         tls_addr,
@@ -228,6 +295,7 @@ async fn serve_stream(
     tls: Option<tokio_rustls::TlsAcceptor>,
     cfg: &TurnConfig,
     auth: Arc<RestAuthHandler>,
+    streams: &StreamServers,
 ) -> Result<()> {
     stream.set_nodelay(true).ok();
     let local = stream.local_addr()?;
@@ -241,8 +309,13 @@ async fn serve_stream(
         }
         None => StreamTurnConn::new(stream, local, peer),
     };
-    let server = new_server(cfg, Arc::clone(&conn) as Arc<dyn Conn + Send + Sync>, auth).await?;
+    let server = Arc::new(
+        new_server(cfg, Arc::clone(&conn) as Arc<dyn Conn + Send + Sync>, auth).await?,
+    );
+    let key = rand::random::<u64>();
+    streams.lock().insert(key, Arc::clone(&server));
     conn.wait_closed().await;
+    streams.lock().remove(&key);
     let _ = server.close().await;
     Ok(())
 }
@@ -413,5 +486,12 @@ mod tests {
         let past = format!("{}:session", crate::db::now_s() - 1);
         assert!(h.auth_handle(&past, "farwing", addr).is_err());
         assert!(h.auth_handle("nonsense", "farwing", addr).is_err());
+        // Credentials naming a node are an edge node's, and only that one's.
+        let node_user = format!("{future}:session:n1");
+        assert!(h.auth_handle(&node_user, "farwing", addr).is_err());
+        let node = RestAuthHandler::for_node("k1", "n1");
+        assert!(node.auth_handle(&node_user, "farwing", addr).is_ok());
+        assert!(node.auth_handle(&user, "farwing", addr).is_err());
+        assert!(node.auth_handle(&format!("{future}:session:n2"), "farwing", addr).is_err());
     }
 }

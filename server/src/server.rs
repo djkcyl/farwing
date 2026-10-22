@@ -71,7 +71,14 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
     } else {
         None
     };
-    let (hub, channels) = Hub::new(runtime::hub_config(&cfg), IceProvider::new(&cfg.turn, None));
+    let edges = Arc::new(crate::edge::EdgeHub::new());
+    edges.load(db.with(|c| crate::webdb::edge_nodes(c))?);
+    edges.reconfigure(&cfg.turn);
+    let (hub, channels) = Hub::new(
+        runtime::hub_config(&cfg),
+        IceProvider::new(&cfg.turn, None),
+        Arc::clone(&edges),
+    );
     let app: App = Arc::new(AppState {
         settings: crate::settings::Settings::new(cfg),
         db: db.clone(),
@@ -88,6 +95,8 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
         tls: Default::default(),
         setup_pending: AtomicBool::new(needs_setup),
         listen_pending: parking_lot::RwLock::new(None),
+        edges,
+        local_relay: Default::default(),
         control: OnceLock::new(),
     });
     let router = http::router(Arc::clone(&app));

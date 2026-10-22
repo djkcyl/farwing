@@ -35,6 +35,7 @@ const ADMIN_ROUTES: [string, Page][] = [
   ['/admin/updates', page(() => import('./pages/admin/Updates'))],
   ['/admin/settings', page(() => import('./pages/admin/Settings'))],
   ['/admin/tokens', page(() => import('./pages/admin/Tokens'))],
+  ['/admin/nodes', page(() => import('./pages/admin/Nodes'))],
   ['/admin/audit', page(() => import('./pages/admin/Audit'))],
 ];
 

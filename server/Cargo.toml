@@ -42,6 +42,7 @@ rand = "0.9"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-platform-verifier = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha1 = "0.10"
@@ -51,8 +52,9 @@ thiserror = "2"
 tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "fs", "io-util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-turn = "0.17.2"
+turn = { version = "0.17.2", features = ["metrics"] }
 tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12", "logging"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 url = "2.5"
 uuid = { version = "1.18", features = ["v4"] }
 webrtc-util = { version = "0.17", default-features = false, features = ["conn", "vnet"] }
@@ -62,7 +64,6 @@ reqwest = { version = "0.13.5", default-features = false, features = ["json", "r
 # Independent STUN decoder for the NAT discovery tests (same version as `turn` uses).
 stun = "0.17.2"
 tempfile = "3"
-tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 
 [profile.release]
 opt-level = 3

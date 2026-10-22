@@ -106,6 +106,9 @@ pub mod types {
     pub const ASSIST_CANCELLED: &str = "assist.cancelled";
     pub const POWER_REQUEST: &str = "power.request";
     pub const WOL_WAKE: &str = "wol.wake";
+    /// Device → server on its presence connection: round trips to the relay
+    /// nodes of `Hello::probe_nodes` ([`NodesRtt`]).
+    pub const NODES_RTT: &str = "nodes.rtt";
 }
 
 /// WebSocket close codes.
@@ -172,6 +175,24 @@ pub struct Hello {
     pub resumed: bool,
     #[serde(default)]
     pub server_time_ms: i64,
+    /// Presence connections: relay nodes whose round trip the device
+    /// measures and reports (`nodes.rtt`), now and every 30 minutes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub probe_nodes: Vec<ProbeNode>,
+}
+
+/// A relay node to measure: its STUN endpoint (`host:port`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProbeNode {
+    pub id: String,
+    pub stun: String,
+}
+
+/// `nodes.rtt`: the lowest round trip to each node in milliseconds, `None`
+/// when it did not answer.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct NodesRtt {
+    pub rtt: std::collections::BTreeMap<String, Option<u32>>,
 }
 
 impl std::fmt::Debug for Hello {
