@@ -69,25 +69,27 @@ pub(super) fn show_compact_performance(
                         &format!("{:.1} Mbps", stats.bitrate_mbps),
                         egui::Color32::WHITE,
                     );
+                    let text = &crate::i18n::t().viewer;
                     compact_hud_line(
                         ui,
-                        &format_optional_ms(stats.health.value(Metric::Rtt)),
+                        &(text.hud_rtt)(&format_optional_ms(stats.health.value(Metric::Rtt))),
                         health_color(stats.health.level(Metric::Rtt)),
                     );
                     compact_hud_line(
                         ui,
-                        &stats.health.value(Metric::FrameDelay).map_or_else(
-                            || "— ms frm.".to_owned(),
-                            |value| format!("{value:.0} ms frm."),
-                        ),
+                        &(text.hud_frame_delay)(&format_optional_ms(
+                            stats.health.value(Metric::FrameDelay),
+                        )),
                         health_color(stats.health.level(Metric::FrameDelay)),
                     );
                     compact_hud_line(
                         ui,
-                        &stats
-                            .health
-                            .value(Metric::Loss)
-                            .map_or_else(|| "— loss".into(), |v| format!("{v:.2}% loss")),
+                        &(text.hud_loss)(
+                            &stats
+                                .health
+                                .value(Metric::Loss)
+                                .map_or_else(|| "—".into(), |v| format!("{v:.2}%")),
+                        ),
                         health_color(stats.health.level(Metric::Loss)),
                     );
                     compact_hud_line(ui, &stats.quality, egui::Color32::WHITE);

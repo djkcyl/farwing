@@ -743,7 +743,7 @@ impl Drop for NativeViewerSession {
     }
 }
 
-const COMPACT_HUD_WIDTH: f32 = 120.0;
+const COMPACT_HUD_WIDTH: f32 = 140.0;
 const COMPACT_METER_WIDTH: f32 = 37.0;
 const COMPACT_COLUMN_GAP: f32 = 8.0;
 

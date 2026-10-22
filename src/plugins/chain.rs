@@ -347,37 +347,49 @@ impl Controller {
         }
     }
     fn menu(&mut self, ui: &mut egui::Ui) {
-        let before = self.selected.clone();
-        egui::ComboBox::from_id_salt("graph-preset")
-            .width(ui.available_width())
-            .selected_text(
-                self.saved
-                    .iter()
-                    .find(|d| Some(&d.graph_id) == self.selected.as_ref())
-                    .map_or(t().features.plugin_select_graph, |d| d.name.as_str()),
-            )
-            .show_ui(ui, |ui| {
-                for doc in &self.saved {
-                    ui.selectable_value(&mut self.selected, Some(doc.graph_id.clone()), &doc.name);
-                }
-            });
-        if self.selected != before && self.enabled {
-            self.watcher = None;
-            self.watch();
-        }
-        let mut enabled = self.enabled;
-        if ui
-            .add_enabled(
-                self.selected.is_some(),
-                egui::Checkbox::new(&mut enabled, t().features.plugin_enable_graph),
-            )
-            .changed()
-        {
-            if enabled {
+        ui.spacing_mut().item_spacing.y = 8.0;
+        let any = !self.saved.is_empty() || self.active.is_some();
+        if any {
+            let before = self.selected.clone();
+            egui::ComboBox::from_id_salt("graph-preset")
+                .width(ui.available_width())
+                .selected_text(
+                    self.saved
+                        .iter()
+                        .find(|d| Some(&d.graph_id) == self.selected.as_ref())
+                        .map_or(t().features.plugin_select_graph, |d| d.name.as_str()),
+                )
+                .show_ui(ui, |ui| {
+                    for doc in &self.saved {
+                        ui.selectable_value(&mut self.selected, Some(doc.graph_id.clone()), &doc.name);
+                    }
+                });
+            if self.selected != before && self.enabled {
+                self.watcher = None;
                 self.watch();
-            } else {
-                self.stop();
             }
+            let mut enabled = self.enabled;
+            let switched = ui
+                .horizontal(|ui| {
+                    ui.add_enabled_ui(self.selected.is_some(), |ui| {
+                        ui.label(t().features.plugin_enable_graph);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            crate::ui::controls::switch(ui, &mut enabled).changed()
+                        })
+                        .inner
+                    })
+                    .inner
+                })
+                .inner;
+            if switched {
+                if enabled {
+                    self.watch();
+                } else {
+                    self.stop();
+                }
+            }
+        } else {
+            ui.label(egui::RichText::new(t().features.plugin_no_graphs).color(crate::ui::theme::MUTED));
         }
         if let Some(active) = &mut self.active {
             ui.weak((t().features.plugin_running_graph)(
@@ -421,6 +433,7 @@ impl Controller {
             crate::ui::controls::DialogIcon::Error,
             self.error.as_deref(),
         );
+        ui.separator();
         ui.horizontal(|ui| {
             if ui.button(t().features.plugin_refresh_list).clicked() {
                 match super::graph::list() {
@@ -428,12 +441,10 @@ impl Controller {
                     Err(e) => self.error = Some(e.to_string()),
                 }
             }
-            if ui
-                .add_enabled(
-                    self.enabled && self.latest.is_some(),
-                    egui::Button::new(t().features.plugin_reapply),
-                )
-                .clicked()
+            if self.enabled
+                && ui
+                    .add_enabled(self.latest.is_some(), egui::Button::new(t().features.plugin_reapply))
+                    .clicked()
                 && let Some(plan) = self.latest.clone()
             {
                 self.prepare(plan);
@@ -444,9 +455,6 @@ impl Controller {
                 self.error = Some(e.to_string());
             }
         });
-        if self.saved.is_empty() {
-            ui.weak(t().features.plugin_no_graphs);
-        }
     }
     pub fn paint(&mut self, ctx: &egui::Context, width: f32, height: f32, video: [f32; 4]) {
         self.last_view = Some(sdk::Viewport {
