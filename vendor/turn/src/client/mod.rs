@@ -115,7 +115,8 @@ impl RelayConnObserver for ClientInternal {
     }
 
     fn set_realm(&mut self, realm: Realm) {
-        if self.realm.text == realm.text {
+        // A realm configured up front still needs its key.
+        if self.realm.text == realm.text && !self.integrity.0.is_empty() {
             return;
         }
         // The key is re-derived when the realm changes. In-flight

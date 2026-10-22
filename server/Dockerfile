@@ -1,12 +1,13 @@
 # syntax=docker/dockerfile:1
 #
 # Farwing Server image. Build from the REPOSITORY ROOT so that the shared
-# protocol crate (crates/protocol) is part of the build context:
+# crates (crates/protocol, crates/rtc-wire) and the patched WebRTC crates
+# (vendor/) are part of the build context:
 #
 #   docker build -f server/Dockerfile -t farwing-server .
 #
-# server/Dockerfile.dockerignore limits the context to crates/protocol and
-# server/ (requires BuildKit, the default builder since Docker 23).
+# server/Dockerfile.dockerignore limits the context to those and server/
+# (requires BuildKit, the default builder since Docker 23).
 
 # The web console (server/web), embedded into the binary by build.rs.
 FROM node:22-bookworm-slim AS web
@@ -22,6 +23,8 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential pkg-config \
  && rm -rf /var/lib/apt/lists/*
 COPY crates/protocol crates/protocol
+COPY crates/rtc-wire crates/rtc-wire
+COPY vendor vendor
 COPY server server
 COPY --from=web /src/server/web/dist server/web/dist
 WORKDIR /src/server

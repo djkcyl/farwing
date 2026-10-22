@@ -1571,6 +1571,7 @@ dependencies = [
  "farwing-nvenc-sys",
  "farwing-plugin-api",
  "farwing-protocol",
+ "farwing-rtc-wire",
  "farwing-vpl-sys",
  "flate2",
  "futures-util",
@@ -1706,6 +1707,13 @@ dependencies = [
  "sha2",
  "spake2",
  "subtle",
+]
+
+[[package]]
+name = "farwing-rtc-wire"
+version = "0.1.0"
+dependencies = [
+ "webrtc",
 ]
 
 [[package]]

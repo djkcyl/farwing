@@ -1,8 +1,19 @@
 # Build context for server/Dockerfile (context = repository root).
 *
 !crates/protocol/
+!crates/rtc-wire/
+!vendor/dtls/
+!vendor/interceptor/
+!vendor/rtcp/
+!vendor/turn/
+!vendor/webrtc/
+!vendor/webrtc-ice/
+!vendor/webrtc-sctp/
+!vendor/webrtc-srtp/
+!vendor/webrtc-util/
 !server/
 crates/protocol/target/
+crates/rtc-wire/target/
 server/target/
 server/target-*/
 server/data/

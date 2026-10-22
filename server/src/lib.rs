@@ -18,6 +18,7 @@ pub mod ratelimit;
 pub mod runtime;
 pub mod server;
 pub mod settings;
+pub mod sfu;
 pub mod setup;
 pub mod stun_server;
 pub mod tls;

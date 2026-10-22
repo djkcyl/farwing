@@ -21,6 +21,7 @@ path = "src/main.rs"
 
 [dependencies]
 farwing-protocol = { path = "../crates/protocol", features = ["crypto"] }
+farwing-rtc-wire = { path = "../crates/rtc-wire" }
 
 anyhow = "1.0"
 argon2 = { version = "0.5.3", features = ["std"] }
@@ -58,12 +59,26 @@ tokio-tungstenite = { version = "0.30.0", default-features = false, features = [
 url = "2.5"
 uuid = { version = "1.18", features = ["v4"] }
 webrtc-util = { version = "0.17", default-features = false, features = ["conn", "vnet"] }
+# Media forwarding (SFU): the client's patched WebRTC stack, so both legs
+# negotiate and frame packets exactly as Farwing clients do.
+webrtc = { path = "../vendor/webrtc" }
 
 [dev-dependencies]
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-no-provider"] }
 # Independent STUN decoder for the NAT discovery tests (same version as `turn` uses).
 stun = "0.17.2"
 tempfile = "3"
+
+# The same patched WebRTC crates as the client workspace (`../Cargo.toml`).
+[patch.crates-io]
+dtls = { path = "../vendor/dtls" }
+interceptor = { path = "../vendor/interceptor" }
+rtcp = { path = "../vendor/rtcp" }
+turn = { path = "../vendor/turn" }
+webrtc-ice = { path = "../vendor/webrtc-ice" }
+webrtc-sctp = { path = "../vendor/webrtc-sctp" }
+webrtc-srtp = { path = "../vendor/webrtc-srtp" }
+webrtc-util = { path = "../vendor/webrtc-util" }
 
 [profile.release]
 opt-level = 3

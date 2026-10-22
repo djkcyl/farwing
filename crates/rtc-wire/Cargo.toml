@@ -1,0 +1,10 @@
+[package]
+name = "farwing-rtc-wire"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-only"
+description = "RTP payload types, codec parameters and header extension order shared by Farwing clients and the server's media forwarder"
+
+[dependencies]
+webrtc = { path = "../../vendor/webrtc" }

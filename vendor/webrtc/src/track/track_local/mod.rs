@@ -126,6 +126,12 @@ pub trait TrackLocal {
     fn kind(&self) -> RTPCodecType;
 
     fn as_any(&self) -> &dyn Any;
+
+    /// Farwing: fixed `(media, rtx, fec)` SSRCs for a sender that forwards
+    /// another sender's packets unchanged; zero (or `None`) draws a random one.
+    fn ssrcs(&self) -> Option<(SSRC, SSRC, SSRC)> {
+        None
+    }
 }
 
 /// TrackBinding is a single bind for a Track

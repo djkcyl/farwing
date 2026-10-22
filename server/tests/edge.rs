@@ -226,6 +226,7 @@ async fn devices_report_round_trips_and_get_the_nearest_nodes() {
 async fn turn_client(server: std::net::SocketAddr, username: &str, password: &str) -> Client {
     let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
     let client = Client::new(ClientConfig {
+        transport: Default::default(),
         stun_serv_addr: server.to_string(),
         turn_serv_addr: server.to_string(),
         username: username.to_owned(),

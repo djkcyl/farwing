@@ -4,6 +4,8 @@
 
 #![allow(dead_code)]
 
+pub mod rtc;
+
 use farwing_protocol::crypto::{self, DeviceKey};
 use farwing_protocol::headers;
 use farwing_server::{Config, RunningServer};

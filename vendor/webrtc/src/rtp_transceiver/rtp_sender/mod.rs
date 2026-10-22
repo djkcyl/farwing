@@ -227,7 +227,7 @@ impl RTCRtpSender {
         track_encodings: &mut Vec<TrackEncoding>,
         track: Arc<dyn TrackLocal + Send + Sync>,
     ) -> Result<()> {
-        let ssrc = rand::random::<u32>();
+        let ssrc = fixed_ssrc(&track, 0);
         let srtp_stream = Arc::new(SrtpWriterFuture {
             closed: AtomicBool::new(false),
             ssrc,
@@ -251,7 +251,7 @@ impl RTCRtpSender {
                 });
 
         let rtx = if create_rtx_stream {
-            let ssrc = rand::random::<u32>();
+            let ssrc = fixed_ssrc(&track, 1);
 
             let srtp_stream = Arc::new(SrtpWriterFuture {
                 closed: AtomicBool::new(false),
@@ -287,7 +287,7 @@ impl RTCRtpSender {
                         .mime_type
                         .eq_ignore_ascii_case(crate::RSFEC_MIME_TYPE)
                 }) {
-            let ssrc = rand::random::<u32>();
+            let ssrc = fixed_ssrc(&track, 2);
             let srtp_stream = Arc::new(SrtpWriterFuture {
                 closed: AtomicBool::new(false),
                 ssrc,
@@ -780,4 +780,13 @@ impl RTCRtpSender {
 
         lock.clone()
     }
+}
+
+/// Farwing: the SSRC `role` (0 media, 1 rtx, 2 fec) fixed by the track, else random.
+fn fixed_ssrc(track: &Arc<dyn TrackLocal + Send + Sync>, role: usize) -> u32 {
+    track
+        .ssrcs()
+        .map(|(media, rtx, fec)| [media, rtx, fec][role])
+        .filter(|ssrc| *ssrc != 0)
+        .unwrap_or_else(rand::random::<u32>)
 }

@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpStream, UdpSocket};
-use turn::client::{Client, ClientConfig};
+use turn::client::{Client, ClientConfig, ClientTransport};
 use webrtc_util::Conn;
 
 fn hmac_b64(secret: &str, username: &str) -> String {
@@ -112,12 +112,14 @@ async fn builtin_server() -> (TestServer, SocketAddr, SocketAddr, SocketAddr) {
 }
 
 async fn turn_client(
+    transport: ClientTransport,
     conn: Arc<dyn Conn + Send + Sync>,
     server: SocketAddr,
     username: &str,
     password: &str,
 ) -> Client {
     let client = Client::new(ClientConfig {
+        transport,
         stun_serv_addr: server.to_string(),
         turn_serv_addr: server.to_string(),
         username: username.to_owned(),
@@ -145,6 +147,7 @@ async fn allocate_and_relay(client: &Client) {
     let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let peer_addr = peer.local_addr().unwrap();
     // Relay -> peer (installs the permission).
+    relay.prepare_peer(peer_addr).await.unwrap();
     relay.send_to(b"hello peer", peer_addr).await.unwrap();
     let mut buf = [0u8; 1500];
     let (n, from) = tokio::time::timeout(Duration::from_secs(5), peer.recv_from(&mut buf))
@@ -188,7 +191,7 @@ async fn builtin_turn_udp_allocation() {
     let password = turn_entry["credential"].as_str().unwrap();
 
     let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
-    let client = turn_client(sock, udp, username, password).await;
+    let client = turn_client(ClientTransport::Udp, sock, udp, username, password).await;
     let mapped = client.send_binding_request().await.unwrap();
     assert_eq!(mapped.ip().to_string(), "127.0.0.1");
     allocate_and_relay(&client).await;
@@ -197,12 +200,12 @@ async fn builtin_turn_udp_allocation() {
     // Expired and forged credentials are refused.
     let expired = format!("{}:{sid}", farwing_server::db::now_s() - 10);
     let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
-    let client = turn_client(sock, udp, &expired, &hmac_b64("builtin-secret", &expired)).await;
+    let client = turn_client(ClientTransport::Udp, sock, udp, &expired, &hmac_b64("builtin-secret", &expired)).await;
     let res = tokio::time::timeout(Duration::from_secs(15), client.allocate()).await;
     assert!(matches!(res, Ok(Err(_))), "expired credential must fail");
     client.close().await.ok();
     let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
-    let client = turn_client(sock, udp, username, "forged").await;
+    let client = turn_client(ClientTransport::Udp, sock, udp, username, "forged").await;
     let res = tokio::time::timeout(Duration::from_secs(15), client.allocate()).await;
     assert!(matches!(res, Ok(Err(_))), "wrong password must fail");
     client.close().await.ok();
@@ -216,7 +219,7 @@ async fn builtin_turn_tcp_allocation() {
     let password = hmac_b64("builtin-secret", &username);
     let stream = TcpStream::connect(tcp).await.unwrap();
     let conn = farwing_server::turn_server::StreamTurnConn::from_tcp(stream).unwrap();
-    let client = turn_client(conn, tcp, &username, &password).await;
+    let client = turn_client(ClientTransport::Tcp, conn, tcp, &username, &password).await;
     allocate_and_relay(&client).await;
     client.close().await.ok();
     srv.shutdown().await;
@@ -235,14 +238,14 @@ async fn builtin_turn_tls_allocation() {
         .await
         .expect("TLS handshake with the web certificate");
     let conn = farwing_server::turn_server::StreamTurnConn::new(stream, local, tls);
-    let client = turn_client(conn, tls, &username, &password).await;
+    let client = turn_client(ClientTransport::Tcp, conn, tls, &username, &password).await;
     allocate_and_relay(&client).await;
     client.close().await.ok();
     // A plain TCP client is not answered on the TLS port.
     let username = format!("{}:plain", farwing_server::db::now_s() + 600);
     let stream = TcpStream::connect(tls).await.unwrap();
     let conn = farwing_server::turn_server::StreamTurnConn::from_tcp(stream).unwrap();
-    let client = turn_client(conn, tls, &username, &hmac_b64("builtin-secret", &username)).await;
+    let client = turn_client(ClientTransport::Tcp, conn, tls, &username, &hmac_b64("builtin-secret", &username)).await;
     let res = tokio::time::timeout(Duration::from_secs(15), client.allocate()).await;
     assert!(!matches!(res, Ok(Ok(_))), "plain TCP must not allocate on the TLS port");
     client.close().await.ok();

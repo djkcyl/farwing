@@ -23,10 +23,7 @@ use webrtc::{
     },
     rtp_transceiver::{
         RTCPFeedback,
-        rtp_codec::{
-            RTCRtpCodecCapability, RTCRtpCodecParameters, RTCRtpHeaderExtensionCapability,
-            RTPCodecType,
-        },
+        rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
     },
     track::track_local::{TrackLocal, track_local_static_rtp::TrackLocalStaticRTP},
 };
@@ -321,36 +318,15 @@ impl Peer {
             },
             RTPCodecType::Video,
         )?;
-        for uri in [
-            "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
-            "urn:ietf:params:rtp-hdrext:sdes:mid",
-        ] {
-            media.register_header_extension(
-                RTCRtpHeaderExtensionCapability { uri: uri.into() },
-                RTPCodecType::Audio,
-                None,
-            )?;
-        }
         // Send time is covered by transport-cc; the viewer decides its own
-        // playout buffer (`docs/protocol/v2-design.md` §6.3.1).
-        for uri in [
-            "http://www.webrtc.org/experiments/rtp-hdrext/video-timing",
-            "urn:farwing:rtp-hdrext:sending-delay",
-            "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
-            "urn:ietf:params:rtp-hdrext:sdes:mid",
-            "http://www.webrtc.org/experiments/rtp-hdrext/color-space",
-            "urn:farwing:rtp-hdrext:capture-index",
-            "urn:farwing:rtp-hdrext:new-frame",
-            crate::media::frame_meta::URI,
-            // Offered by browsers only (`server/web/src/lib/sdp.ts`).
-            crate::media::dependency_descriptor::URI,
-        ] {
-            media.register_header_extension(
-                RTCRtpHeaderExtensionCapability { uri: uri.into() },
-                RTPCodecType::Video,
-                None,
-            )?;
-        }
+        // playout buffer (`docs/protocol/v2-design.md` §6.3.1). The shared
+        // order gives every party the same extension IDs, which the media
+        // forwarder relies on; the dependency descriptor is offered by
+        // browsers only (`server/web/src/lib/sdp.ts`).
+        farwing_rtc_wire::register_header_extensions(
+            &mut media,
+            &[farwing_rtc_wire::DEPENDENCY_DESCRIPTOR_URI],
+        )?;
         media.register_codec(
             RTCRtpCodecParameters {
                 capability: RTCRtpCodecCapability {
