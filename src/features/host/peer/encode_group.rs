@@ -303,10 +303,8 @@ impl Registry {
             Choice::Exact(index) | Choice::Closest(index) => {
                 let group = groups[index].clone();
                 let mut inner = group.lock();
-                // The newcomer starts from a keyframe.
-                if let Some(leader) = inner.leader.and_then(|leader| inner.members.get_mut(&leader)) {
-                    leader.keyframe = true;
-                }
+                // The newcomer asks for its keyframe once it takes frames:
+                // one made now would reach nobody.
                 inner.members.insert(id, member);
                 drop(inner);
                 if matches!(choice, Choice::Exact(_)) {
@@ -699,7 +697,9 @@ mod tests {
         let c = registry.join(key("D1", 3), (2560, 1440), MAX_ENCODERS);
         assert!(c.is_leader());
         assert_eq!(registry.len(), 2);
-        // The newcomer asked the leader for a keyframe.
+        // The newcomer asks for its keyframe once it takes frames.
+        assert!(!a.take_keyframe());
+        b.request_keyframe();
         assert!(a.take_keyframe());
         assert!(!a.take_keyframe());
     }

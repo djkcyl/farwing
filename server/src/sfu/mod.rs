@@ -428,16 +428,28 @@ impl Sfu {
         let weak_room = Arc::downgrade(&room);
         let id = leg_id.to_owned();
         let weak_pc = Arc::downgrade(&pc);
+        let video: Arc<[u32]> = chosen
+            .iter()
+            .filter(|t| t.kind == sdp::Kind::Video)
+            .map(|t| t.ssrc)
+            .collect();
         pc.on_peer_connection_state_change(Box::new(move |state| {
-            let (weak_room, id, weak_pc) = (weak_room.clone(), id.clone(), weak_pc.clone());
+            let (weak_room, id, weak_pc, video) =
+                (weak_room.clone(), id.clone(), weak_pc.clone(), video.clone());
             Box::pin(async move {
+                let Some(room) = weak_room.upgrade() else { return };
+                // A new viewer starts with a keyframe once packets reach it:
+                // one asked for at the subscription went out before.
+                if state == RTCPeerConnectionState::Connected {
+                    room.first_keyframe(&video).await;
+                    return;
+                }
                 if !matches!(
                     state,
                     RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
                 ) {
                     return;
                 }
-                let Some(room) = weak_room.upgrade() else { return };
                 // Only this connection's leg (a replacement keeps its ID).
                 let current = room.legs.read().get(&id).cloned();
                 if let Some(leg) = current
@@ -450,10 +462,6 @@ impl Sfu {
         let old = room.legs.write().insert(leg_id.to_owned(), leg);
         if let Some(old) = old {
             old.close().await;
-        }
-        // A new viewer starts with a keyframe.
-        for track in uplink.tracks.iter().filter(|t| t.info.kind == sdp::Kind::Video) {
-            room.keyframe(track.info.ssrc).await;
         }
         Ok(answer)
     }

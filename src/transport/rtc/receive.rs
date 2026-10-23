@@ -899,7 +899,10 @@ pub(super) async fn emit_video_receiver_result(
             nack_requester.final_lost_packets(),
         );
     }
-    if result.request_keyframe {
+    // Without a window (it closed) nobody waits for the keyframe: asking
+    // would cost every forwarded viewer one.
+    if result.request_keyframe && !video_sinks.lock().await.is_empty() {
+        tracing::debug!(media_ssrc, "the frame assembler asks for a keyframe");
         let _ = send_picture_loss_indication(connection, media_ssrc).await;
     }
     performance.record_predecode_drops(result.predecode_drops);

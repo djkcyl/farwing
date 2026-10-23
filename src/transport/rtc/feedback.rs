@@ -94,6 +94,7 @@ impl RtcpFeedbackBuffer {
         let request_keyframe = std::mem::take(&mut self.request_keyframe);
         let nack_sequences = std::mem::take(&mut self.nack_sequences);
         if request_keyframe {
+            tracing::debug!(media_ssrc, "losses ask for a keyframe");
             if let Err(error) = send_picture_loss_indication(connection, media_ssrc).await {
                 tracing::warn!(%error, "buffered keyframe request failed");
             }

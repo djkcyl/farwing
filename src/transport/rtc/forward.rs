@@ -40,6 +40,8 @@ use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirecti
 
 /// The forwarder connection must carry media within this.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// The longest the offer waits for further candidates.
+const GATHER_WAIT: Duration = Duration::from_millis(300);
 
 /// What a forwarded connection needs from the host connection.
 #[derive(Clone)]
@@ -401,8 +403,10 @@ impl Forwarding {
         let mut gathered = connection.gathering_complete_promise().await;
         connection.set_local_description(offer).await?;
         // The forwarder answers checks from any address: host candidates
-        // suffice, relayed ones need not be waited for.
-        let _ = tokio::time::timeout(Duration::from_secs(1), gathered.recv()).await;
+        // suffice, relayed ones need not be waited for (an unreachable
+        // server would hold the offer back; without UDP to the forwarder the
+        // join fails and the host sends directly).
+        let _ = tokio::time::timeout(GATHER_WAIT, gathered.recv()).await;
         let offer = connection
             .local_description()
             .await

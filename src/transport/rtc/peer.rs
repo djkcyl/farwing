@@ -591,6 +591,7 @@ impl NativePeer {
     }
 
     pub async fn request_keyframe(&self, media_ssrc: u32) -> Result<()> {
+        tracing::debug!(media_ssrc, "keyframe requested");
         // A forwarded track gets its keyframes through the forwarder.
         let forwarded = self
             .video_tracks

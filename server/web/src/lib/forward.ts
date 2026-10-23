@@ -13,7 +13,11 @@ const FIRST_FRAME_MS = 10_000;
 /// A viewer watching without control buffers like a live stream: losses on
 /// a slow downlink are repaired in time instead of costing keyframes.
 const WATCHING_BUFFER_MS = 1000;
-const GATHER_MS = 3_000;
+/// The longest the offer waits for further candidates: relayed ones only
+/// when the viewer must use the relay (the forwarder answers checks from
+/// any address).
+const GATHER_MS = 500;
+const RELAY_GATHER_MS = 3_000;
 
 export interface ForwardContext {
   iceServers: RTCIceServer[];
@@ -174,7 +178,7 @@ export class ForwardReceiver {
       };
     });
     await connection.setLocalDescription(await connection.createOffer());
-    await gathered(connection);
+    await gathered(connection, this.context.relay ? RELAY_GATHER_MS : GATHER_MS);
     const offer = connection.localDescription!.sdp;
     if (worker) {
       const message: WorkerMessage = { codecs: payloadCodecs(offer) };
@@ -217,10 +221,10 @@ export class ForwardReceiver {
 }
 
 /// The offer with its candidates.
-function gathered(connection: RTCPeerConnection): Promise<void> {
+function gathered(connection: RTCPeerConnection, ms: number): Promise<void> {
   if (connection.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise((resolve) => {
-    const timer = window.setTimeout(resolve, GATHER_MS);
+    const timer = window.setTimeout(resolve, ms);
     connection.addEventListener('icegatheringstatechange', () => {
       if (connection.iceGatheringState !== 'complete') return;
       window.clearTimeout(timer);

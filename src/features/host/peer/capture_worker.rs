@@ -503,8 +503,12 @@ pub(super) fn capture_loop(
                 .as_mut()
                 .context(t().features.peer_shared_group_missing)?;
             // This viewer's own keyframe needs (PLI/FIR, a reoffer) go to
-            // the shared encoder.
-            if keyframe.swap(false, Ordering::AcqRel) {
+            // the shared encoder once it takes frames: one made before is
+            // missed (a joining viewer cost everyone two keyframes).
+            if own_active
+                && own_peak >= codec_minimum
+                && keyframe.swap(false, Ordering::AcqRel)
+            {
                 membership.request_keyframe();
                 keyframe_asked = Some(Instant::now());
             }

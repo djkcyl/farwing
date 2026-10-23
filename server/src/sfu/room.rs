@@ -318,11 +318,24 @@ impl Room {
 
     /// Asks the host for a keyframe of `ssrc` (merged across viewers).
     pub async fn keyframe(&self, ssrc: u32) {
+        self.ask_keyframe(ssrc, true).await;
+    }
+
+    /// Keyframes of the video tracks (`ssrcs`) a viewer that just connected
+    /// receives: not merged into one asked for before, which did not reach
+    /// it.
+    pub async fn first_keyframe(&self, ssrcs: &[u32]) {
+        for ssrc in ssrcs {
+            self.ask_keyframe(*ssrc, false).await;
+        }
+    }
+
+    async fn ask_keyframe(&self, ssrc: u32, merge: bool) {
         let Some(uplink) = self.current() else { return };
         let Some(track) = uplink.track(ssrc) else { return };
         {
             let mut at = track.keyframe_at.lock();
-            if at.is_some_and(|at| at.elapsed() < KEYFRAME_INTERVAL) {
+            if merge && at.is_some_and(|at| at.elapsed() < KEYFRAME_INTERVAL) {
                 return;
             }
             *at = Some(Instant::now());
@@ -368,6 +381,7 @@ impl Room {
     fn keyframe_allowed(&self, leg: &Leg) -> bool {
         leg.stats.keyframes_asked.fetch_add(1, Ordering::Relaxed);
         let allowed = self.keyframe_rationed(leg);
+        tracing::debug!(leg = %leg.id, allowed, "viewer asks for a keyframe");
         if allowed {
             leg.stats.keyframes_passed.fetch_add(1, Ordering::Relaxed);
         }

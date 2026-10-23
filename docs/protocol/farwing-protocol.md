@@ -387,7 +387,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 - 被控 `POST /sfu/rooms {sessions, mode, offer}`：`sessions` 为它当前承载的会话（任一不是则 `404`），`offer` 只含发送的媒体（每路编码一个视频轨、共享的系统声音一个音频轨，候选收集完毕），扩展与负载类型取自共享表（`crates/rtc-wire`）。回执 `answer` 与房间 ID；`node` 为转发所在的边缘节点名称（缺省为本服务器）。拒绝：`403 forwarding_disabled`、`403 forwarding_mode_not_allowed`、`503 forwarding_unavailable`。
 - `PUT /sfu/rooms/{room} {sessions?, offer?}`：`sessions` 替换可订阅的会话（被移出的会话随即退订）；`offer` 重新发布（轨道变化），所有订阅结束，观看者需重新订阅。`DELETE` 关闭房间。会话结束后自动移出房间，最后一个会话结束时房间关闭。
 - 主控 `POST /sfu/rooms/{room}/subscribe {session, offer, tracks?}`：只能订阅自己作为主控的会话（否则 `404`）。`offer` 只收不发；`tracks` 按每种媒体的段落顺序指定要收的轨道 ID（缺省按发布顺序）。同一会话再次订阅替换之前的订阅。回执 `answer` 与房间的 `mode`。
-- 转发器原样传递被控的 RTP 包（SSRC、序号、负载类型与头扩展不变，只按连接重写 transport-cc 序号），回应观看者的 NACK、合并关键帧请求（每路每 300 ms 一次）、转发发送端报告。转发连接只提供主机候选（共用 UDP 端口，默认 3481），客户端直接或经自己的中转连到它，不需要交换候选。
+- 转发器原样传递被控的 RTP 包（SSRC、序号、负载类型与头扩展不变，只按连接重写 transport-cc 序号），回应观看者的 NACK、合并关键帧请求（每路每 300 ms 一次；新连接建立后为它的视频轨另请求一次）、转发发送端报告。转发连接只提供主机候选（共用 UDP 端口，默认 3481），客户端直接或经自己的中转连到它，不需要交换候选。
 - 被控如何告诉观看者房间 ID 与轨道，见 §6.7。
 
 ### 3.13 电源与网络唤醒
@@ -765,7 +765,7 @@ abs-send-time、toffset、playout-delay（播放缓冲由主控本地决定）�
 
 - 被控（服务器声明 `features.forwarding`、经服务器的主控——原生或网页——达到 `threshold` 人时）按主人选择的模式（被控设置“多人转发”，默认端到端加密；服务器不允许兼容模式时一律端到端加密）建一条到转发器的上行连接：只发送，[`TRACKS`](../../src/features/host/peer/uplink.rs) 条视频轨（`video_0`…，每个编码器一条），扩展与负载类型来自共享表。每条上行轨以只收帧、从不负责编码的成员身份加入一个编码组，经与参与者相同的打包、节奏控制、重传与 RS-FEC 发送；它的码率票据只限码率，不限帧率。
 - 经转发的参与者（在房间的会话里）不再从直连发送视频，但每条轨要先经直连发出过至少一帧（主控在第一个直连包到达时建立这条轨，转发的同名轨才有处可去），后加入的参与者因此先看到直连画面、随后转到转发器；它们的编码组照常编码（组长也一样），且共用同一屏幕、同一格式的任一编码组（不再按各自的画质、分辨率与显卡分组）。
-- 被控在 SESSION 上推送 `Forward`（tag 24）：`{generation, room, mode, tracks: [{index, track}], session, key, key_id, audio}`——主控的视频轨序号（`video_<index>`）来自房间的哪条轨；`audio`（tag 8）是房间的声音轨（`audio_0`），主控没有声音权限时为空；`mode` 为 `e2ee` 或 `compatible`；`key`（tag 6，20 字节）与 `key_id`（tag 7，1–255）是端到端加密时的帧密钥（§6.8），兼容模式为空与 0；`room` 为空表示回到直连。房间与轨道不变、只有帧密钥变化时，主控沿用已有的转发连接；同一房间换了轨道时，主控用新连接以同一 `session` 重新订阅，转发器以新连接替换旧的，旧连接在新连接收到媒体后关闭（换屏时画面不断）。被控在控制通道换了路由时重发最近一次 `Forward`，主控忽略 `generation` 与已处理的相同的指令。主控订阅（§3.14，`tracks` 按 `Forward` 的顺序，有声音轨时排在最后），在第二条只收媒体的连接上收到这些轨，视频帧进入同一视频轨的接收与解码，声音在转发期间替代直连的声音（离开房间时换回）；此期间对该轨的关键帧请求也发往转发器。连接 10 秒内没有收到媒体即失败。
+- 被控在 SESSION 上推送 `Forward`（tag 24）：`{generation, room, mode, tracks: [{index, track}], session, key, key_id, audio}`——主控的视频轨序号（`video_<index>`）来自房间的哪条轨；`audio`（tag 8）是房间的声音轨（`audio_0`），主控没有声音权限时为空；`mode` 为 `e2ee` 或 `compatible`；`key`（tag 6，20 字节）与 `key_id`（tag 7，1–255）是端到端加密时的帧密钥（§6.8），兼容模式为空与 0；`room` 为空表示回到直连。房间与轨道不变、只有帧密钥变化时，主控沿用已有的转发连接；同一房间换了轨道时，主控用新连接以同一 `session` 重新订阅，转发器以新连接替换旧的，旧连接在新连接收到媒体后关闭（换屏时画面不断）。被控在控制通道换了路由时重发最近一次 `Forward`，主控忽略 `generation` 与已处理的相同的指令。主控订阅（§3.14，`tracks` 按 `Forward` 的顺序，有声音轨时排在最后；提议最多等 300 ms 收集候选，网页端 500 ms、只走中转时 3 秒），在第二条只收媒体的连接上收到这些轨，视频帧进入同一视频轨的接收与解码，声音在转发期间替代直连的声音（离开房间时换回）；此期间对该轨的关键帧请求也发往转发器。连接 10 秒内没有收到媒体即失败。
 - 主控在控制通道推送 `ForwardStatus`（tag 25）：`{generation, receiving, error}`。被控只认最近一次 `Forward` 的 `generation`，较早的回答忽略；`receiving: false` 时被控对它恢复直连 5 分钟。主控在等待某个房间的媒体时收到 `generation` 更新的 `Forward`，即放弃这个房间。
 - 网页主控只接收 `index` 为 0 的轨（网页只显示一路画面），订阅的 offer 去掉 AV1 的 `level-idx`（同直连）。端到端加密时用编码帧变换（`RTCRtpScriptTransform`，在 Worker 中解密，[`server/web/src/lib/forwardWorker.ts`](../../server/web/src/lib/forwardWorker.ts)），它必须在生成 offer 之前挂到接收端上（Chrome 不会把之后设置的变换接入 answer 中声明了 SSRC 的接收流）；浏览器不支持编码帧变换时回答 `receiving: false`。转发器为浏览器的下行改写负载类型、扩展 ID 与 MID 扩展的值（浏览器按 MID 分流）。
 - 转发器在上行连接上向被控发 REMB（`ssrcs` 为 `[0]`，被控在 SSRC 0 上读取，与传输层反馈一起）：转发流的码率上限，即至少一半观看者能承受的码率（deployment-design §5.4）；没有上限时不发，被控的上限 1 秒后失效。
