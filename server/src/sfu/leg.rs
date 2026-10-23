@@ -294,6 +294,29 @@ impl Rewrite {
     }
 }
 
+/// A development bottleneck in front of the viewer
+/// (`FARWING_DEV_SFU_DOWNLINK`): packets leave at the link's rate, recorded
+/// as sent when they enter it; a queue longer than [`SHAPER_QUEUE`] drops.
+struct Shaper {
+    bits_per_second: f64,
+    free_at: Instant,
+}
+
+const SHAPER_QUEUE: Duration = Duration::from_millis(200);
+
+impl Shaper {
+    /// When a packet of `bytes` arrives; `None` when the queue is full.
+    fn admit(&mut self, bytes: usize) -> Option<Instant> {
+        let now = Instant::now();
+        let start = self.free_at.max(now);
+        if start.duration_since(now) > SHAPER_QUEUE {
+            return None;
+        }
+        self.free_at = start + Duration::from_secs_f64((bytes + 48) as f64 * 8.0 / self.bits_per_second);
+        Some(self.free_at)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct LegStats {
     pub packets: AtomicU64,
@@ -320,6 +343,9 @@ pub(super) struct Leg {
     /// Sender reports passed on: NTP middle 32 bits → when.
     reports: Mutex<VecDeque<(u32, Instant)>>,
     pub stats: LegStats,
+    /// The viewer's downlink, from its transport-wide feedback.
+    pub downlink: Mutex<super::estimate::Downlink>,
+    shaper: Option<Mutex<Shaper>>,
     pub tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
@@ -330,6 +356,7 @@ impl Leg {
         tap: Arc<Tap>,
         rewrite: Rewrite,
         tcc: Option<u8>,
+        bottleneck: Option<f64>,
     ) -> (Arc<Self>, mpsc::Receiver<Packet>) {
         let (queue, packets) = mpsc::channel(QUEUE);
         let leg = Arc::new(Self {
@@ -344,6 +371,13 @@ impl Leg {
             repaired: Mutex::default(),
             reports: Mutex::default(),
             stats: LegStats::default(),
+            downlink: Mutex::new(super::estimate::Downlink::new()),
+            shaper: bottleneck.map(|bits_per_second| {
+                Mutex::new(Shaper {
+                    bits_per_second,
+                    free_at: Instant::now(),
+                })
+            }),
             tasks: Mutex::default(),
         });
         (leg, packets)
@@ -357,6 +391,18 @@ impl Leg {
 
     /// Writes queued packets until the connection closes.
     pub async fn run(self: Arc<Self>, mut packets: mpsc::Receiver<Packet>) {
+        // Behind a development bottleneck, packets leave later, in order.
+        let delayed = self.shaper.as_ref().map(|_| {
+            let (delayed, mut queue) = mpsc::unbounded_channel::<(Instant, Bound, Packet)>();
+            let leg = Arc::clone(&self);
+            tokio::spawn(async move {
+                while let Some((at, bound, packet)) = queue.recv().await {
+                    tokio::time::sleep_until(at.into()).await;
+                    leg.write(&bound, &packet).await;
+                }
+            });
+            delayed
+        });
         while let Some(mut packet) = packets.recv().await {
             let Some(bound) = self.tap.bound(packet.header.ssrc) else {
                 continue;
@@ -364,6 +410,7 @@ impl Leg {
             if !self.rewrite.apply(&mut packet) {
                 continue;
             }
+            let mut sequence = None;
             if let Some(id) = self.tcc {
                 let seq = self.tcc_seq.fetch_add(1, Ordering::Relaxed);
                 if packet
@@ -372,15 +419,35 @@ impl Leg {
                     .is_ok()
                 {
                     packet.header.extension = true;
+                    sequence = Some(seq);
                 }
             }
-            match bound.writer.write(&packet, &Attributes::new()).await {
-                Ok(n) => {
-                    self.stats.packets.fetch_add(1, Ordering::Relaxed);
-                    self.stats.bytes.fetch_add(n as u64, Ordering::Relaxed);
-                }
-                Err(error) => tracing::trace!(%error, leg = %self.id, "forwarding write failed"),
+            let size = webrtc::util::MarshalSize::marshal_size(&packet);
+            if let Some(seq) = sequence {
+                self.downlink.lock().sent(seq, size);
             }
+            if let (Some(shaper), Some(delayed)) = (&self.shaper, &delayed) {
+                match shaper.lock().admit(size) {
+                    Some(at) => {
+                        let _ = delayed.send((at, bound, packet));
+                    }
+                    None => {
+                        self.stats.dropped.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                continue;
+            }
+            self.write(&bound, &packet).await;
+        }
+    }
+
+    async fn write(&self, bound: &Bound, packet: &Packet) {
+        match bound.writer.write(packet, &Attributes::new()).await {
+            Ok(n) => {
+                self.stats.packets.fetch_add(1, Ordering::Relaxed);
+                self.stats.bytes.fetch_add(n as u64, Ordering::Relaxed);
+            }
+            Err(error) => tracing::trace!(%error, leg = %self.id, "forwarding write failed"),
         }
     }
 

@@ -13,7 +13,7 @@ use crate::features::host::track::VideoTrack;
 use crate::features::host::transport::Transport;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
@@ -42,6 +42,34 @@ const START: Bounds = Bounds {
 };
 /// Missing keyframes are asked for again after this.
 const KEYFRAME_RETRY: Duration = Duration::from_millis(300);
+/// The forwarder's limit lapses when it is not repeated within this.
+const LIMIT_LAPSE: Duration = Duration::from_secs(1);
+
+/// The forwarder's limit for the forwarded streams (a REMB): what at least
+/// half the participants' downlinks carry (`deployment-design.md` §5.4).
+#[derive(Default)]
+struct Limit {
+    latest: Mutex<Option<(u32, Instant)>>,
+    /// Uplink tracks sending, which share the limit.
+    tracks: AtomicUsize,
+}
+
+impl Limit {
+    fn set(&self, bps: u32) {
+        let mut latest = lock(&self.latest);
+        let previous = latest.filter(|(_, at)| at.elapsed() < LIMIT_LAPSE);
+        if previous.is_none_or(|(old, _)| bps < old / 4 * 3 || bps > old / 3 * 4) {
+            tracing::info!(limit_bps = bps, "the forwarder limits the forwarded streams");
+        }
+        *latest = Some((bps, Instant::now()));
+    }
+
+    /// One track's share of the limit, while there is one.
+    fn per_track(&self) -> Option<u32> {
+        let (bps, at) = (*lock(&self.latest))?;
+        (at.elapsed() < LIMIT_LAPSE).then(|| bps / self.tracks.load(Ordering::Relaxed).max(1) as u32)
+    }
+}
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
@@ -96,6 +124,7 @@ pub(crate) type Cipher = Arc<Mutex<crate::media::frame_crypto::Encryptor>>;
 pub(crate) struct Uplink {
     pc: Arc<RTCPeerConnection>,
     cipher: Option<Cipher>,
+    limit: Arc<Limit>,
     slots: Mutex<Vec<Slot>>,
     cancel: CancellationToken,
     state: watch::Receiver<RTCPeerConnectionState>,
@@ -235,7 +264,10 @@ impl Uplink {
         tasks.push(tokio::spawn(async move { control.control().await }));
         let probes = transport.clone();
         tasks.push(tokio::spawn(async move { probes.probes().await }));
-        // Transport-wide feedback may name SSRC 0.
+        // Transport-wide feedback may name SSRC 0; so does the forwarder's
+        // limit.
+        let limit = Arc::new(Limit::default());
+        let zero_limit = limit.clone();
         let zero_transport = transport.clone();
         let zero_cancel = cancel.clone();
         let zero_dtls = slots[0].sender.transport();
@@ -256,6 +288,8 @@ impl Uplink {
                 for report in reports {
                     if let Some(feedback) = report.as_any().downcast_ref::<webrtc::rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc>() {
                         zero_transport.feedback(feedback);
+                    } else if let Some(remb) = report.as_any().downcast_ref::<webrtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate>() {
+                        zero_limit.set(remb.bitrate.clamp(0.0, u32::MAX as f32) as u32);
                     }
                 }
             }
@@ -275,6 +309,7 @@ impl Uplink {
             Self {
                 pc,
                 cipher,
+                limit,
                 slots: Mutex::new(slots),
                 cancel,
                 state,
@@ -337,6 +372,7 @@ impl Uplink {
                         &self.cancel,
                         Arc::downgrade(&self.pc),
                         self.cipher.clone(),
+                        self.limit.clone(),
                     );
                     tracing::info!(track = index, key = ?group.group.key(), "uplink track follows an encoder group");
                     slots[index].running = Some(running);
@@ -347,6 +383,10 @@ impl Uplink {
                 mapping.insert(*member, format!("video_{index}"));
             }
         }
+        self.limit.tracks.store(
+            slots.iter().filter(|s| s.running.is_some()).count(),
+            Ordering::Relaxed,
+        );
         mapping
     }
 
@@ -374,6 +414,7 @@ fn start(
     uplink: &CancellationToken,
     connection: std::sync::Weak<RTCPeerConnection>,
     cipher: Option<Cipher>,
+    limit: Arc<Limit>,
 ) -> Running {
     let cancel = uplink.child_token();
     let timeline = Timeline::new();
@@ -446,8 +487,11 @@ fn start(
                     transport.fps(output.fps);
                 }
                 let ready = transport.media_ready();
+                // The forwarder's limit: participants who cannot carry it
+                // stall rather than lower everyone's picture.
+                let peak = transport.media_rate();
                 membership.vote(ready.then(|| encode_group::Vote {
-                    peak: transport.media_rate(),
+                    peak: limit.per_track().map_or(peak, |cap| peak.min(cap)),
                     ratio: transport.cwnd_ratio(),
                     fps: 0,
                 }));

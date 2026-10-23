@@ -62,6 +62,8 @@ webrtc-util = { version = "0.17", default-features = false, features = ["conn", 
 # Media forwarding (SFU): the client's patched WebRTC stack, so both legs
 # negotiate and frame packets exactly as Farwing clients do.
 webrtc = { path = "../vendor/webrtc" }
+# Each viewer's downlink estimate (`src/sfu/estimate.rs`).
+goog_cc = { path = "../vendor/goog_cc" }
 
 [dev-dependencies]
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-no-provider"] }
