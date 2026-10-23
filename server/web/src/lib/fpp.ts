@@ -261,6 +261,8 @@ export interface Forward {
   /// End-to-end mode: the frame key (§6.8).
   key: Uint8Array;
   keyId: number;
+  /// The forwarder's sound track; empty: the sound stays direct.
+  audio: string;
 }
 
 function rect(f: Fields | undefined): Rect {
@@ -328,6 +330,7 @@ export function parseSession(body: Uint8Array): SessionMessage {
         session: forward.string(5),
         key: forward.bytes(6),
         keyId: forward.uint32(7),
+        audio: forward.string(8),
       },
     };
   }

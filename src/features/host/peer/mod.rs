@@ -397,7 +397,7 @@ impl Peer {
             .add_track(audio_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
             .await?;
         let audio = super::audio::Audio::new(
-            handle.clone(),
+            Arc::new(handle.clone()),
             cancel.clone(),
             connected.clone(),
             transport.clone(),
@@ -641,12 +641,17 @@ impl Peer {
             .participant()
             .zip(forwarding_session)
             .map(|(key, session)| {
+                // The forwarder carries the sound too.
+                audio.follow_forwarding(reports.forwarded.clone());
+                let lease = handle.clone();
                 Arc::new(super::forwarding::register(
                     key,
                     session,
                     reports.forwarded.clone(),
                     true,
                     ice_servers.clone(),
+                    handle.host(),
+                    Arc::new(move || lease.granted(farwing_protocol::caps::AUDIO)),
                 ))
             });
         let forward_worker = tokio::spawn(match forwarding.clone() {

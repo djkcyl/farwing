@@ -222,6 +222,10 @@ pub(crate) struct MediaForward {
     pub(crate) key: Vec<u8>,
     #[prost(uint32, tag = "7")]
     pub(crate) key_id: u32,
+    /// The forwarder's audio track for this controller; empty: its sound
+    /// stays direct (no audio grant).
+    #[prost(string, tag = "8")]
+    pub(crate) audio: String,
 }
 
 #[derive(Clone, PartialEq, Eq, prost::Message)]

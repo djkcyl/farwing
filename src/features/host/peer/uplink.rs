@@ -29,10 +29,14 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::TrackLocal;
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 
 /// One track per encoder the host may run.
 pub(crate) const TRACKS: usize = encode_group::MAX_ENCODERS;
+/// The uplink's sound track: the host's desktop sound, once for everyone.
+pub(crate) const AUDIO_TRACK: &str = "audio_0";
 /// Before the first group output: a stream is not limited below this.
 const START: Bounds = Bounds {
     reservation: 2_000_000,
@@ -125,6 +129,7 @@ pub(crate) struct Uplink {
     pc: Arc<RTCPeerConnection>,
     cipher: Option<Cipher>,
     limit: Arc<Limit>,
+    audio: Option<crate::features::host::audio::Audio>,
     slots: Mutex<Vec<Slot>>,
     cancel: CancellationToken,
     state: watch::Receiver<RTCPeerConnectionState>,
@@ -149,6 +154,7 @@ impl Uplink {
     pub(crate) async fn new(
         ice_servers: Vec<RTCIceServer>,
         cipher: Option<Cipher>,
+        host: Option<crate::features::host::access::Handle>,
     ) -> Result<(Self, String)> {
         let cancel = CancellationToken::new();
         let owner = cancel.clone();
@@ -208,12 +214,76 @@ impl Uplink {
                 running: None,
             });
         }
+        // The host's desktop sound, encoded once for every forwarded
+        // participant.
+        let connected = Arc::new(AtomicBool::new(false));
+        let mut tasks = Vec::new();
+        let audio = match host {
+            Some(host) => {
+                let track = Arc::new(TrackLocalStaticRTP::new(
+                    RTCRtpCodecCapability {
+                        mime_type: "audio/opus".into(),
+                        clock_rate: 48_000,
+                        channels: 2,
+                        sdp_fmtp_line: farwing_rtc_wire::OPUS_FMTP.into(),
+                        ..Default::default()
+                    },
+                    AUDIO_TRACK.into(),
+                    AUDIO_TRACK.into(),
+                ));
+                let sender = pc
+                    .add_transceiver_from_track(
+                        track.clone() as Arc<dyn TrackLocal + Send + Sync>,
+                        Some(RTCRtpTransceiverInit {
+                            direction: RTCRtpTransceiverDirection::Sendonly,
+                            send_encodings: Vec::new(),
+                        }),
+                    )
+                    .await?
+                    .sender()
+                    .await;
+                let audio = crate::features::host::audio::Audio::new(
+                    Arc::new(crate::features::host::audio::HostAudio(host)),
+                    cancel.clone(),
+                    connected.clone(),
+                    transport.clone(),
+                );
+                audio.encrypt(cipher.clone());
+                let capture = audio.clone();
+                tasks.push(tokio::spawn(async move {
+                    let _ = tokio::task::spawn_blocking(move || capture.run()).await;
+                }));
+                let send = audio.clone();
+                tasks.push(tokio::spawn(async move {
+                    send.transmitter().send(&send, track).await;
+                }));
+                let reports = audio.clone();
+                let (report_peer, report_sender) = (Arc::downgrade(&pc), sender.clone());
+                tasks.push(tokio::spawn(async move {
+                    reports
+                        .transmitter()
+                        .send_reports(&reports, report_peer, report_sender)
+                        .await;
+                }));
+                let feedback = audio.clone();
+                tasks.push(tokio::spawn(async move {
+                    feedback.transmitter().feedback(sender).await;
+                }));
+                Some(audio)
+            }
+            None => None,
+        };
         let (state_tx, state) = watch::channel(RTCPeerConnectionState::New);
+        let state_connected = connected.clone();
         let state_transport = transport.clone();
         let dtls = Arc::downgrade(&slots[0].sender.transport());
         pc.on_peer_connection_state_change(Box::new(move |connection_state| {
             tracing::info!(state = ?connection_state, "forwarder uplink state changed");
             state_transport.network(connection_state == RTCPeerConnectionState::Connected);
+            state_connected.store(
+                connection_state == RTCPeerConnectionState::Connected,
+                Ordering::Release,
+            );
             let _ = state_tx.send(connection_state);
             let transport = state_transport.clone();
             let dtls = dtls.clone();
@@ -253,7 +323,6 @@ impl Uplink {
                     transport.route(network, 1280);
                 })
             }));
-        let mut tasks = Vec::new();
         for slot in &slots {
             let repairs = slot.transport.clone();
             tasks.push(tokio::spawn(async move { repairs.repairs().await }));
@@ -310,6 +379,7 @@ impl Uplink {
                 pc,
                 cipher,
                 limit,
+                audio,
                 slots: Mutex::new(slots),
                 cancel,
                 state,
@@ -321,10 +391,21 @@ impl Uplink {
 
     /// The forwarder's answer.
     pub(crate) async fn answer(&self, sdp: String) -> Result<()> {
+        let description = RTCSessionDescription::answer(sdp)?;
+        let audio = crate::media::audio::encoder::remote_config(&description)?;
         self.pc
-            .set_remote_description(RTCSessionDescription::answer(sdp)?)
+            .set_remote_description(description)
             .await
-            .context("install the forwarder's answer")
+            .context("install the forwarder's answer")?;
+        if let Some(sound) = &self.audio {
+            sound.configure(audio);
+        }
+        Ok(())
+    }
+
+    /// The uplink carries the host's sound.
+    pub(crate) fn has_audio(&self) -> bool {
+        self.audio.is_some()
     }
 
     /// Failed or closed for good.

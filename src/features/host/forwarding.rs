@@ -65,8 +65,10 @@ struct Entry {
     eligible: bool,
     excluded_until: Option<Instant>,
     instruction: watch::Sender<Option<MediaForward>>,
-    /// The room, tracks and frame key last told.
-    told: Option<(String, Vec<(u32, String)>, u8)>,
+    /// Whether the participant may hear the host.
+    audio: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// The room, tracks, frame key and audio track last told.
+    told: Option<(String, Vec<(u32, String)>, u8, String)>,
     /// The generation of the last instruction; answers to older ones are
     /// stale.
     generation: u32,
@@ -130,6 +132,8 @@ struct State {
     entries: BTreeMap<u64, Entry>,
     client: Option<HostClient>,
     ice: Vec<RTCIceServer>,
+    /// The host's settings for the uplink's sound.
+    host: Option<crate::features::host::access::Handle>,
     features: Option<(Option<Forwarding>, Instant)>,
     room: Option<Room>,
     retry_at: Option<Instant>,
@@ -163,12 +167,15 @@ pub(crate) fn register(
     forwarded: Arc<AtomicBool>,
     eligible: bool,
     ice: Vec<RTCIceServer>,
+    host: crate::features::host::access::Handle,
+    audio: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Registration {
     let (instruction, receiver) = watch::channel(None);
     let mut state = state();
     if state.ice.is_empty() {
         state.ice = ice;
     }
+    state.host.get_or_insert(host);
     state.entries.insert(
         key,
         Entry {
@@ -177,6 +184,7 @@ pub(crate) fn register(
             eligible,
             excluded_until: None,
             instruction,
+            audio,
             told: None,
             generation: 0,
         },
@@ -367,7 +375,12 @@ async fn step() -> bool {
             continue;
         }
         let key_id = frame_key.as_ref().map_or(0, |(id, _)| *id);
-        let told = Some((room_id.clone(), tracks.clone(), key_id));
+        let audio = if uplink.has_audio() && (entry.audio)() {
+            super::peer::uplink::AUDIO_TRACK.to_owned()
+        } else {
+            String::new()
+        };
+        let told = Some((room_id.clone(), tracks.clone(), key_id, audio.clone()));
         if entry.told != told {
             generation = generation.wrapping_add(1);
             entry.told = told;
@@ -383,6 +396,7 @@ async fn step() -> bool {
                 session: entry.session_id.clone(),
                 key: frame_key.as_ref().map(|(_, k)| k.clone()).unwrap_or_default(),
                 key_id: u32::from(key_id),
+                audio,
             }));
         }
     }
@@ -399,11 +413,15 @@ fn mode_name(mode: ForwardMode) -> &'static str {
 
 async fn open(client: &HostClient, mode: ForwardMode, candidates: &BTreeMap<u64, String>) {
     let result: anyhow::Result<(String, Arc<Uplink>, Option<Keys>)>;
-    let ice = state().ice.clone();
+    let (ice, host) = {
+        let state = state();
+        (state.ice.clone(), state.host.clone())
+    };
     let sessions: Vec<String> = candidates.values().cloned().collect();
     result = async {
         let keys = (mode == ForwardMode::E2ee).then(Keys::new).transpose()?;
-        let (uplink, offer) = Uplink::new(ice, keys.as_ref().map(|k| k.cipher.clone())).await?;
+        let (uplink, offer) =
+            Uplink::new(ice, keys.as_ref().map(|k| k.cipher.clone()), host).await?;
         let uplink = Arc::new(uplink);
         match client.sfu_create_room(sessions.clone(), mode, offer).await {
             Ok(created) => {

@@ -32,6 +32,10 @@ pub(crate) trait Source: Send + Sync {
     fn report_wake(&self) -> &Notify;
     fn fault(&self, error: String);
     fn send_error(&self, error: String);
+    /// The frame as sent: encrypted for end-to-end forwarding, else `None`.
+    fn seal(&self, _frame: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
 }
 #[derive(Clone, Copy)]
 struct SentClock {
@@ -280,6 +284,14 @@ impl Transmitter {
                 marker = true;
                 continue;
             }
+            let payload = match source.seal(&output[..length]) {
+                Ok(Some(sealed)) => Bytes::from(sealed),
+                Ok(None) => Bytes::copy_from_slice(&output[..length]),
+                Err(error) => {
+                    tracing::debug!(%error, "audio frame not encrypted");
+                    continue;
+                }
+            };
             let packet = Packet {
                 header: webrtc::rtp::header::Header {
                     version: 2,
@@ -288,7 +300,7 @@ impl Transmitter {
                     timestamp: origin.wrapping_add(first_timestamp),
                     ..Default::default()
                 },
-                payload: Bytes::copy_from_slice(&output[..length]),
+                payload,
             };
             use webrtc::rtp::extension::{
                 HeaderExtension, abs_send_time_extension::AbsSendTimeExtension,

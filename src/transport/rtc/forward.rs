@@ -56,6 +56,8 @@ pub(super) struct HostSide {
 struct Active {
     room: String,
     tracks: Vec<(u32, String)>,
+    /// The forwarder's sound track; empty when the sound stays direct.
+    audio: String,
     /// End-to-end mode: the frame keys.
     decrypt: Option<Arc<StdMutex<Decryptor>>>,
     connection: Arc<RTCPeerConnection>,
@@ -163,7 +165,10 @@ impl Forwarding {
             .iter()
             .map(|t| (t.index, t.track.clone()))
             .collect();
-        if instruction.room != active.room || tracks != active.tracks {
+        if instruction.room != active.room
+            || tracks != active.tracks
+            || instruction.audio != active.audio
+        {
             return None;
         }
         let decrypt = active.decrypt.as_ref()?;
@@ -223,6 +228,17 @@ impl Forwarding {
                 )
                 .await?;
         }
+        if !instruction.audio.is_empty() {
+            connection
+                .add_transceiver_from_kind(
+                    RTPCodecType::Audio,
+                    Some(RTCRtpTransceiverInit {
+                        direction: RTCRtpTransceiverDirection::Recvonly,
+                        send_encodings: Vec::new(),
+                    }),
+                )
+                .await?;
+        }
         let stop = context.stop.child_token();
         let ssrcs = Arc::new(StdMutex::new(BTreeMap::new()));
         let decrypt = match instruction.mode.as_str() {
@@ -254,6 +270,15 @@ impl Forwarding {
             let decrypt = decrypt.clone();
             let weak = Arc::downgrade(&connection);
             connection.on_track(Box::new(move |track, receiver, _| {
+                if track.kind() == RTPCodecType::Audio {
+                    if let Some(owner) = context.workers.upgrade() {
+                        let _ = owner.spawn_in(
+                            stop.clone(),
+                            play_forwarded_audio(track, context.stream_control.audio(), decrypt.clone()),
+                        );
+                    }
+                    return Box::pin(async {});
+                }
                 let Some(index) = indexes.get(&track.id()).copied() else {
                     tracing::debug!(track = %track.id(), "unexpected forwarded track");
                     return Box::pin(async {});
@@ -345,6 +370,7 @@ impl Forwarding {
         }
         *std_mutex_lock(&self.active) = Some(Active {
             room: instruction.room.clone(),
+            audio: instruction.audio.clone(),
             tracks: instruction
                 .tracks
                 .iter()
@@ -366,7 +392,12 @@ impl Forwarding {
             .await
             .context("missing forwarder offer")?
             .sdp;
-        let tracks = instruction.tracks.iter().map(|t| t.track.clone()).collect();
+        let tracks = instruction
+            .tracks
+            .iter()
+            .map(|t| t.track.clone())
+            .chain((!instruction.audio.is_empty()).then(|| instruction.audio.clone()))
+            .collect();
         let subscription = api
             .sfu_subscribe(&instruction.room, session, offer, Some(tracks))
             .await
@@ -406,5 +437,45 @@ impl Forwarding {
         tracing::info!(room = %instruction.room, mode = %instruction.mode,
             tracks = instruction.tracks.len(), "receiving through the forwarder");
         Ok(())
+    }
+}
+
+/// The forwarder's sound in place of the host's until the track ends
+/// (`deployment-design.md` §5.4).
+async fn play_forwarded_audio(
+    track: Arc<webrtc::track::track_remote::TrackRemote>,
+    audio: crate::media::audio::AudioPlayback,
+    decrypt: Option<Arc<StdMutex<Decryptor>>>,
+) {
+    let codec = track.codec().capability;
+    let Some(generation) = audio.select_forwarded(&codec.mime_type, codec.clock_rate, codec.channels)
+    else {
+        return;
+    };
+    tracing::info!(ssrc = track.ssrc(), "forwarded sound selected");
+    /// The host's sound plays again however the track ends.
+    struct Restore(crate::media::audio::AudioPlayback, u64);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            self.0.end_forwarded(self.1);
+        }
+    }
+    let _restore = Restore(audio.clone(), generation);
+    while let Ok((packet, _)) = track.read_rtp().await {
+        let data = match &decrypt {
+            Some(decrypt) => match std_mutex_lock(decrypt)
+                .decrypt(crate::media::frame_crypto::Codec::Opus, &packet.payload)
+            {
+                Ok(plain) => bytes::Bytes::from(plain),
+                Err(_) => continue,
+            },
+            None => packet.payload,
+        };
+        audio.receive(
+            generation,
+            data,
+            packet.header.timestamp,
+            packet.header.sequence_number,
+        );
     }
 }

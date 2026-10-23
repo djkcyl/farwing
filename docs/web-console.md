@@ -106,7 +106,7 @@
 3. `session.start`：主屏（`screen_id = -1`）、跟随被控分辨率（`resolution_type = 3`）、合成光标、浏览器能解码的编码（见下）。校验被控公钥与设备 ID。
 4. 与客户端相同形状的 offer：1 条音频、5 条只收视频、5 个带内建立的数据通道；本地 SDP 给 Opus 加 `stereo=1`；发出的 SDP 加 `a=x-farwing-identity`（设备密钥签 DTLS 指纹），访客另加 `a=x-farwing-pake`；验证 answer 的签名（与访客的 PAKE 绑定）。
 5. 数据通道上实现对端协议中观看需要的部分：HELLO（control 通道双向）、SESSION（显示器列表、切换、画面设置）、CURSOR、POINTER（只用作指示指针）、PARTICIPANTS、PERMISSIONS、HOST_EVENT、AUDIO。
-6. 画面用浏览器原生 WebRTC 解码，`<video>` 播放。多人观看时没有控制权的参与者使用 1080p · 60 FPS 的共享观影流；人数达到服务器的多人转发阈值时，画面改由第二条连接从服务器的转发器接收（端到端加密时在 Worker 中解密，`farwing-protocol.md` §6.7–6.8）。
+6. 画面用浏览器原生 WebRTC 解码，`<video>` 播放。多人观看时没有控制权的参与者使用 1080p · 60 FPS 的共享观影流；人数达到服务器的多人转发阈值时，画面与声音改由第二条连接从服务器的转发器接收（端到端加密时在 Worker 中解密，`farwing-protocol.md` §6.7–6.8）。
 
 被控侧的配套修改：没有 `display` 能力的会话在初始准备时不能改分辨率（`resolution_type` 2 / 4 改为 3）。
 

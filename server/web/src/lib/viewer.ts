@@ -251,8 +251,10 @@ export class Viewer {
   private hostHello?: fpp.Hello;
   private negotiateTimer = 0;
   private stream = new MediaStream();
-  /// The host's own video, shown again when forwarding ends.
+  /// The host's own video and sound, played again when forwarding ends.
   private directVideo?: MediaStreamTrack;
+  private directAudio?: MediaStreamTrack;
+  private forwardedAudio = false;
   private forward?: ForwardReceiver;
   private stopped = false;
   private iceRestarts = 0;
@@ -590,7 +592,8 @@ export class Viewer {
   private onTrack(event: RTCTrackEvent) {
     const track = event.track;
     if (track.kind === 'audio') {
-      this.addTrack(track);
+      this.directAudio = track;
+      if (!this.forwardedAudio) this.addTrack(track);
       return;
     }
     const mid = event.transceiver.mid ?? '';
@@ -635,10 +638,13 @@ export class Viewer {
           'farwing.control.v2',
           fpp.encode(fpp.Type.SESSION, fpp.forwardStatus(generation, receiving, error)),
         ),
-      picture: (track, mode) => {
-        const video = track ?? this.directVideo;
-        if (video) this.addTrack(video);
-        this.events.forwarding?.(track ? mode : '');
+      media: (video, audio, mode) => {
+        this.forwardedAudio = !!audio;
+        const picture = video ?? this.directVideo;
+        if (picture) this.addTrack(picture);
+        const sound = audio ?? this.directAudio;
+        if (sound) this.addTrack(sound);
+        this.events.forwarding?.(video ? mode : '');
       },
     });
     this.forward.follow(instruction);

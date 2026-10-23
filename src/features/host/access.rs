@@ -452,6 +452,9 @@ fn clear_session(state: &mut Ownership) {
 }
 
 impl Handle {
+    pub(crate) fn audio_device_changes(&self) -> watch::Receiver<Option<super::audio::Device>> {
+        lock(&self.ownership).audio_device.subscribe()
+    }
     pub(crate) async fn prepare_update(&self) -> anyhow::Result<()> {
         let notices: Vec<_> = {
             let mut state = lock(&self.ownership);
@@ -1434,7 +1437,11 @@ impl Lease {
         self.handle.audio_defaults()
     }
     pub(crate) fn audio_device_changes(&self) -> watch::Receiver<Option<super::audio::Device>> {
-        lock(&self.handle.ownership).audio_device.subscribe()
+        self.handle.audio_device_changes()
+    }
+    /// The host this lease belongs to.
+    pub(crate) fn host(&self) -> Handle {
+        self.handle.clone()
     }
     pub(crate) fn with_cancellation(&self, stop: tokio_util::sync::CancellationToken) -> Self {
         let mut lease = self.clone();

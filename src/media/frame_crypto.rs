@@ -1,4 +1,4 @@
-//! End-to-end encryption of forwarded video frames
+//! End-to-end encryption of forwarded video and audio frames
 //! (`docs/protocol/deployment-design.md` §5.3, `farwing-protocol.md` §6.8).
 //!
 //! The host encrypts each encoded frame before packetization; the forwarder
@@ -6,13 +6,14 @@
 //! packetizers and receivers read stays in the clear: NAL unit headers,
 //! parameter sets and the first bytes of each slice (the receiver reads the
 //! picture parameter set ID there) for H.264 and H.265; OBU headers and
-//! sequence headers for AV1.
+//! sequence headers for AV1; the TOC byte of an Opus frame (the receiver
+//! reads the frame's duration there).
 //!
 //! An encrypted unit is `clear ‖ AES-128-GCM(rest) ‖ tag(16) ‖ counter(8) ‖
 //! key ID(1) ‖ 0xFE`, authenticated with the clear part as associated
 //! data; the nonce is the key's 4-byte salt followed by the counter. H.264
 //! and H.265 units are then escaped like any NAL unit payload so they carry
-//! no start code; AV1 units get their new size.
+//! no start code; AV1 units get their new size; an Opus frame is one unit.
 
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes128Gcm, Nonce, Tag};
@@ -30,6 +31,7 @@ pub(crate) enum Codec {
     H264,
     H265,
     Av1,
+    Opus,
 }
 
 #[derive(Clone)]
@@ -89,6 +91,12 @@ impl Encryptor {
         match codec {
             Codec::H264 | Codec::H265 => self.encrypt_annex_b(codec, frame),
             Codec::Av1 => self.encrypt_av1(frame),
+            Codec::Opus => {
+                ensure!(!frame.is_empty(), "empty Opus frame");
+                let mut out = frame[..1].to_vec();
+                out.extend_from_slice(&self.seal(&frame[..1], &frame[1..])?);
+                Ok(out)
+            }
         }
     }
 
@@ -211,6 +219,12 @@ impl Decryptor {
                 }
                 Ok(out)
             }
+            Codec::Opus => {
+                ensure!(!frame.is_empty(), "empty Opus frame");
+                let mut out = frame[..1].to_vec();
+                out.extend_from_slice(&self.open(&frame[..1], &frame[1..])?);
+                Ok(out)
+            }
         }
     }
 }
@@ -228,7 +242,7 @@ fn encrypted_nal(codec: Codec, unit: &[u8]) -> bool {
     match codec {
         Codec::H264 => (1..=5).contains(&(unit[0] & 31)),
         Codec::H265 => (unit[0] >> 1) & 63 < 32,
-        Codec::Av1 => false,
+        Codec::Av1 | Codec::Opus => false,
     }
 }
 
@@ -444,6 +458,8 @@ mod tests {
         h265.extend_from_slice(&slice);
         let mut av1 = vec![0x12, 0x00, 0x0A, 0x03, 0x00, 0x00, 0x00, 0x32, 40];
         av1.extend_from_slice(&slice);
+        let mut opus = vec![0x78];
+        opus.extend_from_slice(&slice);
         let vectors = [
             (
                 Codec::H264,
@@ -460,10 +476,36 @@ mod tests {
                 av1,
                 "12000a0300000032424c85d48c8e0983f9ac8be5de56469fd3716c2b861d1b232a521ff507f7aa5158f9430f863a67beccab52cf104a7c268e7254887dec023087000000000000002a03fe",
             ),
+            (
+                Codec::Opus,
+                opus,
+                "784c85d48c8e0983f9ac8be5de56469fd3716c2b861d1b232a521ff507f7aa5158f9430f863a67becc375db3177f6f76fb2798de01c904d44b000000000000002a03fe",
+            ),
         ];
         for (codec, frame, expected) in vectors {
             let sealed = encryptor().encrypt(codec, &frame).unwrap();
             assert_eq!(hex(&sealed), expected, "{codec:?}");
         }
+    }
+
+    #[test]
+    fn opus_frames_keep_their_toc_byte() {
+        let frame: Vec<u8> = (0..120u8).collect();
+        let mut encryptor = Encryptor::new(key(4));
+        let sealed = encryptor.encrypt(Codec::Opus, &frame).unwrap();
+        assert_eq!(sealed[0], frame[0]);
+        assert_ne!(&sealed[1..frame.len()], &frame[1..]);
+        let mut decryptor = Decryptor::default();
+        decryptor.add_key(key(4));
+        assert_eq!(decryptor.decrypt(Codec::Opus, &sealed).unwrap(), frame);
+        assert_eq!(
+            decryptor
+                .decrypt(
+                    Codec::Opus,
+                    &encryptor.encrypt(Codec::Opus, &[0x78]).unwrap()
+                )
+                .unwrap(),
+            [0x78]
+        );
     }
 }

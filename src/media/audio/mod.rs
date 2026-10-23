@@ -66,6 +66,9 @@ struct Shared {
     packets: ArrayQueue<Packet>,
     settings: AtomicU32,
     generation: AtomicU64,
+    /// While a forwarded source plays: the source before it, and its own
+    /// generation.
+    forwarded: Mutex<Option<(u64, u64)>>,
     started: AtomicBool,
     audible: AtomicBool,
     stopped: AtomicBool,
@@ -176,6 +179,7 @@ impl AudioPlayback {
                 packets: ArrayQueue::new(200),
                 settings: AtomicU32::new(100),
                 generation: AtomicU64::new(0),
+                forwarded: Mutex::new(None),
                 started: AtomicBool::new(false),
                 audible: AtomicBool::new(false),
                 stopped: AtomicBool::new(false),
@@ -322,6 +326,36 @@ impl AudioPlayback {
         }
         shared.notify_output();
         Some(generation)
+    }
+
+    /// The forwarder's sound replaces the current source until
+    /// [`Self::end_forwarded`] (`deployment-design.md` §5.4).
+    pub fn select_forwarded(&self, codec: &str, rate: u32, channels: u16) -> Option<u64> {
+        let previous = self.0.shared.generation.load(Ordering::Acquire);
+        let generation = self.select_source(codec, rate, channels)?;
+        *lock(&self.0.shared.forwarded) = Some((previous, generation));
+        Some(generation)
+    }
+
+    /// The source before forwarded `generation` plays again (unless another
+    /// source was selected since).
+    pub fn end_forwarded(&self, generation: u64) {
+        let shared = &self.0.shared;
+        let mut forwarded = lock(&shared.forwarded);
+        let Some((previous, current)) = *forwarded else { return };
+        if current != generation {
+            return;
+        }
+        *forwarded = None;
+        if shared
+            .generation
+            .compare_exchange(current, previous, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            shared.receiving.store(false, Ordering::Relaxed);
+            shared.clear_levels();
+            shared.notify_output();
+        }
     }
 
     pub fn receive(&self, generation: u64, data: Bytes, timestamp: u32, sequence: u16) {

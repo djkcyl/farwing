@@ -2,9 +2,10 @@
 // does (`src/media/frame_crypto.rs`, `docs/protocol/farwing-protocol.md`
 // §6.8): `clear ‖ AES-128-GCM(rest) ‖ tag(16) ‖ counter(8) ‖ key ID(1) ‖
 // 0xFE` per unit, the clear part authenticated; H.264 and H.265 units
-// escaped, AV1 units with their new size.
+// escaped, AV1 units with their new size, an Opus frame one unit after its
+// TOC byte.
 
-export type FrameCodec = 'h264' | 'h265' | 'av1';
+export type FrameCodec = 'h264' | 'h265' | 'av1' | 'opus';
 type Bytes = Uint8Array<ArrayBuffer>;
 
 export const KEY_BYTES = 20;
@@ -40,6 +41,11 @@ export class FrameDecryptor {
   /// `frame` as the host encoded it.
   async decrypt(codec: FrameCodec, frame: Bytes): Promise<Bytes> {
     const parts: Uint8Array[] = [];
+    if (codec === 'opus') {
+      if (!frame.length) throw new Error('empty Opus frame');
+      const clear = frame.subarray(0, 1);
+      return concat([clear, await this.open(clear, frame.subarray(1))]);
+    }
     if (codec === 'av1') {
       for (const obu of obus(frame)) {
         if ((obu.kind !== 4 && obu.kind !== 6) || !obu.payload.length) {

@@ -7,9 +7,13 @@ import { FrameDecryptor, importFrameKey, type FrameCodec } from './frameCrypto';
 /// whose frames carry no MIME type).
 export type WorkerMessage = { key: { id: number; material: Uint8Array } } | { codecs: Record<number, FrameCodec> };
 
+type EncodedFrame = RTCEncodedVideoFrame | RTCEncodedAudioFrame;
+
 interface Transformer {
-  readable: ReadableStream<RTCEncodedVideoFrame>;
-  writable: WritableStream<RTCEncodedVideoFrame>;
+  readable: ReadableStream<EncodedFrame>;
+  writable: WritableStream<EncodedFrame>;
+  /// `kind`: `video` or `audio`.
+  options?: { kind?: string };
   sendKeyFrameRequest?(): Promise<void>;
 }
 
@@ -36,13 +40,16 @@ scope.onmessage = (event) => {
 const MIME: Record<string, FrameCodec> = { 'video/h264': 'h264', 'video/h265': 'h265', 'video/av1': 'av1' };
 
 scope.onrtctransform = ({ transformer }) => {
+  const audio = transformer.options?.kind === 'audio';
   let asked = -Infinity;
   void transformer.readable
     .pipeThrough(
-      new TransformStream<RTCEncodedVideoFrame, RTCEncodedVideoFrame>({
+      new TransformStream<EncodedFrame, EncodedFrame>({
         async transform(frame, controller) {
-          const meta = frame.getMetadata() as RTCEncodedVideoFrameMetadata & { mimeType?: string };
-          const codec = MIME[meta.mimeType?.toLowerCase() ?? ''] ?? codecs[meta.payloadType ?? -1];
+          const meta = frame.getMetadata() as { mimeType?: string; payloadType?: number };
+          const codec: FrameCodec | undefined = audio
+            ? 'opus'
+            : (MIME[meta.mimeType?.toLowerCase() ?? ''] ?? codecs[meta.payloadType ?? -1]);
           if (!codec) return;
           await keys;
           try {
@@ -51,7 +58,7 @@ scope.onrtctransform = ({ transformer }) => {
           } catch {
             // Not decryptable (a key not received yet, or altered): the
             // next keyframe starts the picture again.
-            if (performance.now() - asked >= 1000) {
+            if (!audio && performance.now() - asked >= 1000) {
               asked = performance.now();
               void transformer.sendKeyFrameRequest?.().catch(() => undefined);
             }

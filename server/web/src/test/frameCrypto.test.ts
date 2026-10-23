@@ -23,6 +23,11 @@ const FRAMES: [FrameCodec, number[], string][] = [
     [0x12, 0x00, 0x0a, 0x03, 0x00, 0x00, 0x00, 0x32, 40, ...SLICE],
     '12000a0300000032424c85d48c8e0983f9ac8be5de56469fd3716c2b861d1b232a521ff507f7aa5158f9430f863a67beccab52cf104a7c268e7254887dec023087000000000000002a03fe',
   ],
+  [
+    'opus',
+    [0x78, ...SLICE],
+    '784c85d48c8e0983f9ac8be5de56469fd3716c2b861d1b232a521ff507f7aa5158f9430f863a67becc375db3177f6f76fb2798de01c904d44b000000000000002a03fe',
+  ],
 ];
 
 const material = () => new Uint8Array(Array.from({ length: 20 }, (_, i) => i));

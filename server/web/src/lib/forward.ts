@@ -1,7 +1,7 @@
-// The picture through the server's forwarder (`docs/protocol/farwing-protocol.md`
-// §6.7–6.8): a second, receive-only connection to the forwarder, its video
-// in place of the host's; end-to-end encrypted frames are decrypted in a
-// worker before decoding.
+// The picture and sound through the server's forwarder
+// (`docs/protocol/farwing-protocol.md` §6.7–6.8): a second, receive-only
+// connection to the forwarder, its tracks in place of the host's;
+// end-to-end encrypted frames are decrypted in a worker before decoding.
 import { call } from './api';
 import type { Forward } from './fpp';
 import type { FrameCodec } from './frameCrypto';
@@ -20,13 +20,15 @@ export interface ForwardContext {
   log(line: string): void;
   /// The answer to an instruction.
   status(generation: number, receiving: boolean, error: string): void;
-  /// The forwarded picture and its mode; `undefined`: the host's again.
-  picture(track: MediaStreamTrack | undefined, mode: string): void;
+  /// The forwarded picture and sound and their mode; `undefined`: the
+  /// host's again.
+  media(video: MediaStreamTrack | undefined, audio: MediaStreamTrack | undefined, mode: string): void;
 }
 
 interface Active {
   room: string;
   track: string;
+  audio: string;
   session: string;
   mode: string;
   connection: RTCPeerConnection;
@@ -65,14 +67,14 @@ export class ForwardReceiver {
     if (!instruction.room) {
       if (this.leave()) {
         this.context.log('the host sends the picture directly again');
-        this.context.picture(undefined, '');
+        this.context.media(undefined, undefined, '');
       }
       return;
     }
     // This viewer shows the host's first track only.
     const wanted = instruction.tracks.find((t) => t.index === 0)?.track ?? '';
     const active = this.active;
-    if (active && active.room === instruction.room && active.track === wanted) {
+    if (active && active.room === instruction.room && active.track === wanted && active.audio === instruction.audio) {
       // A new frame key for the same room.
       if (active.worker && instruction.key.length) {
         const message: WorkerMessage = { key: { id: instruction.keyId, material: instruction.key } };
@@ -82,23 +84,26 @@ export class ForwardReceiver {
       this.context.status(instruction.generation, true, '');
       return;
     }
-    if (this.leave()) this.context.picture(undefined, '');
+    if (this.leave()) this.context.media(undefined, undefined, '');
     try {
       if (!wanted) throw new Error('no forwarded track for this picture');
-      const track = await this.join(instruction, wanted);
+      const { video, audio } = await this.join(instruction, wanted);
       if (this.closed || this.active?.room !== instruction.room) return;
-      this.context.picture(track, instruction.mode);
+      this.context.media(video, audio, instruction.mode);
       this.context.status(instruction.generation, true, '');
       this.context.log(`receiving through the forwarder room=${instruction.room} mode=${instruction.mode}`);
     } catch (error) {
       const message = (error as Error).message || String(error);
       this.context.log(`cannot receive through the forwarder: ${message}`);
-      if (this.leave()) this.context.picture(undefined, '');
+      if (this.leave()) this.context.media(undefined, undefined, '');
       this.context.status(instruction.generation, false, message);
     }
   }
 
-  private async join(instruction: Forward, track: string): Promise<MediaStreamTrack> {
+  private async join(
+    instruction: Forward,
+    track: string,
+  ): Promise<{ video: MediaStreamTrack; audio?: MediaStreamTrack }> {
     let worker: Worker | undefined;
     if (instruction.mode === 'e2ee') {
       if (typeof RTCRtpScriptTransform === 'undefined') throw new Error('encoded transform unavailable');
@@ -117,6 +122,7 @@ export class ForwardReceiver {
     this.active = {
       room: instruction.room,
       track,
+      audio: instruction.audio,
       session: instruction.session,
       mode: instruction.mode,
       connection,
@@ -126,11 +132,19 @@ export class ForwardReceiver {
     const codecs = videoCodecPreferences();
     if (codecs) transceiver.setCodecPreferences(codecs);
     offerDependencyDescriptor(transceiver);
+    const sound = instruction.audio ? connection.addTransceiver('audio', { direction: 'recvonly' }) : undefined;
     // Before the offer: Chrome leaves a transform set later out of a
     // receiver whose stream the answer declares.
-    if (worker) transceiver.receiver.transform = new RTCRtpScriptTransform(worker);
+    if (worker) {
+      transceiver.receiver.transform = new RTCRtpScriptTransform(worker, { kind: 'video' });
+      if (sound) sound.receiver.transform = new RTCRtpScriptTransform(worker, { kind: 'audio' });
+    }
+    let audio: MediaStreamTrack | undefined;
     const received = new Promise<MediaStreamTrack>((resolve) => {
-      connection.ontrack = (event) => resolve(event.track);
+      connection.ontrack = (event) => {
+        if (event.track.kind === 'audio') audio = event.track;
+        else resolve(event.track);
+      };
     });
     await connection.setLocalDescription(await connection.createOffer());
     await gathered(connection);
@@ -143,14 +157,18 @@ export class ForwardReceiver {
       'POST',
       `/api/v2/sfu/rooms/${encodeURIComponent(instruction.room)}/subscribe`,
       // The forwarder matches fmtp parameters as the host does.
-      { session: instruction.session, offer: withoutAv1Level(offer), tracks: [track] },
+      {
+        session: instruction.session,
+        offer: withoutAv1Level(offer),
+        tracks: instruction.audio ? [track, instruction.audio] : [track],
+      },
       { bearer: this.context.bearer, quiet: true },
     );
     if (subscription.mode !== instruction.mode) throw new Error(`the room forwards in ${subscription.mode} mode`);
     await connection.setRemoteDescription({ type: 'answer', sdp: subscription.answer });
-    const media = await within(received, FIRST_FRAME_MS);
+    const video = await within(received, FIRST_FRAME_MS);
     await firstFrame(connection, () => this.closed || instruction !== this.latest);
-    return media;
+    return { video, audio };
   }
 
   /// Leave the room; whether there was one.

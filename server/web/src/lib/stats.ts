@@ -39,7 +39,7 @@ export class StatsSampler {
   private last?: Sample;
 
   /// `forwarded`: the forwarder connection's report while the picture
-  /// comes through it (the video and its path; the sound stays direct).
+  /// comes through it (the video, its path, and the sound when forwarded).
   sample(report: RTCStatsReport, forwarded?: RTCStatsReport): ViewStats {
     const media = forwarded ?? report;
     const out: ViewStats = {
@@ -90,9 +90,15 @@ export class StatsSampler {
       }
       if (s.type === 'transport' && s.selectedCandidatePairId) pairId = s.selectedCandidatePairId;
     });
-    report.forEach((s) => {
-      if (s.type === 'inbound-rtp' && s.kind === 'audio') now.audioBytes = s.bytesReceived ?? 0;
-    });
+    // The sound comes through the forwarder too when it carries it.
+    const audio = (r: RTCStatsReport) => {
+      let bytes: number | undefined;
+      r.forEach((s) => {
+        if (s.type === 'inbound-rtp' && s.kind === 'audio') bytes = s.bytesReceived ?? 0;
+      });
+      return bytes;
+    };
+    now.audioBytes = (forwarded && audio(forwarded)) ?? audio(report) ?? 0;
     let pair: RTCIceCandidatePairStats | undefined;
     if (pairId) pair = media.get(pairId);
     if (!pair) {

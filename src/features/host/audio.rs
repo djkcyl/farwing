@@ -1,4 +1,5 @@
-//! One desktop sound source per authorized device connection, shared by all screens.
+//! One desktop sound source per authorized device connection, shared by all screens;
+//! the forwarder uplink has one more for the forwarded participants.
 use super::{Lease, lock};
 use crate::media::audio::{
     encoder::Config,
@@ -79,8 +80,59 @@ pub(crate) struct Status {
     #[serde(default)]
     pub target_bitrate: u32,
 }
+/// Who a desktop sound source is for: a participant (its lease), or the
+/// forwarder uplink (the host's settings, no grant of its own).
+pub(crate) trait AudioOwner: Send + Sync {
+    fn requested(&self) -> bool;
+    fn granted(&self) -> bool;
+    fn audio_quality(&self) -> crate::media::audio::encoder::Quality;
+    fn audio_device_changes(&self) -> tokio::sync::watch::Receiver<Option<Device>>;
+    fn audio_status(&self, status: Status);
+}
+
+impl AudioOwner for Lease {
+    fn requested(&self) -> bool {
+        Lease::requested(self)
+    }
+    fn granted(&self) -> bool {
+        Lease::granted(self, farwing_protocol::caps::AUDIO)
+    }
+    fn audio_quality(&self) -> crate::media::audio::encoder::Quality {
+        Lease::audio_quality(self)
+    }
+    fn audio_device_changes(&self) -> tokio::sync::watch::Receiver<Option<Device>> {
+        Lease::audio_device_changes(self)
+    }
+    fn audio_status(&self, status: Status) {
+        Lease::audio_status(self, status);
+    }
+}
+
+/// The forwarder uplink's sound: the host's device and quality.
+pub(crate) struct HostAudio(pub(crate) super::access::Handle);
+
+impl AudioOwner for HostAudio {
+    fn requested(&self) -> bool {
+        self.0.requested()
+    }
+    fn granted(&self) -> bool {
+        true
+    }
+    fn audio_quality(&self) -> crate::media::audio::encoder::Quality {
+        self.0.audio_quality()
+    }
+    fn audio_device_changes(&self) -> tokio::sync::watch::Receiver<Option<Device>> {
+        self.0.audio_device_changes()
+    }
+    fn audio_status(&self, _status: Status) {}
+}
+
 struct Shared {
-    lease: Lease,
+    lease: Arc<dyn AudioOwner>,
+    /// The participant gets the forwarder's sound while this is set.
+    forwarded: Mutex<Option<Arc<AtomicBool>>>,
+    /// End-to-end forwarding: frames are encrypted before packetization.
+    cipher: Mutex<Option<super::peer::uplink::Cipher>>,
     cancel: CancellationToken,
     connected: Arc<AtomicBool>,
     encoding: Mutex<Option<Config>>,
@@ -103,13 +155,15 @@ struct Shared {
 pub(crate) struct Audio(Arc<Shared>);
 impl Audio {
     pub fn new(
-        lease: Lease,
+        lease: Arc<dyn AudioOwner>,
         cancel: CancellationToken,
         connected: Arc<AtomicBool>,
         transport: super::transport::Transport,
     ) -> Self {
         Self(Arc::new(Shared {
             lease,
+            forwarded: Mutex::default(),
+            cipher: Mutex::default(),
             cancel,
             connected,
             encoding: Mutex::default(),
@@ -217,10 +271,21 @@ impl Audio {
             self.invalidate();
         }
     }
+    /// While `forwarded` is set, the forwarder carries this participant's
+    /// sound (`deployment-design.md` §5.4).
+    pub fn follow_forwarding(&self, forwarded: Arc<AtomicBool>) {
+        *lock(&self.0.forwarded) = Some(forwarded);
+    }
+    pub fn encrypt(&self, cipher: Option<super::peer::uplink::Cipher>) {
+        *lock(&self.0.cipher) = cipher;
+    }
     pub fn allowed(&self) -> bool {
         self.0.media_allowed.load(Ordering::Acquire)
             && self.0.lease.requested()
-            && self.0.lease.granted(farwing_protocol::caps::AUDIO)
+            && self.0.lease.granted()
+            && !lock(&self.0.forwarded)
+                .as_ref()
+                .is_some_and(|f| f.load(Ordering::Acquire))
             && self.encoding().is_some()
             && !self.0.cancel.is_cancelled()
     }
@@ -475,6 +540,13 @@ impl Source for Audio {
     }
     fn send_error(&self, error: String) {
         lock(&self.0.status).error = Some(error);
+    }
+    fn seal(&self, frame: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
+        let Some(cipher) = lock(&self.0.cipher).clone() else {
+            return Ok(None);
+        };
+        let sealed = lock(&cipher).encrypt(crate::media::frame_crypto::Codec::Opus, frame)?;
+        Ok(Some(sealed))
     }
 }
 
