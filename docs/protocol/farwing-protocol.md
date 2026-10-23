@@ -244,6 +244,11 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `PUT /assist/saved/favorites` | 账号 | `{favorites: [{connect_id, remark, favorited_at}]}`（≤ 500） | `{saved: [..]}` |
 | `DELETE /assist/saved/recent` | 账号 | — | `{}` |
 | `DELETE /assist/saved/{kind}/{device_id}` | 账号 | — | `{}` |
+| `POST /sfu/rooms` | 任一（被控） | `CreateRoomRequest` `{sessions, mode, offer}` | `RoomCreated` `{room, mode, answer, node?}` |
+| `PUT /sfu/rooms/{room}` | 任一（房间的被控） | `{sessions?, offer?}` | `{answer?}` |
+| `DELETE /sfu/rooms/{room}` | 任一（房间的被控） | — | `{}` |
+| `POST /sfu/rooms/{room}/subscribe` | 任一（该会话的主控） | `SubscribeRequest` `{session, offer, tracks?}` | `Subscription` `{answer, mode}` |
+| `DELETE /sfu/rooms/{room}/subscribe/{session}` | 任一（该会话的主控或被控） | — | `{}` |
 | `GET /ws` | 入场券或恢复令牌（§4.1） | — | WebSocket 升级 |
 
 中转节点的连接（`/edge/ws`）与管理见 [server-admin-api.md](../server-admin-api.md) §5。网页端与管理接口（`/web/info`、`/me/*`、`/admin/*`、`/setup*`）见 [web-console.md](../web-console.md) §8 与 [server-admin-api.md](../server-admin-api.md)。
@@ -374,6 +379,16 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 - 授权变化时：好友在相关设备上的活动会话收到 `session.permissions{grants}`（被控与主控都收到）；不再具备会话目的所需能力时会话以 `permission_revoked` 结束。解除好友删除双向授权并同样结束会话。
 - `GET /devices/self/friend-access`（`path::SELF_FRIEND_ACCESS`）：调用设备可以被哪些好友设备控制，`FriendAccessList = {devices: [FriendAccess]}`，`FriendAccess = {device_id, public_key, alias, user_id, nickname, grants}`，列出在调用设备上持有非空授权的每位好友（未禁用账号）的全部设备，`grants` 为该好友在调用设备上的能力。被控缓存它，在直连时按 `friend` 方法授权（§8.3）。
 - 推送：`friend.changed{kind, user}`，`kind ∈ request_received | request_accepted | request_rejected | request_cancelled | removed | grants_changed`；可见性变化以 `device.changed`（`shared: true`）告知。
+
+### 3.14 多人转发
+
+服务器开启多人转发时，`ServerInfo.features.forwarding = {threshold, modes}`：观看人数达到 `threshold` 时被控可以改为经转发器发送（`deployment-design.md` §5），`modes` 为允许的模式（`e2ee` 总在其中，`compatible` 由管理员决定）。
+
+- 被控 `POST /sfu/rooms {sessions, mode, offer}`：`sessions` 为它当前承载的会话（任一不是则 `404`），`offer` 只含发送的媒体（每路编码一个视频轨、共享的系统声音一个音频轨，候选收集完毕），扩展与负载类型取自共享表（`crates/rtc-wire`）。回执 `answer` 与房间 ID；`node` 为转发所在的边缘节点名称（缺省为本服务器）。拒绝：`403 forwarding_disabled`、`403 forwarding_mode_not_allowed`、`503 forwarding_unavailable`。
+- `PUT /sfu/rooms/{room} {sessions?, offer?}`：`sessions` 替换可订阅的会话（被移出的会话随即退订）；`offer` 重新发布（轨道变化），所有订阅结束，观看者需重新订阅。`DELETE` 关闭房间。会话结束后自动移出房间，最后一个会话结束时房间关闭。
+- 主控 `POST /sfu/rooms/{room}/subscribe {session, offer, tracks?}`：只能订阅自己作为主控的会话（否则 `404`）。`offer` 只收不发；`tracks` 按每种媒体的段落顺序指定要收的轨道 ID（缺省按发布顺序）。同一会话再次订阅替换之前的订阅。回执 `answer` 与房间的 `mode`。
+- 转发器原样传递被控的 RTP 包（SSRC、序号、负载类型与头扩展不变，只按连接重写 transport-cc 序号），回应观看者的 NACK、合并关键帧请求（每路每 300 ms 一次）、转发发送端报告。转发连接只提供主机候选（共用 UDP 端口，默认 3481），客户端直接或经自己的中转连到它，不需要交换候选。
+- 被控如何告诉观看者房间 ID、轨道与帧密钥，见 §5（`media.forward`）。
 
 ### 3.13 电源与网络唤醒
 

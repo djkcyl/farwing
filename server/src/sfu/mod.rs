@@ -63,6 +63,19 @@ pub struct SfuConfig {
     pub loopback: bool,
 }
 
+impl SfuConfig {
+    /// The forwarder of a server whose relay binds `bind` and is reached at
+    /// `public_ip`; a loopback `bind` is a test on one machine.
+    pub fn new(port: u16, bind: IpAddr, public_ip: Option<IpAddr>) -> Self {
+        Self {
+            port,
+            bind,
+            public_ip,
+            loopback: bind.is_loopback(),
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SfuError {
     #[error("no such room")]
@@ -77,6 +90,30 @@ pub enum SfuError {
     WebRtc(#[from] webrtc::Error),
     #[error("candidate gathering timed out")]
     Timeout,
+}
+
+/// A forwarder operation, as the control node sends it to an edge node.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum SfuRequest {
+    Publish {
+        room: String,
+        sdp: String,
+    },
+    Subscribe {
+        room: String,
+        leg: String,
+        sdp: String,
+        #[serde(default)]
+        tracks: Option<Vec<String>>,
+    },
+    Unsubscribe {
+        room: String,
+        leg: String,
+    },
+    Close {
+        room: String,
+    },
 }
 
 pub struct Sfu {
@@ -341,6 +378,7 @@ impl Sfu {
         let tcc = leg_wire.extension_id(farwing_rtc_wire::TRANSPORT_CC_URI);
         let rewrite = Rewrite::new(&uplink.wire, &leg_wire);
         let (leg, packets) = Leg::new(leg_id.to_owned(), Arc::clone(&pc), tap, rewrite, tcc);
+        let senders = pc.get_senders().await;
         {
             let mut tasks = leg.tasks.lock();
             tasks.push(tokio::spawn(Arc::clone(&leg).run(packets)));
@@ -354,7 +392,7 @@ impl Sfu {
                 }
             }));
             // RTCP reaches the tap only while each media sender is read.
-            for sender in pc.get_senders().await {
+            for sender in senders {
                 tasks.push(tokio::spawn(async move {
                     while sender.read_rtcp().await.is_ok() {}
                 }));
@@ -411,6 +449,27 @@ impl Sfu {
         let mut stats: Vec<RoomStats> = rooms.iter().map(|r| r.stats()).collect();
         stats.sort_by(|a, b| a.id.cmp(&b.id));
         stats
+    }
+
+    /// Runs `request`; the answer for a publication or subscription.
+    pub async fn handle(&self, request: SfuRequest) -> Result<String, SfuError> {
+        match request {
+            SfuRequest::Publish { room, sdp } => self.publish(&room, &sdp).await,
+            SfuRequest::Subscribe {
+                room,
+                leg,
+                sdp,
+                tracks,
+            } => self.subscribe(&room, &leg, &sdp, tracks.as_deref()).await,
+            SfuRequest::Unsubscribe { room, leg } => {
+                self.unsubscribe(&room, &leg).await;
+                Ok(String::new())
+            }
+            SfuRequest::Close { room } => {
+                self.close_room(&room).await;
+                Ok(String::new())
+            }
+        }
     }
 
     pub async fn close(&self) {

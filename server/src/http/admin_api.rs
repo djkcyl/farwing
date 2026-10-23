@@ -93,6 +93,11 @@ pub struct Overview {
     pub relayed_sessions: usize,
     pub nodes: usize,
     pub nodes_usable: usize,
+    /// Hosts may forward through the server.
+    pub forwarding: bool,
+    /// Rooms forwarding a host's picture, and the viewers subscribed.
+    pub forwarding_rooms: usize,
+    pub forwarding_viewers: usize,
 }
 
 /// `GET /api/v2/admin/overview`
@@ -122,6 +127,7 @@ pub async fn overview(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Js
     let sessions = app.hub.live_sessions();
     let settings = app.cfg();
     let presented = app.tls.read().clone();
+    let forwarding = app.forwarding.status();
     Ok(Json(Overview {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         instance_name: settings.instance_name.clone(),
@@ -155,6 +161,13 @@ pub async fn overview(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Js
         },
         nodes: app.edges.status().len(),
         nodes_usable: app.edges.status().iter().filter(|n| n.usable).count(),
+        forwarding: settings.sfu.enabled,
+        forwarding_rooms: forwarding.len(),
+        forwarding_viewers: forwarding
+            .iter()
+            .filter_map(|r| r.stats.as_ref())
+            .map(|s| s.legs.len())
+            .sum(),
         db_bytes,
         accounts,
         admins,
@@ -719,6 +732,17 @@ pub struct SessionEntry {
     pub local_relay: bool,
     /// Edge nodes that relay it.
     pub relay_nodes: Vec<String>,
+    /// The controller may receive through a forwarder: the edge node's
+    /// name, empty for this server.
+    pub forwarded_by: Option<String>,
+}
+
+/// `GET /api/v2/admin/sfu`: forwarding rooms with their statistics.
+pub async fn forwarding(
+    State(app): State<App>,
+    _admin: AdminAuth,
+) -> ApiResult<Json<Vec<crate::forwarding::RoomStatus>>> {
+    Ok(Json(app.forwarding.status()))
 }
 
 /// `GET /api/v2/admin/sessions`
@@ -726,6 +750,7 @@ pub async fn sessions(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Js
     let live = app.hub.live_sessions();
     let local = app.local_relay.read().sessions.clone();
     let mut edges = app.edges.relayed_sessions();
+    let mut forwarded = app.forwarding.forwarded_sessions();
     let entries = app
         .db
         .call(move |c| {
@@ -746,6 +771,7 @@ pub async fn sessions(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Js
                     controller_alias: controller.map(|d| d.alias).unwrap_or_default(),
                     local_relay: local.contains(&session.id),
                     relay_nodes: edges.remove(&session.id).unwrap_or_default(),
+                    forwarded_by: forwarded.remove(&session.id),
                     session,
                 });
             }

@@ -11,6 +11,7 @@ pub mod db;
 pub mod edge;
 pub mod edge_node;
 pub mod error;
+pub mod forwarding;
 pub mod http;
 pub mod hub;
 pub mod ice;

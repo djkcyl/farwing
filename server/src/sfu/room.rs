@@ -3,7 +3,7 @@
 use super::leg::{Leg, Rtcp};
 use super::sdp::{self, Kind};
 use parking_lot::{Mutex, RwLock};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -168,7 +168,7 @@ impl Uplink {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LegStats {
     pub id: String,
     pub packets: u64,
@@ -180,7 +180,7 @@ pub struct LegStats {
     pub rtt_ms: Option<u64>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RoomStats {
     pub id: String,
     pub tracks: usize,

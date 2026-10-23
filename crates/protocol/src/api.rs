@@ -36,6 +36,8 @@ pub mod path {
     pub const FRIENDS: &str = "/api/v2/friends";
     pub const FRIEND_REQUESTS: &str = "/api/v2/friends/requests";
     pub const GRANTS: &str = "/api/v2/grants";
+    /// Multi-viewer forwarding (`docs/protocol/deployment-design.md` §5).
+    pub const SFU_ROOMS: &str = "/api/v2/sfu/rooms";
 
     pub fn device(id: &str) -> String {
         format!("{DEVICES}/{id}")
@@ -71,6 +73,15 @@ pub mod path {
     }
     pub fn updates(platform: &str) -> String {
         format!("{UPDATES}/{platform}")
+    }
+    pub fn sfu_room(room: &str) -> String {
+        format!("{SFU_ROOMS}/{room}")
+    }
+    pub fn sfu_subscribe(room: &str) -> String {
+        format!("{SFU_ROOMS}/{room}/subscribe")
+    }
+    pub fn sfu_subscription(room: &str, session_id: &str) -> String {
+        format!("{SFU_ROOMS}/{room}/subscribe/{session_id}")
     }
     pub fn friend(user_id: &str) -> String {
         format!("{FRIENDS}/{user_id}")
@@ -128,6 +139,30 @@ pub struct ServerFeatures {
     /// `stun:` URLs of the RFC 5780 NAT discovery endpoints (`[[turn.stun]]`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub nat_discovery: Vec<String>,
+    /// Hosts may forward through the server; absent when it does not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forwarding: Option<Forwarding>,
+}
+
+/// The server's multi-viewer forwarding.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Forwarding {
+    /// Viewers of one host from which it forwards.
+    pub threshold: u32,
+    /// Modes hosts may choose.
+    pub modes: Vec<ForwardMode>,
+}
+
+/// How a host's picture passes the forwarder.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardMode {
+    /// The host encrypts every frame for its viewers; the forwarder passes
+    /// ciphertext.
+    #[default]
+    E2ee,
+    /// The forwarder can see the picture.
+    Compatible,
 }
 
 // ------------------------------------------------------------------- devices
@@ -816,4 +851,60 @@ pub struct PowerResult {
     pub message: String,
     #[serde(default)]
     pub state: String,
+}
+
+// ------------------------------------------------------------- forwarding
+
+/// `POST /api/v2/sfu/rooms` (host): forward the offered tracks to the
+/// controllers of `sessions` (sessions this device hosts).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreateRoomRequest {
+    pub sessions: Vec<String>,
+    #[serde(default)]
+    pub mode: ForwardMode,
+    /// The host's offer (send-only media, candidates included).
+    pub offer: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RoomCreated {
+    pub room: String,
+    pub mode: ForwardMode,
+    pub answer: String,
+    /// Name of the edge node forwarding; absent: the server itself.
+    #[serde(default)]
+    pub node: Option<String>,
+}
+
+/// `PUT /api/v2/sfu/rooms/{room}` (host): the sessions that may subscribe
+/// (others lose their subscription) and, with an offer, new tracks (every
+/// subscription ends; viewers subscribe again).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateRoomRequest {
+    pub sessions: Option<Vec<String>>,
+    pub offer: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RoomUpdated {
+    pub answer: Option<String>,
+}
+
+/// `POST /api/v2/sfu/rooms/{room}/subscribe` (the controller of `session`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SubscribeRequest {
+    pub session: String,
+    /// Receive-only media; the published tracks fill each kind's sections
+    /// in `tracks` order (default: publishing order).
+    pub offer: String,
+    #[serde(default)]
+    pub tracks: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Subscription {
+    pub answer: String,
+    pub mode: ForwardMode,
 }

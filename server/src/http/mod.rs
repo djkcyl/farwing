@@ -12,6 +12,7 @@ pub mod nodes;
 pub mod power;
 pub mod sessions;
 pub mod settings_api;
+pub mod sfu;
 pub mod setup;
 pub mod tokens;
 pub mod web_static;
@@ -63,6 +64,8 @@ pub struct AppState {
     pub listen_pending: parking_lot::RwLock<Option<crate::runtime::ListenPending>>,
     /// Edge relay nodes.
     pub edges: Arc<crate::edge::EdgeHub>,
+    /// Multi-viewer forwarding rooms.
+    pub forwarding: Arc<crate::forwarding::Forwarding>,
     /// What this server's own relay carries (refreshed every ten seconds).
     pub local_relay: parking_lot::RwLock<crate::turn_server::RelayStats>,
     /// The task that applies settings (`crate::runtime`).
@@ -443,6 +446,17 @@ pub fn router(app: App) -> Router {
         )
         .route("/api/v2/admin/nodes/{id}/rejoin", post(nodes::rejoin))
         .route("/api/v2/edge/ws", get(nodes::connect))
+        .route("/api/v2/admin/sfu", get(admin_api::forwarding))
+        .route(path::SFU_ROOMS, post(sfu::create))
+        .route(
+            "/api/v2/sfu/rooms/{room}",
+            put(sfu::update).delete(sfu::close),
+        )
+        .route("/api/v2/sfu/rooms/{room}/subscribe", post(sfu::subscribe))
+        .route(
+            "/api/v2/sfu/rooms/{room}/subscribe/{session}",
+            delete(sfu::unsubscribe),
+        )
         .route(setup::PATH, get(setup::info).post(setup::complete))
         .route("/api/v2/setup/recover", post(setup::recover))
         .route("/api/v2/admin/audit", get(admin_api::audit_log))

@@ -177,6 +177,9 @@ export interface Overview {
   relayed_sessions: number;
   nodes: number;
   nodes_usable: number;
+  forwarding: boolean;
+  forwarding_rooms: number;
+  forwarding_viewers: number;
 }
 
 export interface AcmeStatus {
@@ -286,6 +289,8 @@ export interface LiveSession {
   controller_alias: string;
   local_relay: boolean;
   relay_nodes: string[];
+  /// Forwarded: the edge node's name, empty for this server.
+  forwarded_by: string | null;
 }
 
 export type TlsMode = 'self_signed' | 'provided' | 'acme' | 'proxy';
@@ -360,6 +365,7 @@ export interface ServerSettings {
     relay_port_max: number | null;
     stun: StunEndpoint[];
   };
+  sfu: SfuSettings;
   limits: LimitsSettings;
   web: {
     enabled: boolean;
@@ -369,6 +375,13 @@ export interface ServerSettings {
     audit_days: number;
     caps: string[];
   };
+}
+
+export interface SfuSettings {
+  enabled: boolean;
+  threshold: number;
+  allow_compatible: boolean;
+  port: number;
 }
 
 export interface ListenPending {
@@ -421,6 +434,8 @@ export interface NodeHealth {
   memory_mb: number | null;
   error: string | null;
   version: string;
+  sfu_port: number | null;
+  rooms: unknown[];
 }
 
 /// An edge relay node (`/api/v2/admin/nodes`).
@@ -441,6 +456,7 @@ export interface EdgeNode {
     relay_bind: string;
     stun: StunEndpoint[];
     bandwidth_limit_mbps: number | null;
+    sfu_port: number | null;
   };
   created_at: number;
   joined_at: number | null;

@@ -125,6 +125,17 @@ async fn a_published_stream_reaches_every_viewer() {
         viewers.push((viewer, rx, rtcp));
     }
 
+    // Packets sent before both ends finish their handshake are lost: warm up
+    // with a contiguous run until every viewer receives.
+    for seq in 980..1000u16 {
+        host.write(&packet(video.ssrc, 98, seq, b"warm-up")).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for (_, rx, _) in &mut viewers {
+        next(rx, "media").await;
+        while rx.try_recv().is_ok() {}
+    }
+
     // Media: every viewer gets the host's bytes.
     let first = packet(video.ssrc, 98, 1000, b"keyframe");
     host.write(&first).await;

@@ -73,12 +73,13 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
     };
     let edges = Arc::new(crate::edge::EdgeHub::new());
     edges.load(db.with(|c| crate::webdb::edge_nodes(c))?);
-    edges.reconfigure(&cfg.turn);
+    edges.reconfigure(&cfg.turn, &cfg.sfu);
     let (hub, channels) = Hub::new(
         runtime::hub_config(&cfg),
         IceProvider::new(&cfg.turn, None),
         Arc::clone(&edges),
     );
+    let forwarding = crate::forwarding::Forwarding::new(&cfg, Arc::clone(&edges));
     let app: App = Arc::new(AppState {
         settings: crate::settings::Settings::new(cfg),
         db: db.clone(),
@@ -96,6 +97,7 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
         setup_pending: AtomicBool::new(needs_setup),
         listen_pending: parking_lot::RwLock::new(None),
         edges,
+        forwarding,
         local_relay: Default::default(),
         control: OnceLock::new(),
     });
@@ -104,6 +106,17 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
     let _ = app.control.set(started.control.clone());
 
     let mut tasks = Vec::new();
+    // Rooms lose the sessions that ended.
+    {
+        let app = Arc::clone(&app);
+        tasks.push(tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                ticks.tick().await;
+                app.forwarding.sweep(&app.hub).await;
+            }
+        }));
+    }
     // Ordered persistence of session state.
     {
         let db = db.clone();
@@ -229,6 +242,7 @@ impl RunningServer {
     pub async fn shutdown(self) {
         tracing::info!("shutting down");
         self.app.hub.shutdown();
+        self.app.forwarding.local.close().await;
         // Give connection tasks a moment to flush their close frames.
         tokio::time::sleep(Duration::from_millis(200)).await;
         self.control.shutdown().await;

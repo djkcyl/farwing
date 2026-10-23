@@ -1,12 +1,13 @@
 //! `farwing-server edge`: an edge relay node (`docs/protocol/deployment-design.md`
 //! §4). It joins the control node once with the link from the web console,
-//! then keeps one signed WebSocket to it, runs the relay and NAT discovery
-//! endpoints it is told to, and reports its health every ten seconds. The
-//! relay keeps running while the connection is down.
+//! then keeps one signed WebSocket to it, runs the relay, NAT discovery
+//! endpoints and media forwarder it is told to, and reports its health
+//! every ten seconds. The relay keeps running while the connection is down.
 
 use crate::config::TurnConfig;
 use crate::edge::{FromNode, Health, ToNode};
 use crate::http::nodes::{JOIN_HEADER, KEY_HEADER, NODE_HEADER, auth_message};
+use crate::sfu::{Sfu, SfuConfig};
 use crate::{stun_server, turn_server};
 use anyhow::{Context, Result, anyhow, bail};
 use farwing_protocol::crypto::DeviceKey;
@@ -332,6 +333,9 @@ pub async fn run(data_dir: PathBuf, join: Option<String>) -> Result<()> {
     };
     let key = identity.key()?;
     let mut relay: Option<Relay> = None;
+    let mut sfu: Option<Arc<Sfu>> = None;
+    // Forwarder answers, written by the connection loop.
+    let (results_tx, mut results) = tokio::sync::mpsc::unbounded_channel::<FromNode>();
     let mut backoff = Duration::from_secs(1);
     tracing::info!(control = %identity.control, "edge node starting");
     loop {
@@ -362,8 +366,18 @@ pub async fn run(data_dir: PathBuf, join: Option<String>) -> Result<()> {
                 _ = crate::server::shutdown_signal() => break true,
                 _ = ticks.tick() => {
                     let Some(relay) = relay.as_mut() else { continue };
-                    let health = relay.health(HEALTH_INTERVAL).await;
+                    let mut health = relay.health(HEALTH_INTERVAL).await;
+                    if let Some(sfu) = &sfu {
+                        health.sfu_port = Some(sfu.config().port);
+                        health.rooms = sfu.rooms();
+                    }
                     let text = serde_json::to_string(&FromNode::Health(health))?;
+                    if sink.send(Message::Text(text.into())).await.is_err() {
+                        break false;
+                    }
+                }
+                Some(result) = results.recv() => {
+                    let text = serde_json::to_string(&result)?;
                     if sink.send(Message::Text(text.into())).await.is_err() {
                         break false;
                     }
@@ -389,7 +403,27 @@ pub async fn run(data_dir: PathBuf, join: Option<String>) -> Result<()> {
                             identity.save(&data_dir)?;
                             tracing::info!(node = %identity.node_id, "joined the control node");
                         }
-                        Ok(ToNode::Config { turn }) => {
+                        Ok(ToNode::Config { turn, sfu_port }) => {
+                            match (sfu_port, &sfu) {
+                                (Some(port), Some(current)) => current.set_config(SfuConfig::new(
+                                    port,
+                                    turn.relay_bind,
+                                    turn.public_ip,
+                                )),
+                                (Some(port), None) => {
+                                    sfu = Some(Sfu::new(SfuConfig::new(
+                                        port,
+                                        turn.relay_bind,
+                                        turn.public_ip,
+                                    )));
+                                }
+                                (None, Some(_)) => {
+                                    if let Some(old) = sfu.take() {
+                                        old.close().await;
+                                    }
+                                }
+                                (None, None) => {}
+                            }
                             if relay.as_ref().is_some_and(|r| r.cfg == *turn) {
                                 continue;
                             }
@@ -405,6 +439,24 @@ pub async fn run(data_dir: PathBuf, join: Option<String>) -> Result<()> {
                             identity.save(&data_dir)?;
                             tracing::info!("the control node's certificate changed");
                         }
+                        Ok(ToNode::Sfu { id, request }) => {
+                            let tx = results_tx.clone();
+                            let Some(sfu) = sfu.clone() else {
+                                let _ = tx.send(FromNode::SfuResult {
+                                    id,
+                                    answer: None,
+                                    error: Some("forwarding is off on this node".to_owned()),
+                                });
+                                continue;
+                            };
+                            tokio::spawn(async move {
+                                let (answer, error) = match sfu.handle(request).await {
+                                    Ok(answer) => (Some(answer), None),
+                                    Err(e) => (None, Some(e.to_string())),
+                                };
+                                let _ = tx.send(FromNode::SfuResult { id, answer, error });
+                            });
+                        }
                         Err(e) => tracing::debug!(error = %e, "unreadable message from the control node"),
                     }
                 }
@@ -418,6 +470,9 @@ pub async fn run(data_dir: PathBuf, join: Option<String>) -> Result<()> {
             _ = tokio::time::sleep(backoff) => {}
             _ = crate::server::shutdown_signal() => break,
         }
+    }
+    if let Some(sfu) = sfu {
+        sfu.close().await;
     }
     if let Some(mut relay) = relay {
         relay.stop().await;

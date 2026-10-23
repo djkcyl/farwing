@@ -72,6 +72,11 @@ export default function AdminOverview() {
                 <Link to="/admin/nodes">{m.nodesUsable(data.nodes_usable, data.nodes)}</Link>
               </Row>
             )}
+            <Row label={m.forwarding}>
+              {data.forwarding && data.forwarding_rooms > 0
+                ? m.forwardingRooms(data.forwarding_rooms, data.forwarding_viewers)
+                : onOff(data.forwarding)}
+            </Row>
             <Row label={m.nat}>
               {data.nat_discovery.length ? (
                 listText(data.nat_discovery)

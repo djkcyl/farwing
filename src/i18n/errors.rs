@@ -81,6 +81,9 @@ pub(crate) struct Errors {
     pub nothing_to_confirm: &'static str,
     pub self_friend: &'static str,
     pub self_connect: &'static str,
+    pub forwarding_disabled: &'static str,
+    pub forwarding_mode_not_allowed: &'static str,
+    pub forwarding_unavailable: &'static str,
 
     // ------------------------------------ devices, permissions, sessions
     pub not_own_device: &'static str,
@@ -190,6 +193,9 @@ impl Errors {
             reason::NOTHING_TO_CONFIRM => text(self.nothing_to_confirm),
             reason::SELF_FRIEND => text(self.self_friend),
             reason::SELF_CONNECT => text(self.self_connect),
+            reason::FORWARDING_DISABLED => text(self.forwarding_disabled),
+            reason::FORWARDING_MODE_NOT_ALLOWED => text(self.forwarding_mode_not_allowed),
+            reason::FORWARDING_UNAVAILABLE => text(self.forwarding_unavailable),
             reason::NOT_OWN_DEVICE => text(self.not_own_device),
             reason::NOT_GRANTED => text(self.not_granted),
             reason::WEB_NOT_ALLOWED => text(self.web_not_allowed),
@@ -293,6 +299,9 @@ pub(crate) const ZH_CN: Errors = Errors {
     nothing_to_confirm: "没有待确认的更改",
     self_friend: "不能添加自己为好友",
     self_connect: "不能连接本机",
+    forwarding_disabled: "服务器未开启多人转发",
+    forwarding_mode_not_allowed: "服务器不允许兼容模式转发",
+    forwarding_unavailable: "多人转发暂不可用",
 
     not_own_device: "只能管理自己账号的设备",
     not_granted: "没有该设备的此项权限",
@@ -388,6 +397,9 @@ pub(crate) const EN: Errors = Errors {
     nothing_to_confirm: "Nothing waits for confirmation",
     self_friend: "Can't add yourself as a friend",
     self_connect: "Can't connect a device to itself",
+    forwarding_disabled: "This server doesn't forward to multiple viewers",
+    forwarding_mode_not_allowed: "This server doesn't allow compatible forwarding",
+    forwarding_unavailable: "Forwarding is unavailable right now",
 
     not_own_device: "Only your own devices can be managed",
     not_granted: "No permission for this on the device",

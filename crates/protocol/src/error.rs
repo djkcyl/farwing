@@ -272,6 +272,12 @@ pub mod reason {
     pub const REQUEST_CANCELLED: &str = "request_cancelled";
     /// `not_found`: the session is gone (realtime plane).
     pub const SESSION_ENDED: &str = "session_ended";
+    /// `forbidden`: the server does not forward to multiple viewers.
+    pub const FORWARDING_DISABLED: &str = "forwarding_disabled";
+    /// `forbidden`: compatible forwarding is not allowed on the server.
+    pub const FORWARDING_MODE_NOT_ALLOWED: &str = "forwarding_mode_not_allowed";
+    /// `unavailable`: no forwarder could take the stream.
+    pub const FORWARDING_UNAVAILABLE: &str = "forwarding_unavailable";
 
     // ---- a host refusing a direct (LAN) connection
     /// `forbidden`: the host does not trust this device.
@@ -346,6 +352,9 @@ pub mod reason {
         NOT_FRIENDS,
         REQUEST_CANCELLED,
         SESSION_ENDED,
+        FORWARDING_DISABLED,
+        FORWARDING_MODE_NOT_ALLOWED,
+        FORWARDING_UNAVAILABLE,
         NOT_TRUSTED,
         NO_ACCESS_CODE,
         HOST_BUSY,

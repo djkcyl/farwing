@@ -357,6 +357,9 @@ async fn run(app: App, socket: WebSocket, id: String, ip: IpAddr, joined: bool) 
             incoming = stream.next() => match incoming {
                 Some(Ok(Message::Text(text))) => match serde_json::from_str::<FromNode>(&text) {
                     Ok(FromNode::Health(health)) => app.edges.report(&id, &conn_id, health),
+                    Ok(FromNode::SfuResult { id: request, answer, error }) => app
+                        .edges
+                        .sfu_result(request, error.map_or_else(|| Ok(answer.unwrap_or_default()), Err)),
                     Err(e) => tracing::debug!(node = %id, error = %e, "unreadable edge message"),
                 },
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,

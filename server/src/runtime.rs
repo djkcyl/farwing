@@ -492,7 +492,7 @@ impl Components {
             })
             .collect();
         self.app.hub.reconfigure(hub_config(cfg), ice);
-        self.app.edges.reconfigure(&cfg.turn);
+        self.app.edges.reconfigure(&cfg.turn, &cfg.sfu);
         *self.app.relay.write() = bound;
     }
 
@@ -647,6 +647,11 @@ impl Components {
             }
         }
         self.reconfigure_hub(&new);
+        if new.sfu != old.sfu || new.turn.relay_bind != old.turn.relay_bind
+            || new.turn.builtin_public_ip() != old.turn.builtin_public_ip()
+        {
+            self.app.forwarding.reconfigure(&new).await;
+        }
         if new.log != old.log {
             crate::server::reload_log(&new.log);
         }

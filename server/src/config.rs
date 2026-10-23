@@ -76,6 +76,7 @@ pub struct Config {
     pub tls: TlsConfig,
     pub guest: GuestConfig,
     pub turn: TurnConfig,
+    pub sfu: SfuSettings,
     pub limits: LimitsConfig,
     pub web: WebConfig,
 }
@@ -95,11 +96,43 @@ impl Default for Config {
             tls: TlsConfig::default(),
             guest: GuestConfig::default(),
             turn: TurnConfig::default(),
+            sfu: SfuSettings::default(),
             limits: LimitsConfig::default(),
             web: WebConfig::default(),
         }
     }
 }
+
+/// Multi-viewer forwarding (`docs/protocol/deployment-design.md` §5).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SfuSettings {
+    /// Hosts may send their picture once to a forwarder here (or on an edge
+    /// node) instead of once per viewer.
+    pub enabled: bool,
+    /// Viewers of one host from which it forwards.
+    pub threshold: u32,
+    /// Hosts may choose compatible mode, in which the forwarder can see the
+    /// picture (browsers without encoded transforms need it).
+    pub allow_compatible: bool,
+    /// UDP port of the forwarder (all its connections share it); edge nodes
+    /// use it unless set otherwise.
+    pub port: u16,
+}
+
+impl Default for SfuSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            threshold: 3,
+            allow_compatible: true,
+            port: 3481,
+        }
+    }
+}
+
+/// Viewers from which a host forwards.
+pub const SFU_THRESHOLD: std::ops::RangeInclusive<u32> = 2..=16;
 
 /// The web console (`docs/web-console.md`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -677,6 +710,38 @@ impl Config {
                 }
                 validate_stun(turn)
                     .map_err(|e| SettingError::new("turn.stun", "invalid", format!("{e:#}")))?;
+            }
+        }
+        let sfu = &self.sfu;
+        if !SFU_THRESHOLD.contains(&sfu.threshold) {
+            return Err(SettingError::range(
+                "sfu.threshold",
+                format!(
+                    "sfu.threshold must be {}-{}",
+                    SFU_THRESHOLD.start(),
+                    SFU_THRESHOLD.end()
+                ),
+            ));
+        }
+        if sfu.port == 0 {
+            return Err(SettingError::range("sfu.port", "sfu.port must be 1-65535"));
+        }
+        if turn.mode == TurnMode::Builtin {
+            let udp = turn
+                .listen_udp
+                .into_iter()
+                .chain(turn.stun.iter().map(|ep| ep.listen))
+                .any(|a| a.port() == sfu.port);
+            let relayed = matches!(
+                (turn.relay_port_min, turn.relay_port_max),
+                (Some(a), Some(b)) if (a..=b).contains(&sfu.port)
+            );
+            if udp || relayed {
+                return Err(SettingError::new(
+                    "sfu.port",
+                    "conflict",
+                    format!("UDP port {} is used by the relay", sfu.port),
+                ));
             }
         }
         if turn.credential_ttl.is_zero() {

@@ -32,6 +32,7 @@ export default function Sessions() {
                   <th>{m.relation}</th>
                   <th>{m.purpose}</th>
                   <th>{m.relay}</th>
+                  <th>{m.forwarding}</th>
                   <th>{t.admin.col.status}</th>
                   <th>{m.started}</th>
                   <th />
@@ -60,6 +61,9 @@ export default function Sessions() {
                         {[...(s.local_relay ? [m.thisServer] : []), ...s.relay_nodes].join(t.format.listSeparator) || (
                           <span className="muted">—</span>
                         )}
+                      </td>
+                      <td className="small">
+                        {s.forwarded_by === null ? <span className="muted">—</span> : s.forwarded_by || m.thisServer}
                       </td>
                       <td className="nowrap">
                         {s.connected ? (

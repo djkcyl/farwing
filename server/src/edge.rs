@@ -8,20 +8,24 @@
 //! credentials are signed with a key derived from the relay secret and its
 //! ID, and name it: `<expiry>:<session>:<node>`.
 
-use crate::config::{StunEndpoint, TurnConfig, TurnMode};
+use crate::config::{SfuSettings, StunEndpoint, TurnConfig, TurnMode};
+use crate::sfu::{RoomStats, SfuRequest};
 use farwing_protocol::realtime::{IceServer, ProbeNode};
 use hmac::{Hmac, Mac};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// A node is usable while its last health report is this recent.
 const HEALTH_FRESH: Duration = Duration::from_secs(30);
 /// Measurements older than this are ignored.
 const RTT_FRESH: Duration = Duration::from_secs(2 * 3600);
+/// A node answers a forwarder request within this.
+const SFU_TIMEOUT: Duration = Duration::from_secs(20);
 /// Edge nodes per session side (the control node's own relay comes on top).
 pub const NODES_PER_SIDE: usize = 2;
 
@@ -50,6 +54,8 @@ pub struct NodeSettings {
     pub stun: Vec<StunEndpoint>,
     /// No new sessions above this relayed bandwidth.
     pub bandwidth_limit_mbps: Option<u32>,
+    /// UDP port of the node's forwarder; empty: the server's.
+    pub sfu_port: Option<u16>,
 }
 
 impl Default for NodeSettings {
@@ -65,6 +71,7 @@ impl Default for NodeSettings {
             relay_bind: t.relay_bind,
             stun: t.stun,
             bandwidth_limit_mbps: None,
+            sfu_port: None,
         }
     }
 }
@@ -91,10 +98,17 @@ pub struct NodeRow {
 pub enum ToNode {
     /// After a join: the node's ID.
     Joined { node_id: String },
-    /// The relay to run (its `shared_secret` is the node's key).
-    Config { turn: Box<TurnConfig> },
+    /// The relay to run (its `shared_secret` is the node's key) and the
+    /// forwarder's UDP port (none: no forwarding).
+    Config {
+        turn: Box<TurnConfig>,
+        #[serde(default)]
+        sfu_port: Option<u16>,
+    },
     /// The control node presents another certificate from now on.
     ControlFingerprint { fingerprint: String },
+    /// A forwarder operation; answered with `FromNode::SfuResult`.
+    Sfu { id: u64, request: SfuRequest },
 }
 
 /// Node → control.
@@ -102,6 +116,13 @@ pub enum ToNode {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromNode {
     Health(Health),
+    SfuResult {
+        id: u64,
+        #[serde(default)]
+        answer: Option<String>,
+        #[serde(default)]
+        error: Option<String>,
+    },
 }
 
 /// A node's report.
@@ -123,6 +144,10 @@ pub struct Health {
     /// Why the relay does not run.
     pub error: Option<String>,
     pub version: String,
+    /// The forwarder's UDP port while it runs.
+    pub sfu_port: Option<u16>,
+    /// Rooms forwarded on the node.
+    pub rooms: Vec<RoomStats>,
 }
 
 struct Live {
@@ -146,18 +171,25 @@ pub struct NodeStatus {
     pub health: Option<Health>,
 }
 
+type SfuReply = oneshot::Sender<Result<String, String>>;
+
 #[derive(Default)]
 pub struct EdgeHub {
     rows: RwLock<BTreeMap<String, NodeRow>>,
     live: RwLock<HashMap<String, Live>>,
     rtt: RwLock<HashMap<String, (BTreeMap<String, Option<u32>>, Instant)>>,
     relay: RwLock<RelaySecret>,
+    /// Forwarder requests waiting for a node's answer.
+    pending: Mutex<HashMap<u64, SfuReply>>,
+    next_request: AtomicU64,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq)]
 struct RelaySecret {
     master: String,
     ttl: Duration,
+    /// The server's forwarder port while forwarding is on.
+    sfu_port: Option<u16>,
 }
 
 impl EdgeHub {
@@ -187,15 +219,17 @@ impl EdgeHub {
         self.live.write().remove(id);
     }
 
-    /// The relay secret and credential lifetime changed: nodes get new keys.
-    pub fn reconfigure(&self, turn: &TurnConfig) {
+    /// The relay secret, credential lifetime or forwarding changed: nodes
+    /// get new keys and settings.
+    pub fn reconfigure(&self, turn: &TurnConfig, sfu: &SfuSettings) {
         let next = RelaySecret {
             master: turn.shared_secret.clone(),
             ttl: turn.credential_ttl,
+            sfu_port: sfu.enabled.then_some(sfu.port),
         };
         let changed = {
             let mut current = self.relay.write();
-            let changed = current.master != next.master || current.ttl != next.ttl;
+            let changed = *current != next;
             *current = next;
             changed
         };
@@ -232,15 +266,92 @@ impl EdgeHub {
         })
     }
 
+    /// The forwarder port of node `id` (none while forwarding is off).
+    pub fn sfu_port_for(&self, id: &str) -> Option<u16> {
+        let port = self.relay.read().sfu_port?;
+        Some(
+            self.rows
+                .read()
+                .get(id)
+                .and_then(|r| r.settings.sfu_port)
+                .unwrap_or(port),
+        )
+    }
+
     fn push_config(&self, id: &str) {
         let Some(turn) = self.config_for(id) else {
             return;
         };
+        let sfu_port = self.sfu_port_for(id);
         if let Some(live) = self.live.read().get(id) {
             let _ = live.tx.send(ToNode::Config {
                 turn: Box::new(turn),
+                sfu_port,
             });
         }
+    }
+
+    /// Runs `request` on node `id`'s forwarder.
+    pub async fn sfu(&self, id: &str, request: SfuRequest) -> Result<String, String> {
+        let request_id = self.next_request.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().insert(request_id, tx);
+        let sent = self.live.read().get(id).is_some_and(|live| {
+            live.tx
+                .send(ToNode::Sfu {
+                    id: request_id,
+                    request,
+                })
+                .is_ok()
+        });
+        let result = if sent {
+            match tokio::time::timeout(SFU_TIMEOUT, rx).await {
+                Ok(Ok(result)) => result,
+                _ => Err("the node did not answer".to_owned()),
+            }
+        } else {
+            Err("the node is offline".to_owned())
+        };
+        self.pending.lock().remove(&request_id);
+        result
+    }
+
+    /// A node answered forwarder request `id`.
+    pub fn sfu_result(&self, id: u64, result: Result<String, String>) {
+        if let Some(tx) = self.pending.lock().remove(&id) {
+            let _ = tx.send(result);
+        }
+    }
+
+    /// The forwarding node nearest to `device_id` by its measurement; none
+    /// without a measured, usable node with a running forwarder.
+    pub fn forwarder_for(&self, device_id: &str) -> Option<(String, String)> {
+        let measured = self
+            .rtt
+            .read()
+            .get(device_id)
+            .filter(|(_, at)| at.elapsed() < RTT_FRESH)
+            .map(|(m, _)| m.clone())?;
+        self.usable()
+            .into_iter()
+            .filter(|(_, _, health)| health.sfu_port.is_some())
+            .filter_map(|(row, _, _)| Some(((*measured.get(&row.id)?)?, row)))
+            .min_by_key(|(rtt, row)| (*rtt, row.name.clone()))
+            .map(|(_, row)| (row.id, row.name))
+    }
+
+    /// Rooms forwarded on the nodes, with the node's name.
+    pub fn forwarded_rooms(&self) -> Vec<(String, RoomStats)> {
+        let rows = self.rows.read();
+        let mut out = Vec::new();
+        for (id, live) in self.live.read().iter() {
+            let Some((health, _)) = &live.health else {
+                continue;
+            };
+            let name = rows.get(id).map_or_else(|| id.clone(), |r| r.name.clone());
+            out.extend(health.rooms.iter().map(|r| (name.clone(), r.clone())));
+        }
+        out
     }
 
     /// Tell connected nodes about a new control certificate.
@@ -485,10 +596,13 @@ mod tests {
     #[test]
     fn nearest_nodes_with_their_own_credentials() {
         let hub = EdgeHub::new();
-        hub.reconfigure(&TurnConfig {
-            shared_secret: "master".into(),
-            ..TurnConfig::default()
-        });
+        hub.reconfigure(
+            &TurnConfig {
+                shared_secret: "master".into(),
+                ..TurnConfig::default()
+            },
+            &SfuSettings::default(),
+        );
         hub.load(vec![row("a", "Beijing"), row("b", "Shanghai"), row("c", "Guangzhou")]);
         healthy(&hub, "a", "203.0.113.1");
         healthy(&hub, "b", "203.0.113.2");

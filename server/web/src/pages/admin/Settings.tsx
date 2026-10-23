@@ -12,6 +12,7 @@ import type {
   ListenPending,
   ServerSettings,
   SettingsView,
+  SfuSettings,
   StunEndpoint,
   TlsMode,
   TurnMode,
@@ -40,7 +41,7 @@ import {
 } from '../../ui/kit';
 import { useOverlay } from '../../ui/overlay';
 
-type Tab = 'basic' | 'certificate' | 'relay' | 'access' | 'limits' | 'backup';
+type Tab = 'basic' | 'certificate' | 'relay' | 'forwarding' | 'access' | 'limits' | 'backup';
 type M = Messages['admin']['settings'];
 
 /// The label of a setting the server refused (`details.field`).
@@ -72,6 +73,8 @@ function fieldLabel(m: M, field: string): string {
     'turn.relay_ip': m.relayIp,
     'turn.credential_ttl': m.credentialTtl,
     'turn.stun': m.stun,
+    'sfu.threshold': m.sfuThreshold,
+    'sfu.port': m.sfuPort,
     'web.caps': m.webCaps,
     'web.admin_allow': m.adminAllow,
     'web.session_idle_minutes': m.sessionIdle,
@@ -834,6 +837,47 @@ function Access({ view, onApplied }: { view: SettingsView; onApplied(v: Applied)
   );
 }
 
+// ---------------------------------------------------------- forwarding
+
+function Forwarding({ view, onApplied }: { view: SettingsView; onApplied(v: Applied): void }) {
+  const t = useT();
+  const m = t.admin.settings;
+  const initial = view.settings.sfu;
+  const [draft, setDraft] = useState(initial);
+  const { save, busy, error } = useSave(onApplied);
+  const set = (p: Partial<SfuSettings>) => setDraft({ ...draft, ...p });
+  return (
+    <Card
+      title={m.tabs.forwarding}
+      actions={<SaveButton busy={busy} changed={!same(draft, initial)} onClick={() => void save({ sfu: draft })} />}
+    >
+      <div className="stack">
+        {error && <Alert>{error}</Alert>}
+        <div className="stack-sm">
+          <Switch checked={draft.enabled} onChange={(enabled) => set({ enabled })} label={m.sfuEnabled} />
+          {draft.enabled && (
+            <Switch
+              checked={draft.allow_compatible}
+              onChange={(allow_compatible) => set({ allow_compatible })}
+              label={m.sfuCompatible}
+            />
+          )}
+        </div>
+        {draft.enabled && (
+          <div className="grid grid-3">
+            <Field label={m.sfuThreshold}>
+              <NumberInput value={draft.threshold} min={2} max={16} onChange={(v) => set({ threshold: v ?? 0 })} />
+            </Field>
+            <Field label={m.sfuPort}>
+              <NumberInput value={draft.port} min={1} max={65535} onChange={(v) => set({ port: v ?? 0 })} />
+            </Field>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 // -------------------------------------------------------------- limits
 
 function Limits({ view, onApplied }: { view: SettingsView; onApplied(v: Applied): void }) {
@@ -949,6 +993,7 @@ export default function Settings() {
     ['basic', <Basic key={generation} view={current} onApplied={applied} />],
     ['certificate', <Certificate key={generation} view={current} onApplied={applied} />],
     ['relay', <Relay key={generation} view={current} onApplied={applied} />],
+    ['forwarding', <Forwarding key={generation} view={current} onApplied={applied} />],
     ['access', <Access key={generation} view={current} onApplied={applied} />],
     ['limits', <Limits key={generation} view={current} onApplied={applied} />],
     ['backup', <Backup key={generation} onApplied={applied} />],

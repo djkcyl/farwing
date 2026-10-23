@@ -184,6 +184,10 @@ curl "${H[@]}" -X POST $S/api/v2/admin/settings/relay-secret
 | `turn.relay_port_min`、`turn.relay_port_max` | `49160`、`49200` | 中转端口范围 |
 | `turn.realm` | `farwing` | TURN realm |
 | `turn.stun` | 3479、3480 | NAT 探测端点 `[{"listen": "0.0.0.0:3479", "public": null}]`，说明见 `server/README.md`“NAT 类型探测” |
+| `sfu.enabled` | `true` | 多人转发：观看人数达到阈值时被控只发一份，由转发器分发 |
+| `sfu.threshold` | 3 | 开始转发的观看人数（2–16） |
+| `sfu.allow_compatible` | `true` | 允许被控选择兼容模式（转发器能看到画面） |
+| `sfu.port` | 3481 | 转发器的 UDP 端口（所有转发连接共用；绑定 `turn.relay_bind`，候选地址为 `turn.public_ip`）；不能与中转端口相同 |
 | `web.enabled` | `true` | 网页端（关闭后页面返回 404，接口不受影响） |
 | `web.admin_allow` | `[]` | 允许管理的网络（CIDR），空 = 不限 |
 | `web.session_idle_minutes`、`web.session_max_hours` | 30、12 | 网页登录的空闲与最长期限 |
@@ -207,11 +211,19 @@ curl "${H[@]}" -X POST $S/api/v2/admin/nodes/<id>/rejoin    # 新的加入命令
 curl "${H[@]}" -X DELETE $S/api/v2/admin/nodes/<id>         # 移除，节点的身份失效
 ```
 
-节点设置（`settings`，部分修改，对象逐键合并）：`public_ip`（空 = 节点连接本服务器的地址）、`listen_udp`、`listen_tcp`、`listen_tls`、`relay_port_min`、`relay_port_max`、`relay_bind`、`stun`（同 4.4 的 `turn.*`）、`bandwidth_limit_mbps`（超过后不再分配给新会话）。列表中每个节点另有 `online`、`usable`（在线、启用、30 秒内报告过健康且中转在运行、未超带宽）、`address`、`health`（实际监听地址、`allocations`、有分配的会话 `sessions`、`relayed_bps`、`error`、`version`）。
+节点设置（`settings`，部分修改，对象逐键合并）：`public_ip`（空 = 节点连接本服务器的地址）、`listen_udp`、`listen_tcp`、`listen_tls`、`relay_port_min`、`relay_port_max`、`relay_bind`、`stun`（同 4.4 的 `turn.*`）、`bandwidth_limit_mbps`（超过后不再分配给新会话）、`sfu_port`（节点转发器的 UDP 端口，空 = 与本服务器的 `sfu.port` 相同）。列表中每个节点另有 `online`、`usable`（在线、启用、30 秒内报告过健康且中转在运行、未超带宽）、`address`、`health`（实际监听地址、`allocations`、有分配的会话 `sessions`、`relayed_bps`、`error`、`version`）。
 
 节点的连接（`GET /api/v2/edge/ws`）：加入时带 `X-Farwing-Join: <令牌>`、`X-Farwing-Node-Key: <新公钥>`，之后带 `X-Farwing-Node: <节点 ID>`；都带 `X-Farwing-Timestamp`（Unix 毫秒）与 `X-Farwing-Signature`（Ed25519 对 `FWEDGE1\n<公钥或节点 ID>\n<时间戳>` 的签名）。本服务器下发 `{"type": "joined"}`、`{"type": "config", "turn": {...}}`（节点的中转设置，`shared_secret` 为节点密钥）、`{"type": "control_fingerprint"}`（证书更换），节点每 10 秒发 `{"type": "health", ...}`。
 
-## 6. 其他管理接口
+## 6. 多人转发
+
+```sh
+curl "${H[@]}" $S/api/v2/admin/sfu    # 转发房间：被控、所在节点、模式、可订阅的会话与统计
+```
+
+每个房间：`id`、`host_device_id`、`node`（边缘节点名称，空 = 本服务器）、`mode`（`e2ee` / `compatible`）、`sessions`、`created_at`、`stats`（`packets`、`bytes`、`uplink_repairs`（向被控补要的包）、`keyframe_requests`、`legs`：每位观看者的 `packets`、`bytes`、`repairs`、`dropped`、`loss`（%）、`rtt_ms`）。边缘节点上的房间统计随节点每 10 秒的健康报告更新。概览的 `forwarding_rooms`、`forwarding_viewers` 与会话列表的 `forwarded_by`（转发所在节点，空字符串 = 本服务器，`null` = 未转发）来自同一数据。房间由客户端经 `/api/v2/sfu/*` 打开（`farwing-protocol.md` §3.14）；关闭多人转发时所有房间立即关闭。
+
+## 7. 其他管理接口
 
 | 接口 | 说明 |
 | --- | --- |

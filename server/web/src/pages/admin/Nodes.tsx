@@ -99,6 +99,7 @@ function EditNode({ node, onClose, onSaved }: { node?: EdgeNode; onClose(): void
           listen_tls: node.settings.listen_tls ?? '',
           relay_port_min: node.settings.relay_port_min ? String(node.settings.relay_port_min) : '',
           relay_port_max: node.settings.relay_port_max ? String(node.settings.relay_port_max) : '',
+          sfu_port: node.settings.sfu_port ? String(node.settings.sfu_port) : '',
         }
       : undefined,
   );
@@ -126,6 +127,7 @@ function EditNode({ node, onClose, onSaved }: { node?: EdgeNode; onClose(): void
           listen_tls: address(draft.listen_tls),
           relay_port_min: number(draft.relay_port_min),
           relay_port_max: number(draft.relay_port_max),
+          sfu_port: number(draft.sfu_port),
         },
       });
       onSaved();
@@ -219,6 +221,15 @@ function EditNode({ node, onClose, onSaved }: { node?: EdgeNode; onClose(): void
               />
             </div>
           </Field>
+          <Field label={s.sfuPort}>
+            <Input
+              type="number"
+              min={1}
+              max={65535}
+              value={draft.sfu_port}
+              onChange={(e) => set({ sfu_port: e.target.value })}
+            />
+          </Field>
         </div>
       </form>
     </Dialog>
@@ -288,6 +299,7 @@ export default function Nodes() {
                   <th>{m.address}</th>
                   <th>{m.allocations}</th>
                   <th>{m.bandwidth}</th>
+                  <th>{m.forwarding}</th>
                   <th>{t.admin.col.lastSeen}</th>
                   <th />
                 </tr>
@@ -312,6 +324,18 @@ export default function Nodes() {
                       <td>{health ? health.allocations : <span className="muted">—</span>}</td>
                       <td className="nowrap">
                         {health ? bitrate(health.relayed_bps * 8) : <span className="muted">—</span>}
+                      </td>
+                      <td className="nowrap">
+                        {health?.sfu_port ? (
+                          <>
+                            <span className="mono small">{health.sfu_port}</span>
+                            {health.rooms.length > 0 && (
+                              <span className="muted small"> · {m.rooms(health.rooms.length)}</span>
+                            )}
+                          </>
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
                       </td>
                       <td className="nowrap muted">
                         {node.online ? m.now : node.last_seen_at ? ago(node.last_seen_at) : m.never}
