@@ -1,6 +1,6 @@
 //! Shared streaming budgets for actual output geometry and negotiated format.
 //! Quality is a bandwidth ceiling, not a promise of constant traffic or fidelity.
-use super::format::{Codec, Format};
+use super::format::Format;
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
@@ -43,19 +43,13 @@ fn downgrade_threshold(maximum: u32) -> u32 {
 // independent quality anchors; compression savings are content-dependent.
 // 10-bit preserves gradients without a blanket raw-bit-depth surcharge.
 fn standard(format: Format, quality: i32, source: (u32, u32), fps: u32) -> Bounds {
-    let rates = match (format.codec, quality) {
-        (Codec::H264, 1) => [1.5, 1.5, 1.5, 1.5],
-        (Codec::H264, 3) => [8.0, 14.0, 24.0, 24.0],
-        (Codec::H264, 4) => [12.0, 20.0, 36.0, 60.0],
-        (Codec::H264, _) => [5.5, 8.0, 8.0, 8.0],
-        (Codec::H265, 1) => [1.3, 1.3, 1.3, 1.3],
-        (Codec::H265, 3) => [7.0, 12.0, 22.0, 22.0],
-        (Codec::H265, 4) => [10.0, 17.0, 32.0, 48.0],
-        (Codec::H265, _) => [4.5, 7.0, 7.0, 7.0],
-        (Codec::Av1, 1) => [1.2, 1.2, 1.2, 1.2],
-        (Codec::Av1, 3) => [6.0, 11.0, 18.0, 18.0],
-        (Codec::Av1, 4) => [8.0, 15.0, 28.0, 42.0],
-        (Codec::Av1, _) => [4.0, 6.0, 6.0, 6.0],
+    // One table for every codec: H.265 and AV1 spend their efficiency on
+    // picture quality at the same rate, not on a lower rate.
+    let rates = match quality {
+        1 => [1.5, 1.5, 1.5, 1.5],
+        3 => [8.0, 14.0, 24.0, 24.0],
+        4 => [12.0, 20.0, 36.0, 60.0],
+        _ => [5.5, 8.0, 8.0, 8.0],
     };
     let size = crate::media::geometry::output_size(source.0, source.1, quality);
     let pixels = u64::from(size.0) * u64::from(size.1);
@@ -452,6 +446,26 @@ impl WindowAdmission {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media::encoding::Codec;
+
+    #[test]
+    fn every_codec_gets_the_h264_rates() {
+        let format = |codec| Format {
+            codec,
+            chroma: 1,
+            depth: 8,
+        };
+        for quality in 1..=4 {
+            for (source, fps) in [((1920, 1080), 60), ((2560, 1440), 120), ((3840, 2160), 30)] {
+                let h264 = standard(format(Codec::H264), quality, source, fps).maximum;
+                assert_eq!(standard(format(Codec::H265), quality, source, fps).maximum, h264);
+                assert_eq!(standard(format(Codec::Av1), quality, source, fps).maximum, h264);
+            }
+        }
+        // The menu's figures at 1080p60: 高清 8M, 超清 14M.
+        assert_eq!(standard(format(Codec::Av1), 2, (1920, 1080), 60).maximum, 8_000_000);
+        assert_eq!(standard(format(Codec::H265), 3, (1920, 1080), 60).maximum, 14_000_000);
+    }
 
     #[test]
     fn bitrate_first_keeps_fps_until_a_quarter_of_the_tier() {
