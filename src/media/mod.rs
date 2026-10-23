@@ -7,6 +7,7 @@ pub(crate) mod decoder;
 pub(crate) mod decoder_pool;
 pub(crate) mod decoder_result;
 pub(crate) mod dependency_descriptor;
+pub(crate) mod frame_crypto;
 pub(crate) mod frame_meta;
 pub(crate) mod microphone;
 pub(crate) mod video_color;

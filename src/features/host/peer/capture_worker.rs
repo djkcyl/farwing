@@ -115,6 +115,9 @@ pub(super) fn capture_loop(
     let mut membership = None::<encode_group::Membership>;
     // Forwarding just ended: back to this participant's own encoder key.
     let mut forwarded_before = false;
+    // A frame went to this participant directly: its viewer has the track a
+    // forwarded stream stands in for.
+    let mut shown = false;
     let mut leading = true;
     // Follower: decoding must (re)start at a keyframe; when one was asked.
     let mut awaiting = true;
@@ -260,7 +263,7 @@ pub(super) fn capture_loop(
         }
 
         // Forwarded: the forwarder uplink takes this stream's frames instead.
-        let forwarding = forwarded.load(Ordering::Acquire);
+        let forwarding = forwarded.load(Ordering::Acquire) && shown;
         // Which encoder this participant uses: lead a group or follow one.
         if wanted.capturing {
             let key = encode_group::Key {
@@ -618,6 +621,7 @@ pub(super) fn capture_loop(
             sender
                 .blocking_send(encoded)
                 .context(t().features.peer_send_queue_closed)?;
+            shown = true;
             continue;
         }
 
@@ -1288,6 +1292,7 @@ pub(super) fn capture_loop(
                 sender
                     .blocking_send(frame)
                     .context(t().features.peer_send_queue_closed)?;
+                shown = true;
             }
         }
     }

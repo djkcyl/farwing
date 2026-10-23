@@ -15,6 +15,7 @@ use super::workers::{SessionWorkers, std_mutex_lock};
 use crate::account::api::ServerApi;
 use crate::features::stream_control::StreamControlHandle;
 use crate::features::stream_control::wire::{ForwardStatus, MediaForward};
+use crate::media::frame_crypto::{Decryptor, FrameKey};
 use crate::transport::rtcp_timing::RtcpTiming;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -54,6 +55,9 @@ pub(super) struct HostSide {
 
 struct Active {
     room: String,
+    tracks: Vec<(u32, String)>,
+    /// End-to-end mode: the frame keys.
+    decrypt: Option<Arc<StdMutex<Decryptor>>>,
     connection: Arc<RTCPeerConnection>,
     stop: CancellationToken,
     /// Forwarder SSRC of each forwarded track, by this viewer's track index.
@@ -92,6 +96,23 @@ impl Forwarding {
             let Some(instruction) = instructions.borrow_and_update().clone() else {
                 continue;
             };
+            // The same room and tracks with a new frame key: no new connection.
+            if let Some(key) = self.rekey(&instruction) {
+                let status = match key {
+                    Ok(()) => ForwardStatus {
+                        generation: instruction.generation,
+                        receiving: true,
+                        error: String::new(),
+                    },
+                    Err(error) => ForwardStatus {
+                        generation: instruction.generation,
+                        receiving: false,
+                        error: format!("{error:#}"),
+                    },
+                };
+                context.stream_control.forward_status(status);
+                continue;
+            }
             if let Some(old) = self.take() {
                 old.stop.cancel();
                 let _ = old.connection.close().await;
@@ -128,6 +149,28 @@ impl Forwarding {
             old.stop.cancel();
             let _ = old.connection.close().await;
         }
+    }
+
+    /// `Some` when `instruction` only changes the frame key of the active
+    /// room.
+    fn rekey(&self, instruction: &MediaForward) -> Option<Result<()>> {
+        let active = std_mutex_lock(&self.active);
+        let active = active.as_ref()?;
+        let tracks: Vec<(u32, String)> = instruction
+            .tracks
+            .iter()
+            .map(|t| (t.index, t.track.clone()))
+            .collect();
+        if instruction.room != active.room || tracks != active.tracks {
+            return None;
+        }
+        let decrypt = active.decrypt.as_ref()?;
+        Some(
+            FrameKey::new(instruction.key_id as u8, &instruction.key).map(|key| {
+                tracing::info!(key = instruction.key_id, "new forwarded frame key");
+                std_mutex_lock(decrypt).add_key(key);
+            }),
+        )
     }
 
     async fn join(
@@ -179,6 +222,15 @@ impl Forwarding {
         }
         let stop = context.stop.child_token();
         let ssrcs = Arc::new(StdMutex::new(BTreeMap::new()));
+        let decrypt = match instruction.mode.as_str() {
+            "e2ee" => {
+                let mut keys = Decryptor::default();
+                keys.add_key(FrameKey::new(instruction.key_id as u8, &instruction.key)?);
+                Some(Arc::new(StdMutex::new(keys)))
+            }
+            "compatible" => None,
+            other => bail!("unknown forwarding mode {other}"),
+        };
         // Forwarder track ID → this viewer's track index.
         let indexes: BTreeMap<String, i32> = instruction
             .tracks
@@ -196,6 +248,7 @@ impl Forwarding {
             let context = context.clone();
             let stop = stop.clone();
             let ssrcs = ssrcs.clone();
+            let decrypt = decrypt.clone();
             let weak = Arc::downgrade(&connection);
             connection.on_track(Box::new(move |track, receiver, _| {
                 let Some(index) = indexes.get(&track.id()).copied() else {
@@ -214,6 +267,7 @@ impl Forwarding {
                 let stop = stop.clone();
                 let context = context.clone();
                 let rtcp_timing = rtcp_timing.clone();
+                let decrypt = decrypt.clone();
                 let _ = owner.spawn_in(stop.clone(), async move {
                     let parameters = ReceiveParameters::of(&receiver.get_parameters().await);
                     let codec = track.codec();
@@ -278,6 +332,7 @@ impl Forwarding {
                             receiver_feedback: Some(receiver_feedback),
                             receiver_feedback_sender: feedback,
                             stream_control: context.stream_control.clone(),
+                            decrypt,
                         },
                     )
                     .await;
@@ -287,6 +342,12 @@ impl Forwarding {
         }
         *std_mutex_lock(&self.active) = Some(Active {
             room: instruction.room.clone(),
+            tracks: instruction
+                .tracks
+                .iter()
+                .map(|t| (t.index, t.track.clone()))
+                .collect(),
+            decrypt,
             connection: connection.clone(),
             stop,
             ssrcs,

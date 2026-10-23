@@ -163,6 +163,8 @@ struct Ownership {
     wol: bool,
     /// Concurrent participants this host admits (published as policy).
     max_participants: u32,
+    /// How this host's picture passes the server's forwarder.
+    forwarding: super::forwarding::Mode,
     power_executing: bool,
     port_revision: u64,
     audio_device: watch::Sender<Option<super::audio::Device>>,
@@ -247,6 +249,7 @@ impl Default for Handle {
                 remote_power: false,
                 wol: false,
                 max_participants: farwing_protocol::limits::DEFAULT_MAX_PARTICIPANTS,
+                forwarding: Default::default(),
                 power_executing: false,
                 port_revision: 0,
                 audio_device: watch::channel(None).0,
@@ -533,6 +536,8 @@ impl Handle {
         state.remote_power = snapshot.remote_power;
         state.wol = snapshot.wol;
         state.max_participants = snapshot.max_participants;
+        state.forwarding = snapshot.forwarding;
+        super::forwarding::set_mode(snapshot.forwarding);
         state.status = snapshot.status;
         self.assistance.replace(snapshot.assistance);
     }
@@ -614,6 +619,7 @@ impl Handle {
                 remote_power,
                 wol,
                 max_participants,
+                forwarding,
             )) => {
                 let _ = handle.assistance.configure(assistance);
                 handle.set_allowed(allowed);
@@ -632,6 +638,8 @@ impl Handle {
                 state.remote_power = remote_power;
                 state.wol = wol;
                 state.max_participants = max_participants;
+                state.forwarding = forwarding;
+                super::forwarding::set_mode(forwarding);
                 state.dirty = false;
                 state.status.saving = false;
             }
@@ -670,6 +678,24 @@ impl Handle {
         anyhow::ensure!(state.active, "{}", t().features.host_account_session_ended);
         if state.max_participants != limit {
             state.max_participants = limit;
+            state.settings_revision = state.settings_revision.wrapping_add(1);
+            state.dirty = true;
+            state.status.saving = true;
+            state.status.settings_error = None;
+        }
+        Ok(())
+    }
+    pub(crate) fn forwarding_mode(&self) -> super::forwarding::Mode {
+        lock(&self.ownership).forwarding
+    }
+    /// How this host's picture passes the server's forwarder; a change
+    /// applies to the next forwarding room.
+    pub(crate) fn set_forwarding_mode(&self, mode: super::forwarding::Mode) -> anyhow::Result<()> {
+        let mut state = lock(&self.ownership);
+        anyhow::ensure!(state.active, "{}", t().features.host_account_session_ended);
+        if state.forwarding != mode {
+            state.forwarding = mode;
+            super::forwarding::set_mode(mode);
             state.settings_revision = state.settings_revision.wrapping_add(1);
             state.dirty = true;
             state.status.saving = true;
@@ -1021,6 +1047,7 @@ impl Handle {
                 remote_power,
                 wol,
                 max_participants,
+                forwarding,
             ) = {
                 let state = lock(&self.ownership);
                 if !state.dirty {
@@ -1040,6 +1067,7 @@ impl Handle {
                     state.remote_power,
                     state.wol,
                     state.max_participants,
+                    state.forwarding,
                 )
             };
             let result = if crate::platform::windows::host_service::resident::managed() {
@@ -1058,6 +1086,7 @@ impl Handle {
                         remote_power,
                         wol,
                         max_participants,
+                        forwarding,
                     },
                 )
                 .await
@@ -1077,6 +1106,7 @@ impl Handle {
                         remote_power,
                         wol,
                         max_participants,
+                        forwarding,
                     )
                 })
                 .await

@@ -90,8 +90,12 @@ struct Slot {
     running: Option<Running>,
 }
 
+/// The uplink's frame cipher in end-to-end mode.
+pub(crate) type Cipher = Arc<Mutex<crate::media::frame_crypto::Encryptor>>;
+
 pub(crate) struct Uplink {
     pc: Arc<RTCPeerConnection>,
+    cipher: Option<Cipher>,
     slots: Mutex<Vec<Slot>>,
     cancel: CancellationToken,
     state: watch::Receiver<RTCPeerConnectionState>,
@@ -113,7 +117,10 @@ fn media_engine() -> Result<MediaEngine> {
 impl Uplink {
     /// A connection with [`TRACKS`] send-only video tracks; returns it and
     /// its offer (candidates gathered).
-    pub(crate) async fn new(ice_servers: Vec<RTCIceServer>) -> Result<(Self, String)> {
+    pub(crate) async fn new(
+        ice_servers: Vec<RTCIceServer>,
+        cipher: Option<Cipher>,
+    ) -> Result<(Self, String)> {
         let cancel = CancellationToken::new();
         let owner = cancel.clone();
         let transport = Transport::for_owner(
@@ -267,6 +274,7 @@ impl Uplink {
         Ok((
             Self {
                 pc,
+                cipher,
                 slots: Mutex::new(slots),
                 cancel,
                 state,
@@ -328,6 +336,7 @@ impl Uplink {
                         group,
                         &self.cancel,
                         Arc::downgrade(&self.pc),
+                        self.cipher.clone(),
                     );
                     tracing::info!(track = index, key = ?group.group.key(), "uplink track follows an encoder group");
                     slots[index].running = Some(running);
@@ -364,6 +373,7 @@ fn start(
     group: &encode_group::Forwarded,
     uplink: &CancellationToken,
     connection: std::sync::Weak<RTCPeerConnection>,
+    cipher: Option<Cipher>,
 ) -> Running {
     let cancel = uplink.child_token();
     let timeline = Timeline::new();
@@ -404,6 +414,7 @@ fn start(
             send_cancel: cancel.clone(),
             sent_first_frame: Arc::new(AtomicBool::new(false)),
             worker_started: Instant::now(),
+            encrypt: cipher,
         },
         frames,
     );

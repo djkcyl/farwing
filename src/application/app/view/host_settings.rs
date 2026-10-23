@@ -1,6 +1,9 @@
 use super::*;
 use crate::i18n::t;
 
+/// The session limit and forwarding mode dropdowns share one width.
+const LIMIT_COMBO_WIDTH: f32 = 200.0;
+
 impl DeviceCenterApp {
     pub(super) fn notification_settings(&mut self, ui: &mut egui::Ui) {
         let text = &t().settings;
@@ -67,7 +70,8 @@ impl DeviceCenterApp {
         let mut wol = host.wol_allowed();
         let mut clipboard = host.clipboard_settings();
         let mut max_participants = host.max_participants();
-        let before = (files, ports, power, wol, clipboard, max_participants);
+        let mut forwarding = host.forwarding_mode();
+        let before = (files, ports, power, wol, clipboard, max_participants, forwarding);
         let enabled = usize::from(clipboard.enabled)
             + usize::from(clipboard.enabled && clipboard.files)
             + usize::from(files)
@@ -120,20 +124,42 @@ impl DeviceCenterApp {
                         }
                     });
                     ui.add_space(theme::MENU_GROUP_GAP);
-                    ui.horizontal(|ui| {
-                        ui.label(text.max_participants);
-                        egui::ComboBox::from_id_salt("host-max-participants")
-                            .selected_text((text.people)(max_participants))
-                            .show_ui(ui, |ui| {
-                                for limit in 1..=farwing_protocol::limits::MAX_PARTICIPANTS {
-                                    ui.selectable_value(
-                                        &mut max_participants,
-                                        limit,
-                                        (text.people)(limit),
-                                    );
-                                }
-                            });
-                    });
+                    egui::Grid::new("host-session-limits")
+                        .num_columns(2)
+                        .spacing(egui::vec2(12.0, 6.0))
+                        .show(ui, |ui| {
+                            ui.label(text.max_participants);
+                            egui::ComboBox::from_id_salt("host-max-participants")
+                                .width(LIMIT_COMBO_WIDTH)
+                                .selected_text((text.people)(max_participants))
+                                .show_ui(ui, |ui| {
+                                    for limit in 1..=farwing_protocol::limits::MAX_PARTICIPANTS {
+                                        ui.selectable_value(
+                                            &mut max_participants,
+                                            limit,
+                                            (text.people)(limit),
+                                        );
+                                    }
+                                });
+                            ui.end_row();
+                            if account {
+                                use crate::features::host::forwarding::Mode;
+                                let label = |mode| match mode {
+                                    Mode::E2ee => text.forwarding_e2ee,
+                                    Mode::Compatible => text.forwarding_compatible,
+                                };
+                                ui.label(text.forwarding);
+                                egui::ComboBox::from_id_salt("host-forwarding-mode")
+                                    .width(LIMIT_COMBO_WIDTH)
+                                    .selected_text(label(forwarding))
+                                    .show_ui(ui, |ui| {
+                                        for mode in [Mode::E2ee, Mode::Compatible] {
+                                            ui.selectable_value(&mut forwarding, mode, label(mode));
+                                        }
+                                    });
+                                ui.end_row();
+                            }
+                        });
                 });
             ui.add_space(theme::MENU_GROUP_GAP);
         }
@@ -144,6 +170,7 @@ impl DeviceCenterApp {
             (wol != before.3).then(|| host.set_wol_allowed(wol)),
             (clipboard != before.4).then(|| host.set_clipboard_settings(clipboard)),
             (max_participants != before.5).then(|| host.set_max_participants(max_participants)),
+            (forwarding != before.6).then(|| host.set_forwarding_mode(forwarding)),
         ];
         let mut changed = false;
         for result in results.into_iter().flatten() {

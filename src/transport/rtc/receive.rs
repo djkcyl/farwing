@@ -63,6 +63,8 @@ pub(super) struct TrackForwardContext {
     pub(super) receiver_feedback_sender: mpsc::UnboundedSender<VideoReceiverFeedback>,
     /// Carries `VideoFeedback` to the host.
     pub(super) stream_control: crate::features::stream_control::StreamControlHandle,
+    /// End-to-end forwarding: frames are decrypted before decoding.
+    pub(super) decrypt: Option<Arc<StdMutex<crate::media::frame_crypto::Decryptor>>>,
 }
 
 pub(super) async fn forward_remote_track(
@@ -94,6 +96,7 @@ pub(super) async fn forward_remote_track(
         receiver_feedback,
         receiver_feedback_sender,
         stream_control,
+        decrypt,
     } = context;
 
     if kind == MediaKind::Video {
@@ -125,6 +128,7 @@ pub(super) async fn forward_remote_track(
             stop,
             audio.clone(),
             stream_control,
+            decrypt,
         )
         .await;
         return;
@@ -206,6 +210,7 @@ pub(super) async fn forward_video_track(
     // Carries the session's cinema-mode switch.
     audio: crate::media::audio::AudioPlayback,
     stream_control: crate::features::stream_control::StreamControlHandle,
+    decrypt: Option<Arc<StdMutex<crate::media::frame_crypto::Decryptor>>>,
 ) {
     let mut ingress = match OrderedVideoIngress::open(&track).await {
         Ok(ingress) => ingress,
@@ -476,6 +481,7 @@ pub(super) async fn forward_video_track(
                     track.ssrc(),
                     &mut loss_recovery,
                     receiver.recovery_snapshot(),
+                    decrypt.as_deref(),
                 )
                 .await;
             }
@@ -507,6 +513,7 @@ pub(super) async fn forward_video_track(
                     track.ssrc(),
                     &mut loss_recovery,
                     receiver.recovery_snapshot(),
+                    decrypt.as_deref(),
                 )
                 .await;
             }
@@ -806,6 +813,7 @@ pub(super) async fn forward_video_track(
                     track.ssrc(),
                     &mut loss_recovery,
                     receiver.recovery_snapshot(),
+                    decrypt.as_deref(),
                 )
                 .await;
 
@@ -863,6 +871,7 @@ pub(super) async fn emit_video_receiver_result(
     media_ssrc: u32,
     loss_recovery: &mut super::recovery::LossRecovery,
     snapshot: Option<crate::transport::video_receiver::recovery::Snapshot>,
+    decrypt: Option<&StdMutex<crate::media::frame_crypto::Decryptor>>,
 ) {
     if let Some(meta) = result.decoded_meta {
         loss_recovery.decoded(meta, result.marked_ltr, snapshot);
@@ -932,12 +941,36 @@ pub(super) async fn emit_video_receiver_result(
         if frame.keyframe {
             video_keyframe_tx.send_modify(|value| *value += 1);
         }
+        // End-to-end forwarding: the frame as the host encoded it.
+        let data = match decrypt {
+            Some(decrypt) => {
+                use crate::media::frame_crypto::Codec;
+                let codec = match frame.codec {
+                    VideoCodecKind::H264 => Codec::H264,
+                    VideoCodecKind::H265 => Codec::H265,
+                    VideoCodecKind::Av1 => Codec::Av1,
+                };
+                let opened = decrypt
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .decrypt(codec, &frame.data);
+                match opened {
+                    Ok(plain) => plain,
+                    Err(error) => {
+                        tracing::debug!(%error, "forwarded frame not decrypted; asking for a keyframe");
+                        let _ = send_picture_loss_indication(connection, media_ssrc).await;
+                        continue;
+                    }
+                }
+            }
+            None => frame.data,
+        };
         let encoded = EncodedVideoFrame {
             completion: DecodeCompletion::new(frame.frame_id, receiver_feedback_sender.clone()),
             parameter_format: frame.parameter_format,
             color_space: frame.color_space,
             frame_id: frame.frame_id,
-            data: Bytes::from(frame.data),
+            data: Bytes::from(data),
             rtp_timestamp: frame.rtp_timestamp,
             received_at: frame.received_at,
             assembled_at: frame.assembled_at,

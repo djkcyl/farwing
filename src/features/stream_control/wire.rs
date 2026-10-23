@@ -217,6 +217,11 @@ pub(crate) struct MediaForward {
     /// The session the controller subscribes with.
     #[prost(string, tag = "5")]
     pub(crate) session: String,
+    /// End-to-end mode: the frame key (16-byte AES key, 4-byte salt).
+    #[prost(bytes = "vec", tag = "6")]
+    pub(crate) key: Vec<u8>,
+    #[prost(uint32, tag = "7")]
+    pub(crate) key_id: u32,
 }
 
 #[derive(Clone, PartialEq, Eq, prost::Message)]

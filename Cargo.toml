@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 farwing-protocol = { path = "crates/protocol", features = ["peer", "crypto"] }
 farwing-rtc-wire = { path = "crates/rtc-wire" }
+aes-gcm = "0.10"
 anyhow = "1.0"
 async-trait = "0.1"
 bytemuck = { version = "1.25.2", features = ["derive", "min_const_generics"] }

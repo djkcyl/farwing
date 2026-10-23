@@ -92,6 +92,9 @@ pub(crate) struct Settings {
     pub power_control: &'static str,
     pub wol_assistance: &'static str,
     pub max_participants: &'static str,
+    pub forwarding: &'static str,
+    pub forwarding_e2ee: &'static str,
+    pub forwarding_compatible: &'static str,
     /// Number of people
     pub people: fn(u32) -> String,
     pub background_service: &'static str,
@@ -454,6 +457,9 @@ pub(crate) const ZH_CN: Settings = Settings {
     power_control: "关机和重启",
     wol_assistance: "局域网唤醒协助",
     max_participants: "同时连接人数上限",
+    forwarding: "多人转发",
+    forwarding_e2ee: "端到端加密",
+    forwarding_compatible: "兼容模式",
     people: |count| format!("{count} 人"),
     background_service: "后台服务",
     manage: "管理",
@@ -807,6 +813,9 @@ pub(crate) const EN: Settings = Settings {
     power_control: "Shut down and restart",
     wol_assistance: "Wake-on-LAN assistance",
     max_participants: "Maximum simultaneous connections",
+    forwarding: "Forwarding",
+    forwarding_e2ee: "End-to-end encrypted",
+    forwarding_compatible: "Compatible",
     people: |count| {
         if count == 1 {
             "1 person".to_owned()

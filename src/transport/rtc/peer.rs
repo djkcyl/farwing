@@ -855,6 +855,7 @@ impl NativePeer {
                                 receiver_feedback,
                                 receiver_feedback_sender: feedback,
                                 stream_control,
+                                decrypt: None,
                             },
                         )
                         .await;

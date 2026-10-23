@@ -197,7 +197,9 @@ pub(super) fn button_hint(members: &[Member]) -> String {
 }
 
 /// The participants list opened from the toolbar button.
-pub(super) fn menu(response: &egui::Response, members: &[Member]) {
+/// `forwarded`: the picture comes through the server's forwarder, end-to-end
+/// encrypted or not.
+pub(super) fn menu(response: &egui::Response, members: &[Member], forwarded: Option<bool>) {
     egui::Popup::menu(response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .gap(6.0)
@@ -217,6 +219,24 @@ pub(super) fn menu(response: &egui::Response, members: &[Member]) {
                 FontId::proportional(theme::SMALL),
                 theme::MUTED,
             );
+            if let Some(e2ee) = forwarded {
+                let (line, _) = ui.allocate_exact_size(
+                    vec2(ui.available_width(), theme::MENU_HEIGHT),
+                    egui::Sense::hover(),
+                );
+                let viewer = &t().viewer;
+                ui.painter().text(
+                    line.left_center() + vec2(10.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    if e2ee {
+                        viewer.participants_forwarded_e2ee
+                    } else {
+                        viewer.participants_forwarded_compatible
+                    },
+                    FontId::proportional(theme::SMALL),
+                    theme::MUTED,
+                );
+            }
             for member in members {
                 ui.push_id(member.id, |ui| participant_row(ui, member));
             }

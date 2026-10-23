@@ -86,6 +86,8 @@ pub(crate) enum Request {
         wol: bool,
         #[serde(default = "default_max_participants")]
         max_participants: u32,
+        #[serde(default)]
+        forwarding: crate::features::host::forwarding::Mode,
     },
     Disconnect {
         account: String,
@@ -144,6 +146,8 @@ pub(crate) struct Snapshot {
     pub wol: bool,
     #[serde(default = "default_max_participants")]
     pub max_participants: u32,
+    #[serde(default)]
+    pub forwarding: crate::features::host::forwarding::Mode,
     pub status: host::Status,
     pub capabilities: Option<host::desktop::Capabilities>,
     /// What the hosting process uses for direct connections.
@@ -885,6 +889,7 @@ async fn run_authorized_account(
                                     remote_power: current.host.power_allowed(),
                                     wol: current.host.wol_allowed(),
                                     max_participants: current.host.max_participants(),
+                                    forwarding: current.host.forwarding_mode(),
                                     status: current.host.status(),
                                     capabilities: current.host.capabilities().map(|v| (*v).clone()),
                                     direct: crate::transport::direct::managed::HostDirect::current(),
@@ -932,6 +937,7 @@ async fn run_authorized_account(
                                     remote_power,
                                     wol,
                                     max_participants,
+                                    forwarding,
                                 } => {
                                     ensure!(expected == account, "{}", t().system.service_account_changed);
                                     encoding.validate()?;
@@ -947,6 +953,7 @@ async fn run_authorized_account(
                                     current.host.set_power_allowed(remote_power)?;
                                     current.host.set_wol_allowed(wol)?;
                                     current.host.set_max_participants(max_participants)?;
+                                    current.host.set_forwarding_mode(forwarding)?;
                                     current.host.set_allowed(allowed);
                                     current.host.persist_settings().await;
                                     if let Some(error) = current.host.status().settings_error {

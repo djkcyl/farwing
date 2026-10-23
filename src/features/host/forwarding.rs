@@ -6,7 +6,8 @@
 //! on each participant's connection. A participant that cannot receive
 //! through the forwarder gets its picture directly again.
 
-use super::peer::uplink::Uplink;
+use super::peer::uplink::{Cipher, Uplink};
+use crate::media::frame_crypto::{Encryptor, FrameKey};
 use crate::features::stream_control::wire::{ForwardStatus, ForwardedTrack, MediaForward};
 use crate::session::host_client::HostClient;
 use farwing_protocol::api::{ForwardMode, Forwarding};
@@ -17,6 +18,33 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Notify, watch};
 use webrtc::ice_transport::ice_server::RTCIceServer;
 
+/// How the host owner wants the picture to pass the forwarder.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Mode {
+    /// Frames are encrypted for the participants; the server passes
+    /// ciphertext.
+    #[default]
+    E2ee,
+    /// The server can see the picture (browsers without encoded transforms).
+    Compatible,
+}
+
+static MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The owner's choice, from the host settings.
+pub(crate) fn set_mode(mode: Mode) {
+    MODE.store(mode == Mode::Compatible, Ordering::Release);
+}
+
+fn preferred() -> ForwardMode {
+    if MODE.load(Ordering::Acquire) {
+        ForwardMode::Compatible
+    } else {
+        ForwardMode::E2ee
+    }
+}
+
 /// How often participants and encoder groups are looked at.
 const TICK: Duration = Duration::from_millis(250);
 /// The server's forwarding settings are read again after this.
@@ -26,6 +54,8 @@ const RETRY: Duration = Duration::from_secs(30);
 /// A participant that could not receive through the forwarder gets its
 /// picture directly for this long.
 const EXCLUDED: Duration = Duration::from_secs(300);
+/// A new frame key is used this long after the participants got it.
+const KEY_SWITCH: Duration = Duration::from_secs(2);
 
 struct Entry {
     session_id: String,
@@ -35,8 +65,8 @@ struct Entry {
     eligible: bool,
     excluded_until: Option<Instant>,
     instruction: watch::Sender<Option<MediaForward>>,
-    /// The room and tracks last told.
-    told: Option<(String, Vec<(u32, String)>)>,
+    /// The room, tracks and frame key last told.
+    told: Option<(String, Vec<(u32, String)>, u8)>,
 }
 
 impl Entry {
@@ -45,9 +75,49 @@ impl Entry {
     }
 }
 
+/// End-to-end mode: the frame key participants get, and the uplink's cipher.
+struct Keys {
+    id: u8,
+    material: [u8; crate::media::frame_crypto::KEY_BYTES],
+    cipher: Cipher,
+    /// The uplink still encrypts with the previous key until then.
+    switch_at: Option<Instant>,
+}
+
+impl Keys {
+    fn new() -> anyhow::Result<Self> {
+        let material = FrameKey::generate();
+        Ok(Self {
+            id: 1,
+            material,
+            cipher: Arc::new(Mutex::new(Encryptor::new(FrameKey::new(1, &material)?))),
+            switch_at: None,
+        })
+    }
+
+    /// A new key for the participants (one left); the uplink takes it once
+    /// they have had time to receive it.
+    fn rotate(&mut self) {
+        self.id = self.id.wrapping_add(1).max(1);
+        self.material = FrameKey::generate();
+        self.switch_at = Some(Instant::now() + KEY_SWITCH);
+    }
+
+    fn switch_due(&mut self) {
+        if self.switch_at.is_some_and(|at| Instant::now() >= at) {
+            self.switch_at = None;
+            if let Ok(key) = FrameKey::new(self.id, &self.material) {
+                self.cipher.lock().unwrap_or_else(|e| e.into_inner()).set_key(key);
+                tracing::info!(key = self.id, "forwarded frames use the new key");
+            }
+        }
+    }
+}
+
 struct Room {
     id: String,
     mode: ForwardMode,
+    keys: Option<Keys>,
     uplink: Arc<Uplink>,
     sessions: BTreeSet<String>,
 }
@@ -210,17 +280,18 @@ async fn step() -> bool {
             .collect();
         (forwarding, candidates, state.room.as_ref().map(|r| r.id.clone()))
     };
-    // Frames are encrypted for the participants only with end-to-end
-    // encryption, which comes with the mode setting; until then forwarding
-    // needs compatible mode.
-    let mode = forwarding
+    // The owner's mode when the server allows it; end-to-end otherwise.
+    let mode = forwarding.as_ref().map(|f| {
+        let preferred = preferred();
+        if f.modes.contains(&preferred) {
+            preferred
+        } else {
+            ForwardMode::E2ee
+        }
+    });
+    let wanted = forwarding
         .as_ref()
-        .filter(|f| f.modes.contains(&ForwardMode::Compatible))
-        .map(|_| ForwardMode::Compatible);
-    let wanted = mode.is_some()
-        && forwarding
-            .as_ref()
-            .is_some_and(|f| candidates.len() >= f.threshold as usize);
+        .is_some_and(|f| candidates.len() >= f.threshold as usize);
 
     let failed = state().room.as_ref().is_some_and(|r| r.uplink.failed());
     if room.is_some() && (!wanted || failed) {
@@ -248,6 +319,12 @@ async fn step() -> bool {
         {
             Ok(()) => {
                 if let Some(room) = state().room.as_mut() {
+                    // Someone left: the frames get a key they do not have.
+                    if !room.sessions.is_subset(&sessions)
+                        && let Some(keys) = room.keys.as_mut()
+                    {
+                        keys.rotate();
+                    }
                     room.sessions = sessions.clone();
                 }
             }
@@ -255,8 +332,12 @@ async fn step() -> bool {
         }
     }
     let mut state = state();
-    let Some(room) = state.room.as_ref() else { return true };
+    let Some(room) = state.room.as_mut() else { return true };
+    if let Some(keys) = room.keys.as_mut() {
+        keys.switch_due();
+    }
     let (room_id, mode, uplink) = (room.id.clone(), room.mode, room.uplink.clone());
+    let frame_key = room.keys.as_ref().map(|k| (k.id, k.material.to_vec()));
     let room_sessions = room.sessions.clone();
     let mapping = uplink.reconcile();
     let mut generation = state.generation;
@@ -275,7 +356,8 @@ async fn step() -> bool {
         if tracks.is_empty() {
             continue;
         }
-        let told = Some((room_id.clone(), tracks.clone()));
+        let key_id = frame_key.as_ref().map_or(0, |(id, _)| *id);
+        let told = Some((room_id.clone(), tracks.clone(), key_id));
         if entry.told != told {
             generation = generation.wrapping_add(1);
             entry.told = told;
@@ -288,6 +370,8 @@ async fn step() -> bool {
                     .map(|(index, track)| ForwardedTrack { index, track })
                     .collect(),
                 session: entry.session_id.clone(),
+                key: frame_key.as_ref().map(|(_, k)| k.clone()).unwrap_or_default(),
+                key_id: u32::from(key_id),
             }));
         }
     }
@@ -303,17 +387,19 @@ fn mode_name(mode: ForwardMode) -> &'static str {
 }
 
 async fn open(client: &HostClient, mode: ForwardMode, candidates: &BTreeMap<u64, String>) {
+    let result: anyhow::Result<(String, Arc<Uplink>, Option<Keys>)>;
     let ice = state().ice.clone();
     let sessions: Vec<String> = candidates.values().cloned().collect();
-    let result = async {
-        let (uplink, offer) = Uplink::new(ice).await?;
+    result = async {
+        let keys = (mode == ForwardMode::E2ee).then(Keys::new).transpose()?;
+        let (uplink, offer) = Uplink::new(ice, keys.as_ref().map(|k| k.cipher.clone())).await?;
         let uplink = Arc::new(uplink);
         match client.sfu_create_room(sessions.clone(), mode, offer).await {
             Ok(created) => {
                 uplink.answer(created.answer).await?;
                 tracing::info!(room = %created.room, node = ?created.node, participants = sessions.len(),
-                    "forwarding room opened");
-                Ok((created.room, uplink))
+                    mode = mode_name(mode), "forwarding room opened");
+                Ok((created.room, uplink, keys))
             }
             Err(error) => {
                 uplink.close().await;
@@ -324,11 +410,12 @@ async fn open(client: &HostClient, mode: ForwardMode, candidates: &BTreeMap<u64,
     .await;
     let mut state = state();
     match result {
-        Ok((id, uplink)) => {
+        Ok((id, uplink, keys)) => {
             state.retry_at = None;
             state.room = Some(Room {
                 id,
                 mode,
+                keys,
                 uplink,
                 sessions: sessions.into_iter().collect(),
             });

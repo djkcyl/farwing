@@ -344,7 +344,11 @@ pub(in crate::application::viewer) fn player_title_bar(
             participants.len(),
             &crate::application::viewer::participants::button_hint(&participants),
         );
-        crate::application::viewer::participants::menu(&response, &participants);
+        crate::application::viewer::participants::menu(
+            &response,
+            &participants,
+            bar.stream_control.forwarded_e2ee(),
+        );
     }
 
     let mut controls = ui.new_child(

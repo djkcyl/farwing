@@ -36,6 +36,8 @@ struct Record {
     wol: bool,
     #[serde(default = "max_participants_default")]
     max_participants: u32,
+    #[serde(default)]
+    forwarding: super::forwarding::Mode,
 }
 fn file_transfer_default() -> bool {
     true
@@ -84,6 +86,7 @@ impl Store {
         bool,
         bool,
         u32,
+        super::forwarding::Mode,
     )> {
         let bytes = match self.0.get_secret() {
             Ok(bytes) => bytes,
@@ -103,6 +106,7 @@ impl Store {
                     false,
                     false,
                     max_participants_default(),
+                    Default::default(),
                 ));
             }
             Err(_) => bail!("{}", t().features.host_settings_read_failed),
@@ -130,6 +134,7 @@ impl Store {
             record
                 .max_participants
                 .clamp(1, farwing_protocol::limits::MAX_PARTICIPANTS),
+            record.forwarding,
         ))
     }
     pub fn save(
@@ -146,6 +151,7 @@ impl Store {
         remote_power: bool,
         wol: bool,
         max_participants: u32,
+        forwarding: super::forwarding::Mode,
     ) -> Result<()> {
         encoding.validate()?;
         audio_quality.validate()?;
@@ -168,6 +174,7 @@ impl Store {
                 remote_power,
                 wol,
                 max_participants,
+                forwarding,
             })?)
             .map_err(|_| anyhow::anyhow!(t().features.host_settings_save_failed))
     }

@@ -683,6 +683,15 @@ impl StreamControlHandle {
     ) -> tokio::sync::watch::Receiver<Option<wire::MediaForward>> {
         self.forward.subscribe()
     }
+    /// The picture comes through the server's forwarder: whether it is
+    /// end-to-end encrypted.
+    pub(crate) fn forwarded_e2ee(&self) -> Option<bool> {
+        self.forward
+            .borrow()
+            .as_ref()
+            .filter(|f| !f.room.is_empty())
+            .map(|f| f.mode == "e2ee")
+    }
     /// Tell the host whether this viewer receives through the forwarder.
     pub(crate) fn forward_status(&self, status: wire::ForwardStatus) {
         let _ = self

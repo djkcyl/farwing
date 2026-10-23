@@ -252,6 +252,8 @@ pub(super) struct Sending<O> {
     pub send_cancel: CancellationToken,
     pub sent_first_frame: Arc<AtomicBool>,
     pub worker_started: Instant,
+    /// End-to-end forwarding: frames are encrypted before packetization.
+    pub encrypt: Option<Arc<Mutex<crate::media::frame_crypto::Encryptor>>>,
 }
 
 /// Packetizes and sends encoded frames until cancelled.
@@ -273,6 +275,7 @@ pub(super) fn spawn_sending<O: Owner>(
         send_cancel,
         sent_first_frame,
         worker_started,
+        encrypt,
     } = sending;
     let origin = timeline.origin;
     let sent = timeline.sent.clone();
@@ -354,15 +357,36 @@ pub(super) fn spawn_sending<O: Owner>(
             let base_header = maximum_header(&base, track.mid_len(), color.len(), mixed);
             let repair_header = maximum_header(&repair, track.mid_len(), color.len(), mixed);
             let mtu = transport.payload_limit(header, repair_header);
+            // End-to-end forwarding: only the participants read the frame.
+            let data = match &encrypt {
+                Some(cipher) => {
+                    use crate::media::frame_crypto::Codec as Wire;
+                    let codec = match frame.format.codec {
+                        crate::features::host::format::Codec::H264 => Wire::H264,
+                        crate::features::host::format::Codec::H265 => Wire::H265,
+                        crate::features::host::format::Codec::Av1 => Wire::Av1,
+                    };
+                    match lock(cipher).encrypt(codec, &frame.data) {
+                        Ok(sealed) => sealed,
+                        Err(error) => {
+                            tracing::warn!(%error, track = index, "frame not encrypted; waiting for a keyframe");
+                            awaiting_keyframe = true;
+                            sending_keyframe.store(true, Ordering::Release);
+                            continue;
+                        }
+                    }
+                }
+                None => frame.data,
+            };
             let payloads = match frame.format.codec {
                 crate::features::host::format::Codec::H264 => payloader
-                    .payload(mtu, &Bytes::from(frame.data))
+                    .payload(mtu, &Bytes::from(data))
                     .map_err(anyhow::Error::from),
                 crate::features::host::format::Codec::H265 => {
-                    crate::features::host::hevc::payloads(mtu, &frame.data)
+                    crate::features::host::hevc::payloads(mtu, &data)
                 }
                 crate::features::host::format::Codec::Av1 => {
-                    crate::media::av1::payloads(mtu, &frame.data, frame.keyframe)
+                    crate::media::av1::payloads(mtu, &data, frame.keyframe)
                 }
             };
             let payloads = match payloads {
@@ -670,6 +694,7 @@ impl Worker {
                 send_cancel,
                 sent_first_frame,
                 worker_started,
+                encrypt: None,
             },
             frames,
         );
