@@ -146,6 +146,27 @@ impl ScreenTabBar {
                         }
                     }
                     let snapshot = control.snapshot();
+                    if crate::features::stream_control::take_dev_virtual_screen(
+                        snapshot.ready && snapshot.topology_support.create && !snapshot.topology.pending,
+                    ) {
+                        let (width, height, _) =
+                            super::super::stream_menu::topology_menu::local_parameters(
+                                ui.ctx(),
+                                control,
+                                window
+                                    .current_monitor()
+                                    .map(|m| (m.size().width, m.size().height)),
+                            );
+                        if let Err(error) = control.apply_display_topology(
+                            self.selected,
+                            crate::features::stream_control::DisplayTopologyAction::Create {
+                                width,
+                                height,
+                            },
+                        ) {
+                            tracing::warn!(%error, "development virtual screen not added");
+                        }
+                    }
                     if snapshot.topology_support.create_visible
                         && crate::ui::controls::screen_add(
                             ui,

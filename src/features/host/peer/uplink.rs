@@ -119,6 +119,9 @@ struct Slot {
     track: Arc<VideoTrack>,
     sender: Arc<RTCRtpSender>,
     transport: Transport,
+    /// Sequence numbers and timestamps go on across the groups the track
+    /// follows: the forwarder drops packets that seem to repeat.
+    clock: Arc<Timeline>,
     running: Option<Running>,
 }
 
@@ -211,6 +214,7 @@ impl Uplink {
                 track,
                 sender,
                 transport: slot_transport,
+                clock: Timeline::new(),
                 running: None,
             });
         }
@@ -498,7 +502,7 @@ fn start(
     limit: Arc<Limit>,
 ) -> Running {
     let cancel = uplink.child_token();
-    let timeline = Timeline::new();
+    let timeline = slot.clock.clone();
     let keyframe = Arc::new(AtomicBool::new(true));
     let (frames_tx, frames) = mpsc::channel(1);
     let owner = UplinkOwner(cancel.clone());
@@ -554,6 +558,7 @@ fn start(
                 if membership.ended() {
                     tracing::info!(track = index, "forwarded encoder group ended");
                     observer_cancel.cancel();
+                    crate::features::host::forwarding::wake();
                     break;
                 }
                 if let Some(output) = membership.output_changed() {

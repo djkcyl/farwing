@@ -41,11 +41,12 @@ pub(super) struct Emulator {
 }
 
 impl Emulator {
-    /// The emulator for viewer `index` of a room, if the variable names it.
-    pub fn for_viewer(index: usize) -> Option<Self> {
+    /// The emulator for viewer `index` (leg `leg`) of a room, if the
+    /// variable names it.
+    pub fn for_viewer(index: usize, leg: &str) -> Option<Self> {
         let spec = std::env::var("FARWING_DEV_SFU_NET").ok()?;
         let rules = parse(&spec, index)?;
-        tracing::warn!(viewer = index, ?rules, "development downlink emulation");
+        tracing::warn!(viewer = index, leg, ?rules, "development downlink emulation");
         let now = Instant::now();
         Some(Self {
             rules,

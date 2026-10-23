@@ -90,6 +90,8 @@ impl Forwarding {
     pub(super) async fn run(self: Arc<Self>, context: HostSide, api: ServerApi, session: String) {
         let mut instructions = context.stream_control.forward_instructions();
         tracing::info!("following the host's forwarding instructions");
+        // The host repeats its last instruction on a new route.
+        let mut handled = None;
         loop {
             tokio::select! {
                 _ = context.stop.cancelled() => break,
@@ -98,6 +100,9 @@ impl Forwarding {
             let Some(instruction) = instructions.borrow_and_update().clone() else {
                 continue;
             };
+            if handled.replace(instruction.generation) == Some(instruction.generation) {
+                continue;
+            }
             // The same room and tracks with a new frame key: no new connection.
             if let Some(key) = self.rekey(&instruction) {
                 let status = match key {
@@ -115,7 +120,13 @@ impl Forwarding {
                 context.stream_control.forward_status(status);
                 continue;
             }
-            if let Some(old) = self.take() {
+            // Other tracks of the same room: the old connection plays on until
+            // the forwarder replaces it with the new one.
+            let (replaced, left) = match self.take() {
+                Some(old) if old.room == instruction.room => (Some(old), None),
+                old => (None, old),
+            };
+            if let Some(old) = left {
                 old.stop.cancel();
                 let _ = old.connection.close().await;
                 let _ = api.sfu_unsubscribe(&old.room, &session).await;
@@ -147,6 +158,10 @@ impl Forwarding {
                     }
                 }
             };
+            if let Some(old) = replaced {
+                old.stop.cancel();
+                let _ = old.connection.close().await;
+            }
             context.stream_control.forward_status(status);
         }
         if let Some(old) = self.take() {
@@ -425,7 +440,10 @@ impl Forwarding {
                     r = first.changed() => r?,
                     r = newer.changed() => {
                         r?;
-                        bail!("superseded by a newer instruction");
+                        let generation = newer.borrow_and_update().as_ref().map(|n| n.generation);
+                        if generation != Some(instruction.generation) {
+                            bail!("superseded by a newer instruction");
+                        }
                     }
                 }
             }
@@ -435,7 +453,7 @@ impl Forwarding {
             Ok(result) => result?,
             Err(_) => bail!("no media from the forwarder in time"),
         }
-        tracing::info!(room = %instruction.room, mode = %instruction.mode,
+        tracing::info!(room = %instruction.room, %session, mode = %instruction.mode,
             tracks = instruction.tracks.len(), "receiving through the forwarder");
         Ok(())
     }

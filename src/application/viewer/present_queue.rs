@@ -46,7 +46,7 @@ pub(super) fn catch_up_override() -> Option<bool> {
 /// Content advance between consecutively shown pictures.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct ContentSteps {
-    last: Option<u32>,
+    last: Option<(u32, Instant)>,
     pub(super) steps: u64,
     pub(super) over_50ms: u64,
     pub(super) over_100ms: u64,
@@ -54,20 +54,27 @@ pub(super) struct ContentSteps {
 }
 
 impl ContentSteps {
-    fn shown(&mut self, rtp_timestamp: u32) {
-        if let Some(last) = self.last {
+    fn shown(&mut self, rtp_timestamp: u32, now: Instant) {
+        if let Some((last, at)) = self.last {
             let step = rtp_timestamp.wrapping_sub(last);
-            if step != 0 && step < 0x8000_0000 {
-                let ms = f64::from(step) / 90.0;
+            let ms = f64::from(step) / 90.0;
+            // Far more content than time passed: another stream's timeline
+            // (the picture moved between the host and the forwarder).
+            let elapsed = now.duration_since(at).as_secs_f64() * 1000.0;
+            if step != 0 && step < 0x8000_0000 && ms <= elapsed + OTHER_TIMELINE_MS {
                 self.steps += 1;
                 self.over_50ms += u64::from(ms >= 50.0);
                 self.over_100ms += u64::from(ms >= 100.0);
                 self.max_ms = self.max_ms.max(ms);
             }
         }
-        self.last = Some(rtp_timestamp);
+        self.last = Some((rtp_timestamp, now));
     }
 }
+
+/// A content step this much longer than the time between the pictures is a
+/// change of timeline, not a step.
+const OTHER_TIMELINE_MS: f64 = 5_000.0;
 
 pub(super) struct PresentQueue {
     frames: VecDeque<DecodedVideoFrame>,
@@ -199,7 +206,7 @@ impl PresentQueue {
 
     /// A picture reached the screen.
     pub(super) fn shown(&mut self, rtp_timestamp: u32) {
-        self.content.shown(rtp_timestamp);
+        self.content.shown(rtp_timestamp, Instant::now());
     }
 }
 

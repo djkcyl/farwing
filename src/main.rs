@@ -223,6 +223,9 @@ enum Commands {
         /// 测量用：以观影模式（true）或非观影模式（false）开始，不保存
         #[arg(long, hide = true, action = clap::ArgAction::Set)]
         dev_cinema: Option<bool>,
+        /// 测试用：连上后为被控添加一块虚拟屏幕（同菜单里确认添加）
+        #[arg(long, hide = true)]
+        dev_virtual_screen: bool,
         /// 测量用：自动画质从这一档开始（2–4），不使用也不保存记住的档位
         #[arg(long, hide = true, value_parser = clap::value_parser!(i32).range(2..=4))]
         dev_auto_quality: Option<i32>,
@@ -906,8 +909,12 @@ fn main() -> Result<()> {
             dev_loss,
             dev_no_recovery,
             dev_cinema,
+            dev_virtual_screen,
             dev_auto_quality,
         } => {
+            if dev_virtual_screen {
+                farwing::application::cli::dev_virtual_screen();
+            }
             if let Some(cinema) = dev_cinema {
                 farwing::application::cli::dev_cinema(cinema);
             }

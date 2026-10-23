@@ -812,6 +812,11 @@ pub fn dev_cinema(cinema: bool) {
     crate::features::stream_control::set_dev_cinema(cinema);
 }
 
+/// `connect --dev-virtual-screen`: add a virtual screen once connected.
+pub fn dev_virtual_screen() {
+    crate::features::stream_control::set_dev_virtual_screen();
+}
+
 /// `connect --dev-auto-quality`: start automatic quality at this tier (not saved).
 pub fn dev_auto_quality(quality: i32) {
     crate::features::stream_control::set_dev_auto_quality(quality);

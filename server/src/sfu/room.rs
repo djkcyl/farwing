@@ -192,6 +192,12 @@ pub struct LegStats {
     /// While the viewer's downlink is congested: what it takes.
     #[serde(default)]
     pub limit_bps: Option<u64>,
+    /// Keyframes the viewer asked for, and those passed on (before the
+    /// per-track merge).
+    #[serde(default)]
+    pub keyframes_asked: u64,
+    #[serde(default)]
+    pub keyframes_passed: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -359,6 +365,15 @@ impl Room {
 
     /// Whether `leg`'s keyframe request goes on (to the per-track merge).
     fn keyframe_allowed(&self, leg: &Leg) -> bool {
+        leg.stats.keyframes_asked.fetch_add(1, Ordering::Relaxed);
+        let allowed = self.keyframe_rationed(leg);
+        if allowed {
+            leg.stats.keyframes_passed.fetch_add(1, Ordering::Relaxed);
+        }
+        allowed
+    }
+
+    fn keyframe_rationed(&self, leg: &Leg) -> bool {
         if !leg.downlink.lock().impaired() {
             return true;
         }
@@ -507,6 +522,8 @@ impl Room {
                 loss: f64::from(leg.stats.loss.load(Ordering::Relaxed)) * 100.0 / 256.0,
                 rtt_ms: Some(leg.stats.rtt_ms.load(Ordering::Relaxed)).filter(|r| *r > 0),
                 limit_bps: leg.downlink.lock().limit(),
+                keyframes_asked: leg.stats.keyframes_asked.load(Ordering::Relaxed),
+                keyframes_passed: leg.stats.keyframes_passed.load(Ordering::Relaxed),
             })
             .collect();
         legs.sort_by(|a, b| a.id.cmp(&b.id));

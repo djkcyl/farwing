@@ -71,6 +71,8 @@ export class ForwardReceiver {
   }
 
   follow(instruction: Forward) {
+    // The host repeats its last instruction on a new route.
+    if (this.latest?.generation === instruction.generation) return;
     this.latest = instruction;
     this.queue = this.queue.then(() => this.apply(instruction));
   }
@@ -102,7 +104,11 @@ export class ForwardReceiver {
       this.context.status(instruction.generation, true, '');
       return;
     }
-    if (this.leave()) this.context.media(undefined, undefined, '');
+    // Another track of the same room: the old connection plays on until the
+    // forwarder replaces it with the new one.
+    const replaced = active?.room === instruction.room ? active : undefined;
+    if (replaced) this.active = undefined;
+    else if (this.leave()) this.context.media(undefined, undefined, '');
     try {
       if (!wanted) throw new Error('no forwarded track for this picture');
       const { video, audio } = await this.join(instruction, wanted);
@@ -113,8 +119,11 @@ export class ForwardReceiver {
     } catch (error) {
       const message = (error as Error).message || String(error);
       this.context.log(`cannot receive through the forwarder: ${message}`);
-      if (this.leave()) this.context.media(undefined, undefined, '');
+      if (this.leave() || replaced) this.context.media(undefined, undefined, '');
       this.context.status(instruction.generation, false, message);
+    } finally {
+      replaced?.connection.close();
+      replaced?.worker?.terminate();
     }
   }
 

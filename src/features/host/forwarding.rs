@@ -148,6 +148,12 @@ fn state() -> MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// A forwarded encoder group ended: its members' new group gets the track
+/// now rather than on the next tick.
+pub(crate) fn wake() {
+    WAKE.notify_one();
+}
+
 /// The server connection rooms are opened with.
 pub(crate) fn set_client(client: HostClient) {
     state().client = Some(client);
@@ -210,7 +216,7 @@ impl Registration {
     /// The participant's answer to an instruction.
     pub(crate) fn status(&self, status: &ForwardStatus) {
         let mut state = state();
-        let generation = state.generation;
+        let mut generation = state.generation;
         let Some(entry) = state.entries.get_mut(&self.key) else {
             return;
         };
@@ -227,8 +233,8 @@ impl Registration {
         tracing::warn!(participant = self.key, error = %status.error,
             "participant cannot receive through the forwarder; sending directly");
         entry.excluded_until = Some(Instant::now() + EXCLUDED);
-        direct(entry, generation.wrapping_add(1));
-        state.generation = state.generation.wrapping_add(1);
+        direct(entry, &mut generation);
+        state.generation = generation;
         drop(state);
         WAKE.notify_one();
     }
@@ -241,10 +247,12 @@ impl Drop for Registration {
     }
 }
 
-/// Back to direct media for `entry`.
-fn direct(entry: &mut Entry, generation: u32) {
+/// Back to direct media for `entry`; telling it takes the next generation.
+fn direct(entry: &mut Entry, generation: &mut u32) {
     entry.forwarded.store(false, Ordering::Release);
     if entry.told.take().is_some() {
+        *generation = generation.wrapping_add(1);
+        let generation = *generation;
         entry.generation = generation;
         entry.instruction.send_replace(Some(MediaForward {
             generation,
@@ -361,8 +369,7 @@ async fn step() -> bool {
     let mut generation = state.generation;
     for (key, entry) in state.entries.iter_mut() {
         if !entry.candidate(now) || !room_sessions.contains(&entry.session_id) {
-            generation = generation.wrapping_add(1);
-            direct(entry, generation);
+            direct(entry, &mut generation);
             continue;
         }
         entry.forwarded.store(true, Ordering::Release);
@@ -464,8 +471,7 @@ async fn close(client: &HostClient, failed: bool) {
         let room = state.room.take();
         let mut generation = state.generation;
         for entry in state.entries.values_mut() {
-            generation = generation.wrapping_add(1);
-            direct(entry, generation);
+            direct(entry, &mut generation);
         }
         state.generation = generation;
         if failed {

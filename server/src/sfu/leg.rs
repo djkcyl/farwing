@@ -312,6 +312,8 @@ pub(super) struct LegStats {
     /// Fraction lost (×256) of the latest report.
     pub loss: AtomicU16,
     pub rtt_ms: AtomicU64,
+    pub keyframes_asked: AtomicU64,
+    pub keyframes_passed: AtomicU64,
 }
 
 pub(super) struct Leg {

@@ -1032,6 +1032,19 @@ fn dev_cinema() -> Option<bool> {
     DEV_CINEMA.get().copied()
 }
 
+static DEV_VIRTUAL_SCREEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `connect --dev-virtual-screen`: add one virtual screen to the host once
+/// the session can (tests; the same request as the confirmed menu action).
+pub(crate) fn set_dev_virtual_screen() {
+    DEV_VIRTUAL_SCREEN.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Whether the requested virtual screen is due now (`ready`); once.
+pub(crate) fn take_dev_virtual_screen(ready: bool) -> bool {
+    ready && DEV_VIRTUAL_SCREEN.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
 static DEV_AUTO_QUALITY: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
 
 /// `connect --dev-auto-quality`: start automatic quality at this tier instead

@@ -403,7 +403,7 @@ impl Sfu {
             tap,
             rewrite,
             tcc,
-            emulate::Emulator::for_viewer(index),
+            emulate::Emulator::for_viewer(index, leg_id),
         );
         let senders = pc.get_senders().await;
         {
