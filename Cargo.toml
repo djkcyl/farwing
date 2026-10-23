@@ -172,6 +172,14 @@ strip = "debuginfo"
 # Decoder workers rely on unwinding to contain failures and release resources.
 panic = "unwind"
 
+# Local iteration (self-tests, runsheets): the release settings with
+# parallel code generation and incremental builds, in `target/fast`.
+# Packages are built with `release`.
+[profile.fast]
+inherits = "release"
+codegen-units = 256
+incremental = true
+
 [profile.release.package.farwing]
 # Optimize application glue for size without changing decoder/DSP dependencies.
 opt-level = "s"

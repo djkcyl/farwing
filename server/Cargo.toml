@@ -87,3 +87,11 @@ opt-level = 3
 lto = "thin"
 codegen-units = 4
 strip = "debuginfo"
+
+# Local iteration (`cargo fast`): no LTO, parallel code generation and
+# incremental builds, in `target/fast`; releases use `release`.
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 256
+incremental = true

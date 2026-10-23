@@ -1,2 +1,6 @@
 [alias]
 dist = ["run", "--quiet", "--locked", "--manifest-path", "xtask/Cargo.toml", "--"]
+# Local iteration: the `fast` profile linked by rust-lld (seconds instead of
+# minutes per change); packages are built by `cargo dist` with `release`.
+fast = ["build", "--profile", "fast", "--config", "target.x86_64-pc-windows-msvc.linker='rust-lld.exe'"]
+fast-test = ["test", "--profile", "fast", "--config", "target.x86_64-pc-windows-msvc.linker='rust-lld.exe'"]
