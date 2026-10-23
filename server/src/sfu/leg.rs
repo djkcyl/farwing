@@ -303,6 +303,14 @@ struct Shaper {
 }
 
 const SHAPER_QUEUE: Duration = Duration::from_millis(200);
+/// A packet is repaired again only after this...
+const REPAIR_REPEAT: Duration = Duration::from_millis(40);
+/// ...on a congested downlink only after this...
+const CONGESTED_REPAIR_REPEAT: Duration = Duration::from_millis(200);
+/// ...where repairs use at most this share of its limit...
+const REPAIR_SHARE: f64 = 0.5;
+/// ...with this much saved up.
+const REPAIR_BURST: Duration = Duration::from_millis(250);
 
 impl Shaper {
     /// When a packet of `bytes` arrives; `None` when the queue is full.
@@ -340,6 +348,9 @@ pub(super) struct Leg {
     rtx_seq: Mutex<HashMap<u32, u16>>,
     /// (SSRC, sequence) → last repair, against repeated requests.
     repaired: Mutex<HashMap<(u32, u16), Instant>>,
+    /// Bytes repairs may still use while the downlink is congested, and when
+    /// counted.
+    repair_budget: Mutex<(f64, Instant)>,
     /// Sender reports passed on: NTP middle 32 bits → when.
     reports: Mutex<VecDeque<(u32, Instant)>>,
     pub stats: LegStats,
@@ -369,6 +380,7 @@ impl Leg {
             tcc_seq: AtomicU16::new(rand::random()),
             rtx_seq: Mutex::default(),
             repaired: Mutex::default(),
+            repair_budget: Mutex::new((0.0, Instant::now())),
             reports: Mutex::default(),
             stats: LegStats::default(),
             downlink: Mutex::new(super::estimate::Downlink::new()),
@@ -457,11 +469,32 @@ impl Leg {
         {
             let mut repaired = self.repaired.lock();
             let now = Instant::now();
+            let limit = self.downlink.lock().limit();
+            // A congested downlink: repairs are repeated less often and use
+            // at most a share of its limit, or repeated requests crowd the
+            // picture out.
+            let repeat = if limit.is_some() {
+                CONGESTED_REPAIR_REPEAT
+            } else {
+                REPAIR_REPEAT
+            };
             if repaired
                 .get(&key)
-                .is_some_and(|at| now.duration_since(*at) < Duration::from_millis(40))
+                .is_some_and(|at| now.duration_since(*at) < repeat)
             {
                 return None;
+            }
+            if let Some(limit) = limit {
+                let mut budget = self.repair_budget.lock();
+                let rate = limit as f64 * REPAIR_SHARE / 8.0;
+                let elapsed = now.duration_since(budget.1).as_secs_f64();
+                budget.0 = (budget.0 + elapsed * rate).min(rate * REPAIR_BURST.as_secs_f64());
+                budget.1 = now;
+                let cost = original.payload.len() as f64 + 60.0;
+                if budget.0 < cost {
+                    return None;
+                }
+                budget.0 -= cost;
             }
             if repaired.len() > 4096 {
                 repaired.retain(|_, at| now.duration_since(*at) < Duration::from_secs(2));
