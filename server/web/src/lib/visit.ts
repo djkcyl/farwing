@@ -139,7 +139,7 @@ export async function visitAdmission(
       throw new VisitError('identity');
     }
     onStep('joining');
-    return { ticket: joined, hostId: joined.host.device_id, pakeKey: key };
+    return { ticket: joined, hostId: joined.host.device_id, pakeKey: key, bearer };
   } catch (error) {
     if (requestId) {
       void call('POST', `/api/v2/assist/requests/${requestId}/cancel`, {}, options).catch(() => undefined);

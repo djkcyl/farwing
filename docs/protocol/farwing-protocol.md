@@ -763,10 +763,11 @@ abs-send-time、toffset、playout-delay（播放缓冲由主控本地决定）�
 
 设计见 [deployment-design.md](deployment-design.md) §5.4，服务器接口见 §3.14。
 
-- 被控（服务器声明 `features.forwarding`、经服务器的原生主控达到 `threshold` 人时）按主人选择的模式（被控设置“多人转发”，默认端到端加密；服务器不允许兼容模式时一律端到端加密）建一条到转发器的上行连接：只发送，[`TRACKS`](../../src/features/host/peer/uplink.rs) 条视频轨（`video_0`…，每个编码器一条），扩展与负载类型来自共享表。每条上行轨以只收帧、从不负责编码的成员身份加入一个编码组，经与参与者相同的打包、节奏控制、重传与 RS-FEC 发送；它的码率票据只限码率，不限帧率。
+- 被控（服务器声明 `features.forwarding`、经服务器的主控——原生或网页——达到 `threshold` 人时）按主人选择的模式（被控设置“多人转发”，默认端到端加密；服务器不允许兼容模式时一律端到端加密）建一条到转发器的上行连接：只发送，[`TRACKS`](../../src/features/host/peer/uplink.rs) 条视频轨（`video_0`…，每个编码器一条），扩展与负载类型来自共享表。每条上行轨以只收帧、从不负责编码的成员身份加入一个编码组，经与参与者相同的打包、节奏控制、重传与 RS-FEC 发送；它的码率票据只限码率，不限帧率。
 - 经转发的参与者（在房间的会话里）不再从直连发送视频，但每条轨要先经直连发出过至少一帧（主控在第一个直连包到达时建立这条轨，转发的同名轨才有处可去），后加入的参与者因此先看到直连画面、随后转到转发器；它们的编码组照常编码（组长也一样），且共用同一屏幕、同一格式的任一编码组（不再按各自的画质、分辨率与显卡分组）。
 - 被控在 SESSION 上推送 `Forward`（tag 24）：`{generation, room, mode, tracks: [{index, track}], session, key, key_id}`——主控的视频轨序号（`video_<index>`）来自房间的哪条轨；`mode` 为 `e2ee` 或 `compatible`；`key`（tag 6，20 字节）与 `key_id`（tag 7，1–255）是端到端加密时的帧密钥（§6.8），兼容模式为空与 0；`room` 为空表示回到直连。房间与轨道不变、只有帧密钥变化时，主控沿用已有的转发连接。主控订阅（§3.14，`tracks` 按 `Forward` 的顺序），在第二条只收视频的连接上收到这些轨，帧进入同一视频轨的接收与解码；此期间对该轨的关键帧请求也发往转发器。连接 10 秒内没有收到媒体即失败。
-- 主控在控制通道推送 `ForwardStatus`（tag 25）：`{generation, receiving, error}`。`receiving: false` 时被控对它恢复直连 5 分钟。
+- 主控在控制通道推送 `ForwardStatus`（tag 25）：`{generation, receiving, error}`。被控只认最近一次 `Forward` 的 `generation`，较早的回答忽略；`receiving: false` 时被控对它恢复直连 5 分钟。主控在等待某个房间的媒体时收到更新的 `Forward`，即放弃这个房间。
+- 网页主控只接收 `index` 为 0 的轨（网页只显示一路画面），订阅的 offer 去掉 AV1 的 `level-idx`（同直连）。端到端加密时用编码帧变换（`RTCRtpScriptTransform`，在 Worker 中解密，[`server/web/src/lib/forwardWorker.ts`](../../server/web/src/lib/forwardWorker.ts)），它必须在生成 offer 之前挂到接收端上（Chrome 不会把之后设置的变换接入 answer 中声明了 SSRC 的接收流）；浏览器不支持编码帧变换时回答 `receiving: false`。转发器为浏览器的下行改写负载类型、扩展 ID 与 MID 扩展的值（浏览器按 MID 分流）。
 - 声音、键鼠、剪贴板、文件、麦克风与其余消息仍走直连。人数低于阈值、转发器失败（30 秒后再试）或服务器关闭多人转发时，被控关闭房间并推送 `room` 为空的 `Forward`。
 - 主控的参与者面板在经转发时显示“服务器转发 · 端到端加密”或“服务器转发 · 兼容模式”。
 

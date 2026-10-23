@@ -17,7 +17,7 @@ export interface ViewStats {
   codec: string;
   decoder: string;
   hardware: boolean | undefined;
-  path: 'lan' | 'p2p' | 'relay' | '';
+  path: 'lan' | 'p2p' | 'relay' | 'forwarded' | '';
   protocol: string;
   local: string;
   remote: string;
@@ -38,7 +38,10 @@ interface Sample {
 export class StatsSampler {
   private last?: Sample;
 
-  sample(report: RTCStatsReport): ViewStats {
+  /// `forwarded`: the forwarder connection's report while the picture
+  /// comes through it (the video and its path; the sound stays direct).
+  sample(report: RTCStatsReport, forwarded?: RTCStatsReport): ViewStats {
+    const media = forwarded ?? report;
     const out: ViewStats = {
       width: 0,
       height: 0,
@@ -68,7 +71,7 @@ export class StatsSampler {
       decoded: 0,
     };
     let pairId: string | undefined;
-    report.forEach((s) => {
+    media.forEach((s) => {
       if (s.type === 'inbound-rtp' && s.kind === 'video' && (s.framesDecoded ?? 0) > 0) {
         out.width = s.frameWidth ?? 0;
         out.height = s.frameHeight ?? 0;
@@ -77,7 +80,7 @@ export class StatsSampler {
         out.framesDropped = s.framesDropped ?? 0;
         out.decoder = s.decoderImplementation ?? '';
         out.hardware = s.powerEfficientDecoder;
-        const codec = report.get(s.codecId);
+        const codec = media.get(s.codecId);
         out.codec = codec?.mimeType?.replace(/^video\//, '') ?? '';
         now.bytes = s.bytesReceived ?? 0;
         now.received = s.packetsReceived ?? 0;
@@ -85,26 +88,29 @@ export class StatsSampler {
         now.decodeTime = s.totalDecodeTime ?? 0;
         now.decoded = s.framesDecoded ?? 0;
       }
-      if (s.type === 'inbound-rtp' && s.kind === 'audio') now.audioBytes = s.bytesReceived ?? 0;
       if (s.type === 'transport' && s.selectedCandidatePairId) pairId = s.selectedCandidatePairId;
     });
+    report.forEach((s) => {
+      if (s.type === 'inbound-rtp' && s.kind === 'audio') now.audioBytes = s.bytesReceived ?? 0;
+    });
     let pair: RTCIceCandidatePairStats | undefined;
-    if (pairId) pair = report.get(pairId);
+    if (pairId) pair = media.get(pairId);
     if (!pair) {
-      report.forEach((s) => {
+      media.forEach((s) => {
         if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s;
       });
     }
     if (pair) {
       out.rttMs = (pair.currentRoundTripTime ?? 0) * 1000;
-      const local = report.get(pair.localCandidateId);
-      const remote = report.get(pair.remoteCandidateId);
+      const local = media.get(pair.localCandidateId);
+      const remote = media.get(pair.remoteCandidateId);
       if (local && remote) {
         out.protocol = local.relayProtocol ?? local.protocol ?? '';
         out.local = `${local.address ?? local.ip ?? ''}:${local.port ?? ''}`;
         out.remote = `${remote.address ?? remote.ip ?? ''}:${remote.port ?? ''}`;
-        out.path =
-          local.candidateType === 'relay' || remote.candidateType === 'relay'
+        out.path = forwarded
+          ? 'forwarded'
+          : local.candidateType === 'relay' || remote.candidateType === 'relay'
             ? 'relay'
             : local.candidateType === 'host' && remote.candidateType === 'host'
               ? 'lan'

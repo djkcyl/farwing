@@ -210,6 +210,8 @@ export const zh = {
     controlling: '控制中',
     noParticipants: '暂无参与者',
     noOthers: '无其他参与者',
+    forwardedE2ee: '服务器转发 · 端到端加密',
+    forwardedCompatible: '服务器转发 · 兼容模式',
   },
   /** The statistics panel. */
   stats: {
@@ -237,6 +239,7 @@ export const zh = {
       lan: '局域网直连',
       p2p: 'P2P 直连',
       relay: '经服务器中转',
+      forwarded: '服务器转发',
     },
   },
   files: {
@@ -522,6 +525,8 @@ export const en: typeof zh = {
     controlling: 'In control',
     noParticipants: 'No participants',
     noOthers: 'No other participants',
+    forwardedE2ee: 'Server forwarding · End-to-end encrypted',
+    forwardedCompatible: 'Server forwarding · Compatible',
   },
   stats: {
     resolution: 'Resolution',
@@ -547,6 +552,7 @@ export const en: typeof zh = {
       lan: 'LAN direct',
       p2p: 'P2P direct',
       relay: 'Server relay',
+      forwarded: 'Server forwarding',
     },
   },
   files: {

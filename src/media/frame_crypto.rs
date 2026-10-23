@@ -426,4 +426,44 @@ mod tests {
             assert_eq!(unescape(before, &out), data);
         }
     }
+
+    /// The frames of `server/web/src/test/frameCrypto.test.ts`: the browser
+    /// decrypts exactly what this side encrypts.
+    #[test]
+    fn known_vectors() {
+        let material: Vec<u8> = (0..KEY_BYTES as u8).collect();
+        let encryptor = || Encryptor {
+            key: FrameKey::new(3, &material).unwrap(),
+            counter: 41,
+        };
+        let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let slice: Vec<u8> = (0..40u8).map(|i| i.wrapping_mul(37)).collect();
+        let mut h264 = vec![0, 0, 0, 1, 0x67, 0x42, 0xC0, 0x1F, 0, 0, 0, 1, 0x65];
+        h264.extend_from_slice(&slice);
+        let mut h265 = vec![0, 0, 0, 1, 0x40, 0x01, 0x0C, 0x01, 0, 0, 0, 1, 0x26, 0x01];
+        h265.extend_from_slice(&slice);
+        let mut av1 = vec![0x12, 0x00, 0x0A, 0x03, 0x00, 0x00, 0x00, 0x32, 40];
+        av1.extend_from_slice(&slice);
+        let vectors = [
+            (
+                Codec::H264,
+                h264,
+                "000000016742c01f000000016500254a6f94b9de0364edec74a6515bd1d4b30df60eaeb7ab598473def5235b028a47ddefcfc27980e1b382233bbe126eb1168baf42e6023e000003000003000003002a03fe",
+            ),
+            (
+                Codec::H265,
+                h265,
+                "0000000140010c0100000001260100254a6f94b9de0364edec74a6515bd1d4b30df60eaeb7ab598473def5235b028a47ddefcfc279809172c12615cd47a922cac65a105864f3000003000003000003002a03fe",
+            ),
+            (
+                Codec::Av1,
+                av1,
+                "12000a0300000032424c85d48c8e0983f9ac8be5de56469fd3716c2b861d1b232a521ff507f7aa5158f9430f863a67beccab52cf104a7c268e7254887dec023087000000000000002a03fe",
+            ),
+        ];
+        for (codec, frame, expected) in vectors {
+            let sealed = encryptor().encrypt(codec, &frame).unwrap();
+            assert_eq!(hex(&sealed), expected, "{codec:?}");
+        }
+    }
 }

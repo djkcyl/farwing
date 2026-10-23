@@ -268,6 +268,8 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
   const [quality, setQuality] = useState<Quality>();
   const [grants, setGrants] = useState<string[]>([]);
   const [people, setPeople] = useState<{ participants: Participant[]; controlling: string }>();
+  /// The picture comes through the server's forwarder in this mode.
+  const [forwarding, setForwarding] = useState('');
   const [pointers, setPointers] = useState<ParticipantPointer[]>([]);
   const [banner, setBanner] = useState<string>();
   const [audioKbps, setAudioKbps] = useState<number>();
@@ -339,6 +341,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
           quality: setQuality,
           permissions: (g) => setGrants([...g]),
           participants: setPeople,
+          forwarding: setForwarding,
           pointers: setPointers,
           hostEvent: (e) => setBanner(hostEventText(e)),
           audio: (a) => {
@@ -451,7 +454,8 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
   useEffect(() => {
     const timer = window.setInterval(async () => {
       const report = await viewer.current?.peer?.getStats().catch(() => undefined);
-      if (report) setStats(sampler.current.sample(report));
+      const forwarded = await viewer.current?.forwardPeer?.getStats().catch(() => undefined);
+      if (report) setStats(sampler.current.sample(report, forwarded));
     }, 1000);
     return () => window.clearInterval(timer);
   }, []);
@@ -1340,6 +1344,11 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
             </dl>
           ) : (
             <div className="list">
+              {forwarding && (
+                <div className="list-item small muted">
+                  {forwarding === 'e2ee' ? t.viewer.screen.forwardedE2ee : t.viewer.screen.forwardedCompatible}
+                </div>
+              )}
               {(people?.participants ?? []).map((p) => (
                 <div key={p.id} className="list-item">
                   <span className="dot-color" style={{ background: colorOf(p, p.id) }} />

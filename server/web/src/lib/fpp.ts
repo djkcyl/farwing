@@ -245,7 +245,23 @@ export type SessionMessage =
   | { kind: 'turn_result'; held: boolean; refusal: number; holder: string }
   | { kind: 'microphone_result'; code: number }
   | { kind: 'microphone_state'; state: number }
+  | { kind: 'forward'; value: Forward }
   | { kind: 'other'; tag: number };
+
+/// Where the picture comes from (`docs/protocol/farwing-protocol.md` §6.7):
+/// the server's forwarder, or the host directly again (`room` empty).
+export interface Forward {
+  generation: number;
+  room: string;
+  /// `e2ee` or `compatible`.
+  mode: string;
+  /// This viewer's video tracks and the forwarder tracks they come from.
+  tracks: { index: number; track: string }[];
+  session: string;
+  /// End-to-end mode: the frame key (§6.8).
+  key: Uint8Array;
+  keyId: number;
+}
 
 function rect(f: Fields | undefined): Rect {
   return {
@@ -300,8 +316,29 @@ export function parseSession(body: Uint8Array): SessionMessage {
   if (microphone) return { kind: 'microphone_result', code: microphone.int32(1) };
   const state = f.message(3);
   if (state) return { kind: 'microphone_state', state: state.int32(1) };
+  const forward = f.message(24);
+  if (forward) {
+    return {
+      kind: 'forward',
+      value: {
+        generation: forward.uint32(1),
+        room: forward.string(2),
+        mode: forward.string(3),
+        tracks: forward.messages(4).map((t) => ({ index: t.uint32(1), track: t.string(2) })),
+        session: forward.string(5),
+        key: forward.bytes(6),
+        keyId: forward.uint32(7),
+      },
+    };
+  }
   if (f.has(4)) return { kind: 'other', tag: 4 };
   return { kind: 'other', tag: 0 };
+}
+
+/// Whether this viewer receives through the forwarder (a push on the
+/// control channel, §6.7).
+export function forwardStatus(generation: number, receiving: boolean, error: string): Uint8Array {
+  return new Writer().message(25, new Writer().int(1, generation).int(2, receiving).string(3, error)).finish();
 }
 
 /// Take or release the control token (a request on the session channel,

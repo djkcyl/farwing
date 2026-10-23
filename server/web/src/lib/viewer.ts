@@ -12,6 +12,7 @@ import { ClipboardSync } from './clipboard';
 import { deviceKey, verify } from './device';
 import { deviceIdOf, unb64 } from './encoding';
 import { FileTransfer, type TransferInfo } from './files';
+import { ForwardReceiver } from './forward';
 import * as fpp from './fpp';
 import { InputController } from './input';
 import { PeerRequestError, type PeerIo } from './peerio';
@@ -109,6 +110,9 @@ export interface ViewerEvents {
   annotation?(state: AnnotationState): void;
   /// The host's HELLO features (what it can receive: `touch`, `pen`, …).
   hostFeatures?(features: Record<string, number>): void;
+  /// The picture comes through the server's forwarder in this mode
+  /// (`e2ee`, `compatible`); '' when it comes from the host.
+  forwarding?(mode: string): void;
   log?(line: string): void;
 }
 
@@ -194,6 +198,14 @@ export interface Admission {
   /// Visitors admitted with an access code bind the DTLS fingerprints to
   /// the PAKE key as well (`a=x-farwing-pake`).
   pakeKey?: Uint8Array;
+  /// A visitor's guest token for later requests (none when signed in).
+  bearer?: string;
+}
+
+function iceServers(started: SessionStarted): RTCIceServer[] {
+  return started.ice_servers.map((s) =>
+    s.username ? { urls: s.urls, username: s.username, credential: s.credential } : { urls: s.urls },
+  );
 }
 
 /// An account session on an own or shared device.
@@ -239,6 +251,9 @@ export class Viewer {
   private hostHello?: fpp.Hello;
   private negotiateTimer = 0;
   private stream = new MediaStream();
+  /// The host's own video, shown again when forwarding ends.
+  private directVideo?: MediaStreamTrack;
+  private forward?: ForwardReceiver;
   private stopped = false;
   private iceRestarts = 0;
   private disconnectedTimer = 0;
@@ -406,9 +421,7 @@ export class Viewer {
   private createPeer() {
     const started = this.started!;
     const pc = new RTCPeerConnection({
-      iceServers: started.ice_servers.map((s) =>
-        s.username ? { urls: s.urls, username: s.username, credential: s.credential } : { urls: s.urls },
-      ),
+      iceServers: iceServers(started),
       iceTransportPolicy: started.force_relay ? 'relay' : 'all',
       bundlePolicy: 'max-bundle',
       rtcpMuxPolicy: 'require',
@@ -587,7 +600,8 @@ export class Viewer {
       // Lower the playout delay where the browser allows it.
       const receiver = event.receiver as RTCRtpReceiver & { jitterBufferTarget?: number | null };
       if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = 0;
-      this.addTrack(track);
+      this.directVideo = track;
+      if (!this.forward?.connection) this.addTrack(track);
     }
   }
 
@@ -602,6 +616,32 @@ export class Viewer {
         if (this.state !== 'playing' && this.state !== 'ended') this.setState('playing');
       };
     }
+  }
+
+  /// The host's forwarding instruction (§6.7).
+  private onForward(instruction: fpp.Forward) {
+    this.log(
+      `host forwarding instruction room=${instruction.room} generation=${instruction.generation} tracks=${instruction.tracks.length}`,
+    );
+    const started = this.started;
+    if (!started) return;
+    this.forward ??= new ForwardReceiver({
+      iceServers: iceServers(started),
+      relay: started.force_relay,
+      bearer: this.admission?.bearer,
+      log: (line) => this.log(line),
+      status: (generation, receiving, error) =>
+        this.sendFrame(
+          'farwing.control.v2',
+          fpp.encode(fpp.Type.SESSION, fpp.forwardStatus(generation, receiving, error)),
+        ),
+      picture: (track, mode) => {
+        const video = track ?? this.directVideo;
+        if (video) this.addTrack(video);
+        this.events.forwarding?.(track ? mode : '');
+      },
+    });
+    this.forward.follow(instruction);
   }
 
   private onConnectionState() {
@@ -813,6 +853,7 @@ export class Viewer {
           this.events.quality?.(message.value);
         } else if (message.kind === 'capture_setting_result') this.events.captureResult?.(message.errors);
         else if (message.kind === 'microphone_state') this.onMicrophoneState(message.state);
+        else if (message.kind === 'forward') this.onForward(message.value);
         return;
       }
       case fpp.Type.PERMISSIONS:
@@ -1062,6 +1103,11 @@ export class Viewer {
     return this.pc;
   }
 
+  /// The forwarder connection while the picture comes through it.
+  get forwardPeer(): RTCPeerConnection | undefined {
+    return this.forward?.connection;
+  }
+
   get host(): fpp.Hello | undefined {
     return this.hostHello;
   }
@@ -1196,6 +1242,11 @@ export class Viewer {
     this.channels.clear();
     this.pc?.close();
     this.pc = undefined;
+    if (this.forward) {
+      this.forward.close();
+      this.forward = undefined;
+      this.events.forwarding?.('');
+    }
   }
 
   /// Leave the session.

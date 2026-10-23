@@ -376,7 +376,24 @@ impl Sfu {
         };
         let leg_wire = sdp::wire(&answer);
         let tcc = leg_wire.extension_id(farwing_rtc_wire::TRANSPORT_CC_URI);
-        let rewrite = Rewrite::new(&uplink.wire, &leg_wire);
+        let mut rewrite = Rewrite::new(&uplink.wire, &leg_wire);
+        if !rewrite.identity {
+            for transceiver in pc.get_transceivers().await {
+                let (Some(mid), Some(track)) =
+                    (transceiver.mid(), transceiver.sender().await.track().await)
+                else {
+                    continue;
+                };
+                let Some(info) = chosen.iter().find(|t| t.id == track.id()) else {
+                    continue;
+                };
+                for ssrc in [info.ssrc, info.rtx, info.fec].into_iter().filter(|s| *s != 0) {
+                    rewrite
+                        .mids
+                        .insert(ssrc, bytes::Bytes::copy_from_slice(mid.as_bytes()));
+                }
+            }
+        }
         let (leg, packets) = Leg::new(leg_id.to_owned(), Arc::clone(&pc), tap, rewrite, tcc);
         let senders = pc.get_senders().await;
         {

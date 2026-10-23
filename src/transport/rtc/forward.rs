@@ -123,7 +123,9 @@ impl Forwarding {
                 tracing::info!("the host sends the picture directly again");
                 continue;
             }
-            let status = match self.join(&context, &api, &session, &instruction).await {
+            // A newer instruction ends the wait for this room.
+            let mut newer = instructions.clone();
+            let status = match self.join(&context, &api, &session, &instruction, &mut newer).await {
                 Ok(()) => ForwardStatus {
                     generation: instruction.generation,
                     receiving: true,
@@ -179,6 +181,7 @@ impl Forwarding {
         api: &ServerApi,
         session: &str,
         instruction: &MediaForward,
+        newer: &mut watch::Receiver<Option<MediaForward>>,
     ) -> Result<()> {
         let mut media = MediaEngine::default();
         super::negotiation::register_codecs(&mut media)?;
@@ -388,6 +391,10 @@ impl Forwarding {
                 tokio::select! {
                     r = state.changed() => r?,
                     r = first.changed() => r?,
+                    r = newer.changed() => {
+                        r?;
+                        bail!("superseded by a newer instruction");
+                    }
                 }
             }
         })

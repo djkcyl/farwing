@@ -67,6 +67,9 @@ struct Entry {
     instruction: watch::Sender<Option<MediaForward>>,
     /// The room, tracks and frame key last told.
     told: Option<(String, Vec<(u32, String)>, u8)>,
+    /// The generation of the last instruction; answers to older ones are
+    /// stale.
+    generation: u32,
 }
 
 impl Entry {
@@ -175,6 +178,7 @@ pub(crate) fn register(
             excluded_until: None,
             instruction,
             told: None,
+            generation: 0,
         },
     );
     if !state.running {
@@ -202,6 +206,11 @@ impl Registration {
         let Some(entry) = state.entries.get_mut(&self.key) else {
             return;
         };
+        if status.generation != entry.generation {
+            tracing::debug!(participant = self.key, generation = status.generation,
+                "stale forwarding status");
+            return;
+        }
         if status.receiving {
             tracing::info!(participant = self.key, generation = status.generation,
                 "participant receives through the forwarder");
@@ -228,6 +237,7 @@ impl Drop for Registration {
 fn direct(entry: &mut Entry, generation: u32) {
     entry.forwarded.store(false, Ordering::Release);
     if entry.told.take().is_some() {
+        entry.generation = generation;
         entry.instruction.send_replace(Some(MediaForward {
             generation,
             session: entry.session_id.clone(),
@@ -361,6 +371,7 @@ async fn step() -> bool {
         if entry.told != told {
             generation = generation.wrapping_add(1);
             entry.told = told;
+            entry.generation = generation;
             entry.instruction.send_replace(Some(MediaForward {
                 generation,
                 room: room_id.clone(),

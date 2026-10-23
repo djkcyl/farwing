@@ -201,6 +201,11 @@ pub(super) struct Rewrite {
     pub payload_types: HashMap<u8, u8>,
     /// Host extension ID → leg extension ID.
     pub extensions: HashMap<u8, u8>,
+    /// The leg's MID extension ID and each forwarded SSRC's MID on the leg:
+    /// browsers route packets by MID, which the host set for its own
+    /// connection.
+    pub mid_extension: Option<u8>,
+    pub mids: HashMap<u32, Bytes>,
     pub identity: bool,
 }
 
@@ -249,6 +254,8 @@ impl Rewrite {
         Self {
             payload_types,
             extensions,
+            mid_extension: leg.extension_id(farwing_rtc_wire::MID_URI),
+            mids: HashMap::new(),
             identity,
         }
     }
@@ -262,11 +269,17 @@ impl Rewrite {
             return false;
         };
         packet.header.payload_type = *pt;
+        let mid = self.mids.get(&packet.header.ssrc);
         let extensions = std::mem::take(&mut packet.header.extensions);
         packet.header.extensions = extensions
             .into_iter()
             .filter_map(|mut e| {
                 e.id = *self.extensions.get(&e.id)?;
+                if Some(e.id) == self.mid_extension
+                    && let Some(mid) = mid
+                {
+                    e.payload = mid.clone();
+                }
                 Some(e)
             })
             .collect();
@@ -441,5 +454,53 @@ impl Leg {
             task.abort();
         }
         let _ = self.pc.close().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use webrtc::rtp::header::Header;
+    use webrtc::util::marshal::Marshal;
+
+    #[test]
+    fn browser_legs_get_their_payload_types_extension_ids_and_mids() {
+        let host = sdp::wire(
+            "a=rtpmap:35 AV1/90000\r\n\
+a=fmtp:35 level-idx=17;profile=0;tier=0\r\n\
+a=extmap:2 urn:ietf:params:rtp-hdrext:sdes:mid\r\n\
+a=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/video-timing\r\n",
+        );
+        let leg = sdp::wire(
+            "a=rtpmap:45 AV1/90000\r\n\
+a=fmtp:45 profile=0;tier=0\r\n\
+a=extmap:9 urn:ietf:params:rtp-hdrext:sdes:mid\r\n",
+        );
+        let mut rewrite = Rewrite::new(&host, &leg);
+        assert!(!rewrite.identity);
+        rewrite.mids.insert(7, Bytes::from_static(b"0"));
+        let mut header = Header {
+            version: 2,
+            extension: true,
+            extension_profile: 0xBEDE,
+            payload_type: 35,
+            ssrc: 7,
+            ..Default::default()
+        };
+        header.set_extension(2, Bytes::from_static(b"3")).unwrap();
+        header.set_extension(3, Bytes::from_static(&[1; 13])).unwrap();
+        let mut packet = Packet {
+            header,
+            payload: Bytes::from_static(&[1, 2, 3]),
+        };
+        assert!(rewrite.apply(&mut packet));
+        assert_eq!(packet.header.payload_type, 45);
+        assert_eq!(packet.header.get_extension(9), Some(Bytes::from_static(b"0")));
+        assert_eq!(packet.header.extensions.len(), 1);
+        let bytes = packet.marshal().unwrap();
+        assert_eq!(
+            <Packet as webrtc::util::Unmarshal>::unmarshal(&mut bytes.clone()).unwrap().payload,
+            packet.payload
+        );
     }
 }

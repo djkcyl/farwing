@@ -866,13 +866,10 @@ impl Session {
         let task_cancel = cancel.clone();
         let relay = incoming.force_relay;
         let sid = session_id.clone();
-        // Multi-viewer forwarding: native controllers of server sessions
-        // watching the desktop (`docs/protocol/deployment-design.md` §5.4).
-        let forwarding_session = (direct_ports.is_none()
-            && !audio_only
-            && !data_only
-            && incoming.controller.platform != farwing_protocol::Platform::Web)
-            .then(|| session_id.clone());
+        // Multi-viewer forwarding: controllers of server sessions watching
+        // the desktop (`docs/protocol/deployment-design.md` §5.4).
+        let forwarding_session =
+            (direct_ports.is_none() && !audio_only && !data_only).then(|| session_id.clone());
         // A direct session's ICE binds the endpoint's UDP ports (§12.3).
         self.preparations.spawn(crate::transport::direct::with_session_ports(direct_ports, async move {
             let preparation_started = std::time::Instant::now();

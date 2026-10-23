@@ -1458,7 +1458,10 @@ OpenUUYC 的视频包始终给 FEC 留出约 50 字节，UDP 负载不超过约 
 - 后加入：第三位观看者曾在直连画面到达前就收到 `Forward`，主控还没有这条视频轨，10 秒后放弃转发（`run-rekey2`）。修正后被控对每条轨先经直连发出一帧再转发：`pbc3` 直连出画约 1 秒后转到转发器（`run-rekey3`）。
 - 兼容模式：在被控设置中选择“兼容模式”后以 `mode="compatible"` 开房间，两位观看者正常接收（`run-compat1`）；参与者面板第二行显示“服务器转发 · 兼容模式”（截图 `run-compat2/pbc-people.png`）。设置页截图 `temp/gui/fw-host4.png`（两个下拉框同宽对齐）、`fw-host5.png`（展开的选项）。
 
-尚未验证：同上，以及网页端主控。
+- 网页主控（`temp/pb/webrun.sh`：被控 `pbh`、原生观看者 `pbc` 与 Chrome 155 中以同一账号打开的网页观看页）：兼容模式下网页约 0.75 秒后经转发器接收（`run-web7`）；端到端加密时网页在 Worker 中解密，持续 60 FPS、零丢帧，只在加入时请求一次关键帧（`run-web8`）。截图：画面与标题行的“服务器转发”（`run-web8/web.png`）、参与者面板的“服务器转发 · 端到端加密”（`web-people.png`）、连接统计的路径“服务器转发 · UDP”（`web-stats.png`）。
+- 联调中发现并修正：订阅的 offer 带 AV1 的 `level-idx` 时转发器不协商 AV1（同直连，去掉该参数）；转发器原样保留被控的 MID 扩展值，Chrome 按 MID 分流而丢弃全部包（浏览器下行改写 MID，`server/src/sfu/leg.rs` 单元测试）；在 `ontrack` 中设置的编码帧变换不被 Chrome 接入（answer 声明 SSRC 时，用纯 Chrome 回环复现），改为生成 offer 之前设置；被控把已关闭房间的失败回答当作当前失败、误把观看者退回直连（现在只认最近一次指令的 `generation`），观看者等待已关闭房间的媒体时不处理新指令（现在立即放弃）。
+
+尚未验证：跨网络、Safari 与 Firefox 的网页端、浏览器访客（访问码）经转发。
 
 ## 47. 仍需你来测
 
