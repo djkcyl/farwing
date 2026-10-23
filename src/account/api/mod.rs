@@ -1130,6 +1130,87 @@ impl ServerApi {
         .map(|_| ())
     }
 
+    // -------------------------------------------------------- forwarding
+
+    /// Open a forwarding room for sessions this device hosts.
+    pub(crate) async fn sfu_create_room(
+        &self,
+        sessions: Vec<String>,
+        mode: wire::ForwardMode,
+        offer: String,
+    ) -> Result<wire::RoomCreated> {
+        self.call(
+            Method::POST,
+            path::SFU_ROOMS,
+            json(&wire::CreateRoomRequest { sessions, mode, offer })?,
+            REQUEST_TIMEOUT,
+            Auth::Session,
+        )
+        .await
+    }
+
+    pub(crate) async fn sfu_update_room(
+        &self,
+        room: &str,
+        sessions: Option<Vec<String>>,
+        offer: Option<String>,
+    ) -> Result<wire::RoomUpdated> {
+        self.call(
+            Method::PUT,
+            &path::sfu_room(room),
+            json(&wire::UpdateRoomRequest { sessions, offer })?,
+            REQUEST_TIMEOUT,
+            Auth::Session,
+        )
+        .await
+    }
+
+    pub(crate) async fn sfu_close_room(&self, room: &str) -> Result<()> {
+        self.call::<IgnoredAny>(
+            Method::DELETE,
+            &path::sfu_room(room),
+            Body::None,
+            REQUEST_TIMEOUT,
+            Auth::Session,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Receive a room's tracks as the controller of `session`.
+    pub(crate) async fn sfu_subscribe(
+        &self,
+        room: &str,
+        session: &str,
+        offer: String,
+        tracks: Option<Vec<String>>,
+    ) -> Result<wire::Subscription> {
+        self.call(
+            Method::POST,
+            &path::sfu_subscribe(room),
+            json(&wire::SubscribeRequest {
+                session: session.to_owned(),
+                offer,
+                tracks,
+            })?,
+            REQUEST_TIMEOUT,
+            Auth::Session,
+        )
+        .await
+    }
+
+    pub(crate) async fn sfu_unsubscribe(&self, room: &str, session: &str) -> Result<()> {
+        self.call::<IgnoredAny>(
+            Method::DELETE,
+            &path::sfu_subscription(room, session),
+            Body::None,
+            REQUEST_TIMEOUT,
+            Auth::Session,
+        )
+        .await
+        .map(|_| ())
+    }
+
     // ----------------------------------------------------------- devices
 
     pub async fn list_devices(&self) -> Result<DeviceList> {

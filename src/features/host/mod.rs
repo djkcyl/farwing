@@ -14,6 +14,7 @@ pub(crate) mod displays;
 mod encoding_settings;
 mod fec;
 pub(crate) mod files;
+pub(crate) mod forwarding;
 pub(crate) mod format;
 mod hevc;
 pub(crate) mod input;

@@ -286,6 +286,30 @@ impl HostClient {
         self.request(|api| async move { api.host_power_response(&request_id, code, message).await })
             .await
     }
+    /// The server's multi-viewer forwarding, if it forwards.
+    pub(crate) async fn forwarding(&self) -> Result<Option<farwing_protocol::api::Forwarding>> {
+        self.request(|api| async move { api.server_info().await })
+            .await
+            .map(|info| info.features.forwarding)
+    }
+    pub(crate) async fn sfu_create_room(
+        &self,
+        sessions: Vec<String>,
+        mode: farwing_protocol::api::ForwardMode,
+        offer: String,
+    ) -> Result<farwing_protocol::api::RoomCreated> {
+        self.request(|api| async move { api.sfu_create_room(sessions, mode, offer).await })
+            .await
+    }
+    pub(crate) async fn sfu_update_room(&self, room: String, sessions: Vec<String>) -> Result<()> {
+        self.request(|api| async move { api.sfu_update_room(&room, Some(sessions), None).await })
+            .await
+            .map(|_| ())
+    }
+    pub(crate) async fn sfu_close_room(&self, room: String) -> Result<()> {
+        self.request(|api| async move { api.sfu_close_room(&room).await })
+            .await
+    }
     /// A single-use ticket for this device's presence connection.
     pub async fn presence_ticket(&self) -> Result<RealtimeTicket> {
         self.request(|api| async move { api.presence_ticket().await })

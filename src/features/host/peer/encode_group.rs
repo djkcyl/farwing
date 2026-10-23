@@ -7,6 +7,12 @@
 //! own RTP clock and send them. Each member votes its allowance every
 //! iteration; the leader encodes at the minimum of the active votes. When the
 //! leader leaves, the earliest remaining member takes over.
+//!
+//! Multi-viewer forwarding (`docs/protocol/deployment-design.md` §5.4): a
+//! participant whose picture goes through the server's forwarder is marked
+//! forwarded and takes no frames itself; the uplink to the forwarder watches
+//! the group as an observer, which takes frames but never leads. A group of
+//! observers only has ended.
 use crate::features::host::encoder::{Encoded, FrameTiming};
 use crate::features::host::format::{Backend, Format};
 use crate::platform::windows::cursor_shape::Snapshot;
@@ -53,7 +59,8 @@ pub(super) struct Vote {
     pub peak: u32,
     /// Congestion-window reduction ratio of the member's transport.
     pub ratio: f64,
-    /// Frame rate after the member's weak-network strategy and decoder cap.
+    /// Frame rate after the member's weak-network strategy and decoder cap;
+    /// 0: no limit of its own (the forwarder uplink).
     pub fps: u32,
 }
 
@@ -64,11 +71,15 @@ pub(super) fn aggregate(votes: impl IntoIterator<Item = Vote>, minimum: u32) -> 
     let usable: Vec<Vote> = votes.iter().copied().filter(|v| v.peak >= minimum).collect();
     let pool = if usable.is_empty() { votes } else { usable };
     let first = *pool.first()?;
-    Some(pool.iter().fold(first, |all, vote| Vote {
+    let all = pool.iter().fold(first, |all, vote| Vote {
         peak: all.peak.min(vote.peak),
         ratio: all.ratio.max(vote.ratio),
-        fps: all.fps.min(vote.fps),
-    }))
+        fps: all.fps,
+    });
+    Some(Vote {
+        fps: pool.iter().map(|v| v.fps).filter(|f| *f > 0).min().unwrap_or(0),
+        ..all
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,6 +187,11 @@ pub(super) struct Output {
 }
 
 struct Member {
+    /// Takes frames for the forwarder uplink; never leads.
+    observer: bool,
+    /// While this member's picture goes through the forwarder: its
+    /// participant and track.
+    forwarded: Option<(u64, usize)>,
     vote: Option<Vote>,
     keyframe: bool,
     outbox: SyncSender<Arc<Shared>>,
@@ -200,6 +216,8 @@ struct Inner {
 
 pub(super) struct Group {
     key: Key,
+    /// Unique per process, for the uplink's track assignment.
+    serial: u64,
     inner: Mutex<Inner>,
 }
 impl Group {
@@ -212,6 +230,23 @@ impl Group {
 pub(super) struct Registry {
     groups: Mutex<Vec<Arc<Group>>>,
     next: AtomicU64,
+}
+
+/// A group with forwarded members, for the forwarder uplink.
+#[derive(Clone)]
+pub(super) struct Forwarded {
+    pub group: Arc<Group>,
+    /// `(participant, track)` of each forwarded member.
+    pub members: Vec<(u64, usize)>,
+}
+
+impl Group {
+    pub(super) fn serial(&self) -> u64 {
+        self.serial
+    }
+    pub(super) fn key(&self) -> &Key {
+        &self.key
+    }
 }
 
 pub(super) static REGISTRY: LazyLock<Arc<Registry>> = LazyLock::new(Arc::default);
@@ -227,6 +262,14 @@ impl Registry {
         self.join_with(key, size, limit, false)
     }
 
+    /// A forwarded participant: share the closest group of the same screen
+    /// and format (all forwarded viewers get one stream), else lead one.
+    pub(super) fn join_forwarded(self: &Arc<Self>, key: Key, size: (u32, u32)) -> Membership {
+        let mut membership = self.join_with(key, size, 0, true);
+        membership.provisional = false;
+        membership
+    }
+
     /// A participant whose own settings have not arrived yet: share the
     /// closest group of the same screen and format rather than open an
     /// encoder for parameters about to change.
@@ -238,6 +281,8 @@ impl Registry {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (outbox, inbox) = sync_channel(FOLLOWER_QUEUE);
         let member = Member {
+            observer: false,
+            forwarded: None,
             vote: None,
             keyframe: false,
             outbox,
@@ -303,6 +348,7 @@ impl Registry {
                 }
                 let group = Arc::new(Group {
                     key: key.clone(),
+                    serial: id,
                     inner: Mutex::new(Inner {
                         size,
                         leader: Some(id),
@@ -330,12 +376,64 @@ impl Registry {
         }
     }
 
+    /// Groups with forwarded members, in creation order.
+    pub(super) fn forwarded(&self) -> Vec<Forwarded> {
+        self.groups()
+            .iter()
+            .filter_map(|group| {
+                let members: Vec<(u64, usize)> =
+                    group.lock().members.values().filter_map(|m| m.forwarded).collect();
+                (!members.is_empty()).then(|| Forwarded {
+                    group: group.clone(),
+                    members,
+                })
+            })
+            .collect()
+    }
+
+    /// Watch `group` for the forwarder: take frames, never lead.
+    pub(super) fn observe(self: &Arc<Self>, group: &Arc<Group>) -> Membership {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let (outbox, inbox) = sync_channel(FOLLOWER_QUEUE);
+        let mut inner = group.lock();
+        if let Some(leader) = inner.leader.and_then(|leader| inner.members.get_mut(&leader)) {
+            leader.keyframe = true;
+        }
+        inner.members.insert(
+            id,
+            Member {
+                observer: true,
+                forwarded: None,
+                vote: None,
+                keyframe: false,
+                outbox,
+                held: None,
+                recovery: None,
+            },
+        );
+        drop(inner);
+        Membership {
+            registry: self.clone(),
+            group: group.clone(),
+            id,
+            wanted: group.key.clone(),
+            provisional: false,
+            inbox,
+            last_sequence: None,
+            output_seen: 0,
+        }
+    }
+
     fn leave(&self, group: &Arc<Group>, id: u64) {
         let mut groups = self.groups();
         let mut inner = group.lock();
         inner.members.remove(&id);
         if inner.leader == Some(id) {
-            inner.leader = inner.members.keys().next().copied();
+            inner.leader = inner
+                .members
+                .iter()
+                .find(|(_, member)| !member.observer)
+                .map(|(id, _)| *id);
             inner.output = None;
             inner.cursor = None;
             if let Some(leader) = inner.leader {
@@ -347,7 +445,8 @@ impl Registry {
                 );
             }
         }
-        let empty = inner.members.is_empty();
+        // Observers alone do not keep a group: nobody would encode for it.
+        let empty = inner.members.values().all(|member| member.observer);
         drop(inner);
         if empty {
             groups.retain(|other| !Arc::ptr_eq(other, group));
@@ -391,6 +490,21 @@ impl Membership {
     /// The key of the group this member is in.
     pub(super) fn group_key(&self) -> &Key {
         &self.group.key
+    }
+    /// Whether this member's picture goes through the forwarder (its
+    /// participant and track), for the uplink.
+    pub(super) fn set_forwarded(&self, forwarded: Option<(u64, usize)>) {
+        if let Some(member) = self.group.lock().members.get_mut(&self.id) {
+            member.forwarded = forwarded;
+        }
+    }
+    /// Observer: the group ended (nobody left to encode).
+    pub(super) fn ended(&self) -> bool {
+        self.group.lock().leader.is_none()
+    }
+    #[cfg(test)]
+    pub(super) fn group_serial(&self) -> u64 {
+        self.group.serial
     }
     /// This member's allowance; `None` while it cannot take frames.
     pub(super) fn vote(&self, vote: Option<Vote>) {
@@ -683,6 +797,10 @@ mod tests {
         assert_eq!(paused.peak, 8_000_000);
         // Unless everyone is paused.
         assert_eq!(aggregate([vote(0, 0.0, 60)], 300_000).unwrap().peak, 0);
+        // The forwarder uplink limits the rate, not the frame rate.
+        let uplink = aggregate([vote(5_000_000, 0.0, 60), vote(3_000_000, 0.0, 0)], 300_000).unwrap();
+        assert_eq!((uplink.peak, uplink.fps), (3_000_000, 60));
+        assert_eq!(aggregate([vote(3_000_000, 0.0, 0)], 300_000).unwrap().fps, 0);
     }
 
     #[test]
@@ -751,5 +869,47 @@ mod tests {
         leader.publish(Shared::new(&frame(true), started));
         let next = follower.receive(Duration::from_millis(1)).unwrap();
         assert!(next.gap && next.frame.keyframe);
+    }
+
+    #[test]
+    fn observers_take_frames_but_never_lead() {
+        let registry = Arc::new(Registry::default());
+        let leader = registry.join(key("D1", 2), (1920, 1080), MAX_ENCODERS);
+        let follower = registry.join(key("D1", 2), (1920, 1080), MAX_ENCODERS);
+        assert!(registry.forwarded().is_empty());
+        follower.set_forwarded(Some((7, 0)));
+        let forwarded = registry.forwarded();
+        assert_eq!(forwarded.len(), 1);
+        assert_eq!(forwarded[0].members, [(7, 0)]);
+        let mut observer = registry.observe(&forwarded[0].group);
+        assert_eq!(observer.group_serial(), leader.group_serial());
+        // The observer asked for a keyframe and counts as an active member.
+        assert!(leader.take_keyframe());
+        observer.vote(Some(vote(4_000_000, 0.0, 60)));
+        assert!(leader.others_active());
+        let started = Instant::now();
+        let frame = Encoded {
+            data: vec![9],
+            keyframe: true,
+            timestamp_100ns: 1,
+            is_new: true,
+            timing: None,
+            meta: None,
+            ltr: Default::default(),
+            format: Format::AVC,
+            color: SDR,
+        };
+        leader.publish(Shared::new(&frame, started));
+        assert!(observer.receive(Duration::from_millis(10)).is_some());
+        // The leader leaves: the follower leads, not the observer.
+        drop(leader);
+        assert!(follower.is_leader());
+        assert!(!observer.is_leader() && !observer.ended());
+        // Only the observer is left: the group has ended.
+        drop(follower);
+        assert!(observer.ended());
+        assert_eq!(registry.len(), 0);
+        assert!(registry.forwarded().is_empty());
+        drop(observer);
     }
 }

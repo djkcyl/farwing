@@ -48,6 +48,8 @@ pub(crate) struct Peer {
     microphone_tracks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     /// This peer among the host's participants; leaves on drop.
     _membership: Option<Arc<super::participants::Membership>>,
+    /// This peer in multi-viewer forwarding; leaves on drop.
+    _forwarding: Option<Arc<super::forwarding::Registration>>,
     started: std::time::Instant,
 }
 
@@ -128,6 +130,7 @@ impl Peer {
         file_capabilities: crate::features::file_transfer::host::Capabilities,
         data_only: bool,
         update_resume: Option<super::update_resume::Context>,
+        forwarding_session: Option<String>,
     ) -> Result<Self> {
         let audio_only = deferred.is_some() && !data_only;
         let handle = owner.with_cancellation(cancel.clone());
@@ -633,6 +636,28 @@ impl Peer {
                 lease.granted(farwing_protocol::caps::CONTROL)
             }))
         });
+        // Multi-viewer forwarding (`docs/protocol/deployment-design.md` §5.4).
+        let forwarding = handle
+            .participant()
+            .zip(forwarding_session)
+            .map(|(key, session)| {
+                Arc::new(super::forwarding::register(
+                    key,
+                    session,
+                    reports.forwarded.clone(),
+                    true,
+                    ice_servers.clone(),
+                ))
+            });
+        let forward_worker = tokio::spawn(match forwarding.clone() {
+            Some(registration) => futures_util::future::Either::Left(forward::run(
+                registration,
+                report_receiver.clone(),
+                cancel.clone(),
+                kcp.clone(),
+            )),
+            None => futures_util::future::Either::Right(std::future::ready(())),
+        });
         let participants_worker = tokio::spawn(match membership.clone() {
             Some(membership) => futures_util::future::Either::Left(participants::run(
                 membership,
@@ -693,6 +718,7 @@ impl Peer {
         let (control_receiver, control_responses) = ingress::ControlIngress {
             input: input.receiver(),
             recovery: reports.recovery.clone(),
+            forwarding: forwarding.clone(),
             membership: membership.clone(),
             files: files.clone(),
             report_target: report_target.clone(),
@@ -875,6 +901,7 @@ impl Peer {
                     publisher,
                     cursor,
                     participants_worker,
+                    forward_worker,
                     clipboard_worker,
                     file_worker,
                     ports_worker,
@@ -895,6 +922,7 @@ impl Peer {
             microphone,
             microphone_tracks,
             _membership: membership,
+            _forwarding: forwarding,
             started: std::time::Instant::now(),
         })
     }
@@ -1215,7 +1243,9 @@ mod channels;
 mod cursor;
 mod participants;
 mod ingress;
+mod forward;
 mod media;
+pub(crate) mod uplink;
 pub(crate) mod screens;
 use channels::bind_channel;
 use channels::publish_state;

@@ -75,7 +75,7 @@ pub(crate) fn request_id(sequence: i64) -> u32 {
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct SessionMessage {
-    #[prost(oneof = "SessionBody", tags = "1,2,3,4,5,7,8,10,11,12,13,14,15,16,17,20,21,22,23")]
+    #[prost(oneof = "SessionBody", tags = "1,2,3,4,5,7,8,10,11,12,13,14,15,16,17,20,21,22,23,24,25")]
     pub(crate) body: Option<SessionBody>,
 }
 
@@ -123,6 +123,13 @@ pub(crate) enum SessionBody {
     /// holds, or a request for a recovery frame (`video.recovery`).
     #[prost(message, tag = "8")]
     VideoFeedback(VideoFeedback),
+    /// Host → controller: where the picture comes from — the forwarder, or
+    /// the host directly again (`deployment-design.md` §5.4).
+    #[prost(message, tag = "24")]
+    Forward(MediaForward),
+    /// Controller → host: whether it receives through the forwarder.
+    #[prost(message, tag = "25")]
+    ForwardStatus(ForwardStatus),
     // --------------------------------------------- responses (H→C)
     #[prost(message, tag = "20")]
     CaptureSettingResult(PbCaptureSettingResponse),
@@ -146,6 +153,8 @@ impl SessionBody {
             Self::CaptureSetting(_) => "CaptureSetting",
             Self::ReceiverStats(_) => "ReceiverStats",
             Self::VideoFeedback(_) => "VideoFeedback",
+            Self::Forward(_) => "Forward",
+            Self::ForwardStatus(_) => "ForwardStatus",
             Self::CreateVirtualDisplay(_) => "CreateVirtualDisplay",
             Self::RemoveVirtualDisplay(_) => "RemoveVirtualDisplay",
             Self::EnterExclusive(_) => "EnterExclusive",
@@ -188,6 +197,47 @@ pub(crate) struct VideoFeedback {
     /// that frame's dependency chain holds.
     #[prost(fixed32, optional, tag = "7")]
     pub(crate) rtp_timestamp: Option<u32>,
+}
+
+/// Where the controller's picture comes from.
+#[derive(Clone, PartialEq, Eq, prost::Message)]
+pub(crate) struct MediaForward {
+    /// Changes with every instruction; the status names it.
+    #[prost(uint32, tag = "1")]
+    pub(crate) generation: u32,
+    /// The forwarding room; empty: directly from the host again.
+    #[prost(string, tag = "2")]
+    pub(crate) room: String,
+    /// `e2ee` or `compatible`.
+    #[prost(string, tag = "3")]
+    pub(crate) mode: String,
+    /// The controller's video tracks and the forwarder tracks they come from.
+    #[prost(message, repeated, tag = "4")]
+    pub(crate) tracks: Vec<ForwardedTrack>,
+    /// The session the controller subscribes with.
+    #[prost(string, tag = "5")]
+    pub(crate) session: String,
+}
+
+#[derive(Clone, PartialEq, Eq, prost::Message)]
+pub(crate) struct ForwardedTrack {
+    /// The controller's video track index (`video_<index>`).
+    #[prost(uint32, tag = "1")]
+    pub(crate) index: u32,
+    /// The forwarder's track ID.
+    #[prost(string, tag = "2")]
+    pub(crate) track: String,
+}
+
+#[derive(Clone, PartialEq, Eq, prost::Message)]
+pub(crate) struct ForwardStatus {
+    #[prost(uint32, tag = "1")]
+    pub(crate) generation: u32,
+    /// Receiving through the forwarder; false: it could not, send directly.
+    #[prost(bool, tag = "2")]
+    pub(crate) receiving: bool,
+    #[prost(string, tag = "3")]
+    pub(crate) error: String,
 }
 
 /// A push (request ID 0).

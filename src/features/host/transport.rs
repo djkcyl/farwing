@@ -2,6 +2,9 @@
 //! is reused: a repair has its own SSRC, payload type and SRTP sequence number.
 use super::protection::{Budget, Kind};
 use super::{Lease, lock};
+
+/// Whether the owner (a participant, or the forwarder uplink) still sends.
+type Requested = Arc<dyn Fn() -> bool + Send + Sync>;
 use async_trait::async_trait;
 use bytes::Bytes;
 use goog_cc::{
@@ -147,7 +150,7 @@ struct Network {
     rtt_us: AtomicU64,
     closed: AtomicBool,
     cancel: CancellationToken,
-    lease: Lease,
+    requested: Requested,
     feedback_wake: tokio::sync::Notify,
     controller: Mutex<super::congestion::Controller>,
     queued: AtomicU64,
@@ -246,6 +249,13 @@ impl Transport {
         cancel: CancellationToken,
         bounds: super::parameters::Bounds,
     ) -> Self {
+        Self::for_owner(Arc::new(move || lease.requested()), cancel, bounds)
+    }
+    pub(crate) fn for_owner(
+        requested: Requested,
+        cancel: CancellationToken,
+        bounds: super::parameters::Bounds,
+    ) -> Self {
         let rate = bounds.initial;
         let connection = Arc::new(Network {
             link: super::link::Link::from_environment(),
@@ -265,7 +275,7 @@ impl Transport {
             rtt_us: AtomicU64::new(0),
             closed: AtomicBool::new(false),
             cancel,
-            lease,
+            requested,
             feedback_wake: tokio::sync::Notify::new(),
             controller: Mutex::new(super::congestion::Controller::new(bounds)),
             queued: AtomicU64::new(0),
@@ -716,7 +726,7 @@ impl Transport {
     fn active(&self) -> bool {
         !self.0.closed.load(Ordering::Acquire)
             && !self.0.cancel.is_cancelled()
-            && self.0.lease.requested()
+            && (self.0.requested)()
     }
     async fn write(
         &self,
@@ -1864,7 +1874,7 @@ impl RTPWriter for AudioWriter {
     async fn write(&self, packet: &Packet, attributes: &Attributes) -> Result<usize> {
         let shared = &self.transport.0;
         if shared.cancel.is_cancelled()
-            || !shared.lease.requested()
+            || !(shared.requested)()
             || !shared.network.load(Ordering::Acquire)
         {
             return Ok(0);

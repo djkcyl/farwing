@@ -147,6 +147,16 @@ impl RtcpTiming {
             .map(Duration::from_millis)
     }
 
+    /// A stream whose sender cannot be measured from here (it comes through
+    /// the forwarder): the round trip to the sender measured elsewhere.
+    pub(crate) fn assume_rtt(&self, ssrc: u32, rtt: Duration) {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(stream) = state.streams.get_mut(&ssrc) {
+            stream.published_rtt_ms = Some((rtt.as_millis() as u64).max(1));
+            stream.published_rtt_at = Some(Instant::now());
+        }
+    }
+
     /// ModuleRtpRtcpImpl2 publishes pending non-sender RTT once per second.
     /// Absence of a new sample does not clear the module's last valid RTT.
     pub(crate) fn publish_rtt(&self) -> Option<Duration> {

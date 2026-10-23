@@ -12,6 +12,8 @@ pub(super) struct ControlIngress {
     pub input: crate::features::host::input::Receiver,
     /// `VideoFeedback` goes to the video track it names.
     pub recovery: Arc<crate::features::host::recovery::Inbox>,
+    /// `ForwardStatus` goes to multi-viewer forwarding.
+    pub forwarding: Option<Arc<crate::features::host::forwarding::Registration>>,
     /// Receives this participant's `POINTER` frames.
     pub membership: Option<Arc<crate::features::host::participants::Membership>>,
     pub files: crate::features::host::files::Receiver,
@@ -24,6 +26,7 @@ impl ControlIngress {
         let Self {
             input,
             recovery,
+            forwarding,
             membership,
             files,
             report_target,
@@ -67,12 +70,21 @@ impl ControlIngress {
                 if let Some(body) = crate::protocol::peer::body_of(
                     crate::protocol::peer::FrameType::Session,
                     bytes,
-                ) && let Ok(crate::features::stream_control::wire::SessionMessage {
-                    body: Some(crate::features::stream_control::wire::SessionBody::VideoFeedback(feedback)),
-                }) = <crate::features::stream_control::wire::SessionMessage as prost::Message>::decode(body)
-                {
-                    recovery.deliver(&feedback);
-                    return Ok(());
+                ) {
+                    use crate::features::stream_control::wire::{SessionBody, SessionMessage};
+                    match <SessionMessage as prost::Message>::decode(body) {
+                        Ok(SessionMessage { body: Some(SessionBody::VideoFeedback(feedback)) }) => {
+                            recovery.deliver(&feedback);
+                            return Ok(());
+                        }
+                        Ok(SessionMessage { body: Some(SessionBody::ForwardStatus(status)) }) => {
+                            if let Some(forwarding) = &forwarding {
+                                forwarding.status(&status);
+                            }
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
                 }
                 match control_files.receive_control(bytes) {
                     Ok(true) => return Ok(()),

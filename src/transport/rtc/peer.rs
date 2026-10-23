@@ -75,6 +75,8 @@ pub struct NativePeer {
     pub(super) ice_servers: Vec<IceServer>,
     pub(super) data_channels: DataChannels,
     pub(super) video_tracks: VideoTrackRegistry,
+    /// The video tracks while the host forwards them through the server.
+    pub(super) forwarding: Arc<super::forward::Forwarding>,
 }
 
 impl NativePeer {
@@ -318,7 +320,24 @@ impl NativePeer {
             ice_servers: configured_ice_servers,
             data_channels,
             video_tracks,
+            forwarding: Arc::default(),
         })
+    }
+
+    /// Follow the host's forwarding instructions for server session
+    /// `session` (`docs/protocol/deployment-design.md` §5.4).
+    pub(crate) fn start_forwarding(&self, api: crate::account::api::ServerApi, session: String) {
+        let context = super::forward::HostSide {
+            workers: Arc::downgrade(&self.data_channels.workers),
+            stop: self.data_channels.workers.shutdown.child_token(),
+            ice_servers: self.ice_servers.clone(),
+            tracks: self.video_tracks.clone(),
+            stream_control: self.data_channels.stream_control.clone(),
+            rtt_micros: self.nack_rtt_micros.clone(),
+        };
+        self.data_channels
+            .workers
+            .spawn(self.forwarding.clone().run(context, api, session));
     }
 
     pub fn performance_monitor(&self) -> PerformanceMonitor {
@@ -572,6 +591,16 @@ impl NativePeer {
     }
 
     pub async fn request_keyframe(&self, media_ssrc: u32) -> Result<()> {
+        // A forwarded track gets its keyframes through the forwarder.
+        let forwarded = self
+            .video_tracks
+            .all()
+            .into_iter()
+            .find(|source| source.metadata.ssrc == media_ssrc)
+            .and_then(|source| self.forwarding.keyframe_target(source.index));
+        if let Some((connection, ssrc)) = forwarded {
+            let _ = send_picture_loss_indication(&connection, ssrc).await;
+        }
         send_picture_loss_indication(&self.core.connection, media_ssrc).await
     }
 
@@ -722,6 +751,7 @@ impl NativePeer {
                             metadata: ForwardedTrack { kind: media_kind, id: id.clone(), codec: codec.clone(), payload_type: track.payload_type(), ssrc: track.ssrc() },
                             index, performance: performance.clone(), sinks: Arc::clone(&video_annexb_sinks),
                             feedback: feedback.clone(), started, keyframes,
+                            keyframe_tx: video_keyframe_tx.clone(),
                             nack_rtt_micros: Arc::clone(&nack_rtt_micros),
                         });
                         {
@@ -750,90 +780,14 @@ impl NativePeer {
                                     .take_while(|line| !line.starts_with("m="))
                                     .any(|line| line == "a=extmap-allow-mixed")
                             });
-                    let rsfec_config = parameters
-                        .codecs
-                        .iter()
-                        .find(|codec| {
-                            codec
-                                .capability
-                                .mime_type
-                                .eq_ignore_ascii_case(crate::transport::rsfec::MIME_TYPE)
-                        })
-                        .map(|codec| RsFecConfig::from_fmtp(&codec.capability.sdp_fmtp_line));
-                    let video_payload_codecs = parameters
-                        .codecs
-                        .iter()
-                        .filter(|entry| {
-                            entry
-                                .capability
-                                .mime_type
-                                .eq_ignore_ascii_case("video/H264")
-                                || entry
-                                    .capability
-                                    .mime_type
-                                    .eq_ignore_ascii_case("video/H265")
-                                || entry
-                                    .capability
-                                    .mime_type
-                                    .eq_ignore_ascii_case("video/HEVC") || entry.capability.mime_type.eq_ignore_ascii_case("video/AV1")
-                        })
-                        .map(|entry| {
-                            (
-                                entry.payload_type,
-                                (
-                                    entry.capability.mime_type.clone(),
-                                    entry.capability.sdp_fmtp_line.clone(),
-                                ),
-                            )
-                        })
-                        .collect();
-                    let rtx_payload_apt = parameters
-                        .codecs
-                        .iter()
-                        .filter(|entry| {
-                            entry.capability.mime_type.eq_ignore_ascii_case("video/rtx")
-                        })
-                        .filter_map(|entry| {
-                            let apt = entry
-                                .capability
-                                .sdp_fmtp_line
-                                .split(';')
-                                .find_map(|part| part.trim().strip_prefix("apt="))?
-                                .parse::<u8>()
-                                .ok()?;
-                            Some((entry.payload_type, apt))
-                        })
-                        .collect();
-                    let flexfec_payload_types = parameters
-                        .codecs
-                        .iter()
-                        .filter(|entry| {
-                            entry
-                                .capability
-                                .mime_type
-                                .eq_ignore_ascii_case("video/flexfec-03")
-                        })
-                        .map(|entry| entry.payload_type)
-                        .collect();
-                    let red_payload_types = parameters
-                        .codecs
-                        .iter()
-                        .filter(|entry| {
-                            entry.capability.mime_type.eq_ignore_ascii_case("video/red")
-                        })
-                        .map(|entry| entry.payload_type)
-                        .collect();
-                    let ulpfec_payload_types = parameters
-                        .codecs
-                        .iter()
-                        .filter(|entry| {
-                            entry
-                                .capability
-                                .mime_type
-                                .eq_ignore_ascii_case("video/ulpfec")
-                        })
-                        .map(|entry| entry.payload_type)
-                        .collect();
+                    let ReceiveParameters {
+                        rsfec_config,
+                        video_payload_codecs,
+                        rtx_payload_apt,
+                        flexfec_payload_types,
+                        red_payload_types,
+                        ulpfec_payload_types,
+                    } = ReceiveParameters::of(&parameters);
                     let ssrc = track.ssrc();
                     let remote_ntp =
                         Arc::new(StdMutex::new(RemoteNtpEstimator::new(Instant::now())));
@@ -940,5 +894,113 @@ impl Drop for NativePeer {
         // Normal paths await close(). This also retires application tasks on
         // an exceptional owner drop instead of leaving them to hold the peer.
         self.data_channels.workers.shutdown.cancel();
+    }
+}
+
+/// The negotiated receive codecs of one track: payload formats, repair and
+/// FEC payload types.
+pub(super) struct ReceiveParameters {
+    pub rsfec_config: Option<RsFecConfig>,
+    pub video_payload_codecs: std::collections::HashMap<u8, (String, String)>,
+    pub rtx_payload_apt: std::collections::HashMap<u8, u8>,
+    pub flexfec_payload_types: std::collections::HashSet<u8>,
+    pub red_payload_types: std::collections::HashSet<u8>,
+    pub ulpfec_payload_types: std::collections::HashSet<u8>,
+}
+
+impl ReceiveParameters {
+    pub(super) fn of(parameters: &webrtc::rtp_transceiver::rtp_codec::RTCRtpParameters) -> Self {
+        let rsfec_config = parameters
+            .codecs
+            .iter()
+            .find(|codec| {
+                codec
+                    .capability
+                    .mime_type
+                    .eq_ignore_ascii_case(crate::transport::rsfec::MIME_TYPE)
+            })
+            .map(|codec| RsFecConfig::from_fmtp(&codec.capability.sdp_fmtp_line));
+        let video_payload_codecs = parameters
+            .codecs
+            .iter()
+            .filter(|entry| {
+                entry
+                    .capability
+                    .mime_type
+                    .eq_ignore_ascii_case("video/H264")
+                    || entry
+                        .capability
+                        .mime_type
+                        .eq_ignore_ascii_case("video/H265")
+                    || entry
+                        .capability
+                        .mime_type
+                        .eq_ignore_ascii_case("video/HEVC") || entry.capability.mime_type.eq_ignore_ascii_case("video/AV1")
+            })
+            .map(|entry| {
+                (
+                    entry.payload_type,
+                    (
+                        entry.capability.mime_type.clone(),
+                        entry.capability.sdp_fmtp_line.clone(),
+                    ),
+                )
+            })
+            .collect();
+        let rtx_payload_apt = parameters
+            .codecs
+            .iter()
+            .filter(|entry| {
+                entry.capability.mime_type.eq_ignore_ascii_case("video/rtx")
+            })
+            .filter_map(|entry| {
+                let apt = entry
+                    .capability
+                    .sdp_fmtp_line
+                    .split(';')
+                    .find_map(|part| part.trim().strip_prefix("apt="))?
+                    .parse::<u8>()
+                    .ok()?;
+                Some((entry.payload_type, apt))
+            })
+            .collect();
+        let flexfec_payload_types = parameters
+            .codecs
+            .iter()
+            .filter(|entry| {
+                entry
+                    .capability
+                    .mime_type
+                    .eq_ignore_ascii_case("video/flexfec-03")
+            })
+            .map(|entry| entry.payload_type)
+            .collect();
+        let red_payload_types = parameters
+            .codecs
+            .iter()
+            .filter(|entry| {
+                entry.capability.mime_type.eq_ignore_ascii_case("video/red")
+            })
+            .map(|entry| entry.payload_type)
+            .collect();
+        let ulpfec_payload_types = parameters
+            .codecs
+            .iter()
+            .filter(|entry| {
+                entry
+                    .capability
+                    .mime_type
+                    .eq_ignore_ascii_case("video/ulpfec")
+            })
+            .map(|entry| entry.payload_type)
+            .collect();
+        Self {
+            rsfec_config,
+            video_payload_codecs,
+            rtx_payload_apt,
+            flexfec_payload_types,
+            red_payload_types,
+            ulpfec_payload_types,
+        }
     }
 }

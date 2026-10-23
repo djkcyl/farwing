@@ -112,6 +112,9 @@ pub(super) struct Reports {
     pub changed: watch::Sender<u64>,
     /// `VideoFeedback` of this participant, by track SSRC.
     pub recovery: Arc<crate::features::host::recovery::Inbox>,
+    /// The participant's picture goes through the forwarder: its tracks
+    /// take no frames themselves (`docs/protocol/deployment-design.md` §5.4).
+    pub forwarded: Arc<AtomicBool>,
 }
 impl Reports {
     pub fn notify(&self) {
@@ -343,6 +346,7 @@ impl Screens {
             pointers: (0..TRACK_COUNT).map(|_| Arc::default()).collect(),
             changed: watch::channel(0).0,
             recovery: Arc::default(),
+            forwarded: Arc::default(),
         });
         let mut slots = Vec::new();
         for index in 0..TRACK_COUNT {
@@ -612,6 +616,7 @@ impl Screens {
             tx,
             self.reports.pointers[index].clone(),
             self.reports.recovery.clone(),
+            self.reports.forwarded.clone(),
         )?;
         *lock(&self.reports.publications[index]) = Some(rx.clone());
         let reports = self.reports.clone();

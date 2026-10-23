@@ -347,6 +347,8 @@ pub struct StreamControlHandle {
     outgoing: mpsc::UnboundedSender<OutgoingControlMessage>,
     echo_responses: mpsc::UnboundedSender<Vec<u8>>,
     protocol_changed: Arc<Notify>,
+    /// The host's latest forwarding instruction.
+    forward: tokio::sync::watch::Sender<Option<wire::MediaForward>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -626,6 +628,7 @@ impl StreamControlHandle {
                 outgoing,
                 echo_responses,
                 protocol_changed: Arc::new(Notify::new()),
+                forward: tokio::sync::watch::channel(None).0,
             },
             receiver,
             echo_receiver,
@@ -673,6 +676,18 @@ impl StreamControlHandle {
         if let Some(frame) = self.participants.pointer_frame(screen_id, position, click) {
             let _ = self.echo_responses.send(frame);
         }
+    }
+    /// The host's forwarding instructions (`deployment-design.md` §5.4).
+    pub(crate) fn forward_instructions(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Option<wire::MediaForward>> {
+        self.forward.subscribe()
+    }
+    /// Tell the host whether this viewer receives through the forwarder.
+    pub(crate) fn forward_status(&self, status: wire::ForwardStatus) {
+        let _ = self
+            .echo_responses
+            .send(wire::push(wire::SessionBody::ForwardStatus(status)));
     }
     /// Push `VideoFeedback` on the control channel (FCT when negotiated).
     /// False when the host does not take it (`video.recovery`).

@@ -273,6 +273,11 @@ impl StreamControlHandle {
         let mut state = lock(&self.shared);
         match body {
             SessionBody::Microphone(event) => self.microphone.event(event.state),
+            SessionBody::Forward(forward) => {
+                tracing::info!(room = %forward.room, generation = forward.generation,
+                    tracks = forward.tracks.len(), "host forwarding instruction");
+                self.forward.send_replace(Some(forward));
+            }
             SessionBody::ClipboardFiles(permission) => {
                 state.clipboard_files_allowed = permission.enabled;
             }

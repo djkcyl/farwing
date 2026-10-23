@@ -281,6 +281,7 @@ impl ControllerConnection {
         }
         let room = cancellable(cancel, client.join_device(&device.device_id, purpose.wire()))
             .await?;
+        let session_id = room.session_id.clone();
         let connection = Self::establish(
             room,
             crate::transport::signal::identity::Local::new(client.client_identity()?),
@@ -299,7 +300,23 @@ impl ControllerConnection {
         )
         .await?;
         shared::register(key, &connection.forwarder.session, client.ended());
+        // The host may forward the picture through the server (§5.4 of
+        // `docs/protocol/deployment-design.md`).
+        connection.follow_forwarding(client, session_id).await;
         Ok(connection)
+    }
+    /// Follow the host's forwarding instructions for server session
+    /// `session_id` (`docs/protocol/deployment-design.md` §5.4).
+    pub(super) async fn follow_forwarding(
+        &self,
+        client: &AuthenticatedClient,
+        session_id: Option<String>,
+    ) {
+        let Some(session) = session_id else { return };
+        match client.request(|api| async move { Ok(api) }).await {
+            Ok(api) => self.peer.start_forwarding(api, session),
+            Err(error) => tracing::warn!(%error, "no server API for forwarding"),
+        }
     }
     fn from_shared(
         session: Arc<shared::Session>,

@@ -53,6 +53,9 @@ pub(crate) struct VideoTrackSource {
     pub feedback: mpsc::UnboundedSender<VideoReceiverFeedback>,
     pub(super) started: watch::Sender<bool>,
     pub(super) keyframes: watch::Receiver<u64>,
+    /// Counts keyframes for [`Self::keyframes`]; a forwarded stream of this
+    /// track counts too.
+    pub(super) keyframe_tx: watch::Sender<u64>,
     pub(super) nack_rtt_micros: Arc<AtomicU64>,
 }
 

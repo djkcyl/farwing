@@ -62,6 +62,8 @@ pub(super) fn capture_loop(
     publication: tokio::sync::watch::Sender<Published>,
     pointer: Arc<Mutex<Option<crate::platform::windows::cursor_shape::Snapshot>>>,
     feedback: Arc<crate::features::host::recovery::TrackFeedback>,
+    forwarded: Arc<AtomicBool>,
+    slot: usize,
 ) -> Result<()> {
     // Declared first, dropped last: after the encoder and transfer that use
     // the device.
@@ -111,6 +113,8 @@ pub(super) fn capture_loop(
     let mut unsent_cache = false;
     // Shared encoding: this participant's group, if capturing.
     let mut membership = None::<encode_group::Membership>;
+    // Forwarding just ended: back to this participant's own encoder key.
+    let mut forwarded_before = false;
     let mut leading = true;
     // Follower: decoding must (re)start at a keyframe; when one was asked.
     let mut awaiting = true;
@@ -255,6 +259,8 @@ pub(super) fn capture_loop(
             wanted.quality = wanted.quality.min(maximum_quality);
         }
 
+        // Forwarded: the forwarder uplink takes this stream's frames instead.
+        let forwarding = forwarded.load(Ordering::Acquire);
         // Which encoder this participant uses: lead a group or follow one.
         if wanted.capturing {
             let key = encode_group::Key {
@@ -287,14 +293,25 @@ pub(super) fn capture_loop(
             // limit regroups, so the members of its group keep their stream;
             // so does a provisional follower once its settings are known.
             let regroup = membership.as_ref().is_none_or(|m| {
-                m.wanted != key
-                    || (*m.group_key() != key && (m.is_leader() || (m.provisional && configured)))
+                if forwarding {
+                    // Forwarded viewers share whichever stream of this screen
+                    // and format there is: one stream goes to the forwarder.
+                    m.group_key().screen != key.screen || m.group_key().format != key.format
+                } else {
+                    m.wanted != key
+                        || forwarded_before
+                        || (*m.group_key() != key
+                            && (m.is_leader() || (m.provisional && configured)))
+                }
             });
+            forwarded_before = forwarding;
             if regroup {
                 // Leave first: the old group must not count against the limit.
                 drop(membership.take());
                 let size = output_size(budget_size.0, budget_size.1, wanted.quality);
-                membership = Some(if configured {
+                membership = Some(if forwarding {
+                    encode_group::REGISTRY.join_forwarded(key, size)
+                } else if configured {
                     encode_group::REGISTRY.join(key, size, encode_group::MAX_ENCODERS)
                 } else {
                     encode_group::REGISTRY.join_provisional(key, size)
@@ -432,11 +449,17 @@ pub(super) fn capture_loop(
         // This participant's allowance; the group encodes for the weakest
         // active member.
         let ready_seen = business_ready.changes();
+        if let Some(membership) = membership.as_ref() {
+            membership.set_forwarded(
+                forwarding.then(|| (handle.participant().unwrap_or_default(), slot)),
+            );
+        }
         let own_active = connected.load(Ordering::Acquire)
             && business_ready.get()
             && transport.media_ready()
             && wanted.sending
-            && wanted.capturing;
+            && wanted.capturing
+            && !forwarding;
         let own_peak = transport.media_rate().min(bounds.maximum);
         let codec_minimum = crate::features::host::parameters::MIN_ENCODER_RATE;
         let shared = membership.as_ref().and_then(|membership| {
@@ -447,8 +470,8 @@ pub(super) fn capture_loop(
             }));
             membership.aggregate(codec_minimum)
         });
-        if let Some(group) = shared {
-            wanted.fps = group.fps.max(1);
+        if let Some(group) = shared.filter(|group| group.fps > 0) {
+            wanted.fps = group.fps;
         }
         let group_peak = shared.map_or(own_peak, |group| group.peak);
         let group_ratio = shared.map_or_else(|| transport.cwnd_ratio(), |group| group.ratio);
@@ -599,8 +622,8 @@ pub(super) fn capture_loop(
         }
 
         // Leader: encode while this participant or another member takes
-        // frames.
-        let others = membership.as_ref().is_some_and(|m| m.others_active());
+        // frames; a forwarded leader encodes for the forwarder uplink.
+        let others = forwarding || membership.as_ref().is_some_and(|m| m.others_active());
         // While the connection is made, open the encoder from the first
         // image of the prepared capture: once media may flow, the first
         // frame only has to be encoded.

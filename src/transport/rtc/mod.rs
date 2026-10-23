@@ -4,6 +4,7 @@ mod channels;
 mod clock;
 mod core;
 mod feedback;
+mod forward;
 pub(crate) mod impair;
 mod ingress;
 mod negotiation;

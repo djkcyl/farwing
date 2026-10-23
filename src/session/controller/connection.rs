@@ -308,6 +308,7 @@ impl ResolvedConnection {
             "{}",
             t().session.error_local_identity_changed
         );
+        let session_id = room.session_id.clone();
         let mut connection = ControllerConnection::establish(
             room,
             local,
@@ -332,6 +333,7 @@ impl ResolvedConnection {
             },
         )
         .await?;
+        connection.follow_forwarding(&self.client, session_id).await;
         let handle = connection.stream_control_handle();
         if self.assist.is_none() {
             shared::register(key, &connection.forwarder.session, self.client.ended());
