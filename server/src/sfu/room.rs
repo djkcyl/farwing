@@ -4,7 +4,7 @@ use super::leg::{Leg, Rtcp};
 use super::sdp::{self, Kind};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -28,13 +28,13 @@ const CACHE: usize = 2048;
 const KEYFRAME_INTERVAL: Duration = Duration::from_millis(300);
 /// The host hears the forwarded stream's limit this often.
 const LIMIT_INTERVAL: Duration = Duration::from_millis(250);
-/// Viewers whose downlinks cannot carry the stream ask for keyframes (for
-/// everyone) together at most this often: their losses do not cost the
-/// others a keyframe each, and they still get a chance to catch up.
-const SLOW_KEYFRAME_INTERVAL: Duration = Duration::from_secs(10);
-/// Other congested viewers ask together at most this often: a keyframe on a
-/// congested downlink is lost again and asked for again.
-const CONGESTED_KEYFRAME_INTERVAL: Duration = Duration::from_secs(2);
+/// Viewers with impaired downlinks (losing, limited or dark) ask for
+/// keyframes (for everyone) together at most this often while another
+/// viewer's downlink is sound: their losses do not cost the others a
+/// keyframe each, and they still get a chance to catch up...
+const IMPAIRED_KEYFRAME_INTERVAL: Duration = Duration::from_secs(10);
+/// ...and this often when every viewer's downlink is impaired.
+const ALL_IMPAIRED_KEYFRAME_INTERVAL: Duration = Duration::from_secs(2);
 /// Lost uplink packets are requested again after this, up to `NACK_TRIES`
 /// times within `NACK_AGE`.
 const NACK_RETRY: Duration = Duration::from_millis(40);
@@ -216,15 +216,13 @@ pub(super) struct Room {
     bytes: AtomicU64,
     nacked: AtomicU64,
     keyframes: AtomicU64,
+    /// Subscriptions so far (development impairments pick viewers by it).
+    pub subscriptions: std::sync::atomic::AtomicUsize,
     /// The forwarded stream's limit, and when the host was last told.
     limit: Mutex<Option<u64>>,
     limit_at: Mutex<Instant>,
-    /// Viewers whose downlinks cannot carry the forwarded stream, and the
-    /// last keyframe one of them asked for.
-    slow: Mutex<HashSet<String>>,
-    slow_keyframe_at: Mutex<Option<Instant>>,
-    /// The last keyframe another congested viewer asked for.
-    congested_keyframe_at: Mutex<Option<Instant>>,
+    /// The last keyframe a viewer with an impaired downlink asked for.
+    impaired_keyframe_at: Mutex<Option<Instant>>,
     pub ticker: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -238,11 +236,10 @@ impl Room {
             bytes: AtomicU64::new(0),
             nacked: AtomicU64::new(0),
             keyframes: AtomicU64::new(0),
+            subscriptions: std::sync::atomic::AtomicUsize::new(0),
             limit: Mutex::default(),
             limit_at: Mutex::new(Instant::now()),
-            slow: Mutex::default(),
-            slow_keyframe_at: Mutex::default(),
-            congested_keyframe_at: Mutex::default(),
+            impaired_keyframe_at: Mutex::default(),
             ticker: Mutex::default(),
         })
     }
@@ -362,15 +359,20 @@ impl Room {
 
     /// Whether `leg`'s keyframe request goes on (to the per-track merge).
     fn keyframe_allowed(&self, leg: &Leg) -> bool {
-        let (at, interval) = if self.slow.lock().contains(&leg.id) {
-            (&self.slow_keyframe_at, SLOW_KEYFRAME_INTERVAL)
-        } else if leg.downlink.lock().limit().is_some() {
-            (&self.congested_keyframe_at, CONGESTED_KEYFRAME_INTERVAL)
-        } else {
+        if !leg.downlink.lock().impaired() {
             return true;
+        }
+        let sound = self
+            .legs()
+            .iter()
+            .any(|other| !other.downlink.lock().impaired());
+        let interval = if sound {
+            IMPAIRED_KEYFRAME_INTERVAL
+        } else {
+            ALL_IMPAIRED_KEYFRAME_INTERVAL
         };
         let now = Instant::now();
-        let mut at = at.lock();
+        let mut at = self.impaired_keyframe_at.lock();
         if at.is_some_and(|at| now.duration_since(at) < interval) {
             return false;
         }
@@ -440,22 +442,18 @@ impl Room {
     /// stall; they do not lower everyone's picture. None while that is any
     /// rate, and the host's limit lapses.
     async fn send_limit(&self, uplink: &Uplink) {
-        let legs: Vec<(String, Option<u64>)> = self
+        // Dark downlinks (nothing arrives) are not counted: a lower rate does
+        // not reach them either.
+        let limits: Vec<Option<u64>> = self
             .legs()
             .iter()
-            .map(|leg| {
+            .filter_map(|leg| {
                 let mut downlink = leg.downlink.lock();
                 downlink.tick();
-                (leg.id.clone(), downlink.limit())
+                (!downlink.dark()).then(|| downlink.limit())
             })
             .collect();
-        let limit = majority_limit(legs.iter().map(|(_, l)| *l));
-        // The minority below the forwarded rate.
-        *self.slow.lock() = legs
-            .into_iter()
-            .filter(|(_, l)| l.is_some_and(|l| limit.is_none_or(|limit| l * 100 < limit * 85)))
-            .map(|(id, _)| id)
-            .collect();
+        let limit = majority_limit(limits.into_iter());
         let previous = std::mem::replace(&mut *self.limit.lock(), limit);
         if previous.is_some() != limit.is_some() {
             tracing::info!(room = %self.id, limit_bps = ?limit, "forwarded stream limit");

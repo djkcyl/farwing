@@ -2,9 +2,14 @@
 //! numbers this leg writes (`docs/protocol/deployment-design.md` §5.4).
 //! The forwarder neither probes nor paces, so it only learns the downlink's
 //! capacity from congestion: GoogCC's delay-based detector overusing, or
-//! more than [`CONGESTED_LOSS`] of the last second's packets lost. Then the
-//! leg's limit is [`BETA`] of what reached the viewer over that second (as
-//! GoogCC lowers its own target); it relaxes by [`RELAX`] a second without
+//! more than [`CONGESTED_LOSS`] of the last second's packets lost while the
+//! one-way delay stands [`QUEUEING`] above its recent minimum (a full
+//! queue; losses without queueing are a lossy link, which a lower rate does
+//! not help). Then the leg's limit is [`BETA`] of the downlink's capacity:
+//! the rate packets arrived at over the last [`ARRIVAL_WINDOW`] (a full
+//! link delivers back to back at its rate, while a mostly still picture
+//! averages far less), at least what reached the viewer over the last
+//! second; it relaxes by [`RELAX`] a second without
 //! congestion (also while the picture is still and the stream small, so
 //! the next motion meets a limit near the downlink's capacity).
 use goog_cc::{
@@ -25,6 +30,19 @@ const MAXIMUM: i64 = 1_000_000_000;
 /// Share of the delivered rate a congested leg is limited to.
 const BETA: f64 = 0.85;
 const CONGESTED_LOSS: f64 = 0.10;
+/// Queueing that, with losses, means the downlink is full.
+const QUEUEING: Duration = Duration::from_millis(60);
+/// The one-way delay's minimum is taken over this long.
+const DELAY_WINDOW: Duration = Duration::from_secs(10);
+/// Sent packets of which none arrived for this long: the downlink is dark.
+const DARK_AFTER: Duration = Duration::from_secs(1);
+/// Arrivals over this long give the capacity of a full downlink...
+const ARRIVAL_WINDOW: Duration = Duration::from_millis(300);
+/// ...from at least this many packets over at least this long.
+const ARRIVAL_PACKETS: usize = 10;
+const ARRIVAL_SPAN: Duration = Duration::from_millis(30);
+/// Losses above this share make a downlink impaired.
+const IMPAIRED_LOSS: f64 = 0.02;
 /// The limit is lowered at most this often.
 const DECREASE_INTERVAL: Duration = Duration::from_millis(500);
 /// A limit relaxes this much a second without congestion...
@@ -53,6 +71,14 @@ pub(super) struct Downlink {
     relaxed_at: Instant,
     /// Reported packets: when reported, delivered bytes (`None`: lost).
     reported: VecDeque<(Instant, Option<usize>)>,
+    /// Received packets: arrival (µs, the viewer's clock mapped to ours)
+    /// and bytes, over the last [`ARRIVAL_WINDOW`].
+    arrivals: VecDeque<(i64, usize)>,
+    /// Mean one-way delay (µs, with the clocks' offset) of each report.
+    delays: VecDeque<(Instant, i64)>,
+    queueing: Duration,
+    last_sent: Option<Instant>,
+    last_delivered: Option<Instant>,
 }
 
 impl Downlink {
@@ -99,6 +125,11 @@ impl Downlink {
             flight: 0,
             limit: None,
             first_report: None,
+            arrivals: VecDeque::new(),
+            delays: VecDeque::new(),
+            queueing: Duration::ZERO,
+            last_sent: None,
+            last_delivered: None,
             congested_at: None,
             relaxed_at: origin,
             reported: VecDeque::new(),
@@ -138,6 +169,7 @@ impl Downlink {
             }
         }
         let _ = self.core.on_sent_packet(packet);
+        self.last_sent = Some(Instant::now());
     }
 
     pub fn feedback(&mut self, feedback: &TransportLayerCc) {
@@ -191,6 +223,7 @@ impl Downlink {
         let base = unwrap(feedback.base_sequence_number.into(), 16, last);
         let mut deltas = feedback.recv_deltas.iter();
         let mut packets = Vec::new();
+        let (mut delay_sum, mut delay_count) = (0i64, 0i64);
         for (index, status) in statuses.into_iter().enumerate() {
             let received = status != SymbolTypeTcc::PacketNotReceived;
             if with_delta(&status) {
@@ -209,6 +242,12 @@ impl Downlink {
             if status == SymbolTypeTcc::PacketReceivedWithoutDelta {
                 continue;
             }
+            if received {
+                delay_sum += received_at - packet.send_time.us();
+                delay_count += 1;
+                self.arrivals
+                    .push_back((received_at, packet.size.bytes() as usize));
+            }
             packets.push(PacketResult {
                 sent_packet: *packet,
                 receive_time: if received {
@@ -220,6 +259,30 @@ impl Downlink {
             });
         }
         trim(&mut self.reported, at);
+        if let Some(&(newest, _)) = self.arrivals.back() {
+            let window = ARRIVAL_WINDOW.as_micros() as i64;
+            while self
+                .arrivals
+                .front()
+                .is_some_and(|(t, _)| newest - *t > window)
+            {
+                self.arrivals.pop_front();
+            }
+        }
+        if delay_count > 0 {
+            self.last_delivered = Some(at);
+            self.delays.push_back((at, delay_sum / delay_count));
+            while self
+                .delays
+                .front()
+                .is_some_and(|(t, _)| at.duration_since(*t) > DELAY_WINDOW)
+            {
+                self.delays.pop_front();
+            }
+            let minimum = self.delays.iter().map(|(_, d)| *d).min().unwrap_or(0);
+            let latest = delay_sum / delay_count;
+            self.queueing = Duration::from_micros((latest - minimum).max(0) as u64);
+        }
         if !packets.is_empty() {
             packets.sort_by_key(|p| p.sent_packet.send_time);
             let _ = self
@@ -239,20 +302,15 @@ impl Downlink {
         if at.duration_since(*self.first_report.get_or_insert(at)) < WINDOW {
             return;
         }
-        let (delivered, lost) = self
+        let (delivered, _) = self
             .reported
             .iter()
             .fold((0usize, 0usize), |(d, l), (_, b)| {
                 (d + b.unwrap_or(0), l + usize::from(b.is_none()))
             });
-        let total = self.reported.len();
-        let loss = if total >= 20 {
-            lost as f64 / total as f64
-        } else {
-            0.0
-        };
+        let loss = self.loss();
         let overusing = self.core.delay_state() == BandwidthUsage::Overusing;
-        if !overusing && loss <= CONGESTED_LOSS {
+        if !overusing && (loss <= CONGESTED_LOSS || self.queueing < QUEUEING) {
             return;
         }
         if self
@@ -261,8 +319,8 @@ impl Downlink {
         {
             return;
         }
-        let delivered = (delivered as f64 * 8.0 / WINDOW.as_secs_f64()).max(MINIMUM);
-        let limit = BETA * delivered;
+        let delivered = delivered as f64 * 8.0 / WINDOW.as_secs_f64();
+        let limit = BETA * self.arrival_rate().unwrap_or(0.0).max(delivered).max(MINIMUM);
         if self.limit.is_none() {
             tracing::info!(
                 limit_bps = limit as u64,
@@ -306,6 +364,47 @@ impl Downlink {
         } else {
             Some(limit)
         };
+    }
+
+    /// The rate packets arrived at over the last [`ARRIVAL_WINDOW`].
+    fn arrival_rate(&self) -> Option<f64> {
+        let (&(first, _), &(last, _)) = (self.arrivals.front()?, self.arrivals.back()?);
+        let span = last - first;
+        if self.arrivals.len() < ARRIVAL_PACKETS || span < ARRIVAL_SPAN.as_micros() as i64 {
+            return None;
+        }
+        // The first packet's bytes arrived before the span began.
+        let bytes: usize = self.arrivals.iter().skip(1).map(|(_, b)| b).sum();
+        Some(bytes as f64 * 8.0 / (span as f64 / 1e6))
+    }
+
+    /// Share of the last second's reported packets that were lost.
+    pub fn loss(&self) -> f64 {
+        let lost = self.reported.iter().filter(|(_, b)| b.is_none()).count();
+        let total = self.reported.len();
+        if total >= 20 {
+            lost as f64 / total as f64
+        } else {
+            0.0
+        }
+    }
+
+    /// Packets went out but none arrived for a while: the viewer's downlink
+    /// is dark (or the viewer is gone).
+    pub fn dark(&self) -> bool {
+        let now = Instant::now();
+        self.last_sent
+            .is_some_and(|sent| now.duration_since(sent) < DARK_AFTER)
+            && self
+                .last_delivered
+                .is_none_or(|delivered| now.duration_since(delivered) >= DARK_AFTER)
+            && self.first_report.is_some()
+    }
+
+    /// The downlink loses, is limited or dark: its viewer's keyframe
+    /// requests are rationed.
+    pub fn impaired(&self) -> bool {
+        self.limit.is_some() || self.loss() > IMPAIRED_LOSS || self.dark()
     }
 
     /// The most this leg carries while it is congested.

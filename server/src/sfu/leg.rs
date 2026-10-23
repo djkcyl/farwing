@@ -294,15 +294,6 @@ impl Rewrite {
     }
 }
 
-/// A development bottleneck in front of the viewer
-/// (`FARWING_DEV_SFU_DOWNLINK`): packets leave at the link's rate, recorded
-/// as sent when they enter it; a queue longer than [`SHAPER_QUEUE`] drops.
-struct Shaper {
-    bits_per_second: f64,
-    free_at: Instant,
-}
-
-const SHAPER_QUEUE: Duration = Duration::from_millis(200);
 /// A packet is repaired again only after this...
 const REPAIR_REPEAT: Duration = Duration::from_millis(40);
 /// ...on a congested downlink only after this...
@@ -311,19 +302,6 @@ const CONGESTED_REPAIR_REPEAT: Duration = Duration::from_millis(200);
 const REPAIR_SHARE: f64 = 0.5;
 /// ...with this much saved up.
 const REPAIR_BURST: Duration = Duration::from_millis(250);
-
-impl Shaper {
-    /// When a packet of `bytes` arrives; `None` when the queue is full.
-    fn admit(&mut self, bytes: usize) -> Option<Instant> {
-        let now = Instant::now();
-        let start = self.free_at.max(now);
-        if start.duration_since(now) > SHAPER_QUEUE {
-            return None;
-        }
-        self.free_at = start + Duration::from_secs_f64((bytes + 48) as f64 * 8.0 / self.bits_per_second);
-        Some(self.free_at)
-    }
-}
 
 #[derive(Default)]
 pub(super) struct LegStats {
@@ -356,7 +334,8 @@ pub(super) struct Leg {
     pub stats: LegStats,
     /// The viewer's downlink, from its transport-wide feedback.
     pub downlink: Mutex<super::estimate::Downlink>,
-    shaper: Option<Mutex<Shaper>>,
+    /// A development emulation of the viewer's downlink.
+    emulator: Option<Mutex<super::emulate::Emulator>>,
     pub tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
@@ -367,7 +346,7 @@ impl Leg {
         tap: Arc<Tap>,
         rewrite: Rewrite,
         tcc: Option<u8>,
-        bottleneck: Option<f64>,
+        emulator: Option<super::emulate::Emulator>,
     ) -> (Arc<Self>, mpsc::Receiver<Packet>) {
         let (queue, packets) = mpsc::channel(QUEUE);
         let leg = Arc::new(Self {
@@ -384,12 +363,7 @@ impl Leg {
             reports: Mutex::default(),
             stats: LegStats::default(),
             downlink: Mutex::new(super::estimate::Downlink::new()),
-            shaper: bottleneck.map(|bits_per_second| {
-                Mutex::new(Shaper {
-                    bits_per_second,
-                    free_at: Instant::now(),
-                })
-            }),
+            emulator: emulator.map(Mutex::new),
             tasks: Mutex::default(),
         });
         (leg, packets)
@@ -403,8 +377,8 @@ impl Leg {
 
     /// Writes queued packets until the connection closes.
     pub async fn run(self: Arc<Self>, mut packets: mpsc::Receiver<Packet>) {
-        // Behind a development bottleneck, packets leave later, in order.
-        let delayed = self.shaper.as_ref().map(|_| {
+        // Behind an emulated downlink, packets arrive later, in order.
+        let delayed = self.emulator.as_ref().map(|_| {
             let (delayed, mut queue) = mpsc::unbounded_channel::<(Instant, Bound, Packet)>();
             let leg = Arc::clone(&self);
             tokio::spawn(async move {
@@ -438,8 +412,8 @@ impl Leg {
             if let Some(seq) = sequence {
                 self.downlink.lock().sent(seq, size);
             }
-            if let (Some(shaper), Some(delayed)) = (&self.shaper, &delayed) {
-                match shaper.lock().admit(size) {
+            if let (Some(emulator), Some(delayed)) = (&self.emulator, &delayed) {
+                match emulator.lock().admit(size) {
                     Some(at) => {
                         let _ = delayed.send((at, bound, packet));
                     }

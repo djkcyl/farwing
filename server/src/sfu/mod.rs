@@ -13,6 +13,7 @@
 //! through their relay, and the forwarder answers their checks from there
 //! (peer-reflexive candidates, no trickling needed).
 
+mod emulate;
 mod estimate;
 mod leg;
 mod room;
@@ -51,22 +52,6 @@ use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 const GATHER_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often lost uplink packets are requested.
 const TICK: Duration = Duration::from_millis(10);
-
-/// Development: `FARWING_DEV_SFU_DOWNLINK=N[,N...]:MBPS` puts those viewers
-/// of a room (counted from 1 as they subscribe) behind a MBPS bottleneck, to
-/// test how the forwarded stream follows its viewers.
-fn dev_downlink(index: usize) -> Option<f64> {
-    let spec = std::env::var("FARWING_DEV_SFU_DOWNLINK").ok()?;
-    let (viewers, mbps) = spec.split_once(':')?;
-    let mbps: f64 = mbps.trim().parse().ok().filter(|m: &f64| *m > 0.0)?;
-    viewers
-        .split(',')
-        .any(|n| n.trim().parse::<usize>().ok() == Some(index))
-        .then(|| {
-            tracing::warn!(viewer = index, mbps, "development downlink bottleneck");
-            mbps * 1e6
-        })
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SfuConfig {
@@ -411,14 +396,14 @@ impl Sfu {
                 }
             }
         }
-        let bottleneck = dev_downlink(room.legs.read().len() + 1);
+        let index = room.subscriptions.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let (leg, packets) = Leg::new(
             leg_id.to_owned(),
             Arc::clone(&pc),
             tap,
             rewrite,
             tcc,
-            bottleneck,
+            emulate::Emulator::for_viewer(index),
         );
         let senders = pc.get_senders().await;
         {
