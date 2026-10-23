@@ -29,12 +29,13 @@ const KEYFRAME_INTERVAL: Duration = Duration::from_millis(300);
 /// The host hears the forwarded stream's limit this often.
 const LIMIT_INTERVAL: Duration = Duration::from_millis(250);
 /// Viewers with impaired downlinks (losing, limited or dark) ask for
-/// keyframes (for everyone) together at most this often while another
-/// viewer's downlink is sound: their losses do not cost the others a
-/// keyframe each, and they still get a chance to catch up...
+/// keyframes (for everyone) together at most this often: a few viewers'
+/// losses do not cost the others a keyframe each, and they still get a
+/// chance to catch up...
 const IMPAIRED_KEYFRAME_INTERVAL: Duration = Duration::from_secs(10);
-/// ...and this often when every viewer's downlink is impaired.
-const ALL_IMPAIRED_KEYFRAME_INTERVAL: Duration = Duration::from_secs(2);
+/// ...and this often while the stream follows the limited majority, or when
+/// no viewer's downlink is sound.
+const FOLLOWED_KEYFRAME_INTERVAL: Duration = Duration::from_secs(2);
 /// Lost uplink packets are requested again after this, up to `NACK_TRIES`
 /// times within `NACK_AGE`.
 const NACK_RETRY: Duration = Duration::from_millis(40);
@@ -377,14 +378,15 @@ impl Room {
         if !leg.downlink.lock().impaired() {
             return true;
         }
+        let followed = self.limit.lock().is_some();
         let sound = self
             .legs()
             .iter()
             .any(|other| !other.downlink.lock().impaired());
-        let interval = if sound {
-            IMPAIRED_KEYFRAME_INTERVAL
+        let interval = if followed || !sound {
+            FOLLOWED_KEYFRAME_INTERVAL
         } else {
-            ALL_IMPAIRED_KEYFRAME_INTERVAL
+            IMPAIRED_KEYFRAME_INTERVAL
         };
         let now = Instant::now();
         let mut at = self.impaired_keyframe_at.lock();
