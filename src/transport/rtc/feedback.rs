@@ -121,6 +121,9 @@ pub(super) struct NackRequester {
     pub(super) final_lost_packets: u64,
     /// The last keyframe this requester asked for on unrecoverable loss.
     pub(super) keyframe_requested: Option<Instant>,
+    /// A missing packet counts as lost no sooner than this: a forwarded
+    /// stream watched in cinema mode waits like a live stream.
+    pub(super) patience: Duration,
 }
 
 impl NackRequester {
@@ -134,11 +137,16 @@ impl NackRequester {
             recovered: Vec::new(),
             final_lost_packets: 0,
             keyframe_requested: None,
+            patience: Duration::ZERO,
         }
     }
 
     pub(super) fn set_rtt(&mut self, rtt: Duration) {
         self.rtt = rtt;
+    }
+
+    pub(super) fn set_patience(&mut self, patience: Duration) {
+        self.patience = patience;
     }
 
     pub(super) fn on_received(
@@ -297,8 +305,8 @@ impl NackRequester {
         let rtt = self.rtt;
         let mut sequences = Vec::new();
         let before = self.entries.len();
-        let unrecoverable = unrecoverable_after(rtt);
-        let early = recovery_after(rtt);
+        let unrecoverable = unrecoverable_after(rtt).max(self.patience);
+        let early = recovery_after(rtt).max(self.patience);
         let mut stale = false;
         let mut late = false;
         self.entries.retain(|_, entry| {
@@ -352,7 +360,9 @@ impl NackRequester {
         let request_keyframe = stale
             && self
                 .keyframe_requested
-                .is_none_or(|at| now.duration_since(at) >= keyframe_request_spacing(rtt));
+                .is_none_or(|at| {
+                    now.duration_since(at) >= keyframe_request_spacing(rtt).max(self.patience)
+                });
         if request_keyframe {
             self.keyframe_requested = Some(now);
             tracing::debug!(

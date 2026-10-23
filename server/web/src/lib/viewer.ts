@@ -621,6 +621,12 @@ export class Viewer {
     }
   }
 
+  private setControlHeld(held: boolean) {
+    this.controlHeld = held;
+    // Watching through the forwarder without control: like a live stream.
+    this.forward?.watching(!held);
+  }
+
   /// The host's forwarding instruction (§6.7).
   private onForward(instruction: fpp.Forward) {
     this.log(
@@ -647,6 +653,7 @@ export class Viewer {
         this.events.forwarding?.(video ? mode : '');
       },
     });
+    this.forward.watching(!this.controlHeld);
     this.forward.follow(instruction);
   }
 
@@ -967,7 +974,7 @@ export class Viewer {
 
   private loseControl(message: string) {
     this.input.stop();
-    this.controlHeld = false;
+    this.setControlHeld(false);
     this.wantControl = false;
     this.emitControl(message);
   }
@@ -990,7 +997,7 @@ export class Viewer {
       const m = fpp.parseSession(await this.request(fpp.Type.SESSION, fpp.turnRequest(true, automatic)));
       const held = m.kind === 'turn_result' && m.held;
       message = m.kind === 'turn_result' && !held ? refusalText(m.refusal, m.holder) : undefined;
-      this.controlHeld = held;
+      this.setControlHeld(held);
       this.wantControl = held;
       if (held) this.input.start();
       else this.input.stop();
@@ -1008,7 +1015,7 @@ export class Viewer {
     this.wantControl = false;
     const held = this.controlHeld;
     this.input.stop();
-    this.controlHeld = false;
+    this.setControlHeld(false);
     this.emitControl();
     if (held) await this.request(fpp.Type.SESSION, fpp.turnRequest(false)).catch(() => undefined);
   }
@@ -1226,7 +1233,7 @@ export class Viewer {
 
   private teardown() {
     this.input.stop();
-    this.controlHeld = false;
+    this.setControlHeld(false);
     this.clipboard.reset();
     this.files.reset();
     this.annotation.reset();

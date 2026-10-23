@@ -40,6 +40,8 @@ use webrtc::rtp::packet::Packet as RtpPacket;
 use webrtc::util::marshal::Marshal;
 
 pub(super) struct TrackForwardContext {
+    /// The track comes through the server's forwarder.
+    pub(super) forwarded: bool,
     pub(super) workers: Weak<SessionWorkers>,
     pub(super) stop: CancellationToken,
     pub(super) kind: MediaKind,
@@ -74,6 +76,7 @@ pub(super) async fn forward_remote_track(
     context: TrackForwardContext,
 ) {
     let TrackForwardContext {
+        forwarded,
         workers,
         stop,
         kind,
@@ -129,6 +132,7 @@ pub(super) async fn forward_remote_track(
             audio.clone(),
             stream_control,
             decrypt,
+            forwarded,
         )
         .await;
         return;
@@ -211,6 +215,7 @@ pub(super) async fn forward_video_track(
     audio: crate::media::audio::AudioPlayback,
     stream_control: crate::features::stream_control::StreamControlHandle,
     decrypt: Option<Arc<StdMutex<crate::media::frame_crypto::Decryptor>>>,
+    forwarded: bool,
 ) {
     let mut ingress = match OrderedVideoIngress::open(&track).await {
         Ok(ingress) => ingress,
@@ -745,10 +750,20 @@ pub(super) async fn forward_video_track(
                     }
                     // The viewer decides its playout buffer: none for the
                     // lowest latency, or the cinema-mode buffer.
-                    let playout_delay = Some(if audio.cinema() {
+                    let cinema = audio.cinema();
+                    nack_requester.set_patience(if forwarded && cinema {
+                        crate::media::audio::FORWARDED_PATIENCE
+                    } else {
+                        Duration::ZERO
+                    });
+                    let playout_delay = Some(if cinema {
                         PlayoutDelay {
                             min: crate::media::audio::CINEMA_VIDEO_DELAY,
-                            max: crate::media::audio::CINEMA_VIDEO_MAX_DELAY,
+                            max: if forwarded {
+                                crate::media::audio::FORWARDED_CINEMA_MAX_DELAY
+                            } else {
+                                crate::media::audio::CINEMA_VIDEO_MAX_DELAY
+                            },
                         }
                     } else {
                         PlayoutDelay {

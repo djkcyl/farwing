@@ -336,6 +336,7 @@ impl Forwarding {
                         source.started.subscribe(),
                         source.keyframe_tx.clone(),
                         TrackForwardContext {
+                            forwarded: true,
                             workers: context.workers.clone(),
                             stop,
                             kind: MediaKind::Video,

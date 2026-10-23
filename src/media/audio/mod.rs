@@ -96,6 +96,12 @@ struct Shared {
 /// time, so both reach the viewer together.
 pub(crate) const CINEMA_VIDEO_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
 pub(crate) const CINEMA_VIDEO_MAX_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+/// A forwarded stream in cinema mode is watched like a live stream: the
+/// playout buffer grows up to this, and a missing packet is lost only after
+/// [`FORWARDED_PATIENCE`] (`deployment-design.md` §5.4).
+pub(crate) const FORWARDED_CINEMA_MAX_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(1200);
+pub(crate) const FORWARDED_PATIENCE: std::time::Duration = std::time::Duration::from_millis(1000);
 const CINEMA_AUDIO_DELAY_MS: u32 = 100;
 
 impl Shared {

@@ -833,6 +833,7 @@ impl NativePeer {
                             forwarding_ready,
                             video_keyframe_tx,
                             TrackForwardContext {
+                                forwarded: false,
                                 workers,
                                 stop,
                                 kind: media_kind,

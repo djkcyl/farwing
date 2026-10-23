@@ -10,6 +10,9 @@ import { offerDependencyDescriptor, videoCodecPreferences, withoutAv1Level } fro
 
 /// The forwarder's media must arrive this soon.
 const FIRST_FRAME_MS = 10_000;
+/// A viewer watching without control buffers like a live stream: losses on
+/// a slow downlink are repaired in time instead of costing keyframes.
+const WATCHING_BUFFER_MS = 1000;
 const GATHER_MS = 3_000;
 
 export interface ForwardContext {
@@ -42,6 +45,8 @@ export class ForwardReceiver {
   private closed = false;
   /// The newest instruction: older ones still queued or joining are moot.
   private latest?: Forward;
+  /// This viewer watches without control.
+  private onlyWatching = true;
 
   constructor(context: ForwardContext) {
     this.context = context;
@@ -50,6 +55,19 @@ export class ForwardReceiver {
   /// The forwarder connection while the picture comes through it.
   get connection(): RTCPeerConnection | undefined {
     return this.active?.connection;
+  }
+
+  /// Whether this viewer watches without control (the playout buffer).
+  watching(watching: boolean) {
+    this.onlyWatching = watching;
+    if (this.active) this.buffer(this.active.connection);
+  }
+
+  private buffer(connection: RTCPeerConnection) {
+    for (const receiver of connection.getReceivers()) {
+      const r = receiver as RTCRtpReceiver & { jitterBufferTarget?: number | null };
+      if ('jitterBufferTarget' in r) r.jitterBufferTarget = this.onlyWatching ? WATCHING_BUFFER_MS : 0;
+    }
   }
 
   follow(instruction: Forward) {
@@ -166,6 +184,7 @@ export class ForwardReceiver {
     );
     if (subscription.mode !== instruction.mode) throw new Error(`the room forwards in ${subscription.mode} mode`);
     await connection.setRemoteDescription({ type: 'answer', sdp: subscription.answer });
+    this.buffer(connection);
     const video = await within(received, FIRST_FRAME_MS);
     await firstFrame(connection, () => this.closed || instruction !== this.latest);
     return { video, audio };
