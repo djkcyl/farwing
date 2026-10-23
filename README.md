@@ -58,7 +58,11 @@ Farwing 不连接、不依赖 UU 官方服务、官方客户端或官方凭据�
 cargo build --release          # 产物 target\release\Farwing.exe
 cargo dist                     # 打包单文件 EXE，产物在 target\dist\
 cargo dist --native            # 仅构建原生 EXE
+cargo fast                     # 本地迭代，产物 target\fast\Farwing.exe
+cargo fast-test --lib          # 本地迭代的单元测试
 ```
+
+`release` 为了保持验证过的代码生成，主 crate 只用一个代码生成单元，改动一处也要重新优化整个 crate（约 9 分钟）。`cargo fast` 使用继承 `release` 的 `fast` 配置：并行代码生成、增量编译，并用 Rust 自带的 `rust-lld` 链接，改动一处后重编约 20 秒；测试与自查用它，发布包仍用 `cargo dist`。（mold 只支持 Linux；时间主要花在编译主 crate，链接只占 2 秒左右。）服务端同样提供 `cargo fast`（不做 LTO，改动一处约 5 秒）。
 
 服务端是独立的 Cargo 工作区，构建方法见 [server/README.md](server/README.md)。
 
