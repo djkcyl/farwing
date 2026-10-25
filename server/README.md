@@ -4,7 +4,7 @@ Farwing Server 是 Farwing（自托管远程桌面）的服务端：账号、设
 
 服务端不转码音视频：两人会话的媒体经 WebRTC（DTLS-SRTP）端到端加密，TURN 只转发密文；多人观看时可经服务端的转发器（见“多人转发”），默认对每一帧另做端到端加密，转发器只看得到包头。远程协助的验证码也不经过服务端：双方通过服务端中转 SPAKE2 消息，服务端看不到协助码。
 
-> **未验证事项**：本服务端在 Windows 上开发和测试（`cargo test` 全部通过，测试在进程内启动服务并通过真实 HTTPS/WSS 与 TURN 连接验证；初始化、设置在运行中生效、监听地址确认与恢复、证书上传、API 令牌也由测试与本机网页端验证）。开发环境中**无法运行 Linux、Docker 和 coturn**，因此以下内容**均未实际验证**：在 Linux 上构建与运行（Linux 程序由 Windows 上的 `cargo zigbuild` 交叉编译，确认是静态链接的 x86_64 / AArch64 ELF，未在 Linux 上运行过）、`Dockerfile`、`docker-compose.yml`、`deploy/farwing-server.service`（systemd）、coturn 配置及其与本服务的互通、真实进程中的 SIGTERM/Ctrl-C 信号处理（优雅退出逻辑本身由测试覆盖）。部署前请自行验证。自动证书（ACME）用 Let's Encrypt 的测试 CA Pebble 在本机验证过 TLS-ALPN-01、HTTP-01、重启复用与失败重试，没有对真实的 Let's Encrypt 与公网域名验证。网页端只在本机 Chrome 中验证过（直连、经内置 TURN 中继、经带路径前缀的反向代理观看本机被控，访问码与“请对方确认”的访客观看；网页控制的键鼠注入、锁定键同步、剪贴板、文件上传下载与权限上限）；Firefox / Safari、手机实机触屏、指针锁定与全屏键盘锁定的真实操作、装有虚拟声卡时的麦克风、跨公网与真实证书、`build-web.sh` 与 Dockerfile 中的前端构建阶段未实际验证。
+> **未验证事项**：本服务端在 Windows 上开发和测试（`cargo test` 全部通过，测试在进程内启动服务并通过真实 HTTPS/WSS 与 TURN 连接验证；初始化、设置在运行中生效、监听地址确认与恢复、证书上传、API 令牌也由测试与本机网页端验证）。开发环境中**无法运行 Linux、Docker 和 coturn**，因此以下内容**均未实际验证**：在 Linux 上构建与运行（Linux 程序由 Windows 上的 `cargo zigbuild` 交叉编译，确认是静态链接的 x86_64 / AArch64 ELF，未在 Linux 上运行过）、`Dockerfile`、`docker-compose.yml`、`deploy/farwing-server.service`（systemd）与 `deploy/install.sh`（只在 Windows 上用替身命令走过流程）、coturn 配置及其与本服务的互通、真实进程中的 SIGTERM/Ctrl-C 信号处理（优雅退出逻辑本身由测试覆盖）。部署前请自行验证。自动证书（ACME）用 Let's Encrypt 的测试 CA Pebble 在本机验证过 TLS-ALPN-01、HTTP-01、重启复用与失败重试，没有对真实的 Let's Encrypt 与公网域名验证。网页端只在本机 Chrome 中验证过（直连、经内置 TURN 中继、经带路径前缀的反向代理观看本机被控，访问码与“请对方确认”的访客观看；网页控制的键鼠注入、锁定键同步、剪贴板、文件上传下载与权限上限）；Firefox / Safari、手机实机触屏、指针锁定与全屏键盘锁定的真实操作、装有虚拟声卡时的麦克风、跨公网与真实证书、`build-web.sh` 与 Dockerfile 中的前端构建阶段未实际验证。
 
 ## 构建
 
@@ -277,7 +277,9 @@ docker compose exec farwing-server farwing-server setup-code   # 需要新的初
 
 ## systemd
 
-见 `deploy/farwing-server.service` 文件头部的安装步骤。要点：
+`sudo sh deploy/install.sh` 一步完成下面的安装（程序取自脚本旁边的 `x86_64/` 或 `aarch64/farwing-server`，或同目录的 `farwing-server`）：监听 TCP 443（用 drop-in 授予 `CAP_NET_BIND_SERVICE`，`--port` 改端口），在运行中的 ufw / firewalld 中放行端口，启动服务并打印初始化码；再次运行即升级，沿用原端口与数据。完整包中的教程 `packaging/release/GUIDE.md` 按这个方式部署。
+
+手动安装见 `deploy/farwing-server.service` 文件头部的步骤。要点：
 
 ```sh
 sudo useradd --system --home-dir /var/lib/farwing-server --shell /usr/sbin/nologin farwing

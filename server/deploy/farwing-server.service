@@ -1,4 +1,5 @@
-# systemd unit for Farwing Server.
+# systemd unit for Farwing Server. `sudo sh deploy/install.sh` does all of
+# the following and listens on 443; by hand:
 #
 #   sudo useradd --system --home-dir /var/lib/farwing-server --shell /usr/sbin/nologin farwing
 #   sudo install -m 0755 target/release/farwing-server /usr/local/bin/

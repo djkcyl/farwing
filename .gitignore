@@ -19,6 +19,7 @@ captures/
 !/docs/**/
 !/docs/**/*.md
 !/server/README.md
+!/packaging/release/*.md
 !/crates/codec/README.md
 !/crates/codec/kernels/h264/README.md
 !/crates/codec/kernels/av1/README.md
