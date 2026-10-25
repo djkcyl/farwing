@@ -149,6 +149,30 @@ impl BuiltinTurn {
     }
 }
 
+/// Ports of a relay that just stopped can stay taken for a moment (its
+/// allocations let go of the socket asynchronously): binding tries again
+/// this often, this many times.
+const BIND_RETRY: Duration = Duration::from_millis(100);
+const BIND_TRIES: u32 = 20;
+
+/// `bind`, again while the address is still in use.
+pub(crate) async fn bind_again<T, F, Fut>(mut bind: F) -> std::io::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<T>>,
+{
+    let mut tries = 1;
+    loop {
+        match bind().await {
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && tries < BIND_TRIES => {
+                tries += 1;
+                tokio::time::sleep(BIND_RETRY).await;
+            }
+            result => return result,
+        }
+    }
+}
+
 /// How long a TURN-over-TLS client has to finish its handshake.
 const TLS_HANDSHAKE: Duration = Duration::from_secs(10);
 
@@ -211,7 +235,7 @@ pub async fn start_with(
 ) -> Result<BuiltinTurn> {
     let auth = Arc::new(auth);
     let listen_udp = cfg.listen_udp.context("turn.listen_udp missing")?;
-    let udp = UdpSocket::bind(listen_udp)
+    let udp = bind_again(|| UdpSocket::bind(listen_udp))
         .await
         .with_context(|| format!("binding TURN UDP {listen_udp}"))?;
     let udp_addr = udp.local_addr()?;
@@ -228,7 +252,7 @@ pub async fn start_with(
         let streams = Arc::clone(&streams);
         async move {
             let what = if tls.is_some() { "TLS" } else { "TCP" };
-            let listener = TcpListener::bind(addr)
+            let listener = bind_again(|| TcpListener::bind(addr))
                 .await
                 .with_context(|| format!("binding TURN {what} {addr}"))?;
             let local = listener.local_addr()?;

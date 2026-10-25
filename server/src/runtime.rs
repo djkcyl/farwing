@@ -704,8 +704,12 @@ impl Components {
             }
             self.stop_relay().await;
             if let Err(e) = self.start_relay(&new).await {
-                // Back to the relay that ran before.
+                // Back to the relay that ran before; its allocations are
+                // gone all the same.
                 let _ = self.start_relay(&old).await;
+                if !lost.is_empty() {
+                    self.app.hub.relay_lost(&lost);
+                }
                 return Err(e);
             }
             outcome.relay_restarted = relay_ready(&new.turn) || relay_ready(&old.turn);

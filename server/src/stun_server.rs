@@ -483,7 +483,7 @@ pub async fn start(cfg: &TurnConfig) -> Result<StunEndpoints> {
     let mut locals = Vec::new();
     let mut publics = Vec::new();
     for ep in &cfg.stun {
-        let socket = UdpSocket::bind(ep.listen)
+        let socket = crate::turn_server::bind_again(|| UdpSocket::bind(ep.listen))
             .await
             .with_context(|| format!("binding [[turn.stun]] listen {}", ep.listen))?;
         let local = socket.local_addr()?;
