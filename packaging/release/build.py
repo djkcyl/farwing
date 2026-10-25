@@ -8,7 +8,7 @@ Inputs (built beforehand, newer than the last source commit):
   server/target-linux/<arch>-unknown-linux-musl/release/farwing-server
                                                          Linux servers (cargo zigbuild)
 
-Output: temp/release/Farwing-0.1.0-<date>.zip and, next to it, the Linux
+Output: temp/release/Farwing-0.1.0-<date>-<commit>.zip and, next to it, the Linux
 server archive it contains.
 """
 import argparse
@@ -104,7 +104,7 @@ def main():
     ]
     package.append(('SHA256SUMS.txt', sums(package)))
     top = f'Farwing-{VERSION}'
-    zip_path = out / f'{top}-{time.strftime("%Y%m%d")}.zip'
+    zip_path = out / f'{top}-{time.strftime("%Y%m%d")}-{commit}.zip'
     stamp = time.localtime(now)[:6]
     with zipfile.ZipFile(zip_path, 'w') as z:
         for name, data in package:
