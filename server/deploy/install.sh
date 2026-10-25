@@ -78,10 +78,9 @@ mkdir -p "$(dirname "$dropin")"
   echo "# 由 install.sh 生成：网页与接口的监听地址。"
   echo "[Service]"
   echo "Environment=FARWING_LISTEN=0.0.0.0:$PORT"
-  if [ "$PORT" -lt 1024 ]; then
-    echo "AmbientCapabilities=CAP_NET_BIND_SERVICE"
-    echo "CapabilityBoundingSet=CAP_NET_BIND_SERVICE"
-  fi
+  # 1024 以下的端口：443，以及证书 HTTP-01 验证用的 80。
+  echo "AmbientCapabilities=CAP_NET_BIND_SERVICE"
+  echo "CapabilityBoundingSet=CAP_NET_BIND_SERVICE"
 } > "$dropin"
 
 # 防火墙：网页 / 接口，中转（UDP、TCP、TLS），NAT 探测与多人转发，中转端口范围。
