@@ -139,6 +139,12 @@ impl BuiltinTurn {
             t.abort();
             let _ = t.await;
         }
+        // The TCP and TLS clients' connections end too: their credentials
+        // and allocations belong to the relay that stops.
+        let streams: Vec<Arc<Server>> = self.streams.lock().values().cloned().collect();
+        for server in streams {
+            let _ = server.close().await;
+        }
         let _ = self.udp.close().await;
     }
 }
