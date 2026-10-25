@@ -169,7 +169,7 @@ pub(super) fn spawn_feedback(
             if let Some(encoding) = params.encodings.first()
                 && registered != Some(encoding.ssrc)
             {
-                recovery.register(encoding.ssrc, &feedback_track);
+                recovery.register(encoding.ssrc, index, &feedback_track);
                 registered = Some(encoding.ssrc);
             }
         };

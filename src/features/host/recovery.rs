@@ -224,19 +224,36 @@ impl TrackFeedback {
 
 /// Feedback of one participant connection, by media SSRC.
 #[derive(Default)]
-pub(crate) struct Inbox(Mutex<HashMap<u32, Arc<TrackFeedback>>>);
+pub(crate) struct Inbox {
+    /// Track index and feedback, by the SSRC this connection sends it on.
+    tracks: Mutex<HashMap<u32, (usize, Arc<TrackFeedback>)>>,
+    /// The forwarder's tracks the participant receives instead: their SSRC
+    /// → its track index (the frames are the same, so is their feedback).
+    forwarded: Mutex<HashMap<u32, usize>>,
+}
 
 impl Inbox {
-    pub(crate) fn register(&self, ssrc: u32, track: &Arc<TrackFeedback>) {
-        lock(&self.0).insert(ssrc, Arc::clone(track));
+    pub(crate) fn register(&self, ssrc: u32, index: usize, track: &Arc<TrackFeedback>) {
+        lock(&self.tracks).insert(ssrc, (index, Arc::clone(track)));
     }
 
     pub(crate) fn unregister(&self, track: &Arc<TrackFeedback>) {
-        lock(&self.0).retain(|_, t| !Arc::ptr_eq(t, track));
+        lock(&self.tracks).retain(|_, (_, t)| !Arc::ptr_eq(t, track));
+    }
+
+    /// The participant receives the forwarder's tracks `(SSRC, its track
+    /// index)` (none: its own again).
+    pub(crate) fn forward(&self, tracks: &[(u32, usize)]) {
+        *lock(&self.forwarded) = tracks.iter().copied().collect();
     }
 
     pub(crate) fn deliver(&self, feedback: &VideoFeedback) {
-        match lock(&self.0).get(&feedback.ssrc) {
+        let tracks = lock(&self.tracks);
+        let track = tracks.get(&feedback.ssrc).map(|(_, t)| t).or_else(|| {
+            let index = *lock(&self.forwarded).get(&feedback.ssrc)?;
+            tracks.values().find(|(i, _)| *i == index).map(|(_, t)| t)
+        });
+        match track {
             Some(track) => track.receive(feedback),
             None => tracing::debug!(target: "farwing::recovery", ssrc = feedback.ssrc,
                 "video feedback for an unknown track"),
@@ -965,10 +982,32 @@ mod tests {
     }
 
     #[test]
+    fn feedback_on_a_forwarded_track_reaches_the_participants_track() {
+        let inbox = Inbox::default();
+        let (first, second) = (Arc::new(TrackFeedback::default()), Arc::new(TrackFeedback::default()));
+        inbox.register(11, 0, &first);
+        inbox.register(22, 1, &second);
+        let feedback = |ssrc| VideoFeedback {
+            ssrc,
+            epoch: 1,
+            decoded: 40,
+            ltr: vec![32],
+            ..Default::default()
+        };
+        // The forwarder's track 99 stands in for track index 1.
+        inbox.deliver(&feedback(99));
+        assert!(second.take().0.is_none());
+        inbox.forward(&[(99, 1)]);
+        inbox.deliver(&feedback(99));
+        assert!(first.take().0.is_none());
+        assert_eq!(second.take().0.unwrap().held, vec![32]);
+    }
+
+    #[test]
     fn feedback_reaches_its_track() {
         let inbox = Inbox::default();
         let track = Arc::new(TrackFeedback::default());
-        inbox.register(0x1234_5678, &track);
+        inbox.register(0x1234_5678, 0, &track);
         inbox.deliver(&VideoFeedback {
             ssrc: 0x1234_5678,
             epoch: 3,

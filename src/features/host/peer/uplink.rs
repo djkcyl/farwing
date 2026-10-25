@@ -143,6 +143,8 @@ impl Running {
 }
 
 struct Slot {
+    /// The track's media SSRC.
+    ssrc: u32,
     track: Arc<VideoTrack>,
     sender: Arc<RTCRtpSender>,
     transport: Transport,
@@ -234,10 +236,12 @@ impl Uplink {
                 )
                 .await?;
             let sender = transceiver.sender().await;
-            for encoding in sender.get_parameters().await.encodings {
+            let encodings = sender.get_parameters().await.encodings;
+            for encoding in &encodings {
                 slot_transport.register_ssrc(encoding.ssrc);
             }
             slots.push(Slot {
+                ssrc: encodings.first().map_or(0, |e| e.ssrc),
                 track,
                 sender,
                 transport: slot_transport,
@@ -438,6 +442,12 @@ impl Uplink {
             sound.configure(audio);
         }
         Ok(())
+    }
+
+    /// The media SSRC of uplink track `track` (`video_<slot>`).
+    pub(crate) fn ssrc(&self, track: &str) -> Option<u32> {
+        let index: usize = track.strip_prefix("video_")?.parse().ok()?;
+        lock(&self.slots).get(index).map(|slot| slot.ssrc)
     }
 
     /// Whether the forwarder gives viewer session `session` the low layer.

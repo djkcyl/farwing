@@ -82,6 +82,9 @@ struct Entry {
     instruction: watch::Sender<Option<MediaForward>>,
     /// Whether the participant may hear the host.
     audio: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// The participant's video feedback: that of the forwarder's tracks
+    /// reaches its own tracks' recovery.
+    recovery: Arc<crate::features::host::recovery::Inbox>,
     /// The room, tracks, frame key and audio track last told.
     told: Option<(String, Vec<(u32, String)>, u8, String)>,
     /// The generation of the last instruction; answers to older ones are
@@ -190,6 +193,7 @@ pub(crate) fn register(
     ice: Vec<RTCIceServer>,
     host: crate::features::host::access::Handle,
     audio: Arc<dyn Fn() -> bool + Send + Sync>,
+    recovery: Arc<crate::features::host::recovery::Inbox>,
 ) -> Registration {
     let (instruction, receiver) = watch::channel(None);
     let mut state = state();
@@ -206,6 +210,7 @@ pub(crate) fn register(
             excluded_until: None,
             instruction,
             audio,
+            recovery,
             told: None,
             generation: 0,
         },
@@ -271,6 +276,7 @@ fn direct(entry: &mut Entry, generation: &mut u32) {
     entry.forwarded.in_room.store(false, Ordering::Release);
     entry.forwarded.low.store(false, Ordering::Release);
     if entry.told.take().is_some() {
+        entry.recovery.forward(&[]);
         *generation = generation.wrapping_add(1);
         let generation = *generation;
         entry.generation = generation;
@@ -413,6 +419,11 @@ async fn step() -> bool {
         };
         let told = Some((room_id.clone(), tracks.clone(), key_id, audio.clone()));
         if entry.told != told {
+            let forwarded: Vec<(u32, usize)> = tracks
+                .iter()
+                .filter_map(|(index, track)| uplink.ssrc(track).map(|ssrc| (ssrc, *index as usize)))
+                .collect();
+            entry.recovery.forward(&forwarded);
             generation = generation.wrapping_add(1);
             entry.told = told;
             entry.generation = generation;

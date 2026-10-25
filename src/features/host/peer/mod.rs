@@ -652,6 +652,7 @@ impl Peer {
                     ice_servers.clone(),
                     handle.host(),
                     Arc::new(move || lease.granted(farwing_protocol::caps::AUDIO)),
+                    reports.recovery.clone(),
                 ))
             });
         let forward_worker = tokio::spawn(match forwarding.clone() {
