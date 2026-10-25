@@ -273,6 +273,9 @@ async fn serve_presence(
             if push_cancel.is_cancelled() || !push_client.is_active() {
                 return;
             }
+            if crate::account::server_changed::push(push) {
+                return;
+            }
             if push_client.host.assistance.push(push) {
                 return;
             }

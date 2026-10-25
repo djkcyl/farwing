@@ -62,9 +62,25 @@ pub struct Outcome {
     pub fingerprint_changed: bool,
     /// The builtin relay restarted (relayed connections reconnect).
     pub relay_restarted: bool,
+    /// The address clients connect to or the certificate changed: this many
+    /// online clients were told.
+    pub clients_told: Option<usize>,
+}
+
+/// What saving settings would do (nothing is saved).
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct Preview {
+    /// Saving restarts the builtin relay.
+    pub relay_restarts: bool,
+    /// Allocations on the builtin relay now: they end when it restarts.
+    pub relay_allocations: u32,
 }
 
 enum Command {
+    Preview {
+        cfg: Box<Config>,
+        reply: oneshot::Sender<Preview>,
+    },
     Apply {
         cfg: Box<Config>,
         /// Load the certificate again even if the settings did not change
@@ -113,6 +129,19 @@ impl Control {
             .await
             .map_err(|_| ApplyError::Stopped)?;
         rx.await.map_err(|_| ApplyError::Stopped)?
+    }
+
+    /// What applying `cfg` would do.
+    pub async fn preview(&self, cfg: Config) -> Preview {
+        let (reply, rx) = oneshot::channel();
+        let command = Command::Preview {
+            cfg: Box::new(cfg),
+            reply,
+        };
+        if self.tx.send(command).await.is_err() {
+            return Preview::default();
+        }
+        rx.await.unwrap_or_default()
     }
 
     /// Keep the new listen address; `false` when none is waiting.
@@ -496,6 +525,34 @@ impl Components {
         *self.app.relay.write() = bound;
     }
 
+    /// What clients connect to: the public URL and the certificate served
+    /// here (none behind a reverse proxy).
+    fn address(&self) -> (String, Option<String>) {
+        let tls = self.app.tls.read().as_ref().map(|t| t.fingerprint());
+        (self.app.cfg().public_url.clone(), tls)
+    }
+
+    /// Tell the online clients where to connect, if that changed: how many
+    /// were told.
+    fn announce(&self, before: (String, Option<String>)) -> Option<usize> {
+        let (url, sha256) = self.address();
+        if (&url, &sha256) == (&before.0, &before.1) {
+            return None;
+        }
+        let changed = farwing_protocol::realtime::ServerChanged {
+            url,
+            previous: before.0,
+            sha256,
+        };
+        let sent = self.app.hub.broadcast(&farwing_protocol::realtime::Envelope::new(
+            farwing_protocol::realtime::types::SERVER_CHANGED,
+            &changed,
+        ));
+        tracing::info!(url = %changed.url, previous = %changed.previous,
+            certificate = changed.sha256.is_some(), clients = sent, "address announced to online clients");
+        Some(sent)
+    }
+
     async fn run(mut self, mut rx: mpsc::Receiver<Command>) {
         let mut stats = tokio::time::interval(Duration::from_secs(10));
         loop {
@@ -516,24 +573,47 @@ impl Components {
                         None => std::future::pending().await,
                     }
                 } => {
+                    let before = self.address();
                     let _ = self.revert_listen().await;
+                    self.announce(before);
                     continue;
                 }
             };
             match command {
+                Some(Command::Preview { cfg, reply }) => {
+                    let old = self.app.cfg();
+                    let relay_restarts = relay_key(&cfg) != relay_key(&old)
+                        && (relay_ready(&cfg.turn) || relay_ready(&old.turn));
+                    let relay_allocations = match &self.turn {
+                        Some(turn) => turn.stats().await.allocations,
+                        None => 0,
+                    };
+                    let _ = reply.send(Preview {
+                        relay_restarts,
+                        relay_allocations,
+                    });
+                }
                 Some(Command::Apply {
                     cfg,
                     reload_tls,
                     reply,
                 }) => {
-                    let result = self.apply(*cfg, reload_tls).await;
+                    let before = self.address();
+                    let mut result = self.apply(*cfg, reload_tls).await;
+                    let told = self.announce(before);
+                    if let Ok(outcome) = &mut result {
+                        outcome.clients_told = told;
+                    }
                     let _ = reply.send(result);
                 }
                 Some(Command::ConfirmListen { reply }) => {
                     let _ = reply.send(self.confirm_listen().await);
                 }
                 Some(Command::RevertListen { reply }) => {
-                    let _ = reply.send(self.revert_listen().await);
+                    let before = self.address();
+                    let reverted = self.revert_listen().await;
+                    self.announce(before);
+                    let _ = reply.send(reverted);
                 }
                 Some(Command::Shutdown { reply }) => {
                     self.stop().await;

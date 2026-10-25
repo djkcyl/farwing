@@ -488,6 +488,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `assist.cancelled` | S→H | 在线连接 | `{request_id}` |
 | `power.request` | S→H | 在线连接 | `{request_id, action, requester, requester_device}` |
 | `wol.wake` | S→协助设备 | 在线连接 | `{request_id, target: {mac, inner_ip, subnet_mask}}` |
+| `server.changed` | S→所有在线连接 | | `{url, previous, sha256?}`：公开地址或服务器自己的证书变了。保存的地址是 `previous`（或 `url`）的客户端确认 `url` 可以连上后改用它；固定了证书指纹的改为 `sha256`（反向代理时没有）。账号与设备登记不变 |
 
 - `SessionStarted`（`session.start` 的 `ack`）：`{participant_id, session_id, ice_servers, force_relay, host: {device_id, public_key}, relation, grants}`。
 - `SessionIncoming`：`{participant_id, attempt_id, purpose, connect_type: "account"|"assist", relation: "own"|"friend"|"trusted"|"assist", grants, controller: ControllerInfo, options, capability, ice_servers, force_relay}`。目的、类型、关系、授予的能力与主控身份以服务端为准；`options` 中的同类信息不作授权依据。经服务端时 `own`、`friend` 的 `connect_type` 为 `account`，`trusted`、`assist` 为 `assist`（§3.11）。`grants`：本账号设备为全部能力，好友为生效授权，受信任设备与访客为空：被控对 `trusted` 重新核对本机受信任设备记录（设备 ID 与公钥都须匹配，否则拒绝）并套用为它记录的能力，对 `assist` 套用访客默认权限。

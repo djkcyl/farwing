@@ -383,6 +383,21 @@ impl Hub {
             .and_then(|l| l.conn.as_ref())
     }
 
+    /// Send `env` on every attached presence connection.
+    pub fn broadcast(&self, env: &Envelope) -> usize {
+        let st = self.state.lock();
+        let conns: Vec<&ConnHandle> = st
+            .presence
+            .values()
+            .filter_map(|id| st.links.get(id))
+            .filter_map(|l| l.conn.as_ref())
+            .collect();
+        for c in &conns {
+            c.send(env);
+        }
+        conns.len()
+    }
+
     /// A presence connection is currently attached.
     pub fn is_online(&self, device_id: &str) -> bool {
         Self::host_conn(&self.state.lock(), device_id).is_some()

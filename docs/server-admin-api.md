@@ -109,8 +109,11 @@ curl "${H[@]}" -X PUT -H "content-type: application/json" $S/api/v2/admin/settin
 | 字段 | 内容 |
 | --- | --- |
 | `listen_url`、`confirm_by` | 监听地址或反向代理模式变了：新地址与确认期限（Unix 秒），见 4.2 |
-| `fingerprint_changed` | 证书换了（使用自签或上传证书的客户端需要重新确认指纹） |
+| `fingerprint_changed` | 证书换了（在线的客户端随推送改固定新指纹；当时离线的需要重新确认） |
 | `relay_restarted` | 内置中转重启了（经中转的连接会自动重连） |
+| `clients_told` | 公开地址或证书变了：推送给了这么多台在线设备（`server.changed`），否则为空 |
+
+保存前可以先看会发生什么（不保存）：`POST /api/v2/admin/settings/preview`，请求体与 `PUT` 相同，返回 `{"relay_restarts": true, "relay_allocations": 6}`——保存是否重启内置中转、它当前的分配数（重启时这些连接重新连接）。
 
 被拒绝时返回 `400 bad_request`，`details`：`{"reason": "setting_invalid", "field": "turn.public_ip", "problem": "required"}`。`problem`：`required`、`invalid`、`out_of_range`、`conflict`、`unavailable`（端口被占用、文件不可用）、`locked`。被拒绝时设置不变。
 

@@ -413,6 +413,14 @@ export interface Outcome {
   confirm_by: number | null;
   fingerprint_changed: boolean;
   relay_restarted: boolean;
+  /// Online devices told the new address or certificate.
+  clients_told: number | null;
+}
+
+/// What saving settings would do.
+export interface Preview {
+  relay_restarts: boolean;
+  relay_allocations: number;
 }
 
 export type Applied = SettingsView & { outcome: Outcome };

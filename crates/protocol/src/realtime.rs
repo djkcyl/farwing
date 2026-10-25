@@ -106,6 +106,9 @@ pub mod types {
     pub const ASSIST_CANCELLED: &str = "assist.cancelled";
     pub const POWER_REQUEST: &str = "power.request";
     pub const WOL_WAKE: &str = "wol.wake";
+    /// Server → presence connections: the address clients connect to or the
+    /// server's certificate changed ([`ServerChanged`]).
+    pub const SERVER_CHANGED: &str = "server.changed";
     /// Device → server on its presence connection: round trips to the relay
     /// nodes of `Hello::probe_nodes` ([`NodesRtt`]).
     pub const NODES_RTT: &str = "nodes.rtt";
@@ -438,6 +441,17 @@ pub struct SessionEnd {
 }
 
 // ------------------------------------------------------------------- pushes
+
+/// `server.changed`: clients that connect to `previous` switch to `url` once
+/// it answers; those that pin the certificate pin `sha256` instead (the
+/// certificate the server serves itself, none behind a reverse proxy).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerChanged {
+    pub url: String,
+    pub previous: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

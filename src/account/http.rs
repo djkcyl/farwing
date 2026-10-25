@@ -73,9 +73,12 @@ impl ServerHttp {
         body: Option<(Bytes, &'static str)>,
         timeout: Duration,
     ) -> Result<Response, reqwest::Error> {
-        let mut request = self
+        // The server moved since this client was built.
+        let moved = self.server.current().and_then(|server| Self::new(&server).ok());
+        let http = moved.as_ref().unwrap_or(self);
+        let mut request = http
             .client
-            .request(method.clone(), self.server.url(path))
+            .request(method.clone(), http.server.url(path))
             .headers(headers)
             .timeout(timeout);
         if let Some((body, content_type)) = body {

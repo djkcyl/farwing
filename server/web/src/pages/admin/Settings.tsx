@@ -10,6 +10,7 @@ import type {
   Applied,
   LimitsSettings,
   ListenPending,
+  Preview,
   ServerSettings,
   SettingsView,
   SfuSettings,
@@ -114,7 +115,15 @@ function useSave(onApplied: (view: Applied) => void) {
       const o = applied.outcome;
       // A moved listener shows its own bar instead.
       if (!o.listen_url) {
-        toast(o.relay_restarted ? m.relayRestarted : o.fingerprint_changed ? m.certificateChanged : m.saved);
+        toast(
+          o.relay_restarted
+            ? m.relayRestarted
+            : o.clients_told != null
+              ? m.clientsTold(o.clients_told)
+              : o.fingerprint_changed
+                ? m.certificateChanged
+                : m.saved,
+        );
       }
       onApplied(applied);
       void auth.refresh();
@@ -538,11 +547,23 @@ function Relay({ view, onApplied }: { view: SettingsView; onApplied(v: Applied):
     set({ stun: draft.stun.map((e, j) => (j === i ? { ...e, ...p } : e)) });
   const local = view.relay.local_ipv4;
   const relay = view.relay;
+  /// Relay allocations that saving `patch` ends (0: the relay keeps running).
+  async function ended(patch: unknown, always = false): Promise<number> {
+    const p = await call<Preview>('POST', '/api/v2/admin/settings/preview', patch).catch(() => undefined);
+    return p && (always || p.relay_restarts) ? p.relay_allocations : 0;
+  }
+  async function saveRelay() {
+    const n = await ended({ turn: draft });
+    if (n > 0 && !(await confirm({ title: m.relaySaveTitle, message: m.relayReconnect(n), confirm: t.common.save }))) {
+      return;
+    }
+    void save({ turn: draft });
+  }
   return (
     <div className="stack">
       <Card
         title={m.turnMode}
-        actions={<SaveButton busy={busy} changed={!same(draft, initial)} onClick={() => void save({ turn: draft })} />}
+        actions={<SaveButton busy={busy} changed={!same(draft, initial)} onClick={() => void saveRelay()} />}
       >
         <div className="stack">
           {error && <Alert>{error}</Alert>}
@@ -656,7 +677,9 @@ function Relay({ view, onApplied }: { view: SettingsView; onApplied(v: Applied):
                   size="sm"
                   loading={rotate.busy}
                   onClick={async () => {
-                    if (await confirm({ title: m.rotateTitle, message: m.rotateMessage, confirm: m.rotateSecret })) {
+                    const n = await ended({}, true);
+                    const message = n > 0 ? m.relayReconnect(n) : m.rotateMessage;
+                    if (await confirm({ title: m.rotateTitle, message, confirm: m.rotateSecret })) {
                       void rotate.save(undefined, '/api/v2/admin/settings/relay-secret', 'POST');
                     }
                   }}

@@ -206,6 +206,17 @@ pub async fn put(
     apply_and_log(&app, &admin, cfg).await
 }
 
+/// `POST /api/v2/admin/settings/preview`: what saving a partial settings
+/// document would do; nothing is saved.
+pub async fn preview(
+    State(app): State<App>,
+    _admin: AdminAuth,
+    JsonBody(patch): JsonBody<Value>,
+) -> ApiResult<Json<crate::runtime::Preview>> {
+    let cfg = patched(&app.cfg(), patch)?;
+    Ok(Json(app.control().preview(cfg).await))
+}
+
 /// `POST /api/v2/admin/settings/listen/confirm`
 pub async fn confirm_listen(
     State(app): State<App>,

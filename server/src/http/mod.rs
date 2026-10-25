@@ -428,6 +428,7 @@ pub fn router(app: App) -> Router {
             "/api/v2/admin/settings/certificate",
             put(settings_api::put_certificate),
         )
+        .route("/api/v2/admin/settings/preview", post(settings_api::preview))
         .route("/api/v2/admin/settings/export", get(settings_api::export))
         .route("/api/v2/admin/settings/import", post(settings_api::import))
         .route(

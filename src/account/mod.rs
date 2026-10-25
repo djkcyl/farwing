@@ -9,6 +9,7 @@ pub(crate) mod http;
 pub mod login;
 pub(crate) mod power;
 pub mod server;
+pub(crate) mod server_changed;
 pub(crate) mod session_restore;
 
 pub(crate) mod feature_ability;

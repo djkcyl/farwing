@@ -34,6 +34,10 @@ struct Stored {
     pinned_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ca_pem: Option<String>,
+    /// The key credentials are bound to, when the server moved away from
+    /// the address it was set up with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    key: Option<String>,
 }
 
 /// A validated server setting.
@@ -42,7 +46,12 @@ pub struct ServerConfig {
     origin: Url,
     pinned_sha256: Option<[u8; 32]>,
     ca_pem: Option<String>,
+    key: Option<String>,
 }
+
+/// Settings this process followed the server to (`server.changed`): HTTPS
+/// clients built for the previous one use them.
+static FOLLOWED: Mutex<Vec<ServerConfig>> = Mutex::new(Vec::new());
 
 impl std::fmt::Debug for ServerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -122,6 +131,7 @@ impl ServerConfig {
             origin: url,
             pinned_sha256,
             ca_pem,
+            key: None,
         })
     }
 
@@ -140,7 +150,9 @@ impl ServerConfig {
         };
         let stored: Stored = serde_json::from_slice(&bytes).context(t().session.server_settings_invalid)?;
         anyhow::ensure!(stored.schema == SCHEMA, "{}", t().session.server_settings_unsupported);
-        Self::new(&stored.url, stored.pinned_sha256.as_deref(), stored.ca_pem).map(Some)
+        let mut config = Self::new(&stored.url, stored.pinned_sha256.as_deref(), stored.ca_pem)?;
+        config.key = stored.key;
+        Ok(Some(config))
     }
 
     /// The configured server, or an error telling the user to configure one.
@@ -156,6 +168,7 @@ impl ServerConfig {
             url: self.origin().to_owned(),
             pinned_sha256: self.pinned_sha256.map(hex),
             ca_pem: self.ca_pem.clone(),
+            key: self.key.clone(),
         };
         let path = directory.join(FILE_NAME);
         let temporary = path.with_extension("json.tmp");
@@ -196,9 +209,55 @@ impl ServerConfig {
         self.origin.as_str().trim_end_matches('/')
     }
 
-    /// Stable key that binds credentials to this server.
+    /// Stable key that binds credentials to this server: its address when it
+    /// was set up here.
     pub fn key(&self) -> String {
-        self.origin().to_ascii_lowercase()
+        self.key
+            .clone()
+            .unwrap_or_else(|| self.origin().to_ascii_lowercase())
+    }
+
+    /// The environment overrides the saved setting.
+    pub(crate) fn overridden() -> bool {
+        std::env::var_os(URL_ENV).is_some()
+    }
+
+    /// This setting after the server announced `changed`, if that concerns
+    /// it (its address was the previous one, or is the new one) and changes
+    /// it. A pinned certificate follows the announced one.
+    pub(crate) fn follow(&self, changed: &farwing_protocol::realtime::ServerChanged) -> Result<Option<Self>> {
+        let ours = |address: &str| {
+            Self::new(address, None, None).is_ok_and(|c| c.origin().eq_ignore_ascii_case(self.origin()))
+        };
+        if !ours(&changed.previous) && !ours(&changed.url) {
+            return Ok(None);
+        }
+        let mut next = Self::new(&changed.url, None, self.ca_pem.clone())?;
+        next.pinned_sha256 = match (&changed.sha256, self.pinned_sha256) {
+            (Some(sha256), Some(_)) => Some(parse_fingerprint(sha256)?),
+            (_, pinned) => pinned,
+        };
+        let key = self.key();
+        next.key = (next.origin().to_ascii_lowercase() != key).then_some(key);
+        Ok((next != *self).then_some(next))
+    }
+
+    /// HTTPS clients of this process built for a setting with the same key
+    /// use this one from now on.
+    pub(crate) fn followed(&self) {
+        let mut followed = FOLLOWED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        followed.retain(|c| c.key() != self.key());
+        followed.push(self.clone());
+    }
+
+    /// The setting this process followed the server to, if this one is out
+    /// of date.
+    pub(crate) fn current(&self) -> Option<Self> {
+        let followed = FOLLOWED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        followed
+            .iter()
+            .find(|c| c.key() == self.key() && *c != self)
+            .cloned()
     }
 
     pub fn host(&self) -> &str {
@@ -539,5 +598,39 @@ mod tests {
         let endpoint = Url::parse("wss://EXAMPLE.com:9443/api/v2/ws").unwrap();
         assert!(config.accepts_endpoint(&endpoint));
         assert!(!config.accepts_endpoint(&Url::parse("wss://other.com/api/v2/ws").unwrap()));
+    }
+
+    #[test]
+    fn follows_the_server_to_its_new_address_and_certificate() {
+        use farwing_protocol::realtime::ServerChanged;
+        let changed = |url: &str, previous: &str, sha256: Option<String>| ServerChanged {
+            url: url.into(),
+            previous: previous.into(),
+            sha256,
+        };
+        let new_pin = "CD:".repeat(31) + "CD";
+        let config = ServerConfig::new("old.example.com:8443", Some(&"ab".repeat(32)), None).unwrap();
+        let moved = config
+            .follow(&changed("https://new.example.com/", "https://OLD.example.com:8443", Some(new_pin.clone())))
+            .unwrap()
+            .unwrap();
+        assert_eq!(moved.origin(), "https://new.example.com");
+        assert_eq!(moved.pinned_fingerprint().unwrap(), "cd".repeat(32));
+        // Credentials stay bound to the server, not to its address.
+        assert_eq!(moved.key(), config.key());
+        let away = changed("https://new.example.com", "https://old.example.com:8443", Some(new_pin));
+        // Another address of the server: not this client's.
+        let elsewhere = ServerConfig::new("192.168.1.5:8443", None, None).unwrap();
+        assert!(elsewhere.follow(&away).unwrap().is_none());
+        // Trusted through the system roots: no pin is added.
+        let trusted = ServerConfig::new("old.example.com:8443", None, None).unwrap();
+        assert!(trusted.follow(&away).unwrap().unwrap().pinned_fingerprint().is_none());
+        // Back to the first address: the key is the address again.
+        let back_again = changed("https://old.example.com:8443", "https://new.example.com", None);
+        let back = moved.follow(&back_again).unwrap().unwrap();
+        assert_eq!(back.key(), config.key());
+        assert!(back.key.is_none());
+        assert_eq!(back.pinned_fingerprint().unwrap(), "cd".repeat(32));
+        assert!(back.follow(&back_again).unwrap().is_none());
     }
 }
