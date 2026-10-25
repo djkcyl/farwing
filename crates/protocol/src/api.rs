@@ -83,6 +83,9 @@ pub mod path {
     pub fn sfu_subscription(room: &str, session_id: &str, connection: u32) -> String {
         format!("{SFU_ROOMS}/{room}/subscribe/{session_id}/{connection}")
     }
+    pub fn sfu_layer(room: &str, session_id: &str) -> String {
+        format!("{SFU_ROOMS}/{room}/subscribe/{session_id}/layer")
+    }
     pub fn friend(user_id: &str) -> String {
         format!("{FRIENDS}/{user_id}")
     }
@@ -151,6 +154,26 @@ pub struct Forwarding {
     pub threshold: u32,
     /// Modes hosts may choose.
     pub modes: Vec<ForwardMode>,
+}
+
+/// Which of the forwarder's two streams a viewer gets (`高清`: the main
+/// one, `流畅`: the low layer, 720p): the forwarder's choice, or the
+/// viewer's own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardLayer {
+    /// The forwarder moves the viewer between them by its downlink.
+    #[default]
+    Auto,
+    Main,
+    Low,
+}
+
+/// `PUT /api/v2/sfu/rooms/{room}/subscribe/{session}/layer` (the controller
+/// of `session`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LayerRequest {
+    pub layer: ForwardLayer,
 }
 
 /// How a host's picture passes the forwarder.
@@ -904,6 +927,9 @@ pub struct SubscribeRequest {
     pub offer: String,
     #[serde(default)]
     pub tracks: Option<Vec<String>>,
+    /// The stream the viewer chose.
+    #[serde(default)]
+    pub layer: ForwardLayer,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

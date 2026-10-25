@@ -2,6 +2,7 @@
 
 use super::leg::{Leg, Rtcp};
 use super::sdp::{self, Kind};
+use farwing_protocol::api::ForwardLayer;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -69,6 +70,12 @@ const IMPAIRED_KEYFRAME_INTERVAL: Duration = Duration::from_secs(3);
 const FOLLOWED_KEYFRAME_INTERVAL: Duration = Duration::from_secs(1);
 /// A connection this young is still waiting for its first picture.
 const JOINING: Duration = Duration::from_secs(5);
+/// A viewer's new connection takes the picture over within this.
+const SWITCH_OVER: Duration = Duration::from_secs(2);
+/// One impaired viewer's own keyframe requests go on at most this often (a
+/// viewer on the main stream its downlink cannot carry, which it chose,
+/// does not cost the others a keyframe every few seconds).
+const IMPAIRED_LEG_KEYFRAME_INTERVAL: Duration = Duration::from_secs(10);
 /// Lost uplink packets are requested again after this, up to `NACK_TRIES`
 /// times within `NACK_AGE`.
 const NACK_RETRY: Duration = Duration::from_millis(40);
@@ -218,6 +225,8 @@ struct Layer {
     /// When the viewer last had a connection here: its layer outlives a
     /// moment without one (between leaving one and opening the next).
     seen: Instant,
+    /// The viewer's own choice: the forwarder moves it only on `Auto`.
+    pin: ForwardLayer,
     /// What its downlink carried when it moved to the low layer (or failed a
     /// try of the main stream): its connection there is calm on the small
     /// stream. Kept when the stream comes down to it (its next connection
@@ -261,6 +270,7 @@ impl Layer {
             tried_at: None,
             probe: None,
             seen: now,
+            pin: ForwardLayer::Auto,
             capacity: None,
         }
     }
@@ -279,6 +289,33 @@ impl Layer {
         main: u64,
         room: Option<u64>,
     ) -> LayerStep {
+        // The viewer chose its stream itself.
+        match self.pin {
+            ForwardLayer::Low => {
+                self.probe = None;
+                if self.low {
+                    return LayerStep::Kept;
+                }
+                self.low = true;
+                self.since = now;
+                self.short_since = None;
+                self.capacity = limit;
+                return LayerStep::Switched;
+            }
+            ForwardLayer::Main => {
+                self.probe = None;
+                self.short_since = None;
+                if !self.low {
+                    return LayerStep::Kept;
+                }
+                self.low = false;
+                self.since = now;
+                self.tried_at = Some(now);
+                self.capacity = None;
+                return LayerStep::Switched;
+            }
+            ForwardLayer::Auto => {}
+        }
         if self.low {
             if let Some(probe) = &self.probe {
                 let probing = now.duration_since(probe.started);
@@ -611,6 +648,18 @@ impl Room {
         }
     }
 
+    /// Viewer `session` chose `layer` (`Auto`: the forwarder decides).
+    pub fn choose_layer(&self, session: &str, layer: ForwardLayer) {
+        let mut layers = self.layers.lock();
+        let entry = layers
+            .entry(session.to_owned())
+            .or_insert_with(|| Layer::new(Instant::now()));
+        if entry.pin != layer {
+            tracing::info!(room = %self.id, %session, ?layer, "viewer chose its stream");
+        }
+        entry.pin = layer;
+    }
+
     /// What viewer `session`'s downlink is known to carry: its connections'
     /// limits, else what it carried when it moved to the low layer. A new
     /// connection of the viewer starts from it.
@@ -663,11 +712,16 @@ impl Room {
             IMPAIRED_KEYFRAME_INTERVAL
         };
         let now = Instant::now();
+        let mut own = leg.rationed_keyframe_at.lock();
+        if own.is_some_and(|at| now.duration_since(at) < IMPAIRED_LEG_KEYFRAME_INTERVAL) {
+            return false;
+        }
         let mut at = self.impaired_keyframe_at.lock();
         if at.is_some_and(|at| now.duration_since(at) < interval) {
             return false;
         }
         *at = Some(now);
+        *own = Some(now);
         true
     }
 
@@ -853,13 +907,17 @@ impl Room {
                 .map(|(session, _)| session.clone())
                 .collect();
             // A viewer moving to the low layer: its older (main) connection
-            // stops, so that it does not crowd out the new one.
+            // stops, so that it does not crowd out the new one on a downlink
+            // that cannot carry it (one that can plays on until the viewer
+            // switches over and leaves it).
             for leg in self.legs() {
                 let session = super::session_of(&leg.id);
                 let superseded = low.iter().any(|s| s == session)
-                    && viewers
-                        .get(session)
-                        .is_some_and(|(_, newest)| !Arc::ptr_eq(newest, &leg));
+                    && viewers.get(session).is_some_and(|(_, newest)| {
+                        !Arc::ptr_eq(newest, &leg)
+                            && (leg.downlink.lock().limit().is_some()
+                                || newest.created.elapsed() >= SWITCH_OVER)
+                    });
                 leg.superseded.store(superseded, Ordering::Relaxed);
             }
             (limit, low)
@@ -1073,6 +1131,34 @@ mod tests {
             assert!(layer.update(now, "a", Some(2_500_000), false, Duration::ZERO, 8_000_000, Some(2_600_000)) == LayerStep::Kept);
         }
         assert!(!layer.low);
+    }
+
+    #[test]
+    fn a_viewer_that_chose_its_stream_keeps_it() {
+        use super::{Layer, LayerStep};
+        use farwing_protocol::api::ForwardLayer;
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let at = |s: f64| start + Duration::from_secs_f64(s);
+        let main = 8_000_000;
+        // 流畅: the low layer at once, never a try of the main stream.
+        let mut layer = Layer::new(start);
+        layer.pin = ForwardLayer::Low;
+        assert!(layer.update(at(0.5), "a", None, false, Duration::ZERO, main, None) == LayerStep::Switched);
+        assert!(layer.update(at(400.0), "a", None, false, Duration::from_secs(400), main, None) == LayerStep::Kept);
+        assert!(layer.low && layer.probe.is_none());
+        // 高清: the main stream however short the downlink.
+        let mut layer = Layer::new(start);
+        layer.pin = ForwardLayer::Main;
+        for s in [1.2, 3.0, 9.0] {
+            assert!(layer.update(at(s), "a", Some(2_000_000), false, Duration::ZERO, main, None) == LayerStep::Kept);
+        }
+        assert!(!layer.low);
+        // Back to automatic: the forwarder decides again.
+        layer.pin = ForwardLayer::Auto;
+        layer.since = start.checked_sub(super::JUST_CAME).unwrap();
+        assert!(layer.update(at(10.0), "a", Some(2_000_000), false, Duration::ZERO, main, None) == LayerStep::Kept);
+        assert!(layer.update(at(11.1), "a", Some(2_000_000), false, Duration::ZERO, main, None) == LayerStep::Switched);
     }
 
     #[test]

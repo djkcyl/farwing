@@ -455,6 +455,10 @@ pub fn router(app: App) -> Router {
         )
         .route("/api/v2/sfu/rooms/{room}/subscribe", post(sfu::subscribe))
         .route(
+            "/api/v2/sfu/rooms/{room}/subscribe/{session}/layer",
+            axum::routing::put(sfu::layer),
+        )
+        .route(
             "/api/v2/sfu/rooms/{room}/subscribe/{session}/{connection}",
             delete(sfu::unsubscribe),
         )

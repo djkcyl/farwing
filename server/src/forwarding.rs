@@ -245,6 +245,7 @@ impl Forwarding {
         connection: u32,
         offer: &str,
         tracks: Option<Vec<String>>,
+        layer: farwing_protocol::api::ForwardLayer,
     ) -> Result<(String, ForwardMode), ForwardError> {
         let record = self.room_of(None, room)?;
         let controls = hub
@@ -261,10 +262,39 @@ impl Forwarding {
                     leg: crate::sfu::leg_id(session, connection),
                     sdp: offer.to_owned(),
                     tracks,
+                    layer,
                 },
             )
             .await?;
         Ok((answer, record.mode))
+    }
+
+    /// The stream the controller `device` of `session` chose in `room`.
+    pub async fn choose_layer(
+        &self,
+        hub: &Hub,
+        device: &str,
+        room: &str,
+        session: &str,
+        layer: farwing_protocol::api::ForwardLayer,
+    ) -> Result<(), ForwardError> {
+        let record = self.room_of(None, room)?;
+        let controls = hub
+            .session(session)
+            .is_some_and(|s| s.controller_device_id == device);
+        if !controls || !record.sessions.contains(session) {
+            return Err(ForwardError::NotFound);
+        }
+        self.run(
+            record.node.as_ref(),
+            SfuRequest::Layer {
+                room: room.to_owned(),
+                session: session.to_owned(),
+                layer,
+            },
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn unsubscribe(

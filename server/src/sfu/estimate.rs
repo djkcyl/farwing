@@ -36,8 +36,11 @@ const QUEUEING: Duration = Duration::from_millis(60);
 const DELAY_WINDOW: Duration = Duration::from_secs(10);
 /// Sent packets of which none arrived for this long: the downlink is dark.
 const DARK_AFTER: Duration = Duration::from_secs(1);
-/// A downlink that was dark until this long ago has just come back.
+/// A downlink that was dark until this long ago has just come back...
 const BACK_WITHIN: Duration = Duration::from_secs(5);
+/// ...said at most this often (a downlink going dark again and again is
+/// overfull, not back from an outage).
+const BACK_AGAIN: Duration = Duration::from_secs(10);
 /// Arrivals over this long give the capacity of a full downlink...
 const ARRIVAL_WINDOW: Duration = Duration::from_millis(300);
 /// ...from at least this many packets over at least this long.
@@ -86,6 +89,8 @@ pub(super) struct Downlink {
     last_delivered: Option<Instant>,
     /// When the downlink was last seen dark, until its return is noticed.
     dark_at: Option<Instant>,
+    /// When its return was last said.
+    returned_at: Option<Instant>,
 }
 
 impl Downlink {
@@ -138,6 +143,7 @@ impl Downlink {
             last_sent: None,
             last_delivered: None,
             dark_at: None,
+            returned_at: None,
             congested_at: None,
             relaxed_at: origin,
             reported: VecDeque::new(),
@@ -423,9 +429,12 @@ impl Downlink {
     /// The downlink was dark (an outage, a roaming Wi-Fi) and has just come
     /// back; says so once.
     pub fn take_return(&mut self) -> bool {
-        let back = !self.dark() && self.dark_at.is_some_and(|at| at.elapsed() < BACK_WITHIN);
+        let back = !self.dark()
+            && self.dark_at.is_some_and(|at| at.elapsed() < BACK_WITHIN)
+            && self.returned_at.is_none_or(|at| at.elapsed() >= BACK_AGAIN);
         if back {
             self.dark_at = None;
+            self.returned_at = Some(Instant::now());
         }
         back
     }

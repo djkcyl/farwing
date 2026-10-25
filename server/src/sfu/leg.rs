@@ -346,6 +346,8 @@ pub(super) struct Leg {
     pub video: Vec<u32>,
     pub tasks: Mutex<Vec<JoinHandle<()>>>,
     pub created: Instant,
+    /// When this leg's last rationed keyframe request went on.
+    pub rationed_keyframe_at: Mutex<Option<Instant>>,
 }
 
 impl Leg {
@@ -378,6 +380,7 @@ impl Leg {
             video,
             tasks: Mutex::default(),
             created: Instant::now(),
+            rationed_keyframe_at: Mutex::default(),
         });
         (leg, packets)
     }

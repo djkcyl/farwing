@@ -21,6 +21,7 @@ pub mod sdp;
 
 pub use room::{LegStats, RoomStats};
 
+use farwing_protocol::api::ForwardLayer;
 use leg::{ForwardTrack, Leg, Rewrite, Tap, TapBuilder};
 use parking_lot::{Mutex, RwLock};
 use room::{Room, Uplink};
@@ -119,6 +120,14 @@ pub enum SfuRequest {
         sdp: String,
         #[serde(default)]
         tracks: Option<Vec<String>>,
+        #[serde(default)]
+        layer: ForwardLayer,
+    },
+    /// The stream viewer `session` chose.
+    Layer {
+        room: String,
+        session: String,
+        layer: ForwardLayer,
     },
     /// `leg`: one connection's leg, or a session (all its legs).
     Unsubscribe {
@@ -534,7 +543,22 @@ impl Sfu {
                 leg,
                 sdp,
                 tracks,
-            } => self.subscribe(&room, &leg, &sdp, tracks.as_deref()).await,
+                layer,
+            } => {
+                if let Some(room) = self.room(&room) {
+                    room.choose_layer(session_of(&leg), layer);
+                }
+                self.subscribe(&room, &leg, &sdp, tracks.as_deref()).await
+            }
+            SfuRequest::Layer {
+                room,
+                session,
+                layer,
+            } => {
+                let room = self.room(&room).ok_or(SfuError::NoRoom)?;
+                room.choose_layer(&session, layer);
+                Ok(String::new())
+            }
             SfuRequest::Unsubscribe { room, leg } => {
                 self.unsubscribe(&room, &leg).await;
                 Ok(String::new())

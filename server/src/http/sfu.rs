@@ -147,9 +147,24 @@ pub async fn subscribe(
             req.connection,
             &req.offer,
             req.tracks,
+            req.layer,
         )
         .await?;
     Ok(Json(Subscription { answer, mode }))
+}
+
+/// `PUT /api/v2/sfu/rooms/{room}/subscribe/{session}/layer` (the session's
+/// controller).
+pub async fn layer(
+    State(app): State<App>,
+    auth: AnyAuth,
+    Path((room, session)): Path<(String, String)>,
+    JsonBody(req): JsonBody<farwing_protocol::api::LayerRequest>,
+) -> ApiResult<Json<Empty>> {
+    app.forwarding
+        .choose_layer(&app.hub, &auth.device.id, &room, &session, req.layer)
+        .await?;
+    Ok(Json(Empty {}))
 }
 
 /// `DELETE /api/v2/sfu/rooms/{room}/subscribe/{session}/{connection}` (the
