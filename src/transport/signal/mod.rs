@@ -198,7 +198,10 @@ impl SignalSession {
         push: Option<SignalPushHandler>,
     ) -> Result<Self> {
         ticket.validate()?;
-        let server = ServerConfig::require()?;
+        let mut server = ServerConfig::require()?;
+        if let Some(moved) = crate::account::server_changed::follow_endpoint(&server, &ticket).await {
+            server = moved;
+        }
         let connect_timeout = Duration::from_millis(u64::from(ticket.connect_timeout_ms.max(100)));
         let mut transport = SignalTransport::spawn(server, ticket, role, push);
         let mut deferred = VecDeque::new();
