@@ -90,6 +90,8 @@ struct Entry {
     /// The generation of the last instruction; answers to older ones are
     /// stale.
     generation: u32,
+    /// The last generation the participant receives through the forwarder.
+    confirmed: u32,
 }
 
 impl Entry {
@@ -213,6 +215,7 @@ pub(crate) fn register(
             recovery,
             told: None,
             generation: 0,
+            confirmed: 0,
         },
     );
     if !state.running {
@@ -251,6 +254,10 @@ impl Registration {
             if entry.told.as_ref().is_some_and(|(room, ..)| !room.is_empty()) {
                 entry.forwarded.receiving.store(true, Ordering::Release);
             }
+            entry.confirmed = status.generation;
+            // Back on the main stream: the participant leaves the low layer.
+            drop(state);
+            WAKE.notify_one();
             return;
         }
         tracing::warn!(participant = self.key, error = %status.error,
@@ -399,15 +406,27 @@ async fn step() -> bool {
             continue;
         }
         entry.forwarded.in_room.store(true, Ordering::Release);
-        entry
-            .forwarded
-            .low
-            .store(uplink.low(&entry.session_id), Ordering::Release);
-        let tracks: Vec<(u32, String)> = mapping
+        let mut tracks: Vec<(u32, String)> = mapping
             .iter()
             .filter(|((participant, _), _)| participant == key)
             .map(|((_, index), track)| (*index as u32, track.clone()))
             .collect();
+        let mut low = uplink.low(&entry.session_id);
+        // Back to the main stream: the participant is told the main
+        // stream's tracks at once but stays in the low layer's group (which
+        // ends with its last member) until its viewer receives them (先接后断).
+        if !low && !tracks.is_empty() {
+            let main: Option<Vec<(u32, String)>> = tracks
+                .iter()
+                .map(|(index, track)| uplink.main_track(track).map(|main| (*index, main)))
+                .collect();
+            if let Some(main) = main {
+                low = entry.confirmed != entry.generation
+                    || entry.told.as_ref().is_none_or(|(_, told, ..)| *told != main);
+                tracks = main;
+            }
+        }
+        entry.forwarded.low.store(low, Ordering::Release);
         if tracks.is_empty() {
             continue;
         }

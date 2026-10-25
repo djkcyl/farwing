@@ -1,9 +1,10 @@
 //! The shared viewer stream (`docs/protocol/v2-design.md` §4.4). While
 //! several participants are connected, everyone except the holder of the
-//! control token watches one stream per screen: 1080p, 60 fps, cinema mode,
-//! in the best format all of them can decode. One encoder serves them all,
-//! the bandwidth stays bounded and everyone sees the same picture; the
-//! holder keeps its own settings and low latency.
+//! control token watches one stream per screen: 1080p (高清) or, for those
+//! who chose 流畅, 720p; 60 fps, cinema mode, in the best format all of
+//! them can decode. One encoder serves each, the bandwidth stays bounded
+//! and everyone sees the same picture; the holder keeps its own settings
+//! and low latency.
 use crate::features::host::VideoConfig;
 use crate::features::host::format::{Codec, Color, Format, Negotiated};
 use std::collections::HashMap;
@@ -11,8 +12,10 @@ use std::sync::{LazyLock, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The quality tier of the shared stream (1920×1080; the tier also sets
-/// the bitrate bounds).
+/// the bitrate bounds)...
 pub(crate) const QUALITY: i32 = 2;
+/// ...or of 流畅 (1280×720) for those who chose it.
+const SMOOTH: i32 = 1;
 pub(crate) const FPS: u32 = 60;
 /// One size bound for everyone: the tier, not each decoder's limit, sizes
 /// the picture, and equal bounds let the viewers share an encoder.
@@ -83,13 +86,20 @@ fn common_format(holder: Option<u64>) -> Option<Format> {
 
 /// Replace `wanted` with the shared stream's settings when `participant`
 /// watches it. Returns whether it does. The settings stored for the
-/// participant stay as they are: taking control brings them back.
-pub(crate) fn apply(participant: Option<u64>, wanted: &mut VideoConfig) -> bool {
+/// participant stay as they are: taking control brings them back. In a
+/// forwarding room (`forwarded`) the forwarder serves 流畅 (its low layer)
+/// instead.
+pub(crate) fn apply(participant: Option<u64>, wanted: &mut VideoConfig, forwarded: bool) -> bool {
     if !super::participants::shared_viewer(participant) {
         return false;
     }
-    wanted.quality = QUALITY;
-    wanted.auto_quality = QUALITY;
+    let tier = if wanted.quality == SMOOTH && !forwarded {
+        SMOOTH
+    } else {
+        QUALITY
+    };
+    wanted.quality = tier;
+    wanted.auto_quality = tier;
     wanted.fps = FPS;
     wanted.requested_fps = FPS;
     wanted.cinema = true;

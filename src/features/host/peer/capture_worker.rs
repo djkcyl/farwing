@@ -28,9 +28,9 @@ mod metrics;
 
 /// A follower that lost frames asks again if no keyframe came this long.
 const KEYFRAME_RETRY: Duration = Duration::from_secs(1);
-/// The forwarder's low layer: the 流畅 tier (720p, 1.5 Mbps) at most 30 fps.
+/// The forwarder's low layer: the 流畅 tier (720p, 1.5 Mbps at 60 fps).
 const LOW_QUALITY: i32 = 1;
-const LOW_FPS: u32 = 30;
+const LOW_FPS: u32 = 60;
 
 /// How long a new participant waits for its own `CaptureSetting` before its
 /// session start parameters count as its settings.
@@ -158,7 +158,11 @@ pub(super) fn capture_loop(
 
         // Several participants: everyone without the control token watches
         // the one shared stream (the stored settings stay for later).
-        let shared = crate::features::host::shared_view::apply(handle.participant(), &mut wanted);
+        let shared = crate::features::host::shared_view::apply(
+            handle.participant(),
+            &mut wanted,
+            forwarded.in_room.load(Ordering::Acquire),
+        );
         if was_shared != Some(shared) {
             was_shared = Some(shared);
             tracing::info!(shared, format = ?wanted.format, "participant stream policy");

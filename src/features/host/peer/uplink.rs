@@ -129,6 +129,8 @@ struct Running {
     serial: u64,
     /// The forwarder's low layer: its own budget, not a share of the limit.
     low: bool,
+    /// The screen the group encodes.
+    screen: String,
     cancel: CancellationToken,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     observer: Option<std::thread::JoinHandle<()>>,
@@ -450,6 +452,21 @@ impl Uplink {
         Ok(())
     }
 
+    /// The main stream's track of the screen low-layer track `track` encodes
+    /// (`None`: `track` is not the low layer, or nobody watches that screen
+    /// on the main stream).
+    pub(crate) fn main_track(&self, track: &str) -> Option<String> {
+        let index: usize = track.strip_prefix("video_")?.parse().ok()?;
+        let slots = lock(&self.slots);
+        let low = slots.get(index)?.running.as_ref().filter(|r| r.low)?;
+        let main = slots.iter().position(|s| {
+            s.running
+                .as_ref()
+                .is_some_and(|r| !r.low && !r.cancel.is_cancelled() && r.screen == low.screen)
+        })?;
+        Some(format!("video_{main}"))
+    }
+
     /// The media SSRC of uplink track `track` (`video_<slot>`).
     pub(crate) fn ssrc(&self, track: &str) -> Option<u32> {
         let index: usize = track.strip_prefix("video_")?.parse().ok()?;
@@ -681,6 +698,7 @@ fn start(
     Running {
         serial: group.group.serial(),
         low,
+        screen: group.group.key().screen.clone(),
         cancel,
         tasks: vec![reports, feedback, sending],
         observer,
