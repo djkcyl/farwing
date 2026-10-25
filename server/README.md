@@ -4,7 +4,7 @@ Farwing Server 是 Farwing（自托管远程桌面）的服务端：账号、设
 
 服务端不转码音视频：两人会话的媒体经 WebRTC（DTLS-SRTP）端到端加密，TURN 只转发密文；多人观看时可经服务端的转发器（见“多人转发”），默认对每一帧另做端到端加密，转发器只看得到包头。远程协助的验证码也不经过服务端：双方通过服务端中转 SPAKE2 消息，服务端看不到协助码。
 
-> **未验证事项**：本服务端在 Windows 上开发和测试（`cargo test` 全部通过，测试在进程内启动服务并通过真实 HTTPS/WSS 与 TURN 连接验证；初始化、设置在运行中生效、监听地址确认与恢复、证书上传、API 令牌也由测试与本机网页端验证）。开发环境中**无法运行 Linux、Docker 和 coturn**，因此以下内容**均未实际验证**：在 Linux 上构建与运行、`Dockerfile`、`docker-compose.yml`、`deploy/farwing-server.service`（systemd）、coturn 配置及其与本服务的互通、真实进程中的 SIGTERM/Ctrl-C 信号处理（优雅退出逻辑本身由测试覆盖）。部署前请自行验证。自动证书（ACME）用 Let's Encrypt 的测试 CA Pebble 在本机验证过 TLS-ALPN-01、HTTP-01、重启复用与失败重试，没有对真实的 Let's Encrypt 与公网域名验证。网页端只在本机 Chrome 中验证过（直连、经内置 TURN 中继、经带路径前缀的反向代理观看本机被控，访问码与“请对方确认”的访客观看；网页控制的键鼠注入、锁定键同步、剪贴板、文件上传下载与权限上限）；Firefox / Safari、手机实机触屏、指针锁定与全屏键盘锁定的真实操作、装有虚拟声卡时的麦克风、跨公网与真实证书、`build-web.sh` 与 Dockerfile 中的前端构建阶段未实际验证。
+> **未验证事项**：本服务端在 Windows 上开发和测试（`cargo test` 全部通过，测试在进程内启动服务并通过真实 HTTPS/WSS 与 TURN 连接验证；初始化、设置在运行中生效、监听地址确认与恢复、证书上传、API 令牌也由测试与本机网页端验证）。开发环境中**无法运行 Linux、Docker 和 coturn**，因此以下内容**均未实际验证**：在 Linux 上构建与运行（Linux 程序由 Windows 上的 `cargo zigbuild` 交叉编译，确认是静态链接的 x86_64 / AArch64 ELF，未在 Linux 上运行过）、`Dockerfile`、`docker-compose.yml`、`deploy/farwing-server.service`（systemd）、coturn 配置及其与本服务的互通、真实进程中的 SIGTERM/Ctrl-C 信号处理（优雅退出逻辑本身由测试覆盖）。部署前请自行验证。自动证书（ACME）用 Let's Encrypt 的测试 CA Pebble 在本机验证过 TLS-ALPN-01、HTTP-01、重启复用与失败重试，没有对真实的 Let's Encrypt 与公网域名验证。网页端只在本机 Chrome 中验证过（直连、经内置 TURN 中继、经带路径前缀的反向代理观看本机被控，访问码与“请对方确认”的访客观看；网页控制的键鼠注入、锁定键同步、剪贴板、文件上传下载与权限上限）；Firefox / Safari、手机实机触屏、指针锁定与全屏键盘锁定的真实操作、装有虚拟声卡时的麦克风、跨公网与真实证书、`build-web.sh` 与 Dockerfile 中的前端构建阶段未实际验证。
 
 ## 构建
 
@@ -27,6 +27,16 @@ sh server/build-web.sh        # Linux / macOS
 脚本依次执行 `npm ci`、`npm run check`（类型检查、oxlint、Prettier、Vitest 单元测试）、`npm run build`（同时生成 Brotli 与 gzip 压缩副本，服务端按浏览器的 `Accept-Encoding` 返回；约 430 KiB 的前端传输约 130 KiB）与 `cargo build --release --locked`。前端依赖全部装在 `server/web/node_modules/`，页面不引用任何 CDN 或外部资源。
 
 SQLite 使用 `rusqlite` 的 `bundled` 特性静态编译，不依赖系统 SQLite；TLS 使用 rustls（ring），不依赖 OpenSSL。构建需要 C 编译器（SQLite、ring）。
+
+在 Windows 上为 Linux 构建（静态链接的 musl 程序，任何发行版都能直接运行）：装好 [zig](https://ziglang.org/) 与 `cargo install cargo-zigbuild`，先构建网页端（`pwsh server/build-web.ps1 -SkipCargo`），再：
+
+```sh
+rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+cd server
+cargo zigbuild --release --locked --target x86_64-unknown-linux-musl    # 或 aarch64-unknown-linux-musl
+```
+
+程序在 `target/<目标>/release/farwing-server`。
 
 Docker 镜像必须**在仓库根目录**构建（构建上下文需要 `crates/protocol`）：
 
