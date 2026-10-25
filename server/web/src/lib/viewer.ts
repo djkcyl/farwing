@@ -108,6 +108,8 @@ export interface ViewerEvents {
   /// Text the host copied (automatic clipboard synchronization).
   clipboardText?(text: string): void;
   transfer?(info: TransferInfo): void;
+  /// The picture stalls while video still arrives (`long`: for 3 s now).
+  stalled?(long: boolean): void;
   annotation?(state: AnnotationState): void;
   /// The host's HELLO features (what it can receive: `touch`, `pen`, …).
   hostFeatures?(features: Record<string, number>): void;
@@ -276,6 +278,9 @@ export class Viewer {
   /// acknowledges decoded frames and the host can send recovery frames.
   private descriptorAccepted = false;
   private ackTimer = 0;
+  private stallTimer = 0;
+  /// The forwarder's stream this viewer chose (its quality setting).
+  private layerChoice = 'auto';
   private acked = new Map<number, number>();
   private requests = new Map<string, { resolve(body: Uint8Array): void; reject(error: Error): void; timer: number }>();
   private clipboardParts = new fpp.Reassembly(48 * 1024 * 1024);
@@ -572,6 +577,7 @@ export class Viewer {
     if (this.pc && this.pc.connectionState !== 'connected') this.armNegotiation(this.pc, CONNECT_TIMEOUT_MS);
     this.descriptorAccepted = hasDependencyDescriptor(data.sdp);
     this.startAcknowledgements();
+    this.startStallWatch();
     this.log(
       `answer gen=${envelope.gen ?? 0} tracks=${[...this.tracks].map(([m, t]) => `${m}:${t}`).join(' ')} descriptor=${this.descriptorAccepted}`,
     );
@@ -653,6 +659,7 @@ export class Viewer {
         if (sound) this.addTrack(sound);
         this.events.forwarding?.(video ? mode : '');
       },
+      layer: () => this.layerChoice,
       directDecoded: async () => {
         let decoded = 0;
         const report = await this.pc?.getStats();
@@ -705,6 +712,54 @@ export class Viewer {
 
   /// Every 100 ms, report the newest frame each video track decoded (the
   /// RTP timestamp libwebrtc reports for the frame it last delivered).
+  /// The quality setting: 自动 lets the forwarder choose its stream, 流畅
+  /// (tier 1) is its low layer, another tier its main one.
+  setQualityChoice(quality: number) {
+    const layer = quality === 5 ? 'auto' : quality === 1 ? 'low' : 'main';
+    if (layer === this.layerChoice) return;
+    this.layerChoice = layer;
+    this.forward?.chooseLayer();
+  }
+
+  /// Every 250 ms: no new frame for 300 ms while video still arrives is a
+  /// stall (a still screen sends nothing).
+  private startStallWatch() {
+    window.clearInterval(this.stallTimer);
+    let frames = -1;
+    let bytes = 0;
+    let since = performance.now();
+    let stalling = false;
+    let long = false;
+    this.stallTimer = window.setInterval(async () => {
+      const pc = this.forward?.connection ?? this.pc;
+      const report = await pc?.getStats().catch(() => undefined);
+      if (!report) return;
+      let decoded = 0;
+      let received = 0;
+      report.forEach((s) => {
+        if (s.type === 'inbound-rtp' && s.kind === 'video') {
+          decoded += s.framesDecoded ?? 0;
+          received += s.bytesReceived ?? 0;
+        }
+      });
+      const now = performance.now();
+      const arriving = received > bytes;
+      bytes = received;
+      if (decoded !== frames) {
+        frames = decoded;
+        since = now;
+        stalling = false;
+        long = false;
+      } else if (arriving && !stalling && now - since >= 300) {
+        stalling = true;
+        this.events.stalled?.(false);
+      } else if (stalling && !long && now - since >= 3000) {
+        long = true;
+        this.events.stalled?.(true);
+      }
+    }, 250);
+  }
+
   private startAcknowledgements() {
     window.clearInterval(this.ackTimer);
     this.ackTimer = 0;
@@ -1272,6 +1327,7 @@ export class Viewer {
     this.requests.clear();
     window.clearInterval(this.helloTimer);
     window.clearInterval(this.ackTimer);
+    window.clearInterval(this.stallTimer);
     window.clearTimeout(this.negotiateTimer);
     window.clearTimeout(this.disconnectedTimer);
     this.helloTimer = 0;

@@ -1,6 +1,8 @@
 /// What happens in the session, shown over the picture to everyone in it:
-/// who joined or left, who took control, how the picture travels.
-import { useEffect, useRef, useState } from 'react';
+/// who joined or left, who took control, how the picture travels; and
+/// `hint`, a suggestion of the viewer's own (a lower quality while the
+/// picture stalls often).
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Messages } from '../i18n';
 import type { Participant } from '../lib/fpp';
 
@@ -16,10 +18,12 @@ interface Notice {
 export function RoomNotices({
   people,
   forwarding,
+  hint,
   t,
 }: {
   people?: { participants: Participant[]; controlling: string };
   forwarding: string;
+  hint?: { id: number; text: string };
   t: Messages;
 }) {
   const [shown, setShown] = useState<Notice[]>([]);
@@ -28,15 +32,20 @@ export function RoomNotices({
   const controlling = useRef('');
   const forwarded = useRef<string | undefined>(undefined);
 
+  const push = useCallback((texts: string[]) => {
+    if (!texts.length) return;
+    const added = texts.map((text) => ({ id: next.current++, text }));
+    setShown((list) => [...list, ...added].slice(-MOST));
+    for (const notice of added) {
+      window.setTimeout(() => setShown((list) => list.filter((n) => n.id !== notice.id)), SHOWN_MS);
+    }
+  }, []);
+
   useEffect(() => {
-    const push = (texts: string[]) => {
-      if (!texts.length) return;
-      const added = texts.map((text) => ({ id: next.current++, text }));
-      setShown((list) => [...list, ...added].slice(-MOST));
-      for (const notice of added) {
-        window.setTimeout(() => setShown((list) => list.filter((n) => n.id !== notice.id)), SHOWN_MS);
-      }
-    };
+    if (hint) push([hint.text]);
+  }, [hint, push]);
+
+  useEffect(() => {
     const s = t.viewer.screen;
     const news: string[] = [];
     // The first list is not announced; an empty one is a gap between lists.
@@ -56,7 +65,7 @@ export function RoomNotices({
     }
     forwarded.current = forwarding;
     push(news);
-  }, [people, forwarding, t]);
+  }, [people, forwarding, t, push]);
 
   if (!shown.length) return null;
   return (

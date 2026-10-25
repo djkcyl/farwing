@@ -155,6 +155,7 @@ export const zh = {
       original: '原画',
       ultra: '超清',
       high: '高清',
+      smooth: '流畅',
     },
     frameRate: '帧率',
     codec: '编码格式',
@@ -216,6 +217,7 @@ export const zh = {
     roomLeft: (name: string) => `${name} 离开`,
     roomControlTaken: (name: string) => `${name} 开始控制`,
     roomForwardingEnded: '服务器转发已结束',
+    stallingTry: (tier: string) => `卡顿较多 · 画质可改为${tier}`,
   },
   /** The statistics panel. */
   stats: {
@@ -475,6 +477,7 @@ export const en: typeof zh = {
       original: 'Original',
       ultra: 'Ultra',
       high: 'High',
+      smooth: 'Smooth',
     },
     frameRate: 'Frame rate',
     codec: 'Codec',
@@ -535,6 +538,7 @@ export const en: typeof zh = {
     roomLeft: (name: string) => `${name} left`,
     roomControlTaken: (name: string) => `${name} has control`,
     roomForwardingEnded: 'Server forwarding ended',
+    stallingTry: (tier) => `Frequent stalls · try quality ${tier}`,
   },
   stats: {
     resolution: 'Resolution',

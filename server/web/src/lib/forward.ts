@@ -20,6 +20,9 @@ const GATHER_MS = 500;
 const RELAY_GATHER_MS = 3_000;
 /// A room left plays on at most this long until the host's picture is back.
 const LEAVE_WAIT_MS = 3_000;
+/// A connection taking over from another of the room shows its picture once
+/// it has decoded this many frames (past its playout buffer's fill).
+const STEADY_FRAMES = 30;
 
 export interface ForwardContext {
   iceServers: RTCIceServer[];
@@ -34,6 +37,9 @@ export interface ForwardContext {
   media(video: MediaStreamTrack | undefined, audio: MediaStreamTrack | undefined, mode: string): void;
   /// Frames of the host's own picture decoded so far.
   directDecoded(): Promise<number>;
+  /// The forwarder's stream this viewer chose: `auto`, `main` (高清) or
+  /// `low` (流畅).
+  layer(): string;
 }
 
 interface Active {
@@ -67,6 +73,18 @@ export class ForwardReceiver {
   /// The forwarder connection while the picture comes through it.
   get connection(): RTCPeerConnection | undefined {
     return this.active?.connection;
+  }
+
+  /// The viewer's choice of stream changed: tell the forwarder of the room.
+  chooseLayer() {
+    const active = this.active;
+    if (!active) return;
+    void call(
+      'PUT',
+      `/api/v2/sfu/rooms/${encodeURIComponent(active.room)}/subscribe/${encodeURIComponent(active.session)}/layer`,
+      { layer: this.context.layer() },
+      { bearer: this.context.bearer, quiet: true },
+    ).catch((error: Error) => this.context.log(`choice of stream not sent: ${error.message}`));
   }
 
   /// Whether this viewer watches without control (the playout buffer).
@@ -125,7 +143,7 @@ export class ForwardReceiver {
     else if (this.leave()) this.context.media(undefined, undefined, '');
     try {
       if (!wanted) throw new Error('no forwarded track for this picture');
-      const { video, audio } = await this.join(instruction, wanted);
+      const { video, audio } = await this.join(instruction, wanted, !!replaced);
       if (this.closed || this.active?.room !== instruction.room) return;
       this.context.media(video, audio, instruction.mode);
       if (replaced) this.drop(replaced);
@@ -146,6 +164,7 @@ export class ForwardReceiver {
   private async join(
     instruction: Forward,
     track: string,
+    replacing = false,
   ): Promise<{ video: MediaStreamTrack; audio?: MediaStreamTrack }> {
     let worker: Worker | undefined;
     if (instruction.mode === 'e2ee') {
@@ -207,6 +226,7 @@ export class ForwardReceiver {
         connection: this.opened,
         offer: withoutAv1Level(offer),
         tracks: instruction.audio ? [track, instruction.audio] : [track],
+        layer: this.context.layer(),
       },
       { bearer: this.context.bearer, quiet: true },
     );
@@ -214,7 +234,11 @@ export class ForwardReceiver {
     await connection.setRemoteDescription({ type: 'answer', sdp: subscription.answer });
     this.buffer(connection);
     const video = await within(received, FIRST_FRAME_MS);
-    await firstFrame(connection, () => this.closed || instruction !== this.latest);
+    await firstFrame(
+      connection,
+      () => this.closed || instruction !== this.latest,
+      replacing ? STEADY_FRAMES : 1,
+    );
     return { video, audio };
   }
 
@@ -280,7 +304,11 @@ function within<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 /// Resolves once the forwarded picture decodes.
-async function firstFrame(connection: RTCPeerConnection, superseded: () => boolean): Promise<void> {
+/// Until `connection` has decoded `frames` frames: one when nothing shows the
+/// picture meanwhile; more when another connection does, so that the new one
+/// has filled its playout buffer (watching viewers hold a second) before it
+/// takes over and the old one closes.
+async function firstFrame(connection: RTCPeerConnection, superseded: () => boolean, frames = 1): Promise<void> {
   const deadline = performance.now() + FIRST_FRAME_MS;
   while (performance.now() < deadline) {
     if (superseded()) throw new Error('superseded by a newer instruction');
@@ -290,8 +318,8 @@ async function firstFrame(connection: RTCPeerConnection, superseded: () => boole
     report.forEach((s) => {
       if (s.type === 'inbound-rtp' && s.kind === 'video') decoded = Math.max(decoded, s.framesDecoded ?? 0);
     });
-    if (decoded > 0) return;
-    await new Promise((resolve) => window.setTimeout(resolve, 200));
+    if (decoded >= frames) return;
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
   }
   throw new Error('no media from the forwarder in time');
 }

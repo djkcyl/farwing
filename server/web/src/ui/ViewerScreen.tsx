@@ -81,7 +81,18 @@ const QUALITIES: { id: number; key: keyof ViewerMessages['screen']['qualities'];
   { id: 4, key: 'original', hint: '30M' },
   { id: 3, key: 'ultra', hint: '14M' },
   { id: 2, key: 'high', hint: '8M' },
+  { id: 1, key: 'smooth', hint: '1.5M' },
 ];
+/// Sharing the picture with others: 自动, 高清 or 流畅 (the forwarder's two
+/// streams); a stored higher tier counts as 高清 meanwhile.
+const SHARED_QUALITIES = [5, 2, 1];
+/// The next lower tier to suggest when the picture stalls often.
+const LOWER: Record<number, keyof ViewerMessages['screen']['qualities']> = { 4: 'ultra', 3: 'high', 2: 'smooth' };
+/// Stalls: this many within this long (or one lasting 3 s) suggest a lower
+/// tier, at most once per tier this often.
+const STALLS = 3;
+const STALLS_WITHIN_MS = 30_000;
+const SUGGEST_AGAIN_MS = 300_000;
 
 const CODECS: { id: VideoCodecId; label: string; mime: string }[] = [
   { id: VideoCodec.AV1, label: 'AV1', mime: 'AV1' },
@@ -283,6 +294,13 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
   const [barVisible, setBarVisible] = useState(true);
   const [videoSize, setVideoSize] = useState<[number, number]>([0, 0]);
   const [frameQuality, setFrameQuality] = useState(5);
+  /// A suggestion shown with the room notices.
+  const [hint, setHint] = useState<{ id: number; text: string }>();
+  const stalls = useRef<number[]>([]);
+  const suggested = useRef(new Map<number, number>());
+  /// The tier in use, for the stall watch: a stored higher one counts as
+  /// 高清 while the picture is shared.
+  const tierNow = useRef(5);
   const [fps, setFps] = useState(60);
   const [sharePointer, setSharePointer] = useState(false);
   const [codec, setCodec] = useState(storedCodec);
@@ -343,6 +361,18 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
           permissions: (g) => setGrants([...g]),
           participants: setPeople,
           forwarding: setForwarding,
+          stalled: (long) => {
+            const at = Date.now();
+            stalls.current = [...stalls.current.filter((t) => at - t < STALLS_WITHIN_MS), at];
+            if (!long && stalls.current.length < STALLS) return;
+            stalls.current = [];
+            const tier = tierNow.current;
+            const lower = LOWER[tier];
+            if (!lower || at - (suggested.current.get(tier) ?? 0) < SUGGEST_AGAIN_MS) return;
+            suggested.current.set(tier, at);
+            const m = messagesNow().viewer.screen;
+            setHint({ id: at, text: m.stallingTry(m.qualities[lower]) });
+          },
           pointers: setPointers,
           hostEvent: (e) => setBanner(hostEventText(e)),
           audio: (a) => {
@@ -391,6 +421,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
       );
       current = v;
       viewer.current = v;
+      v.setQualityChoice(capture.current.quality);
       // For testing from the developer tools of the dev server only.
       if (import.meta.env.DEV) (window as unknown as { farwingViewer?: Viewer }).farwingViewer = v;
       v.start().catch((error: unknown) => {
@@ -560,6 +591,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
     setFps(f);
     setCodec(c);
     capture.current = { ...capture.current, quality: q, fps: f, codec: c };
+    viewer.current?.setQualityChoice(q);
     if (c) localStorage.setItem(CODEC_KEY, String(c));
     else localStorage.removeItem(CODEC_KEY);
     if (viewer.current) sendCapture(viewer.current, q, f, c, capture.current.cursor);
@@ -775,6 +807,12 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
   }, [state]);
   const overlayText = ending ? ending.message() : state === 'playing' ? '' : t.viewer.states[state];
   const others = (people?.participants ?? []).filter((p) => !p.you);
+  // Several watching and another one (or nobody) in control: one shared
+  // picture, 高清 or 流畅.
+  const me = people?.participants.find((p) => p.you)?.id;
+  const sharedView = (people?.participants.length ?? 0) > 1 && people?.controlling !== me;
+  const shownQuality = sharedView && (frameQuality === 4 || frameQuality === 3) ? 2 : frameQuality;
+  tierNow.current = shownQuality;
   const controller = people?.participants.find((p) => p.id === people.controlling);
 
   // Our indicator pointer, when shared: normalized to the picture.
@@ -1044,10 +1082,10 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
           </Menu>
           <Menu label={t.viewer.screen.quality} icon="settings">
             <div className="menu-label">{t.viewer.screen.quality}</div>
-            {QUALITIES.map((q) => (
+            {QUALITIES.filter((q) => !sharedView || SHARED_QUALITIES.includes(q.id)).map((q) => (
               <MenuItem
                 key={q.id}
-                selected={frameQuality === q.id}
+                selected={shownQuality === q.id}
                 hint={q.hint}
                 onClick={() => applyCapture(q.id, fps)}
               >
@@ -1246,7 +1284,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
           </button>
         )}
         {banner && <div className="viewer-banner">{banner}</div>}
-        {playing && <RoomNotices people={people} forwarding={forwarding} t={t} />}
+        {playing && <RoomNotices people={people} forwarding={forwarding} hint={hint} t={t} />}
         {keyboardLocked && barVisible && <div className="viewer-hint">{t.viewer.screen.keyboardLocked}</div>}
         {pendingCopy !== undefined && (
           <button type="button" className="unmute-hint copy-hint" onClick={() => copyLocally(pendingCopy)}>
