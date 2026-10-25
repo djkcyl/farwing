@@ -29,19 +29,20 @@ const KEYFRAME_INTERVAL: Duration = Duration::from_millis(300);
 /// The host hears the forwarded stream's limit this often.
 const LIMIT_INTERVAL: Duration = Duration::from_millis(250);
 /// A viewer gets the low layer when its downlink carries less than this
-/// share of the main stream (or the room's limit)...
+/// share of the main stream (or the room's limit); one that carries at
+/// least this share brings the stream down to it instead...
 const LOW_SHARE: f64 = 0.75;
 /// ...for this long...
-const SHORT_FOR: Duration = Duration::from_secs(3);
-/// ...or this long when it carries less than this share.
+const SHORT_FOR: Duration = Duration::from_millis(1500);
+/// ...or this long when it carries less than this share...
 const FAR_SHORT: f64 = 0.5;
 const FAR_SHORT_FOR: Duration = Duration::from_secs(1);
+/// ...unless the main stream is this small anyway (the low layer is about
+/// 0.7 Mbps).
+const LOW_WORTH: u64 = 2_500_000;
 /// A viewer that came this recently and never had the low layer moves to
 /// it at once when far short (its first verdict already covers a second).
 const JUST_CAME: Duration = Duration::from_secs(5);
-/// ...unless the main stream is this small anyway (the low layer is about
-/// 1.5 Mbps).
-const LOW_WORTH: u64 = 2_500_000;
 /// On the low layer, the main stream is tried again after this long without
 /// congestion...
 const TRY_MAIN_AFTER: Duration = Duration::from_secs(20);
@@ -58,14 +59,16 @@ const LAYER_KEPT: Duration = Duration::from_secs(10);
 /// the low layer within this; at most this long.
 const TRY_FAILED_WITHIN: Duration = Duration::from_secs(30);
 const TRY_MAIN_MOST: Duration = Duration::from_secs(320);
-/// Viewers with impaired downlinks (losing, limited or dark) ask for
-/// keyframes (for everyone) together at most this often: a few viewers'
-/// losses do not cost the others a keyframe each, and they still get a
-/// chance to catch up...
-const IMPAIRED_KEYFRAME_INTERVAL: Duration = Duration::from_secs(10);
-/// ...and this often while the stream follows the limited majority, or when
-/// no viewer's downlink is sound.
-const FOLLOWED_KEYFRAME_INTERVAL: Duration = Duration::from_secs(2);
+/// Viewers with impaired downlinks (losing, limited or dark) on the main
+/// layer ask for keyframes (for everyone) together at most this often: a
+/// few viewers' losses do not cost the others a keyframe each, and they
+/// still catch up soon (the slow ones are on the low layer)...
+const IMPAIRED_KEYFRAME_INTERVAL: Duration = Duration::from_secs(3);
+/// ...and this often while the stream follows limited viewers, or when no
+/// viewer's downlink is sound.
+const FOLLOWED_KEYFRAME_INTERVAL: Duration = Duration::from_secs(1);
+/// A connection this young is still waiting for its first picture.
+const JOINING: Duration = Duration::from_secs(5);
 /// Lost uplink packets are requested again after this, up to `NACK_TRIES`
 /// times within `NACK_AGE`.
 const NACK_RETRY: Duration = Duration::from_millis(40);
@@ -215,6 +218,11 @@ struct Layer {
     /// When the viewer last had a connection here: its layer outlives a
     /// moment without one (between leaving one and opening the next).
     seen: Instant,
+    /// What its downlink carried when it moved to the low layer (or failed a
+    /// try of the main stream): its connection there is calm on the small
+    /// stream. Kept when the stream comes down to it (its next connection
+    /// starts from it), forgotten once a try carries the main stream.
+    capacity: Option<u64>,
     /// Before the main stream is tried again: copies of recent packets at
     /// its rate show whether the downlink carries it.
     probe: Option<Probe>,
@@ -253,6 +261,7 @@ impl Layer {
             tried_at: None,
             probe: None,
             seen: now,
+            capacity: None,
         }
     }
 
@@ -277,12 +286,24 @@ impl Layer {
                     self.probe = None;
                     self.since = now;
                     self.backoff = (self.backoff * 2).min(TRY_MAIN_MOST);
+                    self.capacity = limit.or(self.capacity);
                     return LayerStep::ProbeFailed;
                 }
                 if probing < PROBE_FOR {
                     return LayerStep::Kept;
                 }
                 self.probe = None;
+                self.low = false;
+                self.since = now;
+                self.tried_at = Some(now);
+                self.capacity = None;
+                return LayerStep::Switched;
+            }
+            // The stream came down to what this viewer carries (most viewers
+            // are as slow): back to it.
+            if let (Some(room), Some(capacity)) = (room, self.capacity)
+                && capacity as f64 >= LOW_SHARE * room.min(main) as f64
+            {
                 self.low = false;
                 self.since = now;
                 self.tried_at = Some(now);
@@ -334,6 +355,7 @@ impl Layer {
         self.low = true;
         self.since = now;
         self.short_since = None;
+        self.capacity = limit;
         LayerStep::Switched
     }
 }
@@ -587,6 +609,19 @@ impl Room {
         }
     }
 
+    /// What viewer `session`'s downlink is known to carry: its connections'
+    /// limits, else what it carried when it moved to the low layer. A new
+    /// connection of the viewer starts from it.
+    pub fn known_capacity(&self, session: &str) -> Option<u64> {
+        let legs = self
+            .legs()
+            .iter()
+            .filter(|leg| super::session_of(&leg.id) == session)
+            .filter_map(|leg| leg.downlink.lock().limit())
+            .min();
+        legs.or_else(|| self.layers.lock().get(session).and_then(|l| l.capacity))
+    }
+
     /// Whether `leg`'s keyframe request goes on (to the per-track merge).
     fn keyframe_allowed(&self, leg: &Leg) -> bool {
         leg.stats.keyframes_asked.fetch_add(1, Ordering::Relaxed);
@@ -599,7 +634,20 @@ impl Room {
     }
 
     fn keyframe_rationed(&self, leg: &Leg) -> bool {
-        if !leg.downlink.lock().impaired() {
+        {
+            let mut downlink = leg.downlink.lock();
+            // Back from an outage: everything since is lost, the picture
+            // waits for this keyframe.
+            if !downlink.impaired() || downlink.take_return() {
+                return true;
+            }
+        }
+        // A new connection waits for its first picture; a low-layer
+        // viewer's keyframes go only to the others as slow as itself.
+        let session = super::session_of(&leg.id);
+        if leg.created.elapsed() < JOINING
+            || self.layers.lock().get(session).is_some_and(|l| l.low)
+        {
             return true;
         }
         let followed = self.limit.lock().is_some();
@@ -758,13 +806,28 @@ impl Room {
                 }
             }
             layers.retain(|_, layer| now.duration_since(layer.seen) < LAYER_KEPT);
-            // Dark downlinks (nothing arrives) are not counted: a lower rate
-            // does not reach them either.
-            let limit = majority_limit(viewers.iter().filter_map(|(session, (_, leg))| {
-                let downlink = leg.downlink.lock();
-                let low = layers.get(session).is_some_and(|l| l.low);
-                (!downlink.dark() && !low).then(|| downlink.limit())
-            }));
+            // What each viewer carries (`None`: any rate): its newest
+            // connection's limit; on the low layer, at most what it carried
+            // when it moved there (that connection, calm on the small
+            // stream, says little more). Dark
+            // downlinks (nothing arrives) are not counted: a lower rate does
+            // not reach them either.
+            let capacities: Vec<(bool, Option<u64>)> = viewers
+                .iter()
+                .filter_map(|(session, (_, leg))| {
+                    let downlink = leg.downlink.lock();
+                    if downlink.dark() {
+                        return None;
+                    }
+                    let low = layers.get(session).filter(|l| l.low);
+                    let capacity = match (downlink.limit(), low.and_then(|l| l.capacity)) {
+                        (Some(limit), Some(known)) => Some(limit.min(known)),
+                        (limit, known) => known.or(limit),
+                    };
+                    Some((low.is_some(), capacity))
+                })
+                .collect();
+            let limit = room_limit(&capacities, main);
             for (session, (_, leg)) in &viewers {
                 let (limit_bps, dark, calm) = {
                     let downlink = leg.downlink.lock();
@@ -875,6 +938,25 @@ impl Room {
     }
 }
 
+/// The forwarded stream's limit for viewers that carry `capacities` (on the
+/// low layer or not; `None`: any rate) while it runs at `main`: what at
+/// least half of them carry, and no more than a viewer on the main layer
+/// only a little short of it carries (the stream comes down by at most a
+/// quarter rather than leave it stalling); `None` when that is any rate.
+fn room_limit(capacities: &[(bool, Option<u64>)], main: u64) -> Option<u64> {
+    let majority = majority_limit(capacities.iter().map(|(_, c)| *c));
+    let near = capacities
+        .iter()
+        .filter(|(low, _)| !low)
+        .filter_map(|(_, c)| *c)
+        .filter(|c| *c as f64 >= LOW_SHARE * main as f64)
+        .min();
+    match (majority, near) {
+        (Some(majority), Some(near)) => Some(majority.min(near)),
+        (majority, near) => majority.or(near),
+    }
+}
+
 /// The rate at least half the viewers carry: a congested viewer's limit,
 /// any rate for the others; `None` when that is any rate.
 fn majority_limit(limits: impl Iterator<Item = Option<u64>>) -> Option<u64> {
@@ -889,7 +971,21 @@ fn majority_limit(limits: impl Iterator<Item = Option<u64>>) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::majority_limit;
+    use super::{majority_limit, room_limit};
+
+    #[test]
+    fn a_viewer_a_little_short_brings_the_stream_down_a_slower_one_does_not() {
+        let main = 8_000_000;
+        // 6.8 of 8 Mbps: the stream follows it.
+        assert_eq!(room_limit(&[(false, None), (false, None), (false, Some(6_800_000))], main), Some(6_800_000));
+        // 4 of 8 Mbps: left to the low layer.
+        assert_eq!(room_limit(&[(false, None), (false, None), (false, Some(4_000_000))], main), None);
+        // Most viewers slow, some of them already on the low layer: followed.
+        assert_eq!(
+            room_limit(&[(false, None), (true, Some(3_400_000)), (false, Some(3_400_000))], main),
+            Some(3_400_000)
+        );
+    }
 
     #[test]
     fn one_slow_viewer_does_not_limit_the_others() {
@@ -919,7 +1015,8 @@ mod tests {
         assert!(layer.update(at(1.0), "a", Some(7_000_000), false, Duration::ZERO, main, None) == LayerStep::Kept);
         // Short of the main stream for SHORT_FOR: the low layer.
         assert!(layer.update(at(2.0), "a", Some(5_000_000), false, Duration::ZERO, main, None) == LayerStep::Kept);
-        assert!(layer.update(at(4.0), "a", Some(5_000_000), false, Duration::ZERO, main, None) == LayerStep::Kept);
+        let halfway = 2.0 + SHORT_FOR.as_secs_f64() / 2.0;
+        assert!(layer.update(at(halfway), "a", Some(5_000_000), false, Duration::ZERO, main, None) == LayerStep::Kept);
         let down = 2.0 + SHORT_FOR.as_secs_f64();
         assert!(layer.update(at(down), "a", Some(5_000_000), false, Duration::ZERO, main, None) == LayerStep::Switched);
         assert!(layer.low);
@@ -971,6 +1068,25 @@ mod tests {
             let now = start + Duration::from_secs_f64(s);
             assert!(layer.update(now, "a", Some(2_500_000), false, Duration::ZERO, 8_000_000, Some(2_600_000)) == LayerStep::Kept);
         }
+        assert!(!layer.low);
+    }
+
+    #[test]
+    fn a_low_viewer_returns_once_the_stream_comes_down_to_it() {
+        use super::{Layer, LayerStep};
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let main = 8_000_000;
+        let mut layer = Layer::new(start);
+        let at = |s: f64| start + Duration::from_secs_f64(s);
+        assert!(layer.update(at(1.2), "a", Some(3_400_000), false, Duration::ZERO, main, None) == LayerStep::Switched);
+        assert!(layer.low);
+        // Still the only slow one: it stays.
+        assert!(layer.update(at(2.0), "b", None, false, Duration::ZERO, main, None) == LayerStep::Kept);
+        // Most viewers are as slow: the stream follows them, and this one
+        // is back on it.
+        let room = Some(3_400_000);
+        assert!(layer.update(at(3.0), "b", None, false, Duration::ZERO, 3_400_000, room) == LayerStep::Switched);
         assert!(!layer.low);
     }
 }

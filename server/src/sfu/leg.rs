@@ -345,6 +345,7 @@ pub(super) struct Leg {
     /// The video tracks (SSRCs) this leg receives.
     pub video: Vec<u32>,
     pub tasks: Mutex<Vec<JoinHandle<()>>>,
+    pub created: Instant,
 }
 
 impl Leg {
@@ -376,6 +377,7 @@ impl Leg {
             superseded: std::sync::atomic::AtomicBool::new(false),
             video,
             tasks: Mutex::default(),
+            created: Instant::now(),
         });
         (leg, packets)
     }

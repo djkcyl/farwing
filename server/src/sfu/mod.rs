@@ -484,6 +484,11 @@ impl Sfu {
                 }
             })
         }));
+        // The viewer's downlink is what its other connection learnt (a new
+        // layer's connection would otherwise start unlimited).
+        if let Some(limit) = room.known_capacity(session_of(leg_id)) {
+            leg.downlink.lock().inherit(limit);
+        }
         let old = room.legs.write().insert(leg_id.to_owned(), leg);
         if let Some(old) = old {
             old.close().await;

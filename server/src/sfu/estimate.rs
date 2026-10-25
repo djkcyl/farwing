@@ -36,6 +36,8 @@ const QUEUEING: Duration = Duration::from_millis(60);
 const DELAY_WINDOW: Duration = Duration::from_secs(10);
 /// Sent packets of which none arrived for this long: the downlink is dark.
 const DARK_AFTER: Duration = Duration::from_secs(1);
+/// A downlink that was dark until this long ago has just come back.
+const BACK_WITHIN: Duration = Duration::from_secs(5);
 /// Arrivals over this long give the capacity of a full downlink...
 const ARRIVAL_WINDOW: Duration = Duration::from_millis(300);
 /// ...from at least this many packets over at least this long.
@@ -82,6 +84,8 @@ pub(super) struct Downlink {
     queueing: Duration,
     last_sent: Option<Instant>,
     last_delivered: Option<Instant>,
+    /// When the downlink was last seen dark, until its return is noticed.
+    dark_at: Option<Instant>,
 }
 
 impl Downlink {
@@ -133,6 +137,7 @@ impl Downlink {
             queueing: Duration::ZERO,
             last_sent: None,
             last_delivered: None,
+            dark_at: None,
             congested_at: None,
             relaxed_at: origin,
             reported: VecDeque::new(),
@@ -357,6 +362,9 @@ impl Downlink {
             pacer_queue: None,
         });
         let now = Instant::now();
+        if self.dark() {
+            self.dark_at = Some(now);
+        }
         trim(&mut self.reported, now);
         let Some(limit) = self.limit else { return };
         let calm = self
@@ -412,6 +420,16 @@ impl Downlink {
             && self.first_report.is_some()
     }
 
+    /// The downlink was dark (an outage, a roaming Wi-Fi) and has just come
+    /// back; says so once.
+    pub fn take_return(&mut self) -> bool {
+        let back = !self.dark() && self.dark_at.is_some_and(|at| at.elapsed() < BACK_WITHIN);
+        if back {
+            self.dark_at = None;
+        }
+        back
+    }
+
     /// The downlink loses, is limited or dark: its viewer's keyframe
     /// requests are rationed.
     pub fn impaired(&self) -> bool {
@@ -422,6 +440,15 @@ impl Downlink {
     /// created, if never).
     pub fn calm_for(&self) -> Duration {
         self.congested_at.unwrap_or(self.origin).elapsed()
+    }
+
+    /// The viewer's other connection found its downlink carries `limit`:
+    /// start from it rather than from nothing.
+    pub fn inherit(&mut self, limit: u64) {
+        let now = Instant::now();
+        self.limit = Some(limit as f64);
+        self.congested_at = Some(now);
+        self.relaxed_at = now;
     }
 
     /// The most this leg carries while it is congested.
