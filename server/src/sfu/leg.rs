@@ -337,7 +337,13 @@ pub(super) struct Leg {
     /// The viewer's downlink, from its transport-wide feedback.
     pub downlink: Mutex<super::estimate::Downlink>,
     /// A development emulation of the viewer's downlink.
-    emulator: Option<Mutex<super::emulate::Emulator>>,
+    /// Shared by the legs of one viewer: they share its downlink.
+    emulator: Option<Arc<Mutex<super::emulate::Emulator>>>,
+    /// A newer leg of the viewer carries the low layer: this one gets
+    /// nothing more, so as not to crowd the downlink that one is for.
+    pub superseded: std::sync::atomic::AtomicBool,
+    /// The video tracks (SSRCs) this leg receives.
+    pub video: Vec<u32>,
     pub tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
@@ -348,7 +354,8 @@ impl Leg {
         tap: Arc<Tap>,
         rewrite: Rewrite,
         tcc: Option<u8>,
-        emulator: Option<super::emulate::Emulator>,
+        emulator: Option<Arc<Mutex<super::emulate::Emulator>>>,
+        video: Vec<u32>,
     ) -> (Arc<Self>, mpsc::Receiver<Packet>) {
         let (queue, packets) = mpsc::channel(QUEUE);
         let leg = Arc::new(Self {
@@ -365,13 +372,18 @@ impl Leg {
             reports: Mutex::default(),
             stats: LegStats::default(),
             downlink: Mutex::new(super::estimate::Downlink::new()),
-            emulator: emulator.map(Mutex::new),
+            emulator,
+            superseded: std::sync::atomic::AtomicBool::new(false),
+            video,
             tasks: Mutex::default(),
         });
         (leg, packets)
     }
 
     pub fn push(&self, packet: Packet) {
+        if self.superseded.load(Ordering::Relaxed) {
+            return;
+        }
         if self.queue.try_send(packet).is_err() {
             self.stats.dropped.fetch_add(1, Ordering::Relaxed);
         }
@@ -477,6 +489,17 @@ impl Leg {
             }
             repaired.insert(key, now);
         }
+        self.stats.repairs.fetch_add(1, Ordering::Relaxed);
+        Some(self.retransmission(original, rtx_ssrc, rtx_pt))
+    }
+
+    /// A copy of `original` as a retransmission that the viewer discards
+    /// (it has the packet): probe traffic (`Room::probe`).
+    pub fn probe_copy(&self, original: &Packet, rtx_ssrc: u32, rtx_pt: u8) -> Packet {
+        self.retransmission(original, rtx_ssrc, rtx_pt)
+    }
+
+    fn retransmission(&self, original: &Packet, rtx_ssrc: u32, rtx_pt: u8) -> Packet {
         let mut packet = original.clone();
         let mut payload = Vec::with_capacity(original.payload.len() + 2);
         payload.extend_from_slice(&original.header.sequence_number.to_be_bytes());
@@ -491,8 +514,7 @@ impl Leg {
             *seq = seq.wrapping_add(1);
             current
         };
-        self.stats.repairs.fetch_add(1, Ordering::Relaxed);
-        Some(packet)
+        packet
     }
 
     /// A host sender report passed on to this viewer.

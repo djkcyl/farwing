@@ -1182,6 +1182,7 @@ impl ServerApi {
         &self,
         room: &str,
         session: &str,
+        connection: u32,
         offer: String,
         tracks: Option<Vec<String>>,
     ) -> Result<wire::Subscription> {
@@ -1190,6 +1191,7 @@ impl ServerApi {
             &path::sfu_subscribe(room),
             json(&wire::SubscribeRequest {
                 session: session.to_owned(),
+                connection,
                 offer,
                 tracks,
             })?,
@@ -1199,10 +1201,15 @@ impl ServerApi {
         .await
     }
 
-    pub(crate) async fn sfu_unsubscribe(&self, room: &str, session: &str) -> Result<()> {
+    pub(crate) async fn sfu_unsubscribe(
+        &self,
+        room: &str,
+        session: &str,
+        connection: u32,
+    ) -> Result<()> {
         self.call::<IgnoredAny>(
             Method::DELETE,
-            &path::sfu_subscription(room, session),
+            &path::sfu_subscription(room, session, connection),
             Body::None,
             REQUEST_TIMEOUT,
             Auth::Session,

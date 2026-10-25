@@ -76,7 +76,7 @@ async fn subscribe(srv: &TestServer, room: &str, dev: &Dev, sid: &str) -> (rtc::
         .post(
             &format!("/api/v2/sfu/rooms/{room}/subscribe"),
             dev,
-            json!({"session": sid, "offer": offer}),
+            json!({"session": sid, "connection": 1, "offer": offer}),
         )
         .await;
     viewer.answer(r.ok()["answer"].as_str().unwrap().to_owned()).await;
@@ -153,7 +153,7 @@ async fn a_host_forwards_to_the_sessions_it_hosts() {
     srv.post(
         &format!("/api/v2/sfu/rooms/{room}/subscribe"),
         c2,
-        json!({"session": sid1, "offer": offer}),
+        json!({"session": sid1, "connection": 1, "offer": offer}),
     )
     .await
     .err(404, "not_found");
@@ -162,7 +162,7 @@ async fn a_host_forwards_to_the_sessions_it_hosts() {
         .post(
             &format!("/api/v2/sfu/rooms/{room}/subscribe"),
             c2,
-            json!({"session": sid2, "offer": rtc::viewer(1, 1).await.0.offer().await}),
+            json!({"session": sid2, "connection": 1, "offer": rtc::viewer(1, 1).await.0.offer().await}),
         )
         .await;
     assert_eq!(r.ok()["mode"], "e2ee");
@@ -197,7 +197,7 @@ async fn a_host_forwards_to_the_sessions_it_hosts() {
     srv.post(
         &format!("/api/v2/sfu/rooms/{room}/subscribe"),
         c1,
-        json!({"session": sid1, "offer": rtc::viewer(1, 1).await.0.offer().await}),
+        json!({"session": sid1, "connection": 1, "offer": rtc::viewer(1, 1).await.0.offer().await}),
     )
     .await
     .err(404, "not_found");

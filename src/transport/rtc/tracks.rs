@@ -62,13 +62,13 @@ pub(crate) struct VideoTrackSource {
 }
 
 /// Which connection's frames of a track reach the decoder: the host's
-/// (direct) or the forwarder's. Both may carry the track for a while; the
-/// one wanted takes over at its first keyframe, so the picture never waits
-/// for a switch.
+/// (source 0) or forwarder connection n's (source n). Two may carry the
+/// track for a while; the one wanted takes over at its first keyframe, so
+/// the picture never waits for a switch.
 pub(crate) struct PicturePath {
-    forwarded: AtomicBool,
-    wanted: AtomicBool,
-    changed: watch::Sender<bool>,
+    shown: AtomicU64,
+    wanted: AtomicU64,
+    changed: watch::Sender<u64>,
     /// The track's statistics: whether a switch is pending (the viewer
     /// covers a picture held by one).
     performance: PerformanceMonitor,
@@ -77,57 +77,57 @@ pub(crate) struct PicturePath {
 impl PicturePath {
     pub(super) fn new(performance: PerformanceMonitor) -> Self {
         Self {
-            forwarded: AtomicBool::new(false),
-            wanted: AtomicBool::new(false),
-            changed: watch::channel(false).0,
+            shown: AtomicU64::new(0),
+            wanted: AtomicU64::new(0),
+            changed: watch::channel(0).0,
             performance,
         }
     }
 
-    /// The forwarder's frames (`true`) or the host's should be shown.
-    pub(super) fn want(&self, forwarded: bool) {
-        self.wanted.store(forwarded, Ordering::Release);
+    /// Source `source`'s frames should be shown.
+    pub(super) fn want(&self, source: u64) {
+        self.wanted.store(source, Ordering::Release);
         self.performance
-            .set_switch_pending(self.forwarded.load(Ordering::Acquire) != forwarded);
+            .set_switch_pending(self.shown.load(Ordering::Acquire) != source);
     }
 
-    /// Whether the forwarder's frames are shown now.
-    pub(super) fn forwarded(&self) -> bool {
-        self.forwarded.load(Ordering::Acquire)
+    /// The source whose frames are shown now.
+    pub(super) fn shown(&self) -> u64 {
+        self.shown.load(Ordering::Acquire)
     }
 
-    /// Follows which connection's frames are shown.
-    pub(super) fn watch(&self) -> watch::Receiver<bool> {
+    /// Follows which source's frames are shown.
+    pub(super) fn watch(&self) -> watch::Receiver<u64> {
         self.changed.subscribe()
     }
 
-    /// Whether a frame from the forwarder (`forwarded`) or the host goes on
-    /// to the decoder; a keyframe of the wanted one takes over.
-    pub(super) fn admit(&self, forwarded: bool, keyframe: bool) -> bool {
-        let shown = self.forwarded.load(Ordering::Acquire);
-        if shown == forwarded {
+    /// Whether a frame from `source` goes on to the decoder; a keyframe of
+    /// the wanted one takes over.
+    pub(super) fn admit(&self, source: u64, keyframe: bool) -> bool {
+        let shown = self.shown.load(Ordering::Acquire);
+        if shown == source {
             return true;
         }
-        if !keyframe || self.wanted.load(Ordering::Acquire) != forwarded {
+        if !keyframe || self.wanted.load(Ordering::Acquire) != source {
             return false;
         }
         if self
-            .forwarded
-            .compare_exchange(shown, forwarded, Ordering::AcqRel, Ordering::Acquire)
+            .shown
+            .compare_exchange(shown, source, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            tracing::info!(forwarded, "the picture comes through the other connection now");
+            tracing::info!(source, "the picture comes through another connection now");
             self.performance.set_switch_pending(false);
-            self.changed.send_replace(forwarded);
+            self.changed.send_replace(source);
         }
         true
     }
 
-    /// Whether that connection's frames are shown or should be: only then
-    /// does it ask for keyframes.
-    pub(super) fn needed(&self, forwarded: bool) -> bool {
-        self.forwarded.load(Ordering::Acquire) == forwarded
-            || self.wanted.load(Ordering::Acquire) == forwarded
+    /// Whether `source`'s frames are shown or should be: only then does it
+    /// ask for keyframes.
+    pub(super) fn needed(&self, source: u64) -> bool {
+        self.shown.load(Ordering::Acquire) == source
+            || self.wanted.load(Ordering::Acquire) == source
     }
 }
 
@@ -368,23 +368,29 @@ mod tests {
     #[test]
     fn the_wanted_connection_takes_over_at_its_keyframe() {
         let picture = PicturePath::new(crate::diagnostics::performance::PerformanceMonitor::new(""));
-        assert!(picture.admit(false, false));
+        assert!(picture.admit(0, false));
         // Joining a room: the forwarder's frames wait for a keyframe while
         // the host's go on.
-        picture.want(true);
-        assert!(!picture.admit(true, false));
-        assert!(picture.admit(false, false));
-        assert!(picture.needed(true) && picture.needed(false));
-        assert!(picture.admit(true, true));
-        assert!(picture.forwarded());
-        assert!(!picture.admit(false, true));
-        assert!(!picture.needed(false));
+        picture.want(1);
+        assert!(!picture.admit(1, false));
+        assert!(picture.admit(0, false));
+        assert!(picture.needed(1) && picture.needed(0));
+        assert!(picture.admit(1, true));
+        assert_eq!(picture.shown(), 1);
+        assert!(!picture.admit(0, true));
+        assert!(!picture.needed(0));
+        // Another layer through a second connection.
+        picture.want(2);
+        assert!(picture.admit(1, false));
+        assert!(!picture.admit(2, false));
+        assert!(picture.admit(2, true));
+        assert!(!picture.admit(1, true) && !picture.needed(1));
         // Leaving: back to the host's at its keyframe.
-        picture.want(false);
-        assert!(picture.admit(true, false));
-        assert!(!picture.admit(false, false));
-        assert!(picture.admit(false, true));
-        assert!(!picture.forwarded());
-        assert!(!picture.admit(true, true));
+        picture.want(0);
+        assert!(picture.admit(2, false));
+        assert!(!picture.admit(0, false));
+        assert!(picture.admit(0, true));
+        assert_eq!(picture.shown(), 0);
+        assert!(!picture.admit(2, true));
     }
 }

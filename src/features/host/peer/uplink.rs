@@ -54,18 +54,43 @@ const LIMIT_LAPSE: Duration = Duration::from_secs(1);
 #[derive(Default)]
 struct Limit {
     latest: Mutex<Option<(u32, Instant)>>,
-    /// Uplink tracks sending, which share the limit.
+    /// Main-layer uplink tracks sending, which share the limit.
     tracks: AtomicUsize,
+    /// The viewer sessions the forwarder gives the low layer, and when it
+    /// last said so (`deployment-design.md` §5.5).
+    low: Mutex<(Vec<String>, Option<Instant>)>,
 }
 
 impl Limit {
     fn set(&self, bps: u32) {
         let mut latest = lock(&self.latest);
         let previous = latest.filter(|(_, at)| at.elapsed() < LIMIT_LAPSE);
+        // The forwarder repeats "any rate" as the largest one.
+        if bps == u32::MAX {
+            if previous.is_some() {
+                tracing::info!("the forwarder no longer limits the forwarded streams");
+            }
+            *latest = None;
+            return;
+        }
         if previous.is_none_or(|(old, _)| bps < old / 4 * 3 || bps > old / 3 * 4) {
             tracing::info!(limit_bps = bps, "the forwarder limits the forwarded streams");
         }
         *latest = Some((bps, Instant::now()));
+    }
+
+    fn set_low(&self, sessions: Vec<String>) {
+        let mut low = lock(&self.low);
+        if low.0 != sessions {
+            tracing::info!(?sessions, "the forwarder's low layer viewers");
+        }
+        *low = (sessions, Some(Instant::now()));
+    }
+
+    /// Whether the forwarder gives session `session` the low layer.
+    fn low(&self, session: &str) -> bool {
+        let low = lock(&self.low);
+        low.1.is_some_and(|at| at.elapsed() < LIMIT_LAPSE * 2) && low.0.iter().any(|s| s == session)
     }
 
     /// One track's share of the limit, while there is one.
@@ -96,6 +121,8 @@ impl Owner for UplinkOwner {
 
 struct Running {
     serial: u64,
+    /// The forwarder's low layer: its own budget, not a share of the limit.
+    low: bool,
     cancel: CancellationToken,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     observer: Option<std::thread::JoinHandle<()>>,
@@ -363,6 +390,12 @@ impl Uplink {
                         zero_transport.feedback(feedback);
                     } else if let Some(remb) = report.as_any().downcast_ref::<webrtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate>() {
                         zero_limit.set(remb.bitrate.clamp(0.0, u32::MAX as f32) as u32);
+                    } else if let Some(sessions) = report
+                        .as_any()
+                        .downcast_ref::<webrtc::rtcp::raw_packet::RawPacket>()
+                        .and_then(farwing_rtc_wire::layers::parse)
+                    {
+                        zero_limit.set_low(sessions);
                     }
                 }
             }
@@ -405,6 +438,11 @@ impl Uplink {
             sound.configure(audio);
         }
         Ok(())
+    }
+
+    /// Whether the forwarder gives viewer session `session` the low layer.
+    pub(crate) fn low(&self, session: &str) -> bool {
+        self.limit.low(session)
     }
 
     /// The uplink carries the host's sound.
@@ -469,7 +507,10 @@ impl Uplink {
             }
         }
         self.limit.tracks.store(
-            slots.iter().filter(|s| s.running.is_some()).count(),
+            slots
+                .iter()
+                .filter(|s| s.running.as_ref().is_some_and(|r| !r.low))
+                .count(),
             Ordering::Relaxed,
         );
         mapping
@@ -544,6 +585,7 @@ fn start(
         },
         frames,
     );
+    let low = group.group.key().low;
     let mut membership = REGISTRY.observe(&group.group);
     let transport = slot.transport.clone();
     let observer_cancel = cancel.clone();
@@ -576,8 +618,9 @@ fn start(
                 // The forwarder's limit: participants who cannot carry it
                 // stall rather than lower everyone's picture.
                 let peak = transport.media_rate();
+                let cap = (!low).then(|| limit.per_track()).flatten();
                 membership.vote(ready.then(|| encode_group::Vote {
-                    peak: limit.per_track().map_or(peak, |cap| peak.min(cap)),
+                    peak: cap.map_or(peak, |cap| peak.min(cap)),
                     ratio: transport.cwnd_ratio(),
                     fps: 0,
                 }));
@@ -621,6 +664,7 @@ fn start(
         .ok();
     Running {
         serial: group.group.serial(),
+        low,
         cancel,
         tasks: vec![reports, feedback, sending],
         observer,

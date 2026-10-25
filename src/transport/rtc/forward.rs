@@ -61,10 +61,10 @@ fn pictures(context: &HostSide, tracks: &[(u32, String)]) -> Vec<Arc<super::trac
         .collect()
 }
 
-/// Until the forwarder's frames (`forwarded`) or the host's are shown.
-async fn shown(picture: &super::tracks::PicturePath, forwarded: bool) {
+/// Until source `source`'s frames are shown (0: the host's).
+async fn shown(picture: &super::tracks::PicturePath, source: u64) {
     let mut changes = picture.watch();
-    while picture.forwarded() != forwarded {
+    while picture.shown() != source {
         if changes.changed().await.is_err() {
             return;
         }
@@ -84,6 +84,9 @@ pub(super) struct HostSide {
 }
 
 struct Active {
+    /// This viewer's connection number (from 1): its leg on the forwarder
+    /// and the picture's source.
+    number: u32,
     room: String,
     tracks: Vec<(u32, String)>,
     /// The forwarder's sound track; empty when the sound stays direct.
@@ -100,6 +103,8 @@ struct Active {
 #[derive(Default)]
 pub(crate) struct Forwarding {
     active: StdMutex<Option<Active>>,
+    /// Connections opened so far.
+    opened: std::sync::atomic::AtomicU32,
 }
 
 impl Forwarding {
@@ -150,8 +155,9 @@ impl Forwarding {
                 context.stream_control.forward_status(status);
                 continue;
             }
-            // Other tracks of the same room: the old connection plays on until
-            // the forwarder replaces it with the new one.
+            // Other tracks of the same room (another layer, another screen):
+            // the old connection plays on until the new one's picture takes
+            // over.
             let (replaced, left) = match self.take() {
                 Some(old) if old.room == instruction.room => (Some(old), None),
                 old => (None, old),
@@ -160,17 +166,17 @@ impl Forwarding {
                 // The forwarder's picture stays until the host's is back.
                 let pictures = pictures(&context, &old.tracks);
                 for picture in &pictures {
-                    picture.want(false);
+                    picture.want(0);
                 }
                 let (api, session) = (api.clone(), session.clone());
                 tokio::spawn(async move {
                     let back = futures_util::future::join_all(
-                        pictures.iter().map(|picture| shown(picture, false)),
+                        pictures.iter().map(|picture| shown(picture, 0)),
                     );
                     let _ = tokio::time::timeout(LEAVE_WAIT, back).await;
                     old.stop.cancel();
                     let _ = old.connection.close().await;
-                    let _ = api.sfu_unsubscribe(&old.room, &session).await;
+                    let _ = api.sfu_unsubscribe(&old.room, &session, old.number).await;
                     tracing::info!(room = %old.room, "left the forwarding room");
                 });
             }
@@ -191,12 +197,16 @@ impl Forwarding {
                         "cannot receive through the forwarder");
                     let tracks: Vec<(u32, String)> =
                         instruction.tracks.iter().map(|t| (t.index, t.track.clone())).collect();
-                    for picture in pictures(&context, &tracks) {
-                        picture.want(false);
-                    }
                     if let Some(old) = self.take() {
                         old.stop.cancel();
                         let _ = old.connection.close().await;
+                        let _ = api.sfu_unsubscribe(&old.room, &session, old.number).await;
+                    }
+                    // The picture stays with what showed it, the host's
+                    // stream or the room's old connection.
+                    let before = replaced.as_ref().map_or(0, |old| u64::from(old.number));
+                    for picture in pictures(&context, &tracks) {
+                        picture.want(before);
                     }
                     ForwardStatus {
                         generation: instruction.generation,
@@ -206,8 +216,15 @@ impl Forwarding {
                 }
             };
             if let Some(old) = replaced {
-                old.stop.cancel();
-                let _ = old.connection.close().await;
+                if status.receiving {
+                    old.stop.cancel();
+                    let _ = old.connection.close().await;
+                    let _ = api.sfu_unsubscribe(&old.room, &session, old.number).await;
+                } else {
+                    // The host sends directly again; the old connection is
+                    // left once its picture is back.
+                    *std_mutex_lock(&self.active) = Some(old);
+                }
             }
             context.stream_control.forward_status(status);
         }
@@ -253,9 +270,11 @@ impl Forwarding {
         // The forwarder's frames take over at their first keyframe.
         let tracks: Vec<(u32, String)> =
             instruction.tracks.iter().map(|t| (t.index, t.track.clone())).collect();
+        let number = self.opened.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let source = u64::from(number);
         let pictures = pictures(context, &tracks);
         for picture in &pictures {
-            picture.want(true);
+            picture.want(source);
         }
         let mut media = MediaEngine::default();
         super::negotiation::register_codecs(&mut media)?;
@@ -353,7 +372,7 @@ impl Forwarding {
                     tracing::debug!(track = %track.id(), "unexpected forwarded track");
                     return Box::pin(async {});
                 };
-                let Some(source) = context.tracks.get(index) else {
+                let Some(track_source) = context.tracks.get(index) else {
                     tracing::warn!(index, "forwarded track for a track this viewer does not have");
                     return Box::pin(async {});
                 };
@@ -403,8 +422,8 @@ impl Forwarding {
                     let _ = send_picture_loss_indication(&connection, track.ssrc()).await;
                     forward_remote_track(
                         track,
-                        source.started.subscribe(),
-                        source.keyframe_tx.clone(),
+                        track_source.started.subscribe(),
+                        track_source.keyframe_tx.clone(),
                         TrackForwardContext {
                             forwarded: true,
                             workers: context.workers.clone(),
@@ -422,8 +441,8 @@ impl Forwarding {
                             audio: context.stream_control.audio(),
                             audio_generation: None,
                             connection,
-                            video_annexb_sinks: Arc::clone(&source.sinks),
-                            performance: source.performance.clone(),
+                            video_annexb_sinks: Arc::clone(&track_source.sinks),
+                            performance: track_source.performance.clone(),
                             nack_rtt_micros: Arc::new(AtomicU64::new(
                                 RTP_DEFAULT_RTT.as_micros() as u64,
                             )),
@@ -432,7 +451,8 @@ impl Forwarding {
                             receiver_feedback_sender: feedback,
                             stream_control: context.stream_control.clone(),
                             decrypt,
-                            picture: source.picture.clone(),
+                            picture: track_source.picture.clone(),
+                            source,
                         },
                     )
                     .await;
@@ -441,6 +461,7 @@ impl Forwarding {
             }));
         }
         *std_mutex_lock(&self.active) = Some(Active {
+            number,
             room: instruction.room.clone(),
             audio: instruction.audio.clone(),
             tracks: instruction
@@ -473,7 +494,7 @@ impl Forwarding {
             .chain((!instruction.audio.is_empty()).then(|| instruction.audio.clone()))
             .collect();
         let subscription = api
-            .sfu_subscribe(&instruction.room, session, offer, Some(tracks))
+            .sfu_subscribe(&instruction.room, session, number, offer, Some(tracks))
             .await
             .context("subscribe to the forwarding room")?;
         connection
@@ -491,7 +512,7 @@ impl Forwarding {
                 if !up {
                     *since = Instant::now();
                 } else if since.elapsed() >= KEYFRAME_AGAIN
-                    && pictures.iter().any(|p| !p.forwarded())
+                    && pictures.iter().any(|p| p.shown() != source)
                 {
                     *since = Instant::now();
                     let ssrcs: Vec<u32> = std_mutex_lock(&ssrcs_wanted).values().copied().collect();
@@ -502,7 +523,7 @@ impl Forwarding {
                 }
                 // Done once the pictures come through the forwarder (the
                 // host's stream stops then); a track may lag a little.
-                let switched = pictures.iter().filter(|p| p.forwarded()).count();
+                let switched = pictures.iter().filter(|p| p.shown() == source).count();
                 if switched > 0 {
                     switched_at.get_or_insert_with(Instant::now);
                 }

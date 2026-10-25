@@ -67,8 +67,10 @@ pub(super) struct TrackForwardContext {
     pub(super) stream_control: crate::features::stream_control::StreamControlHandle,
     /// End-to-end forwarding: frames are decrypted before decoding.
     pub(super) decrypt: Option<Arc<StdMutex<crate::media::frame_crypto::Decryptor>>>,
-    /// Whether this connection's frames of the track are shown.
+    /// Whether this connection's frames of the track are shown; `source`
+    /// names the connection (0: the host's).
     pub(super) picture: Arc<super::tracks::PicturePath>,
+    pub(super) source: u64,
 }
 
 pub(super) async fn forward_remote_track(
@@ -103,6 +105,7 @@ pub(super) async fn forward_remote_track(
         stream_control,
         decrypt,
         picture,
+        source,
     } = context;
 
     if kind == MediaKind::Video {
@@ -137,6 +140,7 @@ pub(super) async fn forward_remote_track(
             decrypt,
             forwarded,
             picture,
+            source,
         )
         .await;
         return;
@@ -221,6 +225,7 @@ pub(super) async fn forward_video_track(
     decrypt: Option<Arc<StdMutex<crate::media::frame_crypto::Decryptor>>>,
     forwarded: bool,
     picture: Arc<super::tracks::PicturePath>,
+    source: u64,
 ) {
     let mut ingress = match OrderedVideoIngress::open(&track).await {
         Ok(ingress) => ingress,
@@ -467,7 +472,7 @@ pub(super) async fn forward_video_track(
                     nack_requester.outstanding(),
                     nack_requester.final_lost_packets(),
                 );
-                rtcp_feedback.request_keyframe &= picture.needed(forwarded);
+                rtcp_feedback.request_keyframe &= picture.needed(source);
                 rtcp_feedback.flush(&connection, track.ssrc()).await;
             }
             Event::ReceiverDeadline => {
@@ -494,7 +499,7 @@ pub(super) async fn forward_video_track(
                     receiver.recovery_snapshot(),
                     decrypt.as_deref(),
                     &picture,
-                    forwarded,
+                    source,
                 )
                 .await;
             }
@@ -528,7 +533,7 @@ pub(super) async fn forward_video_track(
                     receiver.recovery_snapshot(),
                     decrypt.as_deref(),
                     &picture,
-                    forwarded,
+                    source,
                 )
                 .await;
             }
@@ -803,7 +808,7 @@ pub(super) async fn forward_video_track(
                     // Parameter failure overrides this packet's buffered NACK.
                     // Packet-buffer/complete-frame feedback occurs after this flush.
                     rtcp_feedback.request_keyframe |= !prepared;
-                    rtcp_feedback.request_keyframe &= picture.needed(forwarded);
+                    rtcp_feedback.request_keyframe &= picture.needed(source);
                     rtcp_feedback.flush(&connection, track.ssrc()).await;
                     result = if prepared {
                         receiver.receive_prepared(parsed)
@@ -841,7 +846,7 @@ pub(super) async fn forward_video_track(
                     receiver.recovery_snapshot(),
                     decrypt.as_deref(),
                     &picture,
-                    forwarded,
+                    source,
                 )
                 .await;
 
@@ -901,7 +906,7 @@ pub(super) async fn emit_video_receiver_result(
     snapshot: Option<crate::transport::video_receiver::recovery::Snapshot>,
     decrypt: Option<&StdMutex<crate::media::frame_crypto::Decryptor>>,
     picture: &super::tracks::PicturePath,
-    forwarded: bool,
+    source: u64,
 ) {
     if let Some(meta) = result.decoded_meta {
         loss_recovery.decoded(meta, result.marked_ltr, snapshot);
@@ -918,7 +923,7 @@ pub(super) async fn emit_video_receiver_result(
     // one from a connection whose frames are not shown: asking would cost
     // every forwarded viewer one.
     if result.request_keyframe
-        && picture.needed(forwarded)
+        && picture.needed(source)
         && !video_sinks.lock().await.is_empty()
     {
         tracing::debug!(media_ssrc, "the frame assembler asks for a keyframe");
@@ -929,7 +934,7 @@ pub(super) async fn emit_video_receiver_result(
     for frame in result.frames {
         // The other connection's frames are shown: this one's are dropped
         // (completed undecoded) until it takes over at a keyframe.
-        if !picture.admit(forwarded, frame.keyframe) {
+        if !picture.admit(source, frame.keyframe) {
             drop(DecodeCompletion::new(frame.frame_id, receiver_feedback_sender.clone()));
             continue;
         }

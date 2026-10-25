@@ -407,6 +407,12 @@ impl Downlink {
         self.limit.is_some() || self.loss() > IMPAIRED_LOSS || self.dark()
     }
 
+    /// How long the downlink has gone without congestion (since it was
+    /// created, if never).
+    pub fn calm_for(&self) -> Duration {
+        self.congested_at.unwrap_or(self.origin).elapsed()
+    }
+
     /// The most this leg carries while it is congested.
     pub fn limit(&self) -> Option<u64> {
         self.limit.map(|l| l as u64)

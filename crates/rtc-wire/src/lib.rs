@@ -191,3 +191,67 @@ pub fn register_header_extensions(
     }
     Ok(())
 }
+
+/// The forwarder's layer report to the host (RTCP APP, RFC 3550 §6.7, name
+/// `FWLO`), sent with its limit on SSRC 0: the viewer sessions whose
+/// downlinks cannot carry the main stream and get the low layer
+/// (`docs/protocol/deployment-design.md` §5.5).
+pub mod layers {
+    use webrtc::rtcp::raw_packet::RawPacket;
+
+    const NAME: &[u8; 4] = b"FWLO";
+    const APP: u8 = 204;
+
+    /// The report naming `sessions`.
+    pub fn report(sessions: &[String]) -> RawPacket {
+        let mut body = sessions.join("\n").into_bytes();
+        while body.len() % 4 != 0 {
+            body.push(0);
+        }
+        let words = (8 + body.len()) / 4;
+        let mut packet = Vec::with_capacity(4 + words * 4);
+        packet.extend_from_slice(&[0x80, APP]);
+        packet.extend_from_slice(&(words as u16).to_be_bytes());
+        packet.extend_from_slice(&0u32.to_be_bytes());
+        packet.extend_from_slice(NAME);
+        packet.extend_from_slice(&body);
+        RawPacket(packet.into())
+    }
+
+    /// The sessions a report names; `None` for other packets.
+    pub fn parse(packet: &RawPacket) -> Option<Vec<String>> {
+        let bytes = &packet.0;
+        if bytes.len() < 12 || bytes[1] != APP || &bytes[8..12] != NAME {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&bytes[12..]);
+        Some(
+            text.trim_end_matches('\0')
+                .split('\n')
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use webrtc::util::marshal::{Marshal, Unmarshal};
+
+        #[test]
+        fn a_report_survives_the_wire() {
+            let sessions = vec!["a1b2".to_owned(), "c3d4e".to_owned()];
+            let wire = super::report(&sessions).marshal().unwrap();
+            assert_eq!(wire.len() % 4, 0);
+            let packets = webrtc::rtcp::packet::unmarshal(&mut wire.clone()).unwrap();
+            let raw = packets[0]
+                .as_any()
+                .downcast_ref::<webrtc::rtcp::raw_packet::RawPacket>()
+                .unwrap();
+            assert_eq!(super::parse(raw), Some(sessions));
+            let empty = super::report(&[]).marshal().unwrap();
+            let raw = webrtc::rtcp::raw_packet::RawPacket::unmarshal(&mut empty.clone()).unwrap();
+            assert_eq!(super::parse(&raw), Some(Vec::new()));
+        }
+    }
+}

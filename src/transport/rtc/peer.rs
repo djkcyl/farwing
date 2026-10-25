@@ -862,6 +862,7 @@ impl NativePeer {
                                 stream_control,
                                 decrypt: None,
                                 picture,
+                                source: 0,
                             },
                         )
                         .await;

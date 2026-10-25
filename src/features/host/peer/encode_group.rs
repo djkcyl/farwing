@@ -50,6 +50,9 @@ pub(super) struct Key {
     /// Non-zero: this member encodes alone for now (a lossy keyframe-only
     /// viewer), each isolated member with its own number.
     pub isolated: u64,
+    /// The forwarder's low layer (`deployment-design.md` §5.5): a smaller,
+    /// slower stream for viewers whose downlinks cannot carry the main one.
+    pub low: bool,
 }
 
 /// A member's allowance for the next frame.
@@ -112,7 +115,9 @@ pub(super) fn choose(groups: &[(Key, (u32, u32))], wanted: &Key, size: (u32, u32
     groups
         .iter()
         .enumerate()
-        .filter(|(_, (key, _))| key.screen == wanted.screen && key.format == wanted.format)
+        .filter(|(_, (key, _))| {
+            key.screen == wanted.screen && key.format == wanted.format && key.low == wanted.low
+        })
         .min_by_key(|(_, (key, group_size))| {
             let same_encoder = key.adapter == wanted.adapter && key.backend == wanted.backend;
             let larger = area(*group_size) > area(size);
@@ -671,6 +676,7 @@ mod tests {
             quality,
             bitrate: 0,
             isolated: 0,
+            low: false,
         }
     }
 

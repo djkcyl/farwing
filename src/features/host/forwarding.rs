@@ -69,6 +69,8 @@ pub(crate) struct Flags {
     /// The participant shows the forwarder's picture: its own media stops.
     /// Until then it keeps it, so switching costs the picture nothing.
     pub(crate) receiving: AtomicBool,
+    /// The forwarder gives the participant the low layer (§5.5).
+    pub(crate) low: AtomicBool,
 }
 
 struct Entry {
@@ -267,6 +269,7 @@ impl Drop for Registration {
 fn direct(entry: &mut Entry, generation: &mut u32) {
     entry.forwarded.receiving.store(false, Ordering::Release);
     entry.forwarded.in_room.store(false, Ordering::Release);
+    entry.forwarded.low.store(false, Ordering::Release);
     if entry.told.take().is_some() {
         *generation = generation.wrapping_add(1);
         let generation = *generation;
@@ -390,6 +393,10 @@ async fn step() -> bool {
             continue;
         }
         entry.forwarded.in_room.store(true, Ordering::Release);
+        entry
+            .forwarded
+            .low
+            .store(uplink.low(&entry.session_id), Ordering::Release);
         let tracks: Vec<(u32, String)> = mapping
             .iter()
             .filter(|((participant, _), _)| participant == key)

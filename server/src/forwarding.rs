@@ -242,6 +242,7 @@ impl Forwarding {
         device: &str,
         room: &str,
         session: &str,
+        connection: u32,
         offer: &str,
         tracks: Option<Vec<String>>,
     ) -> Result<(String, ForwardMode), ForwardError> {
@@ -257,7 +258,7 @@ impl Forwarding {
                 record.node.as_ref(),
                 SfuRequest::Subscribe {
                     room: room.to_owned(),
-                    leg: session.to_owned(),
+                    leg: crate::sfu::leg_id(session, connection),
                     sdp: offer.to_owned(),
                     tracks,
                 },
@@ -266,7 +267,14 @@ impl Forwarding {
         Ok((answer, record.mode))
     }
 
-    pub async fn unsubscribe(&self, hub: &Hub, device: &str, room: &str, session: &str) -> bool {
+    pub async fn unsubscribe(
+        &self,
+        hub: &Hub,
+        device: &str,
+        room: &str,
+        session: &str,
+        connection: u32,
+    ) -> bool {
         let Ok(record) = self.room_of(None, room) else {
             return false;
         };
@@ -282,7 +290,7 @@ impl Forwarding {
                 record.node.as_ref(),
                 SfuRequest::Unsubscribe {
                     room: room.to_owned(),
-                    leg: session.to_owned(),
+                    leg: crate::sfu::leg_id(session, connection),
                 },
             )
             .await;

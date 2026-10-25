@@ -37,6 +37,8 @@ export interface ForwardContext {
 }
 
 interface Active {
+  /// This viewer's connection number (from 1): its leg on the forwarder.
+  number: number;
   room: string;
   track: string;
   audio: string;
@@ -55,6 +57,8 @@ export class ForwardReceiver {
   private latest?: Forward;
   /// This viewer watches without control.
   private onlyWatching = true;
+  /// Connections opened so far.
+  private opened = 0;
 
   constructor(context: ForwardContext) {
     this.context = context;
@@ -114,8 +118,8 @@ export class ForwardReceiver {
       this.context.status(instruction.generation, true, '');
       return;
     }
-    // Another track of the same room: the old connection plays on until the
-    // forwarder replaces it with the new one.
+    // Another track of the same room (another layer): the old connection
+    // plays on until the new one's picture decodes.
     const replaced = active?.room === instruction.room ? active : undefined;
     if (replaced) this.active = undefined;
     else if (this.leave()) this.context.media(undefined, undefined, '');
@@ -124,16 +128,18 @@ export class ForwardReceiver {
       const { video, audio } = await this.join(instruction, wanted);
       if (this.closed || this.active?.room !== instruction.room) return;
       this.context.media(video, audio, instruction.mode);
+      if (replaced) this.drop(replaced);
       this.context.status(instruction.generation, true, '');
       this.context.log(`receiving through the forwarder room=${instruction.room} mode=${instruction.mode}`);
     } catch (error) {
       const message = (error as Error).message || String(error);
       this.context.log(`cannot receive through the forwarder: ${message}`);
-      if (this.leave() || replaced) this.context.media(undefined, undefined, '');
+      this.leave();
+      // The host sends directly again; the room's old connection shows the
+      // picture until then.
+      if (replaced) this.active = replaced;
+      else this.context.media(undefined, undefined, '');
       this.context.status(instruction.generation, false, message);
-    } finally {
-      replaced?.connection.close();
-      replaced?.worker?.terminate();
     }
   }
 
@@ -156,7 +162,9 @@ export class ForwardReceiver {
       bundlePolicy: 'max-bundle',
       rtcpMuxPolicy: 'require',
     });
+    this.opened += 1;
     this.active = {
+      number: this.opened,
       room: instruction.room,
       track,
       audio: instruction.audio,
@@ -196,6 +204,7 @@ export class ForwardReceiver {
       // The forwarder matches fmtp parameters as the host does.
       {
         session: instruction.session,
+        connection: this.opened,
         offer: withoutAv1Level(offer),
         tracks: instruction.audio ? [track, instruction.audio] : [track],
       },
@@ -224,15 +233,20 @@ export class ForwardReceiver {
     const active = this.active;
     if (!active) return false;
     this.active = undefined;
+    this.drop(active);
+    return true;
+  }
+
+  /// Close a connection and its leg on the forwarder.
+  private drop(active: Active) {
     active.connection.close();
     active.worker?.terminate();
     void call(
       'DELETE',
-      `/api/v2/sfu/rooms/${encodeURIComponent(active.room)}/subscribe/${encodeURIComponent(active.session)}`,
+      `/api/v2/sfu/rooms/${encodeURIComponent(active.room)}/subscribe/${encodeURIComponent(active.session)}/${active.number}`,
       undefined,
       { bearer: this.context.bearer, quiet: true },
     ).catch(() => undefined);
-    return true;
   }
 }
 

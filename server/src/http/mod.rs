@@ -454,7 +454,7 @@ pub fn router(app: App) -> Router {
         )
         .route("/api/v2/sfu/rooms/{room}/subscribe", post(sfu::subscribe))
         .route(
-            "/api/v2/sfu/rooms/{room}/subscribe/{session}",
+            "/api/v2/sfu/rooms/{room}/subscribe/{session}/{connection}",
             delete(sfu::unsubscribe),
         )
         .route(setup::PATH, get(setup::info).post(setup::complete))

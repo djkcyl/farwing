@@ -80,8 +80,8 @@ pub mod path {
     pub fn sfu_subscribe(room: &str) -> String {
         format!("{SFU_ROOMS}/{room}/subscribe")
     }
-    pub fn sfu_subscription(room: &str, session_id: &str) -> String {
-        format!("{SFU_ROOMS}/{room}/subscribe/{session_id}")
+    pub fn sfu_subscription(room: &str, session_id: &str, connection: u32) -> String {
+        format!("{SFU_ROOMS}/{room}/subscribe/{session_id}/{connection}")
     }
     pub fn friend(user_id: &str) -> String {
         format!("{FRIENDS}/{user_id}")
@@ -896,6 +896,9 @@ pub struct RoomUpdated {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SubscribeRequest {
     pub session: String,
+    /// The viewer's connection to the forwarder (from 1): a new one may be
+    /// opened before the old one is left, so that the picture never waits.
+    pub connection: u32,
     /// Receive-only media; the published tracks fill each kind's sections
     /// in `tracks` order (default: publishing order).
     pub offer: String,

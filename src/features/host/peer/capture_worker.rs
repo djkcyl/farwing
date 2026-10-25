@@ -28,6 +28,9 @@ mod metrics;
 
 /// A follower that lost frames asks again if no keyframe came this long.
 const KEYFRAME_RETRY: Duration = Duration::from_secs(1);
+/// The forwarder's low layer: the 流畅 tier (720p, 1.5 Mbps) at most 30 fps.
+const LOW_QUALITY: i32 = 1;
+const LOW_FPS: u32 = 30;
 
 /// How long a new participant waits for its own `CaptureSetting` before its
 /// session start parameters count as its settings.
@@ -266,6 +269,14 @@ pub(super) fn capture_loop(
         // once the participant shows them, instead.
         let forwarding = forwarded.in_room.load(Ordering::Acquire) && shown;
         let replaced = forwarding && forwarded.receiving.load(Ordering::Acquire);
+        // The forwarder's low layer for a participant whose downlink cannot
+        // carry the main stream (`deployment-design.md` §5.5).
+        let low = forwarding && forwarded.low.load(Ordering::Acquire);
+        if low {
+            wanted.quality = LOW_QUALITY;
+            wanted.fps = wanted.fps.min(LOW_FPS);
+        }
+        let tier_fps = if low { tier_fps.min(LOW_FPS) } else { tier_fps };
         // Which encoder this participant uses: lead a group or follow one.
         if wanted.capturing {
             let key = encode_group::Key {
@@ -281,6 +292,7 @@ pub(super) fn capture_loop(
                 quality: wanted.quality,
                 bitrate: if wanted.quality == 6 { wanted.bitrate } else { 0 },
                 isolated,
+                low,
             };
             // Until this participant's own settings arrive (or a moment
             // passes, for a controller that sends none), the start
@@ -300,8 +312,11 @@ pub(super) fn capture_loop(
             let regroup = membership.as_ref().is_none_or(|m| {
                 if forwarding {
                     // Forwarded viewers share whichever stream of this screen
-                    // and format there is: one stream goes to the forwarder.
-                    m.group_key().screen != key.screen || m.group_key().format != key.format
+                    // and format there is (one per layer): one stream goes
+                    // to the forwarder.
+                    m.group_key().screen != key.screen
+                        || m.group_key().format != key.format
+                        || m.group_key().low != key.low
                 } else {
                     m.wanted != key
                         || forwarded_before

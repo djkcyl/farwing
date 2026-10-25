@@ -144,6 +144,7 @@ pub async fn subscribe(
             &auth.device.id,
             &room,
             &req.session,
+            req.connection,
             &req.offer,
             req.tracks,
         )
@@ -151,16 +152,16 @@ pub async fn subscribe(
     Ok(Json(Subscription { answer, mode }))
 }
 
-/// `DELETE /api/v2/sfu/rooms/{room}/subscribe/{session}` (the session's
-/// controller or the host).
+/// `DELETE /api/v2/sfu/rooms/{room}/subscribe/{session}/{connection}` (the
+/// session's controller or the host).
 pub async fn unsubscribe(
     State(app): State<App>,
     auth: AnyAuth,
-    Path((room, session)): Path<(String, String)>,
+    Path((room, session, connection)): Path<(String, String, u32)>,
 ) -> ApiResult<Json<Empty>> {
     if !app
         .forwarding
-        .unsubscribe(&app.hub, &auth.device.id, &room, &session)
+        .unsubscribe(&app.hub, &auth.device.id, &room, &session, connection)
         .await
     {
         return Err(ApiError::not_found());

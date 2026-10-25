@@ -53,6 +53,17 @@ const GATHER_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often lost uplink packets are requested.
 const TICK: Duration = Duration::from_millis(10);
 
+/// The leg of a session's connection `connection`: a viewer may hold two
+/// for a moment (the new one up before the old one is left).
+pub fn leg_id(session: &str, connection: u32) -> String {
+    format!("{session}#{connection}")
+}
+
+/// The session of leg `id`.
+pub(crate) fn session_of(id: &str) -> &str {
+    id.split_once('#').map_or(id, |(session, _)| session)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SfuConfig {
     /// The UDP port every forwarder connection shares.
@@ -109,6 +120,7 @@ pub enum SfuRequest {
         #[serde(default)]
         tracks: Option<Vec<String>>,
     },
+    /// `leg`: one connection's leg, or a session (all its legs).
     Unsubscribe {
         room: String,
         leg: String,
@@ -396,14 +408,32 @@ impl Sfu {
                 }
             }
         }
-        let index = room.subscriptions.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        // Development emulation follows the viewer (its session), counted
+        // from 1 in the order viewers first subscribe.
+        let emulator = {
+            let mut emulators = room.emulators.lock();
+            let count = emulators.len();
+            emulators
+                .entry(session_of(leg_id).to_owned())
+                .or_insert_with(|| {
+                    emulate::Emulator::for_viewer(count + 1, leg_id)
+                        .map(|e| Arc::new(parking_lot::Mutex::new(e)))
+                })
+                .clone()
+        };
+        let video: Arc<[u32]> = chosen
+            .iter()
+            .filter(|t| t.kind == sdp::Kind::Video)
+            .map(|t| t.ssrc)
+            .collect();
         let (leg, packets) = Leg::new(
             leg_id.to_owned(),
             Arc::clone(&pc),
             tap,
             rewrite,
             tcc,
-            emulate::Emulator::for_viewer(index, leg_id),
+            emulator,
+            video.to_vec(),
         );
         let senders = pc.get_senders().await;
         {
@@ -428,11 +458,6 @@ impl Sfu {
         let weak_room = Arc::downgrade(&room);
         let id = leg_id.to_owned();
         let weak_pc = Arc::downgrade(&pc);
-        let video: Arc<[u32]> = chosen
-            .iter()
-            .filter(|t| t.kind == sdp::Kind::Video)
-            .map(|t| t.ssrc)
-            .collect();
         pc.on_peer_connection_state_change(Box::new(move |state| {
             let (weak_room, id, weak_pc, video) =
                 (weak_room.clone(), id.clone(), weak_pc.clone(), video.clone());
@@ -466,9 +491,18 @@ impl Sfu {
         Ok(answer)
     }
 
+    /// Removes leg `leg`, or every leg of session `leg`.
     pub async fn unsubscribe(&self, room: &str, leg: &str) {
-        if let Some(room) = self.room(room) {
-            room.remove_leg(leg).await;
+        let Some(room) = self.room(room) else { return };
+        let ids: Vec<String> = room
+            .legs
+            .read()
+            .keys()
+            .filter(|id| *id == leg || session_of(id) == leg)
+            .cloned()
+            .collect();
+        for id in ids {
+            room.remove_leg(&id).await;
         }
     }
 
