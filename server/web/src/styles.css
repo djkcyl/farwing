@@ -1702,6 +1702,39 @@ html[lang='en'] .caps-group {
   border: 1px solid #8c3b48;
   max-width: 80%;
 }
+.room-notices {
+  position: absolute;
+  left: 50%;
+  top: 16px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: 80%;
+  pointer-events: none;
+}
+.viewer-banner + .room-notices {
+  top: 64px;
+}
+.room-notice {
+  padding: 5px 12px;
+  border-radius: var(--radius);
+  background: rgba(22, 26, 33, 0.92);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  white-space: nowrap;
+  animation: room-notice 4s ease forwards;
+}
+@keyframes room-notice {
+  0%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
 .viewer-panel {
   position: absolute;
   right: 12px;

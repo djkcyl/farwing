@@ -212,6 +212,10 @@ export const zh = {
     noOthers: '无其他参与者',
     forwardedE2ee: '服务器转发 · 端到端加密',
     forwardedCompatible: '服务器转发 · 兼容模式',
+    roomJoined: (name: string) => `${name} 加入`,
+    roomLeft: (name: string) => `${name} 离开`,
+    roomControlTaken: (name: string) => `${name} 开始控制`,
+    roomForwardingEnded: '服务器转发已结束',
   },
   /** The statistics panel. */
   stats: {
@@ -527,6 +531,10 @@ export const en: typeof zh = {
     noOthers: 'No other participants',
     forwardedE2ee: 'Server forwarding · End-to-end encrypted',
     forwardedCompatible: 'Server forwarding · Compatible',
+    roomJoined: (name: string) => `${name} joined`,
+    roomLeft: (name: string) => `${name} left`,
+    roomControlTaken: (name: string) => `${name} has control`,
+    roomForwardingEnded: 'Server forwarding ended',
   },
   stats: {
     resolution: 'Resolution',

@@ -61,6 +61,7 @@ pub(in crate::application::viewer) struct ThreadedWindowsApp {
     pub(in crate::application::viewer) stream_control_ui: StreamControlUi,
     pub(in crate::application::viewer) plugin_menu_open: bool,
     pub(in crate::application::viewer) display_transition_visible: bool,
+    room_notices: crate::application::viewer::room_notices::RoomNotices,
     pub(in crate::application::viewer) bound_screen: u64,
     pub(in crate::application::viewer) shutdown: Arc<AtomicBool>,
     pub(in crate::application::viewer) fatal_error: Arc<Mutex<Option<String>>>,
@@ -193,6 +194,7 @@ impl ThreadedWindowsApp {
             stream_control_ui: StreamControlUi::default(),
             plugin_menu_open: false,
             display_transition_visible: false,
+            room_notices: Default::default(),
             bound_screen: session.screen_binding(),
             shutdown,
             fatal_error,
@@ -549,12 +551,15 @@ impl ThreadedWindowsApp {
                 loading.draw(ui);
                 return;
             }
+            let picture_area = ui.available_rect_before_wrap();
             self.display_transition_visible = crate::application::viewer::display_transition::show(
                 &ctx,
                 &self.stream_control,
                 self._session.screen_id(),
-                ui.available_rect_before_wrap(),
+                picture_area,
             );
+            self.room_notices
+                .show(&ctx, &self.stream_control, &self.performance, picture_area);
             let menu_inset = self.fullscreen_chrome.menu_inset(&ctx);
             show_stream_control_window(
                 &ctx,

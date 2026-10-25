@@ -32,6 +32,7 @@ import { Button, Spinner } from './kit';
 import { Dialog, useOverlay } from './overlay';
 import { AnnotationLayer, type AnnotationTool } from './AnnotationLayer';
 import { useRemoteInput, type PictureMap } from './remoteInput';
+import { RoomNotices } from './RoomNotices';
 
 type Scale = 'fit' | 'fill' | 'original';
 type Panel = 'none' | 'stats' | 'people' | 'files';
@@ -1245,6 +1246,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
           </button>
         )}
         {banner && <div className="viewer-banner">{banner}</div>}
+        {playing && <RoomNotices people={people} forwarding={forwarding} t={t} />}
         {keyboardLocked && barVisible && <div className="viewer-hint">{t.viewer.screen.keyboardLocked}</div>}
         {pendingCopy !== undefined && (
           <button type="button" className="unmute-hint copy-hint" onClick={() => copyLocally(pendingCopy)}>

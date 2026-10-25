@@ -206,6 +206,11 @@ struct PerformanceInner {
     current_delay_micros: AtomicU64,
     current_delay_observed_micros: AtomicU64,
     presentation_epoch: AtomicU64,
+    /// When the last new picture was shown (µs after `started_at`, 0: none).
+    last_picture_micros: AtomicU64,
+    /// Since when the picture waits to come through another connection
+    /// (µs after `started_at`, 0: it does not).
+    switch_pending_micros: AtomicU64,
     measured_media_rtt_micros: AtomicU64,
     measured_media_rtt_observed_micros: AtomicU64,
     assembly_delay_micros: AtomicU64,
@@ -623,6 +628,8 @@ impl PerformanceMonitor {
                 current_delay_micros: AtomicU64::new(u64::MAX),
                 current_delay_observed_micros: AtomicU64::new(u64::MAX),
                 presentation_epoch: AtomicU64::new(0),
+                last_picture_micros: AtomicU64::new(0),
+                switch_pending_micros: AtomicU64::new(0),
                 measured_media_rtt_micros: AtomicU64::new(u64::MAX),
                 measured_media_rtt_observed_micros: AtomicU64::new(u64::MAX),
                 assembly_delay_micros: AtomicU64::new(0),
@@ -941,6 +948,10 @@ impl PerformanceMonitor {
             self.inner
                 .actual_rendered_frames
                 .fetch_add(1, Ordering::Relaxed);
+            self.inner.last_picture_micros.store(
+                duration_micros(now.duration_since(self.inner.started_at)).max(1),
+                Ordering::Relaxed,
+            );
         }
         if timing.is_new_picture.is_some() {
             self.inner
@@ -1018,6 +1029,42 @@ impl PerformanceMonitor {
                 }
             }
         }
+    }
+
+    /// The picture waits to come through another connection (`true`), or
+    /// no longer does.
+    pub(crate) fn set_switch_pending(&self, pending: bool) {
+        let now = duration_micros(Instant::now().duration_since(self.inner.started_at)).max(1);
+        if pending {
+            let _ = self.inner.switch_pending_micros.compare_exchange(
+                0,
+                now,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+        } else {
+            self.inner.switch_pending_micros.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// How long the picture has waited to come through another connection.
+    pub(crate) fn switch_pending(&self) -> Option<Duration> {
+        let since = self.inner.switch_pending_micros.load(Ordering::Relaxed);
+        (since != 0).then(|| {
+            Instant::now()
+                .duration_since(self.inner.started_at)
+                .saturating_sub(Duration::from_micros(since))
+        })
+    }
+
+    /// How long ago the last new picture was shown.
+    pub(crate) fn picture_age(&self) -> Option<Duration> {
+        let at = self.inner.last_picture_micros.load(Ordering::Relaxed);
+        (at != 0).then(|| {
+            Instant::now()
+                .duration_since(self.inner.started_at)
+                .saturating_sub(Duration::from_micros(at))
+        })
     }
 
     pub(crate) fn record_dropped_present_frame(&self) {

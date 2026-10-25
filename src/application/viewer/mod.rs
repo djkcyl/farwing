@@ -29,6 +29,7 @@ mod annotation;
 mod display_transition;
 mod participants;
 mod polling_warning;
+pub(crate) mod room_notices;
 
 mod windows_cursor;
 

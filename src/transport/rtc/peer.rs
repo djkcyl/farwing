@@ -736,7 +736,7 @@ impl NativePeer {
                     let codec = codec_parameters.capability.mime_type;
                     let codec_fmtp = codec_parameters.capability.sdp_fmtp_line;
                     let video_annexb_sinks = Arc::new(Mutex::new(Vec::new()));
-                    let picture = Arc::new(super::tracks::PicturePath::new());
+                    let mut picture = Arc::new(super::tracks::PicturePath::new(performance.clone()));
                     let (video_keyframe_tx, keyframes) = watch::channel(0_u64);
                     let (feedback, feedback_rx) = mpsc::unbounded_channel();
                     let receiver_feedback = (media_kind == MediaKind::Video).then_some(feedback_rx);
@@ -746,6 +746,7 @@ impl NativePeer {
                             return;
                         };
                         performance = performance.for_video_track(index as u64);
+                        picture = Arc::new(super::tracks::PicturePath::new(performance.clone()));
                         performance.set_video_codec(format!("{codec} · RTP PT {}", track.payload_type()));
                         let (started, ready) = watch::channel(false);
                         forwarding_ready = ready;

@@ -69,20 +69,26 @@ pub(crate) struct PicturePath {
     forwarded: AtomicBool,
     wanted: AtomicBool,
     changed: watch::Sender<bool>,
+    /// The track's statistics: whether a switch is pending (the viewer
+    /// covers a picture held by one).
+    performance: PerformanceMonitor,
 }
 
 impl PicturePath {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(performance: PerformanceMonitor) -> Self {
         Self {
             forwarded: AtomicBool::new(false),
             wanted: AtomicBool::new(false),
             changed: watch::channel(false).0,
+            performance,
         }
     }
 
     /// The forwarder's frames (`true`) or the host's should be shown.
     pub(super) fn want(&self, forwarded: bool) {
         self.wanted.store(forwarded, Ordering::Release);
+        self.performance
+            .set_switch_pending(self.forwarded.load(Ordering::Acquire) != forwarded);
     }
 
     /// Whether the forwarder's frames are shown now.
@@ -111,6 +117,7 @@ impl PicturePath {
             .is_ok()
         {
             tracing::info!(forwarded, "the picture comes through the other connection now");
+            self.performance.set_switch_pending(false);
             self.changed.send_replace(forwarded);
         }
         true
@@ -360,7 +367,7 @@ mod tests {
 
     #[test]
     fn the_wanted_connection_takes_over_at_its_keyframe() {
-        let picture = PicturePath::new();
+        let picture = PicturePath::new(crate::diagnostics::performance::PerformanceMonitor::new(""));
         assert!(picture.admit(false, false));
         // Joining a room: the forwarder's frames wait for a keyframe while
         // the host's go on.
