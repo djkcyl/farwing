@@ -72,7 +72,8 @@ pub struct NativePeer {
     pub(super) nack_rtt_micros: Arc<AtomicU64>,
     pub(super) rtcp_timing: RtcpTiming,
     pub(super) p2p_only: AtomicBool,
-    pub(super) ice_servers: Vec<IceServer>,
+    /// The server's relays (renewed when its relay restarts).
+    pub(super) ice_servers: StdMutex<Vec<IceServer>>,
     pub(super) data_channels: DataChannels,
     pub(super) video_tracks: VideoTrackRegistry,
     /// The video tracks while the host forwards them through the server.
@@ -317,7 +318,7 @@ impl NativePeer {
             nack_rtt_micros,
             rtcp_timing,
             p2p_only: AtomicBool::new(transport == TransportChoice::P2p),
-            ice_servers: configured_ice_servers,
+            ice_servers: StdMutex::new(configured_ice_servers),
             data_channels,
             video_tracks,
             forwarding: Arc::default(),
@@ -330,7 +331,7 @@ impl NativePeer {
         let context = super::forward::HostSide {
             workers: Arc::downgrade(&self.data_channels.workers),
             stop: self.data_channels.workers.shutdown.child_token(),
-            ice_servers: self.ice_servers.clone(),
+            ice_servers: std_mutex_lock(&self.ice_servers).clone(),
             tracks: self.video_tracks.clone(),
             stream_control: self.data_channels.stream_control.clone(),
             rtt_micros: self.nack_rtt_micros.clone(),
@@ -392,8 +393,7 @@ impl NativePeer {
         transport: TransportChoice,
         server_forced: bool,
     ) {
-        let has_relay = self
-            .ice_servers
+        let has_relay = std_mutex_lock(&self.ice_servers)
             .iter()
             .flat_map(|server| &server.urls)
             .any(|url| url.to_ascii_lowercase().starts_with("turn"));
@@ -478,9 +478,22 @@ impl NativePeer {
     /// Relay only, over every relay transport the server offers (TLS
     /// ranked first until measured, `webrtc_ice` `relay_stream_first`), or
     /// all candidates.
+    /// The server's relays anew (its relay restarted): ICE gathers with them
+    /// from the next restart on, under the policy in force.
+    pub(crate) async fn renew_ice_servers(&self, servers: Vec<IceServer>) -> Result<()> {
+        *std_mutex_lock(&self.ice_servers) = servers;
+        if self.p2p_only.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let relay = self.core.connection.get_configuration().await.ice_transport_policy
+            == RTCIceTransportPolicy::Relay;
+        self.switch_ice_network(relay).await
+    }
+
     pub(crate) async fn switch_ice_network(&self, relay: bool) -> Result<()> {
+        let servers = std_mutex_lock(&self.ice_servers).clone();
         let selected_servers = if relay {
-            self.ice_servers
+            servers
                 .iter()
                 .filter_map(|server| {
                     let mut selected = server.clone();
@@ -491,7 +504,7 @@ impl NativePeer {
                 })
                 .collect::<Vec<_>>()
         } else {
-            self.ice_servers.clone()
+            servers
         };
         if selected_servers.is_empty() && relay {
             bail!("control ACK did not provide a relay server");

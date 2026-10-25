@@ -601,6 +601,25 @@ impl Session {
                     self.rtc(&sid, envelope, signal).await?;
                 }
             }
+            types::SESSION_RELAY_LOST => {
+                let Some(peer) = self.participants.get(&sid).and_then(|p| p.peer.as_ref()) else {
+                    return Ok(());
+                };
+                let lost: farwing_protocol::realtime::SessionRelayLost =
+                    envelope.body().context("中转重启通知格式无效")?;
+                peer.renew_ice_servers(
+                    lost.ice_servers
+                        .into_iter()
+                        .map(|s| webrtc::ice_transport::ice_server::RTCIceServer {
+                            urls: s.urls,
+                            username: s.username,
+                            credential: s.credential,
+                            ..Default::default()
+                        })
+                        .collect(),
+                );
+                tracing::info!("the server's relay restarted; relays renewed");
+            }
             types::SESSION_PERMISSIONS => {
                 let Some(participant) = self.participants.get(&sid) else {
                     return Ok(());

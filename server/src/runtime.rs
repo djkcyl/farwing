@@ -696,7 +696,12 @@ impl Components {
         } else {
             None
         };
+        // Sessions with allocations on a relay that restarts.
+        let mut lost = Vec::new();
         if relay_key(&new) != relay_key(&old) {
+            if let Some(turn) = &self.turn {
+                lost = turn.stats().await.sessions;
+            }
             self.stop_relay().await;
             if let Err(e) = self.start_relay(&new).await {
                 // Back to the relay that ran before.
@@ -727,6 +732,10 @@ impl Components {
             }
         }
         self.reconfigure_hub(&new);
+        if !lost.is_empty() {
+            let told = self.app.hub.relay_lost(&lost);
+            tracing::info!(sessions = told, "relayed sessions told to reconnect through the restarted relay");
+        }
         if new.sfu != old.sfu || new.turn.relay_bind != old.turn.relay_bind
             || new.turn.builtin_public_ip() != old.turn.builtin_public_ip()
         {

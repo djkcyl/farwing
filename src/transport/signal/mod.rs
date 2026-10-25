@@ -965,6 +965,31 @@ impl SignalSession {
                                         None => {}
                                     }
                                 }
+                                types::SESSION_RELAY_LOST => {
+                                    let Ok(lost) = envelope.body::<farwing_protocol::realtime::SessionRelayLost>() else {
+                                        tracing::warn!("discarded invalid session.relay_lost");
+                                        continue;
+                                    };
+                                    let servers = lost
+                                        .ice_servers
+                                        .into_iter()
+                                        .map(|s| crate::transport::rtc::IceServer {
+                                            urls: s.urls,
+                                            username: s.username,
+                                            credential: s.credential,
+                                        })
+                                        .collect();
+                                    if let Err(error) = peer.renew_ice_servers(servers).await {
+                                        tracing::warn!(%error, "renewed relays not applied");
+                                    }
+                                    // The relayed path is gone: a new one now rather than
+                                    // once ICE notices.
+                                    if peer.selected_is_relay().await {
+                                        tracing::info!("the server's relay restarted; restarting ICE");
+                                        forced_restart = true;
+                                        ice_restart_at = Some(tokio::time::Instant::now());
+                                    }
+                                }
                                 types::SESSION_SETTING => {
                                     let parsed = match parse_setting(&envelope, info) {
                                         Ok(parsed) => parsed,

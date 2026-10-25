@@ -14,8 +14,8 @@ use farwing_protocol::api::{Participant, Purpose, Relation};
 use farwing_protocol::ids;
 use farwing_protocol::realtime::{
     ControllerInfo, Envelope, Hello, Limits, PeerIdentity, Ping, ResumeRefreshAck, Role,
-    RtcCandidate, RtcDescription, SessionEnd, SessionIncoming, SessionPermissions, SessionStart,
-    SessionStarted, close, reason, types,
+    RtcCandidate, RtcDescription, SessionEnd, SessionIncoming, SessionPermissions,
+    SessionRelayLost, SessionStart, SessionStarted, close, reason, types,
 };
 use farwing_protocol::session::ConnectType;
 use farwing_protocol::{ErrorBody, ErrorCode};
@@ -396,6 +396,44 @@ impl Hub {
             c.send(env);
         }
         conns.len()
+    }
+
+    /// The builtin relay restarted: sessions `sids` had allocations on it.
+    /// Both sides get the relays anew (`session.relay_lost`); how many
+    /// sessions were told.
+    pub fn relay_lost(&self, sids: &[String]) -> usize {
+        let st = self.state.lock();
+        let mut told = 0;
+        for sid in sids {
+            let Some(s) = st.sessions.get(sid) else { continue };
+            let host_current = st
+                .presence
+                .get(&s.host_device_id)
+                .and_then(|id| st.links.get(id))
+                .is_some_and(|l| l.epoch == s.host_epoch);
+            if s.host_notified
+                && host_current
+                && let Some(h) = Self::host_conn(&st, &s.host_device_id)
+            {
+                let lost = SessionRelayLost {
+                    ice_servers: self.servers_for(sid, &s.host_device_id),
+                };
+                h.send(&Envelope::new(types::SESSION_RELAY_LOST, lost).with_sid(sid));
+            }
+            if let Some(c) = s
+                .controller_link
+                .as_deref()
+                .and_then(|id| st.links.get(id))
+                .and_then(|l| l.conn.as_ref())
+            {
+                let lost = SessionRelayLost {
+                    ice_servers: self.servers_for(sid, &s.controller_device_id),
+                };
+                c.send(&Envelope::new(types::SESSION_RELAY_LOST, lost).with_sid(sid));
+            }
+            told += 1;
+        }
+        told
     }
 
     /// A presence connection is currently attached.

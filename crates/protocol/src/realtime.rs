@@ -98,6 +98,9 @@ pub mod types {
     pub const RTC_CANDIDATE: &str = "rtc.candidate";
     /// Server → host and controller: the participant's capabilities changed.
     pub const SESSION_PERMISSIONS: &str = "session.permissions";
+    /// Server → host and controller: the server's relay restarted while the
+    /// session had allocations on it ([`SessionRelayLost`]).
+    pub const SESSION_RELAY_LOST: &str = "session.relay_lost";
     // pushes
     pub const DEVICE_CHANGED: &str = "device.changed";
     pub const FRIEND_CHANGED: &str = "friend.changed";
@@ -433,6 +436,16 @@ pub mod reason {
 pub struct SessionPermissions {
     #[serde(default)]
     pub grants: Vec<String>,
+}
+
+/// `session.relay_lost` (server → host and controller, `sid` set): the
+/// relayed path is gone; these relays (new credentials when the secret
+/// changed) replace the session's, and a controller on a relayed path
+/// restarts ICE at once.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SessionRelayLost {
+    #[serde(default)]
+    pub ice_servers: Vec<IceServer>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

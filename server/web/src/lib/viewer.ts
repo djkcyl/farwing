@@ -13,6 +13,7 @@ import { deviceKey, verify } from './device';
 import { deviceIdOf, unb64 } from './encoding';
 import { FileTransfer, type TransferInfo } from './files';
 import { ForwardReceiver } from './forward';
+import { relayed } from './stats';
 import * as fpp from './fpp';
 import { InputController } from './input';
 import { PeerRequestError, type PeerIo } from './peerio';
@@ -1154,6 +1155,9 @@ export class Viewer {
       case 'session.permissions':
         this.setGrants((envelope.data as { grants: string[] }).grants ?? this.grants);
         break;
+      case 'session.relay_lost':
+        void this.onRelayLost((envelope.data as { ice_servers?: IceServer[] }).ice_servers ?? []);
+        break;
       case 'session.ended': {
         const reason = (envelope.data as { reason?: string })?.reason ?? '';
         this.end(reason);
@@ -1162,6 +1166,20 @@ export class Viewer {
       case 'error':
         this.log(`server error ${JSON.stringify(envelope.data)}`);
         break;
+    }
+  }
+
+  /// The server's relay restarted: its relays anew, and a new path now if
+  /// this one went through it.
+  private async onRelayLost(servers: IceServer[]) {
+    const started = this.started;
+    const pc = this.pc;
+    if (!started || !pc) return;
+    started.ice_servers = servers;
+    pc.setConfiguration({ ...pc.getConfiguration(), iceServers: iceServers(started) });
+    if (await relayed(pc)) {
+      this.log('the server relay restarted; restarting ICE');
+      await this.negotiate(true).catch((error: Error) => this.log(`restart failed: ${error.message}`));
     }
   }
 

@@ -40,7 +40,8 @@ pub(crate) struct Peer {
     control_receiver: crate::transport::fct::ControlReceiver,
     remote_ice: tokio::sync::Mutex<RemoteIce>,
     transport: super::transport::Transport,
-    ice_servers: Vec<RTCIceServer>,
+    /// The server's relays (renewed when its relay restarts).
+    ice_servers: std::sync::Mutex<Vec<RTCIceServer>>,
     relay_only: AtomicBool,
     input: super::input::Session,
     audio: super::audio::Audio,
@@ -921,7 +922,7 @@ impl Peer {
             control_receiver,
             remote_ice: Default::default(),
             transport: peer_transport,
-            ice_servers,
+            ice_servers: std::sync::Mutex::new(ice_servers),
             relay_only: AtomicBool::new(relay),
             input,
             audio,
@@ -933,13 +934,26 @@ impl Peer {
         })
     }
 
+    /// The server's relays anew (its relay restarted): the controller's ICE
+    /// restart applies them.
+    pub(crate) fn renew_ice_servers(&self, servers: Vec<RTCIceServer>) {
+        *self
+            .ice_servers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = servers;
+    }
+
     async fn restart_network(&self, network_type: u8) -> Result<()> {
         let relay = match network_type {
             farwing_protocol::realtime::network::RELAY => true,
             farwing_protocol::realtime::network::ALL => false,
             _ => anyhow::bail!("invalid ICE network type {network_type}"),
         };
-        let mut servers = self.ice_servers.clone();
+        let mut servers = self
+            .ice_servers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         if relay {
             // Every relay transport; the controlling side measures which.
             for server in &mut servers {

@@ -143,3 +143,16 @@ export class StatsSampler {
 export function pathText(path: string): string {
   return (t().viewer.stats.paths as Record<string, string>)[path] ?? '—';
 }
+
+/// Whether `pc`'s selected path goes through a relay.
+export async function relayed(pc: RTCPeerConnection): Promise<boolean> {
+  const report = await pc.getStats();
+  let pair: RTCIceCandidatePairStats | undefined;
+  report.forEach((s) => {
+    if (s.type === 'transport' && s.selectedCandidatePairId) pair = report.get(s.selectedCandidatePairId);
+  });
+  if (!pair) return false;
+  const local = report.get(pair.localCandidateId);
+  const remote = report.get(pair.remoteCandidateId);
+  return local?.candidateType === 'relay' || remote?.candidateType === 'relay';
+}

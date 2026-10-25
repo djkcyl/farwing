@@ -478,6 +478,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `rtc.candidate` | 双向 | 带 `sid` | `{attempt_id, candidate: {candidate, sdpMid, sdpMLineIndex, usernameFragment}}` |
 | `session.setting` | H→S→C | 带 `sid` | `{kind: "capability", capability}` / `{kind: "sender_info", infos: [{video_track_index, capture_impl, encoder_impl}]}` |
 | `session.permissions` | S→H、S→C | 带 `sid` | `{grants: [caps]}` |
+| `session.relay_lost` | S→H、S→C | 带 `sid` | `{ice_servers}`：服务器的内置中继重启时会话在它上面有分配；双方换用这些中继（换密钥时为新凭据），经中继的主控立即重启 ICE |
 | `session.end` | H→S | 被控在线连接，带 `sid` | `{reason}` |
 | `session.leave` | C→S | 承载该会话的在线连接，带 `sid` | `{}` |
 | `session.ended` | S→C、S→H | 带 `sid` | `{reason}` |
