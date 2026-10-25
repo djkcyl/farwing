@@ -234,11 +234,7 @@ export class ForwardReceiver {
     await connection.setRemoteDescription({ type: 'answer', sdp: subscription.answer });
     this.buffer(connection);
     const video = await within(received, FIRST_FRAME_MS);
-    await firstFrame(
-      connection,
-      () => this.closed || instruction !== this.latest,
-      replacing ? STEADY_FRAMES : 1,
-    );
+    await firstFrame(connection, () => this.closed || instruction !== this.latest, replacing ? STEADY_FRAMES : 1);
     return { video, audio };
   }
 
