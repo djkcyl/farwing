@@ -220,7 +220,7 @@ enum Commands {
         /// 测量用：不声明 video.recovery，丢包后只用关键帧恢复
         #[arg(long, hide = true)]
         dev_no_recovery: bool,
-        /// 测量用：以观影模式（true）或非观影模式（false）开始，不保存
+        /// 测量用：以观影模式（true）或非观影模式（false）观看（多人观看时也不变），不保存
         #[arg(long, hide = true, action = clap::ArgAction::Set)]
         dev_cinema: Option<bool>,
         /// 测试用：连上后为被控添加一块虚拟屏幕（同菜单里确认添加）

@@ -736,6 +736,7 @@ impl NativePeer {
                     let codec = codec_parameters.capability.mime_type;
                     let codec_fmtp = codec_parameters.capability.sdp_fmtp_line;
                     let video_annexb_sinks = Arc::new(Mutex::new(Vec::new()));
+                    let picture = Arc::new(super::tracks::PicturePath::new());
                     let (video_keyframe_tx, keyframes) = watch::channel(0_u64);
                     let (feedback, feedback_rx) = mpsc::unbounded_channel();
                     let receiver_feedback = (media_kind == MediaKind::Video).then_some(feedback_rx);
@@ -754,6 +755,7 @@ impl NativePeer {
                             feedback: feedback.clone(), started, keyframes,
                             keyframe_tx: video_keyframe_tx.clone(),
                             nack_rtt_micros: Arc::clone(&nack_rtt_micros),
+                            picture: Arc::clone(&picture),
                         });
                         {
                             let mut entries = std_mutex_lock(&tracks.entries);
@@ -858,6 +860,7 @@ impl NativePeer {
                                 receiver_feedback_sender: feedback,
                                 stream_control,
                                 decrypt: None,
+                                picture,
                             },
                         )
                         .await;

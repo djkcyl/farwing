@@ -173,11 +173,16 @@ impl StreamControlHandle {
     /// Cinema playout: chosen for this device, or a shared viewing stream.
     pub(crate) fn cinema_playout(&self) -> bool {
         let state = lock(&self.shared);
-        state.device_preferences.cinema || self.participants.shared_view()
+        self.playout(&state)
     }
 
     pub(super) fn apply_playout_locked(&self, state: &StreamControlState) {
-        self.audio
-            .set_cinema(state.device_preferences.cinema || self.participants.shared_view());
+        self.audio.set_cinema(self.playout(state));
+    }
+
+    /// `connect --dev-cinema` decides alone (measurements).
+    fn playout(&self, state: &StreamControlState) -> bool {
+        super::dev_cinema()
+            .unwrap_or_else(|| state.device_preferences.cinema || self.participants.shared_view())
     }
 }

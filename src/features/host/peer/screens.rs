@@ -113,8 +113,9 @@ pub(super) struct Reports {
     /// `VideoFeedback` of this participant, by track SSRC.
     pub recovery: Arc<crate::features::host::recovery::Inbox>,
     /// The participant's picture goes through the forwarder: its tracks
-    /// take no frames themselves (`docs/protocol/deployment-design.md` §5.4).
-    pub forwarded: Arc<AtomicBool>,
+    /// take no frames themselves once it receives from there
+    /// (`docs/protocol/deployment-design.md` §5.4).
+    pub forwarded: Arc<crate::features::host::forwarding::Flags>,
 }
 impl Reports {
     pub fn notify(&self) {

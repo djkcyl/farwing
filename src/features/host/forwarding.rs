@@ -54,13 +54,26 @@ const RETRY: Duration = Duration::from_secs(30);
 /// A participant that could not receive through the forwarder gets its
 /// picture directly for this long.
 const EXCLUDED: Duration = Duration::from_secs(300);
+/// A closed room still forwards this long, until the participants show
+/// their own picture again.
+const CLOSE_GRACE: Duration = Duration::from_secs(3);
 /// A new frame key is used this long after the participants got it.
 const KEY_SWITCH: Duration = Duration::from_secs(2);
 
+/// A participant's part in forwarding, read by its capture workers and its
+/// sound.
+#[derive(Default)]
+pub(crate) struct Flags {
+    /// In a room: the uplink carries this participant's stream.
+    pub(crate) in_room: AtomicBool,
+    /// The participant shows the forwarder's picture: its own media stops.
+    /// Until then it keeps it, so switching costs the picture nothing.
+    pub(crate) receiving: AtomicBool,
+}
+
 struct Entry {
     session_id: String,
-    /// Read by the participant's capture workers.
-    forwarded: Arc<AtomicBool>,
+    forwarded: Arc<Flags>,
     /// A native controller watching the desktop.
     eligible: bool,
     excluded_until: Option<Instant>,
@@ -166,11 +179,11 @@ pub(crate) struct Registration {
 }
 
 /// Registers participant `key` of server session `session_id`; `forwarded`
-/// is the flag its tracks read.
+/// are the flags its tracks read.
 pub(crate) fn register(
     key: u64,
     session_id: String,
-    forwarded: Arc<AtomicBool>,
+    forwarded: Arc<Flags>,
     eligible: bool,
     ice: Vec<RTCIceServer>,
     host: crate::features::host::access::Handle,
@@ -228,6 +241,9 @@ impl Registration {
         if status.receiving {
             tracing::info!(participant = self.key, generation = status.generation,
                 "participant receives through the forwarder");
+            if entry.told.as_ref().is_some_and(|(room, ..)| !room.is_empty()) {
+                entry.forwarded.receiving.store(true, Ordering::Release);
+            }
             return;
         }
         tracing::warn!(participant = self.key, error = %status.error,
@@ -249,7 +265,8 @@ impl Drop for Registration {
 
 /// Back to direct media for `entry`; telling it takes the next generation.
 fn direct(entry: &mut Entry, generation: &mut u32) {
-    entry.forwarded.store(false, Ordering::Release);
+    entry.forwarded.receiving.store(false, Ordering::Release);
+    entry.forwarded.in_room.store(false, Ordering::Release);
     if entry.told.take().is_some() {
         *generation = generation.wrapping_add(1);
         let generation = *generation;
@@ -372,7 +389,7 @@ async fn step() -> bool {
             direct(entry, &mut generation);
             continue;
         }
-        entry.forwarded.store(true, Ordering::Release);
+        entry.forwarded.in_room.store(true, Ordering::Release);
         let tracks: Vec<(u32, String)> = mapping
             .iter()
             .filter(|((participant, _), _)| participant == key)
@@ -481,8 +498,17 @@ async fn close(client: &HostClient, failed: bool) {
     };
     let Some(room) = room else { return };
     tracing::info!(room = %room.id, failed, "forwarding room closed; sending directly");
-    room.uplink.close().await;
-    if let Err(error) = client.sfu_close_room(room.id).await {
-        tracing::debug!(%error, "forwarding room not closed on the server");
-    }
+    // The participants show the forwarder's picture until their own
+    // arrives: the room forwards a little longer.
+    let client = client.clone();
+    let finish = async move {
+        if !failed {
+            tokio::time::sleep(CLOSE_GRACE).await;
+        }
+        room.uplink.close().await;
+        if let Err(error) = client.sfu_close_room(room.id).await {
+            tracing::debug!(%error, "forwarding room not closed on the server");
+        }
+    };
+    tokio::spawn(finish);
 }

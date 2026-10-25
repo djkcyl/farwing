@@ -652,6 +652,14 @@ export class Viewer {
         if (sound) this.addTrack(sound);
         this.events.forwarding?.(video ? mode : '');
       },
+      directDecoded: async () => {
+        let decoded = 0;
+        const report = await this.pc?.getStats();
+        report?.forEach((s) => {
+          if (s.type === 'inbound-rtp' && s.kind === 'video') decoded = Math.max(decoded, s.framesDecoded ?? 0);
+        });
+        return decoded;
+      },
     });
     this.forward.watching(!this.controlHeld);
     this.forward.follow(instruction);

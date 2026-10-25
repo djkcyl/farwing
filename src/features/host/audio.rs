@@ -130,7 +130,7 @@ impl AudioOwner for HostAudio {
 struct Shared {
     lease: Arc<dyn AudioOwner>,
     /// The participant gets the forwarder's sound while this is set.
-    forwarded: Mutex<Option<Arc<AtomicBool>>>,
+    forwarded: Mutex<Option<Arc<super::forwarding::Flags>>>,
     /// End-to-end forwarding: frames are encrypted before packetization.
     cipher: Mutex<Option<super::peer::uplink::Cipher>>,
     cancel: CancellationToken,
@@ -273,7 +273,7 @@ impl Audio {
     }
     /// While `forwarded` is set, the forwarder carries this participant's
     /// sound (`deployment-design.md` §5.4).
-    pub fn follow_forwarding(&self, forwarded: Arc<AtomicBool>) {
+    pub fn follow_forwarding(&self, forwarded: Arc<super::forwarding::Flags>) {
         *lock(&self.0.forwarded) = Some(forwarded);
     }
     pub fn encrypt(&self, cipher: Option<super::peer::uplink::Cipher>) {
@@ -285,7 +285,7 @@ impl Audio {
             && self.0.lease.granted()
             && !lock(&self.0.forwarded)
                 .as_ref()
-                .is_some_and(|f| f.load(Ordering::Acquire))
+                .is_some_and(|f| f.receiving.load(Ordering::Acquire))
             && self.encoding().is_some()
             && !self.0.cancel.is_cancelled()
     }

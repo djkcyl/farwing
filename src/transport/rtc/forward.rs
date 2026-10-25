@@ -42,6 +42,34 @@ use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirecti
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The longest the offer waits for further candidates.
 const GATHER_WAIT: Duration = Duration::from_millis(300);
+/// After the first track's picture came through the forwarder, the others
+/// may take this long before joining counts as done.
+const OTHER_TRACKS_WAIT: Duration = Duration::from_secs(1);
+/// Without a keyframe through the forwarder this long, the joining viewer
+/// asks again.
+const KEYFRAME_AGAIN: Duration = Duration::from_millis(600);
+/// A room left plays on at most this long until the host's picture is back.
+const LEAVE_WAIT: Duration = Duration::from_secs(3);
+
+/// The pictures of a forwarded room's tracks (`(index, track)`) this viewer
+/// has.
+fn pictures(context: &HostSide, tracks: &[(u32, String)]) -> Vec<Arc<super::tracks::PicturePath>> {
+    tracks
+        .iter()
+        .filter_map(|(index, _)| context.tracks.get(*index as i32))
+        .map(|source| source.picture.clone())
+        .collect()
+}
+
+/// Until the forwarder's frames (`forwarded`) or the host's are shown.
+async fn shown(picture: &super::tracks::PicturePath, forwarded: bool) {
+    let mut changes = picture.watch();
+    while picture.forwarded() != forwarded {
+        if changes.changed().await.is_err() {
+            return;
+        }
+    }
+}
 
 /// What a forwarded connection needs from the host connection.
 #[derive(Clone)]
@@ -129,10 +157,22 @@ impl Forwarding {
                 old => (None, old),
             };
             if let Some(old) = left {
-                old.stop.cancel();
-                let _ = old.connection.close().await;
-                let _ = api.sfu_unsubscribe(&old.room, &session).await;
-                tracing::info!(room = %old.room, "left the forwarding room");
+                // The forwarder's picture stays until the host's is back.
+                let pictures = pictures(&context, &old.tracks);
+                for picture in &pictures {
+                    picture.want(false);
+                }
+                let (api, session) = (api.clone(), session.clone());
+                tokio::spawn(async move {
+                    let back = futures_util::future::join_all(
+                        pictures.iter().map(|picture| shown(picture, false)),
+                    );
+                    let _ = tokio::time::timeout(LEAVE_WAIT, back).await;
+                    old.stop.cancel();
+                    let _ = old.connection.close().await;
+                    let _ = api.sfu_unsubscribe(&old.room, &session).await;
+                    tracing::info!(room = %old.room, "left the forwarding room");
+                });
             }
             if instruction.room.is_empty() {
                 tracing::info!("the host sends the picture directly again");
@@ -149,6 +189,11 @@ impl Forwarding {
                 Err(error) => {
                     tracing::warn!(error = %format!("{error:#}"), room = %instruction.room,
                         "cannot receive through the forwarder");
+                    let tracks: Vec<(u32, String)> =
+                        instruction.tracks.iter().map(|t| (t.index, t.track.clone())).collect();
+                    for picture in pictures(&context, &tracks) {
+                        picture.want(false);
+                    }
                     if let Some(old) = self.take() {
                         old.stop.cancel();
                         let _ = old.connection.close().await;
@@ -205,6 +250,13 @@ impl Forwarding {
         instruction: &MediaForward,
         newer: &mut watch::Receiver<Option<MediaForward>>,
     ) -> Result<()> {
+        // The forwarder's frames take over at their first keyframe.
+        let tracks: Vec<(u32, String)> =
+            instruction.tracks.iter().map(|t| (t.index, t.track.clone())).collect();
+        let pictures = pictures(context, &tracks);
+        for picture in &pictures {
+            picture.want(true);
+        }
         let mut media = MediaEngine::default();
         super::negotiation::register_codecs(&mut media)?;
         super::negotiation::register_header_extensions(&mut media)?;
@@ -258,6 +310,7 @@ impl Forwarding {
         }
         let stop = context.stop.child_token();
         let ssrcs = Arc::new(StdMutex::new(BTreeMap::new()));
+        let ssrcs_wanted = ssrcs.clone();
         let decrypt = match instruction.mode.as_str() {
             "e2ee" => {
                 let mut keys = Decryptor::default();
@@ -379,6 +432,7 @@ impl Forwarding {
                             receiver_feedback_sender: feedback,
                             stream_control: context.stream_control.clone(),
                             decrypt,
+                            picture: source.picture.clone(),
                         },
                     )
                     .await;
@@ -427,9 +481,36 @@ impl Forwarding {
             .await
             .context("install the forwarder's answer")?;
         let connected = tokio::time::timeout(CONNECT_TIMEOUT, async {
+            let mut switched_at = None::<Instant>;
+            let mut asked_at = None::<Instant>;
             loop {
+                // The keyframe asked for when the connection came up may have
+                // gone by just before it: ask again while none came through.
+                let up = *first.borrow() && *state.borrow() == RTCPeerConnectionState::Connected;
+                let since = asked_at.get_or_insert_with(Instant::now);
+                if !up {
+                    *since = Instant::now();
+                } else if since.elapsed() >= KEYFRAME_AGAIN
+                    && pictures.iter().any(|p| !p.forwarded())
+                {
+                    *since = Instant::now();
+                    let ssrcs: Vec<u32> = std_mutex_lock(&ssrcs_wanted).values().copied().collect();
+                    for ssrc in ssrcs {
+                        tracing::debug!(ssrc, "no keyframe through the forwarder yet; asking again");
+                        let _ = send_picture_loss_indication(&connection, ssrc).await;
+                    }
+                }
+                // Done once the pictures come through the forwarder (the
+                // host's stream stops then); a track may lag a little.
+                let switched = pictures.iter().filter(|p| p.forwarded()).count();
+                if switched > 0 {
+                    switched_at.get_or_insert_with(Instant::now);
+                }
+                let pictures_done = switched == pictures.len()
+                    || switched_at.is_some_and(|at| at.elapsed() >= OTHER_TRACKS_WAIT);
                 if *state.borrow_and_update() == RTCPeerConnectionState::Connected
                     && *first.borrow_and_update()
+                    && pictures_done
                 {
                     return Ok(());
                 }
@@ -442,6 +523,7 @@ impl Forwarding {
                 tokio::select! {
                     r = state.changed() => r?,
                     r = first.changed() => r?,
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {}
                     r = newer.changed() => {
                         r?;
                         let generation = newer.borrow_and_update().as_ref().map(|n| n.generation);
@@ -455,6 +537,13 @@ impl Forwarding {
         .await;
         match connected {
             Ok(result) => result?,
+            // Media flows but no keyframe made it (a slow downlink): the
+            // picture switches at the next one, as it would have to anyway.
+            Err(_)
+                if *state.borrow() == RTCPeerConnectionState::Connected && *first.borrow() =>
+            {
+                tracing::info!("no keyframe through the forwarder yet; receiving through it anyway");
+            }
             Err(_) => bail!("no media from the forwarder in time"),
         }
         tracing::info!(room = %instruction.room, %session, mode = %instruction.mode,

@@ -57,6 +57,71 @@ pub(crate) struct VideoTrackSource {
     /// track counts too.
     pub(super) keyframe_tx: watch::Sender<u64>,
     pub(super) nack_rtt_micros: Arc<AtomicU64>,
+    /// Whose frames of this track are decoded: the host's or the forwarder's.
+    pub(super) picture: Arc<PicturePath>,
+}
+
+/// Which connection's frames of a track reach the decoder: the host's
+/// (direct) or the forwarder's. Both may carry the track for a while; the
+/// one wanted takes over at its first keyframe, so the picture never waits
+/// for a switch.
+pub(crate) struct PicturePath {
+    forwarded: AtomicBool,
+    wanted: AtomicBool,
+    changed: watch::Sender<bool>,
+}
+
+impl PicturePath {
+    pub(super) fn new() -> Self {
+        Self {
+            forwarded: AtomicBool::new(false),
+            wanted: AtomicBool::new(false),
+            changed: watch::channel(false).0,
+        }
+    }
+
+    /// The forwarder's frames (`true`) or the host's should be shown.
+    pub(super) fn want(&self, forwarded: bool) {
+        self.wanted.store(forwarded, Ordering::Release);
+    }
+
+    /// Whether the forwarder's frames are shown now.
+    pub(super) fn forwarded(&self) -> bool {
+        self.forwarded.load(Ordering::Acquire)
+    }
+
+    /// Follows which connection's frames are shown.
+    pub(super) fn watch(&self) -> watch::Receiver<bool> {
+        self.changed.subscribe()
+    }
+
+    /// Whether a frame from the forwarder (`forwarded`) or the host goes on
+    /// to the decoder; a keyframe of the wanted one takes over.
+    pub(super) fn admit(&self, forwarded: bool, keyframe: bool) -> bool {
+        let shown = self.forwarded.load(Ordering::Acquire);
+        if shown == forwarded {
+            return true;
+        }
+        if !keyframe || self.wanted.load(Ordering::Acquire) != forwarded {
+            return false;
+        }
+        if self
+            .forwarded
+            .compare_exchange(shown, forwarded, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            tracing::info!(forwarded, "the picture comes through the other connection now");
+            self.changed.send_replace(forwarded);
+        }
+        true
+    }
+
+    /// Whether that connection's frames are shown or should be: only then
+    /// does it ask for keyframes.
+    pub(super) fn needed(&self, forwarded: bool) -> bool {
+        self.forwarded.load(Ordering::Acquire) == forwarded
+            || self.wanted.load(Ordering::Acquire) == forwarded
+    }
 }
 
 impl VideoTrackRegistry {
@@ -286,5 +351,33 @@ impl Default for RtpForwardConfig {
         Self {
             video_track_id: Some("video_0".to_owned()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PicturePath;
+
+    #[test]
+    fn the_wanted_connection_takes_over_at_its_keyframe() {
+        let picture = PicturePath::new();
+        assert!(picture.admit(false, false));
+        // Joining a room: the forwarder's frames wait for a keyframe while
+        // the host's go on.
+        picture.want(true);
+        assert!(!picture.admit(true, false));
+        assert!(picture.admit(false, false));
+        assert!(picture.needed(true) && picture.needed(false));
+        assert!(picture.admit(true, true));
+        assert!(picture.forwarded());
+        assert!(!picture.admit(false, true));
+        assert!(!picture.needed(false));
+        // Leaving: back to the host's at its keyframe.
+        picture.want(false);
+        assert!(picture.admit(true, false));
+        assert!(!picture.admit(false, false));
+        assert!(picture.admit(false, true));
+        assert!(!picture.forwarded());
+        assert!(!picture.admit(true, true));
     }
 }

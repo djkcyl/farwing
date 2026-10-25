@@ -18,6 +18,8 @@ const WATCHING_BUFFER_MS = 1000;
 /// any address).
 const GATHER_MS = 500;
 const RELAY_GATHER_MS = 3_000;
+/// A room left plays on at most this long until the host's picture is back.
+const LEAVE_WAIT_MS = 3_000;
 
 export interface ForwardContext {
   iceServers: RTCIceServer[];
@@ -30,6 +32,8 @@ export interface ForwardContext {
   /// The forwarded picture and sound and their mode; `undefined`: the
   /// host's again.
   media(video: MediaStreamTrack | undefined, audio: MediaStreamTrack | undefined, mode: string): void;
+  /// Frames of the host's own picture decoded so far.
+  directDecoded(): Promise<number>;
 }
 
 interface Active {
@@ -89,6 +93,8 @@ export class ForwardReceiver {
   private async apply(instruction: Forward) {
     if (this.closed || instruction !== this.latest) return;
     if (!instruction.room) {
+      // The forwarder's picture stays until the host's is back.
+      if (this.active) await this.directBack(() => this.closed || instruction !== this.latest);
       if (this.leave()) {
         this.context.log('the host sends the picture directly again');
         this.context.media(undefined, undefined, '');
@@ -201,6 +207,16 @@ export class ForwardReceiver {
     const video = await within(received, FIRST_FRAME_MS);
     await firstFrame(connection, () => this.closed || instruction !== this.latest);
     return { video, audio };
+  }
+
+  /// Until the host's own picture decodes again (or a while passes).
+  private async directBack(superseded: () => boolean) {
+    const before = await this.context.directDecoded();
+    const deadline = performance.now() + LEAVE_WAIT_MS;
+    while (performance.now() < deadline && !superseded()) {
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+      if ((await this.context.directDecoded()) > before) return;
+    }
   }
 
   /// Leave the room; whether there was one.

@@ -62,7 +62,7 @@ pub(super) fn capture_loop(
     publication: tokio::sync::watch::Sender<Published>,
     pointer: Arc<Mutex<Option<crate::platform::windows::cursor_shape::Snapshot>>>,
     feedback: Arc<crate::features::host::recovery::TrackFeedback>,
-    forwarded: Arc<AtomicBool>,
+    forwarded: Arc<crate::features::host::forwarding::Flags>,
     slot: usize,
 ) -> Result<()> {
     // Declared first, dropped last: after the encoder and transfer that use
@@ -262,8 +262,10 @@ pub(super) fn capture_loop(
             wanted.quality = wanted.quality.min(maximum_quality);
         }
 
-        // Forwarded: the forwarder uplink takes this stream's frames instead.
-        let forwarding = forwarded.load(Ordering::Acquire) && shown;
+        // In a forwarding room: the uplink takes this stream's frames too;
+        // once the participant shows them, instead.
+        let forwarding = forwarded.in_room.load(Ordering::Acquire) && shown;
+        let replaced = forwarding && forwarded.receiving.load(Ordering::Acquire);
         // Which encoder this participant uses: lead a group or follow one.
         if wanted.capturing {
             let key = encode_group::Key {
@@ -462,7 +464,7 @@ pub(super) fn capture_loop(
             && transport.media_ready()
             && wanted.sending
             && wanted.capturing
-            && !forwarding;
+            && !replaced;
         let own_peak = transport.media_rate().min(bounds.maximum);
         let codec_minimum = crate::features::host::parameters::MIN_ENCODER_RATE;
         let shared = membership.as_ref().and_then(|membership| {

@@ -588,7 +588,7 @@ impl Worker {
         publication: tokio::sync::watch::Sender<Published>,
         pointer: Arc<Mutex<Option<crate::platform::windows::cursor_shape::Snapshot>>>,
         recovery: Arc<crate::features::host::recovery::Inbox>,
-        forwarded: Arc<AtomicBool>,
+        forwarded: Arc<crate::features::host::forwarding::Flags>,
     ) -> Result<Self> {
         let worker_started = Instant::now();
         let track_feedback = Arc::new(crate::features::host::recovery::TrackFeedback::default());

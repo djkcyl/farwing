@@ -67,10 +67,17 @@ impl ContentSteps {
                 self.over_100ms += u64::from(ms >= 100.0);
                 self.max_ms = self.max_ms.max(ms);
             }
+            if elapsed >= HELD_MS {
+                tracing::info!(held_ms = elapsed.round(), "picture held");
+            }
         }
         self.last = Some((rtp_timestamp, now));
     }
 }
+
+/// No new picture for this long is logged (with the time, to match it with
+/// what happened then; still content sends none either).
+const HELD_MS: f64 = 200.0;
 
 /// A content step this much longer than the time between the pictures is a
 /// change of timeline, not a step.
