@@ -41,7 +41,7 @@ const FAR_SHORT_FOR: Duration = Duration::from_secs(1);
 /// 0.7 Mbps).
 const LOW_WORTH: u64 = 2_500_000;
 /// A viewer that came this recently and never had the low layer moves to
-/// it at once when far short (its first verdict already covers a second).
+/// it at once when short (its first verdict already covers half a second).
 const JUST_CAME: Duration = Duration::from_secs(5);
 /// On the low layer, the main stream is tried again after this long without
 /// congestion...
@@ -334,10 +334,12 @@ impl Layer {
         // Far short (a viewer that just came on a slow line): waiting does
         // not help.
         let just_came = self.tried_at.is_none() && now.duration_since(self.since) < JUST_CAME;
-        let wait = match share < FAR_SHORT {
-            true if just_came => Duration::ZERO,
-            true => FAR_SHORT_FOR,
-            false => SHORT_FOR,
+        let wait = if just_came {
+            Duration::ZERO
+        } else if share < FAR_SHORT {
+            FAR_SHORT_FOR
+        } else {
+            SHORT_FOR
         };
         if now.duration_since(*self.short_since.get_or_insert(now)) < wait {
             return LayerStep::Kept;
@@ -1010,6 +1012,8 @@ mod tests {
         let at = |s: f64| start + Duration::from_secs_f64(s);
         let main = 8_000_000;
         let mut layer = Layer::new(start);
+        // Not a viewer that just came.
+        layer.since = start.checked_sub(super::JUST_CAME).unwrap();
         // A small main stream, or a downlink that carries most of it: kept.
         assert!(layer.update(at(0.0), "a", Some(1_000_000), false, Duration::ZERO, 2_000_000, None) == LayerStep::Kept);
         assert!(layer.update(at(1.0), "a", Some(7_000_000), false, Duration::ZERO, main, None) == LayerStep::Kept);
@@ -1043,7 +1047,7 @@ mod tests {
     }
 
     #[test]
-    fn a_viewer_that_just_came_far_short_gets_the_low_layer_at_once() {
+    fn a_viewer_that_just_came_short_gets_the_low_layer_at_once() {
         use super::{JUST_CAME, Layer, LayerStep};
         use std::time::{Duration, Instant};
         let start = Instant::now();
