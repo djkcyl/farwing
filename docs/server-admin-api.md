@@ -231,7 +231,7 @@ curl "${H[@]}" $S/api/v2/admin/sfu    # 转发房间：被控、所在节点、�
 | 接口 | 说明 |
 | --- | --- |
 | `GET /api/v2/admin/overview` | 服务器概览 |
-| `GET`/`POST /api/v2/admin/users`，`GET`/`PATCH`/`DELETE …/users/{id}`，`POST …/{id}/password`，`POST …/{id}/totp/reset` | 账号：创建、修改（`{"admin": bool, "disabled": bool, "nickname": …}`）、删除、重置密码、重置二次验证 |
+| `GET`/`POST /api/v2/admin/users`，`GET`/`PATCH`/`DELETE …/users/{id}`，`POST …/{id}/password`，`POST …/{id}/totp/reset` | 账号：创建、修改（`{"admin": bool, "disabled": bool, "nickname": …}`）、删除、重置密码、重置二次验证；详情含设备、近期登录与好友（`friends`） |
 | `GET`/`POST /api/v2/admin/invites`，`DELETE …/{id}`，`GET …/{id}/uses` | 邀请码 |
 | `GET /api/v2/admin/devices`，`DELETE …/{id}`，`POST …/{id}/disconnect` | 设备：解绑、断开 |
 | `GET /api/v2/admin/sessions`，`DELETE …/{id}` | 会话：结束 |
