@@ -33,6 +33,9 @@ const LIMIT_INTERVAL: Duration = Duration::from_millis(250);
 const LOW_SHARE: f64 = 0.75;
 /// ...for this long...
 const SHORT_FOR: Duration = Duration::from_secs(3);
+/// ...or this long when it carries less than this share.
+const FAR_SHORT: f64 = 0.5;
+const FAR_SHORT_FOR: Duration = Duration::from_secs(1);
 /// ...unless the main stream is this small anyway (the low layer is about
 /// 1.5 Mbps).
 const LOW_WORTH: u64 = 2_500_000;
@@ -298,14 +301,16 @@ impl Layer {
             return LayerStep::Kept;
         }
         let reference = room.map_or(main, |room| room.min(main)) as f64;
-        let short = !dark
-            && main >= LOW_WORTH
-            && limit.is_some_and(|limit| (limit as f64) < LOW_SHARE * reference);
+        let share = limit.map_or(1.0, |limit| limit as f64 / reference.max(1.0));
+        let short = !dark && main >= LOW_WORTH && share < LOW_SHARE;
         if !short {
             self.short_since = None;
             return LayerStep::Kept;
         }
-        if now.duration_since(*self.short_since.get_or_insert(now)) < SHORT_FOR {
+        // Far short (a viewer that just came on a slow line): waiting does
+        // not help.
+        let wait = if share < FAR_SHORT { FAR_SHORT_FOR } else { SHORT_FOR };
+        if now.duration_since(*self.short_since.get_or_insert(now)) < wait {
             return LayerStep::Kept;
         }
         // Back to the low layer soon after trying the main one: wait longer
@@ -895,7 +900,7 @@ mod tests {
 
     #[test]
     fn a_slow_viewer_gets_the_low_layer_and_probes_before_trying_the_main_one() {
-        use super::{Layer, LayerStep, PROBE_FOR, SHORT_FOR, TRY_MAIN_AFTER};
+        use super::{FAR_SHORT_FOR, Layer, LayerStep, PROBE_FOR, SHORT_FOR, TRY_MAIN_AFTER};
         use std::time::{Duration, Instant};
         let start = Instant::now();
         let at = |s: f64| start + Duration::from_secs_f64(s);
@@ -905,9 +910,10 @@ mod tests {
         assert!(layer.update(at(0.0), "a", Some(1_000_000), false, Duration::ZERO, 2_000_000, None) == LayerStep::Kept);
         assert!(layer.update(at(1.0), "a", Some(7_000_000), false, Duration::ZERO, main, None) == LayerStep::Kept);
         // Short of the main stream for SHORT_FOR: the low layer.
-        assert!(layer.update(at(2.0), "a", Some(2_000_000), false, Duration::ZERO, main, None) == LayerStep::Kept);
+        assert!(layer.update(at(2.0), "a", Some(5_000_000), false, Duration::ZERO, main, None) == LayerStep::Kept);
+        assert!(layer.update(at(4.0), "a", Some(5_000_000), false, Duration::ZERO, main, None) == LayerStep::Kept);
         let down = 2.0 + SHORT_FOR.as_secs_f64();
-        assert!(layer.update(at(down), "a", Some(2_000_000), false, Duration::ZERO, main, None) == LayerStep::Switched);
+        assert!(layer.update(at(down), "a", Some(5_000_000), false, Duration::ZERO, main, None) == LayerStep::Switched);
         assert!(layer.low);
         // Calm for TRY_MAIN_AFTER: a probe, which congestion ends.
         let try_at = down + TRY_MAIN_AFTER.as_secs_f64();
@@ -923,9 +929,10 @@ mod tests {
         let done = again + PROBE_FOR.as_secs_f64();
         assert!(layer.update(at(done), "b", None, false, calm + PROBE_FOR, main, None) == LayerStep::Switched);
         assert!(!layer.low);
-        // Back down soon after: the next try waits longer still.
+        // Back down soon after (far short: sooner): the next try waits
+        // longer still.
         assert!(layer.update(at(done + 1.0), "c", Some(2_000_000), false, Duration::ZERO, main, None) == LayerStep::Kept);
-        let down = done + 1.0 + SHORT_FOR.as_secs_f64();
+        let down = done + 1.0 + FAR_SHORT_FOR.as_secs_f64();
         assert!(layer.update(at(down), "c", Some(2_000_000), false, Duration::ZERO, main, None) == LayerStep::Switched);
         assert_eq!(layer.backoff, TRY_MAIN_AFTER * 4);
     }
