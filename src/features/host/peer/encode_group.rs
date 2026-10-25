@@ -497,8 +497,17 @@ impl Membership {
     /// Whether this member's picture goes through the forwarder (its
     /// participant and track), for the uplink.
     pub(super) fn set_forwarded(&self, forwarded: Option<(u64, usize)>) {
-        if let Some(member) = self.group.lock().members.get_mut(&self.id) {
-            member.forwarded = forwarded;
+        let mut inner = self.group.lock();
+        let Some(member) = inner.members.get_mut(&self.id) else { return };
+        let newly = forwarded.is_some() && member.forwarded != forwarded;
+        member.forwarded = forwarded;
+        drop(inner);
+        if newly && self.group.key.low {
+            // The low layer's uplink track takes this group's frames now
+            // rather than on the next tick. (Other groups wait for it: the
+            // members of a group that changes format move over within it,
+            // and its track goes to the new group.)
+            crate::features::host::forwarding::wake();
         }
     }
     /// Observer: the group ended (nobody left to encode).

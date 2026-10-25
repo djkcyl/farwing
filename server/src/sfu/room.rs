@@ -36,6 +36,9 @@ const SHORT_FOR: Duration = Duration::from_secs(3);
 /// ...or this long when it carries less than this share.
 const FAR_SHORT: f64 = 0.5;
 const FAR_SHORT_FOR: Duration = Duration::from_secs(1);
+/// A viewer that came this recently and never had the low layer moves to
+/// it at once when far short (its first verdict already covers a second).
+const JUST_CAME: Duration = Duration::from_secs(5);
 /// ...unless the main stream is this small anyway (the low layer is about
 /// 1.5 Mbps).
 const LOW_WORTH: u64 = 2_500_000;
@@ -309,7 +312,12 @@ impl Layer {
         }
         // Far short (a viewer that just came on a slow line): waiting does
         // not help.
-        let wait = if share < FAR_SHORT { FAR_SHORT_FOR } else { SHORT_FOR };
+        let just_came = self.tried_at.is_none() && now.duration_since(self.since) < JUST_CAME;
+        let wait = match share < FAR_SHORT {
+            true if just_came => Duration::ZERO,
+            true => FAR_SHORT_FOR,
+            false => SHORT_FOR,
+        };
         if now.duration_since(*self.short_since.get_or_insert(now)) < wait {
             return LayerStep::Kept;
         }
@@ -935,6 +943,21 @@ mod tests {
         let down = done + 1.0 + FAR_SHORT_FOR.as_secs_f64();
         assert!(layer.update(at(down), "c", Some(2_000_000), false, Duration::ZERO, main, None) == LayerStep::Switched);
         assert_eq!(layer.backoff, TRY_MAIN_AFTER * 4);
+    }
+
+    #[test]
+    fn a_viewer_that_just_came_far_short_gets_the_low_layer_at_once() {
+        use super::{JUST_CAME, Layer, LayerStep};
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let main = 8_000_000;
+        let mut layer = Layer::new(start);
+        let first = start + Duration::from_millis(1200);
+        assert!(layer.update(first, "a", Some(2_200_000), false, Duration::ZERO, main, None) == LayerStep::Switched);
+        // Later on, far short waits a moment (a dip may pass).
+        let mut layer = Layer::new(start);
+        let later = start + JUST_CAME;
+        assert!(layer.update(later, "a", Some(2_200_000), false, Duration::ZERO, main, None) == LayerStep::Kept);
     }
 
     #[test]

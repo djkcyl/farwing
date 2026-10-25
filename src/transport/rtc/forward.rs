@@ -30,6 +30,7 @@ use webrtc::api::media_engine::MediaEngine;
 use webrtc::interceptor::registry::Registry;
 use webrtc::interceptor::report::receiver::ReceiverReport;
 use webrtc::interceptor::twcc::receiver::Receiver as TransportFeedbackReceiver;
+use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
@@ -42,6 +43,9 @@ use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirecti
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The longest the offer waits for further candidates.
 const GATHER_WAIT: Duration = Duration::from_millis(300);
+/// After the first host candidate, the others (more interfaces) come within
+/// this.
+const HOST_SIBLINGS: Duration = Duration::from_millis(20);
 /// After the first track's picture came through the forwarder, the others
 /// may take this long before joining counts as done.
 const OTHER_TRACKS_WAIT: Duration = Duration::from_secs(1);
@@ -59,6 +63,26 @@ fn pictures(context: &HostSide, tracks: &[(u32, String)]) -> Vec<Arc<super::trac
         .filter_map(|(index, _)| context.tracks.get(*index as i32))
         .map(|source| source.picture.clone())
         .collect()
+}
+
+/// The pictures of `tracks` once the host connection has them all: an
+/// instruction may come just before the host's track does.
+async fn arrived_pictures(
+    context: &HostSide,
+    tracks: &[(u32, String)],
+) -> Result<Vec<Arc<super::tracks::PicturePath>>> {
+    tokio::time::timeout(CONNECT_TIMEOUT, async {
+        loop {
+            let changed = context.tracks.changed.notified();
+            let found = pictures(context, tracks);
+            if found.len() == tracks.len() {
+                return found;
+            }
+            changed.await;
+        }
+    })
+    .await
+    .context("the host's video tracks did not arrive")
 }
 
 /// Until source `source`'s frames are shown (0: the host's).
@@ -97,6 +121,18 @@ struct Active {
     stop: CancellationToken,
     /// Forwarder SSRC of each forwarded track, by this viewer's track index.
     ssrcs: Arc<StdMutex<BTreeMap<i32, u32>>>,
+}
+
+/// `connection` reaches the forwarder from one of this computer's
+/// addresses, not through a relay.
+async fn reached_without_relay(connection: &RTCPeerConnection) -> bool {
+    connection
+        .sctp()
+        .transport()
+        .ice_transport()
+        .get_selected_candidate_pair()
+        .await
+        .is_some_and(|pair| pair.local.typ != RTCIceCandidateType::Relay)
 }
 
 /// The forwarded part of a viewer connection.
@@ -186,7 +222,11 @@ impl Forwarding {
             }
             // A newer instruction ends the wait for this room.
             let mut newer = instructions.clone();
-            let status = match self.join(&context, &api, &session, &instruction, &mut newer).await {
+            let reached = match &replaced {
+                Some(old) => reached_without_relay(&old.connection).await,
+                None => false,
+            };
+            let status = match self.join(&context, &api, &session, &instruction, reached, &mut newer).await {
                 Ok(()) => ForwardStatus {
                     generation: instruction.generation,
                     receiving: true,
@@ -265,6 +305,7 @@ impl Forwarding {
         api: &ServerApi,
         session: &str,
         instruction: &MediaForward,
+        reached: bool,
         newer: &mut watch::Receiver<Option<MediaForward>>,
     ) -> Result<()> {
         // The forwarder's frames take over at their first keyframe.
@@ -272,7 +313,7 @@ impl Forwarding {
             instruction.tracks.iter().map(|t| (t.index, t.track.clone())).collect();
         let number = self.opened.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let source = u64::from(number);
-        let pictures = pictures(context, &tracks);
+        let pictures = arrived_pictures(context, &tracks).await?;
         for picture in &pictures {
             picture.want(source);
         }
@@ -474,14 +515,33 @@ impl Forwarding {
             stop,
             ssrcs,
         });
+        let host = Arc::new(tokio::sync::Notify::new());
+        if reached {
+            let host = Arc::clone(&host);
+            connection.on_ice_candidate(Box::new(move |candidate| {
+                if candidate.is_some_and(|c| c.typ == RTCIceCandidateType::Host) {
+                    host.notify_one();
+                }
+                Box::pin(async {})
+            }));
+        }
         let offer = connection.create_offer(None).await?;
         let mut gathered = connection.gathering_complete_promise().await;
         connection.set_local_description(offer).await?;
         // The forwarder answers checks from any address: host candidates
         // suffice, relayed ones need not be waited for (an unreachable
         // server would hold the offer back; without UDP to the forwarder the
-        // join fails and the host sends directly).
-        let _ = tokio::time::timeout(GATHER_WAIT, gathered.recv()).await;
+        // join fails and the host sends directly). When the room's old
+        // connection reached it without a relay, so will a host candidate.
+        if reached {
+            let _ = tokio::time::timeout(GATHER_WAIT, async {
+                host.notified().await;
+                tokio::time::sleep(HOST_SIBLINGS).await;
+            })
+            .await;
+        } else {
+            let _ = tokio::time::timeout(GATHER_WAIT, gathered.recv()).await;
+        }
         let offer = connection
             .local_description()
             .await

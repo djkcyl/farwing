@@ -166,8 +166,8 @@ fn state() -> MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A forwarded encoder group ended: its members' new group gets the track
-/// now rather than on the next tick.
+/// Forwarding changed (an encoder group ended or formed, the forwarder's
+/// low layer viewers changed): look now rather than on the next tick.
 pub(crate) fn wake() {
     WAKE.notify_one();
 }

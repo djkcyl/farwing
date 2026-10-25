@@ -81,10 +81,16 @@ impl Limit {
 
     fn set_low(&self, sessions: Vec<String>) {
         let mut low = lock(&self.low);
-        if low.0 != sessions {
+        let changed = low.0 != sessions;
+        if changed {
             tracing::info!(?sessions, "the forwarder's low layer viewers");
         }
         *low = (sessions, Some(Instant::now()));
+        drop(low);
+        if changed {
+            // Their encoders change now rather than on the next tick.
+            crate::features::host::forwarding::wake();
+        }
     }
 
     /// Whether the forwarder gives session `session` the low layer.

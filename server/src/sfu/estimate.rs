@@ -53,6 +53,10 @@ const RELAX_AFTER: Duration = Duration::from_secs(1);
 const OVERHEAD: usize = 48;
 /// What the leg delivers over this long gives its rate and loss.
 const WINDOW: Duration = Duration::from_secs(1);
+/// No verdict before this long of reports (the first keyframe's burst
+/// says little about the downlink); until [`WINDOW`], only from the rate
+/// packets arrived at.
+const FIRST_VERDICT: Duration = Duration::from_millis(500);
 
 pub(super) struct Downlink {
     core: GoogCcNetworkController,
@@ -64,8 +68,7 @@ pub(super) struct Downlink {
     remote_offset: Option<i64>,
     flight: usize,
     limit: Option<f64>,
-    /// The first report: a second of them comes before any verdict (the
-    /// first keyframe's burst says little about the downlink).
+    /// The first report ([`FIRST_VERDICT`]).
     first_report: Option<Instant>,
     congested_at: Option<Instant>,
     relaxed_at: Instant,
@@ -299,7 +302,8 @@ impl Downlink {
 
     /// Congestion lowers the limit to [`BETA`] of what got through.
     fn assess(&mut self, at: Instant) {
-        if at.duration_since(*self.first_report.get_or_insert(at)) < WINDOW {
+        let age = at.duration_since(*self.first_report.get_or_insert(at));
+        if age < FIRST_VERDICT {
             return;
         }
         let (delivered, _) = self
@@ -319,8 +323,15 @@ impl Downlink {
         {
             return;
         }
-        let delivered = delivered as f64 * 8.0 / WINDOW.as_secs_f64();
-        let limit = BETA * self.arrival_rate().unwrap_or(0.0).max(delivered).max(MINIMUM);
+        // Reports of less than a second understate what it delivers.
+        let arrival = self.arrival_rate();
+        let (arrival, delivered) = if age >= WINDOW {
+            (arrival.unwrap_or(0.0), delivered as f64 * 8.0 / WINDOW.as_secs_f64())
+        } else {
+            let Some(arrival) = arrival else { return };
+            (arrival, 0.0)
+        };
+        let limit = BETA * arrival.max(delivered).max(MINIMUM);
         if self.limit.is_none() {
             tracing::info!(
                 limit_bps = limit as u64,
