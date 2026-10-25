@@ -247,7 +247,8 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `POST /sfu/rooms` | 任一（被控） | `CreateRoomRequest` `{sessions, mode, offer}` | `RoomCreated` `{room, mode, answer, node?}` |
 | `PUT /sfu/rooms/{room}` | 任一（房间的被控） | `{sessions?, offer?}` | `{answer?}` |
 | `DELETE /sfu/rooms/{room}` | 任一（房间的被控） | — | `{}` |
-| `POST /sfu/rooms/{room}/subscribe` | 任一（该会话的主控） | `SubscribeRequest` `{session, connection, offer, tracks?}` | `Subscription` `{answer, mode}` |
+| `POST /sfu/rooms/{room}/subscribe` | 任一（该会话的主控） | `SubscribeRequest` `{session, connection, offer, tracks?, layer?}` | `Subscription` `{answer, mode}` |
+| `PUT /sfu/rooms/{room}/subscribe/{session}/layer` | 任一（该会话的主控） | `LayerRequest` `{layer}` | `{}` |
 | `DELETE /sfu/rooms/{room}/subscribe/{session}/{connection}` | 任一（该会话的主控或被控） | — | `{}` |
 | `GET /ws` | 入场券或恢复令牌（§4.1） | — | WebSocket 升级 |
 
@@ -386,7 +387,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 
 - 被控 `POST /sfu/rooms {sessions, mode, offer}`：`sessions` 为它当前承载的会话（任一不是则 `404`），`offer` 只含发送的媒体（每路编码一个视频轨、共享的系统声音一个音频轨，候选收集完毕），扩展与负载类型取自共享表（`crates/rtc-wire`）。回执 `answer` 与房间 ID；`node` 为转发所在的边缘节点名称（缺省为本服务器）。拒绝：`403 forwarding_disabled`、`403 forwarding_mode_not_allowed`、`503 forwarding_unavailable`。
 - `PUT /sfu/rooms/{room} {sessions?, offer?}`：`sessions` 替换可订阅的会话（被移出的会话随即退订）；`offer` 重新发布（轨道变化），所有订阅结束，观看者需重新订阅。`DELETE` 关闭房间。会话结束后自动移出房间，最后一个会话结束时房间关闭。
-- 主控 `POST /sfu/rooms/{room}/subscribe {session, connection, offer, tracks?}`：只能订阅自己作为主控的会话（否则 `404`）。`connection` 是主控在这次会话中的第几条转发连接（从 1 起）：同一会话可以同时有两条（新连接接上前旧的继续收），同一编号再次订阅替换之前的那条。`offer` 只收不发；`tracks` 按每种媒体的段落顺序指定要收的轨道 ID（缺省按发布顺序）。回执 `answer` 与房间的 `mode`。`DELETE /sfu/rooms/{room}/subscribe/{session}/{connection}` 退订其中一条。
+- 主控 `POST /sfu/rooms/{room}/subscribe {session, connection, offer, tracks?}`：只能订阅自己作为主控的会话（否则 `404`）。`connection` 是主控在这次会话中的第几条转发连接（从 1 起）：同一会话可以同时有两条（新连接接上前旧的继续收），同一编号再次订阅替换之前的那条。`offer` 只收不发；`tracks` 按每种媒体的段落顺序指定要收的轨道 ID（缺省按发布顺序）。回执 `answer` 与房间的 `mode`。`DELETE /sfu/rooms/{room}/subscribe/{session}/{connection}` 退订其中一条。`layer` 是观看者选的一路：`auto`（缺省，由转发器按下行决定）、`main`（高清，转发器不再把它换到低码率一路）、`low`（流畅，固定看低码率一路、不试回主流）；画质设置改变时主控以 `PUT …/subscribe/{session}/layer` 告诉转发器（网页端同样）。
 - 转发器原样传递被控的 RTP 包（SSRC、序号、负载类型与头扩展不变，只按连接重写 transport-cc 序号），回应观看者的 NACK、合并关键帧请求（每路每 300 ms 一次；新连接建立后为它的视频轨另请求一次）、转发发送端报告。它每 250 ms 在上行连接上向被控发一个复合 RTCP 包（SSRC 0）：REMB 为转发流的上限（没有上限时为 10¹² bit/s），随后的 APP 包（名称 `FWLO`）列出应改看低码率一路的会话 ID（以换行分隔、补零到 4 字节；`deployment-design.md` §5.4）。转发连接只提供主机候选（共用 UDP 端口，默认 3481），客户端直接或经自己的中转连到它，不需要交换候选。
 - 被控如何告诉观看者房间 ID 与轨道，见 §6.7。
 
