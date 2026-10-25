@@ -217,6 +217,9 @@ enum Commands {
         /// 测量用：在本机收包处注入丢包与延迟（规则同 dev video --loss）
         #[arg(long, hide = true)]
         dev_loss: Option<String>,
+        /// 测量用：以此画质开始（auto、original、high、clear、fast），不保存
+        #[arg(long, hide = true)]
+        dev_quality: Option<String>,
         /// 测量用：不声明 video.recovery，丢包后只用关键帧恢复
         #[arg(long, hide = true)]
         dev_no_recovery: bool,
@@ -907,6 +910,7 @@ fn main() -> Result<()> {
             hardware_decode,
             transport,
             dev_loss,
+            dev_quality,
             dev_no_recovery,
             dev_cinema,
             dev_virtual_screen,
@@ -923,6 +927,9 @@ fn main() -> Result<()> {
             }
             if let Some(spec) = dev_loss.as_deref() {
                 farwing::application::cli::dev_impair(spec)?;
+            }
+            if let Some(quality) = dev_quality.as_deref() {
+                farwing::application::cli::dev_quality(quality)?;
             }
             if dev_no_recovery {
                 farwing::application::cli::dev_video_without_recovery();

@@ -817,6 +817,21 @@ pub fn dev_virtual_screen() {
     crate::features::stream_control::set_dev_virtual_screen();
 }
 
+/// `connect --dev-quality`: start at this tier (not saved).
+pub fn dev_quality(quality: &str) -> Result<()> {
+    use crate::features::stream_control::StreamQuality;
+    let quality = match quality {
+        "auto" => StreamQuality::Auto,
+        "original" => StreamQuality::Original,
+        "high" => StreamQuality::High,
+        "clear" => StreamQuality::Clear,
+        "fast" => StreamQuality::Fast,
+        other => anyhow::bail!("unknown quality {other}"),
+    };
+    crate::features::stream_control::set_dev_quality(quality);
+    Ok(())
+}
+
 /// `connect --dev-auto-quality`: start automatic quality at this tier (not saved).
 pub fn dev_auto_quality(quality: i32) {
     crate::features::stream_control::set_dev_auto_quality(quality);

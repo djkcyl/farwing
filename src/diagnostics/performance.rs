@@ -1057,6 +1057,13 @@ impl PerformanceMonitor {
         })
     }
 
+    /// Video packets arrived within `window`.
+    pub(crate) fn video_arrived_within(&self, window: Duration) -> bool {
+        mutex_lock(&self.inner.rtp_timing)
+            .last_arrival
+            .is_some_and(|at| at.elapsed() < window)
+    }
+
     /// How long ago the last new picture was shown.
     pub(crate) fn picture_age(&self) -> Option<Duration> {
         let at = self.inner.last_picture_micros.load(Ordering::Relaxed);

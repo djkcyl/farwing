@@ -41,6 +41,8 @@ use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirecti
 
 /// The forwarder connection must carry media within this.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// The viewer's choice of stream is checked this often.
+const CHOICE_CHECK: Duration = Duration::from_millis(500);
 /// The longest the offer waits for further candidates.
 const GATHER_WAIT: Duration = Duration::from_millis(300);
 /// After the first host candidate, the others (more interfaces) come within
@@ -63,6 +65,18 @@ fn pictures(context: &HostSide, tracks: &[(u32, String)]) -> Vec<Arc<super::trac
         .filter_map(|(index, _)| context.tracks.get(*index as i32))
         .map(|source| source.picture.clone())
         .collect()
+}
+
+/// The forwarder's stream this viewer chose (`deployment-design.md` §5.4):
+/// 流畅 is its low layer, another manual tier its main one.
+fn chosen_layer(control: &StreamControlHandle) -> farwing_protocol::api::ForwardLayer {
+    use crate::features::stream_control::StreamQuality;
+    use farwing_protocol::api::ForwardLayer;
+    match control.snapshot().settings.quality {
+        StreamQuality::Auto => ForwardLayer::Auto,
+        StreamQuality::Fast => ForwardLayer::Low,
+        _ => ForwardLayer::Main,
+    }
 }
 
 /// The pictures of `tracks` once the host connection has them all: an
@@ -161,6 +175,38 @@ impl Forwarding {
     pub(super) async fn run(self: Arc<Self>, context: HostSide, api: ServerApi, session: String) {
         let mut instructions = context.stream_control.forward_instructions();
         tracing::info!("following the host's forwarding instructions");
+        // The viewer's choice of stream follows its quality setting.
+        let chooser = {
+            let this = Arc::clone(&self);
+            let (control, api, session) = (context.stream_control.clone(), api.clone(), session.clone());
+            let stop = context.stop.clone();
+            tokio::spawn(async move {
+                let mut told: Option<(String, farwing_protocol::api::ForwardLayer)> = None;
+                loop {
+                    tokio::select! {
+                        _ = stop.cancelled() => break,
+                        _ = tokio::time::sleep(CHOICE_CHECK) => {}
+                    }
+                    let room = std_mutex_lock(&this.active).as_ref().map(|a| a.room.clone());
+                    let Some(room) = room else {
+                        told = None;
+                        continue;
+                    };
+                    let now = Some((room.clone(), chosen_layer(&control)));
+                    if told == now {
+                        continue;
+                    }
+                    let layer = now.as_ref().map(|(_, layer)| *layer).unwrap_or_default();
+                    match api.sfu_layer(&room, &session, layer).await {
+                        Ok(()) => {
+                            tracing::info!(?layer, "the forwarder knows this viewer's choice of stream");
+                            told = now;
+                        }
+                        Err(error) => tracing::debug!(error = %format!("{error:#}"), "choice of stream not sent"),
+                    }
+                }
+            })
+        };
         // The host repeats its last instruction on a new route.
         let mut handled = None;
         loop {
@@ -278,6 +324,7 @@ impl Forwarding {
             old.stop.cancel();
             let _ = old.connection.close().await;
         }
+        chooser.abort();
     }
 
     /// `Some` when `instruction` only changes the frame key of the active
@@ -561,7 +608,7 @@ impl Forwarding {
             .chain((!instruction.audio.is_empty()).then(|| instruction.audio.clone()))
             .collect();
         let subscription = api
-            .sfu_subscribe(&instruction.room, session, number, offer, Some(tracks))
+            .sfu_subscribe(&instruction.room, session, number, offer, Some(tracks), chosen_layer(&context.stream_control))
             .await
             .context("subscribe to the forwarding room")?;
         connection

@@ -1,7 +1,9 @@
 //! What happens in the session, shown over the picture to everyone in it:
-//! who joined or left, who took control, how the picture travels; and a
-//! scrim while a switch of the picture's path holds it still. Paint only:
-//! no egui area, response or hit region, so input still reaches the picture.
+//! who joined or left, who took control, how the picture travels; that a
+//! lower quality may help when the picture stalls often at a chosen one;
+//! and a scrim while a switch of the picture's path holds it still. Paint
+//! only: no egui area, response or hit region, so input still reaches the
+//! picture.
 use crate::diagnostics::performance::PerformanceMonitor;
 use crate::features::stream_control::StreamControlHandle;
 use crate::i18n::t;
@@ -20,6 +22,16 @@ const MOST: usize = 3;
 const SWITCHING: Duration = Duration::from_millis(1500);
 /// ...after which a picture held this long is covered.
 const HELD: Duration = Duration::from_millis(300);
+/// The picture held this long while video kept arriving: a stall (a still
+/// screen sends nothing, a dead link neither)...
+const STALL: Duration = Duration::from_millis(300);
+/// ...this many within this long, or one this long, at a quality the viewer
+/// chose, suggest a lower one...
+const STALLS: usize = 3;
+const STALLS_WITHIN: Duration = Duration::from_secs(30);
+const LONG_STALL: Duration = Duration::from_secs(3);
+/// ...at most this often for the same quality.
+const SUGGEST_AGAIN: Duration = Duration::from_secs(300);
 const MARGIN: f32 = 14.0;
 const HEIGHT: f32 = 28.0;
 const GAP: f32 = 6.0;
@@ -35,6 +47,11 @@ pub(crate) struct RoomNotices {
     /// `None` until the first look.
     forwarded: Option<Option<bool>>,
     shown: VecDeque<(Instant, String)>,
+    /// The picture is held in a stall now.
+    stalling: bool,
+    stalls: VecDeque<Instant>,
+    /// When a lower quality was last suggested, by the quality in use.
+    suggested: BTreeMap<&'static str, Instant>,
 }
 
 impl RoomNotices {
@@ -49,6 +66,9 @@ impl RoomNotices {
     ) {
         let now = Instant::now();
         self.observe(control, now);
+        self.watch_stalls(control, performance, now);
+        // The stall watch runs while the picture stands still too.
+        ctx.request_repaint_after(Duration::from_millis(250));
         self.paint_scrim(ctx, performance, bounds);
         self.paint_notices(ctx, bounds, now);
     }
@@ -113,6 +133,60 @@ impl RoomNotices {
         {
             self.shown.pop_front();
         }
+    }
+
+    /// Counts stalls; frequent ones at a quality the viewer chose suggest the
+    /// next lower one (自动 for a custom bitrate). A switch of the picture's
+    /// path is not a stall: its scrim covers it.
+    fn watch_stalls(&mut self, control: &StreamControlHandle, performance: &PerformanceMonitor, now: Instant) {
+        use crate::features::stream_control::StreamQuality;
+        let held = performance.picture_age().is_some_and(|age| age >= STALL);
+        let stalled = held
+            && performance.switch_pending().is_none()
+            && performance.video_arrived_within(STALL / 2);
+        if stalled && !self.stalling {
+            self.stalls.push_back(now);
+        }
+        self.stalling = held && (self.stalling || stalled);
+        while self
+            .stalls
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= STALLS_WITHIN)
+        {
+            self.stalls.pop_front();
+        }
+        let long = self.stalling && performance.picture_age().is_some_and(|age| age >= LONG_STALL);
+        if self.stalls.len() < STALLS && !long {
+            return;
+        }
+        self.stalls.clear();
+        let viewer = &t().viewer;
+        // Sharing the picture: a stored higher tier counts as 高清.
+        let quality = match control.snapshot().settings.quality {
+            StreamQuality::Original | StreamQuality::High | StreamQuality::Custom
+                if control.participants().shared_view() =>
+            {
+                StreamQuality::Clear
+            }
+            other => other,
+        };
+        let (current, lower) = match quality {
+            StreamQuality::Original => ("original", viewer.quality_very_high),
+            StreamQuality::High => ("high", viewer.quality_high),
+            StreamQuality::Clear => ("clear", viewer.quality_smooth),
+            StreamQuality::Custom => ("custom", t().features.stream_quality_auto),
+            StreamQuality::Auto | StreamQuality::Fast => return,
+        };
+        if self
+            .suggested
+            .get(current)
+            .is_some_and(|at| now.duration_since(*at) < SUGGEST_AGAIN)
+        {
+            return;
+        }
+        self.suggested.insert(current, now);
+        tracing::info!(quality = current, "frequent stalls; a lower quality suggested");
+        self.push(now, (viewer.stalling_try)(lower));
     }
 
     fn push(&mut self, now: Instant, text: String) {

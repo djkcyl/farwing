@@ -713,35 +713,50 @@ pub(super) fn show_stream_control_window(
                                     }
                                 }
                                 section_separator(ui);
-                                for (quality, label, detail) in [
-                                    (
-                                        StreamQuality::Auto,
-                                        snapshot.auto_quality_label.as_str(),
-                                        String::new(),
-                                    ),
-                                    (StreamQuality::Original, t().viewer.quality_original, "30M".into()),
-                                    (StreamQuality::High, t().viewer.quality_very_high, "14M".into()),
-                                    (StreamQuality::Clear, t().viewer.quality_high, "8M".into()),
-                                    (
-                                        StreamQuality::Custom,
-                                        t().viewer.custom_bitrate,
-                                        format!(
-                                            "{} Mbps",
-                                            settings
-                                                .custom_bitrate_mbps
-                                                .min(snapshot.custom_bitrate_limit)
+                                let auto = (
+                                    StreamQuality::Auto,
+                                    snapshot.auto_quality_label.as_str(),
+                                    String::new(),
+                                );
+                                let clear = (StreamQuality::Clear, t().viewer.quality_high, "8M".to_owned());
+                                let smooth = (StreamQuality::Fast, t().viewer.quality_smooth, "1.5M".to_owned());
+                                // Sharing the picture: 自动, 高清 or 流畅; a stored
+                                // higher tier counts as 高清 meanwhile.
+                                let rows = if locked {
+                                    vec![auto, clear, smooth]
+                                } else {
+                                    vec![
+                                        auto,
+                                        (StreamQuality::Original, t().viewer.quality_original, "30M".into()),
+                                        (StreamQuality::High, t().viewer.quality_very_high, "14M".into()),
+                                        clear,
+                                        smooth,
+                                        (
+                                            StreamQuality::Custom,
+                                            t().viewer.custom_bitrate,
+                                            format!(
+                                                "{} Mbps",
+                                                settings
+                                                    .custom_bitrate_mbps
+                                                    .min(snapshot.custom_bitrate_limit)
+                                            ),
                                         ),
-                                    ),
-                                ] {
+                                    ]
+                                };
+                                let shown = match settings.quality {
+                                    StreamQuality::Auto | StreamQuality::Clear | StreamQuality::Fast => settings.quality,
+                                    _ if locked => StreamQuality::Clear,
+                                    other => other,
+                                };
+                                for (quality, label, detail) in rows {
                                     let more = matches!(quality, StreamQuality::Custom);
                                     let enabled = snapshot.ready
-                                        && !locked
                                         && (!more || snapshot.custom_bitrate_supported);
                                     let response = menu_row(
                                         ui,
                                         label,
                                         &detail,
-                                        Some(settings.quality == quality),
+                                        Some(shown == quality),
                                         enabled,
                                         more,
                                     );

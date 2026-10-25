@@ -1185,6 +1185,7 @@ impl ServerApi {
         connection: u32,
         offer: String,
         tracks: Option<Vec<String>>,
+        layer: wire::ForwardLayer,
     ) -> Result<wire::Subscription> {
         self.call(
             Method::POST,
@@ -1194,11 +1195,25 @@ impl ServerApi {
                 connection,
                 offer,
                 tracks,
+                layer,
             })?,
             REQUEST_TIMEOUT,
             Auth::Session,
         )
         .await
+    }
+
+    /// The forwarder's stream this viewer chose.
+    pub(crate) async fn sfu_layer(&self, room: &str, session: &str, layer: wire::ForwardLayer) -> Result<()> {
+        self.call::<IgnoredAny>(
+            Method::PUT,
+            &path::sfu_layer(room, session),
+            json(&wire::LayerRequest { layer })?,
+            REQUEST_TIMEOUT,
+            Auth::Session,
+        )
+        .await
+        .map(|_| ())
     }
 
     pub(crate) async fn sfu_unsubscribe(

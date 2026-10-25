@@ -25,7 +25,7 @@ pub use display_topology::{DisplayTopologyAction, DisplayTopologyStatus, Display
 use input::expire_cursor_request;
 use settings::{
     apply_reported_color, capture_setting_request, color_supported, encode_capture_request,
-    format_pb_error, format_proposal, frame_rate_choice, normalize_low_quality,
+    format_pb_error, format_proposal, frame_rate_choice,
     quality_from_capability, quality_name, restore_confirmed_capture, validate_color,
     viewing_quality_label,
 };
@@ -228,7 +228,9 @@ impl StreamControlPreferences {
             frame_rate: frame_rate_choice(profile.stream_fps),
             custom_bitrate_mbps: DEFAULT_CUSTOM_BITRATE_MBPS,
         });
-        normalize_low_quality(&mut settings);
+        if let Some(quality) = dev_quality() {
+            settings.quality = quality;
+        }
         settings.custom_bitrate_mbps = normalize_custom_bitrate(settings.custom_bitrate_mbps);
         Self {
             settings,
@@ -1050,6 +1052,17 @@ static DEV_AUTO_QUALITY: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
 /// `connect --dev-auto-quality`: start automatic quality at this tier instead
 /// of the one saved for the device, and do not save the settled tier
 /// (measurements: every run starts alike).
+static DEV_QUALITY: std::sync::OnceLock<StreamQuality> = std::sync::OnceLock::new();
+
+/// `connect --dev-quality`: start at this tier (not saved).
+pub(crate) fn set_dev_quality(quality: StreamQuality) {
+    let _ = DEV_QUALITY.set(quality);
+}
+
+fn dev_quality() -> Option<StreamQuality> {
+    DEV_QUALITY.get().copied()
+}
+
 pub(crate) fn set_dev_auto_quality(quality: i32) {
     let _ = DEV_AUTO_QUALITY.set(quality);
 }

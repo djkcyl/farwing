@@ -319,9 +319,8 @@ impl StreamControlHandle {
 
 pub(super) fn set_requested_settings(
     state: &mut StreamControlState,
-    mut settings: StreamControlSettings,
+    settings: StreamControlSettings,
 ) -> Result<()> {
-    normalize_low_quality(&mut settings);
     if settings.quality == StreamQuality::Custom
         && !(1..=MAX_CUSTOM_BITRATE_MBPS).contains(&settings.custom_bitrate_mbps)
     {
@@ -351,15 +350,6 @@ pub(super) fn set_requested_settings(
     };
     state.settings = settings;
     Ok(())
-}
-
-pub(super) fn normalize_low_quality(settings: &mut StreamControlSettings) {
-    // Capture configuration also normalizes an actual low-tier
-    // capability fallback to Custom 1M; this is not a separate menu entry.
-    if settings.quality == StreamQuality::Fast {
-        settings.quality = StreamQuality::Custom;
-        settings.custom_bitrate_mbps = 1;
-    }
 }
 
 pub(super) fn prepare_initial_capture_sync(
