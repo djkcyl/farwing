@@ -101,6 +101,14 @@ impl PicturePath {
         self.changed.subscribe()
     }
 
+    /// Whether a frame from `source` may go on: its picture is shown, or it
+    /// is a keyframe of the wanted source (which [`Self::admit`] lets take
+    /// over).
+    pub(super) fn admissible(&self, source: u64, keyframe: bool) -> bool {
+        self.shown.load(Ordering::Acquire) == source
+            || (keyframe && self.wanted.load(Ordering::Acquire) == source)
+    }
+
     /// Whether a frame from `source` goes on to the decoder; a keyframe of
     /// the wanted one takes over.
     pub(super) fn admit(&self, source: u64, keyframe: bool) -> bool {

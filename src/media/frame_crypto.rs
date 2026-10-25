@@ -150,7 +150,7 @@ impl Encryptor {
 }
 
 /// A viewer's side: the current and the previous key.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Decryptor {
     keys: Vec<FrameKey>,
 }

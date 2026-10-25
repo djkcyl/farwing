@@ -226,7 +226,13 @@ impl Forwarding {
                 Some(old) => reached_without_relay(&old.connection).await,
                 None => false,
             };
-            let status = match self.join(&context, &api, &session, &instruction, reached, &mut newer).await {
+            // The keys the room's frames are sealed with so far: a key
+            // change may still be on its way to the frames.
+            let keys = replaced
+                .as_ref()
+                .and_then(|old| old.decrypt.as_ref())
+                .map(|decrypt| std_mutex_lock(decrypt).clone());
+            let status = match self.join(&context, &api, &session, &instruction, reached, keys, &mut newer).await {
                 Ok(()) => ForwardStatus {
                     generation: instruction.generation,
                     receiving: true,
@@ -306,6 +312,7 @@ impl Forwarding {
         session: &str,
         instruction: &MediaForward,
         reached: bool,
+        keys: Option<Decryptor>,
         newer: &mut watch::Receiver<Option<MediaForward>>,
     ) -> Result<()> {
         // The forwarder's frames take over at their first keyframe.
@@ -373,7 +380,7 @@ impl Forwarding {
         let ssrcs_wanted = ssrcs.clone();
         let decrypt = match instruction.mode.as_str() {
             "e2ee" => {
-                let mut keys = Decryptor::default();
+                let mut keys = keys.unwrap_or_default();
                 keys.add_key(FrameKey::new(instruction.key_id as u8, &instruction.key)?);
                 Some(Arc::new(StdMutex::new(keys)))
             }

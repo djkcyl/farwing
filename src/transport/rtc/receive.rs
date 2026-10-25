@@ -932,9 +932,36 @@ pub(super) async fn emit_video_receiver_result(
     performance.record_predecode_drops(result.predecode_drops);
     performance.set_frame_buffer_frames(result.frame_buffer_frames);
     for frame in result.frames {
+        // End-to-end forwarding: the frame as the host encoded it. Opened
+        // first: only a frame that opens takes the picture over (one sealed
+        // with a key this connection does not hold yet would leave the
+        // picture on frames it cannot show).
+        let opened = match decrypt {
+            Some(decrypt) if picture.admissible(source, frame.keyframe) => {
+                use crate::media::frame_crypto::Codec;
+                let codec = match frame.codec {
+                    VideoCodecKind::H264 => Codec::H264,
+                    VideoCodecKind::H265 => Codec::H265,
+                    VideoCodecKind::Av1 => Codec::Av1,
+                };
+                let opened = decrypt
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .decrypt(codec, &frame.data);
+                match opened {
+                    Ok(plain) => Some(plain),
+                    Err(error) => {
+                        tracing::debug!(%error, "forwarded frame not decrypted; asking for a keyframe");
+                        let _ = send_picture_loss_indication(connection, media_ssrc).await;
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
         // The other connection's frames are shown: this one's are dropped
         // (completed undecoded) until it takes over at a keyframe.
-        if !picture.admit(source, frame.keyframe) {
+        if (decrypt.is_some() && opened.is_none()) || !picture.admit(source, frame.keyframe) {
             drop(DecodeCompletion::new(frame.frame_id, receiver_feedback_sender.clone()));
             continue;
         }
@@ -989,28 +1016,8 @@ pub(super) async fn emit_video_receiver_result(
         if frame.keyframe {
             video_keyframe_tx.send_modify(|value| *value += 1);
         }
-        // End-to-end forwarding: the frame as the host encoded it.
-        let data = match decrypt {
-            Some(decrypt) => {
-                use crate::media::frame_crypto::Codec;
-                let codec = match frame.codec {
-                    VideoCodecKind::H264 => Codec::H264,
-                    VideoCodecKind::H265 => Codec::H265,
-                    VideoCodecKind::Av1 => Codec::Av1,
-                };
-                let opened = decrypt
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .decrypt(codec, &frame.data);
-                match opened {
-                    Ok(plain) => plain,
-                    Err(error) => {
-                        tracing::debug!(%error, "forwarded frame not decrypted; asking for a keyframe");
-                        let _ = send_picture_loss_indication(connection, media_ssrc).await;
-                        continue;
-                    }
-                }
-            }
+        let data = match opened {
+            Some(plain) => plain,
             None => frame.data,
         };
         let encoded = EncodedVideoFrame {
