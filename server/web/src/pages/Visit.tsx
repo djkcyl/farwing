@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useT } from '../i18n/react';
 import { useAuth } from '../lib/auth';
-import { connectIdText } from '../lib/format';
+import { connectIdText, deviceIdText } from '../lib/format';
 import { Link, navigate, useLocation } from '../lib/router';
 import { warmUpPake } from '../lib/spake2';
 import { parseTarget, VisitError, visitAdmission, visitError, type VisitStep } from '../lib/visit';
@@ -17,18 +17,26 @@ export default function Visit() {
   const t = useT();
   const auth = useAuth();
   const { query } = useLocation();
+  // A link from the host's invitation: `?id=<device>[&confirm=1][#code=<access code>]`
+  // (the fragment never reaches the server).
   const [target, setTarget] = useState(() => {
-    const code = query.get('code') ?? query.get('id') ?? '';
-    return /^\d{9}$/.test(code) ? connectIdText(code) : code;
+    const id = query.get('id') ?? '';
+    return /^\d{9}$/.test(id) ? connectIdText(id) : deviceIdText(id);
   });
-  const [mode, setMode] = useState<'code' | 'confirm'>('code');
-  const [code, setCode] = useState('');
+  const [mode, setMode] = useState<'code' | 'confirm'>(() => (query.get('confirm') === '1' ? 'confirm' : 'code'));
+  const [code, setCode] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('code') ?? '');
   const [step, setStep] = useState<VisitStep>();
   const [error, setError] = useState<VisitError>();
   const [watching, setWatching] = useState(false);
   const first = useRef<Admission | undefined>(undefined);
   const [confirmed, setConfirmed] = useState(false);
   const secret = useRef('');
+
+  // The access code does not stay in the address bar or the history.
+  useEffect(() => {
+    if (window.location.hash)
+      history.replaceState(history.state, '', window.location.pathname + window.location.search);
+  }, []);
 
   // The access-code exchange starts sooner on submit.
   useEffect(() => {

@@ -16,8 +16,9 @@ struct CardAction {
     retry: bool,
 }
 
-/// An invitation to connect to this device, with what the other side needs.
-fn share_text(device_id: &str, short: &str, settings: &Settings) -> String {
+/// An invitation to connect to this device, with what the other side needs;
+/// `server`: the origin of the server this device is reached through.
+fn share_text(device_id: &str, short: &str, settings: &Settings, server: Option<&str>) -> String {
     let words = &t().center;
     let mut lines = vec![
         words.share_intro.to_owned(),
@@ -41,7 +42,24 @@ fn share_text(device_id: &str, short: &str, settings: &Settings) -> String {
     }
     lines.push(String::new());
     lines.push(words.share_how_to.to_owned());
+    if let Some(server) = server {
+        lines.push((words.share_browser)(&visit_link(server, device_id, settings)));
+    }
     lines.join("\n")
+}
+
+/// The web console's visitor page with this device and its access code
+/// filled in. The code goes in the fragment, which browsers do not send to
+/// the server.
+fn visit_link(server: &str, device_id: &str, settings: &Settings) -> String {
+    let mut link = format!("{server}/visit?id={device_id}");
+    if !settings.mode.needs_password() {
+        link.push_str("&confirm=1");
+    } else if settings.passwords != Passwords::Custom {
+        link.push_str("#code=");
+        link.extend(url::form_urlencoded::byte_serialize(settings.code.as_bytes()));
+    }
+    link
 }
 
 /// The access code: on or off, the code to tell others, how it is checked.
@@ -144,8 +162,16 @@ fn access_code_card(
                         )
                         .clicked()
                     {
-                        ui.ctx()
-                            .copy_text(share_text(device_id, &snapshot.connect_id, settings));
+                        let server = crate::account::server::ServerConfig::load()
+                            .ok()
+                            .flatten()
+                            .filter(|_| !crate::transport::nat::settings::current().serverless);
+                        ui.ctx().copy_text(share_text(
+                            device_id,
+                            &snapshot.connect_id,
+                            settings,
+                            server.as_ref().map(|s| s.origin()),
+                        ));
                         ui.ctx().data_mut(|data| data.insert_temp(copied_id, Instant::now()));
                         ui.ctx().request_repaint_after(Duration::from_secs(2));
                     }
@@ -455,5 +481,28 @@ impl DeviceCenterApp {
             self.center_ui.host_assist_settings_open = false;
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_visit_link_carries_what_the_visitor_needs() {
+        let server = "https://farwing.example.com";
+        let id = "abcdefghijklmnop";
+        let mut settings = Settings {
+            code: "AB2CD3EF".into(),
+            ..Settings::default()
+        };
+        assert_eq!(
+            visit_link(server, id, &settings),
+            "https://farwing.example.com/visit?id=abcdefghijklmnop#code=AB2CD3EF"
+        );
+        settings.passwords = Passwords::Custom;
+        assert_eq!(visit_link(server, id, &settings), format!("{server}/visit?id={id}"));
+        settings.mode = Mode::Confirmation;
+        assert_eq!(visit_link(server, id, &settings), format!("{server}/visit?id={id}&confirm=1"));
     }
 }

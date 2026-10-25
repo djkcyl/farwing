@@ -132,7 +132,7 @@ export default function Favorites() {
                       <IconButton
                         icon="play"
                         label={t.devices.watch}
-                        onClick={() => navigate(`/visit?code=${s.connect_id}`)}
+                        onClick={() => navigate(`/visit?id=${s.connect_id}`)}
                       />
                       {tab === 'favorites' && (
                         <IconButton
