@@ -1,4 +1,4 @@
-# Farwing 双机测试清单（第十八版）
+# Farwing 双机测试清单（第十九版）
 
 只列必须在两台真实机器、真实网络上才能知道是否可用的项目。单机已经验证过的功能（画质档位、帧率、首帧时间、音质、FEC、多人控制权流程等）和从代码就能确定的逻辑（权限开关、提示文字等）不在这里。编号沿用完整清单（manual-test-checklist）的编号，合并的项目写成范围。
 
@@ -23,7 +23,7 @@
 | --- | --- | --- | --- |
 | P1 | 记录两台的 Windows 版本、显卡、显示器（分辨率、缩放、刷新率、是否 HDR）、键盘布局与输入法、网络（有线 / Wi-Fi） | — | |
 | P2 | 在两台都能访问的电脑上部署服务端（测试包 README“一、部署服务端”）：运行 `farwing-server.exe`，浏览器打开 `https://<服务器地址>:8443/setup` 输入窗口中的初始化码，设置 admin、公开地址与中转公网 IP，再在网页端“账号”中创建 alice 与 bob；放行 README 列出的端口 | 完成初始化后日志有 `builtin TURN listening`（UDP、TCP、TLS 各一行）、两行 `STUN endpoint listening (UDP)`；网页“服务器设置 → 中转与探测 → 运行状态”显示 UDP/TCP 监听地址 | |
-| P3 | H、C 都运行 `Farwing-v0.1.0-windows-x86_64.exe`，先用 `certutil -hashfile <文件> SHA256` 核对前 16 位为 `a636a61253a2de6a`。首次运行时 Windows 防火墙询问网络访问，选“允许”（专用网络） | — | |
+| P3 | H、C 都运行 `Farwing-v0.1.0-windows-x86_64.exe`，先用 `certutil -hashfile <文件> SHA256` 核对前 16 位为 `47a00210c7b3b4c5`。首次运行时 Windows 防火墙询问网络访问，选“允许”（专用网络） | — | |
 | P4 | 两台都在“连接服务器”填 `<服务器地址>:8443`（核对证书指纹），登录 alice | 设备中心互相出现对方且在线 | |
 | P5 | H 侧边栏“安装服务”，勾选“允许服务发送 Ctrl+Alt+Del”，核对驱动证书指纹 `6CC0CF35FED805B5652161468A6D313B873F6E91` | 安装成功；设备管理器中“Farwing Input”“Farwing Virtual Display Adapter”无感叹号 | |
 | P6（可选） | 已开测试签名时：H“设置 → 后台服务与驱动 → 虚拟声卡 → 安装驱动”；装好后 C 观看 H 时打开麦克风说话，H 用录音机录“虚拟麦克风 (Farwing 虚拟声卡)” | 安装成功，录到 C 的声音 | |
