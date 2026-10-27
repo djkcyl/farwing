@@ -136,16 +136,21 @@ pub fn client_ip(peer: IpAddr, headers: &HeaderMap, trusted: &[IpNet]) -> IpAddr
     if !is_trusted(&peer) {
         return peer;
     }
-    let chain: Vec<IpAddr> = headers
+    // From the right: an entry that does not read as an address (a port,
+    // garbage) ends the chain at the last trusted hop, so nothing left of
+    // it can be trusted.
+    let chain: Vec<Option<IpAddr>> = headers
         .get_all("x-forwarded-for")
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(','))
-        .filter_map(|s| s.trim().parse::<IpAddr>().ok())
-        .map(canonical)
+        .map(|s| s.trim().parse::<IpAddr>().ok().map(canonical))
         .collect();
     let mut ip = peer;
     for addr in chain.iter().rev() {
+        let Some(addr) = addr else {
+            return ip;
+        };
         ip = *addr;
         if !is_trusted(addr) {
             return ip;
@@ -324,6 +329,16 @@ async fn common_layer(State(app): State<App>, mut req: Request, next: Next) -> R
     );
     if let Ok(v) = HeaderValue::from_str(&request_id) {
         h.insert(headers::REQUEST_ID, v);
+    }
+    // API answers carry personal and administrative data: never cached.
+    if path.starts_with("/api/") {
+        if !h.contains_key(axum::http::header::CACHE_CONTROL) {
+            h.insert(axum::http::header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        }
+        h.insert(
+            axum::http::header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        );
     }
     let status = resp.status().as_u16();
     let ms = started.elapsed().as_millis() as u64;

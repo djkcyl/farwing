@@ -80,7 +80,7 @@ function RecordItem({ r }: { r: ConnectionRecord }) {
       >
         <div className="grow">
           <div>
-            {party(r.controller, t.common.guest)} <span className="faint">→</span> {r.host.name}
+            {party(r.controller, t.common.guest)} <span className="faint">→</span> {r.host.name || '—'}
           </div>
           <div className="small muted">
             {dateTime(r.started_at)} · {purposeText(r.purpose)} · {how}

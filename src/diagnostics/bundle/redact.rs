@@ -158,6 +158,11 @@ impl Redactor {
                             | "device_name"
                             | "identity"
                             | "endpoint_id"
+                            // Other participants: who they are and their keys.
+                            | "nickname"
+                            | "public_key"
+                            | "session_id"
+                            | "folder"
                     ) {
                         *v = Value::String(self.alias("id", &v.to_string()));
                     } else {

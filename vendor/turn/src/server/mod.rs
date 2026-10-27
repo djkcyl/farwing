@@ -31,6 +31,7 @@ pub struct Server {
     channel_bind_timeout: Duration,
     pub(crate) nonces: Arc<Mutex<HashMap<String, Instant>>>,
     command_tx: Mutex<Option<broadcast::Sender<Command>>>,
+    peer_filter: Option<config::PeerFilter>,
 }
 
 impl Server {
@@ -45,6 +46,7 @@ impl Server {
             channel_bind_timeout: config.channel_bind_timeout,
             nonces: Arc::new(Mutex::new(HashMap::new())),
             command_tx: Mutex::new(Some(command_tx.clone())),
+            peer_filter: config.peer_filter.clone(),
         };
 
         if s.channel_bind_timeout == Duration::from_secs(0) {
@@ -70,6 +72,7 @@ impl Server {
                 auth_handler,
                 realm,
                 channel_bind_timeout,
+                s.peer_filter.clone(),
                 handle_rx,
             ));
         }
@@ -141,6 +144,7 @@ impl Server {
         auth_handler: Arc<dyn AuthHandler + Send + Sync>,
         realm: String,
         channel_bind_timeout: Duration,
+        peer_filter: Option<config::PeerFilter>,
         mut handle_rx: broadcast::Receiver<Command>,
     ) {
         let mut buf = vec![0u8; INBOUND_MTU];
@@ -201,6 +205,7 @@ impl Server {
                 auth_handler: Arc::clone(&auth_handler),
                 realm: realm.clone(),
                 channel_bind_timeout,
+                peer_filter: peer_filter.clone(),
             };
 
             if let Err(err) = r.handle_request().await {

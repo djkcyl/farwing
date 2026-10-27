@@ -24,6 +24,7 @@ fn new_test_manager() -> Manager {
             net: Arc::new(Net::new(None)),
         }),
         alloc_close_notify: None,
+        peer_filter: None,
     };
     Manager::new(config)
 }

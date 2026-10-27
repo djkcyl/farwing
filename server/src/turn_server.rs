@@ -199,6 +199,76 @@ fn relay_generator(cfg: &TurnConfig) -> Box<dyn RelayAddressGenerator + Send + S
     }
 }
 
+/// Peers the relay may reach: never unspecified, multicast, broadcast,
+/// reserved or link-local addresses (cloud metadata). A public relay
+/// reaches neither loopback nor private networks, nor its own address
+/// outside its relay ports (the server's other services). A relay on a
+/// private network (a LAN or test deployment) reaches that network, this
+/// machine included: the server and a host often share it.
+fn peer_filter(cfg: &TurnConfig) -> turn::server::config::PeerFilter {
+    let own = cfg.relay_ip.or(cfg.public_ip).map(canonical);
+    let ports = cfg.relay_port_min.zip(cfg.relay_port_max);
+    let local = own.is_none_or(|ip| loopback(ip) || private(ip));
+    Arc::new(move |peer: SocketAddr| peer_allowed(canonical(peer.ip()), peer.port(), own, ports, local))
+}
+
+fn peer_allowed(
+    ip: IpAddr,
+    port: u16,
+    own: Option<IpAddr>,
+    ports: Option<(u16, u16)>,
+    local: bool,
+) -> bool {
+    if port == 0 || ip.is_unspecified() || ip.is_multicast() || link_local(ip) || reserved(ip) {
+        return false;
+    }
+    if local {
+        return true;
+    }
+    if own == Some(ip) {
+        // Another allocation on this relay.
+        return ports.is_some_and(|(min, max)| (min..=max).contains(&port));
+    }
+    !loopback(ip) && !private(ip)
+}
+
+fn canonical(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        v4 => v4,
+    }
+}
+
+fn loopback(ip: IpAddr) -> bool {
+    ip.is_loopback()
+}
+
+/// RFC 1918, shared (CGNAT) and unique-local addresses.
+fn private(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_private() || (o[0] == 100 && (64..128).contains(&o[1]))
+        }
+        IpAddr::V6(v6) => (v6.segments()[0] & 0xfe00) == 0xfc00,
+    }
+}
+
+fn link_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_link_local(),
+        IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
+    }
+}
+
+/// 0.0.0.0/8, 240.0.0.0/4 and broadcast.
+fn reserved(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.octets()[0] == 0 || v4.octets()[0] >= 240,
+        IpAddr::V6(_) => false,
+    }
+}
+
 async fn new_server(
     cfg: &TurnConfig,
     conn: Arc<dyn Conn + Send + Sync>,
@@ -213,6 +283,7 @@ async fn new_server(
         auth_handler: auth,
         channel_bind_timeout: Duration::from_secs(0),
         alloc_close_notify: None,
+        peer_filter: Some(peer_filter(cfg)),
     })
     .await
     .map_err(|e| anyhow::anyhow!("starting TURN server: {e}"))
@@ -523,5 +594,46 @@ mod tests {
         assert!(node.auth_handle(&node_user, "farwing", addr).is_ok());
         assert!(node.auth_handle(&user, "farwing", addr).is_err());
         assert!(node.auth_handle(&format!("{future}:session:n2"), "farwing", addr).is_err());
+    }
+}
+
+#[cfg(test)]
+mod peer_tests {
+    use super::*;
+
+    fn allowed(ip: &str, port: u16, own: Option<&str>, local: bool) -> bool {
+        peer_allowed(
+            canonical(ip.parse().unwrap()),
+            port,
+            own.map(|o| o.parse().unwrap()),
+            Some((49160, 49200)),
+            local,
+        )
+    }
+
+    #[test]
+    fn a_public_relay_reaches_only_public_peers() {
+        let own = Some("203.0.113.5");
+        assert!(allowed("198.51.100.7", 50000, own, false));
+        assert!(allowed("2001:db8::1", 50000, own, false));
+        for peer in ["127.0.0.1", "10.0.0.1", "172.16.3.4", "192.168.1.2", "100.64.0.1", "169.254.169.254",
+            "0.0.0.0", "224.0.0.1", "255.255.255.255", "::1", "fe80::1", "fd00::1", "::ffff:127.0.0.1"]
+        {
+            assert!(!allowed(peer, 50000, own, false), "{peer}");
+        }
+        // Another allocation on this relay, not its other services.
+        assert!(allowed("203.0.113.5", 49170, own, false));
+        assert!(!allowed("203.0.113.5", 443, own, false));
+        assert!(!allowed("198.51.100.7", 0, own, false));
+    }
+
+    #[test]
+    fn a_lan_relay_reaches_its_network() {
+        let own = Some("192.168.1.10");
+        assert!(allowed("192.168.1.20", 50000, own, true));
+        assert!(allowed("127.0.0.1", 50000, own, true));
+        // A host on the server's machine.
+        assert!(allowed("192.168.1.10", 61000, own, true));
+        assert!(!allowed("169.254.169.254", 80, own, true));
     }
 }

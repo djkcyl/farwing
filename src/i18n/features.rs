@@ -1552,7 +1552,7 @@ pub(crate) const ZH_CN: Features = Features {
     assist_remote_device: "远端设备",
     assist_request_failed: |code| format!("连接请求失败（{code}）"),
     assist_request_incomplete: "连接请求未完成",
-    assist_locked_out: "访问码错误次数过多，已暂停 5 分钟",
+    assist_locked_out: "访问码错误次数过多，已暂停访客连接",
     // host/power.rs
     power_not_allowed_for_account: "当前账号无法开启远程关机和重启",
     power_permission_revoked: "远程关机和重启许可已撤销",
@@ -2933,7 +2933,7 @@ pub(crate) const EN: Features = Features {
     assist_remote_device: "Remote device",
     assist_request_failed: |code| format!("Connection request failed ({code})"),
     assist_request_incomplete: "Connection request not completed",
-    assist_locked_out: "Too many wrong access codes; paused for 5 minutes",
+    assist_locked_out: "Too many wrong access codes; visitors paused",
     // host/power.rs
     power_not_allowed_for_account: "This account can't allow remote shutdown and restart",
     power_permission_revoked: "Remote shutdown and restart permission revoked",

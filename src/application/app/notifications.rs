@@ -54,6 +54,9 @@ pub(crate) struct Card {
     pub confirmation: bool,
     /// A pairing request: its answers are "deny" and "pair".
     pub pairing: bool,
+    /// From a browser: it may be let in, never trusted (a browser is often
+    /// someone else's next).
+    pub browser: bool,
     pub busy: bool,
     pub connected: bool,
 }
@@ -102,19 +105,21 @@ impl Card {
         }
         if self.confirmation {
             let enabled = !self.busy && self.expires_at > chrono::Utc::now().timestamp();
-            return vec![
-                CardAction {
-                    label: t().common.deny,
-                    verb: Verb::Reject,
-                    kind: ButtonKind::Normal,
-                    enabled,
-                },
-                CardAction {
+            let mut actions = vec![CardAction {
+                label: t().common.deny,
+                verb: Verb::Reject,
+                kind: ButtonKind::Normal,
+                enabled,
+            }];
+            if !self.browser {
+                actions.push(CardAction {
                     label: text.allow_and_trust,
                     verb: Verb::Trust,
                     kind: ButtonKind::Normal,
                     enabled,
-                },
+                });
+            }
+            actions.extend([
                 CardAction {
                     label: if self.busy {
                         text.submitting
@@ -125,7 +130,8 @@ impl Card {
                     kind: ButtonKind::Primary,
                     enabled,
                 },
-            ];
+            ]);
+            return actions;
         }
         let (label, verb) = if self.transfer.as_ref().is_some_and(|t| t.folder.is_some()) {
             (text.open_folder, Verb::OpenFolder)
@@ -382,6 +388,7 @@ impl Center {
                 expires_at: chrono::Utc::now().timestamp() + 12,
                 confirmation: false,
                 pairing: false,
+                browser: false,
                 busy: false,
                 connected: false,
                 transfer: None,
@@ -526,6 +533,7 @@ impl Center {
                         expires_at: p.expires_at,
                         confirmation: true,
                         pairing: pairing.is_some(),
+                        browser: browser_controls.is_some(),
                         busy: p.responding,
                         connected: false,
                         transfer: None,
@@ -548,6 +556,7 @@ impl Center {
                         expires_at: a.expires_at,
                         confirmation: false,
                         pairing: false,
+                        browser: false,
                         busy: false,
                         connected: false,
                         transfer: None,
@@ -580,6 +589,7 @@ impl Center {
                         expires_at: 0,
                         confirmation: false,
                         pairing: false,
+                        browser: false,
                         busy: false,
                         connected,
                         transfer: None,
@@ -616,6 +626,7 @@ impl Center {
                     expires_at: *until,
                     confirmation: false,
                     pairing: false,
+                    browser: false,
                     busy: false,
                     connected: false,
                     transfer: None,
@@ -843,6 +854,7 @@ impl DeviceCenterApp {
                         expires_at: end.ended_at.saturating_add(10),
                         confirmation: false,
                         pairing: false,
+                        browser: false,
                         busy: false,
                         connected: false,
                         transfer: None,

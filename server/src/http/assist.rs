@@ -35,6 +35,10 @@ use std::time::Duration;
 const MAX_PAKE_TEXT: usize = 128;
 /// Failed attempts tolerated per connect ID per hour, across all accounts.
 const TARGET_FAILURES_PER_HOUR: u32 = 50;
+/// Joins per controller and per address in an hour, whatever their outcome:
+/// short numbers cannot be swept to learn which exist or are online.
+const LOOKUPS_PER_HOUR: u32 = 60;
+const LOOKUPS_PER_IP_HOUR: u32 = 300;
 
 fn pake_list_ok(list: &[String], max: usize) -> bool {
     list.len() <= max && list.iter().all(|m| m.len() <= MAX_PAKE_TEXT)
@@ -103,8 +107,9 @@ fn failure_key(auth: &AnyAuth, target: &str) -> String {
     format!("assist:{}:{target}", controller_key(auth))
 }
 
-fn target_key(connect_id: &str) -> String {
-    format!("assist-target:{connect_id}")
+/// By the host device, however it was dialled (short number or device ID).
+fn target_key(host_device_id: &str) -> String {
+    format!("assist-target:{host_device_id}")
 }
 
 fn unavailable() -> ApiError {
@@ -156,6 +161,7 @@ fn push_cancelled(app: &App, host_device_id: &str, request_id: &str) {
 /// controller (key confirmation), so the server cannot tell failures apart.
 pub async fn join(
     State(app): State<App>,
+    ClientIp(ip): ClientIp,
     auth: AnyAuth,
     JsonBody(req): JsonBody<AssistJoinRequest>,
 ) -> ApiResult<Json<AssistPending>> {
@@ -163,10 +169,17 @@ pub async fn join(
         return Err(ApiError::bad_request("invalid pake"));
     }
     let wanted = join_target(&req)?;
+    for (lookup, max) in [
+        (format!("assist-lookup:{}", controller_key(&auth)), LOOKUPS_PER_HOUR),
+        (format!("assist-lookup-ip:{ip}"), LOOKUPS_PER_IP_HOUR),
+    ] {
+        app.limiter
+            .take(&lookup, max, Duration::from_secs(3600))
+            .map_err(ApiError::rate_limited)?;
+    }
     // Attempts are counted before the host is asked, so concurrent guesses
     // cannot all pass.
     let key = failure_key(&auth, &wanted);
-    let target = target_key(&wanted);
     app.limiter
         .take(
             &key,
@@ -174,6 +187,14 @@ pub async fn join(
             Duration::from_secs(60),
         )
         .map_err(ApiError::rate_limited)?;
+    let host = match assist_host(&app, &auth, &wanted).await {
+        Ok(host) => host,
+        Err(error) => {
+            app.limiter.refund(&key);
+            return Err(error);
+        }
+    };
+    let target = target_key(&host.id);
     if let Err(wait) = app
         .limiter
         .take(&target, TARGET_FAILURES_PER_HOUR, Duration::from_secs(3600))
@@ -185,13 +206,6 @@ pub async fn join(
     let refund = || {
         app.limiter.refund(&key);
         app.limiter.refund(&target);
-    };
-    let host = match assist_host(&app, &auth, &wanted).await {
-        Ok(host) => host,
-        Err(error) => {
-            refund();
-            return Err(error);
-        }
     };
     if !host.policy.assist {
         refund();
@@ -216,7 +230,14 @@ pub async fn join(
             types::ASSIST_JOIN,
             AssistJoinPush {
                 request_id: rid.clone(),
-                controller: device_controller_info(&app, &auth.device, auth.user.as_ref()),
+                // Before it lets the visitor in, the host learns its device
+                // and the name it goes by, not its account.
+                controller: {
+                    let mut c = device_controller_info(&app, &auth.device, auth.user.as_ref());
+                    c.user_id.clear();
+                    c.username.clear();
+                    c
+                },
                 pake: req.pake.clone(),
             },
         ),
@@ -300,7 +321,7 @@ pub async fn accept(
             match start_assist_session(&app, &auth, &parties, trusted, record.clone()).await {
                 Ok(join) => {
                     // A successful decision: the attempt was not a failure.
-                    app.limiter.refund(&target_key(&parties.target));
+                    app.limiter.refund(&target_key(&parties.host_device_id));
                     app.limiter.clear(&failure_key(&auth, &parties.target));
                     Ok(Json(join))
                 }

@@ -163,7 +163,8 @@ export default function Invites() {
   const [code, setCode] = useState<string>();
   const [viewing, setViewing] = useState<Invite>();
   const names = new Map((users.data ?? []).map((u) => [u.id, u.username]));
-  const link = code ? `${location.origin}${sitePath(`/register?code=${encodeURIComponent(code)}`)}` : '';
+  // In the fragment: it never reaches a server or a proxy log.
+  const link = code ? `${location.origin}${sitePath(`/register#code=${encodeURIComponent(code)}`)}` : '';
 
   return (
     <div className="stack">

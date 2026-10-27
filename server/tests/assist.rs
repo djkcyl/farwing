@@ -266,7 +266,10 @@ async fn password_mode_with_pake() {
     // confirms back, the host allows.
     let joined = join(&mut s, &ctrl, Some(CODE), PASSWORD).await;
     let push = &joined.push["data"];
-    assert_eq!(push["controller"]["username"], "helper");
+    // Before admission the host learns the visitor's device and the name it
+    // goes by, not its account.
+    assert_eq!(push["controller"]["username"], "");
+    assert_eq!(push["controller"]["user_id"], "");
     assert_eq!(push["controller"]["nickname"], "helper-nick");
     assert_eq!(push["controller"]["device_id"], ctrl.id.as_str());
     assert_eq!(push["controller"]["public_key"], ctrl.public_key().as_str());
@@ -620,6 +623,22 @@ async fn rate_limit_counts_attempts_without_a_session() {
     password_flow(&mut s, &ctrl, "000000")
         .await
         .err(403, "assist_code_invalid");
+    // A visitor that was not let in learns nothing about the device it
+    // tried; the device it was let in to keeps its name, not its account.
+    let records = s.srv.get("/api/v2/records", &ctrl).await.ok().clone();
+    let records = records.as_array().unwrap();
+    let refused = records
+        .iter()
+        .find(|r| r["outcome"] == "code_invalid")
+        .expect("the refused attempt");
+    assert_eq!(refused["host"]["device_id"], "");
+    assert_eq!(refused["host"]["name"], "");
+    let admitted = records
+        .iter()
+        .find(|r| r["outcome"] != "code_invalid")
+        .expect("the admitted visit");
+    assert_eq!(admitted["host"]["device_id"], s.host.id.as_str());
+    assert_eq!(admitted["host"]["user_id"], "");
     let joined = join(&mut s, &ctrl, Some("111111"), PASSWORD).await;
     assert!(joined.controller_key().1.is_none());
     // The next attempt is refused before the host is asked.

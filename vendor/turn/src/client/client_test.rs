@@ -153,6 +153,7 @@ async fn test_client_nonce_expiration() -> Result<()> {
         auth_handler: Arc::new(TestAuthHandler {}),
         channel_bind_timeout: Duration::from_secs(0),
         alloc_close_notify: None,
+        peer_filter: None,
     })
     .await?;
 

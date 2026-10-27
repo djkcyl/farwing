@@ -108,7 +108,7 @@ pub(crate) struct Errors {
     pub pairing_declined: &'static str,
     pub pairing_recently_declined: &'static str,
     /// Minutes locked.
-    pub code_locked: fn(u64) -> String,
+    pub code_locked: &'static str,
 
     // ------------------------------------------- reaching the server
     pub timed_out: &'static str,
@@ -215,7 +215,7 @@ impl Errors {
             reason::HOST_APP_CLOSED => text(self.host_app_closed),
             reason::PAIRING_DECLINED => text(self.pairing_declined),
             reason::PAIRING_RECENTLY_DECLINED => text(self.pairing_recently_declined),
-            reason::CODE_LOCKED => n("minutes").map(self.code_locked),
+            reason::CODE_LOCKED => text(self.code_locked),
             reason::TIMED_OUT => text(self.timed_out),
             reason::CONNECTION_LOST => text(self.connection_lost),
             _ => None,
@@ -323,7 +323,7 @@ pub(crate) const ZH_CN: Errors = Errors {
     host_app_closed: "对方未打开 Farwing 设备中心",
     pairing_declined: "对方未同意配对",
     pairing_recently_declined: "对方刚拒绝过配对",
-    code_locked: |minutes| format!("访问码错误次数过多，已锁定 {minutes} 分钟"),
+    code_locked: "访问码错误次数过多，暂时无法连接",
 
     timed_out: "连接服务器超时",
     connection_lost: "与服务器的连接已中断",
@@ -421,7 +421,7 @@ pub(crate) const EN: Errors = Errors {
     host_app_closed: "Farwing isn't open on the other device",
     pairing_declined: "Pairing was declined",
     pairing_recently_declined: "Pairing was declined recently",
-    code_locked: |minutes| format!("Too many incorrect access codes, locked for {minutes} min"),
+    code_locked: "Too many incorrect access codes; try again later",
 
     timed_out: "Connection to the server timed out",
     connection_lost: "Connection to the server was lost",

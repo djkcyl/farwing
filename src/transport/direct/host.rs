@@ -204,15 +204,18 @@ struct Shared {
 }
 
 /// Pairing requests pop up on the host's screen: at most one every few
-/// seconds, and none from a device for a minute after this side said no.
+/// seconds, none from a device for a minute after this side said no, and
+/// none at all for a while after any no (new keys cost nothing).
 #[derive(Default)]
 struct PairingLimits {
     last: Option<std::time::Instant>,
     declined: std::collections::HashMap<String, std::time::Instant>,
+    any_declined: Option<std::time::Instant>,
 }
 
 const PAIRING_SPACING: Duration = Duration::from_secs(3);
 const PAIRING_DECLINED: Duration = Duration::from_secs(60);
+const PAIRING_AFTER_ANY_DECLINE: Duration = Duration::from_secs(30);
 
 /// What an authorised controller may do.
 struct Authorized {
@@ -244,11 +247,18 @@ fn refuse_with(code: ErrorCode, message: &str, details: serde_json::Value) -> an
 }
 
 impl super::lan::Announcer for Shared {
+    /// Only whether visitors are accepted: not whether it is signed in or
+    /// shared with friends.
     fn announcement(&self) -> Option<(LocalDevice, u16, Vec<String>)> {
+        let methods = self
+            .methods()
+            .into_iter()
+            .filter(|m| m == method::ASSIST)
+            .collect();
         self.client
             .host
             .requested()
-            .then(|| (self.local.clone(), self.port, self.methods()))
+            .then(|| (self.local.clone(), self.port, methods))
     }
 }
 
@@ -359,13 +369,19 @@ impl Shared {
             hello.public_key != self.local.identity.public_key(),
             "不能直连本机自己"
         );
-        let mut mine = super::hello(&self.local, ROLE_HOST, ekm, self.methods(), self.port);
-        mine.admits = self.admits(&hello);
-        write_frame(writer, &Envelope::new(dtypes::HELLO, &mine)).await?;
-        tracing::info!(%peer, device = %hello.device_id, "direct controller identified");
         if !self.client.is_active() || !self.client.host.requested() {
             return Err(refuse(ErrorCode::HostDisabled, "host access is off"));
         }
+        // Before access the controller learns only the key it talks to (and
+        // whether that key already admits it): its name, system, version
+        // and what it accepts come with `direct.authorized`.
+        let mut mine = super::hello(&self.local, ROLE_HOST, ekm, Vec::new(), self.port);
+        mine.name.clear();
+        mine.version.clear();
+        mine.platform = farwing_protocol::Platform::Unknown;
+        mine.admits = self.admits(&hello);
+        write_frame(writer, &Envelope::new(dtypes::HELLO, &mine)).await?;
+        tracing::info!(%peer, device = %hello.device_id, "direct controller identified");
         let authorized = loop {
             let message = self.read(reader, step).await?;
             match message.kind.as_str() {
@@ -400,6 +416,9 @@ impl Shared {
                 DirectAuthorized {
                     relation: authorized.relation,
                     grants: authorized.grants.clone(),
+                    name: self.local.name.clone(),
+                    platform: farwing_protocol::Platform::Windows,
+                    version: env!("CARGO_PKG_VERSION").to_owned(),
                 },
             ),
         )
@@ -468,7 +487,11 @@ impl Shared {
                     serde_json::json!({ "reason": refusal_reason::PAIRING_RECENTLY_DECLINED }),
                 ));
             }
-            if limits.last.is_some_and(|at| now.duration_since(at) < PAIRING_SPACING) {
+            if limits.last.is_some_and(|at| now.duration_since(at) < PAIRING_SPACING)
+                || limits
+                    .any_declined
+                    .is_some_and(|at| now.duration_since(at) < PAIRING_AFTER_ANY_DECLINE)
+            {
                 return Err(refuse(ErrorCode::RateLimited, "pairing requests too frequent"));
             }
             limits.last = Some(now);
@@ -498,11 +521,10 @@ impl Shared {
         }
         let code = farwing_protocol::crypto::pairing_code(ekm, &theirs, &nonce);
         let declined = |this: &Self| {
-            this.pairing
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .declined
-                .insert(hello.device_id.clone(), std::time::Instant::now());
+            let mut limits = this.pairing.lock().unwrap_or_else(|e| e.into_inner());
+            let now = std::time::Instant::now();
+            limits.declined.insert(hello.device_id.clone(), now);
+            limits.any_declined = Some(now);
         };
         // This side's answer and the controller's agreement may come in
         // either order; one read of the connection serves until the latter.
@@ -522,12 +544,11 @@ impl Shared {
                     _ = self.cancel.cancelled() => bail!("被控端已停止直连"),
                     decision = &mut asked, if !ours => match decision {
                         Decision::Trust => ours = true,
+                        // Why nobody answered (locked, busy, closed) stays
+                        // here: an unknown peer learns only "no".
                         Decision::Unavailable(reason) => {
-                            return Err(refuse_with(
-                                ErrorCode::AssistUnavailable,
-                                "nobody can answer",
-                                serde_json::json!({ "reason": reason }),
-                            ));
+                            tracing::info!(reason, "pairing request not shown");
+                            return Err(refuse(ErrorCode::AssistRejected, "pairing declined"));
                         }
                         Decision::Reject | Decision::Allow => {
                             declined(self);
@@ -571,7 +592,15 @@ impl Shared {
         });
         write_frame(
             writer,
-            &Envelope::new(dtypes::PAIRED, DirectPaired { grants: farwing_protocol::caps::all() }),
+            &Envelope::new(
+                dtypes::PAIRED,
+                DirectPaired {
+                    grants: farwing_protocol::caps::all(),
+                    name: self.local.name.clone(),
+                    platform: farwing_protocol::Platform::Windows,
+                    version: env!("CARGO_PKG_VERSION").to_owned(),
+                },
+            ),
         )
         .await?;
         tracing::info!(device = %hello.device_id, "paired with a controller");
@@ -586,10 +615,11 @@ impl Shared {
             let host_id = self.local.identity.device_id.clone();
             let mut own = store::own_device(&user, &hello.public_key);
             let mut friend = store::friend_device(&user, &host_id, &hello.public_key);
-            // Friends' grants change on the server: ask it again when it is
-            // reachable (at most every few seconds); the cache stands in
-            // while it is not.
-            if own.is_none() && self.refresh_account_cache().await {
+            // Devices leave the account and friends' grants change on the
+            // server: ask it again when it is used (at most every few
+            // seconds), so a removed device is not still taken as this
+            // account's; the cache stands in while the server is out of reach.
+            if (own.is_none() || !self.client.offline()) && self.refresh_account_cache().await {
                 own = store::own_device(&user, &hello.public_key);
                 friend = store::friend_device(&user, &host_id, &hello.public_key);
             }
@@ -669,7 +699,7 @@ impl Shared {
             return Err(refuse_with(
                 ErrorCode::RateLimited,
                 "too many wrong access codes",
-                serde_json::json!({ "reason": refusal_reason::CODE_LOCKED, "minutes": 5 }),
+                serde_json::json!({ "reason": refusal_reason::CODE_LOCKED }),
             ));
         }
         let mut key = None;
@@ -749,11 +779,8 @@ impl Shared {
                     });
                 }
                 Decision::Unavailable(reason) => {
-                    return Err(refuse_with(
-                        ErrorCode::AssistUnavailable,
-                        "nobody can answer",
-                        serde_json::json!({ "reason": reason }),
-                    ));
+                    tracing::info!(reason, "direct confirmation not shown");
+                    return Err(refuse(ErrorCode::AssistRejected, "connection declined"));
                 }
                 Decision::Reject => return Err(refuse(ErrorCode::AssistRejected, "connection declined")),
             }

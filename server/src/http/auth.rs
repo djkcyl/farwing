@@ -267,6 +267,8 @@ pub struct AdminAuth {
     pub ip: std::net::IpAddr,
     /// The API token used (ID, name), when not a signed-in login.
     pub token: Option<(String, String)>,
+    /// A read-only API token.
+    pub read_only: bool,
 }
 
 impl AdminAuth {
@@ -311,7 +313,8 @@ async fn admin_token(
             "this token is not allowed from this address",
         ));
     }
-    if row.scope != crate::webdb::SCOPE_ADMIN
+    let row_scope_read_only = row.scope != crate::webdb::SCOPE_ADMIN;
+    if row_scope_read_only
         && !matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD)
     {
         return Err(ApiError::forbidden("this token can only read"));
@@ -331,6 +334,7 @@ async fn admin_token(
     Ok(AdminAuth {
         user,
         ip,
+        read_only: row_scope_read_only,
         token: Some((row.id, row.name)),
     })
 }
@@ -383,6 +387,7 @@ impl FromRequestParts<App> for AdminAuth {
             user: account.user,
             ip,
             token: None,
+            read_only: false,
         })
     }
 }

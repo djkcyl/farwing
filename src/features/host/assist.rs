@@ -401,9 +401,10 @@ fn trust(
 struct State {
     snapshot: Snapshot,
     requests: Option<mpsc::Sender<Push>>,
-    /// PAKE keys of granted requests by controller device, for binding the
-    /// assistance session's DTLS fingerprints.
-    keys: HashMap<String, ([u8; 32], Instant)>,
+    /// Requests this host let in, by controller device: the PAKE key that
+    /// binds the session's DTLS fingerprints (none after a confirmation
+    /// alone). A visitor's session needs one (`take_admission`).
+    keys: HashMap<String, (Option<[u8; 32]>, Instant)>,
     /// Wrong codes (assistance and pairing, server-relayed and direct)
     /// within [`FAILURE_WINDOW`], and the lockout they caused.
     failures: VecDeque<Instant>,
@@ -444,9 +445,17 @@ fn note_failure(state: &mut State) {
 
 /// Whether wrong codes currently lock assistance and pairing.
 fn check_lock(state: &mut State) -> bool {
-    state.failures.retain(|at| at.elapsed() < FAILURE_WINDOW);
-    if state.failures.len() >= FAILURE_LIMIT && state.locked_until.is_none() {
-        state.locked_until = Some(Instant::now() + LOCKOUT);
+    state.failures.retain(|at| at.elapsed() < HOURLY_WINDOW);
+    let recent = state.failures.iter().filter(|at| at.elapsed() < FAILURE_WINDOW).count();
+    let lockout = if state.failures.len() >= HOURLY_FAILURE_LIMIT {
+        Some(HOURLY_WINDOW)
+    } else {
+        (recent >= FAILURE_LIMIT).then_some(LOCKOUT)
+    };
+    if let Some(lockout) = lockout
+        && state.locked_until.is_none()
+    {
+        state.locked_until = Some(Instant::now() + lockout);
         state.snapshot.error = Some(t().features.assist_locked_out.into());
         tracing::warn!("assistance and pairing locked after repeated wrong codes");
     }
@@ -683,7 +692,10 @@ impl Handle {
     }
     /// The PAKE key of the assistance request granted to `controller_device`
     /// (at most once, within two minutes of the grant).
-    pub fn take_pake_key(&self, controller_device: &str) -> Option<[u8; 32]> {
+    /// The admission of a visitor's session through the server: `None`
+    /// when this host did not let that device in moments ago (a session the
+    /// server made up), else its PAKE key if a code was used.
+    pub fn take_admission(&self, controller_device: &str) -> Option<Option<[u8; 32]>> {
         let mut state = self.lock();
         state.keys.retain(|_, (_, at)| at.elapsed() < KEY_LIFETIME);
         state.keys.remove(controller_device).map(|(key, _)| key)
@@ -788,10 +800,13 @@ fn sanitize(text: &str) -> String {
 /// How long a granted request's PAKE key waits for its session.
 const KEY_LIFETIME: Duration = Duration::from_secs(120);
 /// Local brute-force guard: this many wrong codes within a minute block
-/// assistance for five minutes.
+/// assistance for five minutes; this many within an hour (a slow guesser
+/// of a fixed code) for an hour.
 const FAILURE_LIMIT: usize = 10;
 const FAILURE_WINDOW: Duration = Duration::from_secs(60);
 const LOCKOUT: Duration = Duration::from_secs(300);
+const HOURLY_FAILURE_LIMIT: usize = 30;
+const HOURLY_WINDOW: Duration = Duration::from_secs(3600);
 
 /// One request between `assist.join` and the decision.
 struct Request {
@@ -1262,12 +1277,11 @@ async fn run(client: HostClient, mut rx: mpsc::Receiver<Push>, stop: Cancellatio
                                     Some(Instant::now() + Duration::from_secs(60));
                             }
                         } else {
-                            if refusal.is_none()
-                                && let Some(key) = request.granted_key
-                            {
-                                state
-                                    .keys
-                                    .insert(request.device_id.clone(), (key, Instant::now()));
+                            if refusal.is_none() {
+                                state.keys.insert(
+                                    request.device_id.clone(),
+                                    (request.granted_key, Instant::now()),
+                                );
                             }
                             outgoing = Some(Reply::Decision(
                                 id.clone(),
@@ -1304,17 +1318,16 @@ async fn run(client: HostClient, mut rx: mpsc::Receiver<Push>, stop: Cancellatio
                         && ui_present
                         && request.is_some()
                         && crate::platform::capture::session_locked() == Some(false);
-                    if allowed
-                        && let Some(request) = &request
-                        && let Some(key) = request.granted_key
-                    {
+                    if allowed && let Some(request) = &request {
                         state
                             .keys
-                            .insert(request.device_id.clone(), (key, Instant::now()));
+                            .insert(request.device_id.clone(), (request.granted_key, Instant::now()));
                     }
+                    // A browser is let in, never trusted.
                     if allowed
                         && trust
                         && let Some(request) = &request
+                        && request.caps_limit.is_none()
                     {
                         self::trust(
                             &request.name,

@@ -61,6 +61,7 @@ pub struct Request {
     pub auth_handler: Arc<dyn AuthHandler + Send + Sync>,
     pub realm: String,
     pub channel_bind_timeout: Duration,
+    pub peer_filter: Option<crate::server::config::PeerFilter>,
 }
 
 impl Request {
@@ -79,7 +80,31 @@ impl Request {
             auth_handler,
             realm: String::new(),
             channel_bind_timeout: Duration::from_secs(0),
+            peer_filter: None,
         }
+    }
+
+    fn peer_allowed(&self, peer: SocketAddr) -> bool {
+        self.peer_filter.as_ref().is_none_or(|allowed| allowed(peer))
+    }
+
+    async fn send_forbidden(&self, m: &Message, method: Method, peer: SocketAddr) -> Result<()> {
+        log::debug!("refused relaying to {peer}");
+        let msg = build_msg(
+            m.transaction_id,
+            MessageType::new(method, CLASS_ERROR_RESPONSE),
+            vec![Box::new(ErrorCodeAttribute {
+                code: CODE_FORBIDDEN,
+                reason: vec![],
+            })],
+        )?;
+        build_and_send_err(
+            &self.conn,
+            self.src_addr,
+            msg,
+            Error::Other(format!("relaying to {peer} is not allowed")),
+        )
+        .await
     }
 
     /// Processes the give [`Request`]
@@ -740,6 +765,11 @@ impl Request {
                     .await;
                 }
 
+                let peer = SocketAddr::new(peer_address.ip, peer_address.port);
+                if !self.peer_allowed(peer) {
+                    return self.send_forbidden(m, METHOD_CREATE_PERMISSION, peer).await;
+                }
+
                 log::debug!(
                     "adding permission for {}:{}",
                     peer_address.ip,
@@ -873,6 +903,11 @@ impl Request {
                     .await;
                 }
             }
+        }
+
+        let peer = SocketAddr::new(peer_addr.ip, peer_addr.port);
+        if !self.peer_allowed(peer) {
+            return self.send_forbidden(m, METHOD_CHANNEL_BIND, peer).await;
         }
 
         log::debug!(

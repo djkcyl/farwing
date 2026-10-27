@@ -366,7 +366,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 2. **被控** `POST /assist/requests/{id}/pake`，主体 `AssistPakeReply{allowed, mode, trusted, pake, key_confirm}`，`mode` 为 `password | confirmation | password_confirmation`：
    - 请求未带 `pake`、主控公钥在被控的受信任设备中且被控允许连接：`allowed: true, trusted: true`，`pake`、`key_confirm` 为空。
    - 否则 `pake: [msgB_0, msgB_1]`，`key_confirm: [HMAC(K_i, "FWAK2\nhost\n"+request_id)]`；仅确认模式 `pake` 为空。
-3. **服务端**返回主控 `AssistPending{request_id, mode, trusted, pake, key_confirm}`：被控放行之前不透露它的任何信息（设备 ID、名称、系统、版本、公钥都在第 6 步的 `AssistJoin.host` 中）。被控 `allowed: false` → `409 assist_unavailable`；非 `trusted` 且需要访问码而请求未带 `pake` → `409 assist_code_required`（`details.mode`）并推送 `assist.cancelled`；被控未应答 → `408 timeout`。
+3. **服务端**返回主控 `AssistPending{request_id, mode, trusted, pake, key_confirm}`：被控放行之前不透露它的任何信息（设备 ID、名称、系统、版本、公钥都在第 6 步的 `AssistJoin.host` 中）。同样，第 1 步推给被控的 `assist.join.controller` 不含访客的账号（`user_id`、`username` 为空），只有设备与昵称。每个主控与每个地址每小时最多 60 / 300 次 `join`（无论结果），被控按解析出的设备计数。被控 `allowed: false` → `409 assist_unavailable`；非 `trusted` 且需要访问码而请求未带 `pake` → `409 assist_code_required`（`details.mode`）并推送 `assist.cancelled`；被控未应答 → `408 timeout`。
 4. **主控**：`trusted` 时直接 `accept`（`key_confirm` 为空串）。否则逐槽计算 K 并核对 `key_confirm`；都不匹配即访问码错误：本地报错并 `POST …/cancel`。匹配（或仅确认模式）则 `POST /assist/requests/{id}/accept {key_confirm: HMAC(K, "FWAK2\ncontroller\n"+request_id)}`（长轮询，最多 65 秒；确认模式为空串）。
 5. **服务端**推送 `assist.accept{request_id, key_confirm}`；被控对受信任的请求重新核对该设备仍受信任，对访客校验确认值并在需要时弹出本机确认，然后 `POST …/decision`，主体 `AssistDecision{allowed, refusal?, trusted}`，`refusal ∈ code_invalid | code_required | rejected | unavailable`。
 6. 允许：服务端建立会话（`purpose = desktop`，`connect_type = assist`，`decision.trusted` 时 `relation = trusted`、否则 `assist`，`grants` 为空：被控套用为该受信任设备记录的能力或访客默认权限），返回 `AssistJoin` = `SessionTicket` 字段（`target.relation` 同上）+ `host`。拒绝映射：`code_invalid → 403 assist_code_invalid`，`code_required → 409 assist_code_required`，`rejected → 403 assist_rejected`，`unavailable → 409 assist_unavailable`。被控未决定 → `408 timeout` 并推送 `assist.cancelled`；请求已被取消 → `409 conflict`。
@@ -867,17 +867,17 @@ ICE 代理在默认路由上发布私网 UDP/IPv4 主机候选后，为该端口
 
 | type | 方向 | data |
 |------|------|------|
-| `direct.hello` | 双向，各自的第一条消息 | `{device_id, public_key, name, platform, version, proof}`；被控另带 `methods`（此刻接受的方式，见下）与 `udp_port` |
+| `direct.hello` | 双向，各自的第一条消息 | `{device_id, public_key, name, platform, version, proof}`；被控另带 `udp_port` 与 `admits`（是否已按设备密钥放行这台主控）。授权前被控只给身份：`name`、`version` 为空，`platform` 为 `unknown`，`methods` 为空 |
 | `direct.auth` | C→H | `{method: "own"\|"friend"\|"trusted"}`（被控不论取值，依次检查全部） |
 | `direct.pake` | 双向 | 主控：`{kind: "assist", messages}`；被控：`{messages, confirm: [每槽一条], confirmation}` |
 | `direct.confirm` | C→H | `{confirm}` |
-| `direct.authorized` | H→C | `{relation: "own"\|"friend"\|"trusted"\|"assist", grants}` |
+| `direct.authorized` | H→C | `{relation: "own"\|"friend"\|"trusted"\|"assist", grants, name, platform, version}`：被控的名称、系统与版本在放行后才给 |
 
-`methods`（`direct::method`）：`own`（被控登录了账号）、`friend`（登录了账号且好友授权缓存非空）、`trusted`（总是声明）、`assist`（访问码已开启）。
+`methods`（`direct::method`）只出现在局域网应答中，且只有 `assist`（访问码已开启）：不透露被控是否登录、是否有好友授权。
 
 ### 8.3 授权
 
-1. 双方交换 `direct.hello`，校验对方 `device_id` 由其 `public_key` 推导（§1.3，否则断开）以及 `proof`。被控未开启“允许连接本机”时回 `error{host_disabled}`。
+1. 被控未开启“允许连接本机”时，收到主控的 `direct.hello` 后直接回 `error{host_disabled}`，不发自己的 `direct.hello`。否则双方交换 `direct.hello`，校验对方 `device_id` 由其 `public_key` 推导（§1.3，否则断开）以及 `proof`。对尚未放行的对端，被控只回不带原因的拒绝（`assist_rejected`），不说明是锁屏、忙还是无人应答；配对请求被拒后 30 秒内不再弹出任何配对请求。访问码在 1 分钟内错 10 次暂停 5 分钟，1 小时内错 30 次暂停 1 小时。
 2. 主控选择一种方式：
    - **设备密钥**（`direct.auth`；被控声明 `own` 时主控发 `own`，否则 `trusted`）。被控依次检查：
      - `own` —— 被控缓存的本账号设备列表（`GET /devices` 中的 `public_key`，保存在 `own_devices.json`）包含主控公钥：关系 `own`，全部能力。
@@ -903,10 +903,10 @@ ICE 代理在默认路由上发布私网 UDP/IPv4 主机候选后，为该端口
 
 ### 8.6 局域网发现
 
-- 被控在 `lan_discovery`（默认开启）时绑定 UDP `0.0.0.0:28889`（`SO_REUSEADDR`）并加入组播 `239.255.70.87`；“允许连接本机”时每 30 秒向组播地址发送通告，并单播回应查询。
+- 被控在 `lan_discovery`（默认开启）时绑定 UDP `0.0.0.0:28889`（`SO_REUSEADDR`）并加入组播 `239.255.70.87`；“允许连接本机”时只单播回应来自私有、链路本地与回环地址的查询，不主动通告。
 - 主控向组播地址与 `255.255.255.255:28889` 各发一次查询，等待时间过半时再发一次，默认收集 2 秒。
 - 查询：`{"t":"farwing.lan.query","v":2,"nonce":"…"}`。
-- 通告：`{"t":"farwing.lan.announce","v":2,"device_id","name","platform","version","public_key","port","udp_port","methods":[…],"ts","nonce","sig"}`。回应查询时 `nonce` 与查询相同，主控只接受本次查询的应答；周期通告的 `nonce` 为空。`device_id` 不是由 `public_key` 推导的通告被丢弃。`sig` 只证明 ID、名称、端口与公钥属于同一设备；能否按设备密钥连接由主控按设备 ID 匹配本账号设备、好友共享的设备或 `known_hosts.json` 决定。
+- 应答：`{"t":"farwing.lan.announce","v":2,"device_id","name","platform","version","public_key","port","udp_port","methods":[…],"ts","nonce","sig"}`，`version` 为空，`methods` 只可能有 `assist`。`nonce` 与查询相同，主控只接受本次查询的应答。`device_id` 不是由 `public_key` 推导的通告被丢弃。`sig` 只证明 ID、名称、端口与公钥属于同一设备；能否按设备密钥连接由主控按设备 ID 匹配本账号设备、好友共享的设备或 `known_hosts.json` 决定。
 
 ---
 

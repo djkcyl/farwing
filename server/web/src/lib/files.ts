@@ -685,7 +685,12 @@ export function zipTarget(folder: string): DownloadTarget {
   return {
     entry: async (item) => {
       zip.end();
-      zip.begin(`${folder}/${item.path}`, item.dir, new Date(Number(item.mtimeNs / 1_000_000n) || Date.now()));
+      // The host names the entries: no `..` or absolute paths in the ZIP.
+      zip.begin(
+        `${safeName(folder)}/${safePath(item.path) || '_'}`,
+        item.dir,
+        new Date(Number(item.mtimeNs / 1_000_000n) || Date.now()),
+      );
     },
     write: async (data) => {
       size += data.length;

@@ -129,7 +129,15 @@ pub async fn complete(
     if let Some(c) = &req.certificate {
         settings_api::store_certificate(&app, c)?;
     }
-    let cfg = settings_api::patched(&app.cfg(), req.settings)?;
+    let mut cfg = settings_api::patched(&app.cfg(), req.settings)?;
+    // Behind a reverse proxy every request comes from the proxy: trust the
+    // usual one on this machine to name the client, unless set otherwise.
+    if cfg.tls.mode == crate::config::TlsMode::Proxy && cfg.trusted_proxies.is_empty() {
+        cfg.trusted_proxies = ["127.0.0.1/32", "::1/128"]
+            .iter()
+            .filter_map(|n| n.parse().ok())
+            .collect();
+    }
     let outcome = app
         .control()
         .apply(cfg)

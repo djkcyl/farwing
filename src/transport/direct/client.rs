@@ -269,6 +269,10 @@ async fn connect_inner(
     let message = read(&mut reader, wait).await?;
     ensure!(message.kind == dtypes::AUTHORIZED, "{}", t().session.direct_not_authorized);
     let authorized: DirectAuthorized = message.body().context(t().session.direct_authorization_invalid)?;
+    let mut host = host;
+    host.name = super::sanitize_name(&authorized.name);
+    host.platform = authorized.platform;
+    host.version = authorized.version.clone();
     store::remember_host(KnownHost {
         device_id: host.device_id.clone(),
         public_key: host.public_key.clone(),
@@ -378,7 +382,11 @@ async fn pair_inner(
     .await?;
     let message = answer.await?;
     ensure!(message.kind == dtypes::PAIRED, "{}", t().session.pairing_incomplete);
-    let _: DirectPaired = message.body().context(t().session.pairing_reply_invalid)?;
+    let paired: DirectPaired = message.body().context(t().session.pairing_reply_invalid)?;
+    let mut host = host;
+    host.name = super::sanitize_name(&paired.name);
+    host.platform = paired.platform;
+    host.version = paired.version;
     store::remember_host(KnownHost {
         device_id: host.device_id.clone(),
         public_key: host.public_key.clone(),

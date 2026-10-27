@@ -147,12 +147,16 @@ pub struct DirectConfirm {
     pub confirm: String,
 }
 
-/// `direct.authorized` (host → controller).
+/// `direct.authorized` (host → controller): also what the host's
+/// `direct.hello` leaves out before access (its name, system, version).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DirectAuthorized {
     pub relation: Relation,
     pub grants: Vec<String>,
+    pub name: String,
+    pub platform: crate::Platform,
+    pub version: String,
 }
 
 /// `direct.pair` (controller → host).
@@ -178,6 +182,9 @@ pub struct DirectPairNonce {
 pub struct DirectPaired {
     /// What the controller may do on the host from now on.
     pub grants: Vec<String>,
+    pub name: String,
+    pub platform: crate::Platform,
+    pub version: String,
 }
 
 /// LAN discovery messages ([`DISCOVERY_PORT`]).

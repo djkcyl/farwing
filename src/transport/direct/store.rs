@@ -506,7 +506,11 @@ pub(crate) fn device_list(user_id: &str) -> Option<crate::account::api::DeviceLi
         .map(|cache| cache.list)
 }
 
-/// The cached devices of `user_id`; empty for another or no account.
+/// How long the account's device list stays usable without the server.
+const OWN_CACHE_TTL_S: i64 = 7 * 24 * 3600;
+
+/// The cached devices of `user_id`; empty for another or no account, or
+/// when the server has not confirmed them for a week.
 pub(crate) fn own_devices(user_id: &str) -> Vec<OwnDevice> {
     if user_id.is_empty() {
         return Vec::new();
@@ -515,7 +519,7 @@ pub(crate) fn own_devices(user_id: &str) -> Vec<OwnDevice> {
     file("own_devices.json")
         .and_then(|path| read::<OwnDevices>(&path))
         .ok()
-        .filter(|cache| cache.user_id == user_id)
+        .filter(|cache| cache.user_id == user_id && now() - cache.updated_at < OWN_CACHE_TTL_S)
         .map(|cache| {
             cache
                 .devices

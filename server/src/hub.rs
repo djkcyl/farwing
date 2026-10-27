@@ -854,6 +854,11 @@ impl Hub {
             .get_mut(sid)
             .filter(|s| s.controller_device_id == controller_device_id)
             .ok_or(ErrorCode::NotFound)?;
+        // The same account (or a guest staying a guest): a session cannot be
+        // moved to a credential that revoking the account would not reach.
+        if s.controller_auth.user_id() != auth.user_id() {
+            return Err(ErrorCode::Forbidden);
+        }
         s.controller_auth = auth;
         if s.controller_link.is_none() {
             s.ticket_deadline = Some(Instant::now() + ttl);

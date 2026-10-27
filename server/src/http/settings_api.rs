@@ -299,6 +299,9 @@ pub async fn export(
     admin: AdminAuth,
     Query(q): Query<ExportQuery>,
 ) -> ApiResult<Json<Value>> {
+    if q.secrets && admin.read_only {
+        return Err(ApiError::forbidden("a read-only token cannot export secrets"));
+    }
     let cfg = app.cfg();
     super::admin_api::log(
         &app,

@@ -131,6 +131,12 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
                 screen_id = capture.screen_id,
                 "host capture action"
             );
+            // A files or ports session, or one whose `view` was withdrawn,
+            // never gets the picture.
+            anyhow::ensure!(
+                !capture.start || session.authorization().granted(farwing_protocol::caps::VIEW),
+                "本次会话不允许观看画面"
+            );
             if !capture.start {
                 session.stop(capture.screen_id).await?;
             } else if capture.screen_id == -1 {

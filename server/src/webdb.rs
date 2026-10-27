@@ -577,10 +577,13 @@ pub const ACCOUNT_EVENT_KINDS: &[&str] = &[
 /// The events of an account: what it did, and what was done to it (the
 /// entry's target is its username), of [`ACCOUNT_EVENT_KINDS`]; newest
 /// first.
+/// `since`: the account's creation, so a new account with an old name does
+/// not see the earlier one's events.
 pub fn account_events(
     c: &Connection,
     user_id: &str,
     username: &str,
+    since: i64,
     before: Option<i64>,
     limit: u32,
 ) -> R<Vec<AuditEntry>> {
@@ -592,10 +595,10 @@ pub fn account_events(
     let mut st = c.prepare(&format!(
         "SELECT id, at, actor_user, actor_name, kind, target, detail, ok, ip FROM audit_log
          WHERE (actor_user = ?1 OR target = ?2) AND kind IN ({kinds})
-           AND (?3 IS NULL OR id < ?3)
+           AND (?3 IS NULL OR id < ?3) AND at >= ?5
          ORDER BY id DESC LIMIT ?4"
     ))?;
-    st.query_map(params![user_id, username, before, limit.clamp(1, 200)], |r| {
+    st.query_map(params![user_id, username, before, limit.clamp(1, 200), since], |r| {
         Ok(AuditEntry {
             id: r.get(0)?,
             at: r.get(1)?,

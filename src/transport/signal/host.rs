@@ -35,6 +35,7 @@ struct Participant {
     /// The participant's lease with its bound capabilities.
     granted: crate::features::host::Lease,
     relation: farwing_protocol::api::Relation,
+    purpose: farwing_protocol::api::Purpose,
     /// The server's limit on this controller, applied to every grant.
     caps_limit: Option<Vec<String>>,
     peer: Option<Peer>,
@@ -94,7 +95,10 @@ pub(crate) struct Session {
     /// Publication of a changed device policy (files, ports, power, assist).
     policy_sync: Option<tokio::task::JoinHandle<()>>,
     /// PAKE keys of code-verified assistance sessions, by server session.
-    assist_keys: HashMap<String, [u8; 32]>,
+    /// Visitor and paired sessions this host let in, by server session,
+    /// with their PAKE key when a code was used. Kept until the session
+    /// ends, so a reconnection of the same session is still bound.
+    assist_keys: HashMap<String, Option<[u8; 32]>>,
     /// Publish the device policy again even if it looks unchanged: it was
     /// enabled while the server was unreachable.
     republish: bool,
@@ -638,6 +642,18 @@ impl Session {
                     };
                     participant.granted.set_grants(grants);
                     tracing::info!(grants = ?participant.granted.grants(), "participant capabilities changed");
+                    // Without what the session is for (`view` for the
+                    // desktop), it ends.
+                    let required = participant.purpose.required_cap();
+                    if !participant.granted.granted(required) {
+                        tracing::info!(required, "participant lost the session's capability");
+                        self.remove(
+                            &sid,
+                            signal,
+                            Some(farwing_protocol::realtime::reason::PERMISSION_REVOKED),
+                        )
+                        .await;
+                    }
                 }
             }
             types::SESSION_ENDED => {
@@ -646,6 +662,7 @@ impl Session {
                         reason: String::new(),
                     });
                     tracing::info!(reason = %ended.reason, "host matching session end received");
+                    self.assist_keys.remove(&sid);
                     self.remove(&sid, signal, None).await;
                 }
             }
@@ -701,29 +718,30 @@ impl Session {
         // The controller's SDP must be signed by the device key the server
         // (or the direct handshake) stated; code-verified assistance and
         // pairing are additionally bound to the PAKE.
+        let direct = signal
+            .router()
+            .is_some_and(|router| router.is_direct(&session_id));
         let direct_key = signal
             .router()
             .and_then(|router| router.take_session_key(&session_id));
         if let Some(key) = direct_key {
-            self.assist_keys.insert(session_id.clone(), key);
+            self.assist_keys.insert(session_id.clone(), Some(key));
         }
         let pake = if let Some(key) = self.assist_keys.get(&session_id) {
-            Some(*key)
-        } else if incoming.relation == farwing_protocol::api::Relation::Assist {
-            match self.assist_keys.get(&session_id) {
-                Some(key) => Some(*key),
-                None => {
-                    let key = self
-                        .client
-                        .host
-                        .assistance
-                        .take_pake_key(&incoming.controller.device_id);
-                    if let Some(key) = key {
-                        self.assist_keys.insert(session_id.clone(), key);
-                    }
-                    key
-                }
-            }
+            *key
+        } else if incoming.relation == farwing_protocol::api::Relation::Assist && !direct {
+            // A visitor through the server gets in only as a request this
+            // host let in (its code or its user's confirmation), never on
+            // the server's word alone. Direct visitors were let in by the
+            // direct endpoint.
+            let admission = self
+                .client
+                .host
+                .assistance
+                .take_admission(&incoming.controller.device_id)
+                .context("本机没有放行这位访客")?;
+            self.assist_keys.insert(session_id.clone(), admission);
+            admission
         } else {
             None
         };
@@ -1049,6 +1067,7 @@ impl Session {
                 binding,
                 granted: authorization.clone(),
                 relation: incoming.relation,
+                purpose: incoming.purpose,
                 caps_limit: incoming.controller.effective_caps_limit(),
                 peer: None,
                 preparing: Some(cancel),
@@ -1157,8 +1176,9 @@ impl Session {
         let Some(mut participant) = self.participants.remove(sid) else {
             return;
         };
-        self.assist_keys.remove(sid);
         if let Some(why) = why {
+            // This host ends the session.
+            self.assist_keys.remove(sid);
             Self::notify_termination(signal, sid, why).await;
         }
         if let Some(cancel) = participant.preparing.take() {

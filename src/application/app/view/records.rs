@@ -156,7 +156,11 @@ fn record_card(ui: &mut egui::Ui, r: &ConnectionRecord, open: bool) -> bool {
             let header = ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.set_max_width((ui.available_width() - 120.0).max(200.0));
-                    ui.label(format!("{}  →  {}", party(&r.controller), r.host.name));
+                    ui.label(format!(
+                        "{}  →  {}",
+                        party(&r.controller),
+                        if r.host.name.is_empty() { "—" } else { &r.host.name }
+                    ));
                     let route = r.viewer.as_ref().map_or("", |v| (text.route)(&v.route));
                     small(
                         ui,

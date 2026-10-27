@@ -13,8 +13,9 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 
-/// How often a host announces itself unasked.
-const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(30);
+/// How often the responder joins adapters that came up. It never announces
+/// itself unasked: it only answers queries from local networks.
+const ADAPTER_INTERVAL: Duration = Duration::from_secs(30);
 
 fn group() -> Ipv4Addr {
     let [a, b, c, d] = wire::DISCOVERY_GROUP;
@@ -26,6 +27,19 @@ pub(crate) trait Announcer: Send + Sync {
     fn announcement(&self) -> Option<(LocalDevice, u16, Vec<String>)>;
 }
 
+/// Queries are answered only from private, link-local and loopback
+/// addresses: discovery is for the local network.
+fn local_network(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local() || v4.is_loopback(),
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+        }
+    }
+}
+
 fn announce(local: &LocalDevice, port: u16, methods: Vec<String>, nonce: &str) -> lan::Announce {
     let mut announce = lan::Announce {
         t: lan::ANNOUNCE.into(),
@@ -33,7 +47,7 @@ fn announce(local: &LocalDevice, port: u16, methods: Vec<String>, nonce: &str) -
         device_id: local.identity.device_id.clone(),
         name: local.name.clone(),
         platform: farwing_protocol::Platform::Windows,
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: String::new(),
         public_key: local.identity.public_key(),
         port,
         udp_port: port,
@@ -72,21 +86,18 @@ impl Responder {
         };
         let task_cancel = cancel.clone();
         tokio::spawn(async move {
-            let destination = SocketAddr::V4(SocketAddrV4::new(group(), wire::DISCOVERY_PORT));
-            let mut tick = tokio::time::interval(ANNOUNCE_INTERVAL);
+            let mut tick = tokio::time::interval(ADAPTER_INTERVAL);
             let mut buffer = vec![0u8; 2048];
             let mut joined = Vec::new();
             loop {
                 tokio::select! {
                     _ = task_cancel.cancelled() => break,
-                    _ = tick.tick() => {
-                        join_lan_adapters(&socket, &mut joined);
-                        if let Some((local, port, methods)) = source.announcement() {
-                            send(&socket, &announce(&local, port, methods, ""), destination).await;
-                        }
-                    }
+                    _ = tick.tick() => join_lan_adapters(&socket, &mut joined),
                     received = socket.recv_from(&mut buffer) => {
                         let Ok((length, from)) = received else { continue };
+                        if !local_network(from.ip()) {
+                            continue;
+                        }
                         let Ok(query) = serde_json::from_slice::<lan::Query>(&buffer[..length]) else { continue };
                         if query.t != lan::QUERY || query.nonce.len() > 64 {
                             continue;

@@ -1,6 +1,6 @@
 // Sign in (password, then the second step for accounts with two-step
 // verification) and invitation registration.
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { useT } from '../i18n/react';
 import { ApiError, errorText } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -188,7 +188,13 @@ export function RegisterPage() {
   const r = t.auth.register;
   const auth = useAuth();
   const { query } = useLocation();
-  const [invite, setInvite] = useState(query.get('code') ?? '');
+  const [invite, setInvite] = useState(
+    () => new URLSearchParams(location.hash.slice(1)).get('code') ?? query.get('code') ?? '',
+  );
+  // The code leaves the address bar and the history once read.
+  useEffect(() => {
+    if (location.hash) history.replaceState(history.state, '', location.pathname + location.search);
+  }, []);
   const [username, setUsername] = useState('');
   const [nickname, setNickname] = useState('');
   const [password, setPassword] = useState('');

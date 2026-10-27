@@ -61,6 +61,7 @@ async fn test_server_simple() -> Result<()> {
         auth_handler: Arc::new(TestAuthHandler::new()),
         channel_bind_timeout: Duration::from_secs(0),
         alloc_close_notify: None,
+        peer_filter: None,
     })
     .await?;
 
@@ -197,6 +198,7 @@ async fn build_vnet() -> Result<VNet> {
         auth_handler: Arc::new(TestAuthHandler::new()),
         channel_bind_timeout: Duration::from_secs(0),
         alloc_close_notify: None,
+        peer_filter: None,
     })
     .await?;
 

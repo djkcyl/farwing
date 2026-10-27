@@ -11,7 +11,8 @@ use axum::Json;
 use axum::extract::{Query, State};
 use farwing_protocol::ErrorCode;
 use farwing_protocol::api::{
-    AccountEvent, ConnectionRecord, DeviceEvent, Empty, RecordParty, RecordReport, device_event,
+    AccountEvent, ConnectionRecord, DeviceEvent, Empty, RecordOutcome, RecordParty, RecordReport,
+    device_event,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -34,13 +35,28 @@ pub async fn list(
     auth: AccountAuth,
     Query(q): Query<RecordsQuery>,
 ) -> ApiResult<Json<Vec<ConnectionRecord>>> {
+    let me = auth.user.id.clone();
     let filter = Filter {
-        user: Some(auth.user.id.clone()),
+        user: Some(me.clone()),
         device: q.device.filter(|d| !d.is_empty()),
         before: q.before,
         limit: q.limit.unwrap_or(PAGE),
     };
-    Ok(Json(app.db.call(move |c| records::list(c, &filter)).await?))
+    let mut rows = app.db.call(move |c| records::list(c, &filter)).await?;
+    for r in &mut rows {
+        if r.host.user_id != me {
+            // A visitor that was not let in learns nothing about the device
+            // it tried.
+            if !matches!(r.outcome, RecordOutcome::Open | RecordOutcome::Ended) {
+                r.host = RecordParty::default();
+            }
+            r.host.user_id.clear();
+        }
+        if r.controller.user_id != me {
+            r.controller.user_id.clear();
+        }
+    }
+    Ok(Json(rows))
 }
 
 /// `GET /api/v2/admin/records`: every connection, or one account's or
@@ -118,10 +134,11 @@ pub async fn account_events(
     Query(q): Query<EventsQuery>,
 ) -> ApiResult<Json<Vec<AccountEvent>>> {
     let (uid, username) = (auth.user.id.clone(), auth.user.username.clone());
+    let since = auth.user.created_at;
     let limit = q.limit.unwrap_or(PAGE);
     let entries = app
         .db
-        .call(move |c| webdb::account_events(c, &uid, &username, q.before, limit))
+        .call(move |c| webdb::account_events(c, &uid, &username, since, q.before, limit))
         .await?;
     Ok(Json(
         entries
@@ -139,7 +156,14 @@ pub async fn account_events(
                 target: e.target,
                 detail: serde_json::from_str(&e.detail).unwrap_or_default(),
                 ok: e.ok,
-                ip: e.ip,
+                // Where this account acted from, or failed sign-ins against
+                // it; not where a friend or an administrator was.
+                ip: if e.actor_user.is_none() || e.actor_user.as_deref() == Some(auth.user.id.as_str())
+                {
+                    e.ip
+                } else {
+                    String::new()
+                },
             })
             .collect(),
     ))

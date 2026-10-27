@@ -49,6 +49,17 @@ pub async fn audit(
 }
 
 /// Verify a password on a blocking thread, bounded like logins.
+/// Password and second-factor checks of a signed-in account are limited
+/// like sign-in attempts, so a stolen login cannot guess the password or a
+/// code. Clear the returned key after a success.
+fn take_secret_attempt(app: &App, user_id: &str) -> ApiResult<String> {
+    let key = format!("secret-user:{user_id}");
+    app.limiter
+        .take(&key, app.cfg().limits.login_failures_per_user, Duration::from_secs(15 * 60))
+        .map_err(ApiError::rate_limited)?;
+    Ok(key)
+}
+
 pub async fn check_password(app: &App, password: String, hash: String) -> ApiResult<bool> {
     let Ok(_slot) = tokio::time::timeout(Duration::from_secs(10), app.password_slots.acquire()).await
     else {
@@ -206,11 +217,13 @@ pub async fn set_password(
 ) -> ApiResult<Json<Empty>> {
     password_rule(&req.new_password)?;
     let actor = Some((auth.user.id.as_str(), auth.user.username.as_str()));
+    let attempt = take_secret_attempt(&app, &auth.user.id)?;
     if !check_password(&app, req.old_password, auth.user.password_hash.clone()).await? {
         let why = reason::CURRENT_PASSWORD_INCORRECT;
         audit(&app, actor, "password.change", &auth.user.username, failure(why), false, ip).await;
         return Err(ApiError::reason(ErrorCode::Forbidden, why, "current password is incorrect"));
     }
+    app.limiter.clear(&attempt);
     let hash = new_hash(req.new_password).await?;
     let (uid, keep) = (auth.user.id.clone(), auth.token_hash.clone());
     app.db
@@ -262,9 +275,11 @@ pub async fn totp_setup(
     auth: AccountAuth,
     JsonBody(req): JsonBody<PasswordOnly>,
 ) -> ApiResult<Json<TotpSetup>> {
+    let attempt = take_secret_attempt(&app, &auth.user.id)?;
     if !check_password(&app, req.password, auth.user.password_hash.clone()).await? {
         return Err(password_incorrect());
     }
+    app.limiter.clear(&attempt);
     let secret = crate::totp::new_secret();
     let (uid, s2) = (auth.user.id.clone(), secret.clone());
     // Two-step verification guards the web console's administration; client
@@ -370,12 +385,14 @@ pub async fn totp_disable(
     auth: AccountAuth,
     JsonBody(req): JsonBody<DisableRequest>,
 ) -> ApiResult<Json<Empty>> {
+    let attempt = take_secret_attempt(&app, &auth.user.id)?;
     if !check_password(&app, req.password, auth.user.password_hash.clone()).await? {
         return Err(password_incorrect());
     }
     if !second_factor(&app, &auth.user.id, &req.code).await? {
         return Err(code_incorrect());
     }
+    app.limiter.clear(&attempt);
     let uid = auth.user.id.clone();
     app.db.call(move |c| webdb::clear_totp(c, &uid)).await?;
     audit(
@@ -420,7 +437,10 @@ async fn second_factor(app: &App, user_id: &str, code: &str) -> ApiResult<bool> 
                 return Ok(true);
             }
             let hash = sha256_hex(code.as_bytes());
-            if let Some(i) = recovery.iter().position(|h| *h == hash) {
+            if let Some(i) = recovery
+                .iter()
+                .position(|h| crate::crypto::ct_eq(h.as_bytes(), hash.as_bytes()))
+            {
                 recovery.remove(i);
                 webdb::set_totp_recovery(c, &uid, &recovery)?;
                 return Ok(true);

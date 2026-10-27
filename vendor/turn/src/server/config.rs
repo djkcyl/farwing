@@ -24,6 +24,10 @@ impl ConnConfig {
     }
 }
 
+/// Whether a client may relay to this peer (Farwing: keeps the relay off
+/// the server's own and private networks).
+pub type PeerFilter = Arc<dyn Fn(std::net::SocketAddr) -> bool + Send + Sync>;
+
 /// ServerConfig configures the TURN Server
 pub struct ServerConfig {
     /// `conn_configs` are a list of all the turn listeners.
@@ -42,6 +46,10 @@ pub struct ServerConfig {
 
     /// To receive notify on allocation close event, with metrics data.
     pub alloc_close_notify: Option<mpsc::Sender<AllocationInfo>>,
+
+    /// Peers that CreatePermission and ChannelBind may name; `None` allows
+    /// every peer.
+    pub peer_filter: Option<PeerFilter>,
 }
 
 impl ServerConfig {

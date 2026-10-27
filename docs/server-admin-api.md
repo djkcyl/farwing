@@ -147,7 +147,7 @@ curl "${H[@]}" -X POST $S/api/v2/admin/settings/listen/revert                   
 jq -n --rawfile c fullchain.pem --rawfile k privkey.pem '{cert_pem: $c, key_pem: $k}' |
   curl "${H[@]}" -X PUT -H "content-type: application/json" $S/api/v2/admin/settings/certificate -d @-
 
-# 导出（默认不含密钥；?secrets=true 含密钥）
+# 导出（默认不含密钥；?secrets=true 含密钥，只读令牌不能导出密钥）
 curl "${H[@]}" "$S/api/v2/admin/settings/export?secrets=true" > farwing-settings.json
 
 # 导入整份设置（密钥为空时保留当前的；--listen 指定的监听地址不变）
@@ -166,7 +166,7 @@ curl "${H[@]}" -X POST $S/api/v2/admin/settings/relay-secret
 | `listen` | `0.0.0.0:8443` | 网页与接口的监听地址 |
 | `public_url` | `https://<本机地址>:8443` | 客户端与浏览器访问的地址；实时端点由它生成。带路径前缀时，反向代理可剥掉前缀 |
 | `instance_name` | `farwing` | 实例名称 |
-| `trusted_proxies` | `[]` | 受信任的反向代理（CIDR），只对它们采用 `X-Forwarded-For` |
+| `trusted_proxies` | `[]`（初始化时选反向代理模式则为本机 `127.0.0.1/32`、`::1/128`） | 受信任的反向代理（CIDR），只对它们采用 `X-Forwarded-For`；从右往左，遇到不是地址的条目即止于最后一个受信任的一跳 |
 | `bitrate_limit_mbps` | 空 | 下发给客户端的会话码率上限（1–10000） |
 | `log` | `info` | 日志过滤（`tracing` 语法） |
 | `registration` | `false` | 邀请码注册 |
