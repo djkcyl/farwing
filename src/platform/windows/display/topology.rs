@@ -41,6 +41,10 @@ pub(crate) struct Dpi {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum VirtualProvider {
+    /// Another product's virtual display: a software-enumerated adapter
+    /// (`ROOT\` or `SWD\`, not a PCI, USB or VM device). Never owned,
+    /// managed or counted as a display someone sees.
+    Foreign,
     /// This client's own Farwing Display adapter.
     Farwing,
 }
@@ -52,6 +56,14 @@ impl VirtualProvider {
             _ => None,
         }
     }
+}
+
+/// Whether the adapter at `path` (`DISPLAYCONFIG_ADAPTER_NAME`, lowercase)
+/// is software-enumerated: a virtual display driver, not a graphics card,
+/// USB display or a virtual machine's display.
+fn software_adapter(path: &str) -> bool {
+    let instance = path.trim_start_matches(r"\\?\").trim_start_matches(r"\??\");
+    instance.starts_with("root#") || instance.starts_with("swd#")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,6 +86,13 @@ pub(crate) struct Target {
     /// Independent of the current source mode and supported-mode maximum.
     pub preferred_mode: Option<(u32, u32)>,
     pub dpi: Option<Dpi>,
+}
+impl Target {
+    /// Another product's virtual display: shows nothing anyone sees, so it
+    /// neither replaces a lost monitor nor keeps the fallback away.
+    pub(crate) fn foreign(&self) -> bool {
+        self.virtual_provider == Some(VirtualProvider::Foreign)
+    }
 }
 pub(crate) struct Topology {
     pub paths: Vec<DISPLAYCONFIG_PATH_INFO>,
@@ -456,7 +475,8 @@ impl Topology {
                     identity
                         .contains(FARWING_MONITOR)
                         .then_some(VirtualProvider::Farwing)
-                });
+                })
+                .or_else(|| software_adapter(&adapter_path).then_some(VirtualProvider::Foreign));
             targets.push(Target {
                 identity,
                 name: text(&target.monitorFriendlyDeviceName),
@@ -907,6 +927,16 @@ impl Target {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn software_adapters_are_virtual_displays() {
+        // Paths as DisplayConfigGetDeviceInfo reports them, lowercased.
+        assert!(super::software_adapter(r"\\?\root#display#0000#{5b45201d-f2f2-4f3b-85bb-30ff1f953599}"));
+        assert!(super::software_adapter(r"\\?\swd#remotedisplayenum#rdpidd_indirectdisplay#{5b45201d}"));
+        assert!(!super::software_adapter(r"\\?\pci#ven_10de&dev_2d59&subsys_3ac81043&rev_a1#4&1#{5b45201d}"));
+        assert!(!super::software_adapter(r"\\?\usb#vid_17e9&pid_6006#0#{5b45201d}"));
+        assert!(super::software_adapter(r"\??\root#display#0001#{5b45201d}"));
+        assert!(!super::software_adapter(""));
+    }
     #[test]
     fn inventory_is_reused_while_the_configuration_is_unchanged() {
         let cache = std::sync::Mutex::new(Vec::new());

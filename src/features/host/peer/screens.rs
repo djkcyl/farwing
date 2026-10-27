@@ -27,7 +27,9 @@ pub(crate) const TRACK_COUNT: usize = 5;
 pub(super) struct Inventory {
     targets: Vec<Target>,
     screens: Vec<capture::Screen>,
-    layout: crate::platform::display::topology::SavedTopology,
+    /// `None` when the layout could not be read (a topology in change):
+    /// the screens are still maintained.
+    layout: Option<crate::platform::display::topology::SavedTopology>,
 }
 impl Inventory {
     pub fn read() -> Result<Self> {
@@ -44,7 +46,10 @@ impl Inventory {
         Ok(Self {
             targets: topology.targets_within(max_age)?,
             screens: capture::screens()?,
-            layout: Topology::query(true)?.snapshot()?,
+            layout: Topology::query(true)
+                .and_then(|topology| topology.snapshot())
+                .inspect_err(|error| tracing::debug!(error = %format!("{error:#}"), "display layout not read"))
+                .ok(),
         })
     }
     pub async fn collect(cancel: &CancellationToken) -> Result<Option<Self>> {
@@ -431,7 +436,9 @@ impl Screens {
             screens,
             layout,
         } = inventory;
-        self.displays.observe_layout(&layout)?;
+        if let Some(layout) = &layout {
+            self.displays.observe_layout(layout)?;
+        }
         let mut catalog = Vec::new();
         for mut screen in screens {
             let mut target = targets

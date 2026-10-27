@@ -8,10 +8,15 @@ pub(super) fn same_source(a: &capture::Screen, b: &capture::Screen) -> bool {
     a.id == b.id && a.identity.is_some() && a.identity == b.identity
 }
 
+/// After a failed fallback, the next try (the topology may settle).
+const RETRY: Duration = Duration::from_secs(10);
+
 #[derive(Default)]
 pub(super) struct State {
     empty_since: Option<Instant>,
-    attempted: bool,
+    /// When the fallback was last tried in this spell without a usable
+    /// screen.
+    attempted: Option<Instant>,
     unused_returning: Option<(String, Instant)>,
     pub(super) recovery: Option<Recovery>,
 }
@@ -110,17 +115,21 @@ impl State {
             }
         }
     }
+    /// `empty`: no screen anyone sees (none, or only other products'
+    /// virtual screens).
     fn should_create(&mut self, empty: bool, now: Instant) -> bool {
         if !empty {
             self.empty_since = None;
-            self.attempted = false;
+            self.attempted = None;
             return false;
         }
         let since = *self.empty_since.get_or_insert(now);
-        if self.attempted || now.saturating_duration_since(since) < Duration::from_millis(200) {
+        if self.attempted.is_some_and(|at| now.saturating_duration_since(at) < RETRY)
+            || now.saturating_duration_since(since) < Duration::from_millis(200)
+        {
             return false;
         }
-        self.attempted = true;
+        self.attempted = Some(now);
         true
     }
     pub(super) async fn close(&mut self) {
@@ -133,6 +142,34 @@ impl State {
 }
 
 impl Screens {
+    /// No screen anyone sees: none, or only other products' virtual screens.
+    fn unseen(&self) -> bool {
+        lock(&self.reports.catalog)
+            .iter()
+            .all(|i| i.target.as_ref().is_some_and(|t| t.foreign()))
+    }
+    /// A registered screen waiting for its lost monitor while only the
+    /// fallback `fallback` (or nothing anyone sees) is there.
+    fn waiting_for(&self, fallback: i32) -> Option<usize> {
+        let alone = lock(&self.reports.catalog).iter().all(|i| {
+            i.screen.id == fallback || i.target.as_ref().is_some_and(|t| t.foreign())
+        });
+        if !alone {
+            return None;
+        }
+        let current = self.reports.current.load(Ordering::Acquire);
+        self.slots
+            .iter()
+            .enumerate()
+            .filter(|(index, slot)| {
+                self.registered.contains(index)
+                    && slot.awaiting_source
+                    && slot.worker.is_none()
+                    && slot.suspended.is_some()
+            })
+            .min_by_key(|(_, slot)| slot.suspended.as_ref().is_none_or(|s| s.id != current))
+            .map(|(index, _)| index)
+    }
     fn delivered(&self, index: usize) -> bool {
         self.slots
             .get(index)
@@ -153,6 +190,27 @@ impl Screens {
                         probe: None,
                         replacement_since: None,
                     });
+                } else if let Some(index) = self.waiting_for(fallback.id) {
+                    // The fallback stayed (an earlier connection, a start that
+                    // failed): a screen that lost its monitor takes it while
+                    // nothing else is seen.
+                    let original = self.slots[index]
+                        .suspended
+                        .clone()
+                        .unwrap_or_else(|| fallback.clone());
+                    self.headless.recovery = Some(Recovery {
+                        slot: index,
+                        original,
+                        fallback: fallback.id,
+                        automatic: true,
+                        returning: None,
+                        retry_at: Instant::now(),
+                        probe: None,
+                        replacement_since: None,
+                    });
+                    let config = *lock(&self.slots[index].config);
+                    self.start_at(index, fallback, config).await?;
+                    return Ok(());
                 } else if self.displays.allows_fallback_retirement() {
                     // A retained screen may already be unused at reconnect, or
                     // video was paused before the first topology maintenance.
@@ -165,8 +223,7 @@ impl Screens {
                         .find(|i| {
                             i.screen.id != fallback.id
                                 && i.target.as_ref().is_some_and(|t| {
-                                    t.active
-                                    && t.available
+                                    t.active && t.available && !t.foreign()
                                 })
                                 && (idle
                                     || self.slots.iter().enumerate().any(|(n, s)| {
@@ -200,14 +257,14 @@ impl Screens {
             }
         }
         if self.headless.recovery.is_none() {
-            if lock(&self.reports.catalog).is_empty() && !self.headless.attempted {
+            if self.unseen() && self.headless.attempted.is_none() {
                 self.headless.empty_since.get_or_insert_with(Instant::now);
                 // Confirm the empty topology before publishing ScreenSources.
                 // Otherwise a controller could close its last tab in the gap.
                 tokio::select! { _ = self.cancel.cancelled() => return Ok(()), _ = tokio::time::sleep(Duration::from_millis(200)) => {} }
                 self.refresh()?;
             }
-            let empty = lock(&self.reports.catalog).is_empty();
+            let empty = self.unseen();
             if !self.headless.should_create(empty, Instant::now()) {
                 return Ok(());
             }
@@ -265,7 +322,7 @@ impl Screens {
                     probe.close().await;
                 }
                 self.headless.empty_since = None;
-                self.headless.attempted = false;
+                self.headless.attempted = None;
                 Ok(())
             }
             result => {
@@ -288,10 +345,7 @@ impl Screens {
             .iter()
             .filter(|i| {
                 i.screen.id != r.fallback
-                    && i.target.as_ref().is_some_and(|t| {
-                        t.active
-                            && t.available
-                    })
+                    && i.target.as_ref().is_some_and(|t| t.active && t.available && !t.foreign())
             })
             .min_by_key(|i| (i.screen.identity != r.original.identity, !i.screen.primary))
             .map(|i| i.screen.clone());
@@ -458,10 +512,7 @@ impl Screens {
                 .iter()
                 .find(|i| {
                     i.screen.id != id
-                        && i.target.as_ref().is_some_and(|t| {
-                            t.active
-                            && t.available
-                        })
+                        && i.target.as_ref().is_some_and(|t| t.active && t.available && !t.foreign())
                 })
                 .and_then(|i| i.screen.identity.clone())
         });
@@ -479,5 +530,25 @@ impl Screens {
         }
         self.refresh()?;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_fallback_is_tried_again_while_nothing_is_seen() {
+        let mut state = State::default();
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        assert!(!state.should_create(true, at(0)));
+        assert!(state.should_create(true, at(200)));
+        assert!(!state.should_create(true, at(5_000)));
+        assert!(state.should_create(true, at(10_200)));
+        // A screen someone sees ends the spell.
+        assert!(!state.should_create(false, at(10_300)));
+        assert!(!state.should_create(true, at(10_400)));
+        assert!(state.should_create(true, at(10_600)));
     }
 }

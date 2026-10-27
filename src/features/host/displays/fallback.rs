@@ -43,9 +43,7 @@ pub(super) fn target<'a>(identity: &str, targets: &'a [Target]) -> Option<&'a Ta
     targets.iter().find(|t| t.identity == identity)
 }
 fn replacement(t: &Target, own: Option<&str>) -> bool {
-    t.active
-        && t.available
-        && own.is_none_or(|identity| identity != t.identity)
+    t.active && t.available && !t.foreign() && own.is_none_or(|identity| identity != t.identity)
 }
 pub(crate) fn pin() -> Result<Option<Driver>> {
     if Driver::device_instance().is_err() {

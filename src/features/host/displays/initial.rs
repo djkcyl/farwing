@@ -192,7 +192,7 @@ impl State {
         if !options.force_virtual
             && !self.preferences.default_virtual
             && !self.preferences.super_enabled
-            && !targets.iter().any(|t| t.available)
+            && !targets.iter().any(|t| t.available && !t.foreign())
         {
             automatic = fallback::ensure(
                 self.fallback_driver()?,
