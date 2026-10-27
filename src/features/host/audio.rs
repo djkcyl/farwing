@@ -183,9 +183,9 @@ impl Audio {
             transport,
         }))
     }
-    pub fn enable_quality_control(&self, enabled: bool, audio_only: bool) {
-        self.0.quality_control.store(enabled, Ordering::Release);
-        if enabled && audio_only {
+    pub fn enable_quality_control(&self, audio_only: bool) {
+        self.0.quality_control.store(true, Ordering::Release);
+        if audio_only {
             self.0.remote_quality.store(256, Ordering::Relaxed);
         }
     }

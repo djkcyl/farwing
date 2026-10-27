@@ -50,9 +50,6 @@ pub(crate) fn pin() -> Result<Option<Driver>> {
         return Ok(None);
     }
     let driver = Driver::open()?;
-    if !driver.persistent_supported() {
-        return Ok(None);
-    }
     driver.pin_fallback()?;
     Ok(Some(driver))
 }
@@ -94,11 +91,6 @@ pub(super) fn ensure(
     }) {
         return screen(driver);
     }
-    ensure!(
-        driver.persistent_supported(),
-        "{}",
-        t().features.screen_none_driver_outdated
-    );
     let saved = store::read::<Record>(&path()?)?;
     let record = saved.unwrap_or(Record {
         width: width.clamp(2, 16384),
@@ -237,26 +229,15 @@ pub(super) fn retire(driver: &Driver, replacement_identity: Option<&str>) -> Res
 #[derive(Default)]
 pub(crate) struct Maintainer {
     returning: Option<(String, Instant)>,
-    protocol_retry: Option<Instant>,
 }
 impl Maintainer {
     pub(crate) fn tick(&mut self) -> Result<()> {
-        if self.protocol_retry.is_some_and(|t| Instant::now() < t) {
-            return Ok(());
-        }
         if Driver::device_instance().is_err() {
             self.returning = None;
             return Ok(());
         }
         let _serial = display::recovery::Serial::acquire()?;
         let driver = Driver::open()?;
-        if !driver.persistent_supported() {
-            // The old driver's version query itself renews its global watchdog.
-            // Do not poll it frequently and accidentally keep orphaned screens alive.
-            self.protocol_retry = Some(Instant::now() + Duration::from_secs(30));
-            return Ok(());
-        }
-        self.protocol_retry = None;
         let (own, users) = driver.fallback_state()?;
         if own.is_none() && !path()?.is_file() {
             self.returning = None;

@@ -378,7 +378,7 @@ async fn settings_and_announcements_apply_at_once() {
     .ok();
     let info = srv.get("/api/v2/server", &root).await;
     assert_eq!(info.ok()["server"]["instance_name"], "Lab");
-    assert_eq!(srv.get("/api/v2/config", &root).await.ok()["bitrate_limit_mbps"], 40);
+    assert_eq!(srv.app().cfg().bitrate_limit_mbps, Some(40));
     let r = srv
         .put("/api/v2/admin/settings", &root, json!({"bitrate_limit_mbps": 0}))
         .await;
@@ -386,7 +386,7 @@ async fn settings_and_announcements_apply_at_once() {
     assert_eq!(r.body["error"]["details"]["field"], "bitrate_limit_mbps");
     assert_eq!(r.body["error"]["details"]["problem"], "out_of_range");
     // The refused change left the settings as they were, secret included.
-    assert_eq!(srv.get("/api/v2/config", &root).await.ok()["bitrate_limit_mbps"], 40);
+    assert_eq!(srv.app().cfg().bitrate_limit_mbps, Some(40));
     assert_eq!(srv.app().cfg().turn.shared_secret, "test-shared-secret");
     let audit = srv.get("/api/v2/admin/audit?kind=settings.update", &root).await;
     let detail: serde_json::Value =

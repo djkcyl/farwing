@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static PUSHES: AtomicU64 = AtomicU64::new(0);
 
-/// A `notice` push arrived (or the background service received one).
+/// A `notice` or `friend.changed` push arrived (or the background service
+/// received one).
 pub(crate) fn pushed() {
     PUSHES.fetch_add(1, Ordering::Relaxed);
 }

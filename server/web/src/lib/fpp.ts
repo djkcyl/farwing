@@ -144,7 +144,6 @@ export const VIEWER_FEATURES = [
   'host_event',
   'audio.quality',
   'audio.microphone',
-  'display.geometry',
   'clipboard',
   'files',
   'annotation',

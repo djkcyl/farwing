@@ -22,7 +22,6 @@ pub(crate) struct HostEvent {
     pub actor: String,
 }
 
-#[allow(dead_code)]
 pub(crate) mod kind {
     /// The host installs an update and restarts Farwing.
     pub const UPDATING: i32 = 1;

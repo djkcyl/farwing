@@ -5,7 +5,7 @@ use anyhow::{Result, ensure};
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::sync::mpsc;
 
@@ -17,8 +17,8 @@ pub(crate) enum Action {
 #[derive(Debug)]
 struct Command {
     action: Action,
-    call_id: Option<String>,
-    need_response: bool,
+    /// The server's request ID, answered with the result.
+    call_id: String,
 }
 fn parse(push: &farwing_protocol::realtime::Envelope) -> Result<Option<Command>> {
     use farwing_protocol::api::PowerAction;
@@ -35,11 +35,9 @@ fn parse(push: &farwing_protocol::realtime::Envelope) -> Result<Option<Command>>
         PowerAction::Shutdown => Action::Shutdown,
         PowerAction::Wake => anyhow::bail!("在线设备不处理唤醒请求"),
     };
-    // Every Farwing power request is acknowledged with its result.
     Ok(Some(Command {
         action,
-        call_id: Some(request.request_id),
-        need_response: true,
+        call_id: request.request_id,
     }))
 }
 #[derive(Default)]
@@ -50,7 +48,6 @@ struct State {
     committed: bool,
     sender: Option<mpsc::Sender<Request>>,
     seen: VecDeque<String>,
-    last_anonymous: Option<Instant>,
 }
 #[derive(Clone, Default)]
 pub(crate) struct Handle(Arc<Mutex<State>>);
@@ -74,27 +71,16 @@ impl Handle {
         if s.busy || s.committed {
             return true;
         }
-        if let Some(id) = &command.call_id {
-            if s.seen.contains(id) {
-                return true;
-            }
-        } else if s
-            .last_anonymous
-            .is_some_and(|at| at.elapsed() < Duration::from_secs(30))
-        {
+        if s.seen.contains(&command.call_id) {
             return true;
         }
         let Some(sender) = s.sender.clone() else {
             return true;
         };
-        if let Some(id) = &command.call_id {
-            if s.seen.len() == 64 {
-                s.seen.pop_front();
-            }
-            s.seen.push_back(id.clone());
-        } else {
-            s.last_anonymous = Some(Instant::now());
+        if s.seen.len() == 64 {
+            s.seen.pop_front();
         }
+        s.seen.push_back(command.call_id.clone());
         s.busy = true;
         let request = Request {
             command,
@@ -227,10 +213,10 @@ async fn prepare(request: Request, client: &HostClient) -> Result<Request> {
     } else {
         Err(anyhow::anyhow!(t().features.power_not_allowed_here))
     };
-    if request.command.need_response && request.valid() && client.is_active() {
+    if request.valid() && client.is_active() {
         client
             .power_response(
-                request.command.call_id.clone().unwrap(),
+                request.command.call_id.clone(),
                 if ready.is_ok() { 0 } else { -1 },
                 if ready.is_ok() {
                     "ok".into()

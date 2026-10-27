@@ -214,9 +214,6 @@ impl Screens {
             }
         }
     }
-    pub(super) fn update_media_intent(&self) -> VideoConfig {
-        self.base
-    }
     /// Whether the participant watches the picture (not audio only): only
     /// those watching share the viewers' stream and take part in forwarding.
     fn watching(&self, watching: bool) {

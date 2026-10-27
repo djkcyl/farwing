@@ -65,7 +65,7 @@ async fn protocol_header_and_version_errors() {
     let r = srv
         .send(
             srv.http
-                .get(srv.url("/api/v2/config"))
+                .get(srv.url("/api/v2/me"))
                 .header(headers::PROTOCOL, "1"),
         )
         .await;
@@ -715,10 +715,6 @@ async fn guest_registration_and_restrictions() {
     srv.get("/api/v2/devices", &g)
         .await
         .err(401, "unauthorized");
-    let cfg = srv.get("/api/v2/config", &g).await.ok().clone();
-    assert!(cfg.get("network").is_none());
-    assert!(cfg.get("input").is_none());
-    assert_eq!(cfg["bitrate_limit_mbps"], Value::Null);
     let (_gw, hello) = srv.presence(&g).await;
     assert_eq!(hello["data"]["epoch"], 1);
     // Guests may set their policy (e.g. accept assistance).
@@ -726,7 +722,7 @@ async fn guest_registration_and_restrictions() {
     // A guest token from another device is rejected.
     let mut other = srv.init_device("OTHER", "windows", true).await;
     other.guest = g.guest.clone();
-    srv.get("/api/v2/config", &other)
+    srv.put("/api/v2/devices/self/policy", &other, host_policy(true))
         .await
         .err(401, "device_mismatch");
 
@@ -905,7 +901,6 @@ async fn updates_and_config() {
             .unwrap();
         }
     }
-    let d = Dev::default();
     let v = srv
         .send(srv.raw(Method::GET, "/api/v2/updates/windows"))
         .await;
@@ -925,15 +920,8 @@ async fn updates_and_config() {
     assert_eq!(v.ok(), &json!({"latest": null}));
     let info = srv.send(srv.raw(Method::GET, "/api/v2/server")).await;
     assert_eq!(info.ok()["features"]["updates"], true);
-    // Config requires credentials.
-    srv.get("/api/v2/config", &d)
-        .await
-        .err(401, "device_unauthorized");
-    let g = srv.guest_device("G").await;
-    assert_eq!(
-        srv.get("/api/v2/config", &g).await.ok()["bitrate_limit_mbps"],
-        40
-    );
+    // The configured limit is in effect.
+    assert_eq!(srv.app().cfg().bitrate_limit_mbps, Some(40));
     tokio::time::sleep(Duration::from_millis(10)).await;
     srv.shutdown().await;
 }

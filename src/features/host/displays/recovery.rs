@@ -272,7 +272,6 @@ fn recover(path: &std::path::Path) -> Result<()> {
         journal,
         path: path.into(),
         preferences: Preference::default(),
-        has_saved_preferences: false,
         preference_path: None,
         driver: None,
         fallback_pin: fallback::pin()?,

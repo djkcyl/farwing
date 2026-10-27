@@ -220,7 +220,6 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `DELETE /devices/self/wallpaper` | 账号 | — | `{}` |
 | `PUT /devices/self/wol` | 账号 | `{mac, inner_ip, subnet_mask}` | `{supported}` |
 | `POST /power/{request_id}/result` | 任一 | `{code, message, state}` | `{}` |
-| `GET /config` | 任一 | — | `{bitrate_limit_mbps, network}` |
 | `GET /updates/{platform}?channel=stable\|beta` | 无 | — | `{latest: ReleaseInfo \| null}` |
 | `POST /presence/ticket` | 任一 | 空 | `PresenceTicket` |
 | `POST /sessions` | 账号 | `{target_device_id, purpose, presence?, visit?}` | `SessionTicket` |
@@ -330,7 +329,6 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 
 ### 3.9 配置与更新
 
-- `GET /config`：`{bitrate_limit_mbps: u32 | null}`。
 - `GET /updates/{platform}`：管理员发布的版本公告（网页端“客户端更新”或管理接口，不在配置文件中）`{version, prerelease, published_at, notes, url}`；`beta` 渠道同时包含 `stable` 条目，取 `published_at` 最新者；未配置或平台未知时 `{latest: null}`。
 
 ### 3.10 会话入场
@@ -640,7 +638,7 @@ v1 的 `MOUSE_POLICY`、`AUDIO_QUALITY`、`FILE_BLOCK`、`DRAG_DATA`（0x0502）
 
 | 类别 | 特性名 |
 |------|--------|
-| 画面与显示 | `video.h264`、`video.hevc`、`video.av1`、`video.444`、`video.hdr`、`display.config`、`display.virtual`、`display.exclusive`、`display.geometry` |
+| 画面与显示 | `video.h264`、`video.hevc`、`video.av1`、`video.444`、`video.hdr`、`display.config`、`display.virtual`、`display.exclusive` |
 | 音频 | `audio.quality`、`audio.microphone` |
 | 光标 | `cursor.shape`、`cursor.participants` |
 | 数据 | `clipboard`、`clipboard.files`、`files`、`drag`、`annotation`、`ports.tcp`、`ports.udp`、`diagnostics` |

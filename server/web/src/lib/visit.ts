@@ -143,8 +143,3 @@ export async function visitAdmission(
     throw visitError(error);
   }
 }
-
-/// The bearer a visitor's later requests use (none when signed in).
-export function visitorSignedIn(): boolean {
-  return hasToken();
-}

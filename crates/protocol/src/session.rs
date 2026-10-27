@@ -31,11 +31,8 @@ pub struct CaptureParams {
     /// Video quality tier 1..=6 (5 = automatic, 6 = custom bitrate); see stream control.
     pub quality: i32,
     pub cursor_capture: bool,
-    /// 3 = follow the remote (host) resolution.
-    pub resolution_type: i32,
     /// The controller's physical display size.
     pub local_resolution: Option<Resolution>,
-    pub chosen_resolution: Option<Resolution>,
     /// 1 = 4:2:0, 3 = 4:4:4 (true color).
     pub chroma: i32,
     /// Custom maximum bitrate in bit/s; 0 = automatic.
@@ -75,11 +72,7 @@ pub struct DecoderCapability {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ConnectOptions {
-    /// Initially selected screen; -1 = host default.
-    pub screen_id: i32,
     pub capture: Option<CaptureParams>,
     pub decoders: Vec<DecoderCapability>,
-    /// Controller application version.
-    pub version: String,
 }
 

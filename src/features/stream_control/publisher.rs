@@ -95,7 +95,6 @@ pub(crate) mod kind {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ConnectOptions {
     pub kind: i32,
-    pub screen_id: i32,
     pub params: Option<CaptureParams>,
     pub decoders: Vec<DecoderCapability>,
     pub client_type: i32,
@@ -118,14 +117,11 @@ impl ConnectOptions {
             height: r.height,
         };
         Self {
-            screen_id: wire.screen_id,
             params: wire.capture.as_ref().map(|c| CaptureParams {
                 fps: c.fps,
                 quality: c.quality,
                 cursor_capture: c.cursor_capture,
-                resolution_type: c.resolution_type,
                 local_resolution: c.local_resolution.as_ref().map(resolution),
-                chosen_resolution: c.chosen_resolution.as_ref().map(resolution),
                 chroma: c.chroma,
                 bitrate: c.bitrate,
                 hdr: c.hdr,
@@ -224,12 +220,8 @@ pub(crate) struct CaptureParams {
     pub quality: i32,
     #[prost(bool, tag = "3")]
     pub cursor_capture: bool,
-    #[prost(int32, tag = "4")]
-    pub resolution_type: i32,
     #[prost(message, optional, tag = "5")]
     pub local_resolution: Option<Resolution>,
-    #[prost(message, optional, tag = "6")]
-    pub chosen_resolution: Option<Resolution>,
     #[prost(int32, tag = "7")]
     pub chroma: i32,
     #[prost(int32, tag = "8")]

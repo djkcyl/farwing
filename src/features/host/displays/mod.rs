@@ -79,7 +79,6 @@ struct State {
     journal: Journal,
     path: PathBuf,
     preferences: Preference,
-    has_saved_preferences: bool,
     preference_path: Option<PathBuf>,
     driver: Option<Heartbeat>,
     fallback_pin: Option<Driver>,
@@ -123,7 +122,6 @@ impl Session {
             .map(store::read::<Preference>)
             .transpose()?
             .flatten();
-        let has_saved_preferences = preferences.is_some();
         let preferences = preferences.unwrap_or_default();
         fallback::start_background();
         Ok(Arc::new(Self {
@@ -150,7 +148,6 @@ impl Session {
                     desired_dpi: Vec::new(),
                 },
                 preferences,
-                has_saved_preferences,
                 preference_path,
                 driver: None,
                 fallback_pin: None,
@@ -288,7 +285,7 @@ impl Session {
                         .journal
                         .owned
                         .iter()
-                        .filter(|o| matches!(o.kind, 1 | 3))
+                        .filter(|o| o.kind == 1)
                         .count()
                         < 3,
                 "{}",
@@ -322,7 +319,7 @@ impl Session {
         self.run(move |state, lease| {
             let index = state.owned_index(&identity)?;
             ensure!(
-                matches!(state.journal.owned[index].kind, 1 | 3),
+                state.journal.owned[index].kind == 1,
                 "{}",
                 t().features.screen_remove_cannot_exit_super
             );

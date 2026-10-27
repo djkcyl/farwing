@@ -281,7 +281,11 @@ async fn serve_presence(
             if crate::account::server_changed::push(push) {
                 return;
             }
-            if push.kind == farwing_protocol::realtime::types::NOTICE {
+            // Notices, and friends or requests changing: the device centre
+            // reads them again.
+            if push.kind == farwing_protocol::realtime::types::NOTICE
+                || push.kind == farwing_protocol::realtime::types::FRIEND_CHANGED
+            {
                 crate::account::notices::pushed();
                 return;
             }

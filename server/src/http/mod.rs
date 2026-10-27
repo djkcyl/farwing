@@ -510,7 +510,6 @@ pub fn router(app: App) -> Router {
         )
         .route(path::SELF_WOL, put(power::set_wol_info))
         .route("/api/v2/power/{request_id}/result", post(power::result))
-        .route(path::CONFIG, get(misc::client_config))
         .route("/api/v2/updates/{platform}", get(misc::updates))
         .route(path::PRESENCE_TICKET, post(sessions::presence_ticket))
         .route(path::SESSIONS, post(sessions::create))

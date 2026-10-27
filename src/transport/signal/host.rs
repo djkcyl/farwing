@@ -767,12 +767,8 @@ impl Session {
         };
         let remote: crate::protocol::capability::DeviceCapability =
             serde_json::from_value(capability).context("缺少主控解码能力")?;
-        // Every v2 controller implements these; the peer HELLO negotiates the
-        // in-session feature set.
-        let extensions = SessionExtensions {
-            audio_only: incoming.purpose == farwing_protocol::api::Purpose::Audio,
-            ..SessionExtensions::default()
-        };
+        // The peer HELLO negotiates the in-session feature set.
+        let audio_only = incoming.purpose == farwing_protocol::api::Purpose::Audio;
         tracing::info!(client_type=options.client_type,kind=options.kind,connect_type=options.connect_type,
             decoders=?options.decoders,formats=?remote.video_codec_capability,
             "host incoming media capabilities");
@@ -891,12 +887,6 @@ impl Session {
         });
         let cancel = tokio_util::sync::CancellationToken::new();
         let lease = owner.with_cancellation(cancel.clone());
-        let audio_only = extensions.audio_only;
-        let update_resume = (!audio_only && !data_only)
-            .then(|| {
-                crate::features::host::update_resume::Context::new(lease.display_scope(), &options)
-            })
-            .flatten();
         // The display layout is shared: the first participant creates it
         // (under the host-wide lease, so it outlives that participant).
         let displays = match self.displays.as_ref().and_then(|d| {
@@ -970,41 +960,13 @@ impl Session {
                     media_ms = media_started.elapsed().as_millis();
                     anyhow::ensure!(lease.requested(), "本次被控许可已失效");
                     let capabilities = encoding_settings.select(&media.codecs)?;
-                    let restored = if let Some(context) = update_resume.clone() {
-                        let original = options.clone();
-                        match tokio::task::spawn_blocking(move || context.take(&original)).await? {
-                            Ok(value) => value,
-                            Err(error) => {
-                                tracing::warn!(%error, "update media handoff unavailable");
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    };
-                    let prepared = if let Some(restored) = restored {
-                        match desktop::Prepared::new(
-                            &restored,
-                            screen.clone(),
-                            &capabilities,
-                            &remote,
-                            encoding_settings,
-                        ) {
-                            Ok(prepared) => prepared,
-                            Err(error) => {
-                                tracing::warn!(%error, "update media intent no longer supported by current capabilities");
-                                desktop::Prepared::new(
-                                    &options,
-                                    screen,
-                                    &capabilities,
-                                    &remote,
-                                    encoding_settings,
-                                )?
-                            }
-                        }
-                    } else {
-                        desktop::Prepared::new(&options, screen, &capabilities, &remote, encoding_settings)?
-                    };
+                    let prepared = desktop::Prepared::new(
+                        &options,
+                        screen,
+                        &capabilities,
+                        &remote,
+                        encoding_settings,
+                    )?;
                     (
                         Some(prepared.screen),
                         prepared.config,
@@ -1025,18 +987,12 @@ impl Session {
                     options.control_screen_reports(),
                     negotiated,
                     deferred,
-                    extensions.audio_control,
-                    extensions.annotation,
-                    extensions.display_geometry,
-                    extensions.diagnostics,
-                    extensions.drag_drop,
                     crate::protocol::peer_platform::PeerPlatform::from_connect_client_type(
                         options.client_type,
                     ),
                     options.clipboard_level(),
                     options.file_capabilities(),
                     data_only,
-                    update_resume,
                     forwarding_session,
                 )
                 .await?;
@@ -1268,27 +1224,4 @@ impl Session {
     }
 }
 
-/// In-session extensions of a v2 controller. All are implemented by every v2
-/// build; only `audio_only` depends on the session purpose.
-#[derive(Clone, Copy)]
-struct SessionExtensions {
-    audio_only: bool,
-    audio_control: bool,
-    annotation: bool,
-    display_geometry: bool,
-    diagnostics: bool,
-    drag_drop: bool,
-}
 
-impl Default for SessionExtensions {
-    fn default() -> Self {
-        Self {
-            audio_only: false,
-            audio_control: true,
-            annotation: true,
-            display_geometry: true,
-            diagnostics: true,
-            drag_drop: true,
-        }
-    }
-}

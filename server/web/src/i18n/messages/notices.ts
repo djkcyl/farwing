@@ -39,7 +39,6 @@ const zhActions: Record<string, string> = { reboot: '重启', shutdown: '关闭'
 const enActions: Record<string, string> = { reboot: 'restarted', shutdown: 'shut down', wake: 'woke' };
 
 export const zh = {
-  markAllRead: '全部标为已读',
   empty: '暂无通知',
   loadMore: '加载更早的通知',
   settings: '通知',
@@ -157,7 +156,6 @@ export const zh = {
 };
 
 export const en: typeof zh = {
-  markAllRead: 'Mark all as read',
   empty: 'No notifications',
   loadMore: 'Load earlier notifications',
   settings: 'Notifications',

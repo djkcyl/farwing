@@ -121,14 +121,14 @@ This server has not been set up. Open https://<this server>:8443/setup and enter
 ### 设备、好友与授权
 
 - `GET /api/v2/devices` 返回 `{current_device, own, shared}`：`own` 为本账号其他设备（`granted` 为全部能力），`shared` 为好友的、本账号至少持有一项授权的设备（带 `owner` 与 `granted`）。好友只看得到自己在其设备上的参与者。`GET /devices/{id}/detail` 返回结构化详情；好友设备带 `owner`，不含协助号与硬件信息。改名与删除只限自己的设备（好友设备返回 `403`）。
-- `PUT /api/v2/devices/self/policy`（游客也可）设置主人策略 `DevicePolicy{control, files, ports, power, wol, assist, max_participants}`，返回规范化后的策略；取代 v1 的 `self/controllable` 与 `self/wol/enabled`。
-- 好友：`GET /friends`、`POST /friends/requests {username}`（对方已向我申请时直接成为好友，返回 `accepted`；否则 `sent`；未知用户 `404 user_not_found`，已是好友 `409 already_friends`，自己 `400`；每账号每小时 20 次）、`GET /friends/requests`、`POST /friends/requests/{id}/accept`（返回 `Friend`）· `/reject`、`DELETE /friends/requests/{id}`（撤回自己发出的）、`DELETE /friends/{user_id}`（删除双向授权并以 `permission_revoked` 结束相关会话）。成为好友时双方各自自动授予对方“所有设备 = `view`, `annotation`”。
+- `PUT /api/v2/devices/self/policy`（游客也可）设置主人策略 `DevicePolicy{control, files, ports, power, wol, assist, max_participants}`，返回规范化后的策略。
+- 好友：`GET /friends`、`POST /friends/requests {username}`（对方已向我申请时直接成为好友，返回 `accepted`；否则 `sent`；未知用户 `404 user_not_found`，已是好友 `409 already_friends`，自己 `400`；每账号每小时 20 次）、`GET /friends/requests`、`POST /friends/requests/{id}/accept`（返回 `Friend`）· `/reject`、`DELETE /friends/requests/{id}`（撤回自己发出的）、`DELETE /friends/{user_id}`（删除双向授权并以 `permission_revoked` 结束相关会话）。接受申请时请求体 `{caps}` 是接受方给对方的“所有设备”权限，申请方给接受方的是默认的 `view`, `audio`, `annotation`。
 - 授权：`GET`/`PUT /api/v2/grants/{user_id}`，`{default, devices: {device_id: caps}}`，只对好友有效（否则 `404`），设备键必须是自己的设备，能力名按 `caps::normalize` 规范化。某好友在某设备上的能力 = 该设备的条目，否则默认条目。
 - 推送：`device.changed` 同时发给主人的其他设备（`shared: false`）与持有授权的好友（`shared: true`，`granted` 按该好友计算），覆盖上下线、改名、策略、删除，以及授权导致的可见性变化；`friend.changed` 覆盖申请收到/接受/拒绝/撤回、解除好友与授权变化（`grants_changed`）。授权变化时，该好友在相关设备上的活动会话收到 `session.permissions{grants}`（被控与主控都收到）；不再具备会话目的所需能力（desktop/audio 需 `view`，files 需 `files`，ports 需 `ports`）时会话以 `permission_revoked` 结束。
 
 ### 会话与多人参与
 
-- `POST /api/v2/sessions {target_device_id, purpose}`：自己的设备，或具备 `purpose` 所需能力的好友设备（能看到设备但缺能力返回 `403 forbidden`）；被控须在线、具备 `host` 能力，且主人策略允许（desktop/audio 需 `policy.control`，files 需 `policy.files`，ports 需 `policy.ports`），否则 `409 host_disabled`。`force` 已删除。
+- `POST /api/v2/sessions {target_device_id, purpose}`：自己的设备，或具备 `purpose` 所需能力的好友设备（能看到设备但缺能力返回 `403 forbidden`）；被控须在线、具备 `host` 能力，且主人策略允许（desktop/audio 需 `policy.control`，files 需 `policy.files`，ports 需 `policy.ports`），否则 `409 host_disabled`。
 - 一台被控可同时有多个会话，上限为 `policy.max_participants`（限制在 1–16）。同一主控设备对同一被控只保留一个会话，新会话以 `replaced` 替换自己的旧会话；超出上限返回 `409 busy`，从不顶替他人。协助会话遵循同样规则。
 - `POST /sessions` 带 `"presence": true` 时不签发入场券（`ticket` 为空）：主控在本设备、本账号的在线连接上发送带 `sid` 的 `session.start`，此后该会话的信令走这条连接，离开时发送 `session.leave{sid}`；原以入场券建立的主控连接以 `4001` 关闭。协助会话总是签发入场券。
 - `session.start` 只携带 `attempt_id`、`options`、`capability`（以及只供直连端点使用、服务端忽略的可选 `purpose`）；目的、类型、关系、授予能力与主控身份全部来自服务端。`session.incoming` 带 `relation`、`grants`（自己的设备为全部能力，好友为生效授权，协助为空、由被控套用本机模板）与 `controller{…, public_key}`；`session.start` 的 `ack` 带 `host{device_id, public_key}`、`relation`、`grants`；`SessionTicket.target` 带 `relation`、`granted`、`public_key`。
@@ -140,16 +140,11 @@ This server has not been set up. Open https://<this server>:8443/setup and enter
 2. 主控在本地核对被控的密钥确认；都不匹配即验证码错误，主控不再继续（可调用 `cancel`）。匹配则 `POST /assist/requests/{id}/accept {key_confirm}`（长轮询）：服务端推送 `assist.accept`，等待被控 `POST /assist/requests/{id}/decision`。允许则建立协助会话并返回 `AssistJoin{…会话入场券, host}`；拒绝时 `code_invalid`→`403 assist_code_invalid`，`code_required`→`409 assist_code_required`，`rejected`→`403 assist_rejected`，`unavailable`→`409 assist_unavailable`；超时 `408 timeout` 并推送 `assist.cancelled`。
 3. `POST /assist/requests/{id}/cancel`（仅发起该请求的主控）撤销请求并推送 `assist.cancelled`。被控已应答但主控 120 秒内未 `accept` 的请求过期后也推送 `assist.cancelled`。
 4. 限速：每次 `join` 预先计数（每账号 + 协助号每分钟 `assist_failures_per_minute` 次，每协助号跨账号每小时 50 次），只有最终建立会话才返还；在请求到达被控前失败（协助号无效、不在线、未开启协助）不计数。服务端无法区分验证码错误与放弃的请求，二者都计为失败。
-5. v1 的 `assist/mode`、`assist/join/confirm`、`assist/cancel` 与 `assist.mode_query`/`assist.verify`/`assist.confirm` 推送已删除；`POST /assist/identity` 与收藏/最近记录接口不变。
 
 ### 电源与网络唤醒
 
 - `POST /api/v2/devices/{id}/power`：自己的设备总是允许，好友需要 `power` 授权。关机/重启要求被控在线、具备 `power` 能力且 `policy.power` 为真（否则 `409 host_disabled`）；推送 `power.request{request_id, action, requester{user_id, username, nickname}, requester_device}`。结果 `POST /api/v2/power/{request_id}/result` 只能由该请求的目标设备提交（否则 `403`）。
-- 唤醒要求 `policy.wol` 为真且已登记 WoL 信息（`PUT /devices/self/wol`）。请求设备与目标的公网地址相同、且它自己登记的内网地址与目标在同一子网（按目标子网掩码比较 `inner_ip & mask`）时，回执 `current_device_in_same_network = true` 并附 `target{mac, inner_ip, subnet_mask}`，由请求设备自己发送魔术包；另外仍向目标主人的、与目标同一公网地址的在线设备推送 `wol.wake`（`assist_count`）。`router_wol` 已删除。
-
-### 已删除的 v1 接口
-
-`/api/v1/*`、`GET /devices/groups`、`PUT /devices/self/controllable`、`PUT /devices/self/wol/enabled`、`POST /assist/mode`、`POST /assist/join/confirm`、`POST /assist/cancel`、`/assist/requests/{id}/mode|sign|confirmation`、设备令牌头 `X-Farwing-Device-Token`、`session.start` 中的 `connect_type`/`extensions`（`purpose` 不再作为授权依据，服务端忽略）、`POST /sessions` 的 `force`、`ClientConfig.input`。
+- 唤醒要求 `policy.wol` 为真且已登记 WoL 信息（`PUT /devices/self/wol`）。请求设备与目标的公网地址相同、且它自己登记的内网地址与目标在同一子网（按目标子网掩码比较 `inner_ip & mask`）时，回执 `current_device_in_same_network = true` 并附 `target{mac, inner_ip, subnet_mask}`，由请求设备自己发送魔术包；另外仍向目标主人的、与目标同一公网地址的在线设备推送 `wol.wake`（`assist_count`）。
 
 ## TLS 选项
 

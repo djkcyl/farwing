@@ -479,9 +479,8 @@ pub(crate) struct PbScreenSources {
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct PbScreen {
-    /// Preferred (native panel) mode, sent only when the controller declared
-    /// the `display.geometry` HELLO feature. Never repurpose init_resolution: it
-    /// is a connection snapshot, not the panel mode.
+    /// Preferred (native panel) mode. Never repurpose init_resolution: it is
+    /// a connection snapshot, not the panel mode.
     #[prost(message, optional, tag = "100")]
     pub(crate) display_geometry: Option<PbDisplayGeometry>,
     #[prost(int32, tag = "1")]

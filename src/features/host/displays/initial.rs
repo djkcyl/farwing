@@ -19,36 +19,11 @@ impl Session {
             "{}",
             t().features.screen_connection_type_unsupported
         );
-        // Changing this host's resolution needs the `display` capability,
-        // also when the session starts: without it the screens are viewed
-        // as they are (resolution "follow the host").
-        let mut options = options;
-        if !self.lease.display_expansion_allowed()
-            && let Some(params) = options.params.as_mut()
-            && matches!(params.resolution_type, 2 | 4)
-        {
-            tracing::info!(
-                requested = params.resolution_type,
-                "initial resolution change refused without the display capability"
-            );
-            params.resolution_type = 3;
-        }
         // Only the first preparation may change the layout; later
         // participants view the screens as they are.
         let previous = lock(&self.prepared).clone();
         if let Some(previous) = previous {
-            return self.select(&previous, options.screen_id).await;
-        }
-        if let Some(params) = &options.params {
-            ensure!(
-                (0..=4).contains(&params.resolution_type),
-                "{}",
-                t().features.screen_resolution_policy_invalid
-            );
-            if params.resolution_type == 4 {
-                validate_modes(&[size(params.chosen_resolution.as_ref())
-                    .context(t().features.screen_resolution_missing)?])?;
-            }
+            return self.select(&previous).await;
         }
         tokio::task::spawn_blocking(recovery::recover_abandoned).await??;
         let screen = self
@@ -58,20 +33,15 @@ impl Session {
         Ok(screen)
     }
 
-    /// A screen of the current layout for a later participant: the requested
-    /// one, else the first participant's, else the primary.
-    async fn select(&self, previous: &capture::Screen, requested: i32) -> Result<capture::Screen> {
+    /// A screen of the current layout for a later participant: the first
+    /// participant's, else the primary.
+    async fn select(&self, previous: &capture::Screen) -> Result<capture::Screen> {
         let screens = tokio::task::spawn_blocking(capture::screens)
             .await
             .context(t().features.screen_read_interrupted)??;
         screens
             .iter()
-            .find(|s| requested >= 0 && s.id == requested)
-            .or_else(|| {
-                screens
-                    .iter()
-                    .find(|s| s.identity.is_some() && s.identity == previous.identity)
-            })
+            .find(|s| s.identity.is_some() && s.identity == previous.identity)
             .or_else(|| screens.iter().find(|s| s.primary))
             .or(screens.first())
             .cloned()
@@ -103,40 +73,6 @@ impl Session {
 }
 
 impl State {
-    fn initial_resolution(
-        &mut self,
-        target: &Target,
-        width: u32,
-        height: u32,
-        lease: &Lease,
-    ) -> Result<bool> {
-        let previous = self.journal.mode_changes.clone();
-        self.intend_mode(&target.identity, width, height)?;
-        match target.set_resolution(width, height, || lease.requested()) {
-            Ok(()) => Ok(true),
-            Err(error)
-                if error
-                    .downcast_ref::<display::topology::ModeTestRejected>()
-                    .is_some() =>
-            {
-                ensure!(
-                    lease.requested(),
-                    "{}",
-                    t().features.screen_operation_cancelled
-                );
-                // Preflight did not modify Windows. Do not leave a fictitious
-                // desired mode for cleanup, or persist it as successfully applied.
-                self.journal.desired = None;
-                self.journal.mode_changes = previous;
-                self.save()?;
-                tracing::warn!(width, height, %error,
-                    "initial display mode rejected; retaining current mode for connection");
-                Ok(false)
-            }
-            Err(error) => Err(error),
-        }
-    }
-
     fn prepare(&mut self, options: ConnectOptions, lease: &Lease) -> Result<capture::Screen> {
         if self.fallback_pin.is_none() {
             self.fallback_pin = fallback::pin().unwrap_or_else(|error| {
@@ -146,16 +82,15 @@ impl State {
         }
         let mut screens = capture::screens()?;
         tracing::info!(screens = screens.len(), "host initial display selection");
-        let choice = options.params.as_ref().map_or(0, |p| p.resolution_type);
-        let local = size(
+        // A screen the host creates (fallback, super screen) takes the
+        // controller's display size.
+        let virtual_size = size(
             options
                 .params
                 .as_ref()
                 .and_then(|p| p.local_resolution.as_ref()),
-        );
-        // A screen the host creates (fallback, super screen): the
-        // controller's resolution when it asks for one.
-        let virtual_size = local.filter(|_| choice != 0).unwrap_or((1920, 1080));
+        )
+        .unwrap_or((1920, 1080));
         let mut automatic = None;
         let targets = Topology::query(true)?.metadata()?;
         if !self.preferences.super_enabled
@@ -204,64 +139,14 @@ impl State {
                 screen.render_adapter = self.render_adapter;
             }
         }
+        // The host's screens are viewed as they are; the primary one first.
         let selected = if let Some(automatic) = automatic.as_ref() {
             screens.iter().find(|s| s.identity == automatic.identity)
-        } else if options.screen_id == -1 {
-            screens.iter().find(|s| s.primary).or(screens.first())
         } else {
-            screens.iter().find(|s| s.id == options.screen_id)
+            screens.iter().find(|s| s.primary).or(screens.first())
         }
         .cloned()
         .context(t().features.screen_requested_unavailable)?;
-        // The saved controller layout owns initial physical/virtual modes.
-        // Incoming resolution choices apply only when no layout was saved.
-        if self.has_saved_preferences {
-            return Ok(selected);
-        }
-        let requested = match choice {
-            2 => local,
-            4 => size(
-                options
-                    .params
-                    .as_ref()
-                    .and_then(|p| p.chosen_resolution.as_ref()),
-            ),
-            _ => None,
-        };
-        if let Some((width, height)) = requested {
-            validate_modes(&[(width, height)])?;
-            if (selected.width, selected.height) == (width, height) {
-                // Preserve the explicit preference without starting a recovery
-                // guard or writing mutation intent for an unchanged mode.
-                self.remember_physical(
-                    selected
-                        .identity
-                        .as_deref()
-                        .context(t().features.screen_initial_target_missing)?,
-                    Some(choice),
-                )?;
-                return Ok(selected);
-            }
-            let target = Topology::query(true)?
-                .targets()?
-                .into_iter()
-                .find(|t| selected.identity.as_deref() == Some(t.identity.as_str()))
-                .context(t().features.screen_initial_target_missing)?;
-            if !target
-                .modes
-                .iter()
-                .any(|m| m.width == width && m.height == height)
-            {
-                return self.enter_super(width, height, 0, false, lease);
-            }
-            self.begin()?;
-            let changed = self.initial_resolution(&target, width, height, lease)?;
-            self.applied()?;
-            if changed {
-                self.remember_physical(&target.identity, Some(choice))?;
-            }
-            return find_screen(&target.identity);
-        }
         Ok(selected)
     }
 }

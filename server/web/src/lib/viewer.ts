@@ -376,15 +376,11 @@ export class Viewer {
         attempt_id: this.attempt,
         purpose: 'desktop',
         options: {
-          screen_id: -1,
           capture: {
             fps: 2,
             quality: 5,
             cursor_capture: true,
-            // Follow the host's resolution: the web never changes displays.
-            resolution_type: 3,
             local_resolution: { width, height },
-            chosen_resolution: null,
             chroma: 1,
             bitrate: 0,
             hdr: false,
@@ -395,7 +391,6 @@ export class Viewer {
             codec: this.options.codec?.() ?? 0,
           },
           decoders: this.decoders.map((d) => ({ fps: 60, codec: d.codec, width: 3840, height: 2160, chroma: 1 })),
-          version: 'web-0.1.0',
         },
         capability: {
           sdr_10bit: false,

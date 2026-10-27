@@ -15,8 +15,6 @@ pub(crate) const INITIAL_WINDOW: u64 = 4 * 1024 * 1024;
 pub(crate) const MAX_WINDOW: u64 = 64 * 1024 * 1024;
 
 /// What a stream carries; it selects the owner on the receiving side.
-/// CLIPBOARD, DRAG and DIAGNOSTICS are reserved for their v2 data planes.
-#[allow(dead_code)]
 pub(crate) mod kind {
     pub const FILE: i32 = 1;
     pub const CLIPBOARD: i32 = 2;

@@ -35,7 +35,8 @@ impl Drop for DeviceSet {
     }
 }
 pub(crate) const FALLBACK_ID: Uuid = Uuid::from_u128(0x65b02ee1_f206_41c8_8e3f_63b31949534f);
-pub(crate) struct Driver(HANDLE, [u8; 4], std::cell::Cell<bool>);
+/// The display driver (protocol 1.1) and whether this handle pins the fallback.
+pub(crate) struct Driver(HANDLE, std::cell::Cell<bool>);
 // A host display owner serializes IOCTLs. The OS handle has no COM apartment.
 unsafe impl Send for Driver {}
 impl Drop for Driver {
@@ -189,15 +190,14 @@ impl Driver {
             )
         }
         .context(t().system.driver_display_open_failed)?;
-        let mut driver = Self(handle, [0; 4], std::cell::Cell::new(false));
+        let driver = Self(handle, std::cell::Cell::new(false));
         let mut version = [0u8; 4];
         let returned = driver.control(0x8ff, &[], &mut version)?;
         ensure!(
-            returned == version.len() && matches!(version, [1, 0, 0, 0] | [1, 1, 0, 0]),
+            returned == version.len() && version == [1, 1, 0, 0],
             "{}",
             (t().system.driver_display_protocol_unsupported)(&format!("{version:?}"))
         );
-        driver.1 = version;
         Ok(driver)
     }
     fn control(&self, command: u32, input: &[u8], output: &mut [u8]) -> Result<usize> {
@@ -225,37 +225,21 @@ impl Driver {
     pub(crate) fn add(&self, id: Uuid, width: u32, height: u32, hz: u32) -> Result<Output> {
         self.add_command(0x800, id, width, height, hz)
     }
-    pub(crate) fn persistent_supported(&self) -> bool {
-        self.1 == [1, 1, 0, 0]
-    }
     pub(crate) fn add_fallback(&self, width: u32, height: u32, hz: u32) -> Result<Output> {
-        ensure!(
-            self.persistent_supported(),
-            "{}",
-            t().system.driver_display_update_required
-        );
         self.add_command(0x805, FALLBACK_ID, width, height, hz)
     }
     pub(crate) fn fallback(&self) -> Result<Option<Output>> {
         Ok(self.fallback_state()?.0)
     }
     pub(crate) fn pin_fallback(&self) -> Result<()> {
-        ensure!(
-            self.persistent_supported(),
-            "{}",
-            t().system.driver_display_update_required
-        );
         self.control(0x806, &1u32.to_le_bytes(), &mut [])?;
-        self.2.set(true);
+        self.1.set(true);
         Ok(())
     }
     pub(crate) fn owns_fallback_pin(&self) -> bool {
-        self.2.get()
+        self.1.get()
     }
     pub(crate) fn fallback_state(&self) -> Result<(Option<Output>, u32)> {
-        if !self.persistent_supported() {
-            return Ok((None, 0));
-        }
         let mut result = Fallback::default();
         let buffer = unsafe {
             std::slice::from_raw_parts_mut(

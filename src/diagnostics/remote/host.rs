@@ -30,10 +30,8 @@ struct Shared {
 }
 
 impl Host {
-    /// Serve this connection until `stop`. `enabled`: the controller
-    /// declared the `diagnostics` feature.
+    /// Serve this connection until `stop`.
     pub(crate) fn start(
-        enabled: bool,
         lease: Lease,
         connected: Arc<AtomicBool>,
         stop: CancellationToken,
@@ -50,7 +48,7 @@ impl Host {
         let activity = crate::platform::windows::host_service::activity::Work::new();
         tokio::spawn(async move {
             let _activity = activity;
-            worker.run(enabled, lease, connected, stop, requests).await;
+            worker.run(lease, connected, stop, requests).await;
         });
         host
     }
@@ -104,13 +102,12 @@ impl Host {
     }
     async fn run(
         &self,
-        enabled: bool,
         lease: Lease,
         connected: Arc<AtomicBool>,
         stop: CancellationToken,
         mut requests: mpsc::Receiver<Received>,
     ) {
-        let allowed = || enabled && lease.diagnostics_access() && connected.load(Ordering::Acquire);
+        let allowed = || lease.diagnostics_access() && connected.load(Ordering::Acquire);
         let mut announced: Option<(Weak<RTCDataChannel>, bool)> = None;
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(200));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -137,10 +134,6 @@ impl Host {
             let Received::Request(id, Body::Request(request)) = message else {
                 continue;
             };
-            if !enabled {
-                self.refuse(id, farwing_protocol::peer::error_code::UNSUPPORTED, crate::i18n::t().session.diag_unsupported).await;
-                continue;
-            }
             if !allowed() {
                 self.refuse(id, farwing_protocol::peer::error_code::FORBIDDEN, crate::i18n::t().session.diag_forbidden).await;
                 continue;

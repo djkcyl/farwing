@@ -53,12 +53,8 @@ pub mod feature {
     pub const DISPLAY_VIRTUAL: &str = "display.virtual";
     /// Exclusive (super) screen.
     pub const DISPLAY_EXCLUSIVE: &str = "display.exclusive";
-    /// Driver-preferred panel mode in the screen list.
-    pub const DISPLAY_GEOMETRY: &str = "display.geometry";
     pub const AUDIO_QUALITY: &str = "audio.quality";
     pub const AUDIO_MICROPHONE: &str = "audio.microphone";
-    pub const INPUT_KEYBOARD_USAGE: &str = "input.keyboard_usage";
-    pub const INPUT_POINTER: &str = "input.pointer";
     pub const CURSOR_SHAPE: &str = "cursor.shape";
     pub const CURSOR_PARTICIPANTS: &str = "cursor.participants";
     pub const CLIPBOARD: &str = "clipboard";

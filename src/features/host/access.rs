@@ -569,9 +569,6 @@ impl Handle {
     }
     pub(crate) fn cancel_update(&self) {
         lock(&self.ownership).updating = false;
-        if let Err(error) = super::update_resume::clear(&self.scope) {
-            tracing::warn!(%error, "cancelled update media handoff cleanup failed");
-        }
     }
     pub(crate) fn bind_account(&mut self, account: String) {
         self.account = account;
@@ -1079,9 +1076,6 @@ impl Handle {
         if !allowed {
             self.power.invalidate();
             if !crate::platform::windows::host_service::resident::managed() {
-                if let Err(error) = super::update_resume::clear(&self.scope) {
-                    tracing::warn!(%error, "revoked update media handoff cleanup failed");
-                }
             }
         }
 
@@ -1262,9 +1256,6 @@ impl Handle {
         self.desired.send_replace(None);
         drop(state);
         if clear_update {
-            if let Err(error) = super::update_resume::clear(&self.scope) {
-                tracing::warn!(%error, "retired update media handoff cleanup failed");
-            }
         }
     }
     pub(crate) fn room_closed(&self) {

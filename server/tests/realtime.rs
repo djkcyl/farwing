@@ -196,7 +196,6 @@ async fn full_session_flow_relay_and_endings() {
     assert_eq!(d["controller"]["alias"], "CTRL");
     assert_eq!(d["controller"]["platform"], "windows");
     assert_eq!(d["controller"]["public_key"], ctrl.public_key().as_str());
-    assert_eq!(d["options"]["screen_id"], -1);
     assert_eq!(d["capability"], json!({"codecs": ["h265"]}));
     assert_eq!(d["force_relay"], false);
     assert!(d.get("network").is_none());

@@ -5,7 +5,7 @@ use anyhow::Context;
 use farwing_protocol::api::{DeviceInitRequest, DevicePolicy, Grants, HardwareInfo, Relation};
 use farwing_protocol::{Platform, caps, limits};
 use rusqlite::{Connection, OptionalExtension, Row, params};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -1344,16 +1344,6 @@ pub fn friend_access(c: &Connection, device: &DeviceRow) -> R<Vec<(DeviceRow, Us
         for row in list_user_devices(c, &friend)? {
             out.push((row, user.clone(), caps.clone()));
         }
-    }
-    Ok(out)
-}
-
-/// Grants of `owner` per grantee, for the admin CLI: `grantee -> Grants`.
-pub fn grants_by_owner(c: &Connection, owner: &str) -> R<BTreeMap<String, Grants>> {
-    let mut out = BTreeMap::new();
-    for friend in friend_ids(c, owner)? {
-        let g = get_grants(c, owner, &friend)?;
-        out.insert(friend, g);
     }
     Ok(out)
 }

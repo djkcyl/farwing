@@ -8,7 +8,7 @@ use anyhow::{Result, bail};
 use farwing_protocol::api::Purpose;
 use farwing_protocol::realtime::SessionStart;
 use farwing_protocol::session::{
-    CaptureParams, ConnectOptions, ConnectType, DecoderCapability, Resolution,
+    CaptureParams, ConnectOptions, DecoderCapability, Resolution,
 };
 use uuid::Uuid;
 
@@ -22,15 +22,6 @@ pub(crate) enum ControlConnectType {
     Assistance = 2,
 }
 
-impl ControlConnectType {
-    #[allow(dead_code)]
-    pub(crate) fn wire(self) -> ConnectType {
-        match self {
-            Self::Normal => ConnectType::Account,
-            Self::Assistance => ConnectType::Assist,
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ControlPurpose {
@@ -96,8 +87,6 @@ fn connect_options(
         // The initial request leaves cursor capture off. Once the peer protocol
         // and screen state are ready, stream control sends the viewing policy.
         cursor_capture: false,
-        // Follow the remote resolution.
-        resolution_type: 3,
         // The controller's physical display size, not a resize request. The
         // host falls back to 1920x1080 for display-layout initialization when
         // it is absent, so it is always included.
@@ -105,7 +94,6 @@ fn connect_options(
             width: profile.local_display.width as i32,
             height: profile.local_display.height as i32,
         }),
-        chosen_resolution: None,
         chroma: if preferences.is_some_and(|p| p.settings.true_color) {
             3
         } else {
@@ -149,9 +137,7 @@ fn connect_options(
         });
     }
     Ok(ConnectOptions {
-        screen_id: -1,
         capture: Some(capture),
         decoders,
-        version: env!("CARGO_PKG_VERSION").to_owned(),
     })
 }

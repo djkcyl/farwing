@@ -49,7 +49,6 @@ struct Inbox {
     channel: Option<u16>,
     sender: Option<mpsc::Sender<Vec<u8>>>,
     receiver: Option<mpsc::Receiver<Vec<u8>>>,
-    native: bool,
     token: u64,
     file: std::sync::Weak<RTCDataChannel>,
 }
@@ -58,9 +57,6 @@ struct Inbox {
 pub(super) const INBOX: usize = 2048;
 impl Receiver {
     /// Negotiated capability, independent of the initial audio/file/view purpose.
-    pub fn native(&self, enabled: bool) {
-        super::lock(&self.0).native = enabled;
-    }
     pub fn bind_file(&self, channel: &Arc<RTCDataChannel>) {
         super::lock(&self.0).file = Arc::downgrade(channel);
     }
@@ -237,8 +233,8 @@ async fn binding(
             let native = {
                 let s = super::lock(&receiver.0);
                 crate::features::drag_drop::HostPolicy {
-                    token: if s.native { s.token } else { 0 },
-                    enabled: s.native && viewing && !native_failed && lease.file_access() && connected.load(Ordering::Acquire)
+                    token: s.token,
+                    enabled: viewing && !native_failed && lease.file_access() && connected.load(Ordering::Acquire)
                         && s.file.upgrade().is_some_and(|c| c.ready_state() == webrtc::data_channel::data_channel_state::RTCDataChannelState::Open),
                     screens: current_screens,
                 }
@@ -314,7 +310,7 @@ async fn bulk(
             lease.requested()
                 && !stop.is_cancelled()
                 && (!packet.native
-                    || (state.token == packet.revision && state.native && lease.file_access()))
+                    || (state.token == packet.revision && lease.file_access()))
         };
         if !current() {
             continue;

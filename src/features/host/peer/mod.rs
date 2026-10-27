@@ -121,16 +121,10 @@ impl Peer {
         control_screens: bool,
         negotiated: Arc<super::format::Negotiated>,
         deferred: Option<screens::Deferred>,
-        audio_control: bool,
-        annotation_extension: bool,
-        display_geometry: bool,
-        diagnostics_extension: bool,
-        drag_extension: bool,
         clipboard_platform: crate::protocol::peer_platform::PeerPlatform,
         clipboard_level: i32,
         file_capabilities: crate::features::file_transfer::host::Capabilities,
         data_only: bool,
-        update_resume: Option<super::update_resume::Context>,
         forwarding_session: Option<String>,
     ) -> Result<Self> {
         let audio_only = deferred.is_some() && !data_only;
@@ -403,7 +397,7 @@ impl Peer {
             connected.clone(),
             transport.clone(),
         );
-        audio.enable_quality_control(audio_control, audio_only);
+        audio.enable_quality_control(audio_only);
         audio.set_media_allowed(!data_only);
         let screen_pool = screens::Screens::new(
             connection.clone(),
@@ -507,7 +501,6 @@ impl Peer {
         let annotation_connected = connected.clone();
         let (annotation, annotation_worker) = super::annotation::Receiver::start(
             !data_only && !audio_only,
-            annotation_extension,
             move || super::annotation::Context {
                 allowed: annotation_lease.requested()
                     && annotation_lease.granted(farwing_protocol::caps::ANNOTATION)
@@ -617,12 +610,7 @@ impl Peer {
             clipboard: clipboard_level,
             ..Default::default()
         });
-        handle.set_update_notice(UpdateNotice::new(
-            report_target.clone(),
-            cancel.clone(),
-            update_resume,
-            screens.clone(),
-        ));
+        handle.set_update_notice(UpdateNotice::new(report_target.clone(), cancel.clone()));
         let cursor = tokio::spawn(cursor::run(
             reports.clone(),
             report_receiver.clone(),
@@ -678,9 +666,6 @@ impl Peer {
             None => futures_util::future::Either::Right(std::future::ready(())),
         });
         let clipboard_receiver = super::clipboard::Receiver::default();
-        // Capability belongs to the connection. The clipboard worker gates execution
-        // on the current video sources, including viewers attached after audio/files.
-        clipboard_receiver.native(drag_extension);
         let clipboard_screens = reports.clone();
         let clipboard_worker = tokio::spawn(super::clipboard::run(
             clipboard_receiver.clone(),
@@ -722,7 +707,6 @@ impl Peer {
             input.receiver().mouse_policy(),
             audio.clone(),
             microphone.receiver().status(),
-            display_geometry,
             handle.clone(),
         ));
         let (control_receiver, control_responses) = ingress::ControlIngress {
@@ -748,7 +732,6 @@ impl Peer {
         let channel_clipboard = clipboard_receiver.clone();
         let channel_control = control_receiver.clone();
         let channel_diagnostics = crate::diagnostics::remote::Host::start(
-            diagnostics_extension,
             handle.clone(),
             connected.clone(),
             cancel.clone(),

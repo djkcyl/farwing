@@ -104,7 +104,7 @@ pub(super) fn user() -> Result<()> {
 /// Credential targets are `<user>.<service>`; services come from
 /// `product::keyring_service`, i.e. `farwing.<suffix>` for the default profile
 /// and `farwing.<profile>.<suffix>` for the others (all profiles are purged).
-const CREDENTIAL_PATTERN: &str = r"\.farwing\.(?:[a-z0-9][a-z0-9-]{0,31}\.)?(?:session|wallpaper|host\.(?:guest|update-resume)|(?:assist|viewing|audio|microphone|host|device-preferences)\.[0-9a-f]{64})$";
+const CREDENTIAL_PATTERN: &str = r"\.farwing\.(?:[a-z0-9][a-z0-9-]{0,31}\.)?(?:session|wallpaper|host\.guest|(?:assist|viewing|audio|microphone|host|device-preferences)\.[0-9a-f]{64})$";
 
 #[cfg(test)]
 mod tests {
@@ -117,7 +117,6 @@ mod tests {
             "user.farwing.dev.session".to_owned(),
             "key.farwing.wallpaper".to_owned(),
             "0b8f0a6e-1c1d-4a4e-9a9e-1f2a3b4c5d6e.farwing.host.guest".to_owned(),
-            "scope.farwing.dev-2.host.update-resume".to_owned(),
             format!("device.farwing.viewing.{hash}"),
             format!("device.farwing.dev.device-preferences.{hash}"),
             format!("id.farwing.assist.{hash}"),

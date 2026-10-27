@@ -47,7 +47,6 @@ struct Binding {
     generation: u64,
     channel: Weak<RTCDataChannel>,
     viewing: bool,
-    extension: bool,
     token: u64,
     last_request: i64,
     completed: std::collections::VecDeque<(i64, i32)>,
@@ -60,7 +59,6 @@ pub(crate) struct Receiver {
 impl Receiver {
     pub fn start(
         viewing: bool,
-        extension: bool,
         context: impl Fn() -> Context + Send + 'static,
         cancel: CancellationToken,
     ) -> (Self, tokio::task::JoinHandle<()>) {
@@ -68,7 +66,6 @@ impl Receiver {
             generation: 0,
             channel: Weak::new(),
             viewing,
-            extension,
             token: 0,
             last_request: 0,
             completed: Default::default(),
@@ -157,7 +154,7 @@ impl Receiver {
     }
     pub fn hello(&self, channel: &Arc<RTCDataChannel>) -> Option<Vec<u8>> {
         let b = super::lock(&self.binding);
-        if !b.extension || !b.channel.ptr_eq(&Arc::downgrade(channel)) {
+        if !b.channel.ptr_eq(&Arc::downgrade(channel)) {
             return None;
         }
         native::encode(native::Packet {
@@ -199,8 +196,7 @@ impl Receiver {
         };
         let (generation, previous) = {
             let mut b = super::lock(&self.binding);
-            if !b.extension
-                || b.token != packet.token
+            if b.token != packet.token
                 || !b.channel.ptr_eq(&Arc::downgrade(channel))
             {
                 return Ok(());

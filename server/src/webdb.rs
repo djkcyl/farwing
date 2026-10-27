@@ -159,16 +159,6 @@ pub fn set_token_mfa(c: &Connection, token_hash: &str) -> R<usize> {
     )
 }
 
-/// When the token was issued.
-pub fn token_created(c: &Connection, token_hash: &str) -> R<Option<i64>> {
-    c.query_row(
-        "SELECT created_at FROM access_tokens WHERE token_hash = ?1",
-        [token_hash],
-        |r| r.get(0),
-    )
-    .optional()
-}
-
 // =================================================================== invites
 
 #[derive(Clone, Debug, Serialize)]

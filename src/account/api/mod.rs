@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned, de::IgnoredAny};
 
 pub use farwing_protocol::ErrorCode;
 pub use farwing_protocol::api::{
-    AssistMode, ClientConfig, DeviceInitRequest, DeviceInitResponse, DevicePolicy,
+    AssistMode, DeviceInitRequest, DeviceInitResponse, DevicePolicy,
     Purpose, Relation, ReleaseInfo, SavedDevice as WireSavedDevice,
 };
 

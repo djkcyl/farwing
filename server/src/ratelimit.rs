@@ -32,14 +32,6 @@ impl WindowLimiter {
         Ok(())
     }
 
-    pub fn hit(&self, key: &str) {
-        self.map
-            .lock()
-            .entry(key.to_owned())
-            .or_default()
-            .push_back(Instant::now());
-    }
-
     /// Atomically check and record one event. Record attempts before the
     /// expensive or secret-revealing work, so concurrent requests cannot all
     /// pass the check; use [`Self::refund`] for outcomes that reveal nothing.

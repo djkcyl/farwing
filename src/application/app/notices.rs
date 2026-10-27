@@ -114,6 +114,11 @@ impl DeviceCenterApp {
         if pushes == self.notices.pushes && !due {
             return;
         }
+        // A friend request, acceptance or change of what friends share
+        // shows at once in an open friends page.
+        if pushes != self.notices.pushes && self.friends.data.is_some() && !self.friends.busy {
+            self.request_friends(super::friends::FriendOperation::Refresh);
+        }
         self.notices.pushes = pushes;
         self.notices.next_check = Some(Instant::now() + CHECK_EVERY);
         self.notices.checking = self.send_notices(NoticeOperation::Check);

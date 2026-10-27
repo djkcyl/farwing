@@ -24,7 +24,6 @@ pub mod path {
     pub const SELF_FRIEND_ACCESS: &str = "/api/v2/devices/self/friend-access";
     pub const SELF_WALLPAPER: &str = "/api/v2/devices/self/wallpaper";
     pub const SELF_WOL: &str = "/api/v2/devices/self/wol";
-    pub const CONFIG: &str = "/api/v2/config";
     pub const PRESENCE_TICKET: &str = "/api/v2/presence/ticket";
     pub const SESSIONS: &str = "/api/v2/sessions";
     pub const ASSIST_JOIN: &str = "/api/v2/assist/join";
@@ -540,12 +539,6 @@ pub struct Grants {
 }
 
 // -------------------------------------------------------------------- config
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ClientConfig {
-    pub bitrate_limit_mbps: Option<u32>,
-}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct UpdateInfo {

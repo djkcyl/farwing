@@ -1,13 +1,12 @@
 //! Server info, client configuration, update announcements and health.
 
 use super::App;
-use super::auth::AnyAuth;
 use crate::config::normalize_platform;
 use crate::error::ApiResult;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use farwing_protocol::api::{
-    ClientConfig, ProtocolRange, ReleaseInfo, ServerFeatures, ServerIdentity, ServerInfo,
+    ProtocolRange, ReleaseInfo, ServerFeatures, ServerIdentity, ServerInfo,
     UpdateInfo,
 };
 use serde::Deserialize;
@@ -63,13 +62,6 @@ pub async fn server_info(State(app): State<App>) -> Json<ServerInfo> {
             }),
         },
         time_ms: crate::db::now_ms(),
-    })
-}
-
-/// `GET /api/v2/config`
-pub async fn client_config(State(app): State<App>, _auth: AnyAuth) -> Json<ClientConfig> {
-    Json(ClientConfig {
-        bitrate_limit_mbps: app.cfg().bitrate_limit_mbps,
     })
 }
 
