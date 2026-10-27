@@ -84,10 +84,13 @@ pub(super) async fn sample_network_performance(
                 route,
                 "selected ICE candidate pair"
             );
-            performance.set_connection(format!(
-                "{} {route}",
-                pair.local.protocol.to_string().to_uppercase()
-            ));
+            // `LAN · UDP`, `P2P · UDP`; a relay is named with its transport
+            // once the local candidate's stats arrive (`TURN · TLS`).
+            performance.set_connection(if route == "relay" {
+                "TURN".to_owned()
+            } else {
+                format!("{route} · {}", pair.local.protocol.to_string().to_uppercase())
+            });
             selected_candidate_ids = Some((pair.local.stats_id, pair.remote.stats_id));
             selected_route = Some(route);
         }
@@ -129,15 +132,19 @@ pub(super) async fn sample_network_performance(
                             .is_some_and(|(local_id, _)| stats.id == *local_id) =>
                 {
                     let transport = match stats.relay_protocol.as_str() {
-                        "tls" => "TURNS",
-                        "tcp" => "TCP",
-                        "udp" => "UDP",
-                        _ => "TURN",
+                        "tls" => " · TLS",
+                        "tcp" => " · TCP",
+                        "udp" => " · UDP",
+                        _ => "",
                     };
-                    performance.set_connection(format!("{transport} relay"));
+                    performance.set_connection(format!("TURN{transport}"));
                 }
                 _ => {}
             }
+        }
+        // The picture through the server's forwarder.
+        if let Some(e2ee) = stream_control.forwarded_e2ee() {
+            performance.set_connection(if e2ee { "SFU · E2EE" } else { "SFU" });
         }
         stream_control
             .network_control()

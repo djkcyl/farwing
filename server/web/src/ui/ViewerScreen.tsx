@@ -10,14 +10,14 @@ import { useT } from '../i18n/react';
 import { argbCss, type AnnotationState } from '../lib/annotation';
 import { ApiError, call, errorText, hasToken } from '../lib/api';
 import { DEFAULT_DIR, droppedEntries, type TransferInfo } from '../lib/files';
-import { bitrate, capText, displayName, listText, num } from '../lib/format';
+import { displayName, num } from '../lib/format';
 import type { CursorShape, HostEvent, Participant, ParticipantPointer, Quality, Screens } from '../lib/fpp';
 import { HostEventKind } from '../lib/fpp';
 import { SystemCommand, Usage } from '../lib/input';
 import { PeerRequestError } from '../lib/peerio';
 import { sendViewerReport, VisitSummary } from '../lib/record';
 import { VideoCodec, type VideoCodecId } from '../lib/sdp';
-import { pathText, StatsSampler, type ViewStats } from '../lib/stats';
+import { pathLabel, StatsSampler, type ViewStats } from '../lib/stats';
 import {
   failureText,
   Viewer,
@@ -33,10 +33,11 @@ import { Button, Spinner } from './kit';
 import { Dialog, useOverlay } from './overlay';
 import { AnnotationLayer, type AnnotationTool } from './AnnotationLayer';
 import { useRemoteInput, type PictureMap } from './remoteInput';
+import { PERF_HISTORY, PerformanceOverlay, type PerfSample } from './PerformanceOverlay';
 import { RoomNotices } from './RoomNotices';
 
 type Scale = 'fit' | 'fill' | 'original';
-type Panel = 'none' | 'stats' | 'people' | 'files';
+type Panel = 'none' | 'people' | 'files';
 
 /// Take the control token when a session starts ('0': the user turned it off).
 const CONTROL_KEY = 'farwing.viewer.control';
@@ -293,6 +294,10 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
   const [stats, setStats] = useState<ViewStats>();
   const [scale, setScale] = useState<Scale>('fit');
   const [panel, setPanel] = useState<Panel>('none');
+  const [perf, setPerf] = useState(false);
+  const [perfHistory, setPerfHistory] = useState<PerfSample[]>([]);
+  const playingSince = useRef<number>(undefined);
+  const [uptime, setUptime] = useState(0);
   const [muted, setMuted] = useState(true);
   const [volume, setVolume] = useState(1);
   const [fullscreen, setFullscreen] = useState(false);
@@ -504,7 +509,14 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
       const forwarded = await viewer.current?.forwardPeer?.getStats().catch(() => undefined);
       if (!report) return;
       const sampled = sampler.current.sample(report, forwarded);
-      if (viewer.current?.state === 'playing') summary.current.add(sampled);
+      if (viewer.current?.state === 'playing') {
+        summary.current.add(sampled);
+        playingSince.current ??= Date.now();
+        setUptime((Date.now() - playingSince.current) / 1000);
+        setPerfHistory((history) =>
+          [...history, { fps: sampled.fps, rttMs: sampled.rttMs, mbps: sampled.bitrate / 1e6 }].slice(-PERF_HISTORY),
+        );
+      }
       setStats(sampled);
     }, 1000);
     return () => window.clearInterval(timer);
@@ -878,7 +890,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
           <div className="ellipsis">{title}</div>
           <div className="small muted ellipsis">
             {playing && stats
-              ? `${stats.width}×${stats.height} · ${num(stats.fps)} fps · ${num(stats.rttMs)} ms · ${pathText(stats.path)}`
+              ? `${stats.width}×${stats.height} · ${num(stats.fps)} fps · ${num(stats.rttMs)} ms · ${pathLabel(stats, forwarding)}`
               : subtitle}
           </div>
         </div>
@@ -1198,12 +1210,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
           </div>
           <ToolButton icon="camera" label={t.viewer.screen.screenshot} onClick={screenshot} disabled={!playing} />
           <ToolButton icon="pip" label={t.viewer.screen.pip} onClick={pip} disabled={!playing} />
-          <ToolButton
-            icon="chart"
-            label={t.viewer.screen.stats}
-            active={panel === 'stats'}
-            onClick={() => setPanel(panel === 'stats' ? 'none' : 'stats')}
-          />
+          <ToolButton icon="chart" label={t.viewer.screen.stats} active={perf} onClick={() => setPerf(!perf)} />
           <ToolButton
             icon="users"
             label={t.viewer.screen.people}
@@ -1326,6 +1333,19 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
           </button>
         )}
         {dragOver && <div className="drop-hint">{t.viewer.screen.dropHint}</div>}
+        {perf && playing && (
+          <PerformanceOverlay
+            stats={stats}
+            history={perfHistory}
+            forwarding={forwarding}
+            uptime={uptime}
+            encoder={quality ? `${quality.encoder || '—'} · ${quality.capture || '—'}` : '—'}
+            audioAllowed={audioAllowed}
+            audioKbps={audioKbps}
+            grants={grants}
+            onClose={() => setPerf(false)}
+          />
+        )}
         {panel !== 'files' && transfers.length > 0 && (
           <div className="transfers-float">
             <TransferList transfers={transfers} files={viewer.current?.files} />
@@ -1361,11 +1381,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
         <aside className="viewer-panel">
           <header className="row">
             <h2 className="grow">
-              {panel === 'stats'
-                ? t.viewer.screen.stats
-                : panel === 'files'
-                  ? t.viewer.screen.hostFiles
-                  : t.viewer.screen.people}
+              {panel === 'files' ? t.viewer.screen.hostFiles : t.viewer.screen.people}
               {panel === 'people' && <span className="card-count">{people?.participants.length ?? 1}</span>}
             </h2>
             <button type="button" className="tool" onClick={() => setPanel('none')} aria-label={t.common.close}>
@@ -1374,48 +1390,6 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
           </header>
           {panel === 'files' ? (
             <FilesPanel files={viewer.current?.files} transfers={transfers} toast={toast} />
-          ) : panel === 'stats' ? (
-            <dl className="stats">
-              <dt>{t.viewer.stats.resolution}</dt>
-              <dd>{stats?.width ? `${stats.width} × ${stats.height}` : '—'}</dd>
-              <dt>{t.viewer.stats.frameRate}</dt>
-              <dd>{stats ? `${num(stats.fps)} fps` : '—'}</dd>
-              <dt>{t.viewer.stats.bitrate}</dt>
-              <dd>{stats ? bitrate(stats.bitrate) : '—'}</dd>
-              <dt>{t.viewer.stats.loss}</dt>
-              <dd>{stats ? `${num(stats.loss * 100, 1)}%` : '—'}</dd>
-              <dt>{t.viewer.stats.rtt}</dt>
-              <dd>{stats ? `${num(stats.rttMs)} ms` : '—'}</dd>
-              <dt>{t.viewer.stats.jitter}</dt>
-              <dd>{stats ? `${num(stats.jitterMs)} ms` : '—'}</dd>
-              <dt>{t.viewer.stats.decodeTime}</dt>
-              <dd>{stats?.decodeMs ? `${num(stats.decodeMs, 1)} ms` : '—'}</dd>
-              <dt>{t.viewer.stats.dropped}</dt>
-              <dd>{stats?.framesDropped ?? '—'}</dd>
-              <dt>{t.viewer.stats.codec}</dt>
-              <dd>{stats?.codec || '—'}</dd>
-              <dt>{t.viewer.stats.decoder}</dt>
-              <dd>
-                {stats?.decoder || '—'}
-                {stats?.hardware !== undefined && (stats.hardware ? t.viewer.stats.hardware : t.viewer.stats.software)}
-              </dd>
-              <dt>{t.viewer.stats.hostEncoder}</dt>
-              <dd>{quality ? `${quality.encoder || '—'} · ${quality.capture || '—'}` : '—'}</dd>
-              <dt>{t.viewer.stats.path}</dt>
-              <dd>
-                {stats ? pathText(stats.path) : '—'}
-                {stats?.protocol && ` · ${stats.protocol.toUpperCase()}`}
-              </dd>
-              <dt>{t.viewer.stats.remote}</dt>
-              <dd className="mono small">{stats?.remote || '—'}</dd>
-              <dt>{t.viewer.stats.audio}</dt>
-              <dd>
-                {!audioAllowed ? t.viewer.stats.noPermission : stats ? bitrate(stats.audioBitrate) : '—'}
-                {audioAllowed && audioKbps ? t.viewer.stats.audioSet(audioKbps) : ''}
-              </dd>
-              <dt>{t.viewer.stats.grants}</dt>
-              <dd>{grants.length ? listText(grants.map(capText)) : '—'}</dd>
-            </dl>
           ) : (
             <div className="list">
               {forwarding && (

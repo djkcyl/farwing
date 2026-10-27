@@ -87,10 +87,10 @@ pub(crate) const ZH_CN: Records = Records {
         _ => "",
     },
     route: |r| match r {
-        "lan" => "局域网",
+        "lan" => "LAN",
         "p2p" => "P2P",
-        "relay" => "中转",
-        "forwarded" => "多人转发",
+        "relay" => "TURN",
+        "forwarded" => "SFU",
         _ => "",
     },
     end_reason: |r| match r {
@@ -215,8 +215,8 @@ pub(crate) const EN: Records = Records {
     route: |r| match r {
         "lan" => "LAN",
         "p2p" => "P2P",
-        "relay" => "Relay",
-        "forwarded" => "Multi-viewer forwarding",
+        "relay" => "TURN",
+        "forwarded" => "SFU",
         _ => "",
     },
     end_reason: |r| match r {

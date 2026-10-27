@@ -1,6 +1,5 @@
 // Connection statistics from `RTCPeerConnection.getStats()`: picture,
 // rates, loss, delay, codec and the path (LAN, P2P or relay).
-import { t } from '../i18n';
 
 export interface ViewStats {
   width: number;
@@ -139,9 +138,21 @@ export class StatsSampler {
   }
 }
 
-/// How the media travels: LAN, P2P or relayed ('' before it is known).
-export function pathText(path: string): string {
-  return (t().viewer.stats.paths as Record<string, string>)[path] ?? '—';
+/// How the media travels, in technical terms as the native viewer shows it:
+/// `LAN · UDP`, `P2P · UDP`, `TURN · TLS`, `SFU · E2EE` (`forwarding`: the
+/// picture comes through the server's forwarder).
+export function pathLabel(stats: ViewStats | undefined, forwarding = ''): string {
+  if (forwarding) return forwarding === 'e2ee' ? 'SFU · E2EE' : 'SFU';
+  if (!stats?.path) return '—';
+  const transport = stats.protocol.toUpperCase();
+  switch (stats.path) {
+    case 'relay':
+      return transport ? `TURN · ${transport}` : 'TURN';
+    case 'forwarded':
+      return 'SFU';
+    default:
+      return `${stats.path.toUpperCase()} · ${transport || 'UDP'}`;
+  }
 }
 
 /// Whether `pc`'s selected path goes through a relay.

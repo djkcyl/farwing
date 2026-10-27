@@ -46,22 +46,23 @@ impl Tally {
         let Some((width, height)) = snapshot.decoded_resolution else {
             return;
         };
+        // `LAN · UDP`, `P2P · UDP`, `TURN · TLS`, `SFU · E2EE`.
         let connection = snapshot.connection.as_str();
-        let route = if forwarded {
+        let route = if forwarded || connection.starts_with("SFU") {
             "forwarded"
-        } else if connection.contains("relay") {
+        } else if connection.starts_with("TURN") {
             "relay"
-        } else if connection.contains("LAN") {
+        } else if connection.starts_with("LAN") {
             "lan"
-        } else if connection.contains("P2P") {
+        } else if connection.starts_with("P2P") {
             "p2p"
         } else {
             return;
         };
         if route == "relay" {
-            self.relay = if connection.starts_with("TURNS") {
+            self.relay = if connection.ends_with("TLS") {
                 "tls"
-            } else if connection.starts_with("TCP") {
+            } else if connection.ends_with("TCP") {
                 "tcp"
             } else {
                 "udp"

@@ -227,10 +227,11 @@ pub(super) fn compact_hud_line(ui: &mut egui::Ui, text: &str, color: egui::Color
     );
 }
 
+/// `LAN`/`P2P` good, `TURN` a warning, `SFU` neutral.
 pub(super) fn connection_color(connection: &str) -> egui::Color32 {
-    if connection.contains("P2P") || connection.contains("LAN") {
+    if connection.starts_with("P2P") || connection.starts_with("LAN") {
         good_color()
-    } else if connection.to_ascii_lowercase().contains("relay") {
+    } else if connection.starts_with("TURN") {
         warning_color()
     } else {
         egui::Color32::WHITE
