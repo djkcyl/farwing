@@ -24,7 +24,7 @@
 | --- | --- | --- | --- |
 | P1 | 记录两台的 Windows 版本、显卡、显示器（分辨率、缩放、刷新率、是否 HDR）、键盘布局与输入法、网络（有线 / Wi-Fi） | — | |
 | P2 | 在两台都能访问的服务器上部署服务端（`GUIDE.md` 二至五）：浏览器打开 `https://<服务器地址>/setup` 输入初始化码，设置 admin、公开地址、证书与中转公网 IP，再在网页端“账号”中创建 alice 与 bob；放行 `GUIDE.md` 列出的端口 | 完成初始化后日志有 `builtin TURN listening`（UDP、TCP、TLS 各一行）、两行 `STUN endpoint listening (UDP)`；网页“服务器设置 → 中转与探测 → 运行状态”显示 UDP/TCP 监听地址 | |
-| P3 | H、C 都运行 `Farwing-v0.1.0-windows-x86_64.exe`，先用 `certutil -hashfile <文件> SHA256` 核对前 16 位为 `f2de0ed187aca64f`。首次运行时 Windows 防火墙询问网络访问，选“允许”（专用网络） | — | |
+| P3 | H、C 都运行 `Farwing-v0.1.0-windows-x86_64.exe`，先用 `certutil -hashfile <文件> SHA256` 核对前 16 位为 `45e77e1360dd8f09`。首次运行时 Windows 防火墙询问网络访问，选“允许”（专用网络） | — | |
 | R0 | 服务器是从旧版升级的：网页端“服务器设置 → 账号与网页端”把“空闲登出”改为 10080 分钟、“最长登录”改为 720 小时（新部署默认就是） | 保存成功 | |
 | P4 | 两台都在“连接服务器”填 `<服务器地址>`（自签名证书时核对证书指纹），登录 alice | 设备中心互相出现对方且在线 | |
 | P5 | H 侧边栏“安装服务”，勾选“允许服务发送 Ctrl+Alt+Del”，核对驱动证书指纹 `6CC0CF35FED805B5652161468A6D313B873F6E91` | 安装成功；设备管理器中“Farwing Input”“Farwing Virtual Display Adapter”无感叹号 | |
