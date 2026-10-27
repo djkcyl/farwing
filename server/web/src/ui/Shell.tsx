@@ -24,6 +24,7 @@ const USER_NAV: NavItem[] = [
   { to: '/devices', label: 'devices', icon: 'monitor', prefix: true },
   { to: '/friends', label: 'friends', icon: 'users' },
   { to: '/favorites', label: 'favorites', icon: 'star' },
+  { to: '/records', label: 'records', icon: 'history' },
   { to: '/account', label: 'account', icon: 'shield' },
   { to: '/connect', label: 'connect', icon: 'link' },
 ];
@@ -34,6 +35,7 @@ const ADMIN_NAV: NavItem[] = [
   { to: '/admin/invites', label: 'invites', icon: 'ticket' },
   { to: '/admin/devices', label: 'allDevices', icon: 'server' },
   { to: '/admin/sessions', label: 'sessions', icon: 'activity' },
+  { to: '/admin/records', label: 'allRecords', icon: 'history' },
   { to: '/admin/updates', label: 'updates', icon: 'download' },
   { to: '/admin/nodes', label: 'nodes', icon: 'globe' },
   { to: '/admin/settings', label: 'settings', icon: 'settings' },

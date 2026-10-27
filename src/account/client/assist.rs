@@ -16,8 +16,9 @@ impl AuthenticatedClient {
         &self,
         request_id: &str,
         key_confirm: String,
+        visit: &str,
     ) -> Result<AssistJoined> {
-        self.request(|api| async move { api.assist_accept(request_id, key_confirm).await })
+        self.request(|api| async move { api.assist_accept(request_id, key_confirm, visit).await })
             .await
     }
     /// A saved code the host did not accept is forgotten.

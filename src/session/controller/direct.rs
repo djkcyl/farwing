@@ -91,6 +91,10 @@ pub(super) async fn run_owner(
     })
     .await?;
     let mut alias = alias;
+    let visit = super::record::new_visit();
+    let record = super::record::VisitRecord::start(monitor.subscribe());
+    let started_at = chrono::Utc::now().timestamp();
+    let result = async {
     let mut recovering = None::<std::time::Instant>;
     let mut attempt = 0u32;
     let mut preferences = None;
@@ -105,11 +109,12 @@ pub(super) async fn run_owner(
             options.transport,
             preferences,
             audio,
+            &visit,
             reporter,
             cancel,
         )
         .await;
-        let (mut controller, host) = match connected {
+        let (mut controller, host, relation) = match connected {
             Ok(connected) => connected,
             Err(error)
                 if !cancel.is_cancelled()
@@ -133,6 +138,21 @@ pub(super) async fn run_owner(
         monitor.send_replace(Some(controller.performance_monitor()));
         let session_control = controller.stream_control_handle();
         session_control.mouse().set_host_input_allowed(true);
+        record.connected(&session_control);
+        record.bind(
+            None,
+            &visit,
+            &host.device_id,
+            &local.identity.device_id,
+            Some(farwing_protocol::api::DirectRecord {
+                started_at,
+                relation,
+                host_name: host.name.clone(),
+                controller_name: local.name.clone(),
+                controller_platform: farwing_protocol::Platform::Windows,
+                ..farwing_protocol::api::DirectRecord::default()
+            }),
+        );
         let close = match viewing::present_video(
             &mut controller,
             &alias,
@@ -151,6 +171,9 @@ pub(super) async fn run_owner(
                     return Err(error);
                 }
                 attempt += 1;
+                if recovering.is_none() {
+                    record.reconnecting();
+                }
                 recovering.get_or_insert_with(std::time::Instant::now);
                 display = reconnect_display(&alias, &error, reporter, cancel, &sender).await?;
                 continue;
@@ -175,6 +198,9 @@ pub(super) async fn run_owner(
         match result {
             Err(error) if recovery(&error) != Recovery::Fatal => {
                 attempt += 1;
+                if recovering.is_none() {
+                    record.reconnecting();
+                }
                 recovering.get_or_insert_with(std::time::Instant::now);
                 display = reconnect_display(&alias, &error, reporter, cancel, &sender).await?;
             }
@@ -184,6 +210,10 @@ pub(super) async fn run_owner(
             }
         }
     }
+    }
+    .await;
+    record.finish().await;
+    result
 }
 
 /// A direct session without a window or playback, for scripted input
@@ -208,10 +238,12 @@ pub(crate) async fn connect_headless(
             volume: 0,
             muted: true,
         }),
+        "",
         &reporter,
         cancel,
     )
     .await
+    .map(|(connection, host, _)| (connection, host))
 }
 
 /// Connect to the host and negotiate one session.
@@ -224,9 +256,10 @@ async fn connect_once(
     transport: crate::media::TransportChoice,
     preferences: Option<crate::features::stream_control::StreamControlPreferences>,
     audio: Option<crate::media::audio::AudioSettings>,
+    visit: &str,
     reporter: &ConnectionProgressReporter,
     cancel: &CancellationToken,
-) -> Result<(ControllerConnection, DirectHello)> {
+) -> Result<(ControllerConnection, DirectHello, Relation)> {
     report_progress(
         Some(reporter),
         3,
@@ -270,8 +303,10 @@ async fn connect_once(
         muted: false,
     });
     audio.muted |= profile.muted;
+    let mut signal = connected.signal;
+    signal.set_visit(visit);
     let mut connection = ControllerConnection::establish_on(
-        connected.signal,
+        signal,
         crate::transport::signal::identity::Local {
             identity: local.identity.clone(),
             pake: connected.pake_key,
@@ -298,7 +333,7 @@ async fn connect_once(
         connection.preference_writer = Some(store.clone().bind(handle.clone()));
         connection.local_preference_writer = Some(store.bind_local_preferences(handle));
     }
-    Ok((connection, host))
+    Ok((connection, host, connected.relation))
 }
 
 /// Before connecting again: wait for the host (it may be restarting) or back off.

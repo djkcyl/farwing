@@ -61,6 +61,7 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
     std::fs::create_dir_all(cfg.wallpaper_dir())?;
     let db = Db::open(&cfg.db_path())?;
     let stale = db.with(|c| db::end_open_sessions(c, "server_restart"))?;
+    db.with(|c| crate::records::end_all(c, "server_restart"))?;
     if stale > 0 {
         tracing::info!(stale, "closed sessions left open by a previous run");
     }
@@ -125,13 +126,15 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
             while let Some(job) = rx.recv().await {
                 let res = db
                     .call(move |c| match job {
-                        PersistJob::SessionCreated(rec) => db::insert_session(c, &rec),
+                        PersistJob::SessionCreated(rec, opened) => db::insert_session(c, &rec)
+                            .and_then(|()| crate::records::open(c, &opened)),
                         PersistJob::SessionState {
                             id,
                             state,
                             started_at,
                         } => db::set_session_state(c, &id, state, started_at),
-                        PersistJob::SessionEnded { id, reason } => db::end_session(c, &id, &reason),
+                        PersistJob::SessionEnded { id, reason } => db::end_session(c, &id, &reason)
+                            .and_then(|()| crate::records::end(c, &id, &reason)),
                         PersistJob::LastSeen(id) => db::touch_last_seen(c, &id).map(|_| ()),
                     })
                     .await;
@@ -184,7 +187,7 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
             }
         }));
     }
-    // Audit log retention (`web.audit_days`).
+    // Audit log and connection record retention (`web.audit_days`).
     {
         let app = Arc::clone(&app);
         tasks.push(tokio::spawn(async move {
@@ -194,11 +197,13 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
                 let keep = i64::from(app.cfg().web.audit_days.max(1)) * 86_400;
                 match app
                     .db
-                    .call(move |c| crate::webdb::prune_audit(c, keep))
+                    .call(move |c| {
+                        Ok(crate::webdb::prune_audit(c, keep)? + crate::records::prune(c, keep)?)
+                    })
                     .await
                 {
                     Ok(0) => {}
-                    Ok(n) => tracing::info!(removed = n, "old audit entries removed"),
+                    Ok(n) => tracing::info!(removed = n, "old audit entries and records removed"),
                     Err(e) => tracing::warn!(error = %format!("{e:#}"), "pruning the audit log failed"),
                 }
             }

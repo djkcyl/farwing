@@ -72,6 +72,7 @@ pub(crate) fn build_session_start(
         options: connect_options(selected_capabilities, profile, preferences, purpose)?,
         capability: serde_json::to_value(decoder_support)?,
         purpose: Some(purpose.wire()),
+        visit: String::new(),
     })
 }
 

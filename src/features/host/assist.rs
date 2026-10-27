@@ -305,6 +305,7 @@ fn trust(
         grants.retain(|cap| limit.contains(cap));
     }
     let now = chrono::Utc::now().timestamp();
+    let known = store::find_trusted(public_key).is_some();
     match store::save_trusted(store::TrustedDevice {
         device_id: device_id.to_owned(),
         public_key: public_key.to_owned(),
@@ -314,7 +315,16 @@ fn trust(
         last_seen: now,
         paired,
     }) {
-        Ok(()) => tracing::info!(device = %device_id, paired, "device trusted after confirmation"),
+        Ok(()) => {
+            tracing::info!(device = %device_id, paired, "device trusted after confirmation");
+            if !known {
+                crate::account::records::device_event(
+                    farwing_protocol::api::device_event::TRUSTED_ADD,
+                    device_id,
+                    &sanitize(name),
+                );
+            }
+        }
         Err(error) => tracing::warn!(error = %format!("{error:#}"), "device could not be trusted"),
     }
 }

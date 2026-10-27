@@ -124,6 +124,7 @@ pub(crate) fn apply(action: Action) -> Result<Applied> {
         } => {
             let now = chrono::Utc::now().timestamp();
             let previous = store::find_trusted(&public_key);
+            let new = previous.is_none();
             store::save_trusted(TrustedDevice {
                 device_id: device_id.clone(),
                 public_key,
@@ -134,6 +135,13 @@ pub(crate) fn apply(action: Action) -> Result<Applied> {
                 paired: paired || previous.is_some_and(|p| p.paired),
             })?;
             tracing::info!(device = %device_id, "device trusted");
+            if new {
+                crate::account::records::device_event(
+                    farwing_protocol::api::device_event::TRUSTED_ADD,
+                    &device_id,
+                    &super::sanitize_name(&name),
+                );
+            }
             Ok(Applied::default())
         }
         Action::SetGrants { device_id, grants } => {
@@ -145,7 +153,17 @@ pub(crate) fn apply(action: Action) -> Result<Applied> {
             Ok(Applied::default())
         }
         Action::Remove { device_id } => {
-            store::remove_trusted(&device_id)?;
+            let name = store::trusted()
+                .into_iter()
+                .find(|d| d.device_id == device_id)
+                .map(|d| d.name);
+            if store::remove_trusted(&device_id)? > 0 {
+                crate::account::records::device_event(
+                    farwing_protocol::api::device_event::TRUSTED_REMOVE,
+                    &device_id,
+                    &name.unwrap_or_default(),
+                );
+            }
             Ok(Applied {
                 end_sessions_of: Some(device_id),
                 restart_presence: false,

@@ -236,6 +236,10 @@ pub struct SessionStart {
     /// it from here and checks it against the participant's grants (§12.2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<Purpose>,
+    /// A host's direct endpoint: the controller's visit
+    /// (`api::CreateSessionRequest::visit`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub visit: String,
 }
 
 /// A peer's device identity as stated by the server.
@@ -330,6 +334,10 @@ impl ControllerInfo {
 pub struct SessionIncoming {
     pub participant_id: String,
     pub attempt_id: String,
+    /// The controller's visit (`api::CreateSessionRequest::visit`): the host
+    /// reports what the participant did under it.
+    #[serde(default)]
+    pub visit: String,
     pub purpose: Purpose,
     pub connect_type: ConnectType,
     #[serde(default)]

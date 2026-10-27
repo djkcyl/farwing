@@ -8,6 +8,7 @@ pub(crate) mod device_change;
 pub(crate) mod http;
 pub mod login;
 pub(crate) mod power;
+pub(crate) mod records;
 pub mod server;
 pub(crate) mod server_changed;
 pub(crate) mod session_restore;

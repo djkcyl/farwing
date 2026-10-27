@@ -266,6 +266,77 @@ export interface InviteUse {
   used_at: number;
 }
 
+/// The controller's summary of a connection.
+export interface ViewerReport {
+  route: string;
+  relay: string;
+  seconds: number;
+  width: number;
+  height: number;
+  fps: number;
+  rtt_ms: number;
+  stalls: number;
+  reconnects: number;
+}
+
+export interface FileRecord {
+  name: string;
+  count: number;
+  bytes: number;
+  upload: boolean;
+  outcome: 'done' | 'cancelled' | 'failed' | 'interrupted';
+}
+
+/// The host's summary of what a participant did.
+export interface HostReport {
+  controlled: boolean;
+  files: FileRecord[];
+  more_files: number;
+  ports: string[];
+}
+
+export interface RecordParty {
+  device_id: string;
+  name: string;
+  user_id: string;
+  username: string;
+  nickname: string;
+  platform: string;
+}
+
+export type RecordOutcome = 'open' | 'ended' | 'rejected' | 'code_invalid' | 'no_answer' | 'busy';
+
+/// A connection (`docs/connection-records.md`).
+export interface ConnectionRecord {
+  id: number;
+  host: RecordParty;
+  controller: RecordParty;
+  relation: string;
+  admission: string;
+  purpose: string;
+  direct: boolean;
+  ip: string;
+  started_at: number;
+  ended_at: number | null;
+  outcome: RecordOutcome;
+  end_reason: string;
+  reconnects: number;
+  viewer: ViewerReport | null;
+  host_report: HostReport | null;
+}
+
+/// An event of the account.
+export interface AccountEvent {
+  id: number;
+  at: number;
+  kind: string;
+  actor: string;
+  target: string;
+  detail: Record<string, unknown> | null;
+  ok: boolean;
+  ip: string;
+}
+
 export interface LiveSession {
   id: string;
   host_device_id: string;

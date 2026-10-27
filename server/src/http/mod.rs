@@ -10,6 +10,7 @@ pub mod me;
 pub mod misc;
 pub mod nodes;
 pub mod power;
+pub mod records;
 pub mod sessions;
 pub mod settings_api;
 pub mod sfu;
@@ -370,6 +371,7 @@ pub fn router(app: App) -> Router {
         )
         .route(path::ME, get(account::me).patch(me::set_profile))
         .route("/api/v2/me/security", get(me::security))
+        .route(path::ACCOUNT_EVENTS, get(records::account_events))
         .route("/api/v2/me/password", post(me::set_password))
         .route("/api/v2/me/totp/setup", post(me::totp_setup))
         .route("/api/v2/me/totp/enable", post(me::totp_enable))
@@ -465,6 +467,7 @@ pub fn router(app: App) -> Router {
         .route(setup::PATH, get(setup::info).post(setup::complete))
         .route("/api/v2/setup/recover", post(setup::recover))
         .route("/api/v2/admin/audit", get(admin_api::audit_log))
+        .route("/api/v2/admin/records", get(records::admin_list))
         .route(path::GUEST_SESSION, post(account::guest_session))
         .route(path::DEVICES, get(devices::list))
         .route(
@@ -478,6 +481,7 @@ pub fn router(app: App) -> Router {
         )
         .route("/api/v2/devices/{id}/power", post(power::request))
         .route(path::SELF_POLICY, put(devices::set_policy))
+        .route(path::SELF_EVENTS, post(records::device_event))
         .route(path::SELF_FRIEND_ACCESS, get(devices::friend_access))
         .route(
             path::SELF_WALLPAPER,
@@ -489,6 +493,8 @@ pub fn router(app: App) -> Router {
         .route("/api/v2/updates/{platform}", get(misc::updates))
         .route(path::PRESENCE_TICKET, post(sessions::presence_ticket))
         .route(path::SESSIONS, post(sessions::create))
+        .route(path::RECORDS, get(records::list))
+        .route(path::RECORD_REPORTS, post(records::report))
         .route(
             "/api/v2/sessions/{session_id}/ticket",
             post(sessions::refresh_ticket),

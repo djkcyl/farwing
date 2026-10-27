@@ -2,7 +2,7 @@
 
 use super::auth::{AccountAuth, AnyAuth};
 use super::devices::visible_device;
-use super::{App, JsonBody};
+use super::{App, ClientIp, JsonBody};
 use crate::db::{self, DeviceRow};
 use crate::error::{ApiError, ApiResult};
 use crate::hub::SessionSpec;
@@ -104,6 +104,7 @@ pub fn policy_allows(target: &DeviceRow, purpose: Purpose) -> bool {
 pub async fn create(
     State(app): State<App>,
     auth: AccountAuth,
+    ClientIp(ip): ClientIp,
     JsonBody(req): JsonBody<CreateSessionRequest>,
 ) -> ApiResult<Json<SessionTicket>> {
     let target = visible_device(&app, &auth, &req.target_device_id).await?;
@@ -152,6 +153,15 @@ pub async fn create(
             "the server does not allow this to browsers",
         ));
     }
+    let record = crate::records::Opened {
+        visit: req.visit.clone(),
+        host: crate::records::host_party(&target.row),
+        controller: crate::records::controller_party(&controller),
+        relation: target.relation,
+        purpose: req.purpose,
+        ip: ip.to_string(),
+        ..crate::records::Opened::default()
+    };
     let (sid, ticket) = app.hub.create_session(SessionSpec {
         host_device_id: target.row.id.clone(),
         host_public_key: target.row.public_key.clone(),
@@ -164,6 +174,7 @@ pub async fn create(
         grants: target.granted.clone(),
         max_participants: target.row.max_participants(),
         presence: req.presence,
+        record,
     })?;
     Ok(Json(session_ticket(
         &app,

@@ -6,6 +6,7 @@ import { useT } from '../i18n/react';
 import { useAuth } from '../lib/auth';
 import { connectIdText, deviceIdText } from '../lib/format';
 import { Link, navigate, useLocation } from '../lib/router';
+import { newVisit } from '../lib/record';
 import { warmUpPake } from '../lib/spake2';
 import { parseTarget, VisitError, visitAdmission, visitError, type VisitStep } from '../lib/visit';
 import type { Admission } from '../lib/viewer';
@@ -31,6 +32,7 @@ export default function Visit() {
   const first = useRef<Admission | undefined>(undefined);
   const [confirmed, setConfirmed] = useState(false);
   const secret = useRef('');
+  const [visit, setVisit] = useState('');
 
   // The access code does not stay in the address bar or the history.
   useEffect(() => {
@@ -52,9 +54,11 @@ export default function Visit() {
       return;
     }
     secret.current = mode === 'code' ? code.trim() : '';
+    const next = newVisit();
+    setVisit(next);
     setConfirmed(false);
     try {
-      first.current = await visitAdmission(target, secret.current, (s) => {
+      first.current = await visitAdmission(target, secret.current, next, (s) => {
         if (s === 'confirming') setConfirmed(true);
         setStep(s);
       });
@@ -74,10 +78,11 @@ export default function Visit() {
         // A session needing the host user's confirmation is not re-asked
         // automatically.
         autoRetry={!confirmed}
+        visit={visit}
         admit={async () => {
           const ready = first.current;
           first.current = undefined;
-          return ready ?? visitAdmission(target, secret.current, () => undefined);
+          return ready ?? visitAdmission(target, secret.current, visit, () => undefined);
         }}
         onLeave={() => {
           setWatching(false);

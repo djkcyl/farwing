@@ -1,7 +1,8 @@
 // Watch an own or shared device (account session).
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useT } from '../i18n/react';
 import { displayName, platformText } from '../lib/format';
+import { newVisit } from '../lib/record';
 import { navigate } from '../lib/router';
 import type { DeviceList } from '../lib/types';
 import { useApi } from '../lib/useApi';
@@ -13,7 +14,8 @@ export default function View({ params }: { params: Record<string, string> }) {
   const target = params.id;
   const list = useApi<DeviceList>('/api/v2/devices');
   const device = [...(list.data?.own ?? []), ...(list.data?.shared ?? [])].find((d) => d.device_id === target);
-  const admit = useCallback(() => accountAdmission(target), [target]);
+  const visit = useMemo(() => (target ? newVisit() : ''), [target]);
+  const admit = useCallback(() => accountAdmission(target, visit), [target, visit]);
   const title = device?.alias ?? target;
   const subtitle = device
     ? `${platformText(device.platform)}${device.owner ? ` · ${t.devices.sharedBy(displayName(device.owner))}` : ''}`
@@ -24,6 +26,7 @@ export default function View({ params }: { params: Record<string, string> }) {
       title={title}
       subtitle={subtitle}
       admit={admit}
+      visit={visit}
       onLeave={() => (history.length > 1 ? history.back() : navigate('/devices'))}
     />
   );

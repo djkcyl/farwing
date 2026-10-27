@@ -789,6 +789,7 @@ impl Shared {
         let incoming = SessionIncoming {
             participant_id: participant_id.clone(),
             attempt_id: start.attempt_id.clone(),
+            visit: start.visit.clone(),
             purpose,
             connect_type: if assist {
                 farwing_protocol::session::ConnectType::Assist

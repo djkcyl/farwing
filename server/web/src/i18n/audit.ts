@@ -32,6 +32,10 @@ const zh = {
   scope: (scope: string) => `权限：${scope}`,
   expiresDays: (days: number | null) => `有效期：${days === null ? '永久' : `${days} 天`}`,
   token: (name: string) => `API 令牌：${name}`,
+  previous: (name: string) => `原名：${name}`,
+  friend: (name: string) => `好友：${name}`,
+  other: (name: string) => `设备：${name}`,
+  actions: { reboot: '重启', shutdown: '关机', wake: '唤醒' } as Record<string, string>,
 };
 
 type Texts = typeof zh;
@@ -50,6 +54,10 @@ const en: Texts = {
   scope: (scope) => `Access: ${scope}`,
   expiresDays: (days) => `Valid for: ${days === null ? 'No expiry' : `${days} days`}`,
   token: (name) => `API token: ${name}`,
+  previous: (name) => `Was: ${name}`,
+  friend: (name) => `Friend: ${name}`,
+  other: (name) => `Device: ${name}`,
+  actions: { reboot: 'Restart', shutdown: 'Shut down', wake: 'Wake' },
 };
 
 const TEXTS: Record<Lang, Texts> = { 'zh-CN': zh, en };
@@ -105,6 +113,20 @@ function field(
     case 'device_id':
     case 'platform':
       return 'device' in all ? undefined : `${key}: ${raw(value)}`;
+    case 'previous':
+      return t.previous(raw(value));
+    case 'friend':
+      return t.friend(raw(value));
+    // Who did it is the entry's actor.
+    case 'by':
+    case 'other_id':
+      return undefined;
+    case 'other': {
+      const id = raw(all.other_id ?? '').replace(/(.{4})(?=.)/g, '$1 ');
+      return [t.other(raw(value)), id && `ID ${id}`].filter(Boolean).join(' · ');
+    }
+    case 'action':
+      return t.actions[raw(value)] ?? raw(value);
   }
   if (typeof value === 'boolean') return `${key}: ${value ? t.yes : t.no}`;
   return `${key}: ${raw(value)}`;

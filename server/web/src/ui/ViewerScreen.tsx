@@ -15,6 +15,7 @@ import type { CursorShape, HostEvent, Participant, ParticipantPointer, Quality, 
 import { HostEventKind } from '../lib/fpp';
 import { SystemCommand, Usage } from '../lib/input';
 import { PeerRequestError } from '../lib/peerio';
+import { sendViewerReport, VisitSummary } from '../lib/record';
 import { VideoCodec, type VideoCodecId } from '../lib/sdp';
 import { pathText, StatsSampler, type ViewStats } from '../lib/stats';
 import {
@@ -240,6 +241,8 @@ export interface ViewerScreenProps {
   title: string;
   subtitle?: ReactNode;
   admit(): Promise<Admission>;
+  /// The visit `admit` asks for: its sessions make one connection record.
+  visit: string;
   onLeave(): void;
   /// Re-create lost sessions automatically (5 minutes).
   autoRetry?: boolean;
@@ -261,7 +264,7 @@ function sendCapture(v: Viewer, quality: number, fps: number, codec: number, cur
   });
 }
 
-export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true }: ViewerScreenProps) {
+export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry = true }: ViewerScreenProps) {
   const t = useT();
   const { toast } = useOverlay();
   const root = useRef<HTMLDivElement>(null);
@@ -271,6 +274,8 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
   const firstFailure = useRef(0);
   const retries = useRef(0);
   const sampler = useRef(new StatsSampler());
+  const summary = useRef(new VisitSummary());
+  const admitted = useRef<Admission | undefined>(undefined);
   const [generation, setGeneration] = useState(0);
   const [state, setState] = useState<ViewerState>('connecting');
   const [ending, setEnding] = useState<Ending>();
@@ -343,9 +348,17 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
     let current: Viewer | undefined;
     const timer = window.setTimeout(() => {
       const v = new Viewer(
-        { admit, codec: () => capture.current.codec },
+        {
+          admit: async () => {
+            const admission = await admit();
+            admitted.current = admission;
+            return admission;
+          },
+          codec: () => capture.current.codec,
+        },
         {
           state: (s) => {
+            if (s === 'reconnecting') summary.current.reconnects += 1;
             setState(s);
             if (s === 'playing') {
               firstFailure.current = 0;
@@ -362,6 +375,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
           participants: setPeople,
           forwarding: setForwarding,
           stalled: (long) => {
+            if (!long) summary.current.stalls += 1;
             const at = Date.now();
             stalls.current = [...stalls.current.filter((t) => at - t < STALLS_WITHIN_MS), at];
             if (!long && stalls.current.length < STALLS) return;
@@ -452,6 +466,7 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
   }, [generation]);
 
   const retryNow = useCallback(() => {
+    if (summary.current.watched) summary.current.reconnects += 1;
     setRetryAt(undefined);
     setEnding(undefined);
     setBanner(undefined);
@@ -487,10 +502,29 @@ export function ViewerScreen({ title, subtitle, admit, onLeave, autoRetry = true
     const timer = window.setInterval(async () => {
       const report = await viewer.current?.peer?.getStats().catch(() => undefined);
       const forwarded = await viewer.current?.forwardPeer?.getStats().catch(() => undefined);
-      if (report) setStats(sampler.current.sample(report, forwarded));
+      if (!report) return;
+      const sampled = sampler.current.sample(report, forwarded);
+      if (viewer.current?.state === 'playing') summary.current.add(sampled);
+      setStats(sampled);
     }, 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  // The viewer's summary of the visit, when it leaves or the page closes.
+  useEffect(() => {
+    let sent = false;
+    const send = () => {
+      const admission = admitted.current;
+      if (sent || !admission) return;
+      sent = true;
+      void sendViewerReport(visit, admission.hostId, summary.current, admission.bearer);
+    };
+    window.addEventListener('pagehide', send);
+    return () => {
+      window.removeEventListener('pagehide', send);
+      send();
+    };
+  }, [visit]);
 
   // Keep the account login alive during the session (not past the
   // server's maximum login age). Quiet: an ended login must not tear the

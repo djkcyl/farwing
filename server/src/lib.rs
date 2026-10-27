@@ -16,6 +16,7 @@ pub mod http;
 pub mod hub;
 pub mod ice;
 pub mod ratelimit;
+pub mod records;
 pub mod runtime;
 pub mod server;
 pub mod settings;

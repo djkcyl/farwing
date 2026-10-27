@@ -236,6 +236,7 @@ pub(super) async fn run_viewer_connection_owner(
     let presence_stop = CancellationToken::new();
     let mut presence_task = None;
     let mut account_owner = None;
+    let mut record = super::record::VisitRecord::start(monitor.subscribe());
     let result = async {
         let client = match hosted_client.clone() {
             Some(client) => client,
@@ -340,6 +341,14 @@ pub(super) async fn run_viewer_connection_owner(
             let switcher = crate::application::viewer::device_switch::DeviceSwitcher::new(
                 Arc::clone(&resolved.client), resolved.target_device_id.clone(), switch_sender.clone(), cancel.clone());
             let session_control = controller.stream_control_handle();
+            record.connected(&session_control);
+            record.bind(
+                Some(Arc::clone(&resolved.client)),
+                &resolved.visit,
+                &resolved.target_device_id,
+                &resolved.controller_device_id,
+                None,
+            );
             // Marked host input is valid when controlling another device from
             // this desktop. Keep it out of an actual local loopback session.
             session_control.mouse().set_host_input_allowed(
@@ -490,6 +499,10 @@ pub(super) async fn run_viewer_connection_owner(
             if let Some((next, new_display)) = next_connection {
                 if let Some(upgrade) = &upgrade { upgrade.retire(); }
                 display = new_display;
+                // Another device: another record.
+                std::mem::replace(&mut record, super::record::VisitRecord::start(monitor.subscribe()))
+                    .finish()
+                    .await;
                 resolved = next;
                 retries = 0;
                 continue;
@@ -514,6 +527,9 @@ pub(super) async fn run_viewer_connection_owner(
                     resolved.preferences = Some(session_control.preferences());
                     resolved.audio_preferences = Some(session_control.audio().settings());
                     retries += 1;
+                    if recovering.is_none() {
+                        record.reconnecting();
+                    }
                     recovering.get_or_insert_with(std::time::Instant::now);
                     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
                     let (display_tx, display_rx) = oneshot::channel();
@@ -528,6 +544,7 @@ pub(super) async fn run_viewer_connection_owner(
             }
         }
     }.await;
+    record.finish().await;
     monitor.send_replace(None);
     presence_stop.cancel();
     if let Some(task) = presence_task {

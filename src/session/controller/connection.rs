@@ -17,6 +17,9 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) struct ResolvedConnection {
     pub(super) client: Arc<AuthenticatedClient>,
+    /// This connection's record (`docs/connection-records.md`): its
+    /// sessions, reconnections included, make one.
+    pub(super) visit: String,
     pub(super) target_device_id: String,
     pub(super) controller_device_id: String,
     pub(super) profile: ConnectionMediaProfile,
@@ -156,7 +159,7 @@ impl ResolvedConnection {
         let mut pake_key = None;
         let room = if let Some(assist) = &mut self.assist {
             let reply = assist
-                .join(&self.client, &self.controller_device_id, reporter, cancel)
+                .join(&self.client, &self.controller_device_id, &self.visit, reporter, cancel)
                 .await?;
             pake_key = reply.pake_key;
             self.target_device_id = reply.host.device_id.clone();
@@ -177,6 +180,7 @@ impl ResolvedConnection {
                         } else {
                             crate::account::api::Purpose::Desktop
                         },
+                        &self.visit,
                     ),
                 )
                 .await
@@ -477,6 +481,7 @@ pub(super) async fn resolve_connection_with_client(
     };
     Ok(ResolvedConnection {
         client,
+        visit: super::record::new_visit(),
         target_device_id,
         controller_device_id,
         profile,

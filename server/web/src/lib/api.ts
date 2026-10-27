@@ -88,6 +88,8 @@ interface CallOptions {
   /// A background request: an ended login does not sign the page out (the
   /// next ordinary request will).
   quiet?: boolean;
+  /// Completes even when the page closes.
+  keepalive?: boolean;
 }
 
 /// Headers of a signed request (`docs/protocol/farwing-protocol.md` §1.2).
@@ -135,6 +137,7 @@ export async function call<T>(method: string, path: string, body?: unknown, opti
     method,
     headers,
     body: body === undefined ? undefined : (bytes as BufferSource),
+    keepalive: options.keepalive,
   });
   const raw = await response.text();
   let value: { error?: { code?: string; message?: string; details?: unknown } } = {};

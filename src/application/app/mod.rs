@@ -24,6 +24,7 @@ use view::{CenterUi, configure_visuals};
 mod assist;
 mod direct;
 pub(crate) mod friends;
+mod records;
 mod catalog;
 mod controlled_caption;
 pub(crate) mod device_status;
@@ -142,6 +143,7 @@ struct DeviceCenterApp {
     center_ui: CenterUi,
     assist: AssistUi,
     friends: friends::FriendsUi,
+    records: records::RecordsUi,
     direct: direct::DirectUi,
     worker: GuiWorker,
     devices: Option<DeviceList>,
@@ -202,6 +204,7 @@ impl DeviceCenterApp {
             viewers: Default::default(),
             assist: AssistUi::default(),
             friends: Default::default(),
+            records: Default::default(),
             direct: Default::default(),
             worker: GuiWorker::spawn(),
             devices: None,
@@ -515,6 +518,7 @@ impl DeviceCenterApp {
                             // The worker accepted this session and invalidated
                             // the login flow before exposing the new epoch.
                             self.login_generation = generation.wrapping_add(1);
+                            self.records = Default::default();
                             self.login_form.clear_private();
                             self.sync_login_running();
                             self.login_restoring = true;
@@ -638,6 +642,12 @@ impl DeviceCenterApp {
                         continue;
                     }
                     self.finish_friends(result);
+                }
+                GuiEvent::Records(generation, result) => {
+                    if generation != self.login_generation || self.logout_pending {
+                        continue;
+                    }
+                    self.finish_records(result);
                 }
                 GuiEvent::AssistOperation(generation, sequence, result) => {
                     if generation != self.login_generation

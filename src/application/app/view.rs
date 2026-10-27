@@ -27,6 +27,7 @@ mod host_settings;
 mod logs;
 mod port_mapping;
 mod power;
+mod records;
 mod settings;
 mod status_bar;
 mod this_device;
@@ -46,6 +47,8 @@ enum Page {
     Friends,
     /// Who may connect to this device.
     ThisDevice,
+    /// Connections and account events.
+    Records,
     DeviceDetails,
     Settings,
 }
@@ -56,6 +59,7 @@ impl Page {
             Self::Devices => text.center.page_devices,
             Self::Friends => text.center.page_friends,
             Self::ThisDevice => text.center.page_this_device,
+            Self::Records => text.records.page,
             Self::DeviceDetails => text.center.page_device_details,
             Self::Settings => text.common.settings,
         }
@@ -154,6 +158,8 @@ enum Icon {
     Friends,
     /// This device and who may connect to it.
     Host,
+    /// Records: a clock.
+    Records,
 }
 
 pub(super) fn configure_visuals(ctx: &egui::Context) {
@@ -179,6 +185,10 @@ fn paint_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: Color32) {
             ));
         }
         Icon::Keyboard => crate::ui::controls::paint_keyboard(p, rect, color),
+        Icon::Records => {
+            p.circle_stroke(c, 8.5, s);
+            p.add(egui::Shape::line(vec![q(0.0, -5.0), q(0.0, 0.0), q(4.0, 3.0)], s));
+        }
         Icon::Friends => {
             p.circle_stroke(q(-4.0, -4.0), 3.5, s);
             p.circle_stroke(q(5.0, -2.0), 3.0, s);
@@ -580,6 +590,8 @@ impl DeviceCenterApp {
                     self.friends_page(ui);
                 } else if self.center_ui.page == Page::ThisDevice {
                     self.this_device_page(ui);
+                } else if self.center_ui.page == Page::Records {
+                    self.records_page(ui);
                 } else {
                     self.devices_page(ui);
                 }
@@ -681,6 +693,22 @@ impl DeviceCenterApp {
                     self.center_ui.page == Page::ThisDevice,
                 ) {
                     self.center_ui.page = Page::ThisDevice;
+                }
+                if nav_item(
+                    ui,
+                    Icon::Records,
+                    Page::Records.title(),
+                    None,
+                    locked(Page::Records),
+                    self.center_ui.page == Page::Records,
+                ) {
+                    if self.center_ui.page != Page::Records && !locked(Page::Records) {
+                        // Opening the page shows the latest.
+                        self.records.connections = None;
+                        self.records.events = None;
+                        self.records.error = None;
+                    }
+                    self.center_ui.page = Page::Records;
                 }
                 ui.add_space(14.0);
                 ui.separator();

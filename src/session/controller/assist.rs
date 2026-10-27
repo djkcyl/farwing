@@ -15,6 +15,7 @@ impl AssistConnection {
         &mut self,
         client: &AuthenticatedClient,
         controller_id: &str,
+        visit: &str,
         reporter: Option<&ConnectionProgressReporter>,
         cancel: &CancellationToken,
     ) -> Result<AssistJoined> {
@@ -40,12 +41,12 @@ impl AssistConnection {
                     self.request
                         .expected_publisher_id
                         .get_or_insert_with(|| previous.host.device_id.clone());
-                    authorize(client, &self.request, reporter, cancel).await?
+                    authorize(client, &self.request, visit, reporter, cancel).await?
                 }
                 Err(error) => return Err(error),
             }
         } else {
-            authorize(client, &self.request, reporter, cancel).await?
+            authorize(client, &self.request, visit, reporter, cancel).await?
         };
         reply.validate(controller_id)?;
         if self
@@ -129,6 +130,7 @@ pub(super) async fn resolve(
     let profile = options.resolve(display)?;
     Ok(ResolvedConnection {
         client,
+        visit: super::record::new_visit(),
         target_device_id: String::new(),
         controller_device_id,
         profile,
@@ -157,6 +159,7 @@ pub(super) async fn resolve(
 async fn authorize(
     client: &AuthenticatedClient,
     request: &AssistRequest,
+    visit: &str,
     reporter: Option<&ConnectionProgressReporter>,
     cancel: &CancellationToken,
 ) -> Result<AssistJoined> {
@@ -232,7 +235,7 @@ async fn authorize(
             .map(|key| crypto::key_confirm(&key, "controller", &pending.request_id))
             .unwrap_or_default();
         let mut joined =
-            cancellable(cancel, client.assist_accept(&pending.request_id, confirm)).await?;
+            cancellable(cancel, client.assist_accept(&pending.request_id, confirm, visit)).await?;
         anyhow::ensure!(
             joined.host.device_id == pending.host.device_id
                 && joined.host.public_key == pending.host.public_key,

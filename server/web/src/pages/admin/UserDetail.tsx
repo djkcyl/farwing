@@ -27,6 +27,7 @@ import {
   Rows,
 } from '../../ui/kit';
 import { Dialog, useOverlay } from '../../ui/overlay';
+import { RecordList } from '../../ui/Records';
 import { OnceDialog } from './Users';
 
 function grantsText(g: Grants, devices: Map<string, string>, m: Messages['admin']['userDetail']): string {
@@ -333,6 +334,10 @@ export default function UserDetail({ params }: { params: Record<string, string> 
             </table>
           </div>
         )}
+      </Card>
+
+      <Card title={t.nav.allRecords} pad={false}>
+        <RecordList path="/api/v2/admin/records" user={params.id} />
       </Card>
 
       {!self && (

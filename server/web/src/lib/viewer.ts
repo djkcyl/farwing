@@ -212,10 +212,11 @@ function iceServers(started: SessionStarted): RTCIceServer[] {
 }
 
 /// An account session on an own or shared device.
-export async function accountAdmission(target: string): Promise<Admission> {
+export async function accountAdmission(target: string, visit: string): Promise<Admission> {
   const ticket = await call<SessionTicket>('POST', '/api/v2/sessions', {
     target_device_id: target,
     purpose: 'desktop',
+    visit,
   });
   return { ticket, hostId: target };
 }

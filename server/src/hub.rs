@@ -116,6 +116,8 @@ struct Session {
     /// Capabilities granted to the controller (empty for assistance).
     grants: Vec<String>,
     participant_id: String,
+    /// The controller's visit (the session ID when it gave none).
+    visit: String,
     created_at_s: i64,
     state: SessState,
     controller_link: Option<String>,
@@ -164,7 +166,7 @@ pub enum HubEvent {
 /// Session/device bookkeeping written to SQLite in order.
 #[derive(Debug)]
 pub enum PersistJob {
-    SessionCreated(db::SessionRecord),
+    SessionCreated(db::SessionRecord, Box<crate::records::Opened>),
     SessionState {
         id: String,
         state: &'static str,
@@ -204,6 +206,9 @@ pub struct SessionSpec {
     pub max_participants: u32,
     /// The controller signals over its presence connection: no ticket.
     pub presence: bool,
+    /// The connection record: the visit, both sides, how the controller was
+    /// admitted, its address; the hub fills in the session and the time.
+    pub record: crate::records::Opened,
 }
 
 /// Result of processing one inbound frame.
@@ -782,6 +787,11 @@ impl Hub {
             relation: spec.relation,
             grants: spec.grants.clone(),
             participant_id: new_uuid(),
+            visit: if spec.record.visit.is_empty() {
+                sid.clone()
+            } else {
+                spec.record.visit.clone()
+            },
             created_at_s: now_s(),
             state: SessState::Ticketed,
             controller_link: None,
@@ -802,7 +812,12 @@ impl Hub {
             state: "ticketed".to_owned(),
             created_at: session.created_at_s,
             started_at: None,
-        }));
+        }, Box::new(crate::records::Opened {
+            session_id: sid.clone(),
+            visit: session.visit.clone(),
+            at: session.created_at_s,
+            ..spec.record
+        })));
         st.sessions.insert(sid.clone(), session);
         let ticket = if spec.presence {
             String::new()
@@ -1430,6 +1445,7 @@ impl Hub {
         let incoming = SessionIncoming {
             participant_id: s.participant_id.clone(),
             attempt_id: start.attempt_id,
+            visit: s.visit.clone(),
             purpose: s.purpose,
             connect_type: s.connect_type,
             relation: s.relation,

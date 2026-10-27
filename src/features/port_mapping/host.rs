@@ -285,6 +285,7 @@ async fn serve(
             };
             answer(wire::code::OK).await?;
             opened = true;
+            receiver.lease.record_port(format!("udp {}:{}", open.host, open.port));
             tracing::debug!(stream = id, %target, "host UDP forwarding opened");
             let mut buffer = vec![0; 65_536];
             loop {
@@ -337,6 +338,7 @@ async fn serve(
         ensure!(receiver.permitted(generation, policy), "{}", t().features.mapping_permission_expired);
         answer(wire::code::OK).await?;
         opened = true;
+        receiver.lease.record_port(format!("tcp {}:{}", open.host, open.port));
         tracing::debug!(stream = id, target = ?socket.peer_addr().ok(), "host TCP forwarding opened");
         let relay = Mutex::new(RuleStatus::default());
         let result = pump(&transport, &stream, inbound, socket, &relay).await;

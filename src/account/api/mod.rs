@@ -39,6 +39,8 @@ use crate::account::server::ServerConfig;
 pub const PROTOCOL_VERSION: u32 = farwing_protocol::PROTOCOL_VERSION;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Records per page (`GET /records`, `GET /me/events`).
+pub(crate) const RECORD_PAGE: usize = 50;
 const SHORT_TIMEOUT: Duration = Duration::from_secs(5);
 const LONG_POLL_TIMEOUT: Duration =
     Duration::from_millis(farwing_protocol::limits::ASSIST_DECISION_WAIT_MS + 10_000);
@@ -1458,6 +1460,7 @@ impl ServerApi {
         target_device_id: &str,
         purpose: Purpose,
         presence: bool,
+        visit: &str,
     ) -> Result<(RealtimeTicket, wire::SessionTarget)> {
         validate_device_id(target_device_id)?;
         let ticket: wire::SessionTicket = self
@@ -1468,6 +1471,7 @@ impl ServerApi {
                     target_device_id: target_device_id.to_owned(),
                     purpose,
                     presence,
+                    visit: visit.to_owned(),
                 })?,
                 REQUEST_TIMEOUT,
                 Auth::Session,
@@ -1554,18 +1558,77 @@ impl ServerApi {
         &self,
         request_id: &str,
         key_confirm: String,
+        visit: &str,
     ) -> Result<AssistJoined> {
         anyhow::ensure!(farwing_protocol::ids::is_uuid(request_id), "{}", crate::i18n::t().session.api_assist_id_invalid);
         let joined: wire::AssistJoin = self
             .call(
                 Method::POST,
                 &path::assist_request(request_id, "accept"),
-                json(&wire::AssistAcceptRequest { key_confirm })?,
+                json(&wire::AssistAcceptRequest {
+                    key_confirm,
+                    visit: visit.to_owned(),
+                })?,
                 LONG_POLL_TIMEOUT,
                 Auth::Session,
             )
             .await?;
         Ok(joined.into())
+    }
+
+    /// A side's summary of a connection (`docs/connection-records.md`).
+    pub(crate) async fn record_report(&self, report: &wire::RecordReport) -> Result<()> {
+        self.call::<IgnoredAny>(
+            Method::POST,
+            path::RECORD_REPORTS,
+            json(report)?,
+            REQUEST_TIMEOUT,
+            Auth::Session,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// A change of this device's access settings, for the account's events.
+    pub(crate) async fn device_event(&self, event: &wire::DeviceEvent) -> Result<()> {
+        self.call::<IgnoredAny>(
+            Method::POST,
+            path::SELF_EVENTS,
+            json(event)?,
+            REQUEST_TIMEOUT,
+            Auth::Session,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// The account's connection records, newest first (`before`: an ID).
+    pub(crate) async fn records(
+        &self,
+        device: Option<&str>,
+        before: Option<i64>,
+    ) -> Result<Vec<wire::ConnectionRecord>> {
+        let mut query = vec![format!("limit={}", RECORD_PAGE)];
+        if let Some(device) = device {
+            validate_device_id(device)?;
+            query.push(format!("device={device}"));
+        }
+        if let Some(before) = before {
+            query.push(format!("before={before}"));
+        }
+        let path = format!("{}?{}", path::RECORDS, query.join("&"));
+        self.call(Method::GET, &path, Body::None, REQUEST_TIMEOUT, Auth::Session)
+            .await
+    }
+
+    /// The account's events, newest first (`before`: an ID).
+    pub(crate) async fn account_events(&self, before: Option<i64>) -> Result<Vec<wire::AccountEvent>> {
+        let mut path = format!("{}?limit={}", path::ACCOUNT_EVENTS, RECORD_PAGE);
+        if let Some(before) = before {
+            path.push_str(&format!("&before={before}"));
+        }
+        self.call(Method::GET, &path, Body::None, REQUEST_TIMEOUT, Auth::Session)
+            .await
     }
 
     pub(crate) async fn assist_cancel(&self, request_id: &str) -> Result<()> {

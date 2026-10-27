@@ -836,13 +836,20 @@ impl AuthenticatedClient {
 
     /// Create a session with an own or shared device and obtain its realtime
     /// ticket. Other participants of the host are never displaced.
-    pub async fn join_device(&self, device_id: &str, purpose: Purpose) -> Result<RealtimeTicket> {
+    /// `visit`: the connection record these sessions belong to (a viewer
+    /// window); empty for a session of its own.
+    pub async fn join_device(
+        &self,
+        device_id: &str,
+        purpose: Purpose,
+        visit: &str,
+    ) -> Result<RealtimeTicket> {
         // Signal over this process's presence connection when it has one
         // (`docs/protocol/v2-design.md` §11).
         let presence =
             crate::transport::signal::presence_available(&self.device_id(), self.user_id());
         let (ticket, target) = self
-            .request(|api| async move { api.create_session(device_id, purpose, presence).await })
+            .request(|api| async move { api.create_session(device_id, purpose, presence, visit).await })
             .await?;
         if !target.device_id.is_empty() {
             self.features

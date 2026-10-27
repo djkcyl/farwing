@@ -233,6 +233,37 @@ CREATE TABLE IF NOT EXISTS audit_log (
     ip         TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS audit_at ON audit_log(at);
+CREATE TABLE IF NOT EXISTS records (
+    seq                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    visit                TEXT NOT NULL,
+    session_id           TEXT NOT NULL DEFAULT '',
+    host_device_id       TEXT NOT NULL,
+    host_user_id         TEXT NOT NULL DEFAULT '',
+    host_name            TEXT NOT NULL DEFAULT '',
+    host_platform        TEXT NOT NULL DEFAULT '',
+    controller_device_id TEXT NOT NULL,
+    controller_user_id   TEXT NOT NULL DEFAULT '',
+    controller_name      TEXT NOT NULL DEFAULT '',
+    controller_username  TEXT NOT NULL DEFAULT '',
+    controller_nickname  TEXT NOT NULL DEFAULT '',
+    controller_platform  TEXT NOT NULL DEFAULT '',
+    relation             TEXT NOT NULL,
+    admission            TEXT NOT NULL DEFAULT '',
+    purpose              TEXT NOT NULL,
+    direct               INTEGER NOT NULL DEFAULT 0,
+    ip                   TEXT NOT NULL DEFAULT '',
+    started_at           INTEGER NOT NULL,
+    ended_at             INTEGER,
+    outcome              TEXT NOT NULL,
+    end_reason           TEXT NOT NULL DEFAULT '',
+    sessions             INTEGER NOT NULL DEFAULT 1,
+    viewer               TEXT,
+    host                 TEXT
+);
+CREATE INDEX IF NOT EXISTS records_visit ON records(controller_device_id, visit);
+CREATE INDEX IF NOT EXISTS records_session ON records(session_id);
+CREATE INDEX IF NOT EXISTS records_host_user ON records(host_user_id);
+CREATE INDEX IF NOT EXISTS records_controller_user ON records(controller_user_id);
 "#;
 
 impl Db {

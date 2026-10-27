@@ -378,6 +378,31 @@ pub(super) async fn gui_worker_loop(
                         ));
                     }
                 }
+                GuiCommand::Records {
+                    generation,
+                    operation,
+                } => {
+                    if generation != catalog_generation || logout_task.is_some() {
+                        let _ = events.send(GuiEvent::Records(
+                            generation,
+                            Err(t().common.signed_out.into()),
+                        ));
+                    } else if let Some(client) = &client {
+                        let client = Arc::clone(client);
+                        let events = events.clone();
+                        tokio::spawn(async move {
+                            let result = super::records::execute(client, operation)
+                                .await
+                                .map_err(assist::operation_error);
+                            let _ = events.send(GuiEvent::Records(generation, result));
+                        });
+                    } else {
+                        let _ = events.send(GuiEvent::Records(
+                            generation,
+                            Err(t().common.signed_out.into()),
+                        ));
+                    }
+                }
                 GuiCommand::CancelAssistCheck => {
                     if assist_operation_is_query {
                         cancel_operation(&mut assist_operation_task).await;

@@ -192,6 +192,75 @@ struct Ownership {
     status: Status,
 }
 
+/// What a participant did, for its connection record
+/// (`docs/connection-records.md`).
+#[derive(Default)]
+struct Record {
+    /// The controller's visit (empty: nothing is reported).
+    visit: String,
+    controller_device_id: String,
+    /// A connection without the server: what the record needs.
+    direct: Option<farwing_protocol::api::DirectRecord>,
+    controlled: bool,
+    /// File transfers in order, by notice ID, and whether each has ended.
+    files: Vec<(String, farwing_protocol::api::FileRecord, bool)>,
+    more_files: u32,
+    ports: Vec<String>,
+}
+
+impl Record {
+    fn file(&mut self, notice: &crate::features::file_transfer::host::notices::Notice) {
+        use crate::features::file_transfer::host::notices as n;
+        use farwing_protocol::api::{FileOutcome, FileRecord, HostReport};
+        let (outcome, ended) = match notice.state {
+            n::COMPLETE => (FileOutcome::Done, true),
+            n::CANCELLED => (FileOutcome::Cancelled, true),
+            n::FAILED => (FileOutcome::Failed, true),
+            n::INTERRUPTED => (FileOutcome::Interrupted, true),
+            _ => (FileOutcome::Interrupted, false),
+        };
+        let record = FileRecord {
+            name: notice.name.chars().take(256).collect(),
+            count: 0,
+            bytes: notice.total,
+            upload: notice.receiving,
+            outcome,
+        };
+        if let Some(entry) = self.files.iter_mut().find(|(id, ..)| *id == notice.id) {
+            (entry.1, entry.2) = (record, ended);
+        } else if self.files.len() < HostReport::MAX_FILES {
+            self.files.push((notice.id.clone(), record, ended));
+        } else {
+            self.more_files = self.more_files.saturating_add(1);
+        }
+    }
+
+    /// The report when the participant leaves (`None`: nothing to report).
+    fn finish(self) -> Option<farwing_protocol::api::RecordReport> {
+        if self.visit.is_empty() {
+            return None;
+        }
+        let now = chrono::Utc::now().timestamp();
+        Some(farwing_protocol::api::RecordReport {
+            visit: self.visit,
+            host_device_id: String::new(),
+            controller_device_id: self.controller_device_id,
+            direct: self.direct.map(|mut d| {
+                d.ended_at = now;
+                d
+            }),
+            viewer: None,
+            host: Some(farwing_protocol::api::HostReport {
+                controlled: self.controlled,
+                // Unfinished transfers ended with the connection.
+                files: self.files.into_iter().map(|(_, f, _)| f).collect(),
+                more_files: self.more_files,
+                ports: self.ports,
+            }),
+        })
+    }
+}
+
 /// One connected controller or viewer.
 struct Participant {
     stream_generations: std::collections::BTreeMap<usize, u64>,
@@ -204,6 +273,7 @@ struct Participant {
     update_notice: Option<Arc<super::peer::UpdateNotice>>,
     /// The owner withdrew `control` for the rest of this session.
     control_blocked: bool,
+    record: Record,
 }
 
 /// Upper bound of concurrent participants this host admits.
@@ -380,11 +450,16 @@ fn block_control(state: &mut Ownership, expected: &str, blocked: bool, managed: 
 
 /// End one participant; the others keep their sessions.
 fn end_participant(state: &mut Ownership, key: u64) {
-    let Some(participant) = state.participants.remove(&key) else {
+    let Some(mut participant) = state.participants.remove(&key) else {
         return;
     };
     if participant.connected {
         state.last_controlled = Some(std::time::Instant::now());
+    }
+    if participant.connected_since.is_some()
+        && let Some(report) = std::mem::take(&mut participant.record).finish()
+    {
+        crate::account::records::submit(crate::account::records::Item::Report(report));
     }
     if let Some(since) = participant.connected_since {
         let mut connection = participant.connection.clone();
@@ -1025,7 +1100,17 @@ impl Handle {
     pub(crate) fn set_assistance(&self, settings: super::assist::Settings) -> anyhow::Result<()> {
         let mut state = lock(&self.ownership);
         anyhow::ensure!(state.active, "{}", t().features.host_account_session_ended);
+        let was_on = self.assistance.snapshot().settings.enabled;
+        let on = settings.enabled;
         if self.assistance.configure(settings)? {
+            if on != was_on {
+                use farwing_protocol::api::device_event::{ACCESS_CODE_OFF, ACCESS_CODE_ON};
+                crate::account::records::device_event(
+                    if on { ACCESS_CODE_ON } else { ACCESS_CODE_OFF },
+                    "",
+                    "",
+                );
+            }
             state.settings_revision = state.settings_revision.wrapping_add(1);
             state.dirty = true;
             state.status.saving = true;
@@ -1327,6 +1412,44 @@ impl Lease {
     pub(crate) fn participant(&self) -> Option<u64> {
         self.participant
     }
+    /// The connection record this participant's summary goes to: the
+    /// controller's visit and device; a direct connection's details.
+    pub(crate) fn set_record(
+        &self,
+        visit: &str,
+        controller_device_id: &str,
+        direct: Option<farwing_protocol::api::DirectRecord>,
+    ) {
+        let participant = self.participant;
+        self.modify(|state| {
+            if let Some(p) = participant.and_then(|key| state.participants.get_mut(&key)) {
+                visit.clone_into(&mut p.record.visit);
+                controller_device_id.clone_into(&mut p.record.controller_device_id);
+                p.record.direct = direct;
+            }
+        });
+    }
+    /// The participant used the keyboard and mouse.
+    pub(crate) fn record_control(&self) {
+        let participant = self.participant;
+        self.modify(|state| {
+            if let Some(p) = participant.and_then(|key| state.participants.get_mut(&key)) {
+                p.record.controlled = true;
+            }
+        });
+    }
+    /// The participant forwarded a port to `target` (`tcp 127.0.0.1:3389`).
+    pub(crate) fn record_port(&self, target: String) {
+        let participant = self.participant;
+        self.modify(|state| {
+            if let Some(p) = participant.and_then(|key| state.participants.get_mut(&key))
+                && !p.record.ports.contains(&target)
+                && p.record.ports.len() < farwing_protocol::api::HostReport::MAX_PORTS
+            {
+                p.record.ports.push(target);
+            }
+        });
+    }
     /// How the participant is shown on this host.
     pub(crate) fn set_profile(&self, profile: &super::participants::Profile) {
         let participant = self.participant;
@@ -1625,6 +1748,7 @@ impl Lease {
                 connected: false,
                 update_notice: None,
                 control_blocked: false,
+                record: Record::default(),
             },
         );
         refresh_connections(&mut state);
@@ -1804,6 +1928,11 @@ impl Lease {
         // Permit this owner's final cancellation report, but never resurrect an old account/session.
         if !self.current_owner(&state) {
             return;
+        }
+        if let Some(p) = self.participant.and_then(|key| state.participants.get_mut(&key)) {
+            for notice in &updates {
+                p.record.file(notice);
+            }
         }
         let notices = &mut state.status.file_transfers;
         let now = chrono::Utc::now().timestamp();

@@ -848,6 +848,18 @@ impl Session {
             &incoming.controller.public_key,
         );
         owner.bind_session(&session_id);
+        owner.set_record(
+            &incoming.visit,
+            &incoming.controller.device_id,
+            signal.is_direct(&session_id).then(|| farwing_protocol::api::DirectRecord {
+                started_at: chrono::Utc::now().timestamp(),
+                relation: incoming.relation,
+                purpose: incoming.purpose,
+                controller_name: incoming.controller.alias.clone(),
+                controller_platform: incoming.controller.platform,
+                ..farwing_protocol::api::DirectRecord::default()
+            }),
+        );
         owner.set_profile(&crate::features::host::participants::Profile {
             nickname: incoming.controller.display_name().to_owned(),
             device_name: incoming.controller.alias.clone(),

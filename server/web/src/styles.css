@@ -1200,6 +1200,39 @@ table.table {
   border-bottom: none;
 }
 
+.record {
+  border-bottom: 1px solid var(--line);
+}
+.record:last-child {
+  border-bottom: none;
+}
+.record-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  cursor: pointer;
+}
+.record-head:hover {
+  background: rgba(44, 54, 69, 0.45);
+}
+.record-chevron {
+  color: var(--faint);
+  transition: transform 0.15s;
+  flex: none;
+}
+.record-chevron.open {
+  transform: rotate(90deg);
+}
+.record-detail {
+  padding: 0 18px 12px;
+}
+.stack-xs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .pager {
   display: flex;
   justify-content: center;

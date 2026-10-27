@@ -127,6 +127,7 @@ pub async fn request(
                 return Err(ApiError::device_offline());
             }
             tracing::info!(request_id = %rid, device_id = %target.id, requester = %auth.user.id, action = action_str(req.action), "power request sent");
+            power_event(&app, &auth, &target, visible.owner.as_ref(), req.action, ip).await;
             Ok(Json(PowerReceipt {
                 request_id: rid,
                 ..PowerReceipt::default()
@@ -177,6 +178,7 @@ pub async fn request(
                     }
                 }
             }
+            power_event(&app, &auth, &target, visible.owner.as_ref(), req.action, ip).await;
             let same_network = requester_on_target_lan(&auth.device, ip, &target);
             tracing::info!(request_id = %rid, device_id = %target.id, helpers, same_network, "wake request routed");
             Ok(Json(PowerReceipt {
@@ -187,6 +189,25 @@ pub async fn request(
             }))
         }
     }
+}
+
+/// An account event of the requester and of the device's owner.
+async fn power_event(
+    app: &App,
+    auth: &AccountAuth,
+    target: &DeviceRow,
+    owner: Option<&db::UserRow>,
+    action: PowerAction,
+    ip: IpAddr,
+) {
+    let owner = owner.map_or(auth.user.username.as_str(), |o| o.username.as_str());
+    let detail = serde_json::json!({
+        "device": target.alias,
+        "device_id": target.id,
+        "action": action_str(action),
+    });
+    let actor = Some((auth.user.id.as_str(), auth.user.username.as_str()));
+    super::me::audit(app, actor, "device.power", owner, detail, true, ip).await;
 }
 
 /// `POST /api/v2/power/{request_id}/result`: reported by the target device.

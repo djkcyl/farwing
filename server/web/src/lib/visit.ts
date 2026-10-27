@@ -87,6 +87,7 @@ export function visitError(error: unknown): VisitError {
 export async function visitAdmission(
   target: string,
   code: string,
+  visit: string,
   onStep: (step: VisitStep) => void,
 ): Promise<Admission> {
   const addressed = parseTarget(target);
@@ -127,7 +128,7 @@ export async function visitAdmission(
     const joined = await call<AssistJoin>(
       'POST',
       `/api/v2/assist/requests/${requestId}/accept`,
-      { key_confirm: key ? keyConfirm(key, 'controller', requestId) : '' },
+      { key_confirm: key ? keyConfirm(key, 'controller', requestId) : '', visit },
       options,
     );
     requestId = '';

@@ -547,6 +547,70 @@ pub fn audit_entries(
     .collect()
 }
 
+/// Audit kinds an account sees about itself (`GET /me/events`).
+pub const ACCOUNT_EVENT_KINDS: &[&str] = &[
+    "login",
+    "login.totp",
+    "register",
+    "logout",
+    "auth.revoke",
+    "password.change",
+    "totp.enable",
+    "totp.disable",
+    "user.update",
+    "user.password",
+    "user.totp_reset",
+    "device.rename",
+    "device.remove",
+    "device.unbind",
+    "device.disconnect",
+    "device.power",
+    "friend.add",
+    "friend.remove",
+    "grants.update",
+    "access_code.on",
+    "access_code.off",
+    "trusted.add",
+    "trusted.remove",
+];
+
+/// The events of an account: what it did, and what was done to it (the
+/// entry's target is its username), of [`ACCOUNT_EVENT_KINDS`]; newest
+/// first.
+pub fn account_events(
+    c: &Connection,
+    user_id: &str,
+    username: &str,
+    before: Option<i64>,
+    limit: u32,
+) -> R<Vec<AuditEntry>> {
+    let kinds = ACCOUNT_EVENT_KINDS
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut st = c.prepare(&format!(
+        "SELECT id, at, actor_user, actor_name, kind, target, detail, ok, ip FROM audit_log
+         WHERE (actor_user = ?1 OR target = ?2) AND kind IN ({kinds})
+           AND (?3 IS NULL OR id < ?3)
+         ORDER BY id DESC LIMIT ?4"
+    ))?;
+    st.query_map(params![user_id, username, before, limit.clamp(1, 200)], |r| {
+        Ok(AuditEntry {
+            id: r.get(0)?,
+            at: r.get(1)?,
+            actor_user: r.get(2)?,
+            actor_name: r.get(3)?,
+            kind: r.get(4)?,
+            target: r.get(5)?,
+            detail: r.get(6)?,
+            ok: r.get::<_, i64>(7)? != 0,
+            ip: r.get(8)?,
+        })
+    })?
+    .collect()
+}
+
 /// Drop entries older than `keep_s`.
 pub fn prune_audit(c: &Connection, keep_s: i64) -> R<usize> {
     c.execute("DELETE FROM audit_log WHERE at < ?1", [now_s() - keep_s])

@@ -128,6 +128,11 @@ async fn run_presence(
     events: Sender<PresenceEvent>,
     task_cancel: CancellationToken,
 ) -> Result<()> {
+    // This process hosts: its participants' records go up with its account.
+    if let Some(account) = client.account() {
+        let cancel = task_cancel.clone();
+        tokio::spawn(async move { crate::account::records::upload(&account, &cancel).await });
+    }
     // Reservation lifetime (not mutex thread ownership) spans the whole room.
     // During installation the new background waits for the portable room's
     // normal close; two account owners must never kick each other off the server.

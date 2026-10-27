@@ -61,6 +61,9 @@ pub struct SignalSession {
     /// Request IDs are unique on the socket: sessions carried by one
     /// presence connection each have their own prefix.
     request_prefix: String,
+    /// Controller on a direct connection: its visit, told to the host in
+    /// `session.start` (the server learns it when the session is created).
+    visit: String,
 }
 
 /// The presence connection of this process that controller sessions of the
@@ -241,7 +244,13 @@ impl SignalSession {
             dialed: None,
             derived: Default::default(),
             request_prefix: "c-".to_owned(),
+            visit: String::new(),
         }
+    }
+
+    /// The visit this controller's session belongs to (direct connections).
+    pub(crate) fn set_visit(&mut self, visit: &str) {
+        visit.clone_into(&mut self.visit);
     }
 
     /// Offer this presence connection to controller sessions of the same
@@ -403,7 +412,7 @@ impl SignalSession {
             ?decoder_support,
             "advertising native decoder configuration capabilities"
         );
-        let start = build_session_start(
+        let mut start = build_session_start(
             &local.identity.device_id,
             &decoder_support,
             profile,
@@ -411,6 +420,7 @@ impl SignalSession {
             preferences,
             purpose,
         )?;
+        start.visit.clone_from(&self.visit);
         let attempt_id = start.attempt_id.clone();
         let id = self.request_id();
         // A carried session names itself: the presence connection has no

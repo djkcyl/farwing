@@ -223,7 +223,11 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `GET /config` | 任一 | — | `{bitrate_limit_mbps, network}` |
 | `GET /updates/{platform}?channel=stable\|beta` | 无 | — | `{latest: ReleaseInfo \| null}` |
 | `POST /presence/ticket` | 任一 | 空 | `PresenceTicket` |
-| `POST /sessions` | 账号 | `{target_device_id, purpose, presence?}` | `SessionTicket` |
+| `POST /sessions` | 账号 | `{target_device_id, purpose, presence?, visit?}` | `SessionTicket` |
+| `GET /records?device=&before=&limit=` | 账号 | — | `[ConnectionRecord]`（本账号为任一方的，新的在前） |
+| `POST /records/reports` | 任一（连接的一方） | `RecordReport` `{visit, host_device_id, controller_device_id, direct?, viewer?, host?}` | `{}` |
+| `GET /me/events?before=&limit=` | 账号 | — | `[AccountEvent]` |
+| `POST /devices/self/events` | 账号 | `DeviceEvent` `{kind, device_id?, device_name?}` | `{}` |
 | `POST /sessions/{session_id}/ticket` | 任一（该会话的主控设备） | — | `SessionTicket` |
 | `GET /friends` | 账号 | — | `{friends: [Friend]}` |
 | `DELETE /friends/{user_id}` | 账号 | — | `{}` |
@@ -235,7 +239,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `GET /grants/{user_id}` | 账号 | — | `Grants` |
 | `PUT /grants/{user_id}` | 账号 | `Grants` | 规范化后的 `Grants` |
 | `POST /assist/join` | 任一 | `AssistJoinRequest` | `AssistPending` |
-| `POST /assist/requests/{id}/accept` | 任一（发起者） | `{key_confirm}` | 长轮询 → `AssistJoin` |
+| `POST /assist/requests/{id}/accept` | 任一（发起者） | `{key_confirm, visit?}` | 长轮询 → `AssistJoin` |
 | `POST /assist/requests/{id}/cancel` | 任一（发起者） | — | `{}` |
 | `POST /assist/requests/{id}/pake` | 任一（目标被控） | `AssistPakeReply` | `{}` |
 | `POST /assist/requests/{id}/decision` | 任一（目标被控） | `AssistDecision` `{allowed, refusal?, trusted}` | `{}` |
@@ -519,6 +523,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 主控进程已有本设备、本账号且处于连接状态的在线连接时，会话信令复用它：
 
 - `POST /sessions` 带 `"presence": true`，不签发入场券。
+- `visit`：主控为一个观看窗口（或一次文件、端口转发会话）生成的 ID，服务器把同一 visit 的会话归入同一条连接记录（重连不另记）；`session.incoming` 把它告诉被控，直连时主控放在 `session.start` 里。被控在参与者离开、主控在窗口关闭时各自 `POST /records/reports` 上报摘要（`docs/connection-records.md`）。
 - 在线连接上的 `session.start` 必须带 `sid`，且该会话的主控设备是本连接的设备、创建会话的账号与本连接的账号相同（否则 `error{forbidden}`）。此后该会话的 `rtc.offer`/`rtc.candidate` 从这条连接接受，发往主控的 `rtc.answer`/`rtc.candidate`/`session.setting`/`session.permissions`/`session.ended` 也发往这条连接。会话原来的主控连接（以入场券建立的）以 `4001` 关闭。
 - 主控离开发送 `session.leave{}`（带 `sid`）；会话结束时只发 `session.ended`，不关闭在线连接。在线连接 `bye`、被新连接取代、恢复窗口过期或凭据吊销时，它承载的主控会话以 `controller_left` 结束；暂时断开（可恢复）时保留。
 - §3.11 的会话（受信任设备与访客）总是使用单独的主控连接。

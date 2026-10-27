@@ -21,6 +21,7 @@ const USER_ROUTES: [string, Page][] = [
   ['/devices/:id', page(() => import('./pages/me/DeviceDetail'))],
   ['/friends', page(() => import('./pages/me/Friends'))],
   ['/favorites', page(() => import('./pages/me/Favorites'))],
+  ['/records', page(() => import('./pages/me/Records'))],
   ['/account', page(() => import('./pages/me/Account'))],
   ['/connect', page(() => import('./pages/me/Connect'))],
 ];
@@ -36,6 +37,7 @@ const ADMIN_ROUTES: [string, Page][] = [
   ['/admin/settings', page(() => import('./pages/admin/Settings'))],
   ['/admin/tokens', page(() => import('./pages/admin/Tokens'))],
   ['/admin/nodes', page(() => import('./pages/admin/Nodes'))],
+  ['/admin/records', page(() => import('./pages/admin/Records'))],
   ['/admin/audit', page(() => import('./pages/admin/Audit'))],
 ];
 

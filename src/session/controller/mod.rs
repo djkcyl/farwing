@@ -41,6 +41,7 @@ pub(crate) fn gui_connection_activity(
 }
 mod assist;
 pub(crate) mod direct;
+mod record;
 mod shared;
 pub(crate) mod windows;
 
@@ -279,7 +280,7 @@ impl ControllerConnection {
         if let Some(session) = shared::get(&key) {
             return Self::from_shared(session, profile, false);
         }
-        let room = cancellable(cancel, client.join_device(&device.device_id, purpose.wire()))
+        let room = cancellable(cancel, client.join_device(&device.device_id, purpose.wire(), ""))
             .await?;
         let session_id = room.session_id.clone();
         let connection = Self::establish(

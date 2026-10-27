@@ -418,6 +418,7 @@ pub async fn detail(
 pub async fn rename(
     State(app): State<App>,
     auth: AccountAuth,
+    ClientIp(ip): ClientIp,
     Path(id): Path<String>,
     JsonBody(req): JsonBody<RenameRequest>,
 ) -> ApiResult<Json<RenameResponse>> {
@@ -436,6 +437,11 @@ pub async fn rename(
         .call(move |c| db::set_device_alias(c, &id2, &a2))
         .await?;
     notify_changed(&app, &row.id, DeviceChangeKind::Updated, true).await;
+    if alias != row.alias {
+        let detail = serde_json::json!({ "device": alias, "previous": row.alias, "device_id": row.id });
+        let actor = Some((auth.user.id.as_str(), auth.user.username.as_str()));
+        super::me::audit(&app, actor, "device.rename", &auth.user.username, detail, true, ip).await;
+    }
     Ok(Json(RenameResponse {
         device_id: row.id,
         alias,
@@ -469,10 +475,14 @@ pub async fn unbind_device(app: &App, row: &DeviceRow, reason: &'static str) -> 
 pub async fn remove(
     State(app): State<App>,
     auth: AccountAuth,
+    ClientIp(ip): ClientIp,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Empty>> {
     let row = owned_device(&app, &auth, &id).await?;
     unbind_device(&app, &row, "removed").await?;
+    let detail = serde_json::json!({ "device": row.alias, "device_id": row.id });
+    let actor = Some((auth.user.id.as_str(), auth.user.username.as_str()));
+    super::me::audit(&app, actor, "device.remove", &auth.user.username, detail, true, ip).await;
     Ok(Json(Empty {}))
 }
 

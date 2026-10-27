@@ -22,6 +22,7 @@ import { viewBlocker } from '../../lib/devices';
 import { Icon } from '../../ui/icons';
 import { Button, Card, Copy, Empty, Field, Input, Online, PageHeader, PageState, Row, Rows } from '../../ui/kit';
 import { Dialog, useOverlay } from '../../ui/overlay';
+import { RecordList } from '../../ui/Records';
 
 export default function DeviceDetail({ params }: { params: Record<string, string> }) {
   const t = useT();
@@ -172,6 +173,9 @@ export default function DeviceDetail({ params }: { params: Record<string, string
             ))}
           </div>
         )}
+      </Card>
+      <Card title={t.nav.allRecords} pad={false}>
+        <RecordList path="/api/v2/records" device={params.id} />
       </Card>
       <Dialog
         open={renaming}

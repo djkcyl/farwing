@@ -690,20 +690,26 @@ pub async fn unbind_device(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Empty>> {
     let did = id.clone();
-    let alias = app
+    let (alias, owner) = app
         .db
         .call(move |c| {
             let Some(d) = db::get_device(c, &did)? else {
                 return Ok(None);
             };
+            let owner = match &d.user_id {
+                Some(uid) => db::get_user(c, uid)?.map(|u| u.username),
+                None => None,
+            };
             db::revoke_tokens_for_device(c, &d.id, "removed_by_admin")?;
             db::set_device_user(c, &d.id, None)?;
-            Ok(Some(d.alias))
+            Ok(Some((d.alias, owner)))
         })
         .await?
         .ok_or_else(ApiError::not_found)?;
     app.hub.revoke_device(&id);
-    log(&app, &admin, "device.unbind", &format!("{alias} [{id}]"), Value::Null).await;
+    // The owner's username as the target: the owner sees it among its events.
+    let detail = serde_json::json!({ "device": alias, "device_id": id });
+    log(&app, &admin, "device.unbind", &owner.unwrap_or_default(), detail).await;
     Ok(Json(Empty {}))
 }
 
@@ -715,7 +721,22 @@ pub async fn disconnect_device(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Empty>> {
     app.hub.disconnect_device(&id);
-    log(&app, &admin, "device.disconnect", &id, Value::Null).await;
+    let did = id.clone();
+    let (alias, owner) = app
+        .db
+        .call(move |c| {
+            let Some(d) = db::get_device(c, &did)? else {
+                return Ok((String::new(), None));
+            };
+            let owner = match &d.user_id {
+                Some(uid) => db::get_user(c, uid)?.map(|u| u.username),
+                None => None,
+            };
+            Ok((d.alias, owner))
+        })
+        .await?;
+    let detail = serde_json::json!({ "device": alias, "device_id": id });
+    log(&app, &admin, "device.disconnect", &owner.unwrap_or_default(), detail).await;
     Ok(Json(Empty {}))
 }
 

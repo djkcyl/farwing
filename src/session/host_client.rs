@@ -113,6 +113,13 @@ impl HostClient {
         matches!(self.identity, Identity::Local(_))
             || crate::transport::nat::settings::current().serverless
     }
+    /// The account client, when hosting signed in.
+    pub(crate) fn account(&self) -> Option<Arc<AuthenticatedClient>> {
+        match &self.identity {
+            Identity::Account(c) => Some(Arc::clone(c)),
+            _ => None,
+        }
+    }
     /// The logged-in account, if any.
     pub(crate) fn account_user_id(&self) -> Option<String> {
         match &self.identity {

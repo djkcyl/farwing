@@ -134,13 +134,20 @@ pub async fn login(
 }
 
 /// `POST /api/v2/auth/logout`: revoke the token and unbind the device.
-pub async fn logout(State(app): State<App>, auth: AccountAuth) -> ApiResult<Json<Empty>> {
+pub async fn logout(
+    State(app): State<App>,
+    auth: AccountAuth,
+    ClientIp(ip): ClientIp,
+) -> ApiResult<Json<Empty>> {
     let hash = auth.token_hash.clone();
     app.db
         .call(move |c| db::revoke_token(c, &hash, "logout"))
         .await?;
     unbind_device(&app, &auth.device, "logout").await?;
     tracing::info!(user_id = %auth.user.id, device_id = %auth.device.id, "logout");
+    let detail = json!({ "device": auth.device.alias, "device_id": auth.device.id });
+    let actor = Some((auth.user.id.as_str(), auth.user.username.as_str()));
+    super::me::audit(&app, actor, "logout", &auth.user.username, detail, true, ip).await;
     Ok(Json(Empty {}))
 }
 
@@ -181,6 +188,7 @@ pub async fn auth_sessions(
 pub async fn revoke_auth_session(
     State(app): State<App>,
     auth: AccountAuth,
+    ClientIp(ip): ClientIp,
     Path(device_id): Path<String>,
 ) -> ApiResult<Json<Empty>> {
     if !ids::is_device_id(&device_id) {
@@ -200,11 +208,15 @@ pub async fn revoke_auth_session(
     if revoked == 0 && !bound {
         return Err(ApiError::not_found());
     }
+    let alias = device.as_ref().map(|d| d.alias.clone()).unwrap_or_default();
     match device.filter(|_| bound) {
         Some(row) => unbind_device(&app, &row, "revoked_by_user").await?,
         None => app.hub.revoke_device(&device_id),
     }
     tracing::info!(user_id = %auth.user.id, device_id = %device_id, "login revoked");
+    let detail = json!({ "device": alias, "device_id": device_id });
+    let actor = Some((auth.user.id.as_str(), auth.user.username.as_str()));
+    super::me::audit(&app, actor, "auth.revoke", &auth.user.username, detail, true, ip).await;
     Ok(Json(Empty {}))
 }
 

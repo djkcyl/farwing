@@ -38,6 +38,14 @@ pub mod path {
     pub const GRANTS: &str = "/api/v2/grants";
     /// Multi-viewer forwarding (`docs/protocol/deployment-design.md` §5).
     pub const SFU_ROOMS: &str = "/api/v2/sfu/rooms";
+    /// Connection records of the current account (`docs/connection-records.md`).
+    pub const RECORDS: &str = "/api/v2/records";
+    /// A party's summary of a connection ([`super::RecordReport`]).
+    pub const RECORD_REPORTS: &str = "/api/v2/records/reports";
+    /// Account events of the current account ([`super::AccountEvent`]).
+    pub const ACCOUNT_EVENTS: &str = "/api/v2/me/events";
+    /// An event of the calling device's settings ([`super::DeviceEvent`]).
+    pub const SELF_EVENTS: &str = "/api/v2/devices/self/events";
 
     pub fn device(id: &str) -> String {
         format!("{DEVICES}/{id}")
@@ -555,9 +563,10 @@ pub struct PresenceTicket {
 }
 
 /// Session purpose. `audio` is a desktop session without video.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Purpose {
+    #[default]
     Desktop,
     Audio,
     Files,
@@ -592,6 +601,11 @@ pub struct CreateSessionRequest {
     /// response's `ticket` is empty.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub presence: bool,
+    /// The controller's ID of this visit (a viewer window, a file or port
+    /// session): sessions with the same visit make one connection record,
+    /// so reconnections do not add records. Empty: the session is its own.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub visit: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -722,6 +736,8 @@ pub struct AssistAcceptRequest {
     /// Controller key confirmation (label `controller`); empty in
     /// confirmation mode.
     pub key_confirm: String,
+    /// The visit ([`CreateSessionRequest::visit`]).
+    pub visit: String,
 }
 
 /// Reply of a successful `accept`: the session to join.
@@ -874,6 +890,225 @@ pub struct PowerResult {
     pub message: String,
     #[serde(default)]
     pub state: String,
+}
+
+// ---------------------------------------------------------------- records
+
+/// How a connection record turned out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordOutcome {
+    /// Connected and not ended yet.
+    #[default]
+    Open,
+    /// Connected, then ended (`end_reason`).
+    Ended,
+    /// The host's user declined.
+    Rejected,
+    /// The access code was wrong.
+    CodeInvalid,
+    /// Nobody answered on the host.
+    NoAnswer,
+    /// The host had as many participants as it accepts.
+    Busy,
+}
+
+impl RecordOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Ended => "ended",
+            Self::Rejected => "rejected",
+            Self::CodeInvalid => "code_invalid",
+            Self::NoAnswer => "no_answer",
+            Self::Busy => "busy",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "ended" => Self::Ended,
+            "rejected" => Self::Rejected,
+            "code_invalid" => Self::CodeInvalid,
+            "no_answer" => Self::NoAnswer,
+            "busy" => Self::Busy,
+            _ => Self::Open,
+        }
+    }
+}
+
+/// One side of a connection record, as it was then.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecordParty {
+    pub device_id: String,
+    pub name: String,
+    /// The device's account (empty: a visitor without an account).
+    pub user_id: String,
+    pub username: String,
+    pub nickname: String,
+    pub platform: Platform,
+}
+
+/// The controller's summary of a connection, sent when its window closes.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ViewerReport {
+    /// The path used longest: `lan`, `p2p`, `relay` or `forwarded`.
+    pub route: String,
+    /// The relay's transport when `route` is `relay`: `udp`, `tcp`, `tls`.
+    pub relay: String,
+    /// Seconds with a picture.
+    pub seconds: u32,
+    pub width: u32,
+    pub height: u32,
+    /// Average frames per second shown.
+    pub fps: f32,
+    /// Average round trip.
+    pub rtt_ms: u32,
+    /// Times the picture stopped for 0.3 s or more while video arrived.
+    pub stalls: u32,
+    /// Times the connection was lost and came back.
+    pub reconnects: u32,
+}
+
+/// What became of a file transfer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileOutcome {
+    #[default]
+    Done,
+    Cancelled,
+    Failed,
+    /// The connection ended first.
+    Interrupted,
+}
+
+/// A file transfer: one file, or a folder or several files at once.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct FileRecord {
+    /// The file or folder name (several: the first).
+    pub name: String,
+    /// Files in the transfer.
+    pub count: u32,
+    pub bytes: u64,
+    /// To the host (else from it).
+    pub upload: bool,
+    pub outcome: FileOutcome,
+}
+
+/// The host's summary of what a participant did.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct HostReport {
+    /// It used the keyboard and mouse.
+    pub controlled: bool,
+    /// File transfers, at most [`HostReport::MAX_FILES`].
+    pub files: Vec<FileRecord>,
+    /// Transfers beyond those listed.
+    pub more_files: u32,
+    /// Forwarded targets, `tcp 127.0.0.1:3389`, at most
+    /// [`HostReport::MAX_PORTS`].
+    pub ports: Vec<String>,
+}
+
+impl HostReport {
+    pub const MAX_FILES: usize = 100;
+    pub const MAX_PORTS: usize = 20;
+}
+
+/// A connection without the server (LAN or address), stated by one side.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DirectRecord {
+    pub started_at: i64,
+    pub ended_at: i64,
+    pub relation: Relation,
+    pub purpose: Purpose,
+    /// See [`ConnectionRecord::admission`].
+    pub admission: String,
+    pub host_name: String,
+    pub controller_name: String,
+    pub controller_platform: Platform,
+}
+
+/// `POST /records/reports` (the host or the controller of the visit).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecordReport {
+    pub visit: String,
+    pub host_device_id: String,
+    pub controller_device_id: String,
+    /// A direct connection: the server has no record of it yet.
+    pub direct: Option<DirectRecord>,
+    pub viewer: Option<ViewerReport>,
+    pub host: Option<HostReport>,
+}
+
+/// A connection: a viewer window or a file or port session from the first
+/// admission to the end, reconnections included; or an attempt that was
+/// not admitted (`GET /records`, `docs/connection-records.md`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConnectionRecord {
+    pub id: i64,
+    pub host: RecordParty,
+    pub controller: RecordParty,
+    pub relation: Relation,
+    /// How a visitor was admitted: `code`, `approval`, `code_approval`, or
+    /// empty (by account or device key).
+    pub admission: String,
+    pub purpose: Purpose,
+    /// Without the server (LAN or address).
+    pub direct: bool,
+    /// The controller's address as the server saw it.
+    pub ip: String,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub outcome: RecordOutcome,
+    /// Why it ended (`realtime::reason`).
+    pub end_reason: String,
+    /// Sessions after the first (reconnections the server saw).
+    pub reconnects: u32,
+    pub viewer: Option<ViewerReport>,
+    pub host_report: Option<HostReport>,
+}
+
+/// An event of the account (`GET /me/events`): sign-ins, security,
+/// devices, friends and the devices' access settings.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AccountEvent {
+    pub id: i64,
+    pub at: i64,
+    pub kind: String,
+    /// Who did it when not this account (an administrator, a friend).
+    pub actor: String,
+    pub target: String,
+    pub detail: serde_json::Value,
+    pub ok: bool,
+    pub ip: String,
+}
+
+/// `POST /devices/self/events`: a change of this device's access settings.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeviceEvent {
+    /// One of [`device_event`].
+    pub kind: String,
+    /// The device concerned (trusted devices).
+    pub device_id: String,
+    pub device_name: String,
+}
+
+/// [`DeviceEvent::kind`]s.
+pub mod device_event {
+    pub const ACCESS_CODE_ON: &str = "access_code.on";
+    pub const ACCESS_CODE_OFF: &str = "access_code.off";
+    pub const TRUSTED_ADD: &str = "trusted.add";
+    pub const TRUSTED_REMOVE: &str = "trusted.remove";
+    pub const ALL: [&str; 4] = [ACCESS_CODE_ON, ACCESS_CODE_OFF, TRUSTED_ADD, TRUSTED_REMOVE];
 }
 
 // ------------------------------------------------------------- forwarding

@@ -5,6 +5,7 @@ export const zh = {
   devices: '设备',
   friends: '好友',
   favorites: '收藏',
+  records: '记录',
   account: '账号与安全',
   connect: '连接到本服务器',
   adminGroup: '管理',
@@ -17,6 +18,7 @@ export const zh = {
   nodes: '中转节点',
   settings: '服务器设置',
   tokens: 'API 令牌',
+  allRecords: '连接记录',
   audit: '审计日志',
 };
 
@@ -25,6 +27,7 @@ export const en: typeof zh = {
   devices: 'Devices',
   friends: 'Friends',
   favorites: 'Favorites',
+  records: 'Records',
   account: 'Account and security',
   connect: 'Connect to this server',
   adminGroup: 'Administration',
@@ -37,5 +40,6 @@ export const en: typeof zh = {
   nodes: 'Relay nodes',
   settings: 'Server settings',
   tokens: 'API tokens',
+  allRecords: 'Connection records',
   audit: 'Audit log',
 };

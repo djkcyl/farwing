@@ -7,18 +7,19 @@
 
 use super::auth::{AccountAuth, AnyAuth};
 use super::sessions::{device_controller_info, session_ticket};
-use super::{App, JsonBody};
+use super::{App, ClientIp, JsonBody};
 use crate::assist::{DecisionOutcome, Parties, ReplyError};
 use crate::crypto::new_uuid;
 use crate::db::{self, DeviceRow};
 use crate::error::{ApiError, ApiResult};
 use crate::hub::SessionSpec;
+use crate::records;
 use axum::Json;
 use axum::extract::{Path, State};
 use farwing_protocol::api::{
     AssistAcceptRequest, AssistDecision, AssistHost, AssistIdentity, AssistJoin,
     AssistJoinRequest, AssistMode, AssistPakeReply, AssistPending, AssistRefusal, Empty,
-    FavoritesRequest, Purpose, Relation, SavedDevice, SavedList,
+    FavoritesRequest, Purpose, RecordOutcome, Relation, SavedDevice, SavedList,
 };
 use farwing_protocol::crypto::ASSIST_PAKE_SLOTS;
 use farwing_protocol::realtime::{
@@ -258,6 +259,7 @@ pub async fn join(
 pub async fn accept(
     State(app): State<App>,
     auth: AnyAuth,
+    ClientIp(ip): ClientIp,
     Path(rid): Path<String>,
     JsonBody(req): JsonBody<AssistAcceptRequest>,
 ) -> ApiResult<Json<AssistJoin>> {
@@ -288,13 +290,15 @@ pub async fn accept(
     }
     let outcome = tokio::time::timeout(wait, rx).await;
     app.assist.remove(&rid);
+    let record = |trusted: bool| assist_record(&app, &auth, &parties, mode, trusted, &req.visit, ip);
     match outcome {
         Ok(Ok(DecisionOutcome::Decision(AssistDecision {
             allowed: true,
             trusted,
             ..
         }))) => {
-            match start_assist_session(&app, &auth, &parties, trusted).await {
+            let record = record(trusted).await?;
+            match start_assist_session(&app, &auth, &parties, trusted, record.clone()).await {
                 Ok(join) => {
                     // A successful decision: the attempt was not a failure.
                     app.limiter.refund(&target_key(&parties.target));
@@ -302,6 +306,9 @@ pub async fn accept(
                     Ok(Json(join))
                 }
                 Err(e) => {
+                    if e.code == ErrorCode::Busy {
+                        record_refusal(&app, record, RecordOutcome::Busy).await;
+                    }
                     push_cancelled(&app, &parties.host_device_id, &rid);
                     Err(e)
                 }
@@ -309,6 +316,14 @@ pub async fn accept(
         }
         Ok(Ok(DecisionOutcome::Decision(d))) => {
             tracing::info!(request_id = %rid, target = %parties.target, controller = %controller_key(&auth), refusal = ?d.refusal, "assist request refused");
+            let outcome = match d.refusal {
+                Some(AssistRefusal::CodeInvalid) => Some(RecordOutcome::CodeInvalid),
+                Some(AssistRefusal::Rejected) | None => Some(RecordOutcome::Rejected),
+                Some(AssistRefusal::CodeRequired | AssistRefusal::Unavailable) => None,
+            };
+            if let (Some(outcome), Ok(record)) = (outcome, record(d.trusted).await) {
+                record_refusal(&app, record, outcome).await;
+            }
             Err(refusal_error(d.refusal, mode))
         }
         Ok(Ok(DecisionOutcome::Cancelled)) => {
@@ -320,8 +335,57 @@ pub async fn accept(
         }
         _ => {
             push_cancelled(&app, &parties.host_device_id, &rid);
+            if let Ok(record) = record(false).await {
+                record_refusal(&app, record, RecordOutcome::NoAnswer).await;
+            }
             Err(ApiError::timeout())
         }
+    }
+}
+
+/// The connection record of a visitor's attempt.
+async fn assist_record(
+    app: &App,
+    auth: &AnyAuth,
+    parties: &Parties,
+    mode: Option<AssistMode>,
+    trusted: bool,
+    visit: &str,
+    ip: std::net::IpAddr,
+) -> ApiResult<records::Opened> {
+    let hid = parties.host_device_id.clone();
+    let host = app
+        .db
+        .call(move |c| db::get_device(c, &hid))
+        .await?
+        .ok_or_else(ApiError::device_not_found)?;
+    let admission = match mode {
+        _ if trusted => "",
+        Some(AssistMode::Password) => "code",
+        Some(AssistMode::Confirmation) => "approval",
+        Some(AssistMode::PasswordConfirmation) => "code_approval",
+        None => "",
+    };
+    Ok(records::Opened {
+        visit: visit.to_owned(),
+        host: records::host_party(&host),
+        controller: records::controller_party(&device_controller_info(
+            app,
+            &auth.device,
+            auth.user.as_ref(),
+        )),
+        relation: if trusted { Relation::Trusted } else { Relation::Assist },
+        admission: admission.to_owned(),
+        purpose: Purpose::Desktop,
+        ip: ip.to_string(),
+        at: db::now_s(),
+        ..records::Opened::default()
+    })
+}
+
+async fn record_refusal(app: &App, record: records::Opened, outcome: RecordOutcome) {
+    if let Err(e) = app.db.call(move |c| records::refused(c, &record, outcome)).await {
+        tracing::warn!(error = %format!("{e:#}"), "recording a refused attempt failed");
     }
 }
 
@@ -330,6 +394,7 @@ async fn start_assist_session(
     auth: &AnyAuth,
     parties: &Parties,
     trusted: bool,
+    record: records::Opened,
 ) -> ApiResult<AssistJoin> {
     let hid = parties.host_device_id.clone();
     let host = app
@@ -358,6 +423,7 @@ async fn start_assist_session(
         grants: Vec::new(),
         max_participants: host.max_participants(),
         presence: false,
+        record,
     })?;
     if let (Some(user), false) = (&auth.user, parties.connect_id.is_empty()) {
         let (uid, cid, hid) = (user.id.clone(), parties.connect_id.clone(), host.id.clone());

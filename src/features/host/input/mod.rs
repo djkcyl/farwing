@@ -123,6 +123,8 @@ struct Shared {
     geometry: Box<dyn Fn() -> Geometry + Send + Sync>,
     /// RTT to this participant, when measured.
     round_trip: Box<dyn Fn() -> Option<Duration> + Send + Sync>,
+    /// The participant has used the keyboard or mouse (its record says so).
+    controlled: AtomicBool,
 
     configuration: tokio::sync::watch::Sender<Arc<config::Configuration>>,
     mouse_policy: tokio::sync::watch::Sender<config::MousePolicy>,
@@ -153,6 +155,7 @@ impl Session {
             connected,
             geometry: Box::new(geometry),
             round_trip: Box::new(round_trip),
+            controlled: AtomicBool::new(false),
 
             configuration: tokio::sync::watch::channel(Arc::new(Default::default())).0,
             mouse_policy: tokio::sync::watch::channel(Default::default()).0,
@@ -669,6 +672,9 @@ impl Worker {
         let Some(engine) = hub.engine.as_mut() else {
             return;
         };
+        if !heartbeat && !shared.controlled.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            shared.lease.record_control();
+        }
         if let Err(error) = engine.synchronize(geometry.clone()) {
             let _ = engine.release();
             shared

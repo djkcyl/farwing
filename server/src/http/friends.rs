@@ -2,7 +2,7 @@
 
 use super::auth::AccountAuth;
 use super::devices::{push_shared, user_summary};
-use super::{App, JsonBody};
+use super::{App, ClientIp, JsonBody};
 use crate::crypto::new_uuid;
 use crate::db::{self, DeviceRow, UserRow};
 use crate::error::{ApiError, ApiResult};
@@ -284,6 +284,7 @@ async fn own_request(
 pub async fn accept_request(
     State(app): State<App>,
     auth: AccountAuth,
+    ClientIp(ip): ClientIp,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Friend>> {
     let (_, other) = own_request(&app, &auth, &id, true).await?;
@@ -293,6 +294,7 @@ pub async fn accept_request(
         .call(move |c| db::make_friends(c, &me, &them))
         .await?;
     tracing::info!(user_id = %auth.user.id, friend = %other.id, "friend request accepted");
+    friend_event(&app, &auth, &other, "friend.add", ip).await;
     announce_friendship(&app, &auth.user, &other).await?;
     Ok(Json(Friend {
         user: user_summary(&other),
@@ -333,6 +335,7 @@ pub async fn cancel_request(
 pub async fn remove(
     State(app): State<App>,
     auth: AccountAuth,
+    ClientIp(ip): ClientIp,
     Path(user_id): Path<String>,
 ) -> ApiResult<Json<Empty>> {
     let other = load_user(&app, &user_id).await?.ok_or_else(not_friends)?;
@@ -354,6 +357,7 @@ pub async fn remove(
     app.hub.regrant(&other.id, &revoke_all(&mine_seen));
     app.hub.regrant(&auth.user.id, &revoke_all(&theirs_seen));
     tracing::info!(user_id = %auth.user.id, friend = %other.id, "friendship removed");
+    friend_event(&app, &auth, &other, "friend.remove", ip).await;
     push_friend_changed(&app, &other.id, FriendChangeKind::Removed, &auth.user).await;
     let gone = |seen: &[(DeviceRow, Vec<String>)]| -> Vec<(DeviceRow, Vec<String>)> {
         seen.iter()
@@ -388,9 +392,21 @@ pub async fn get_grants(
 /// `PUT /api/v2/grants/{user_id}`: replace what the caller grants this
 /// friend. Live sessions follow immediately (`session.permissions`, or
 /// `permission_revoked` when the purpose is no longer allowed).
+/// An account event of both friends: the entry's target is the other one.
+async fn friend_event(app: &App, auth: &AccountAuth, other: &UserRow, kind: &str, ip: std::net::IpAddr) {
+    let detail = serde_json::json!({ "friend": display(other), "by": display(&auth.user) });
+    let actor = Some((auth.user.id.as_str(), auth.user.username.as_str()));
+    super::me::audit(app, actor, kind, &other.username, detail, true, ip).await;
+}
+
+fn display(u: &UserRow) -> String {
+    if u.nickname.is_empty() { u.username.clone() } else { u.nickname.clone() }
+}
+
 pub async fn put_grants(
     State(app): State<App>,
     auth: AccountAuth,
+    ClientIp(ip): ClientIp,
     Path(user_id): Path<String>,
     JsonBody(req): JsonBody<Grants>,
 ) -> ApiResult<Json<Grants>> {
@@ -426,6 +442,9 @@ pub async fn put_grants(
         .await??;
     let after = devices_seen_by(&app, &auth.user.id, &other.id).await?;
     tracing::info!(user_id = %auth.user.id, friend = %other.id, "grants changed");
+    if as_map(&before) != as_map(&after) {
+        friend_event(&app, &auth, &other, "grants.update", ip).await;
+    }
     app.hub.regrant(&other.id, &as_map(&after));
     push_friend_changed(&app, &other.id, FriendChangeKind::GrantsChanged, &auth.user).await;
     push_visibility(&app, &auth.user, &other.id, &as_map(&before), &after).await;
