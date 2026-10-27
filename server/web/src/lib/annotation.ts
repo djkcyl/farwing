@@ -2,7 +2,7 @@
 // `docs/protocol/peer-messages.md`): the host offers it with a token on the
 // session channel; commands carry that token and a strictly increasing
 // request number, and each gets a result. Pen strokes (sent in pieces while
-// drawing), the laser pointer, undo, clear and a whiteboard.
+// drawing), undo, clear and a whiteboard.
 import { t } from '../i18n';
 import * as fpp from './fpp';
 import { Fields, Writer } from './pb';
@@ -72,19 +72,6 @@ export function boardCommand(screen: number, color?: number): Writer {
   return new Writer().message(4, board);
 }
 
-export function laserCommand(
-  id: number,
-  screen: number,
-  width: number,
-  color: number,
-  tailMs: number,
-  samples: { point: Point; ageMs: number }[],
-): Writer {
-  const laser = new Writer().int(1, id).int(2, screen).float(3, width).fixed32(4, color).int(5, tailMs);
-  for (const s of samples) laser.message(6, new Writer().message(1, point(s.point)).int(2, s.ageMs));
-  return new Writer().message(6, laser);
-}
-
 export interface AnnotationState {
   /// The host offered annotation.
   available: boolean;
@@ -92,10 +79,6 @@ export interface AnnotationState {
   /// The last failure, in words.
   error?: string;
 }
-
-const MAX_IN_FLIGHT = 48;
-export const LASER_TAIL_MS = 100;
-const LASER_SAMPLES = 32;
 
 export class Annotation {
   private send: (frame: Uint8Array) => void;
@@ -109,7 +92,6 @@ export class Annotation {
   /// Strokes in drawing order, for undo.
   private strokes: { id: number; screen: number }[] = [];
   private boards = new Set<number>();
-  private laser?: { id: number; screen: number; samples: { at: number; point: Point }[] };
 
   constructor(send: (frame: Uint8Array) => void, onState: (state: AnnotationState) => void) {
     this.send = send;
@@ -143,9 +125,8 @@ export class Annotation {
   }
 
   /// Send a command; resolves with its result code.
-  private command(command: Writer, optional = false): Promise<number> {
+  private command(command: Writer): Promise<number> {
     if (this.token === 0n) return Promise.resolve(4);
-    if (optional && this.pending.size >= MAX_IN_FLIGHT) return Promise.resolve(0);
     this.request += 1;
     const request = this.request;
     const result = new Promise<number>((resolve) => {
@@ -227,34 +208,6 @@ export class Annotation {
     if (on) this.boards.add(screen);
     else this.boards.delete(screen);
     void this.command(boardCommand(screen, on ? color : undefined));
-  }
-
-  /// Move the laser pointer (a transient trail that fades on the host).
-  laserTo(screen: number, p: Point, width: number, color: number) {
-    if (!this.enabled) return;
-    const now = performance.now();
-    if (!this.laser || this.laser.screen !== screen) {
-      this.laser = { id: this.begin(), screen, samples: [] };
-    }
-    const laser = this.laser;
-    laser.samples.push({ at: now, point: p });
-    const life = LASER_TAIL_MS + 220;
-    laser.samples = laser.samples.filter((s) => now - s.at <= life).slice(-LASER_SAMPLES);
-    void this.command(
-      laserCommand(
-        laser.id,
-        screen,
-        width,
-        color,
-        LASER_TAIL_MS,
-        laser.samples.map((s) => ({ point: s.point, ageMs: Math.round(now - s.at) })),
-      ),
-      true,
-    );
-  }
-
-  laserEnd() {
-    this.laser = undefined;
   }
 
   /// The connection is gone.

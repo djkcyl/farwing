@@ -309,7 +309,11 @@ pub async fn friend(command: FriendCommand) -> Result<()> {
                 }
             }
             FriendCommand::Answer(id, accept) => {
-                client.answer_friend_request(&id, accept).await?;
+                // The command line shares the new-friend default.
+                let shares = accept.then(|| {
+                    farwing_protocol::caps::normalize(farwing_protocol::caps::DEFAULT_FRIEND)
+                });
+                client.answer_friend_request(&id, shares).await?;
                 println!("{}", if accept { "已接受好友申请" } else { "已拒绝好友申请" });
             }
             FriendCommand::Cancel(id) => {

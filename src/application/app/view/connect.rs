@@ -265,7 +265,7 @@ impl DeviceCenterApp {
                     .clone()
                     .filter(|(target, _)| *target == address)
                     .map(|(_, name)| name);
-                self.connect_address(&address, code, ask, name.as_deref());
+                self.connect_address(&address, code, ask, name.as_deref(), None);
             }
             Ok(Target::ShortNumber(number)) => {
                 if self.access() == Access::NoServer {
@@ -299,7 +299,7 @@ impl DeviceCenterApp {
             .into_iter()
             .find(|h| h.announce.device_id == id)
         {
-            self.connect_address(&host.target().to_string(), code, ask, Some(&host.announce.name));
+            self.connect_address(&host.target().to_string(), code, ask, Some(&host.announce.name), Some(id));
             return;
         }
         if self.access() != Access::NoServer {
@@ -307,7 +307,7 @@ impl DeviceCenterApp {
             return;
         }
         match store::known_host(id).filter(|h| !h.address.is_empty()) {
-            Some(host) => self.connect_address(&host.address, code, ask, Some(&host.name)),
+            Some(host) => self.connect_address(&host.address, code, ask, Some(&host.name), Some(id)),
             None => {
                 self.direct.error = Some((t().center.device_not_found)(
                     &crate::account::api::device_id_text(id),
@@ -318,7 +318,15 @@ impl DeviceCenterApp {
 
     /// Connect directly: by this device's key, with an access code, or
     /// asking the other side's user.
-    fn connect_address(&mut self, address: &str, code: &str, ask: bool, name: Option<&str>) {
+    /// `expected`: the device chosen, the only one connected to.
+    fn connect_address(
+        &mut self,
+        address: &str,
+        code: &str,
+        ask: bool,
+        name: Option<&str>,
+        expected: Option<&str>,
+    ) {
         let code = (!code.is_empty()).then(|| code.to_owned());
         let ask = ask && code.is_none();
         match crate::session::controller::DirectRequest::parse(address, code, ask) {
@@ -326,6 +334,10 @@ impl DeviceCenterApp {
                 self.direct.error = None;
                 let request = match name {
                     Some(name) => request.named(name),
+                    None => request,
+                };
+                let request = match expected {
+                    Some(id) => request.expecting(id),
                     None => request,
                 };
                 self.spawn_direct_viewer(request);
@@ -551,7 +563,8 @@ impl DeviceCenterApp {
             .collect();
         let text = &t().center;
         enum Pick {
-            Key(String, String),
+            /// Address, name, device ID.
+            Key(String, String, String),
             Server(String),
             Code(String, String),
             Pair(String, String, String),
@@ -635,7 +648,11 @@ impl DeviceCenterApp {
                         |ui| {
                             if own_device || admits {
                                 if ui.add(primary(t().common.connect)).clicked() {
-                                    picked = Some(Pick::Key(target.clone(), announce.name.clone()));
+                                    picked = Some(Pick::Key(
+                                        target.clone(),
+                                        announce.name.clone(),
+                                        announce.device_id.clone(),
+                                    ));
                                 }
                             } else if let Some(device) = friend {
                                 // It takes friends' keys directly (also while the
@@ -643,7 +660,11 @@ impl DeviceCenterApp {
                                 let direct = methods(farwing_protocol::direct::method::FRIEND);
                                 if ui.add(primary(t().common.connect)).clicked() {
                                     picked = Some(if direct {
-                                        Pick::Key(target.clone(), announce.name.clone())
+                                        Pick::Key(
+                                            target.clone(),
+                                            announce.name.clone(),
+                                            announce.device_id.clone(),
+                                        )
                                     } else {
                                         Pick::Server(device.device_id.clone())
                                     });
@@ -674,7 +695,9 @@ impl DeviceCenterApp {
             }
         });
         match picked {
-            Some(Pick::Key(target, name)) => self.connect_address(&target, "", false, Some(&name)),
+            Some(Pick::Key(target, name, id)) => {
+                self.connect_address(&target, "", false, Some(&name), Some(&id))
+            }
             Some(Pick::Server(id)) => {
                 self.selected_device_id = Some(id);
                 self.start_viewer();

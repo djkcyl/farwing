@@ -1,14 +1,6 @@
 // ANNOTATION packets (`docs/protocol/peer-messages.md`, 0x0601).
 import { describe, expect, test } from 'vitest';
-import {
-  boardCommand,
-  clearCommand,
-  eraseCommand,
-  laserCommand,
-  packet,
-  strokeCommand,
-  toggleCommand,
-} from '../lib/annotation';
+import { boardCommand, clearCommand, eraseCommand, packet, strokeCommand, toggleCommand } from '../lib/annotation';
 import { hex } from '../lib/encoding';
 import { Fields } from '../lib/pb';
 
@@ -34,22 +26,12 @@ describe('annotation', () => {
     expect([p.float(1), p.float(2)]).toEqual([0.5, 0]);
   });
 
-  test('erase, clear, board and laser', () => {
+  test('erase, clear and board', () => {
     const erase = new Fields(eraseCommand(9, 2).finish()).message(1)!.message(2)!;
     expect([erase.int32(1), erase.uint32(2), erase.int32(3)]).toEqual([2, 9, 2]);
     expect(spaced(clearCommand(false).finish())).toBe('28 00');
     expect(spaced(clearCommand(true).finish())).toBe('28 01');
     expect(spaced(boardCommand(0).finish())).toBe('22 00');
     expect(spaced(boardCommand(1, 0xffffffff).finish())).toBe('22 07 08 01 15 ff ff ff ff');
-    const laser = new Fields(
-      laserCommand(3, 0, 5, 0xffff4444, 100, [
-        { point: { x: 0.1, y: 0.2 }, ageMs: 50 },
-        { point: { x: 0.2, y: 0.2 }, ageMs: 0 },
-      ]).finish(),
-    ).message(6)!;
-    expect(laser.uint32(1)).toBe(3);
-    expect(laser.fixed32(4)).toBe(0xffff4444);
-    expect(laser.uint32(5)).toBe(100);
-    expect(laser.messages(6).map((s) => s.uint32(2))).toEqual([50, 0]);
   });
 });

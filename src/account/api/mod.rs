@@ -1066,13 +1066,18 @@ impl ServerApi {
         .await
     }
 
-    /// `action`: `accept` or `reject`.
-    pub async fn answer_friend_request(&self, id: &str, accept: bool) -> Result<()> {
+    /// Accept, sharing `accept` on all this account's devices, or reject
+    /// (`None`).
+    pub async fn answer_friend_request(&self, id: &str, accept: Option<Vec<String>>) -> Result<()> {
         anyhow::ensure!(farwing_protocol::ids::is_uuid(id), "{}", crate::i18n::t().session.api_friend_request_id_invalid);
+        let (action, body) = match accept {
+            Some(caps) => ("accept", json(&wire::FriendAccept { caps })?),
+            None => ("reject", Body::None),
+        };
         self.call::<IgnoredAny>(
             Method::POST,
-            &path::friend_request(id, if accept { "accept" } else { "reject" }),
-            Body::None,
+            &path::friend_request(id, action),
+            body,
             REQUEST_TIMEOUT,
             Auth::Session,
         )

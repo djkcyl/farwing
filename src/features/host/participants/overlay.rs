@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// A pointer fades out after this long without moving.
-const IDLE: Duration = Duration::from_secs(3);
-const FADE: Duration = Duration::from_millis(400);
+const IDLE: Duration = Duration::from_secs(5);
+const FADE: Duration = Duration::from_millis(800);
 /// How long a click ring expands and fades.
 const RING: Duration = Duration::from_millis(600);
 /// Repaint interval while something animates.
@@ -536,7 +536,7 @@ mod tests {
         assert_eq!(next_wait(&[still.clone()], false), IDLE_WAIT);
         assert_eq!(next_wait(&[still.clone()], true), FRAME);
         let mut idle = still.clone();
-        idle.pointer.as_mut().unwrap().idle = Duration::from_millis(2800);
+        idle.pointer.as_mut().unwrap().idle = IDLE - Duration::from_millis(200);
         assert_eq!(next_wait(&[idle.clone()], false), Duration::from_millis(200));
         idle.pointer.as_mut().unwrap().idle = IDLE + FADE / 2;
         assert_eq!(next_wait(&[idle.clone()], false), FRAME);

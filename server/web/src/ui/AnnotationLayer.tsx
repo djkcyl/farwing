@@ -1,12 +1,9 @@
 // Drawing on the host's screen from the browser (`docs/web-console.md`
 // §7.7): a layer over the picture takes the pointer (mouse, pen or touch).
 // The pen sends its points every 30 ms while drawing and previews the stroke
-// locally until the host's ink shows in the video; the laser sends its
-// trail, which fades on the host.
+// locally until the host's ink shows in the video.
 import { useEffect, useLayoutEffect, useRef } from 'react';
-import { argbCss, LASER_TAIL_MS, type Annotation, type Point } from '../lib/annotation';
-
-export type AnnotationTool = 'pen' | 'laser';
+import { argbCss, type Annotation, type Point } from '../lib/annotation';
 
 export interface Box {
   x: number;
@@ -23,7 +20,6 @@ export function AnnotationLayer({
   box,
   screenId,
   screenWidth,
-  tool,
   color,
   width,
 }: {
@@ -32,20 +28,18 @@ export function AnnotationLayer({
   screenId: number;
   /// Host screen width in pixels: line widths are host pixels.
   screenWidth: number;
-  tool: AnnotationTool;
   color: number;
   width: number;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   /// The pen stroke being drawn or previewed; `done` once the pen lifts.
   const live = useRef<{ id: number; points: Point[]; unsent: Point[]; done: number } | undefined>(undefined);
-  const trail = useRef<{ at: number; p: Point }[]>([]);
-  const settings = useRef({ box, screenId, screenWidth, tool, color, width });
+  const settings = useRef({ box, screenId, screenWidth, color, width });
   useLayoutEffect(() => {
-    settings.current = { box, screenId, screenWidth, tool, color, width };
+    settings.current = { box, screenId, screenWidth, color, width };
   });
 
-  // Local preview: the live stroke and the laser trail.
+  // Local preview of the live stroke.
   useEffect(() => {
     let frame = 0;
     const paint = () => {
@@ -76,15 +70,6 @@ export function AnnotationLayer({
         if (stroke.points.length === 1) ctx.lineTo(stroke.points[0].x * w + 0.1, stroke.points[0].y * h);
         ctx.stroke();
       }
-      const samples = trail.current.filter((t) => now - t.at <= LASER_TAIL_MS + 220);
-      trail.current = samples;
-      if (samples.length) {
-        ctx.strokeStyle = argbCss(s.color);
-        ctx.lineWidth = Math.max(2, s.width * scale);
-        ctx.beginPath();
-        samples.forEach((t, i) => (i ? ctx.lineTo(t.p.x * w, t.p.y * h) : ctx.moveTo(t.p.x * w, t.p.y * h)));
-        ctx.stroke();
-      }
     };
     paint();
     return () => cancelAnimationFrame(frame);
@@ -99,7 +84,6 @@ export function AnnotationLayer({
       return { x: clamp((e.clientX - r.left) / r.width), y: clamp((e.clientY - r.top) / r.height) };
     };
     let timer = 0;
-    let laserSent = 0;
     // The pointer drawing now (capture can fail for a pointer already gone).
     let pointer: number | undefined;
     const flush = () => {
@@ -119,11 +103,6 @@ export function AnnotationLayer({
         // Moves outside the layer are lost; the stroke still works inside.
       }
       const p = at(e);
-      if (settings.current.tool === 'laser') {
-        trail.current = [{ at: performance.now(), p }];
-        annotation.laserTo(settings.current.screenId, p, settings.current.width, settings.current.color);
-        return;
-      }
       live.current = { id: annotation.begin(), points: [p], unsent: [p], done: 0 };
       flush();
       window.clearInterval(timer);
@@ -133,16 +112,6 @@ export function AnnotationLayer({
       if (e.pointerId !== pointer) return;
       const coalesced = e.getCoalescedEvents?.() ?? [];
       const events = coalesced.length ? coalesced : [e];
-      if (settings.current.tool === 'laser') {
-        const now = performance.now();
-        for (const ev of events) trail.current.push({ at: now, p: at(ev) });
-        if (now - laserSent >= FLUSH_MS) {
-          laserSent = now;
-          const s = settings.current;
-          annotation.laserTo(s.screenId, at(e), s.width, s.color);
-        }
-        return;
-      }
       const stroke = live.current;
       if (!stroke) return;
       for (const ev of events) {
@@ -157,10 +126,6 @@ export function AnnotationLayer({
       if (e.pointerId !== pointer) return;
       pointer = undefined;
       if (c.hasPointerCapture(e.pointerId)) c.releasePointerCapture(e.pointerId);
-      if (settings.current.tool === 'laser') {
-        annotation.laserEnd();
-        return;
-      }
       window.clearInterval(timer);
       flush();
       if (live.current) live.current.done = performance.now();

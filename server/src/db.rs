@@ -1031,10 +1031,10 @@ pub fn friend_ids(c: &Connection, user_id: &str) -> R<Vec<String>> {
     st.query_map([user_id], |r| r.get(0))?.collect()
 }
 
-/// Make `a` and `b` friends: drop pending requests between them and give each
-/// side the default grant of [`caps::DEFAULT_FRIEND`] from the other.
+/// Make `a` and `b` friends: drop pending requests between them; `a` shares
+/// `shares` on all its devices, `b` the default [`caps::DEFAULT_FRIEND`].
 /// Returns the friendship start.
-pub fn make_friends(c: &mut Connection, a: &str, b: &str) -> R<i64> {
+pub fn make_friends(c: &mut Connection, a: &str, b: &str, shares: &[String]) -> R<i64> {
     let now = now_s();
     let tx = c.transaction()?;
     let (x, y) = pair(a, b);
@@ -1043,9 +1043,10 @@ pub fn make_friends(c: &mut Connection, a: &str, b: &str) -> R<i64> {
         params![x, y, now],
     )?;
     delete_requests_between(&tx, a, b)?;
-    let default = serde_json::to_string(&caps::normalize(caps::DEFAULT_FRIEND))
-        .unwrap_or_else(|_| "[]".into());
-    for (owner, grantee) in [(a, b), (b, a)] {
+    let text = |list: Vec<String>| serde_json::to_string(&list).unwrap_or_else(|_| "[]".into());
+    let shared = text(caps::normalize(shares));
+    let default = text(caps::normalize(caps::DEFAULT_FRIEND));
+    for (owner, grantee, caps) in [(a, b, &shared), (b, a, &default)] {
         tx.execute(
             "DELETE FROM grants WHERE owner_user = ?1 AND grantee_user = ?2",
             params![owner, grantee],
@@ -1053,7 +1054,7 @@ pub fn make_friends(c: &mut Connection, a: &str, b: &str) -> R<i64> {
         tx.execute(
             "INSERT INTO grants (owner_user, grantee_user, device_id, caps, updated_at)
              VALUES (?1, ?2, NULL, ?3, ?4)",
-            params![owner, grantee, default, now],
+            params![owner, grantee, caps, now],
         )?;
     }
     let since = tx.query_row(
@@ -1644,10 +1645,10 @@ mod tests {
             Some((Relation::Own, caps::all()))
         );
         assert_eq!(access(&c, "u2", &d1).unwrap(), None);
-        make_friends(&mut c, "u2", "u1").unwrap();
+        make_friends(&mut c, "u2", "u1", &["view".into()]).unwrap();
         assert_eq!(
             access(&c, "u2", &d1).unwrap(),
-            Some((Relation::Friend, vec!["view".into(), "annotation".into()]))
+            Some((Relation::Friend, vec!["view".into(), "audio".into(), "annotation".into()]))
         );
         let mut g = Grants::default();
         g.devices.insert("d1".into(), vec!["files".into()]);

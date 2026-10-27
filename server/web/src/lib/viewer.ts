@@ -124,6 +124,10 @@ export interface ControlState {
   pending: boolean;
   /// Why the token was refused or lost.
   message?: string;
+  /// Refused for lack of the grant: the host's user may be asked.
+  canAsk?: boolean;
+  /// Awaiting the host's user.
+  asking?: boolean;
 }
 
 export interface MicrophoneStatus {
@@ -158,6 +162,8 @@ function refusalText(code: number, holder: string): string {
       return m.otherControlling(holder || m.otherParticipant);
     case 4:
       return m.notAutomaticShared;
+    case 5:
+      return m.declined;
     default:
       return m.refused;
   }
@@ -289,6 +295,7 @@ export class Viewer {
   private myId = '';
   private controlHeld = false;
   private turnPending = false;
+  private turnAsking = false;
   /// Keep the token across reconnections.
   private wantControl = false;
   private mic?: { stream: MediaStream; ok: boolean; active: boolean };
@@ -1034,7 +1041,7 @@ export class Viewer {
   }
 
   private emitControl(message?: string) {
-    this.events.control?.({ held: this.controlHeld, pending: this.turnPending, message });
+    this.events.control?.({ held: this.controlHeld, pending: this.turnPending, asking: this.turnAsking, message });
   }
 
   private loseControl(message: string) {
@@ -1049,19 +1056,23 @@ export class Viewer {
   }
 
   /// Ask for the control token; input is forwarded only once it is held.
-  async takeControl(automatic = false): Promise<ControlState> {
-    if (!this.grants.includes('control')) {
-      const state = { held: false, pending: false, message: t().viewer.control.noPermission };
-      this.events.control?.(state);
-      return state;
+  /// `ask`: without the grant, ask the host's user for this connection.
+  async takeControl(automatic = false, ask = false): Promise<ControlState> {
+    if (!ask && !this.grants.includes('control')) {
+      return { held: false, pending: false, message: t().viewer.control.noPermission, canAsk: !automatic };
     }
     this.turnPending = true;
+    this.turnAsking = ask;
     this.emitControl();
     let message: string | undefined;
+    let canAsk = false;
     try {
-      const m = fpp.parseSession(await this.request(fpp.Type.SESSION, fpp.turnRequest(true, automatic)));
+      // The host's user has a minute to answer.
+      const timeout = ask ? 75_000 : undefined;
+      const m = fpp.parseSession(await this.request(fpp.Type.SESSION, fpp.turnRequest(true, automatic, ask), timeout));
       const held = m.kind === 'turn_result' && m.held;
       message = m.kind === 'turn_result' && !held ? refusalText(m.refusal, m.holder) : undefined;
+      canAsk = m.kind === 'turn_result' && !held && m.refusal === 2 && !automatic && !ask;
       this.setControlHeld(held);
       this.wantControl = held;
       if (held) this.input.start();
@@ -1070,10 +1081,12 @@ export class Viewer {
       message = (error as Error).message;
     } finally {
       this.turnPending = false;
+      this.turnAsking = false;
     }
-    // Automatic re-takes after a reconnection fail quietly.
-    this.emitControl(automatic ? undefined : message);
-    return { held: this.controlHeld, pending: false, message };
+    // Automatic re-takes after a reconnection fail quietly; a refusal that
+    // may be asked about is the caller's to show.
+    this.emitControl(automatic || canAsk ? undefined : message);
+    return { held: this.controlHeld, pending: false, message, canAsk };
   }
 
   async releaseControl() {

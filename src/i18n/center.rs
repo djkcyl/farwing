@@ -211,6 +211,10 @@ pub(crate) struct Center {
     /// When it was sent.
     pub request_received: fn(&str) -> String,
     pub accept: &'static str,
+    /// The requester's name.
+    pub accept_friend: fn(&str) -> String,
+    /// What the new friend may do on this account's devices.
+    pub they_may: &'static str,
     pub decline: &'static str,
     pub request_sent: fn(&str) -> String,
     pub withdraw: &'static str,
@@ -593,6 +597,8 @@ pub(crate) const ZH_CN: Center = Center {
     pending_requests: "待处理的申请",
     request_received: |when| format!("好友申请 · {when}"),
     accept: "接受",
+    accept_friend: |name| format!("接受 {name} 的好友请求"),
+    they_may: "对方在我的设备上可以",
     decline: "拒绝",
     request_sent: |when| format!("等待对方接受 · 发出于 {when}"),
     withdraw: "撤回",
@@ -971,6 +977,8 @@ pub(crate) const EN: Center = Center {
     pending_requests: "Pending requests",
     request_received: |when| format!("Friend request · {when}"),
     accept: "Accept",
+    accept_friend: |name| format!("Accept {name}'s friend request"),
+    they_may: "On my devices, they may",
     decline: "Decline",
     request_sent: |when| format!("Waiting for acceptance · Sent {when}"),
     withdraw: "Withdraw",

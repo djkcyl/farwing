@@ -9,8 +9,8 @@ use crate::error::{ApiError, ApiResult};
 use axum::Json;
 use axum::extract::{Path, State};
 use farwing_protocol::api::{
-    Empty, Friend, FriendList, FriendRequest, FriendRequestCreate, FriendRequestOutcome,
-    FriendRequests, Grants,
+    Empty, Friend, FriendAccept, FriendList, FriendRequest, FriendRequestCreate,
+    FriendRequestOutcome, FriendRequests, Grants,
 };
 use farwing_protocol::realtime::{
     DeviceChangeKind, Envelope, FriendChangeKind, FriendChanged, types,
@@ -93,6 +93,28 @@ fn as_map(list: &[(DeviceRow, Vec<String>)]) -> HashMap<String, Vec<String>> {
     list.iter()
         .map(|(row, caps)| (row.id.clone(), caps.clone()))
         .collect()
+}
+
+/// What changed on each device between `before` and `after`, for a notice:
+/// `[{device, added, removed}]` (device names, capability names).
+fn grant_changes(
+    before: &HashMap<String, Vec<String>>,
+    after: &[(DeviceRow, Vec<String>)],
+) -> serde_json::Value {
+    let changes: Vec<serde_json::Value> = after
+        .iter()
+        .filter_map(|(row, now)| {
+            let old = before.get(&row.id).map(Vec::as_slice).unwrap_or(&[]);
+            let added: Vec<&String> = now.iter().filter(|c| !old.contains(c)).collect();
+            let removed: Vec<&String> = old.iter().filter(|c| !now.contains(c)).collect();
+            if added.is_empty() && removed.is_empty() {
+                return None;
+            }
+            let name = if row.alias.is_empty() { &row.name } else { &row.alias };
+            Some(serde_json::json!({ "device": name, "added": added, "removed": removed }))
+        })
+        .collect();
+    serde_json::Value::Array(changes)
 }
 
 /// After `a` and `b` became friends: announce the friendship to `b` and the
@@ -204,7 +226,8 @@ pub async fn send_request(
                 return Ok(None);
             }
             if db::find_friend_request(c, &them, &me)?.is_some() {
-                return Ok(Some(SendOutcome::Accepted(db::make_friends(c, &me, &them)?)));
+                let shares = caps::normalize(caps::DEFAULT_FRIEND);
+                return Ok(Some(SendOutcome::Accepted(db::make_friends(c, &me, &them, &shares)?)));
             }
             if let Some(r) = db::find_friend_request(c, &me, &them)? {
                 return Ok(Some(SendOutcome::Existing(r)));
@@ -227,7 +250,10 @@ pub async fn send_request(
         SendOutcome::Accepted(since) => {
             tracing::info!(user_id = %auth.user.id, friend = %other.id, "friends (mutual request)");
             announce_friendship(&app, &auth.user, &other).await?;
-            let data = serde_json::json!({ "who": display(&auth.user) });
+            let data = serde_json::json!({
+                "who": display(&auth.user),
+                "caps": caps::normalize(caps::DEFAULT_FRIEND),
+            });
             crate::notify::send(&app, &other.id, farwing_protocol::api::notice::FRIEND_ACCEPTED, data, &[]);
             FriendRequestOutcome::Accepted {
                 friend: Friend {
@@ -284,22 +310,26 @@ async fn own_request(
         .ok_or_else(ApiError::not_found)
 }
 
-/// `POST /api/v2/friends/requests/{id}/accept` → the new [`Friend`].
+/// `POST /api/v2/friends/requests/{id}/accept` with what the caller shares
+/// ([`FriendAccept`]) → the new [`Friend`].
 pub async fn accept_request(
     State(app): State<App>,
     auth: AccountAuth,
     ClientIp(ip): ClientIp,
     Path(id): Path<String>,
+    JsonBody(req): JsonBody<FriendAccept>,
 ) -> ApiResult<Json<Friend>> {
     let (_, other) = own_request(&app, &auth, &id, true).await?;
     let (me, them) = (auth.user.id.clone(), other.id.clone());
+    let shares = caps::normalize(&req.caps);
+    let shared = shares.clone();
     let since = app
         .db
-        .call(move |c| db::make_friends(c, &me, &them))
+        .call(move |c| db::make_friends(c, &me, &them, &shared))
         .await?;
-    tracing::info!(user_id = %auth.user.id, friend = %other.id, "friend request accepted");
+    tracing::info!(user_id = %auth.user.id, friend = %other.id, ?shares, "friend request accepted");
     friend_event(&app, &auth, &other, "friend.add", ip).await;
-    let data = serde_json::json!({ "who": display(&auth.user) });
+    let data = serde_json::json!({ "who": display(&auth.user), "caps": shares });
     crate::notify::send(&app, &other.id, farwing_protocol::api::notice::FRIEND_ACCEPTED, data, &[]);
     announce_friendship(&app, &auth.user, &other).await?;
     Ok(Json(Friend {
@@ -364,6 +394,8 @@ pub async fn remove(
     app.hub.regrant(&auth.user.id, &revoke_all(&theirs_seen));
     tracing::info!(user_id = %auth.user.id, friend = %other.id, "friendship removed");
     friend_event(&app, &auth, &other, "friend.remove", ip).await;
+    let data = serde_json::json!({ "who": display(&auth.user) });
+    crate::notify::send(&app, &other.id, farwing_protocol::api::notice::FRIEND_REMOVED, data, &[]);
     push_friend_changed(&app, &other.id, FriendChangeKind::Removed, &auth.user).await;
     let gone = |seen: &[(DeviceRow, Vec<String>)]| -> Vec<(DeviceRow, Vec<String>)> {
         seen.iter()
@@ -450,7 +482,10 @@ pub async fn put_grants(
     tracing::info!(user_id = %auth.user.id, friend = %other.id, "grants changed");
     if as_map(&before) != as_map(&after) {
         friend_event(&app, &auth, &other, "grants.update", ip).await;
-        let data = serde_json::json!({ "who": display(&auth.user) });
+        let data = serde_json::json!({
+            "who": display(&auth.user),
+            "changes": grant_changes(&as_map(&before), &after),
+        });
         crate::notify::send(&app, &other.id, farwing_protocol::api::notice::FRIEND_GRANTS, data, &[]);
     }
     app.hub.regrant(&other.id, &as_map(&after));

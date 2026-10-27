@@ -184,9 +184,7 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
         SessionBody::RemoveVirtualDisplay(remove) => {
             let result = async {
                 anyhow::ensure!(
-                    session
-                        .authorization()
-                        .granted(farwing_protocol::caps::DISPLAY),
+                    session.authorization().display_allowed(),
                     "本次会话不允许修改显示设置"
                 );
                 let id = *remove.screen_id.first().context("缺少待删除屏幕")?;
@@ -241,9 +239,7 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
             Ok(display_result(id, if result.is_ok() { 0 } else { code }))
         }
         SessionBody::QuitExclusive(_) => {
-            let result = if session
-                .authorization()
-                .granted(farwing_protocol::caps::DISPLAY)
+            let result = if session.authorization().display_allowed()
             {
                 session.quit_super().await
             } else {
@@ -268,9 +264,7 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
                 || setting.dpi_scale > 0
                 || matches!(setting.resolution_type, 2..=4);
             if display_change
-                && !session
-                    .authorization()
-                    .granted(farwing_protocol::caps::DISPLAY)
+                && !session.authorization().display_allowed()
             {
                 return Ok(capture_result(
                     id,

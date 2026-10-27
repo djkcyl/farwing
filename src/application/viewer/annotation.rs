@@ -1,6 +1,6 @@
 use crate::features::stream_control::{
     StreamControlHandle,
-    annotation::{LaserOptions, Point, Stroke as InkStroke, Style},
+    annotation::{Point, Stroke as InkStroke, Style},
 };
 use crate::i18n::t;
 use crate::ui::{controls, theme};
@@ -24,8 +24,6 @@ pub(super) struct AnnotationUi {
     rgb: [u8; 3],
     opacity: u8,
     width: f32,
-    laser_width: f32,
-    laser_options: LaserOptions,
     board_color: [u8; 3],
     gesture: Option<Gesture>,
     generation: u64,
@@ -46,8 +44,6 @@ impl AnnotationUi {
             rgb: [255, 68, 68],
             opacity: 100,
             width: 3.,
-            laser_width: 5.,
-            laser_options: LaserOptions::default(),
             board_color: theme::ANNOTATION_BOARD_COLORS[0],
             gesture: None,
             generation: 0,
@@ -85,7 +81,6 @@ impl AnnotationUi {
         }
     }
     pub fn finish(&mut self) {
-        self.control.annotation_laser_stop(self.owner);
         if let Some(gesture) = self.gesture.take() {
             if is_shape(gesture.tool) {
                 self.control.annotation_shape_end(self.owner, false);
@@ -100,11 +95,7 @@ impl AnnotationUi {
                 | (u32::from(self.rgb[0]) << 16)
                 | (u32::from(self.rgb[1]) << 8)
                 | u32::from(self.rgb[2]),
-            width: if self.tool == Tool::Laser {
-                self.laser_width
-            } else {
-                self.width
-            },
+            width: self.width,
         }
     }
     pub fn draw(
@@ -243,22 +234,27 @@ impl AnnotationUi {
                         }
                         controls::annotation_tool_frame().show(ui, |ui| {
                             ui.spacing_mut().item_spacing.x = theme::ANNOTATION_TOOL_GAP;
+                            let t = &t().viewer;
+                            let tools = [
+                                (Tool::Pen, t.tool_pen),
+                                (Tool::Line, t.tool_line),
+                                (Tool::Arrow, t.tool_arrow),
+                                (Tool::Rectangle, t.tool_rectangle),
+                                (Tool::Ellipse, t.tool_ellipse),
+                                (Tool::Eraser, t.tool_eraser),
+                            ];
+                            // Equal cells span the whole row.
+                            let width = (ui.available_width()
+                                - theme::ANNOTATION_TOOL_GAP * (tools.len() - 1) as f32)
+                                / tools.len() as f32;
                             ui.horizontal(|ui| {
-                                let t = &t().viewer;
-                                for (tool, name) in [
-                                    (Tool::Pen, t.tool_pen),
-                                    (Tool::Laser, t.tool_laser),
-                                    (Tool::Line, t.tool_line),
-                                    (Tool::Arrow, t.tool_arrow),
-                                    (Tool::Rectangle, t.tool_rectangle),
-                                    (Tool::Ellipse, t.tool_ellipse),
-                                    (Tool::Eraser, t.tool_eraser),
-                                ] {
+                                for (tool, name) in tools {
                                     if controls::annotation_tool_button(
                                         ui,
                                         tool,
                                         self.tool == tool,
                                         name,
+                                        width,
                                     )
                                     .clicked()
                                     {
@@ -270,17 +266,7 @@ impl AnnotationUi {
                         });
                         ui.horizontal(|ui| {
                             controls::annotation_color(ui, &mut self.rgb, &mut self.opacity);
-                            controls::annotation_width(
-                                ui,
-                                if self.tool == Tool::Laser {
-                                    &mut self.laser_width
-                                } else {
-                                    &mut self.width
-                                },
-                                self.tool,
-                                (self.tool == Tool::Laser)
-                                    .then_some(&mut self.laser_options.tail_ms),
-                            );
+                            controls::annotation_width(ui, &mut self.width);
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -420,10 +406,6 @@ impl AnnotationUi {
                     {
                         continue;
                     }
-                    if button == egui::PointerButton::Primary && self.tool == Tool::Laser {
-                        self.move_laser(screen, rect, pos);
-                        continue;
-                    }
                     self.finish();
                     self.error = None;
                     let style = self.style();
@@ -467,13 +449,6 @@ impl AnnotationUi {
                     }
                 }
                 egui::Event::PointerMoved(pos) => {
-                    if self.tool == Tool::Laser && self.gesture.is_none() {
-                        if rect.contains(pos) && ctx.layer_id_at(pos) == Some(ui.layer_id()) {
-                            self.move_laser(screen, rect, pos);
-                        } else {
-                            self.control.annotation_laser_stop(self.owner);
-                        }
-                    }
                     if let Some(g) = &mut self.gesture {
                         g.raw_end = pos;
                         g.end = constrain(g, pos, ctx.input(|i| i.modifiers.shift));
@@ -536,19 +511,6 @@ impl AnnotationUi {
                 }
             }
         }
-    }
-    fn move_laser(&mut self, screen: i32, rect: Rect, pos: Pos2) {
-        self.error = self
-            .control
-            .annotation_laser_move(
-                self.owner,
-                screen,
-                normalize(rect, pos),
-                self.style(),
-                self.laser_options,
-            )
-            .err()
-            .map(|e| e.to_string());
     }
     fn erase(&mut self, screen: i32, rect: Rect, pos: Pos2) {
         if self.control.annotation_snapshot().busy {

@@ -1,7 +1,6 @@
 //! Shared annotation editor. Protocol adapters submit commands and complete effects.
 use super::*;
 use board::{Board, BoardEdit};
-use laser::LaserTrail;
 use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
@@ -9,7 +8,6 @@ pub(crate) mod wire;
 pub(crate) use wire::*;
 
 mod board;
-mod laser;
 mod native;
 mod transport;
 use transport::{InFlight, Outcome, Reply};
@@ -20,19 +18,6 @@ const MAX_PENDING: usize = 512;
 const MAX_HISTORY: usize = 32;
 const BOARD_SLOT_IDS: u32 = 128;
 const BOARD_IDS: u32 = 256 * BOARD_SLOT_IDS;
-const LASER_FADE: Duration = Duration::from_millis(220);
-pub(crate) const LASER_TAIL_MIN: u16 = 40;
-pub(crate) const LASER_TAIL_MAX: u16 = 300;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) struct LaserOptions {
-    pub tail_ms: u16,
-}
-impl Default for LaserOptions {
-    fn default() -> Self {
-        Self { tail_ms: 100 }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Point {
@@ -95,7 +80,6 @@ struct Drawing {
 enum DrawingKind {
     Stroke,
     Shape,
-    Laser(LaserOptions),
 }
 struct LiveShape {
     owner: u64,
@@ -105,7 +89,6 @@ struct LiveShape {
     shown: bool,
     finish: Option<bool>,
     preview_submissions: u32,
-    laser: Option<LaserTrail>,
 }
 #[derive(Clone, Copy)]
 enum Pending {
@@ -238,7 +221,7 @@ impl Annotation {
             return;
         }
         let shape = self.live_shape.take().unwrap();
-        if shape.finish == Some(true) && shape.laser.is_none() {
+        if shape.finish == Some(true) {
             tracing::info!(
                 screen = shape.stroke.screen,
                 stroke = shape.stroke.id,
@@ -476,7 +459,6 @@ impl StreamControlHandle {
         kind: DrawingKind,
     ) -> Result<()> {
         let live = kind != DrawingKind::Stroke;
-        let transient = matches!(kind, DrawingKind::Laser(_));
         let mut s = lock(&self.shared);
         ensure_ready(&s)?;
         if !s.annotation.enabled || s.annotation.toggling() || s.annotation.uncertain {
@@ -503,15 +485,14 @@ impl StreamControlHandle {
             bail!("{}", t().features.annotation_invalid_parameters);
         }
         let a = &mut s.annotation;
-        if !transient
-            && (a.strokes.len() + a.finishing.len() >= MAX_STROKES
-                || a.strokes
-                    .iter()
-                    .chain(a.finishing.iter())
-                    .map(|s| s.points.len())
-                    .sum::<usize>()
-                    + points.len()
-                    > MAX_POINTS)
+        if a.strokes.len() + a.finishing.len() >= MAX_STROKES
+            || a.strokes
+                .iter()
+                .chain(a.finishing.iter())
+                .map(|s| s.points.len())
+                .sum::<usize>()
+                + points.len()
+                > MAX_POINTS
         {
             bail!("{}", t().features.annotation_limit_reached);
         }
@@ -533,18 +514,6 @@ impl StreamControlHandle {
         });
         if live {
             let drawing = a.drawing.take().unwrap();
-            let trail = if let DrawingKind::Laser(options) = kind {
-                let now = Instant::now();
-                let style = drawing.stroke.style;
-                Some(LaserTrail::new(
-                    drawing.stroke.points[0],
-                    style,
-                    options,
-                    now,
-                ))
-            } else {
-                None
-            };
             a.live_shape = Some(LiveShape {
                 owner,
                 stroke: drawing.stroke,
@@ -553,59 +522,10 @@ impl StreamControlHandle {
                 shown: false,
                 finish: None,
                 preview_submissions: 0,
-                laser: trail,
             });
         }
         a.error = None;
         Ok(())
-    }
-    pub(crate) fn annotation_laser_move(
-        &self,
-        owner: u64,
-        screen: i32,
-        point: Point,
-        style: Style,
-        options: LaserOptions,
-    ) -> Result<()> {
-        if !(LASER_TAIL_MIN..=LASER_TAIL_MAX).contains(&options.tail_ms) {
-            bail!("{}", t().features.annotation_laser_tail_out_of_range);
-        }
-        if !point.valid() {
-            return Ok(());
-        }
-        {
-            let mut s = lock(&self.shared);
-            if let Some(shape) = &mut s.annotation.live_shape {
-                if shape.owner != owner || shape.stroke.screen != screen || shape.finish.is_some() {
-                    return Ok(());
-                }
-                let Some(laser) = &mut shape.laser else {
-                    return Ok(());
-                };
-                laser.move_to(point, style, options, Instant::now());
-                return Ok(());
-            }
-            if s.annotation.drawing.is_some() || s.annotation.editing.is_some() {
-                return Ok(());
-            }
-        }
-        self.begin_annotation(
-            owner,
-            screen,
-            vec![point],
-            style,
-            DrawingKind::Laser(options),
-        )
-    }
-    pub(crate) fn annotation_laser_stop(&self, owner: u64) {
-        let mut s = lock(&self.shared);
-        if let Some(shape) = &mut s.annotation.live_shape {
-            if shape.owner != owner || shape.laser.is_none() {
-                return;
-            }
-            shape.finish = Some(false);
-        }
-        self.drive_live_shape(&mut s);
     }
     pub(crate) fn annotation_shape_update(&self, owner: u64, points: Vec<Point>) -> Result<()> {
         let mut s = lock(&self.shared);
@@ -638,7 +558,7 @@ impl StreamControlHandle {
                 return;
             }
             if shape.finish != Some(false) {
-                shape.finish = Some(commit && shape.laser.is_none());
+                shape.finish = Some(commit);
             }
         }
         self.drive_live_shape(&mut s);
@@ -656,10 +576,7 @@ impl StreamControlHandle {
                 .uncertain(t().features.annotation_screen_removed.into());
             return;
         }
-        // Refresh the desired laser snapshot even while the previous replace is
-        // in flight. Only the latest short trail is sent when that batch finishes.
         let native = s.annotation.native_token.is_some();
-        laser::update(&mut s.annotation, Instant::now(), native);
         if s.annotation
             .pending
             .values()
@@ -669,18 +586,11 @@ impl StreamControlHandle {
         {
             return;
         }
-        let Some(shape) = s.annotation.live_shape.as_ref() else {
-            return;
-        };
         let cancel = shape.finish == Some(false);
-        if s.annotation.native_token.is_some() {
+        if native {
             let pending = s.annotation.pending.len();
             if (cancel || shape.sent_revision != shape.revision) && pending < MAX_PENDING {
                 let stroke = shape.stroke.clone();
-                let laser = shape
-                    .laser
-                    .as_ref()
-                    .map(|laser| laser.native(stroke.id, stroke.screen));
                 let shown = shape.shown;
                 let result = if cancel {
                     if shown {
@@ -693,18 +603,8 @@ impl StreamControlHandle {
                     } else {
                         Ok(())
                     }
-                } else if let Some(laser) = laser {
-                    self.send_native_draw(
-                        s,
-                        crate::protocol::annotation::Command::new(
-                            crate::protocol::annotation::Operation::Laser(laser),
-                        ),
-                        Pending::Shape,
-                    )
-                    .map(|_| ())
                 } else {
-                    self.native_replace(s, &stroke, Pending::Shape)
-                        .map(|_| ())
+                    self.native_replace(s, &stroke, Pending::Shape).map(|_| ())
                 };
                 if let Err(error) = result {
                     s.annotation.uncertain(error.to_string());

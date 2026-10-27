@@ -24,6 +24,9 @@ pub struct DirectRequest {
     pub(crate) auth: Auth,
     /// The host's name, when known before connecting (a nearby device).
     pub(crate) name: Option<String>,
+    /// The device chosen (a nearby or known device): whatever answers at
+    /// the address, only it is connected to.
+    pub(crate) expected: Option<String>,
 }
 
 impl DirectRequest {
@@ -41,11 +44,17 @@ impl DirectRequest {
             target,
             auth,
             name: None,
+            expected: None,
         })
     }
 
     pub fn named(mut self, name: &str) -> Self {
         self.name = Some(name.to_owned()).filter(|name| !name.is_empty());
+        self
+    }
+
+    pub fn expecting(mut self, device_id: &str) -> Self {
+        self.expected = Some(device_id.to_owned()).filter(|id| !id.is_empty());
         self
     }
 
@@ -266,7 +275,14 @@ async fn connect_once(
         t().session.progress_connecting_direct,
         (t().session.progress_connecting_to_address)(alias, &request.target.to_string()),
     );
-    let connected = direct::client::connect(&request.target, local, request.auth.clone(), cancel).await?;
+    let connected = direct::client::connect(
+        &request.target,
+        local,
+        request.auth.clone(),
+        request.expected.as_deref(),
+        cancel,
+    )
+    .await?;
     let host = connected.host.clone();
     report_progress(
         Some(reporter),

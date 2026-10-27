@@ -116,7 +116,7 @@ grants(owner_user, grantee_user, device_id NULL, caps TEXT, updated_at)
 | `annotation` | 批注 |
 
 - 自己账号的设备：全部能力。
-- 好友：按 grants；建立好友关系时，双方各自自动为对方生成“所有设备 = view, annotation”。某台设备的有效能力为空（单独设为空，或默认为空且未单独设置）时，该设备对好友完全不可见：不出现在 `GET /devices` 的 `shared` 中，详情、壁纸、会话等接口按 `device_not_found` 处理，也不推送它的状态。界面中“默认都不共享”即默认能力为空。
+- 好友：按 grants；接受好友申请时，接受方选择给对方的“所有设备”权限（`POST /friends/requests/{id}/accept` 的 `{"caps": [...]}`，界面预选观看、声音、批注），申请方给接受方的是默认的“所有设备 = view, audio, annotation”（`caps::DEFAULT_FRIEND`），之后各自可改。某台设备的有效能力为空（单独设为空，或默认为空且未单独设置）时，该设备对好友完全不可见：不出现在 `GET /devices` 的 `shared` 中，详情、壁纸、会话等接口按 `device_not_found` 处理，也不推送它的状态。界面中“默认都不共享”即默认能力为空。
 - 主控界面中好友共享的设备按好友分组列出（“好友”页与“设备 → 好友共享”），不出现在“我的设备”。所有设备列表只显示设备 ID（§1.1，即设备指纹），同一台设备在各种连接方式与任何服务器下都相同。
 - 好友在直连时同样按这里的授权：被控缓存 `GET /api/v2/devices/self/friend-access` 的结果，按 `friend` 方法授权（§12.2）。
 - 访客：被控本机的访客默认权限（能力模板）。默认 `view, control, clipboard, audio, annotation`。
@@ -193,7 +193,7 @@ grants(owner_user, grantee_user, device_id NULL, caps TEXT, updated_at)
   - 空闲 3 s 淡出。
   - 点击反馈：左键蓝色、右键橙色圆环。
   - 当前控制者的光标即被控真实光标，覆盖层为其加上身份标签。
-- 删除批注中的“鼠标指示”工具（`Tool::Pointer`），激光笔保留。
+- 删除批注中的“鼠标指示”工具（`Tool::Pointer`）与激光笔，由参与者光标代替。
 
 ### 4.4 多人观看流（`src/features/host/shared_view.rs`）
 

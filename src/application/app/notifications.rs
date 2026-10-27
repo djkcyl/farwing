@@ -54,9 +54,9 @@ pub(crate) struct Card {
     pub confirmation: bool,
     /// A pairing request: its answers are "deny" and "pair".
     pub pairing: bool,
-    /// From a browser: it may be let in, never trusted (a browser is often
-    /// someone else's next).
-    pub browser: bool,
+    /// Let in, never trusted: a browser (often someone else's next) or a
+    /// participant asking for control.
+    pub no_trust: bool,
     pub busy: bool,
     pub connected: bool,
 }
@@ -111,7 +111,7 @@ impl Card {
                 kind: ButtonKind::Normal,
                 enabled,
             }];
-            if !self.browser {
+            if !self.no_trust {
                 actions.push(CardAction {
                     label: text.allow_and_trust,
                     verb: Verb::Trust,
@@ -388,7 +388,7 @@ impl Center {
                 expires_at: chrono::Utc::now().timestamp() + 12,
                 confirmation: false,
                 pairing: false,
-                browser: false,
+                no_trust: false,
                 busy: false,
                 connected: false,
                 transfer: None,
@@ -487,15 +487,17 @@ impl Center {
             }
             if let Some(p) = snapshot.pending.filter(|p| p.expires_at > now) {
                 let key = format!("confirm:{}", p.token);
-                // A browser gets the visitor permissions within the server's
-                // limit on browsers.
-                let browser_controls = p.caps_limit.as_ref().map(|limit| {
-                    snapshot
-                        .settings
-                        .grants()
-                        .iter()
-                        .any(|c| c == farwing_protocol::caps::CONTROL && limit.contains(c))
-                });
+                // What the visitor gets once allowed: the visitor
+                // permissions, within the server's limit on browsers.
+                let browser = p.caps_limit.is_some();
+                let gets = snapshot
+                    .settings
+                    .grants()
+                    .into_iter()
+                    .filter(|c| p.caps_limit.as_ref().is_none_or(|limit| limit.contains(c)))
+                    .map(|c| super::friends::cap_label(&c))
+                    .collect::<Vec<_>>()
+                    .join("、");
                 let pairing = p.pairing.clone();
                 items.push((
                     key,
@@ -504,6 +506,8 @@ impl Center {
                         ticket: String::new(),
                         title: if pairing.is_some() {
                             text.pairing_request
+                        } else if p.control {
+                            text.control_request
                         } else {
                             text.connection_request
                         }
@@ -523,17 +527,17 @@ impl Center {
                                 &code[..code.len().min(3)],
                                 &code[code.len().min(3)..],
                             )
-                        } else if browser_controls == Some(false) {
-                            text.browser_view_only.into()
-                        } else if browser_controls == Some(true) {
-                            text.browser_view_and_control.into()
+                        } else if p.control {
+                            text.control_this_session.into()
+                        } else if browser {
+                            (text.browser_gets)(&gets)
                         } else {
-                            text.view_and_control.into()
+                            (text.visitor_gets)(&gets)
                         },
                         expires_at: p.expires_at,
                         confirmation: true,
                         pairing: pairing.is_some(),
-                        browser: browser_controls.is_some(),
+                        no_trust: browser || p.control,
                         busy: p.responding,
                         connected: false,
                         transfer: None,
@@ -556,7 +560,7 @@ impl Center {
                         expires_at: a.expires_at,
                         confirmation: false,
                         pairing: false,
-                        browser: false,
+                        no_trust: false,
                         busy: false,
                         connected: false,
                         transfer: None,
@@ -589,7 +593,7 @@ impl Center {
                         expires_at: 0,
                         confirmation: false,
                         pairing: false,
-                        browser: false,
+                        no_trust: false,
                         busy: false,
                         connected,
                         transfer: None,
@@ -626,7 +630,7 @@ impl Center {
                     expires_at: *until,
                     confirmation: false,
                     pairing: false,
-                    browser: false,
+                    no_trust: false,
                     busy: false,
                     connected: false,
                     transfer: None,
@@ -854,7 +858,7 @@ impl DeviceCenterApp {
                         expires_at: end.ended_at.saturating_add(10),
                         confirmation: false,
                         pairing: false,
-                        browser: false,
+                        no_trust: false,
                         busy: false,
                         connected: false,
                         transfer: None,

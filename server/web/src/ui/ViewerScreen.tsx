@@ -10,7 +10,7 @@ import { useT } from '../i18n/react';
 import { argbCss, type AnnotationState } from '../lib/annotation';
 import { ApiError, call, errorText, hasToken } from '../lib/api';
 import { DEFAULT_DIR, droppedEntries, type TransferInfo } from '../lib/files';
-import { displayName, num } from '../lib/format';
+import { capText, displayName, num } from '../lib/format';
 import type { CursorShape, HostEvent, Participant, ParticipantPointer, Quality, Screens } from '../lib/fpp';
 import { HostEventKind } from '../lib/fpp';
 import { SystemCommand, Usage } from '../lib/input';
@@ -31,7 +31,7 @@ import { FilesPanel, TransferList } from './FilesPanel';
 import { Icon, type IconName } from './icons';
 import { Button, Spinner } from './kit';
 import { Dialog, useOverlay } from './overlay';
-import { AnnotationLayer, type AnnotationTool } from './AnnotationLayer';
+import { AnnotationLayer } from './AnnotationLayer';
 import { useRemoteInput, type PictureMap } from './remoteInput';
 import {
   PERF_HISTORY,
@@ -49,6 +49,8 @@ type Panel = 'none' | 'people' | 'files';
 const CONTROL_KEY = 'farwing.viewer.control';
 /// Automatic clipboard synchronization ('0': off).
 const CLIPBOARD_KEY = 'farwing.viewer.clipboard';
+/// Show this viewer's pointer to the host and the others ('0': off).
+const POINTER_KEY = 'farwing.viewer.pointer';
 /// 'mouse': touch acts as mouse gestures even when the host takes touch.
 const TOUCH_KEY = 'farwing.viewer.touch';
 /// The performance monitor: compact (the default), detailed or off.
@@ -179,17 +181,20 @@ function ToolButton({
   onClick,
   active,
   disabled,
+  dim,
 }: {
   icon: IconName;
   label: string;
-  onClick(): void;
+  onClick?(): void;
   active?: boolean;
   disabled?: boolean;
+  /// Shown as unavailable, still clickable.
+  dim?: boolean;
 }) {
   return (
     <button
       type="button"
-      className={`tool ${active ? 'active' : ''}`}
+      className={`tool ${active ? 'active' : ''} ${dim ? 'dim' : ''}`}
       title={label}
       aria-label={label}
       disabled={disabled}
@@ -249,14 +254,24 @@ function MenuItem({
   onClick,
   children,
   hint,
+  disabled,
+  title,
 }: {
   selected?: boolean;
   onClick(): void;
   children: ReactNode;
   hint?: ReactNode;
+  disabled?: boolean;
+  title?: string;
 }) {
   return (
-    <button type="button" className={`menu-item ${selected ? 'selected' : ''}`} onClick={onClick}>
+    <button
+      type="button"
+      className={`menu-item ${selected ? 'selected' : ''}`}
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+    >
       <span className="menu-check">{selected && <Icon name="check" size={14} />}</span>
       <span className="grow">{children}</span>
       {hint && <span className="small faint">{hint}</span>}
@@ -346,7 +361,9 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
   /// 高清 while the picture is shared.
   const tierNow = useRef(5);
   const [fps, setFps] = useState(60);
-  const [sharePointer, setSharePointer] = useState(false);
+  const [sharePointer, setSharePointer] = useState(() => localStorage.getItem(POINTER_KEY) !== '0');
+  // Refused for lack of the grant: offer to ask the host's user.
+  const [askControl, setAskControl] = useState(false);
   const [codec, setCodec] = useState(storedCodec);
   const [codecs, setCodecs] = useState<{ common: VideoCodecId[]; hostPreferred?: VideoCodecId }>();
   const pointerSent = useRef(0);
@@ -365,7 +382,6 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
   const [dragOver, setDragOver] = useState(false);
   const [keyboardLocked, setKeyboardLocked] = useState(false);
   const [ink, setInk] = useState<AnnotationState>({ available: false, enabled: false });
-  const [inkTool, setInkTool] = useState<AnnotationTool>('pen');
   const [inkColor, setInkColor] = useState(INK_COLORS[0].argb);
   const [inkWidth, setInkWidth] = useState(4);
   const [inkRevision, setInkRevision] = useState(0);
@@ -380,6 +396,8 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
   const filesAllowed = grants.includes('files');
   const micAllowed = grants.includes('microphone');
   const inkAllowed = grants.includes('annotation');
+  /// Why something is unavailable: its permission was not granted.
+  const missing = (cap: string) => t.viewer.screen.permissionMissing(capText(cap));
 
   // One session per generation; a timer keeps React's double effects in
   // development from opening two.
@@ -703,6 +721,16 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
     if (result.held) {
       localStorage.removeItem(CONTROL_KEY);
       stage.current?.focus({ preventScroll: true });
+    } else if (result.canAsk) setAskControl(true);
+  };
+
+  // Ask the host's user for control in this connection.
+  const askForControl = async () => {
+    setAskControl(false);
+    const result = await viewer.current?.takeControl(false, true);
+    if (result?.held) {
+      localStorage.removeItem(CONTROL_KEY);
+      stage.current?.focus({ preventScroll: true });
     }
   };
 
@@ -905,22 +933,27 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
   tierNow.current = shownQuality;
   const controller = people?.participants.find((p) => p.id === people.controlling);
 
-  // Our indicator pointer, when shared: normalized to the picture.
-  const onPointer = (e: React.PointerEvent<HTMLDivElement>, visible: boolean) => {
+  // Our indicator pointer and clicks, when shared: normalized to the picture.
+  const onPointer = (e: React.PointerEvent<HTMLDivElement>, visible: boolean, phase?: number) => {
     showBar();
     if (control.held || !sharePointer || !video.current || !current || !box) return;
+    // Wire buttons: 1 left, 2 right, 3 middle.
+    const button = ({ 0: 1, 1: 3, 2: 2 } as Record<number, number>)[e.button];
+    const click = phase && button ? { button, phase } : undefined;
     const stamp = performance.now();
-    if (visible && stamp - pointerSent.current < 30) return;
+    if (visible && !click && stamp - pointerSent.current < 30) return;
     pointerSent.current = stamp;
     const rect = video.current.getBoundingClientRect();
     const x = (e.clientX - rect.left - box.x) / box.w;
     const y = (e.clientY - rect.top - box.y) / box.h;
     const inside = x >= 0 && x <= 1 && y >= 0 && y <= 1;
+    if (click && !inside) return;
     viewer.current?.sendPointer(
       current.id,
       Math.min(1, Math.max(0, x)),
       Math.min(1, Math.max(0, y)),
       visible && inside,
+      click,
     );
   };
 
@@ -959,23 +992,26 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
               ))}
             </Menu>
           )}
-          {controlAllowed && (
-            <ToolButton
-              icon="mouse"
-              label={
-                control.held
-                  ? t.viewer.control.stop
-                  : control.pending
-                    ? t.viewer.control.pending
+          <ToolButton
+            icon="mouse"
+            label={
+              control.held
+                ? t.viewer.control.stop
+                : control.pending
+                  ? control.asking
+                    ? t.viewer.control.asking
+                    : t.viewer.control.pending
+                  : !controlAllowed
+                    ? t.viewer.control.noPermission
                     : controller && !controller.you
                       ? t.viewer.control.otherControlling(controller.nickname || t.viewer.control.otherParticipant)
                       : t.viewer.control.start
-              }
-              active={control.held}
-              disabled={!playing || control.pending}
-              onClick={() => void toggleControl()}
-            />
-          )}
+            }
+            active={control.held}
+            dim={!controlAllowed && !control.held}
+            disabled={!playing || control.pending}
+            onClick={() => void toggleControl()}
+          />
           {control.held && (
             <Menu label={t.viewer.screen.keys} icon="keyboard">
               <div className="menu-label">{t.viewer.screen.mouse}</div>
@@ -1051,6 +1087,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
               )}
             </Menu>
           )}
+          {!inkAllowed && ink.available && <ToolButton icon="edit" label={missing('annotation')} disabled />}
           {inkAllowed && ink.available && (
             <Menu label={t.viewer.annotation.title} icon="edit">
               <MenuItem selected={ink.enabled} onClick={() => void toggleInk()}>
@@ -1058,13 +1095,6 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
               </MenuItem>
               {ink.enabled && shown && (
                 <>
-                  <div className="menu-label">{t.viewer.annotation.tools}</div>
-                  <MenuItem selected={inkTool === 'pen'} onClick={() => setInkTool('pen')}>
-                    {t.viewer.annotation.pen}
-                  </MenuItem>
-                  <MenuItem selected={inkTool === 'laser'} onClick={() => setInkTool('laser')}>
-                    {t.viewer.annotation.laser}
-                  </MenuItem>
                   <div className="menu-label">{t.viewer.annotation.colorWidth}</div>
                   <div className="ink-swatches" onClick={(e) => e.stopPropagation()}>
                     {INK_COLORS.map((c) => (
@@ -1118,10 +1148,14 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
               )}
             </Menu>
           )}
+          {!clipboardAllowed && <ToolButton icon="clipboard" label={missing('clipboard')} disabled />}
           {clipboardAllowed && (
             <Menu label={t.viewer.screen.clipboard} icon="clipboard">
+              {/* Writing the host clipboard is control: it also needs that grant. */}
               <MenuItem
-                selected={clipboardAuto}
+                selected={clipboardAuto && controlAllowed}
+                disabled={!controlAllowed}
+                title={controlAllowed ? undefined : missing('control')}
                 onClick={() => {
                   localStorage.setItem(CLIPBOARD_KEY, clipboardAuto ? '0' : '1');
                   setClipboardAuto(!clipboardAuto);
@@ -1129,10 +1163,17 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
               >
                 {t.viewer.screen.autoSync}
               </MenuItem>
-              <MenuItem onClick={() => void sendClipboard()}>{t.viewer.screen.sendClipboard}</MenuItem>
+              <MenuItem
+                disabled={!controlAllowed}
+                title={controlAllowed ? undefined : missing('control')}
+                onClick={() => void sendClipboard()}
+              >
+                {t.viewer.screen.sendClipboard}
+              </MenuItem>
               <MenuItem onClick={() => void pullClipboard()}>{t.viewer.screen.pullClipboard}</MenuItem>
             </Menu>
           )}
+          {!filesAllowed && <ToolButton icon="folder" label={missing('files')} disabled />}
           {filesAllowed && (
             <ToolButton
               icon="folder"
@@ -1142,6 +1183,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
               onClick={() => setPanel(panel === 'files' ? 'none' : 'files')}
             />
           )}
+          {!micAllowed && <ToolButton icon="micOff" label={missing('microphone')} disabled />}
           {micAllowed && (
             <ToolButton
               icon={mic.state === 'off' ? 'micOff' : 'mic'}
@@ -1228,7 +1270,13 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
               </>
             )}
             <div className="menu-label">{t.viewer.screen.other}</div>
-            <MenuItem selected={sharePointer} onClick={() => setSharePointer(!sharePointer)}>
+            <MenuItem
+              selected={sharePointer}
+              onClick={() => {
+                localStorage.setItem(POINTER_KEY, sharePointer ? '0' : '1');
+                setSharePointer(!sharePointer);
+              }}
+            >
               {t.viewer.screen.sharePointer}
             </MenuItem>
           </Menu>
@@ -1283,6 +1331,8 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
         style={control.held && !relative && cursor ? { cursor } : undefined}
         onDoubleClick={() => !control.held && toggleFullscreen()}
         onPointerMove={(e) => onPointer(e, true)}
+        onPointerDown={(e) => onPointer(e, true, 1)}
+        onPointerUp={(e) => onPointer(e, true, 2)}
         onPointerLeave={(e) => onPointer(e, false)}
         onDragOver={(e) => {
           if (!filesAllowed || !playing || !e.dataTransfer.types.includes('Files')) return;
@@ -1316,7 +1366,6 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
               box={box}
               screenId={shown.id}
               screenWidth={shown.current.width}
-              tool={inkTool}
               color={inkColor}
               width={inkWidth}
             />
@@ -1414,6 +1463,22 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
           </div>
         )}
       </div>
+
+      <Dialog
+        open={askControl}
+        title={t.viewer.control.noPermission}
+        onClose={() => setAskControl(false)}
+        footer={
+          <>
+            <Button onClick={() => setAskControl(false)}>{t.common.cancel}</Button>
+            <Button variant="primary" onClick={() => void askForControl()}>
+              {t.viewer.control.ask}
+            </Button>
+          </>
+        }
+      >
+        {null}
+      </Dialog>
 
       <Dialog
         open={typing !== undefined}

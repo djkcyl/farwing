@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 /// A pointer disappears after this long without moving.
-pub(crate) const IDLE_FADE: Duration = Duration::from_secs(3);
-const FADE_OUT: Duration = Duration::from_millis(400);
+pub(crate) const IDLE_FADE: Duration = Duration::from_secs(5);
+const FADE_OUT: Duration = Duration::from_millis(800);
 /// How long a click ring stays visible.
 pub(crate) const CLICK_RING: Duration = Duration::from_millis(600);
 /// Moves are sent at most this often; clicks and visibility changes at once.

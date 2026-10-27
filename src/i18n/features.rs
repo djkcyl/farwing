@@ -49,6 +49,8 @@ pub(crate) struct Features {
     pub host_other_participant: &'static str,
     /// participant name
     pub host_display_changed_by: fn(&str) -> String,
+    /// Capability labels added and removed (either may be empty).
+    pub permissions_changed: fn(&str, &str) -> String,
     pub host_participant: &'static str,
     // host/assist.rs
     pub assist_mode_code: &'static str,
@@ -280,6 +282,7 @@ pub(crate) struct Features {
     pub peer_encoder_output_mismatch: &'static str,
     pub peer_control_not_available: &'static str,
     pub peer_no_control_permission: &'static str,
+    pub peer_control_declined: &'static str,
     pub peer_control_not_automatic_shared: &'static str,
     /// error
     pub peer_capture_stopped: fn(&str) -> String,
@@ -922,7 +925,6 @@ pub(crate) struct Features {
     pub annotation_invalid_parameters: &'static str,
     pub annotation_limit_reached: &'static str,
     pub annotation_ids_exhausted: &'static str,
-    pub annotation_laser_tail_out_of_range: &'static str,
     pub annotation_shape_out_of_range: &'static str,
     pub annotation_screen_removed: &'static str,
     pub annotation_stroke_limit_reached: &'static str,
@@ -1356,6 +1358,7 @@ pub(crate) struct Features {
     pub transfer_file_path_invalid: &'static str,
     pub transfer_local_absolute_only: &'static str,
     pub transfer_reparse_access_denied: &'static str,
+    pub transfer_protected_path: &'static str,
     pub transfer_local_dir_not_absolute: &'static str,
     pub transfer_local_path_not_directory: &'static str,
     pub transfer_opened_file_became_link: &'static str,
@@ -1523,6 +1526,16 @@ pub(crate) const ZH_CN: Features = Features {
     // host/participants.rs, host/participants/overlay.rs
     host_other_participant: "另一位参与者",
     host_display_changed_by: |name| format!("{name} 修改了被控端的显示设置"),
+    permissions_changed: |added, removed| {
+        let mut parts = Vec::new();
+        if !added.is_empty() {
+            parts.push(format!("新增 {added}"));
+        }
+        if !removed.is_empty() {
+            parts.push(format!("取消 {removed}"));
+        }
+        format!("你的权限已变更：{}", parts.join("；"))
+    },
     host_participant: "参与者",
     // host/assist.rs
     assist_mode_code: "访问码",
@@ -1745,6 +1758,7 @@ pub(crate) const ZH_CN: Features = Features {
     peer_encoder_output_mismatch: "编码器输出与协商的格式不一致",
     peer_control_not_available: "本次连接无法控制被控端",
     peer_no_control_permission: "无键鼠控制权限",
+    peer_control_declined: "对方未同意键鼠控制",
     peer_control_not_automatic_shared: "多人连接时不自动开启键鼠控制",
     peer_capture_stopped: |error| format!("画面采集已停止：{error}"),
     peer_packetize_failed: |error| format!("视频分包失败：{error}"),
@@ -2350,7 +2364,6 @@ pub(crate) const ZH_CN: Features = Features {
     annotation_invalid_parameters: "批注参数无效",
     annotation_limit_reached: "批注已达容量上限",
     annotation_ids_exhausted: "批注编号已用尽",
-    annotation_laser_tail_out_of_range: "激光笔拖尾长度超出范围",
     annotation_shape_out_of_range: "形状坐标或大小超出范围",
     annotation_screen_removed: "批注屏幕已移除",
     annotation_stroke_limit_reached: "笔迹已达容量上限",
@@ -2742,6 +2755,7 @@ pub(crate) const ZH_CN: Features = Features {
     transfer_file_path_invalid: "文件路径无效",
     transfer_local_absolute_only: "仅支持本地磁盘的绝对路径",
     transfer_reparse_access_denied: "不允许通过重解析点访问文件",
+    transfer_protected_path: "不能访问 Farwing 的数据目录",
     transfer_local_dir_not_absolute: "本地目录不是绝对路径",
     transfer_local_path_not_directory: "本地路径不是目录",
     transfer_opened_file_became_link: "打开的文件已变为链接",
@@ -2904,6 +2918,16 @@ pub(crate) const EN: Features = Features {
     // host/participants.rs, host/participants/overlay.rs
     host_other_participant: "Another participant",
     host_display_changed_by: |name| format!("{name} changed the host's display settings"),
+    permissions_changed: |added, removed| {
+        let mut parts = Vec::new();
+        if !added.is_empty() {
+            parts.push(format!("added {added}"));
+        }
+        if !removed.is_empty() {
+            parts.push(format!("removed {removed}"));
+        }
+        format!("Your permissions changed: {}", parts.join("; "))
+    },
     host_participant: "Participant",
     // host/assist.rs
     assist_mode_code: "Access code",
@@ -3126,6 +3150,7 @@ pub(crate) const EN: Features = Features {
     peer_encoder_output_mismatch: "The encoder output doesn't match the negotiated format",
     peer_control_not_available: "This connection can't control the host",
     peer_no_control_permission: "No keyboard and mouse control permission",
+    peer_control_declined: "The other side declined control",
     peer_control_not_automatic_shared: "Keyboard and mouse control isn't turned on automatically when several people are connected",
     peer_capture_stopped: |error| format!("Capture stopped: {error}"),
     peer_packetize_failed: |error| format!("Couldn't packetize video: {error}"),
@@ -3731,7 +3756,6 @@ pub(crate) const EN: Features = Features {
     annotation_invalid_parameters: "Invalid annotation parameters",
     annotation_limit_reached: "Annotation limit reached",
     annotation_ids_exhausted: "Annotation IDs exhausted",
-    annotation_laser_tail_out_of_range: "Laser trail length out of range",
     annotation_shape_out_of_range: "Shape coordinates or size out of range",
     annotation_screen_removed: "The annotated screen was removed",
     annotation_stroke_limit_reached: "Stroke limit reached",
@@ -4129,6 +4153,7 @@ pub(crate) const EN: Features = Features {
     transfer_file_path_invalid: "Invalid file path",
     transfer_local_absolute_only: "Only absolute paths on local drives are supported",
     transfer_reparse_access_denied: "Can't access files through a reparse point",
+    transfer_protected_path: "Farwing's data folder can't be accessed",
     transfer_local_dir_not_absolute: "Local folder path isn't absolute",
     transfer_local_path_not_directory: "Local path isn't a folder",
     transfer_opened_file_became_link: "The opened file became a link",

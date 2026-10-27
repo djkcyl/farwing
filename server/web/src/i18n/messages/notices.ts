@@ -1,8 +1,40 @@
 // Notifications (`docs/notifications.md`): the page, the settings, and
 // each kind's words from its data.
 
-type Data = Record<string, string | number | undefined>;
+import { en as formatEn, zh as formatZh } from './format';
+
+type Data = Record<string, unknown>;
 const s = (v: unknown) => (v === undefined || v === null ? '' : String(v));
+const list = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
+/// Capability names as labels.
+const capsText = (names: Record<string, string>, v: unknown, separator: string) =>
+  list(v)
+    .map((c) => names[c] ?? c)
+    .join(separator);
+/// What changed on each device (`changes`: `[{device, added, removed}]`),
+/// a line per device.
+function grantChanges(
+  d: Data,
+  names: Record<string, string>,
+  separator: string,
+  line: (device: string, added: string, removed: string) => string,
+): string {
+  return (Array.isArray(d.changes) ? (d.changes as Data[]) : [])
+    .map((c) => line(s(c.device), capsText(names, c.added, separator), capsText(names, c.removed, separator)))
+    .join('\n');
+}
+/// What a new friend shares (`caps`); nothing when the data has none.
+function shared(
+  d: Data,
+  names: Record<string, string>,
+  separator: string,
+  some: (caps: string) => string,
+  none: string,
+) {
+  if (d.caps === undefined) return '';
+  const caps = capsText(names, d.caps, separator);
+  return caps ? some(caps) : none;
+}
 const zhActions: Record<string, string> = { reboot: '重启', shutdown: '关闭', wake: '唤醒' };
 const enActions: Record<string, string> = { reboot: 'restarted', shutdown: 'shut down', wake: 'woke' };
 
@@ -24,6 +56,7 @@ export const zh = {
     'friend.request': '好友申请',
     'friend.accepted': '好友申请通过',
     'friend.grants': '好友修改权限',
+    'friend.removed': '好友解除关系',
     'connection.own': '本账号设备之间的连接',
     'device.offline': '设备离线 10 分钟',
     'access.changed': '访问码与受信任设备变更',
@@ -87,8 +120,21 @@ export const zh = {
       body: '',
     }),
     'friend.request': (d: Data) => ({ title: `${s(d.who)} 请求添加你为好友`, body: '' }),
-    'friend.accepted': (d: Data) => ({ title: `${s(d.who)} 已成为你的好友`, body: '' }),
-    'friend.grants': (d: Data) => ({ title: `${s(d.who)} 修改了你在其设备上的权限`, body: '' }),
+    'friend.accepted': (d: Data) => ({
+      title: `${s(d.who)} 已成为你的好友`,
+      body: shared(d, formatZh.caps, '、', (caps) => `你在对方设备上可以：${caps}`, '对方未共享设备'),
+    }),
+    'friend.grants': (d: Data) => ({
+      title: `${s(d.who)} 修改了你在其设备上的权限`,
+      body: grantChanges(
+        d,
+        formatZh.caps,
+        '、',
+        (device, added, removed) =>
+          `${device}：${[added && `新增 ${added}`, removed && `取消 ${removed}`].filter(Boolean).join('；')}`,
+      ),
+    }),
+    'friend.removed': (d: Data) => ({ title: `${s(d.who)} 解除了与你的好友关系`, body: '' }),
     'device.offline': (d: Data) => ({ title: `${s(d.device)} 已离线 ${s(d.minutes)} 分钟`, body: '' }),
     'access.changed': (d: Data) => ({
       title:
@@ -127,6 +173,7 @@ export const en: typeof zh = {
     'friend.request': 'Friend requests',
     'friend.accepted': 'Accepted friend requests',
     'friend.grants': 'Permission changes by friends',
+    'friend.removed': 'Friends who removed you',
     'connection.own': "Connections between this account's devices",
     'device.offline': 'Device offline for 10 minutes',
     'access.changed': 'Access code and trusted device changes',
@@ -189,8 +236,21 @@ export const en: typeof zh = {
       body: '',
     }),
     'friend.request': (d) => ({ title: `${s(d.who)} wants to be your friend`, body: '' }),
-    'friend.accepted': (d) => ({ title: `${s(d.who)} is now your friend`, body: '' }),
-    'friend.grants': (d) => ({ title: `${s(d.who)} changed what you may do on their devices`, body: '' }),
+    'friend.accepted': (d) => ({
+      title: `${s(d.who)} is now your friend`,
+      body: shared(d, formatEn.caps, ', ', (caps) => `On their devices you may: ${caps}`, 'No devices shared with you'),
+    }),
+    'friend.grants': (d) => ({
+      title: `${s(d.who)} changed what you may do on their devices`,
+      body: grantChanges(
+        d,
+        formatEn.caps,
+        ', ',
+        (device, added, removed) =>
+          `${device}: ${[added && `added ${added}`, removed && `removed ${removed}`].filter(Boolean).join('; ')}`,
+      ),
+    }),
+    'friend.removed': (d) => ({ title: `${s(d.who)} removed you as a friend`, body: '' }),
     'device.offline': (d) => ({ title: `${s(d.device)} has been offline for ${s(d.minutes)} minutes`, body: '' }),
     'access.changed': (d) => ({
       title:

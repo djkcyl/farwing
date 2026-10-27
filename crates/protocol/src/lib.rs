@@ -197,8 +197,8 @@ pub mod caps {
         DIAGNOSTICS,
         ANNOTATION,
     ];
-    /// Granted automatically to a new friend on all devices.
-    pub const DEFAULT_FRIEND: &[&str] = &[VIEW, ANNOTATION];
+    /// Offered to a new friend on all devices (the one accepting chooses).
+    pub const DEFAULT_FRIEND: &[&str] = &[VIEW, AUDIO, ANNOTATION];
     /// Default host template for remote assistance.
     pub const DEFAULT_ASSIST: &[&str] = &[VIEW, CONTROL, CLIPBOARD, AUDIO, ANNOTATION];
     /// What a browser controller can use: a server's web limit is a subset

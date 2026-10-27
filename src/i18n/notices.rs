@@ -28,6 +28,43 @@ fn or(value: String, fallback: &str) -> String {
     if value.is_empty() { fallback.to_owned() } else { value }
 }
 
+/// Capability names in `d[key]`, as labels joined by `separator`.
+fn caps(d: &Value, key: &str, separator: &str) -> String {
+    d.get(key)
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .map(crate::application::app::friends::cap_label)
+                .collect::<Vec<_>>()
+                .join(separator)
+        })
+        .unwrap_or_default()
+}
+
+/// What changed on each device (`changes`: `[{device, added, removed}]`),
+/// a line per device.
+fn grant_changes(d: &Value, separator: &str, line: impl Fn(String, String, String) -> String) -> String {
+    d.get("changes")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .map(|c| line(s(c, "device"), caps(c, "added", separator), caps(c, "removed", separator)))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+/// What a new friend shares (`caps`); nothing when the data has none.
+fn shared(d: &Value, separator: &str, some: fn(&str) -> String, none: &str) -> String {
+    if d.get("caps").is_none() {
+        return String::new();
+    }
+    let list = caps(d, "caps", separator);
+    if list.is_empty() { none.to_owned() } else { some(&list) }
+}
+
 fn zh_text(kind: &str, d: &Value) -> (String, String) {
     let by = s(d, "by");
     let admin_line = if by.is_empty() { String::new() } else { format!("管理员：{by}") };
@@ -82,8 +119,24 @@ fn zh_text(kind: &str, d: &Value) -> (String, String) {
             (format!("{} {action}了 {}", s(d, "who"), s(d, "device")), String::new())
         }
         "friend.request" => (format!("{} 请求添加你为好友", s(d, "who")), String::new()),
-        "friend.accepted" => (format!("{} 已成为你的好友", s(d, "who")), String::new()),
-        "friend.grants" => (format!("{} 修改了你在其设备上的权限", s(d, "who")), String::new()),
+        "friend.accepted" => (
+            format!("{} 已成为你的好友", s(d, "who")),
+            shared(d, "、", |caps| format!("你在对方设备上可以：{caps}"), "对方未共享设备"),
+        ),
+        "friend.grants" => (
+            format!("{} 修改了你在其设备上的权限", s(d, "who")),
+            grant_changes(d, "、", |device, added, removed| {
+                let mut parts = Vec::new();
+                if !added.is_empty() {
+                    parts.push(format!("新增 {added}"));
+                }
+                if !removed.is_empty() {
+                    parts.push(format!("取消 {removed}"));
+                }
+                format!("{device}：{}", parts.join("；"))
+            }),
+        ),
+        "friend.removed" => (format!("{} 解除了与你的好友关系", s(d, "who")), String::new()),
         "device.offline" => (format!("{} 已离线 {} 分钟", s(d, "device"), s(d, "minutes")), String::new()),
         "access.changed" => {
             let (device, other) = (s(d, "device"), s(d, "other"));
@@ -164,8 +217,24 @@ fn en_text(kind: &str, d: &Value) -> (String, String) {
             (format!("{} {action} {}", s(d, "who"), s(d, "device")), String::new())
         }
         "friend.request" => (format!("{} wants to be your friend", s(d, "who")), String::new()),
-        "friend.accepted" => (format!("{} is now your friend", s(d, "who")), String::new()),
-        "friend.grants" => (format!("{} changed what you may do on their devices", s(d, "who")), String::new()),
+        "friend.accepted" => (
+            format!("{} is now your friend", s(d, "who")),
+            shared(d, ", ", |caps| format!("On their devices you may: {caps}"), "No devices shared with you"),
+        ),
+        "friend.grants" => (
+            format!("{} changed what you may do on their devices", s(d, "who")),
+            grant_changes(d, ", ", |device, added, removed| {
+                let mut parts = Vec::new();
+                if !added.is_empty() {
+                    parts.push(format!("added {added}"));
+                }
+                if !removed.is_empty() {
+                    parts.push(format!("removed {removed}"));
+                }
+                format!("{device}: {}", parts.join("; "))
+            }),
+        ),
+        "friend.removed" => (format!("{} removed you as a friend", s(d, "who")), String::new()),
         "device.offline" => (
             format!("{} has been offline for {} minutes", s(d, "device"), s(d, "minutes")),
             String::new(),
@@ -212,6 +281,7 @@ pub(crate) const ZH_CN: Notices = Notices {
         "friend.request" => "好友申请",
         "friend.accepted" => "好友申请通过",
         "friend.grants" => "好友修改权限",
+        "friend.removed" => "好友解除关系",
         "connection.own" => "本账号设备之间的连接",
         "device.offline" => "设备离线 10 分钟",
         "access.changed" => "访问码与受信任设备变更",
@@ -248,6 +318,7 @@ pub(crate) const EN: Notices = Notices {
         "friend.request" => "Friend requests",
         "friend.accepted" => "Accepted friend requests",
         "friend.grants" => "Permission changes by friends",
+        "friend.removed" => "Friends who removed you",
         "connection.own" => "Connections between this account's devices",
         "device.offline" => "Device offline for 10 minutes",
         "access.changed" => "Access code and trusted device changes",

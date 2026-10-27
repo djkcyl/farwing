@@ -496,6 +496,13 @@ pub struct FriendRequestCreate {
     pub username: String,
 }
 
+/// Accepting a friend request: what this account shares with the new
+/// friend on all its devices (capability names; empty shares nothing).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FriendAccept {
+    pub caps: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FriendRequest {
@@ -1130,6 +1137,8 @@ pub mod notice {
     pub const FRIEND_ACCEPTED: &str = "friend.accepted";
     /// A friend changed what this account may do on their devices.
     pub const FRIEND_GRANTS: &str = "friend.grants";
+    /// A friend ended the friendship.
+    pub const FRIEND_REMOVED: &str = "friend.removed";
     /// One of the account's devices connected to another.
     pub const CONNECTION_OWN: &str = "connection.own";
     /// A device has been offline for a while.
@@ -1155,7 +1164,7 @@ pub mod notice {
         Kind { kind, default, admin }
     }
 
-    pub const KINDS: [Kind; 16] = [
+    pub const KINDS: [Kind; 17] = [
         k(LOGIN_NEW_DEVICE, true, false),
         k(LOGIN_FAILURES, true, false),
         k(SECURITY_CHANGED, true, false),
@@ -1166,6 +1175,7 @@ pub mod notice {
         k(FRIEND_REQUEST, true, false),
         k(FRIEND_ACCEPTED, true, false),
         k(FRIEND_GRANTS, true, false),
+        k(FRIEND_REMOVED, true, false),
         k(CONNECTION_OWN, false, false),
         k(DEVICE_OFFLINE, false, false),
         k(ACCESS_CHANGED, false, false),

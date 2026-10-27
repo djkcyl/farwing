@@ -153,6 +153,17 @@ impl StreamControlHandle {
         }
         self.refresh_mouse_policy(&mut state);
     }
+    /// Show this participant's pointer to the host and the others.
+    pub(crate) fn set_share_pointer(&self, enabled: bool) {
+        let mut state = lock(&self.shared);
+        if state.device_preferences.share_pointer != enabled {
+            state.device_preferences.share_pointer = enabled;
+            self.publish_device_preferences(&mut state);
+        }
+    }
+    pub(crate) fn share_pointer(&self) -> bool {
+        lock(&self.shared).device_preferences.share_pointer
+    }
     pub(crate) fn set_intercept_shortcuts(&self, enabled: bool) {
         let mut state = lock(&self.shared);
         if state.device_preferences.intercept_shortcuts != enabled {

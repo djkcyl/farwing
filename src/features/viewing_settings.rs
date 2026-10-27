@@ -49,6 +49,10 @@ pub(crate) struct DevicePreferences {
     pub weak_network: WeakNetwork,
     /// Cinema mode: smooth, synchronized playback and quality-first encoding.
     pub cinema: bool,
+    /// Show this participant's pointer to the host and the others while
+    /// not controlling.
+    #[serde(skip_serializing_if = "is_true")]
+    pub share_pointer: bool,
 }
 
 /// Weak-network strategy as the viewer chooses it.
@@ -92,6 +96,7 @@ impl Default for DevicePreferences {
             performance_always_visible: true,
             weak_network: WeakNetwork::Bitrate,
             cinema: false,
+            share_pointer: true,
         }
     }
 }

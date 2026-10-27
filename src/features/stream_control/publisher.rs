@@ -39,6 +39,7 @@ impl MicrophonePolicy {
 pub(crate) struct ControlTurn {
     pub take: bool,
     pub automatic: bool,
+    pub ask: bool,
     request_id: u32,
 }
 pub(crate) fn control_turn(bytes: &[u8]) -> Result<Option<ControlTurn>> {
@@ -52,6 +53,7 @@ pub(crate) fn control_turn(bytes: &[u8]) -> Result<Option<ControlTurn>> {
     Ok(Some(ControlTurn {
         take: request.take,
         automatic: request.automatic,
+        ask: request.ask,
         request_id: received.request_id,
     }))
 }

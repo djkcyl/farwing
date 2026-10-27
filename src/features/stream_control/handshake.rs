@@ -17,7 +17,6 @@ use crate::media::VideoCodec;
 use crate::protocol::capability::DualCapability;
 use anyhow::{Result, anyhow};
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::Notify;
 
 impl StreamControlHandle {
@@ -397,23 +396,18 @@ impl StreamControlHandle {
                 state.annotation.disconnect();
             }
             kind::SESSION_SWITCH => {
-                state.remote_notice =
-                    Some((Instant::now(), t().features.stream_host_session_switched.into()));
+                state.notify_remote(t().features.stream_host_session_switched.into());
             }
             kind::RESTARTING | kind::SLEEPING | kind::SHUTTING_DOWN => {
-                state.remote_notice =
-                    Some((Instant::now(), t().features.stream_host_going_offline.into()));
+                state.notify_remote(t().features.stream_host_going_offline.into());
             }
             kind::DISPLAY_CHANGING => {
                 let actor: String = event.actor.trim().chars().take(40).collect();
-                state.remote_notice = Some((
-                    Instant::now(),
-                    if actor.is_empty() {
-                        t().features.stream_host_display_changing.into()
-                    } else {
-                        (t().features.host_display_changed_by)(&actor)
-                    },
-                ));
+                state.notify_remote(if actor.is_empty() {
+                    t().features.stream_host_display_changing.into()
+                } else {
+                    (t().features.host_display_changed_by)(&actor)
+                });
             }
             _ => {}
         }
@@ -427,6 +421,23 @@ impl StreamControlHandle {
         self.files
             .permit(grants.iter().any(|cap| cap == farwing_protocol::caps::FILES));
         let mut state = lock(&self.shared);
+        // A change during the session is told, except control alone while
+        // controlling (granted on request, or ended with its own notice).
+        if let Some(old) = state.grants.as_ref().filter(|old| **old != grants) {
+            let added: Vec<&String> = grants.iter().filter(|c| !old.contains(c)).collect();
+            let removed: Vec<&String> = old.iter().filter(|c| !grants.contains(c)).collect();
+            let control_only = added.iter().chain(&removed).all(|c| *c == farwing_protocol::caps::CONTROL);
+            if !(control_only && state.mouse.mode() != crate::features::remote_input::MouseMode::View) {
+                let labels = |list: &[&String]| {
+                    list.iter()
+                        .map(|c| crate::application::app::friends::cap_label(c))
+                        .collect::<Vec<_>>()
+                        .join("、")
+                };
+                let notice = (t().features.permissions_changed)(&labels(&added), &labels(&removed));
+                state.notify_remote(notice);
+            }
+        }
         state.grants = Some(grants);
         self.refresh_mouse_policy(&mut state);
         drop(state);

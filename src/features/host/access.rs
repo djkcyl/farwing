@@ -275,6 +275,9 @@ struct Participant {
     update_notice: Option<Arc<super::peer::UpdateNotice>>,
     /// The owner withdrew `control` for the rest of this session.
     control_blocked: bool,
+    /// The host's user let this participant control for this session
+    /// only, without the grant.
+    temporary_control: bool,
     record: Record,
 }
 
@@ -1527,6 +1530,9 @@ impl Lease {
         });
         if self.control_blocked() {
             grants.retain(|cap| cap != farwing_protocol::caps::CONTROL);
+        } else if self.temporary_control() && !grants.iter().any(|c| c == farwing_protocol::caps::CONTROL) {
+            grants.push(farwing_protocol::caps::CONTROL.to_owned());
+            grants = farwing_protocol::caps::normalize(&grants);
         }
         grants
     }
@@ -1537,11 +1543,23 @@ impl Lease {
             .and_then(|key| state.participants.get(&key))
             .is_some_and(|p| p.control_blocked)
     }
+    /// The host's user let this participant control for this session.
+    fn temporary_control(&self) -> bool {
+        let state = lock(&self.handle.ownership);
+        self.participant
+            .and_then(|key| state.participants.get(&key))
+            .is_some_and(|p| p.temporary_control)
+    }
     /// Whether the participant holds session capability `cap`. A lease
     /// without bound grants (before the session) holds none.
     pub(crate) fn granted(&self, cap: &str) -> bool {
-        if cap == farwing_protocol::caps::CONTROL && self.control_blocked() {
-            return false;
+        if cap == farwing_protocol::caps::CONTROL {
+            if self.control_blocked() {
+                return false;
+            }
+            if self.temporary_control() {
+                return true;
+            }
         }
         self.grants.as_ref().is_some_and(|shared| {
             shared
@@ -1551,11 +1569,51 @@ impl Lease {
                 .any(|value| value == cap)
         })
     }
-    /// Explicit extra-display requests need the `display` capability. This
+    /// Ask the host's user to let this participant control for this
+    /// session only. True once allowed.
+    pub(crate) async fn ask_control(&self) -> bool {
+        let Some(key) = self.participant else {
+            return false;
+        };
+        let profile = self.profile();
+        let name = if profile.nickname.trim().is_empty() {
+            profile.device_name.clone()
+        } else {
+            profile.nickname.clone()
+        };
+        let device_id = {
+            let state = lock(&self.handle.ownership);
+            state
+                .participants
+                .get(&key)
+                .map(|p| p.connection.device_id.clone())
+                .unwrap_or_default()
+        };
+        let decision = self.handle.assistance.confirm_control(name, device_id).await;
+        if !matches!(decision, super::assist::Decision::Allow | super::assist::Decision::Trust) {
+            return false;
+        }
+        self.modify(|state| {
+            if let Some(p) = state.participants.get_mut(&key) {
+                p.temporary_control = true;
+                p.control_blocked = false;
+                refresh_connections(state);
+            }
+        });
+        super::participants::touch();
+        tracing::info!(participant = key, "host user allowed control for this session");
+        true
+    }
+    /// Changing the host's displays: `display` together with `control`
+    /// (changing them is operating the host).
+    pub(crate) fn display_allowed(&self) -> bool {
+        self.granted(farwing_protocol::caps::DISPLAY) && self.granted(farwing_protocol::caps::CONTROL)
+    }
+    /// Explicit extra-display requests need [`Self::display_allowed`]. This
     /// is separate from resolution conversion, headless recovery and
     /// releasing a screen.
     pub(crate) fn display_expansion_allowed(&self) -> bool {
-        self.requested() && self.granted(farwing_protocol::caps::DISPLAY)
+        self.requested() && self.display_allowed()
     }
     pub(crate) fn set_update_notice(&self, notice: Arc<super::peer::UpdateNotice>) {
         let mut state = lock(&self.handle.ownership);
@@ -1761,6 +1819,7 @@ impl Lease {
                 connected: false,
                 update_notice: None,
                 control_blocked: false,
+                temporary_control: false,
                 record: Record::default(),
             },
         );
@@ -1851,19 +1910,22 @@ impl Lease {
     pub(crate) fn audio_status(&self, audio: super::audio::Status) {
         self.modify_primary(|state| state.status.audio = audio);
     }
-    /// Clipboard sync for this participant. With several participants only
-    /// the holder of the control token syncs automatically, so a viewer
-    /// neither receives the host clipboard nor overwrites it
+    /// Clipboard sync for this participant. It writes the host clipboard,
+    /// so it needs `control` besides `clipboard` (files also `files`); with
+    /// several participants only the holder of the control token syncs, so
+    /// a viewer neither receives the host clipboard nor overwrites it
     /// (`docs/protocol/v2-design.md` §4.2).
     pub(crate) fn clipboard_settings(&self) -> super::clipboard::Settings {
         let settings = self.handle.clipboard_settings();
         let shared = lock(&self.handle.ownership).participants.len() > 1;
         if self.granted(farwing_protocol::caps::CLIPBOARD)
-            && (!shared
-                || (self.granted(farwing_protocol::caps::CONTROL)
-                    && super::participants::holds_control(self.participant)))
+            && self.granted(farwing_protocol::caps::CONTROL)
+            && (!shared || super::participants::holds_control(self.participant))
         {
-            settings
+            super::clipboard::Settings {
+                enabled: settings.enabled,
+                files: settings.files && self.granted(farwing_protocol::caps::FILES),
+            }
         } else {
             super::clipboard::Settings {
                 enabled: false,
@@ -1873,10 +1935,14 @@ impl Lease {
     }
     /// Manual clipboard copy (CLIPBOARD v2 `Pull`, §8.2): any participant
     /// holding `clipboard`, within this host's clipboard switches, whether or
-    /// not it currently controls.
+    /// not it currently controls; files also need `files`.
     pub(crate) fn clipboard_pull(&self) -> super::clipboard::Settings {
         if self.granted(farwing_protocol::caps::CLIPBOARD) {
-            self.handle.clipboard_settings()
+            let settings = self.handle.clipboard_settings();
+            super::clipboard::Settings {
+                enabled: settings.enabled,
+                files: settings.files && self.granted(farwing_protocol::caps::FILES),
+            }
         } else {
             super::clipboard::Settings {
                 enabled: false,

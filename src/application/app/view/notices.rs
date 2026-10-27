@@ -9,7 +9,7 @@ use farwing_protocol::api::Notice;
 const GROUPS: [(&str, &[&str]); 5] = [
     ("security", &["login.new_device", "login.failures", "security.changed", "device.removed"]),
     ("connections", &["connection.incoming", "connection.refused", "connection.own"]),
-    ("friends", &["friend.request", "friend.accepted", "friend.grants"]),
+    ("friends", &["friend.request", "friend.accepted", "friend.grants", "friend.removed"]),
     ("devices", &["power.remote", "device.offline", "access.changed"]),
     ("admin", &["admin.certificate", "admin.node_offline", "admin.registered"]),
 ];

@@ -131,12 +131,20 @@ use crate::ui::controls::menu_row;
 
 /// Whether the host granted `cap` to this participant (until it says,
 /// everything is offered).
-fn granted(handle: &StreamControlHandle, cap: &str) -> bool {
+pub(in crate::application::viewer) fn granted(handle: &StreamControlHandle, cap: &str) -> bool {
     handle.granted().is_none_or(|grants| grants.iter().any(|c| c == cap))
 }
 
+/// The first of `caps` the host did not grant.
+pub(in crate::application::viewer) fn lacking(
+    handle: &StreamControlHandle,
+    caps: &[&'static str],
+) -> Option<&'static str> {
+    caps.iter().copied().find(|cap| !granted(handle, cap))
+}
+
 /// Why something is unavailable: its permission was not granted.
-fn missing(cap: &str) -> String {
+pub(in crate::application::viewer) fn missing(cap: &str) -> String {
     (t().viewer.permission_missing)(crate::application::app::friends::cap_label(cap))
 }
 
@@ -586,13 +594,38 @@ pub(super) fn show_stream_control_window(
         snapshot.network.notice.as_deref().filter(|_| state.open),
     );
 
-    crate::ui::controls::observe_notice(
-        ctx,
-        "remote-session-notice",
-        t().viewer.remote_notice,
-        crate::ui::controls::DialogIcon::Info,
-        snapshot.remote_notice.as_deref(),
-    );
+    // Each notice once, also when it repeats the previous one (a second
+    // refused control request). A refusal for lack of the grant offers to
+    // ask the host's user for control in this connection.
+    if let Some((number, notice, ask)) = &snapshot.remote_notice {
+        let shown = egui::Id::new("remote-session-notice-shown");
+        if ctx.data(|d| d.get_temp::<u64>(shown)) != Some(*number) {
+            ctx.data_mut(|d| d.insert_temp(shown, *number));
+            if *ask {
+                crate::ui::controls::notice_with_action(
+                    ctx,
+                    "remote-session-notice",
+                    t().viewer.remote_notice,
+                    crate::ui::controls::DialogIcon::Info,
+                    notice.clone(),
+                    t().viewer.ask_control,
+                );
+            } else {
+                crate::ui::controls::notice(
+                    ctx,
+                    "remote-session-notice",
+                    t().viewer.remote_notice,
+                    crate::ui::controls::DialogIcon::Info,
+                    notice.clone(),
+                );
+            }
+        }
+    }
+    if crate::ui::controls::notice_answer(ctx, "remote-session-notice") == Some(true)
+        && let Err(error) = handle.ask_control()
+    {
+        handle.mouse().fail(error.to_string());
+    }
     let multi_screen = snapshot.screens.len() > 1;
     if !state.open {
         state.page = Page::Quality;
@@ -784,7 +817,12 @@ pub(super) fn show_stream_control_window(
                                 }
                                 ui.add_space(crate::ui::theme::MENU_GROUP_GAP);
                                 // What this participant was not granted is shown, disabled, with why.
-                                let display_granted = granted(handle, farwing_protocol::caps::DISPLAY);
+                                // Changing displays is operating the host: it also needs control.
+                                let display_lacking = lacking(
+                                    handle,
+                                    &[farwing_protocol::caps::DISPLAY, farwing_protocol::caps::CONTROL],
+                                );
+                                let display_granted = display_lacking.is_none();
                                 let display = menu_row(
                                     ui,
                                     t().viewer.resolution_and_dpi,
@@ -796,7 +834,7 @@ pub(super) fn show_stream_control_window(
                                 let display = if display_granted {
                                     display
                                 } else {
-                                    display.on_disabled_hover_text(missing(farwing_protocol::caps::DISPLAY))
+                                    display.on_disabled_hover_text(missing(display_lacking.unwrap_or_default()))
                                 };
                                 if display.clicked() {
                                     state.page = Page::Display;
@@ -915,12 +953,22 @@ pub(super) fn show_stream_control_window(
                                 let audio = handle.audio();
                                 let mut audio_settings = audio.settings();
                                 let audio_status = audio.snapshot();
-                                let (volume_response, choose_output) = volume_bar(
-                                    ui,
-                                    &mut audio_settings.volume,
-                                    &mut audio_settings.muted,
-                                    &audio,
-                                );
+                                let audio_granted = granted(handle, farwing_protocol::caps::AUDIO);
+                                let (volume_response, choose_output) = ui
+                                    .add_enabled_ui(audio_granted, |ui| {
+                                        volume_bar(
+                                            ui,
+                                            &mut audio_settings.volume,
+                                            &mut audio_settings.muted,
+                                            &audio,
+                                        )
+                                    })
+                                    .inner;
+                                let volume_response = if audio_granted {
+                                    volume_response
+                                } else {
+                                    volume_response.on_disabled_hover_text(missing(farwing_protocol::caps::AUDIO))
+                                };
                                 if choose_output {
                                     state.page = Page::Audio;
                                     state.local_error = audio.refresh_output_devices().err().map(|error| error.to_string());
@@ -1052,6 +1100,11 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", t().v
                                     state.page = Page::Mouse;
                                 }
                                 switch_row(ui, t().viewer.intercept_shortcuts, &mut view.intercept_shortcuts);
+                                // Pointing while not controlling: shown to the host and the others.
+                                let mut share_pointer = handle.share_pointer();
+                                if switch_row(ui, t().viewer.share_pointer, &mut share_pointer).changed() {
+                                    handle.set_share_pointer(share_pointer);
+                                }
                                 let clipboard = handle.clipboard();
                                 let input=handle.microphone().selected_input();
                                 let devices=handle.microphone().input_devices();
@@ -1072,14 +1125,18 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", t().v
                                 }
                                 let clip = clipboard.snapshot();
                                 let clipboard_granted = granted(handle, farwing_protocol::caps::CLIPBOARD);
-                                let mut enabled = clip.enabled && clipboard_granted;
+                                // Sync writes the host clipboard: it also needs control.
+                                let sync_lacking = lacking(
+                                    handle,
+                                    &[farwing_protocol::caps::CLIPBOARD, farwing_protocol::caps::CONTROL],
+                                );
+                                let mut enabled = clip.enabled && sync_lacking.is_none();
                                 let sync = ui
-                                    .add_enabled_ui(clipboard_granted, |ui| switch_row(ui, t().viewer.clipboard_sync, &mut enabled))
+                                    .add_enabled_ui(sync_lacking.is_none(), |ui| switch_row(ui, t().viewer.clipboard_sync, &mut enabled))
                                     .inner;
-                                let sync = if clipboard_granted {
-                                    sync
-                                } else {
-                                    sync.on_disabled_hover_text(missing(farwing_protocol::caps::CLIPBOARD))
+                                let sync = match sync_lacking {
+                                    None => sync,
+                                    Some(cap) => sync.on_disabled_hover_text(missing(cap)),
                                 };
                                 if sync.changed() {
                                     if let Err(error) = handle.set_clipboard_enabled(enabled) {
@@ -1087,8 +1144,17 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", t().v
                                     }
                                 }
                                 if enabled {
-                                    let mut files = clip.files;
-                                    if switch_row(ui, t().viewer.file_copy, &mut files).changed() {
+                                    let files_granted = granted(handle, farwing_protocol::caps::FILES);
+                                    let mut files = clip.files && files_granted;
+                                    let copy = ui
+                                        .add_enabled_ui(files_granted, |ui| switch_row(ui, t().viewer.file_copy, &mut files))
+                                        .inner;
+                                    let copy = if files_granted {
+                                        copy
+                                    } else {
+                                        copy.on_disabled_hover_text(missing(farwing_protocol::caps::FILES))
+                                    };
+                                    if copy.changed() {
                                         handle.set_clipboard_files(files);
                                     }
                                     crate::ui::controls::progress_notice(ui.ctx(),"clipboard-wait",t().viewer.clipboard_sync,(!clip.active && snapshot.mouse_mode != MouseMode::View).then_some(t().viewer.clipboard_waiting));

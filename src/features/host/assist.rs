@@ -274,6 +274,9 @@ pub(crate) struct Confirmation {
     /// A pairing request: the six digits both screens show.
     #[serde(default)]
     pub pairing: Option<String>,
+    /// A participant asks for keyboard and mouse control in this session.
+    #[serde(default)]
+    pub control: bool,
 }
 
 /// The local user's answer to a direct request.
@@ -496,7 +499,13 @@ impl Handle {
     }
     /// Ask the local user to allow a direct assistance request.
     pub(crate) async fn confirm_direct(&self, name: String, device_id: String, public_key: String) -> Decision {
-        self.ask_direct(name, device_id, public_key, None).await
+        self.ask_direct(name, device_id, public_key, None, false).await
+    }
+
+    /// Ask the local user to let a connected participant control this
+    /// session (never trusted from here).
+    pub(crate) async fn confirm_control(&self, name: String, device_id: String) -> Decision {
+        self.ask_direct(name, device_id, String::new(), None, true).await
     }
 
     /// Ask the local user to pair with a device that shows `code`: trust
@@ -508,7 +517,7 @@ impl Handle {
         public_key: String,
         code: String,
     ) -> Decision {
-        self.ask_direct(name, device_id, public_key, Some(code)).await
+        self.ask_direct(name, device_id, public_key, Some(code), false).await
     }
 
     async fn ask_direct(
@@ -517,6 +526,7 @@ impl Handle {
         device_id: String,
         public_key: String,
         pairing: Option<String>,
+        control: bool,
     ) -> Decision {
         let (sender, answer) = tokio::sync::oneshot::channel();
         let id = uuid::Uuid::new_v4().to_string();
@@ -544,6 +554,7 @@ impl Handle {
                 public_key,
                 caps_limit: None,
                 pairing,
+                control,
             });
             state.direct.insert(id.clone(), sender);
         }
@@ -647,7 +658,9 @@ impl Handle {
             );
             let pending = state.snapshot.pending.take();
             let pairing = pending.as_ref().is_some_and(|p| p.pairing.is_some());
-            let trust = allow && (trust || pairing);
+            // A control request is answered, never turned into trust.
+            let control = pending.as_ref().is_some_and(|p| p.control);
+            let trust = allow && !control && (trust || pairing);
             let decision = match (allow, trust) {
                 (false, _) => Decision::Reject,
                 (true, false) => Decision::Allow,
@@ -1272,6 +1285,7 @@ async fn run(client: HostClient, mut rx: mpsc::Receiver<Push>, stop: Cancellatio
                                     public_key: request.public_key.clone(),
                                     caps_limit: request.caps_limit.clone(),
                                     pairing: None,
+                                    control: false,
                                 });
                                 state.pending_deadline =
                                     Some(Instant::now() + Duration::from_secs(60));

@@ -243,10 +243,15 @@ pub(in crate::application::viewer) fn player_title_bar(
         }
     }
     let annotation = bar.stream_control.annotation_snapshot();
+    // What this participant was not granted is shown, disabled, with why.
+    let annotation_granted = crate::application::viewer::stream_menu::granted(
+        &bar.stream_control,
+        farwing_protocol::caps::ANNOTATION,
+    );
     action.toggle_annotation = actions
         .add_enabled_ui(
             !annotation.toggling
-                && (annotation.enabled || annotation.supported),
+                && (annotation.enabled || (annotation.supported && annotation_granted)),
             |ui| {
                 title_icon_button(
                     ui,
@@ -257,7 +262,11 @@ pub(in crate::application::viewer) fn player_title_bar(
             },
         )
         .inner
-        .on_disabled_hover_text(t().viewer.annotation_unavailable)
+        .on_disabled_hover_text(if annotation_granted {
+            t().viewer.annotation_unavailable.to_owned()
+        } else {
+            crate::application::viewer::stream_menu::missing(farwing_protocol::caps::ANNOTATION)
+        })
         .clicked();
     action.one_to_one = actions
         .add_enabled_ui(
@@ -280,13 +289,22 @@ pub(in crate::application::viewer) fn player_title_bar(
     } else {
         t().viewer.microphone
     };
+    let mic_granted = crate::application::viewer::stream_menu::granted(
+        &bar.stream_control,
+        farwing_protocol::caps::MICROPHONE,
+    );
     if actions
         .add_enabled_ui(
-            mic.enabled || (bar.stream_control.microphone_available() && control.ready),
+            mic.enabled
+                || (bar.stream_control.microphone_available() && control.ready && mic_granted),
             |ui| title_icon_button(ui, TitleIcon::Microphone, mic.enabled, mic_hint),
         )
         .inner
-        .on_disabled_hover_text(t().viewer.mic_unavailable)
+        .on_disabled_hover_text(if mic_granted {
+            t().viewer.mic_unavailable.to_owned()
+        } else {
+            crate::application::viewer::stream_menu::missing(farwing_protocol::caps::MICROPHONE)
+        })
         .clicked()
     {
         crate::ui::controls::clear_notice(actions.ctx(), "microphone-request-error");
@@ -312,7 +330,9 @@ pub(in crate::application::viewer) fn player_title_bar(
         .flatten();
     let mouse_button = actions
         .add_enabled_ui((enabled || control.ready) && holder.is_none(), |ui| {
-            let hint = if bar.stream_control.mouse().transport_recovering() {
+            let hint = if control.control_asking {
+                t().viewer.control_asking.into()
+            } else if bar.stream_control.mouse().transport_recovering() {
                 t().viewer.control_recovering.into()
             } else if bar.stream_control.mouse().waiting_for_neutral() {
                 t().viewer.release_all_keys.into()

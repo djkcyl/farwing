@@ -53,7 +53,8 @@ impl Presence {
     /// Report this frame's pointer and clicks. `picture` shows remote screen
     /// `screen` in window points; `active` is false while the window is
     /// unfocused or minimized, a transition covers the picture, or a locked
-    /// game cursor no longer follows the local pointer.
+    /// game cursor no longer follows the local pointer. Turned off, the
+    /// pointer is hidden once.
     pub(super) fn share(
         &mut self,
         ctx: &egui::Context,
@@ -62,7 +63,7 @@ impl Presence {
         picture: Option<Rect>,
         active: bool,
     ) {
-        let picture = picture.filter(|_| active);
+        let picture = picture.filter(|_| active && control.share_pointer());
         if picture.is_none() {
             self.pressed = 0;
         }

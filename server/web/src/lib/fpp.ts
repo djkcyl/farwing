@@ -345,9 +345,10 @@ export function forwardStatus(generation: number, receiving: boolean, error: str
 }
 
 /// Take or release the control token (a request on the session channel,
-/// control brief §1); `automatic` re-takes it after a reconnection.
-export function turnRequest(take: boolean, automatic = false): Uint8Array {
-  return new Writer().message(17, new Writer().int(1, take).int(2, automatic)).finish();
+/// control brief §1); `automatic` re-takes it after a reconnection; `ask`
+/// asks the host's user for control in this connection, without the grant.
+export function turnRequest(take: boolean, automatic = false, ask = false): Uint8Array {
+  return new Writer().message(17, new Writer().int(1, take).int(2, automatic).int(3, ask)).finish();
 }
 
 /// Turn the host's virtual microphone on or off (control brief §5.2).

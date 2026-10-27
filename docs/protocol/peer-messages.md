@@ -301,14 +301,17 @@ PolicyResponse { error_code: int32 = 1 }
 TurnRequest {
   take: bool = 1                           // true 获取控制权，false 释放
   automatic: bool = 2                      // 自动恢复上次的控制状态，不是用户操作
+  ask: bool = 3                            // 没有 control 授权时，请被控端用户允许本次连接控制
 }
 TurnResponse {
   held: bool = 1                           // 回复时本参与者是否持有控制权
-  message: string = 2                      // 获取被拒绝的原因，直接显示给用户
+  refusal: int32 = 3                       // 拒绝原因：1 本次连接无法控制，2 未授权 control，
+                                           // 3 他人持有，4 多人时不自动获取，5 被控端用户未同意
+  holder: string = 4                       // refusal = 3 时的持有者
 }
 ```
 
-**ControlTurn**：主控开启键鼠控制时发送 `take = true`，关闭时发送 `take = false`。无人持有且本参与者拥有 `control` 能力时获得；他人持有或没有 `control` 能力时 `held = false`，主控关闭键鼠控制并显示 `message`。`automatic = true` 时，只有本参与者已经持有、或会话中只有它一人才会获得；否则 `held = false`，主控静默回到仅观看。获取请求发不出去或被控回 `ERROR` 时，主控同样关闭键鼠控制（提示“未能向被控端请求键鼠控制权”，`automatic` 时不提示）。释放总是成功。控制权的其他变化（持有者离开、失去 `control` 能力）只经 `PARTICIPANTS.controlling` 通知。
+**ControlTurn**：主控开启键鼠控制时发送 `take = true`，关闭时发送 `take = false`。无人持有且本参与者拥有 `control` 能力时获得；他人持有或没有 `control` 能力时 `held = false`，主控关闭键鼠控制并按 `refusal` 提示。因未授权（`refusal = 2`）被拒时，提示里可以“请求本次控制”：主控再发 `take = true, ask = true`，被控端弹出“请求键鼠控制 · 仅本次连接”，用户允许后本参与者在本次连接内拥有 `control`（`PERMISSIONS` 随之包含 `control`，主人收回控制权时失效，不写入受信任设备），回复 `held = true`；拒绝或 60 秒无人回应时 `refusal = 5`。等待期间控制通道照常工作。`automatic = true` 时，只有本参与者已经持有、或会话中只有它一人才会获得；否则 `held = false`，主控静默回到仅观看。获取请求发不出去或被控回 `ERROR` 时，主控同样关闭键鼠控制（提示“未能向被控端请求键鼠控制权”，`automatic` 时不提示）。释放总是成功。控制权的其他变化（持有者离开、失去 `control` 能力）只经 `PARTICIPANTS.controlling` 通知。
 
 **CaptureSetting 结果码**（`PbError.error_code`）
 
@@ -604,30 +607,11 @@ Command { oneof operation {
   Object replace = 2        // 替换一笔
   Batch batch = 3
   Board board = 4           // 白板
-  bool clear = 5            // false 清除普通笔迹；true 同时清除背景与临时工具
-  Laser laser = 6           // 激光笔
-  Click click = 7           // 点击标记
+  bool clear = 5            // false 清除笔迹；true 同时清除白板
 }}
 Batch { commands: repeated Command = 1 }
-Object { stroke: PbDrawStroke = 1, transient: bool = 2 }
+Object { stroke: PbDrawStroke = 1 }
 Board { screen: int32 = 1, color: optional fixed32 = 2 }
-Laser {
-  id: uint32 = 1
-  screen: int32 = 2
-  width: float = 3
-  color: fixed32 = 4
-  tail_ms: uint32 = 5
-  samples: repeated LaserSample = 6
-}
-LaserSample { point: PbDrawPoint = 1, age_ms: uint32 = 2 }
-Click {
-  id: uint32 = 1
-  screen: int32 = 2
-  center: PbDrawPoint = 3
-  radii: PbDrawPoint = 4
-  width: float = 5
-  color: fixed32 = 6
-}
 
 PbDrawRequest { oneof payload {
   PbDrawStroke stroke = 1

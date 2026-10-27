@@ -254,6 +254,8 @@ export default function Friends() {
   const [username, setUsername] = useState('');
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<UserSummary>();
+  // Accepting a request: what the new friend may do on this account's devices.
+  const [accepting, setAccepting] = useState<{ request: FriendRequests['incoming'][number]; caps: string[] }>();
   const hosts = (devices.data?.own ?? [])
     .filter((d) => d.capabilities.includes('host') && d.platform !== 'web')
     .sort(byName);
@@ -324,7 +326,7 @@ export default function Friends() {
                     <Button
                       size="sm"
                       variant="primary"
-                      onClick={() => act(() => call('POST', `/api/v2/friends/requests/${r.id}/accept`, {}), m.added)}
+                      onClick={() => setAccepting({ request: r, caps: [...DEFAULT_FRIEND] })}
                     >
                       {m.accept}
                     </Button>
@@ -409,6 +411,34 @@ export default function Friends() {
         </Card>
       )}
       <GrantsEditor friend={editing} devices={hosts} onClose={() => setEditing(undefined)} />
+      <Dialog
+        open={!!accepting}
+        title={accepting ? m.acceptTitle(displayName(accepting.request.user)) : ''}
+        onClose={() => setAccepting(undefined)}
+        footer={
+          <>
+            <Button onClick={() => setAccepting(undefined)}>{t.common.cancel}</Button>
+            <Button
+              variant="primary"
+              onClick={() => {
+                if (!accepting) return;
+                const { request, caps } = accepting;
+                setAccepting(undefined);
+                void act(() => call('POST', `/api/v2/friends/requests/${request.id}/accept`, { caps }), m.added);
+              }}
+            >
+              {m.accept}
+            </Button>
+          </>
+        }
+      >
+        {accepting && (
+          <div className="stack-sm">
+            <h3>{m.theyMay}</h3>
+            <CapsEditor value={accepting.caps} onChange={(caps) => setAccepting({ ...accepting, caps })} />
+          </div>
+        )}
+      </Dialog>
     </div>
   );
 }

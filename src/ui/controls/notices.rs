@@ -52,6 +52,38 @@ pub(crate) fn notice(
     );
 }
 
+/// [`notice`] with an action button; [`notice_answer`] returns the choice.
+pub(crate) fn notice_with_action(
+    ctx: &Context,
+    source: impl egui::AsId,
+    title: &str,
+    icon: DialogIcon,
+    message: impl Into<String>,
+    action: &str,
+) {
+    publish(
+        ctx,
+        Id::new(source),
+        title,
+        icon,
+        message.into(),
+        Some(action),
+        true,
+        true,
+    );
+}
+
+/// The choice on a [`notice_with_action`]: true for the action, false for
+/// a dismissal; `None` until answered.
+pub(crate) fn notice_answer(ctx: &Context, source: impl egui::AsId) -> Option<bool> {
+    let source = Id::new(source);
+    ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<State>(state_id())
+            .results
+            .remove(&source)
+    })
+}
+
 fn publish(
     ctx: &Context,
     source: Id,

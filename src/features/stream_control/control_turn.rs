@@ -14,6 +14,10 @@ pub(crate) struct TurnRequest {
     /// participant alone in the session.
     #[prost(bool, tag = "2")]
     pub automatic: bool,
+    /// Without the `control` grant, ask the host's user for control in
+    /// this session only.
+    #[prost(bool, tag = "3")]
+    pub ask: bool,
 }
 /// `ControlTurnResult` (H→C).
 #[derive(Clone, PartialEq, prost::Message)]
@@ -40,6 +44,8 @@ pub(crate) mod refusal {
     pub const HELD: i32 = 3;
     /// Shared view: control is not taken automatically.
     pub const SHARED: i32 = 4;
+    /// The host's user declined a request for control (or nobody answered).
+    pub const DECLINED: i32 = 5;
 }
 
 impl TurnResponse {
@@ -51,6 +57,7 @@ impl TurnResponse {
             refusal::NOT_ALLOWED => text.peer_no_control_permission.to_owned(),
             refusal::HELD => held_by(&self.holder),
             refusal::SHARED => text.peer_control_not_automatic_shared.to_owned(),
+            refusal::DECLINED => text.peer_control_declined.to_owned(),
             _ => return None,
         })
     }
@@ -75,18 +82,19 @@ impl StreamControlHandle {
         state: &mut StreamControlState,
         take: bool,
         automatic: bool,
+        ask: bool,
     ) {
         if !state.pb_connected || !state.text_channel_open {
             return;
         }
         let sequence = state.next_sequence;
         state.next_sequence = state.next_sequence.wrapping_add(1);
-        state.turn_request = take.then_some((sequence, automatic));
+        state.turn_request = take.then_some((sequence, automatic, ask));
         let payload = super::wire::request(
             sequence,
-            super::wire::SessionBody::ControlTurn(TurnRequest { take, automatic }),
+            super::wire::SessionBody::ControlTurn(TurnRequest { take, automatic, ask }),
         );
-        tracing::info!(take, automatic, sequence, "control token requested");
+        tracing::info!(take, automatic, ask, sequence, "control token requested");
         let _ = self.outgoing.send(OutgoingControlMessage {
             annotation_generation: None,
             sequence,
@@ -105,7 +113,7 @@ impl StreamControlHandle {
         sequence: i64,
         response: TurnResponse,
     ) {
-        let Some((pending, automatic)) = state.turn_request else {
+        let Some((pending, automatic, ask)) = state.turn_request else {
             return;
         };
         if pending != sequence {
@@ -115,19 +123,21 @@ impl StreamControlHandle {
         if response.held {
             return;
         }
-        tracing::info!(automatic, refusal = response.refusal, "control token refused");
+        tracing::info!(automatic, ask, refusal = response.refusal, "control token refused");
         let notice = (!automatic).then(|| {
             response
                 .refusal_text()
                 .unwrap_or_else(|| t().features.stream_control_refused.to_owned())
         });
-        self.leave_control_locked(state, notice);
+        // Without the grant, the notice offers to ask the host's user.
+        let offer = !automatic && !ask && response.refusal == refusal::NOT_ALLOWED;
+        self.leave_control_locked(state, notice, offer);
     }
 
     /// A take that could not be sent: this participant does not control
     /// (no notice for an automatic take, as for a refusal).
     pub(super) fn turn_send_failed(&self, state: &mut StreamControlState, sequence: i64) -> bool {
-        let Some((pending, automatic)) = state.turn_request else {
+        let Some((pending, automatic, _)) = state.turn_request else {
             return false;
         };
         if pending != sequence {
@@ -136,7 +146,7 @@ impl StreamControlHandle {
         state.turn_request = None;
         let notice =
             (!automatic).then(|| t().features.stream_control_request_failed.to_owned());
-        self.leave_control_locked(state, notice);
+        self.leave_control_locked(state, notice, false);
         true
     }
 
@@ -150,10 +160,11 @@ impl StreamControlHandle {
         self.leave_control_locked(
             state,
             Some(t().features.stream_control_withdrawn.to_owned()),
+            false,
         );
     }
 
-    fn leave_control_locked(&self, state: &mut StreamControlState, notice: Option<String>) {
+    fn leave_control_locked(&self, state: &mut StreamControlState, notice: Option<String>, offer: bool) {
         if state.mouse.mode() == MouseMode::View {
             return;
         }
@@ -162,7 +173,7 @@ impl StreamControlHandle {
         state.restore_input_pending = false;
         state.cursor_sync_needed = true;
         if let Some(notice) = notice {
-            state.remote_notice = Some((Instant::now(), notice));
+            state.notify_remote_with(notice, offer);
         }
         self.refresh_mouse_policy(state);
         self.mouse.repaint();

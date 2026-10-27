@@ -73,7 +73,6 @@ impl StreamControlHandle {
             s,
             Command::new(Operation::Replace(protocol::Object {
                 stroke: Some(stroke),
-                transient: false,
             })),
             pending,
         )
@@ -89,7 +88,6 @@ impl StreamControlHandle {
         let restore = |stroke: &Stroke| {
             Command::new(Operation::Replace(protocol::Object {
                 stroke: Some(encoded_stroke(stroke, &stroke.points)),
-                transient: false,
             }))
         };
         let command = match (&edit, reverse) {

@@ -19,7 +19,8 @@ pub(crate) use input_rate::input_rate_warning;
 mod notices;
 pub(crate) use inputs::{number_input, singleline};
 pub(crate) use notices::{
-    clear_notice, notice, observe_form_notice, observe_notice, observe_notice_action,
+    clear_notice, notice, notice_answer, notice_with_action, observe_form_notice, observe_notice,
+    observe_notice_action,
     progress_notice, show_notices,
 };
 pub(crate) mod file_icons;

@@ -1435,8 +1435,11 @@ html[lang='en'] .caps-group {
   background: var(--hover);
   color: var(--text);
 }
-.tool:disabled {
+.tool:disabled,
+.tool.dim {
   opacity: 0.4;
+}
+.tool:disabled {
   cursor: default;
 }
 .tool-text {

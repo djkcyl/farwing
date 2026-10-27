@@ -1,11 +1,10 @@
 use super::*;
 use crate::i18n::t;
-use egui::{Rect, Response, Sense, Ui, pos2};
+use egui::{Rect, Response, Sense, Ui, Vec2, pos2};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AnnotationIcon {
     Pen,
-    Laser,
     Line,
     Arrow,
     Rectangle,
@@ -24,24 +23,37 @@ pub(crate) fn annotation_button(
     selected: bool,
     hint: &str,
 ) -> Response {
-    ink_button(ui, icon, selected, hint, theme::ANNOTATION_BUTTON)
+    ink_button(
+        ui,
+        icon,
+        selected,
+        hint,
+        Vec2::splat(theme::ANNOTATION_BUTTON),
+    )
 }
 pub(crate) fn annotation_tool_button(
     ui: &mut Ui,
     icon: AnnotationIcon,
     selected: bool,
     hint: &str,
+    width: f32,
 ) -> Response {
-    ink_button(ui, icon, selected, hint, theme::ANNOTATION_TOOL_SIZE)
+    ink_button(
+        ui,
+        icon,
+        selected,
+        hint,
+        vec2(width, theme::ANNOTATION_TOOL_SIZE),
+    )
 }
 fn ink_button(
     ui: &mut Ui,
     icon: AnnotationIcon,
     selected: bool,
     hint: &str,
-    size: f32,
+    size: Vec2,
 ) -> Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let painter = ui.painter();
     if selected || response.hovered() {
         painter.rect_filled(
@@ -124,7 +136,7 @@ pub(crate) fn annotation_header(
                     AnnotationIcon::Undo,
                     false,
                     t().controls.annotation_undo,
-                    height,
+                    Vec2::splat(height),
                 )
             })
             .inner
@@ -136,7 +148,7 @@ pub(crate) fn annotation_header(
                     AnnotationIcon::Redo,
                     false,
                     t().controls.annotation_redo,
-                    height,
+                    Vec2::splat(height),
                 )
             })
             .inner
@@ -146,7 +158,7 @@ pub(crate) fn annotation_header(
             AnnotationIcon::Exit,
             false,
             t().controls.annotation_end,
-            height,
+            Vec2::splat(height),
         )
         .clicked();
         close = close_button(ui, t().controls.annotation_hide_panel, height).clicked();
@@ -331,51 +343,13 @@ fn annotation_board_content(
     });
     action
 }
-fn annotation_laser_options(ui: &mut Ui, tail_ms: &mut u16) {
-    ui.add_space(8.);
-    ui.label(RichText::new(t().controls.trail_length).strong());
-    ui.horizontal(|ui| {
-        for (value, label) in [
-            (60, t().controls.trail_short),
-            (100, t().controls.trail_medium),
-            (200, t().controls.trail_long),
-        ] {
-            if ui.selectable_label(*tail_ms == value, label).clicked() {
-                *tail_ms = value;
-            }
-        }
-    });
-    ui.spacing_mut().slider_width = theme::ANNOTATION_PICKER_WIDTH - 80.;
-    ui.add(
-        egui::Slider::new(
-            tail_ms,
-            crate::features::stream_control::annotation::LASER_TAIL_MIN
-                ..=crate::features::stream_control::annotation::LASER_TAIL_MAX,
-        )
-        .suffix(" ms"),
-    );
-}
-pub(crate) fn annotation_width(
-    ui: &mut Ui,
-    width: &mut f32,
-    tool: AnnotationIcon,
-    tail_ms: Option<&mut u16>,
-) {
-    let laser = tool == AnnotationIcon::Laser;
+pub(crate) fn annotation_width(ui: &mut Ui, width: &mut f32) {
     let (r, response) = ink_property(ui, theme::ANNOTATION_SIZE_WIDTH);
     let y = r.center().y;
-    if laser {
-        ui.painter().circle_filled(
-            pos2(r.left() + 18., y),
-            (*width * 0.5).clamp(2., 6.),
-            theme::TEXT,
-        );
-    } else {
-        ui.painter().line_segment(
-            [pos2(r.left() + 9., y), pos2(r.left() + 27., y)],
-            Stroke::new((*width).clamp(1., 5.), theme::TEXT),
-        );
-    }
+    ui.painter().line_segment(
+        [pos2(r.left() + 9., y), pos2(r.left() + 27., y)],
+        Stroke::new((*width).clamp(1., 5.), theme::TEXT),
+    );
     ui.painter().text(
         pos2(r.left() + 34., y),
         egui::Align2::LEFT_CENTER,
@@ -389,20 +363,9 @@ pub(crate) fn annotation_width(
             ui.set_width(theme::ANNOTATION_PICKER_WIDTH);
             ui.spacing_mut().interact_size.y = theme::COMPACT_HEIGHT;
             ui.spacing_mut().item_spacing.x = 4.0;
-            ui.label(
-                RichText::new(if laser {
-                    t().controls.dot_size
-                } else {
-                    t().controls.line_width
-                })
-                .strong(),
-            );
+            ui.label(RichText::new(t().controls.line_width).strong());
             ui.horizontal(|ui| {
-                for value in if laser {
-                    [3., 5., 8., 12.]
-                } else {
-                    [1., 3., 6., 12.]
-                } {
+                for value in [1., 3., 6., 12.] {
                     if ui
                         .selectable_label((*width - value).abs() < 0.01, format!("{value:.0} px"))
                         .clicked()
@@ -417,9 +380,6 @@ pub(crate) fn annotation_width(
                     .logarithmic(true)
                     .suffix(" px"),
             );
-            if let Some(tail_ms) = tail_ms {
-                annotation_laser_options(ui, tail_ms);
-            }
         });
 }
 pub(crate) fn paint_annotation_icon(
@@ -446,18 +406,6 @@ pub(crate) fn paint_annotation_icon(
                 stroke,
             ));
             line(at(0.62, 0.15), at(0.85, 0.38));
-        }
-        AnnotationIcon::Laser => {
-            p.circle_filled(r.center(), 2.4, color);
-            p.circle_stroke(r.center(), 4.7, Stroke::new(1.0, color));
-            for (a, b) in [
-                (at(0.5, 0.0), at(0.5, 0.12)),
-                (at(0.5, 0.88), at(0.5, 1.0)),
-                (at(0.0, 0.5), at(0.12, 0.5)),
-                (at(0.88, 0.5), at(1.0, 0.5)),
-            ] {
-                line(a, b);
-            }
         }
         AnnotationIcon::Line => line(at(0.1, 0.9), at(0.9, 0.1)),
         AnnotationIcon::Arrow => {

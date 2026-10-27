@@ -215,9 +215,13 @@ pub(crate) struct App {
     pub name_with_device_id: fn(&str, &str) -> String,
     /// The two halves of the pairing code
     pub pairing_code: fn(&str, &str) -> String,
-    pub browser_view_only: &'static str,
-    pub browser_view_and_control: &'static str,
-    pub view_and_control: &'static str,
+    /// What a visitor gets once allowed (capability names).
+    pub visitor_gets: fn(&str) -> String,
+    /// From a browser: what it gets once allowed.
+    pub browser_gets: fn(&str) -> String,
+    /// A connected participant asks for keyboard and mouse control.
+    pub control_request: &'static str,
+    pub control_this_session: &'static str,
     pub connection_attempt: &'static str,
     pub incoming_connection: &'static str,
     pub verifying_access_code: &'static str,
@@ -524,9 +528,10 @@ pub(crate) const ZH_CN: App = App {
     connection_request: "连接请求",
     name_with_device_id: |name, id| format!("{name} · 设备 ID {id}"),
     pairing_code: |first, second| format!("配对码 {first} {second} · 配对后双方可完全控制"),
-    browser_view_only: "网页端 · 仅观看和收听",
-    browser_view_and_control: "网页端 · 请求观看和控制",
-    view_and_control: "请求观看和控制",
+    visitor_gets: |caps| format!("可以：{caps}"),
+    browser_gets: |caps| format!("网页端 · 可以：{caps}"),
+    control_request: "请求键鼠控制",
+    control_this_session: "仅本次连接",
     connection_attempt: "收到连接尝试",
     incoming_connection: "对方正在连接本机",
     verifying_access_code: "正在校验访问码",
@@ -823,9 +828,10 @@ pub(crate) const EN: App = App {
     pairing_code: |first, second| {
         format!("Pairing code {first} {second} · Both devices get full control")
     },
-    browser_view_only: "Browser · View and listen only",
-    browser_view_and_control: "Browser · Requests view and control",
-    view_and_control: "Requests view and control",
+    visitor_gets: |caps| format!("May: {caps}"),
+    browser_gets: |caps| format!("Browser · May: {caps}"),
+    control_request: "Asks for keyboard and mouse control",
+    control_this_session: "This connection only",
     connection_attempt: "Connection attempt",
     incoming_connection: "A device is connecting to this device",
     verifying_access_code: "Verifying access code",

@@ -624,9 +624,12 @@ impl AuthenticatedClient {
             .await
     }
 
-    pub async fn answer_friend_request(&self, id: &str, accept: bool) -> Result<()> {
-        self.request(|api| async move { api.answer_friend_request(id, accept).await })
-            .await
+    pub async fn answer_friend_request(&self, id: &str, accept: Option<Vec<String>>) -> Result<()> {
+        self.request(|api| {
+            let accept = accept.clone();
+            async move { api.answer_friend_request(id, accept).await }
+        })
+        .await
     }
 
     pub async fn cancel_friend_request(&self, id: &str) -> Result<()> {

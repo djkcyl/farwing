@@ -81,7 +81,7 @@ impl Receiver {
             let mut backend = agent::Backend::default();
             let mut generation = 0;
             while !cancel.is_cancelled() {
-                let work = match incoming.recv_timeout(backend.interval()) {
+                let work = match incoming.recv_timeout(Duration::from_millis(50)) {
                     Ok(work) => Some(work),
                     Err(mpsc::RecvTimeoutError::Timeout) => None,
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,

@@ -1,12 +1,6 @@
 use super::*;
-use crate::protocol::annotation::{Click, Command, Laser, Operation};
-use std::time::{Duration, Instant};
+use crate::protocol::annotation::{Command, Operation};
 
-#[derive(Clone)]
-pub(super) enum Animation {
-    Laser { value: Laser, received: Instant },
-    Click { value: Click, started: Instant },
-}
 fn point(p: &PbDrawPoint) -> bool {
     p.x.is_finite() && p.y.is_finite() && (0.0..=1.0).contains(&p.x) && (0.0..=1.0).contains(&p.y)
 }
@@ -33,49 +27,16 @@ pub(in crate::features::host::annotation) fn valid_native(command: &Command) -> 
                     {
                         valid_native(c)
                     }
-                    Some(Operation::Replace(object)) if !object.transient => valid_native(c),
+                    Some(Operation::Replace(_)) => valid_native(c),
                     _ => false,
                 })
         }
         Some(Operation::Board(board)) => board.color.is_none_or(|c| c >> 24 == 255),
         Some(Operation::Clear(_)) => true,
-        Some(Operation::Laser(laser)) => {
-            laser.id != 0
-                && width(laser.width)
-                && (40..=300).contains(&laser.tail_ms)
-                && !laser.samples.is_empty()
-                && laser.samples.len() <= 32
-                && laser
-                    .samples
-                    .iter()
-                    .all(|s| s.point.as_ref().is_some_and(point) && s.age_ms <= laser.tail_ms + 220)
-                && laser.samples.windows(2).all(|w| w[0].age_ms >= w[1].age_ms)
-        }
-        Some(Operation::Click(click)) => {
-            click.id != 0
-                && width(click.width)
-                && click.center.as_ref().is_some_and(point)
-                && click
-                    .radii
-                    .as_ref()
-                    .is_some_and(|p| point(p) && p.x > 0.0 && p.y > 0.0)
-        }
         None => false,
     }
 }
 impl Model {
-    pub fn suspend(&mut self) {
-        if self.transient.is_empty() {
-            return;
-        }
-        for key in &self.transient {
-            self.strokes.remove(key);
-            self.dirty.insert(key.0);
-        }
-        self.transient.clear();
-        self.animations.clear();
-        self.changed();
-    }
     pub fn apply_action(
         &mut self,
         context: &Context,
@@ -130,12 +91,6 @@ impl Model {
                     return 4;
                 }
                 self.strokes.insert(key, Arc::new(stroke.clone()));
-                self.animations.remove(&key);
-                if object.transient {
-                    self.transient.insert(key);
-                } else {
-                    self.transient.remove(&key);
-                }
                 self.dirty.insert(key.0);
             }
             Operation::Board(board) => {
@@ -151,133 +106,15 @@ impl Model {
             }
             Operation::Clear(all) => {
                 self.dirty.extend(self.strokes.keys().map(|(id, _)| *id));
+                self.strokes.clear();
                 if *all {
                     self.dirty.extend(self.boards.keys().copied());
-                    self.strokes.clear();
                     self.boards.clear();
-                    self.transient.clear();
-                    self.animations.clear();
-                } else {
-                    self.strokes.retain(|key, _| self.transient.contains(key));
                 }
-            }
-            Operation::Laser(value) => {
-                let key = (value.screen, value.id);
-                if !self.can_animate(context, key) {
-                    return 4;
-                }
-                self.transient.insert(key);
-                self.animations.insert(
-                    key,
-                    Animation::Laser {
-                        value: value.clone(),
-                        received: Instant::now(),
-                    },
-                );
-                self.tick(Instant::now());
-            }
-            Operation::Click(value) => {
-                let key = (value.screen, value.id);
-                if !self.can_animate(context, key) {
-                    return 4;
-                }
-                self.transient.insert(key);
-                self.animations.insert(
-                    key,
-                    Animation::Click {
-                        value: value.clone(),
-                        started: Instant::now(),
-                    },
-                );
-                self.tick(Instant::now());
             }
             Operation::Draw(_) => unreachable!(),
         }
         self.changed();
         0
     }
-    fn can_animate(&self, context: &Context, key: (i32, u32)) -> bool {
-        Self::screen(context, Some(key.0)).is_some()
-            && (self.animations.contains_key(&key) || self.animations.len() < 8)
-            && (!self.strokes.contains_key(&key) || self.transient.contains(&key))
-            && (self.strokes.contains_key(&key) || self.strokes.len() < MAX_STROKES)
-            && self.strokes.values().map(|s| s.points.len()).sum::<usize>() + 64 <= MAX_POINTS
-    }
-    pub fn tick(&mut self, now: Instant) {
-        let mut expired = Vec::new();
-        for (&key, animation) in &self.animations {
-            let (points, color, line) = match animation {
-                Animation::Laser { value, received } => {
-                    let elapsed = now
-                        .saturating_duration_since(*received)
-                        .as_millis()
-                        .min(u32::MAX as u128) as u32;
-                    let age = elapsed.saturating_add(value.samples.last().unwrap().age_ms);
-                    let life = value.tail_ms + 220;
-                    if age >= life {
-                        expired.push(key);
-                        continue;
-                    }
-                    let mut points: Vec<_> = value
-                        .samples
-                        .iter()
-                        .filter(|s| s.age_ms.saturating_add(elapsed) <= value.tail_ms)
-                        .map(|s| s.point.clone().unwrap())
-                        .collect();
-                    if points.is_empty() {
-                        points.push(value.samples.last().unwrap().point.clone().unwrap());
-                    }
-                    (
-                        points,
-                        fade(value.color, 1.0 - age as f32 / life as f32),
-                        value.width,
-                    )
-                }
-                Animation::Click { value, started } => {
-                    let elapsed = now.saturating_duration_since(*started);
-                    if elapsed >= Duration::from_millis(450) {
-                        expired.push(key);
-                        continue;
-                    }
-                    let t = elapsed.as_secs_f32() / 0.45;
-                    let radius = 0.35 + 0.65 * t;
-                    let center = value.center.as_ref().unwrap();
-                    let radii = value.radii.as_ref().unwrap();
-                    let points = (0..=40)
-                        .map(|i| {
-                            let a = i as f32 / 40.0 * std::f32::consts::TAU;
-                            PbDrawPoint {
-                                x: (center.x + a.cos() * radii.x * radius).clamp(0.0, 1.0),
-                                y: (center.y + a.sin() * radii.y * radius).clamp(0.0, 1.0),
-                            }
-                        })
-                        .collect();
-                    (points, fade(value.color, 1.0 - t), value.width)
-                }
-            };
-            let stroke = PbDrawStroke {
-                stroke_id: key.1,
-                screen_id: Some(key.0),
-                points,
-                line_width: Some(line),
-                color: Some(color),
-            };
-            if self.strokes.get(&key).map(AsRef::as_ref) != Some(&stroke) {
-                self.strokes.insert(key, Arc::new(stroke));
-                self.dirty.insert(key.0);
-            }
-        }
-        for key in expired {
-            self.animations.remove(&key);
-            self.transient.remove(&key);
-            self.strokes.remove(&key);
-            self.dirty.insert(key.0);
-        }
-        if !self.dirty.is_empty() {
-            self.changed();
-        }
-    }
-}
-fn fade(color: u32, amount: f32) -> u32 {
-    (color & 0xffffff) | ((((color >> 24) as f32 * amount.clamp(0.0, 1.0)).round() as u32) << 24)
 }

@@ -248,10 +248,17 @@ impl Forwarding {
         layer: farwing_protocol::api::ForwardLayer,
     ) -> Result<(String, ForwardMode), ForwardError> {
         let record = self.room_of(None, room)?;
-        let controls = hub
-            .session(session)
-            .is_some_and(|s| s.controller_device_id == device);
+        let view = hub.session(session);
+        let controls = view.as_ref().is_some_and(|s| s.controller_device_id == device);
         if !controls || !record.sessions.contains(session) {
+            return Err(ForwardError::NotFound);
+        }
+        // The frame key opens the audio too: only a participant granted
+        // `audio` receives it from the forwarder.
+        let audio = view
+            .as_ref()
+            .is_some_and(|s| s.grants.iter().any(|c| c == farwing_protocol::caps::AUDIO));
+        if !audio && crate::sfu::sdp::media_sections(offer).contains(&crate::sfu::sdp::Kind::Audio) {
             return Err(ForwardError::NotFound);
         }
         let answer = self

@@ -16,6 +16,8 @@ pub(super) struct FriendsUi {
     pub error: Option<String>,
     pub editor: Option<GrantEditor>,
     pub confirm_remove: Option<UserSummary>,
+    /// Accepting a request: what to share with the new friend.
+    pub accepting: Option<(FriendRequest, Vec<String>)>,
 }
 
 #[derive(Clone, Default)]
@@ -38,7 +40,8 @@ pub(super) struct GrantEditor {
 pub(super) enum FriendOperation {
     Refresh,
     Add(String),
-    Answer(String, bool),
+    /// Accept sharing these capabilities, or reject (`None`).
+    Answer(String, Option<Vec<String>>),
     Cancel(String),
     Remove(String),
     LoadGrants(UserSummary),
@@ -82,9 +85,10 @@ pub(super) async fn execute(
             }
         },
         FriendOperation::Answer(id, accept) => {
+            let accepted = accept.is_some();
             client.answer_friend_request(&id, accept).await?;
             FriendResult::Done(
-                if accept {
+                if accepted {
                     t().app.friend_request_accepted
                 } else {
                     t().app.friend_request_declined

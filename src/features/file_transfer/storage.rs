@@ -144,7 +144,40 @@ pub(super) fn local_path(value: &str) -> Result<PathBuf> {
             Err(e) => return Err(e.into()),
         }
     }
+    ensure!(!protected(&result), "{}", t().features.transfer_protected_path);
     Ok(result)
+}
+
+/// Farwing's own state (device keys, trusted devices, settings): never
+/// reached by file operations. Compared in long form: the deepest existing
+/// ancestor is resolved (short names, case), the rest appended.
+fn protected(path: &Path) -> bool {
+    let resolve = |path: &Path| -> PathBuf {
+        let mut existing = path.to_path_buf();
+        let mut rest = Vec::new();
+        while !existing.exists() {
+            match (existing.file_name().map(ToOwned::to_owned), existing.parent()) {
+                (Some(name), Some(parent)) => {
+                    rest.push(name);
+                    existing = parent.to_path_buf();
+                }
+                _ => return path.to_path_buf(),
+            }
+        }
+        let mut resolved = dunce::canonicalize(&existing).unwrap_or(existing);
+        resolved.extend(rest.into_iter().rev());
+        resolved
+    };
+    let path = resolve(path);
+    [
+        crate::product::local_app_data()
+            .ok()
+            .map(|p| p.join(crate::product::PRODUCT_NAME)),
+        crate::product::program_data_dir().ok(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|root| underneath(&path, &resolve(&root)))
 }
 pub(super) fn canonical_dir(p: &Path) -> Result<PathBuf> {
     ensure!(p.is_absolute(), "{}", t().features.transfer_local_dir_not_absolute);

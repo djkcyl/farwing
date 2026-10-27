@@ -1,5 +1,5 @@
 //! Native annotation messages (peer frame type `ANNOTATION`) on the session channel.
-use crate::features::stream_control::annotation::wire::{PbDrawPoint, PbDrawRequest, PbDrawStroke};
+use crate::features::stream_control::annotation::wire::{PbDrawRequest, PbDrawStroke};
 use anyhow::{Result, ensure};
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,7 @@ pub(crate) enum Payload {
 }
 #[derive(Clone, PartialEq, Message, Serialize, Deserialize)]
 pub(crate) struct Command {
-    #[prost(oneof = "Operation", tags = "1,2,3,4,5,6,7")]
+    #[prost(oneof = "Operation", tags = "1,2,3,4,5")]
     pub operation: Option<Operation>,
 }
 #[derive(Clone, PartialEq, prost::Oneof, Serialize, Deserialize)]
@@ -39,13 +39,9 @@ pub(crate) enum Operation {
     Batch(Batch),
     #[prost(message, tag = "4")]
     Board(Board),
-    /// false clears ordinary ink; true also clears background and transient tools.
+    /// false clears the ink; true also clears the whiteboards.
     #[prost(bool, tag = "5")]
     Clear(bool),
-    #[prost(message, tag = "6")]
-    Laser(Laser),
-    #[prost(message, tag = "7")]
-    Click(Click),
 }
 #[derive(Clone, PartialEq, Message, Serialize, Deserialize)]
 pub(crate) struct Batch {
@@ -56,8 +52,6 @@ pub(crate) struct Batch {
 pub(crate) struct Object {
     #[prost(message, optional, tag = "1")]
     pub stroke: Option<PbDrawStroke>,
-    #[prost(bool, tag = "2")]
-    pub transient: bool,
 }
 #[derive(Clone, PartialEq, Message, Serialize, Deserialize)]
 pub(crate) struct Board {
@@ -65,43 +59,6 @@ pub(crate) struct Board {
     pub screen: i32,
     #[prost(fixed32, optional, tag = "2")]
     pub color: Option<u32>,
-}
-#[derive(Clone, PartialEq, Message, Serialize, Deserialize)]
-pub(crate) struct LaserSample {
-    #[prost(message, optional, tag = "1")]
-    pub point: Option<PbDrawPoint>,
-    #[prost(uint32, tag = "2")]
-    pub age_ms: u32,
-}
-#[derive(Clone, PartialEq, Message, Serialize, Deserialize)]
-pub(crate) struct Laser {
-    #[prost(uint32, tag = "1")]
-    pub id: u32,
-    #[prost(int32, tag = "2")]
-    pub screen: i32,
-    #[prost(float, tag = "3")]
-    pub width: f32,
-    #[prost(fixed32, tag = "4")]
-    pub color: u32,
-    #[prost(uint32, tag = "5")]
-    pub tail_ms: u32,
-    #[prost(message, repeated, tag = "6")]
-    pub samples: Vec<LaserSample>,
-}
-#[derive(Clone, PartialEq, Message, Serialize, Deserialize)]
-pub(crate) struct Click {
-    #[prost(uint32, tag = "1")]
-    pub id: u32,
-    #[prost(int32, tag = "2")]
-    pub screen: i32,
-    #[prost(message, optional, tag = "3")]
-    pub center: Option<PbDrawPoint>,
-    #[prost(message, optional, tag = "4")]
-    pub radii: Option<PbDrawPoint>,
-    #[prost(float, tag = "5")]
-    pub width: f32,
-    #[prost(fixed32, tag = "6")]
-    pub color: u32,
 }
 impl Command {
     pub fn new(operation: Operation) -> Self {

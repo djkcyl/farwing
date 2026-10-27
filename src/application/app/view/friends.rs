@@ -169,6 +169,7 @@ impl DeviceCenterApp {
             self.friend_list(ui, &data);
         });
         self.grant_editor(ui.ctx());
+        self.accept_dialog(ui.ctx());
         self.friend_confirmations(ui.ctx());
     }
 
@@ -236,8 +237,10 @@ impl DeviceCenterApp {
                     }
                 },
             );
-            if let Some(accept) = answer {
-                self.request_friends(FriendOperation::Answer(request.id.clone(), accept));
+            match answer {
+                Some(true) => self.friends.accepting = Some((request.clone(), friend_default())),
+                Some(false) => self.request_friends(FriendOperation::Answer(request.id.clone(), None)),
+                None => {}
             }
         }
         for request in &data.outgoing {
@@ -557,6 +560,51 @@ impl DeviceCenterApp {
         } else if close {
             self.friends.editor = None;
             self.friends.error = None;
+        }
+    }
+
+    /// Accepting a request: what the new friend may do on this account's
+    /// devices (changed later per device).
+    fn accept_dialog(&mut self, ctx: &egui::Context) {
+        let Some((request, caps)) = &mut self.friends.accepting else {
+            return;
+        };
+        let text = &t().center;
+        let busy = self.friends.busy;
+        let mut close = false;
+        let mut accept = None;
+        let title = (text.accept_friend)(request.user.display_name());
+        let response = egui::Modal::new(egui::Id::new("friend-accept"))
+            .frame(dialog_frame())
+            .show(ctx, |ui| {
+                ui.set_width(520.0);
+                close |= crate::ui::controls::dialog_header(
+                    ui,
+                    &title,
+                    crate::ui::controls::DialogIcon::Info,
+                    true,
+                );
+                ui.label(RichText::new(text.they_may).strong());
+                ui.add_space(4.0);
+                cards::caps_editor(ui, "accept", caps);
+                let (accepted, dismiss) = crate::ui::controls::dialog_actions(
+                    ui,
+                    Some(crate::ui::controls::DialogAction::new(text.accept).enabled(!busy)),
+                    Some(t().common.cancel),
+                );
+                if accepted {
+                    accept = Some((request.id.clone(), caps.clone()));
+                }
+                close |= dismiss;
+            });
+        if response.should_close() {
+            close = true;
+        }
+        if let Some((id, caps)) = accept {
+            self.friends.accepting = None;
+            self.request_friends(FriendOperation::Answer(id, Some(caps)));
+        } else if close {
+            self.friends.accepting = None;
         }
     }
 

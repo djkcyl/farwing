@@ -57,7 +57,7 @@ export function capPresets(): [string, string[]][] {
 }
 
 /// Granted to a new friend (`caps::DEFAULT_FRIEND`).
-export const DEFAULT_FRIEND = ['view', 'annotation'];
+export const DEFAULT_FRIEND = ['view', 'audio', 'annotation'];
 
 export function capText(id: string): string {
   return named(t().format.caps, id);

@@ -42,14 +42,14 @@ export function useUnreadNotices(enabled: boolean): number {
 /// Title and line of a notification in the current language.
 export function noticeText(n: Notice): { title: string; body: string } {
   const text = t().notices.text[n.kind];
-  return text ? text((n.data ?? {}) as Record<string, string | number | undefined>) : { title: n.kind, body: '' };
+  return text ? text((n.data ?? {}) as Record<string, unknown>) : { title: n.kind, body: '' };
 }
 
 /// The settings' groups, in order.
 export const NOTICE_GROUPS: [keyof ReturnType<typeof t>['notices']['groups'], string[]][] = [
   ['security', ['login.new_device', 'login.failures', 'security.changed', 'device.removed']],
   ['connections', ['connection.incoming', 'connection.refused', 'connection.own']],
-  ['friends', ['friend.request', 'friend.accepted', 'friend.grants']],
+  ['friends', ['friend.request', 'friend.accepted', 'friend.grants', 'friend.removed']],
   ['devices', ['power.remote', 'device.offline', 'access.changed']],
   ['admin', ['admin.certificate', 'admin.node_offline', 'admin.registered']],
 ];

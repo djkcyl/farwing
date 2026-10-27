@@ -553,7 +553,7 @@ pub async fn register(
     };
     if invite.auto_friend {
         let (a, b) = (invite.created_by.clone(), user_id.clone());
-        if let Err(e) = app.db.call(move |c| db::make_friends(c, &a, &b).map(drop)).await {
+        if let Err(e) = app.db.call(move |c| db::make_friends(c, &a, &b, &farwing_protocol::caps::normalize(farwing_protocol::caps::DEFAULT_FRIEND)).map(drop)).await {
             tracing::warn!(error = %format!("{e:#}"), "invited account not made a friend");
         }
     }

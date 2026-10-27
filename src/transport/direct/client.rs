@@ -98,17 +98,19 @@ async fn read<R: AsyncRead + Unpin>(reader: &mut R, wait: Duration) -> Result<En
     Ok(envelope)
 }
 
-/// Connect and authorise. `cancel` aborts every wait.
+/// Connect and authorise; `expected`: only this device is connected to.
+/// `cancel` aborts every wait.
 pub(crate) async fn connect(
     target: &Target,
     local: &LocalDevice,
     auth: Auth,
+    expected: Option<&str>,
     cancel: &CancellationToken,
 ) -> Result<Connected> {
     tokio::select! {
         biased;
         _ = cancel.cancelled() => bail!("connection cancelled"),
-        result = connect_admitted(target, local, auth) => result,
+        result = connect_admitted(target, local, auth, expected) => result,
     }
 }
 
@@ -116,8 +118,13 @@ pub(crate) async fn connect(
 /// answer comes from caches that it may refresh before deciding (a friend's
 /// access withdrawn meanwhile): then the code the user gave, or asking the
 /// host's user, still applies, on a new connection.
-async fn connect_admitted(target: &Target, local: &LocalDevice, auth: Auth) -> Result<Connected> {
-    match connect_inner(target, local, auth.clone(), true).await {
+async fn connect_admitted(
+    target: &Target,
+    local: &LocalDevice,
+    auth: Auth,
+    expected: Option<&str>,
+) -> Result<Connected> {
+    match connect_inner(target, local, auth.clone(), true, expected).await {
         Err(error)
             if matches!(auth, Auth::Code(_))
                 && error
@@ -125,7 +132,7 @@ async fn connect_admitted(target: &Target, local: &LocalDevice, auth: Auth) -> R
                     .is_some_and(|failure| failure.code == ErrorCode::Forbidden) =>
         {
             tracing::info!(%error, "host no longer admits this device by key; using the code or confirmation");
-            connect_inner(target, local, auth, false).await
+            connect_inner(target, local, auth, false, expected).await
         }
         result => result,
     }
@@ -181,6 +188,7 @@ async fn connect_inner(
     local: &LocalDevice,
     auth: Auth,
     by_key_if_admitted: bool,
+    expected: Option<&str>,
 ) -> Result<Connected> {
     let Opened {
         mut reader,
@@ -189,6 +197,18 @@ async fn connect_inner(
         ekm,
         address,
     } = open(target, local).await?;
+    // The hello is signed by the key the ID derives from: a chosen device
+    // is connected to only when it is what answers at the address.
+    if let Some(device_id) = expected {
+        ensure!(
+            host.device_id == device_id,
+            "{}",
+            (t().session.pairing_wrong_device)(
+                &target.to_string(),
+                &crate::account::api::device_id_text(device_id)
+            )
+        );
+    }
     // A host that admits this device by its key needs neither a code nor a
     // confirmation, whichever was asked for.
     let auth = if host.admits && by_key_if_admitted { Auth::Key } else { auth };

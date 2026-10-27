@@ -10,13 +10,6 @@ pub(super) struct Backend {
     local: Option<Local>,
 }
 impl Backend {
-    pub fn interval(&self) -> Duration {
-        if self.local.as_ref().is_some_and(|l| l.model.animated()) {
-            Duration::from_millis(16)
-        } else {
-            Duration::from_millis(50)
-        }
-    }
     pub fn exchange(
         &mut self,
         context: Context,
@@ -65,7 +58,6 @@ struct Local {
     shown: bool,
     revision: u64,
     desktop: Option<(Instant, i32)>,
-    last_animation: Instant,
 }
 impl Local {
     fn new() -> Result<Self> {
@@ -76,7 +68,6 @@ impl Local {
             shown: false,
             revision: u64::MAX,
             desktop: None,
-            last_animation: Instant::now(),
         })
     }
     fn exchange(&mut self, context: Context, command: Option<&Action>) -> Result<i32> {
@@ -104,14 +95,6 @@ impl Local {
             self.model.clear();
         }
         let code = command.map_or(0, |c| self.model.apply_action(&self.context, c, desktop));
-        if desktop != 0 {
-            self.model.suspend();
-        }
-        if desktop == 0 && self.last_animation.elapsed() >= Duration::from_millis(16) {
-            let now = Instant::now();
-            self.model.tick(now);
-            self.last_animation = now;
-        }
         let visible = self.model.enabled && self.context.allowed && desktop == 0;
         if !visible {
             self.overlay.hide();

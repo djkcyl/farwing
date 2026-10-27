@@ -57,7 +57,7 @@ async fn befriend(t: &Two) {
         .await;
     let id = r.ok()["sent"]["request"]["id"].as_str().unwrap().to_owned();
     t.srv
-        .post_empty(&format!("/api/v2/friends/requests/{id}/accept"), &t.bob)
+        .post(&format!("/api/v2/friends/requests/{id}/accept"), &t.bob, json!({"caps": ["view", "annotation"]}))
         .await
         .ok();
 }
@@ -105,7 +105,7 @@ async fn friend_requests_lifecycle_and_pushes() {
     assert_eq!(reqs["outgoing"][0]["user"]["username"], "bob");
 
     // Only the recipient accepts; only the sender cancels.
-    srv.post_empty(&format!("/api/v2/friends/requests/{id}/accept"), &t.alice)
+    srv.post(&format!("/api/v2/friends/requests/{id}/accept"), &t.alice, json!({"caps": []}))
         .await
         .err(404, "not_found");
     srv.delete(&format!("/api/v2/friends/requests/{id}"), &t.bob)
@@ -114,7 +114,7 @@ async fn friend_requests_lifecycle_and_pushes() {
 
     // bob accepts: alice is told; each now sees the other's devices.
     let r = srv
-        .post_empty(&format!("/api/v2/friends/requests/{id}/accept"), &t.bob)
+        .post(&format!("/api/v2/friends/requests/{id}/accept"), &t.bob, json!({"caps": ["view", "annotation"]}))
         .await;
     assert_eq!(r.ok()["user"]["username"], "alice");
     assert!(r.ok()["since"].as_i64().unwrap() > 0);
@@ -148,7 +148,7 @@ async fn friend_requests_lifecycle_and_pushes() {
         .await
         .ok()
         .clone();
-    assert_eq!(g, json!({"default": ["view", "annotation"], "devices": {}}));
+    assert_eq!(g, json!({"default": ["view", "audio", "annotation"], "devices": {}}));
     // Friends' devices show limited details and cannot be managed.
     let d = srv
         .get(&format!("/api/v2/devices/{}/detail", t.bob.id), &t.alice)

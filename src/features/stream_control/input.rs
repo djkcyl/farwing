@@ -93,11 +93,19 @@ impl StreamControlHandle {
     }
 
     pub fn set_mouse_mode(&self, mode: MouseMode) -> Result<()> {
-        self.change_mouse_mode(mode, true)
+        self.change_mouse_mode(mode, true, false)
+    }
+
+    /// Turn control on, asking the host's user for it in this connection
+    /// (after a refusal for lack of the grant).
+    pub(crate) fn ask_control(&self) -> Result<()> {
+        let mode = lock(&self.shared).device_preferences.mouse_mode;
+        let mode = if mode == MouseMode::View { MouseMode::Smart } else { mode };
+        self.change_mouse_mode(mode, true, true)
     }
 
     pub(crate) fn suspend_mouse_control(&self) -> Result<()> {
-        self.change_mouse_mode(MouseMode::View, false)
+        self.change_mouse_mode(MouseMode::View, false, false)
     }
 
     pub(crate) fn reconcile_mouse_failure(&self) {
@@ -109,7 +117,7 @@ impl StreamControlHandle {
         self.refresh_mouse_policy(&mut state);
     }
 
-    fn change_mouse_mode(&self, mode: MouseMode, user_choice: bool) -> Result<()> {
+    fn change_mouse_mode(&self, mode: MouseMode, user_choice: bool, ask: bool) -> Result<()> {
         let mut state = lock(&self.shared);
         expire_cursor_request(&mut state);
         state.mouse_restore_point = None;
@@ -118,7 +126,7 @@ impl StreamControlHandle {
             // Local revocation never waits for remote settings.
             state.mouse.disable();
             if was_controlling {
-                self.request_turn_locked(&mut state, false, false);
+                self.request_turn_locked(&mut state, false, false, false);
             }
         } else {
             ensure_ready(&state)?;
@@ -133,7 +141,7 @@ impl StreamControlHandle {
             let (relative, _) = mouse_policy(&state, mode);
             state.mouse.enable(mode, relative)?;
             if !was_controlling {
-                self.request_turn_locked(&mut state, true, false);
+                self.request_turn_locked(&mut state, true, false, ask);
             }
         }
         state.restore_input_pending = false;
@@ -203,7 +211,7 @@ impl StreamControlHandle {
         state.mouse.enable(mode, relative)?;
         // A rebuilt session starts without a token holder; the host decides
         // whether this participant may take it back without asking.
-        self.request_turn_locked(&mut state, true, true);
+        self.request_turn_locked(&mut state, true, true, false);
         if recovering {
             tracing::info!("remote input control restored after transport recovery");
         }

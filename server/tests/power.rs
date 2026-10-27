@@ -98,9 +98,10 @@ async fn reboot_push_and_result() {
         .post("/api/v2/friends/requests", &bob, json!({"username": "alice"}))
         .await;
     let request_id = req.ok()["sent"]["request"]["id"].as_str().unwrap().to_owned();
-    srv.post_empty(
+    srv.post(
         &format!("/api/v2/friends/requests/{request_id}/accept"),
         &host,
+        serde_json::json!({"caps": ["view", "annotation"]}),
     )
     .await
     .ok();

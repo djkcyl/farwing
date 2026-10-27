@@ -299,6 +299,8 @@ pub struct StreamControlSnapshot {
     pub mouse_preference: MouseMode,
     pub mouse_mode: MouseMode,
     pub mouse_pending: bool,
+    /// Control awaits the host's user (asked for this connection).
+    pub control_asking: bool,
     pub mouse_error: Option<String>,
     pub cursor_pending: bool,
     pub cursor_error: Option<String>,
@@ -326,7 +328,10 @@ pub struct StreamControlSnapshot {
     pub last_applied_sequence: Option<i64>,
     pub last_error: Option<String>,
     pub last_notice: Option<String>,
-    pub remote_notice: Option<String>,
+    /// The latest notice about the host, with its number: each one is
+    /// shown once, also when its text repeats an earlier one. True when it
+    /// offers to ask the host's user for control.
+    pub remote_notice: Option<(u64, String, bool)>,
     pub persistence_error: Option<String>,
     pub network: NetworkControlSnapshot,
 }
@@ -422,10 +427,13 @@ struct StreamControlState {
     annotation_extension: Option<u64>,
     custom_bitrate_limit: u32,
     features: Option<crate::account::feature_ability::FeaturePolicy>,
-    remote_notice: Option<(Instant, String)>,
+    remote_notice: Option<(Instant, u64, String, bool)>,
+    remote_notices: u64,
     /// A control-token take awaiting the host's answer: its sequence and
     /// whether it restores the previous control state (automatic).
-    turn_request: Option<(i64, bool)>,
+    /// A take awaiting the host: its sequence, whether automatic, whether
+    /// it asks the host's user.
+    turn_request: Option<(i64, bool, bool)>,
     /// Capabilities the host put in effect for this participant (`PERMISSIONS`).
     grants: Option<Vec<String>>,
     device_preferences: crate::features::viewing_settings::DevicePreferences,
@@ -485,6 +493,18 @@ struct StreamControlState {
     reported_drops: u64,
 }
 
+impl StreamControlState {
+    /// A notice about the host, shown once.
+    pub(super) fn notify_remote(&mut self, notice: String) {
+        self.notify_remote_with(notice, false);
+    }
+    /// `ask`: the notice offers to ask the host's user for control.
+    pub(super) fn notify_remote_with(&mut self, notice: String, ask: bool) {
+        self.remote_notices = self.remote_notices.wrapping_add(1);
+        self.remote_notice = Some((Instant::now(), self.remote_notices, notice, ask));
+    }
+}
+
 impl StreamControlHandle {
     pub(crate) fn new(
         profile: ConnectionMediaProfile,
@@ -519,6 +539,7 @@ impl StreamControlHandle {
             device_persistence_error: None,
             restore_input_pending: false,
             remote_notice: None,
+            remote_notices: 0,
             turn_request: None,
             grants: None,
             remote_cursor: cursor.clone(),
@@ -773,6 +794,7 @@ impl StreamControlHandle {
             mouse_preference: state.device_preferences.mouse_mode,
             mouse_mode: state.mouse.mode(),
             mouse_pending: state.mouse.waiting_for_neutral() || state.mouse.transport_recovering(),
+            control_asking: state.turn_request.is_some_and(|(_, _, ask)| ask),
             mouse_error: state.mouse.error(),
             cursor_pending: state.cursor_pending.is_some(),
             cursor_error: state.cursor_error.clone(),
@@ -825,8 +847,8 @@ impl StreamControlHandle {
             remote_notice: state
                 .remote_notice
                 .as_ref()
-                .filter(|(at, _)| at.elapsed() < std::time::Duration::from_secs(3))
-                .map(|(_, notice)| notice.clone()),
+                .filter(|(at, ..)| at.elapsed() < std::time::Duration::from_secs(3))
+                .map(|(_, number, notice, ask)| (*number, notice.clone(), *ask)),
             persistence_error: state
                 .persistence_error
                 .clone()

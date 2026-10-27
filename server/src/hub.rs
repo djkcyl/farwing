@@ -705,7 +705,20 @@ impl Hub {
         link.conn = Some(conn.clone());
         let hello = self.hello(link, &conn.conn_id, token, true);
         conn.send(&hello);
-        let (role, device) = (link.role, link.device_id.clone());
+        let (role, device, epoch) = (link.role, link.device_id.clone(), link.epoch);
+        if role == Role::Host && was_detached {
+            // Permission changes while detached were not delivered: the
+            // host's sessions get their current grants again.
+            for s in st.sessions.values().filter(|s| {
+                s.host_device_id == device && s.host_notified && s.host_epoch == epoch
+            }) {
+                let grants = s.grants.clone();
+                conn.send(
+                    &Envelope::new(types::SESSION_PERMISSIONS, SessionPermissions { grants })
+                        .with_sid(&s.id),
+                );
+            }
+        }
         drop(st);
         tracing::info!(device_id = %device, ?role, "connection resumed");
         if role == Role::Host && was_detached {

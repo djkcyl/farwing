@@ -16,8 +16,6 @@ pub(crate) struct Model {
     pub revision: u64,
     pub dirty: BTreeSet<i32>,
     pub boards: BTreeMap<i32, u32>,
-    transient: BTreeSet<(i32, u32)>,
-    animations: BTreeMap<(i32, u32), native::Animation>,
 }
 pub(super) fn valid(command: &PbDrawRequestKind) -> bool {
     match command {
@@ -45,15 +43,10 @@ impl Model {
         self.strokes.clear();
         self.dirty.extend(self.boards.keys().copied());
         self.boards.clear();
-        self.transient.clear();
-        self.animations.clear();
         self.changed();
     }
     fn changed(&mut self) {
         self.revision = self.revision.wrapping_add(1);
-    }
-    pub fn animated(&self) -> bool {
-        !self.animations.is_empty()
     }
     pub fn reconcile(&mut self, old: &Context, new: &Context) {
         if old.screens == new.screens {
@@ -68,9 +61,6 @@ impl Model {
         self.boards.retain(|id,_| {
             matches!((old.screens.iter().find(|s|s.id==*id),new.screens.iter().find(|s|s.id==*id)),(Some(a),Some(b)) if a.device_name==b.device_name && a.identity==b.identity && a.adapter==b.adapter)
         });
-        self.transient.retain(|key| self.strokes.contains_key(key));
-        self.animations
-            .retain(|key, _| self.transient.contains(key));
         if before != self.strokes.len() || old.screens != new.screens {
             self.dirty
                 .extend(old.screens.iter().chain(&new.screens).map(|s| s.id));
@@ -144,8 +134,6 @@ impl Model {
                     self.strokes.clear();
                     self.dirty.extend(self.boards.keys().copied());
                     self.boards.clear();
-                    self.transient.clear();
-                    self.animations.clear();
                 } // ALL is session-wide, even with an optional screen.
                 2 if clear.stroke_id != 0 => {
                     self.dirty.extend(
@@ -160,9 +148,6 @@ impl Model {
                     self.strokes.retain(|(screen, id), _| {
                         *id != clear.stroke_id || clear.screen_id.is_some_and(|s| s != *screen)
                     });
-                    self.transient.retain(|key| self.strokes.contains_key(key));
-                    self.animations
-                        .retain(|key, _| self.transient.contains(key));
                 }
                 _ => return 4,
             },

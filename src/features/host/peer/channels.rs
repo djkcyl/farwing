@@ -342,6 +342,36 @@ pub(super) async fn bind_channel(
                 match crate::features::stream_control::publisher::control_turn(&message.data) {
                     Ok(Some(turn)) => {
                         let lease = screens.lock().await.authorization();
+                        if turn.take
+                            && turn.ask
+                            && lease.requested()
+                            && !lease.granted(farwing_protocol::caps::CONTROL)
+                        {
+                            // The host's user answers within a minute; the
+                            // channel keeps serving meanwhile.
+                            let weak = weak.clone();
+                            let cancel = cancel.clone();
+                            tokio::spawn(async move {
+                                let (held, refusal, holder) = if lease.ask_control().await {
+                                    control_turn(&lease, true, false)
+                                } else {
+                                    (
+                                        false,
+                                        crate::features::stream_control::control_turn::refusal::DECLINED,
+                                        String::new(),
+                                    )
+                                };
+                                if let Some(channel) = weak.upgrade()
+                                    && !cancel.is_cancelled()
+                                    && let Err(error) = channel
+                                        .send(&Bytes::from(turn.response(held, refusal, holder)))
+                                        .await
+                                {
+                                    tracing::debug!(%error, "control request response failed");
+                                }
+                            });
+                            return;
+                        }
                         let (held, refusal, holder) =
                             control_turn(&lease, turn.take, turn.automatic);
                         if let Some(channel) = weak.upgrade()
