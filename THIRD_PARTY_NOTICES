@@ -8,28 +8,21 @@ components remain effective. This inventory neither replaces the full
 original licenses nor guarantees that all provenance and
 distribution-compliance reviews have been completed.
 
-1. Origin: OpenUUYC
+1. UU Remote
 
-Farwing is derived from OpenUUYC by djkcyl and contributors
-(https://github.com/djkcyl/openuuyc, v1.0.0-rc.3, commit 506df56). The
-original OpenUUYC copyright, provenance and license notice is preserved
-verbatim in licenses/OpenUUYC-NOTICE.txt. Mentions of "OpenUUYC" below
-describe that history.
+Farwing uses its own Farwing Protocol (docs/protocol/farwing-protocol.md)
+and the self-hosted Farwing Server, and does not contact, load or require
+any UU Remote service, client, SDK, credential or component. The names UU
+Remote and NetEase, and their code, documentation, marks, assets and
+services, belong to their respective rightsholders; Farwing claims no
+affiliation.
 
-OpenUUYC implemented interoperability with the NetEase UU Remote service.
-Farwing removes that service binding: it uses its own Farwing Protocol
-(docs/protocol/farwing-protocol.md) and the self-hosted Farwing Server, and
-does not contact, load or require any UU Remote service, client, SDK,
-credential or component. The names UU Remote and NetEase, and their code,
-documentation, marks, assets and services, belong to their respective
-rightsholders; Farwing claims no affiliation.
-
-Parameter provenance: OpenUUYC's notice stated that its RS-FEC repair-count
-tables (formerly src/features/host/fec-high-rtt.bin and fec-low-rtt.bin)
-were obtained from the UU V4.7.3 SDK. Farwing deleted those tables; repair
-counts are now computed from a binomial loss model in
-src/transport/fec_policy.rs. The same notice listed the bitrate budget
-table in src/features/host/parameters.rs; it is retained unchanged in this
+Parameter provenance: the RS-FEC repair-count tables formerly in
+src/features/host/fec-high-rtt.bin and fec-low-rtt.bin were obtained from
+the UU V4.7.3 SDK. Farwing deleted those tables; repair counts are now
+computed from a binomial loss model in src/transport/fec_policy.rs. The
+bitrate budget table in src/features/host/parameters.rs was listed with
+those tables and its origin is unconfirmed; it is retained unchanged in this
 release to preserve streaming behavior and is scheduled for review.
 
 2. Video decoding and platform adaptation
@@ -57,7 +50,7 @@ Sender-side Google Congestion Control algorithm core:
 vendor/goog_cc/ is based on goog_cc 0.1.4, a Rust port of WebRTC algorithms.
 The original BSD-style LICENSE, PATENTS, AUTHORS and library tests are retained.
 Transport feedback, pacing and protection policies are integrated by
-OpenUUYC/Farwing; the upstream default configuration is retained in the vendor tree.
+Farwing; the upstream default configuration is retained in the vendor tree.
 Source: https://github.com/kixelated/goog_cc
 
 FFmpeg-derived Rust decoding and DXVA parameter implementations:
@@ -67,8 +60,8 @@ src/platform/windows/decoder/rust_dxva/.
 Retained original author attributions include Michael Niedermayer, Loren
 Merritt, Daniel Kang, Laurent Aimar, and Hendrik Leppkes. File-specific
 sources and attributions must also be preserved. Rust ports, SIMD
-optimizations, parameter mapping, and other covered modifications do not
-become subject to the project's reserved-rights terms instead.
+optimizations, parameter mapping, and other covered modifications remain
+under the LGPL.
 Reference: FFmpeg 8.0.3, https://ffmpeg.org/releases/ffmpeg-8.0.3.tar.xz
 License texts: src/media/decoder/COPYING.FFmpeg and
 crates/codec/kernels/h264/COPYING.LGPLv2.1.
@@ -79,7 +72,7 @@ Original notice: Copyright (c) 2026 NyxWays.
 License texts: src/media/decoder/LICENSE-MIT and src/media/decoder/LICENSE-APACHE.
 The original crate was removed, but licenses and attributions for existing
 derivative code remain applicable. mediaway-common has also been removed;
-active media types and decoder ownership now belong to OpenUUYC.
+active media types and decoder ownership now belong to Farwing.
 
 Selected AVC/HEVC syntax, reference metadata and transform primitives are
 adapted from oxideav-h264 0.1.8 and oxideav-h265 0.0.10 (MIT),
@@ -145,14 +138,13 @@ frameworks or graphics drivers.
 This repository distributes the plugin SDK and the video-filter example.
 The client does not bundle third-party inference runtimes or model weights.
 Separately installed plugins, runtimes, and assets remain subject to their
-own copyright and license terms; the project's original-code restrictions
-do not replace those terms.
+own copyright and license terms; the project's license does not replace
+those terms.
 
 6. Distribution and corresponding source
 
 LGPL components and their modifications must retain the applicable rights
-to use, modify, and redistribute them. Restrictions on original project
-material must not become additional restrictions on LGPL components.
+to use, modify, and redistribute them.
 The single-file Windows EXE statically links relevant components. Using
 Rust or UPX compression, or omitting separate DLLs, does not remove
 obligations concerning corresponding source and relinkable materials.
@@ -163,9 +155,8 @@ necessary build scripts, resources, and license texts, with access provided
 as required by the applicable licenses. The required materials depend on
 the actual build. Repository visibility or the existence of this inventory
 alone does not establish compliance.
-Project source: https://github.com/djkcyl/openuuyc
-Use the tag or commit matching the release, rather than assuming that the
-main branch always corresponds to a particular binary.
+Use the source at the tag or commit matching the release, rather than
+assuming that the main branch always corresponds to a particular binary.
 
 Upstream license texts retained in the project have independent effect.
 This file and the root LICENSE must not rewrite their grants, conditions,

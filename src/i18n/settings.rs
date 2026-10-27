@@ -159,8 +159,6 @@ pub(crate) struct Settings {
     pub wol_issue_unconfirmed: fn(&str) -> String,
 
     // About
-    pub project_links: &'static str,
-    pub upstream_project: &'static str,
     pub copyright_section: &'static str,
     pub unaffiliated: &'static str,
     pub ffmpeg_notice: &'static str,
@@ -518,8 +516,6 @@ pub(crate) const ZH_CN: Settings = Settings {
     wol_issue_magic_packet: "无法设置仅允许魔术包唤醒",
     wol_issue_unconfirmed: |property| format!("{property}：未确认生效"),
 
-    project_links: "项目链接",
-    upstream_project: "上游项目 OpenUUYC",
     copyright_section: "著作权、协议与许可",
     unaffiliated: "Farwing 与网易及 UU 远程无关",
     ffmpeg_notice: "包含 FFmpeg 派生组件（LGPL-2.1-or-later）",
@@ -880,8 +876,6 @@ pub(crate) const EN: Settings = Settings {
     wol_issue_magic_packet: "Couldn't restrict wake to magic packets",
     wol_issue_unconfirmed: |property| format!("{property}: not confirmed"),
 
-    project_links: "Project links",
-    upstream_project: "Upstream project OpenUUYC",
     copyright_section: "Copyright and licenses",
     unaffiliated: "Farwing is not affiliated with NetEase or UU Remote",
     ffmpeg_notice: "Includes components derived from FFmpeg (LGPL-2.1-or-later)",

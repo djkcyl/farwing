@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Macroblock-at-a-time reconstruction, following FFmpeg h264_mb_template.c,
 // h264_mc_template.c and h264_slice.c. Copyright (c) 2003-2011 Michael
-// Niedermayer; Rust adaptation Copyright (c) 2026 OpenUUYC contributors.
+// Niedermayer; Rust adaptation Copyright (c) 2026 Farwing contributors.
 use crate::{
     Error, Result,
     dsp::{

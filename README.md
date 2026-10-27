@@ -7,7 +7,7 @@
 
 # Farwing
 
-Farwing 是可自建、可独立部署的远程控制与桌面串流软件，定位类似 Moonlight 与 RustDesk。它基于 [OpenUUYC](https://github.com/djkcyl/openuuyc)（djkcyl 及贡献者）的完整 Windows 客户端改造：保留其界面、业务逻辑、状态机和媒体实现，把所有 UU 远程业务协议与官方服务依赖替换为 **Farwing Protocol** 和自建的 **Farwing Server**。
+Farwing 是可自建、可独立部署的远程控制与桌面串流软件，定位类似 Moonlight 与 RustDesk：Windows 客户端、自建的 **Farwing Server** 和双方共享的 **Farwing Protocol**。
 
 | 组件 | 位置 | 说明 |
 | --- | --- | --- |
@@ -15,7 +15,7 @@ Farwing 是可自建、可独立部署的远程控制与桌面串流软件，定
 | Farwing Server | [`server/`](server/README.md) | Rust 服务端：HTTPS 管理面、WSS 在线与会话协调、SQLite、TURN 凭据与可选内置 STUN/TURN；自带网页端（用户中心、管理后台、浏览器里的远程桌面） |
 | Farwing Protocol | [`docs/protocol/`](docs/protocol/farwing-protocol.md)、[`crates/protocol`](crates/protocol) | 客户端与服务端共享的协议规范与线上类型 |
 
-Farwing 不连接、不依赖 UU 官方服务、官方客户端或官方凭据，也不与 UU 远程或 OpenUUYC 互通。媒体通过 WebRTC 端到端传输（DTLS-SRTP），中继使用标准 TURN，服务端不接触、不重编码音视频。
+Farwing 不连接、不依赖 UU 官方服务、官方客户端或官方凭据，也不与 UU 远程互通。媒体通过 WebRTC 端到端传输（DTLS-SRTP），中继使用标准 TURN，服务端不接触、不重编码音视频。
 
 **当前阶段：第二轮（Farwing Protocol v2）已实现，部分项目待双机验证。** 第一轮（v1，协议与自建服务迁移）的迁移情况和验证结果见 [docs/migration-status.md](docs/migration-status.md)；第二轮的设计、实现状态与待验证项见 [docs/protocol/v2-design.md](docs/protocol/v2-design.md)。Farwing 尚未发布，不提供与旧版本（包括 v1）的兼容：客户端与服务端须使用同一版本，服务端也不迁移旧数据库。
 
@@ -34,11 +34,11 @@ Farwing 不连接、不依赖 UU 官方服务、官方客户端或官方凭据�
    Farwing.exe connect --device-id <设备ID>
    ```
 
-完整用法（被控、远程协助、多实例 profile、与 OpenUUYC 共存）见 [docs/client-usage.md](docs/client-usage.md)。
+完整用法（被控、远程协助、多实例 profile）见 [docs/client-usage.md](docs/client-usage.md)。
 
 ## 能力
 
-功能范围与 OpenUUYC v1.0.0 一致（已跟进 rc.4、rc.5 与 1.0.0 的改动，见 [docs/upstream-sync.md](docs/upstream-sync.md)），全部改用 Farwing Protocol：
+功能范围：
 
 - 账号与设备管理、在线状态、设备改名/移除、壁纸、同账号设备互访、好友与按设备授权、多人同时连接
 - 远程协助：9 位设备号 + 验证码 / 本机确认 / 验证码加确认，游客协助，最近与收藏
@@ -68,7 +68,7 @@ cargo fast-test --lib          # 本地迭代的单元测试
 
 ## 驱动
 
-虚拟显示、输入与虚拟声卡驱动的源码在 [`drivers/`](drivers/README.md)，其硬件 ID、设备名、接口 GUID 与 OpenUUYC 区分（见 [docs/dev/identity.md](docs/dev/identity.md)）。驱动需要 WDK 构建，并使用你自己的代码签名证书签名；把签名后的驱动包放入 `assets/drivers/` 后重新构建客户端即可嵌入。未嵌入驱动包的构建中，相关安装入口会提示该构建未包含驱动，其余功能不受影响。
+虚拟显示、输入与虚拟声卡驱动的源码在 [`drivers/`](drivers/README.md)，其硬件 ID、设备名与接口 GUID 见 [docs/dev/identity.md](docs/dev/identity.md)。驱动需要 WDK 构建，并使用你自己的代码签名证书签名；把签名后的驱动包放入 `assets/drivers/` 后重新构建客户端即可嵌入。未嵌入驱动包的构建中，相关安装入口会提示该构建未包含驱动，其余功能不受影响。
 
 ## 文档
 
@@ -76,13 +76,11 @@ cargo fast-test --lib          # 本地迭代的单元测试
 - [服务端部署与管理](server/README.md)；[网页端](docs/web-console.md)
 - [Farwing Protocol 规范](docs/protocol/farwing-protocol.md) 与 [对端消息定义](docs/protocol/peer-messages.md)；[v2 设计与决策记录](docs/protocol/v2-design.md)
 - [迁移状态与验证结果](docs/migration-status.md)
-- [系统组件身份](docs/dev/identity.md)、[参考实现协议清单](docs/dev/reference-inventory.md)
+- [系统组件身份](docs/dev/identity.md)
 
 ## 许可与来源
 
-Farwing 新增和改写的部分以 [AGPL-3.0-only](LICENSE) 发布。
-
-Farwing 派生自 OpenUUYC。OpenUUYC 原作者声明保留在 [licenses/OpenUUYC-NOTICE.txt](licenses/OpenUUYC-NOTICE.txt)。按该声明，OpenUUYC 原创部分未采用开源许可，保留所有权利。因此，以 AGPL-3.0-only 分发包含这些部分的整体程序，需要其权利人的授权。分发前请确认已取得该授权。
+Farwing 以 [AGPL-3.0-only](LICENSE) 发布。
 
 第三方代码及其派生部分保留各自的许可（FFmpeg 派生部分为 LGPL-2.1-or-later，rav1d/dav1d 为 BSD-2-Clause 等），详见 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) 与各目录下的许可文件。
 
@@ -90,7 +88,6 @@ Farwing 与网易及 UU 远程无关，不代表也不提供任何官方服务�
 
 ## 鸣谢
 
-- [OpenUUYC](https://github.com/djkcyl/openuuyc)（djkcyl 及其贡献者）：Farwing 的客户端、界面、业务与媒体实现基础。
 - [SudoVDA](https://github.com/SudoMaker/SudoVDA) 与 [Microsoft Windows Driver Samples](https://github.com/microsoft/Windows-driver-samples)：虚拟显示驱动的源码基础，以及虚拟音频驱动的示例参考。
 - [FFmpeg](https://ffmpeg.org/)：视频编解码基础算法及硬件解码适配。
 - [rav1d](https://github.com/memorysafety/rav1d) / dav1d：AV1 软件解码核心及 SIMD 实现。

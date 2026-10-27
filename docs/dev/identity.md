@@ -1,8 +1,7 @@
 # Farwing system identities
 
-Every name below is distinct from OpenUUYC so both products can be installed
-on one machine. Per-profile names come from `src/product.rs`; the default
-profile uses the plain names shown here.
+Per-profile names come from `src/product.rs`; the default profile uses the
+plain names shown here.
 
 | Item | Farwing value |
 |------|---------------|
@@ -30,6 +29,3 @@ profile uses the plain names shown here.
 | Audio circuit GUIDs | render `b6d42785-7971-42c9-8003-dd380402c60b`, capture `9715079d-b3a3-47ba-a7c1-7d77bd64282a` |
 | Driver signing subject | `CN=Farwing Drivers` (pin derived from the bundled certificate) |
 | Plugin ABI | `farwing_plugin_manifest_v1`, `farwing_plugin_query_v1`, `farwing_node_query_v1`, `farwing_video_node_query_v1`, metadata magic `FWPLMETA`, handshakes `Farwing plugin protocol 1` / `Farwing video protocol 1`, ids `farwing.effects.*` |
-
-Farwing never migrates, stops or removes OpenUUYC components; an OpenUUYC
-virtual display adapter is treated as a foreign adapter.

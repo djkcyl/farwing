@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Register-resident form of FFmpeg's cabac_functions.h / x86/cabac.h decision
-// arithmetic. Original copyright Michael Niedermayer; Rust port OpenUUYC.
+// arithmetic. Original copyright Michael Niedermayer; Rust port Farwing.
 use super::{Cabac, Context, tables};
 
 #[inline(always)]

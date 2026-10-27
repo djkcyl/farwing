@@ -56,19 +56,6 @@ impl DeviceCenterApp {
             ui.add_space(20.0);
 
             ui.label(
-                RichText::new(text.project_links)
-                    .size(crate::ui::theme::SECTION)
-                    .strong(),
-            );
-            ui.add_space(6.0);
-            // Farwing releases are published through the Farwing server (see
-            // "Software update" above); the only external link is upstream attribution.
-            ui.horizontal_wrapped(|ui| {
-                ui.hyperlink_to(text.upstream_project, "https://github.com/djkcyl/openuuyc");
-            });
-
-            ui.add_space(28.0);
-            ui.label(
                 RichText::new(text.copyright_section)
                     .size(crate::ui::theme::SECTION)
                     .strong(),
@@ -104,11 +91,8 @@ impl DeviceCenterApp {
             LegalDocument::License => (
                 "Copyright and License Notice",
                 concat!(
-                    "Farwing is licensed under the GNU Affero General Public License v3.0 only.\n",
-                    "It is derived from OpenUUYC; the original OpenUUYC notice follows the license text.\n\n",
+                    "Farwing is licensed under the GNU Affero General Public License v3.0 only.\n\n",
                     include_str!("../../../../LICENSE"),
-                    "\n\nAppendix: OpenUUYC copyright, provenance and license notice\n\n",
-                    include_str!("../../../../licenses/OpenUUYC-NOTICE.txt"),
                 ),
             ),
             LegalDocument::ThirdParty => (

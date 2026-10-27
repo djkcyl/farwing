@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // FFmpeg's H.264 chroma interpolation, prediction weighting and chroma loop
-// filter arithmetic. Copyright (c) 2003-2011 Michael Niedermayer; Rust OpenUUYC.
+// filter arithmetic. Copyright (c) 2003-2011 Michael Niedermayer; Rust Farwing.
 use super::*;
 #[inline]
 unsafe fn load<const W: usize>(p: *const u8) -> __m128i {

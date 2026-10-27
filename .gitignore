@@ -8,7 +8,6 @@ captures/
 /tools/
 # Portable build tools (NASM) and local edit scripts.
 /.tools/
-/reference/
 /src/decoder/fixtures/
 /assets/banner-v*.png
 # Public docs are an explicit allowlist. Keep research and working notes local.

@@ -22,7 +22,6 @@
 
   标“需实测”的项目没有在任何机器上验证过。
 - 路径前缀：
-  - 参考仓库 OpenUUYC（只读）记作 `openuuyc:路径:行`；
   - `winit-0.30.13`、`windows-0.62.2`、`egui-winit-0.36.1` 指 `D:\Rust\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\` 下的同名目录。
 - 用语同 [web-control-brief.md](web-control-brief.md)（下称“控制简报”）：被控 = host；主控 = controller；“原生”指 Windows 客户端主控。
 - 帧头：`46 57 02 <flags> <type u16 BE> <request_id u32 BE>`（`crates/protocol/src/peer/mod.rs:4-13`、`:217-254`）。
@@ -180,7 +179,7 @@
 
 | 方案 | 最低系统 | 类型与点数 | 笔属性 | 备注 |
 |---|---|---|---|---|
-| `InitializeTouchInjection` + `InjectTouchInput` | Windows 8 | 只有触摸，最多 `MAX_TOUCH_COUNT` = 256 | 无 | 每个进程一个注入上下文；OpenUUYC 和 Chromium 远程桌面用它 |
+| `InitializeTouchInjection` + `InjectTouchInput` | Windows 8 | 只有触摸，最多 `MAX_TOUCH_COUNT` = 256 | 无 | 每个进程一个注入上下文；Chromium 远程桌面用它 |
 | **`CreateSyntheticPointerDevice` + `InjectSyntheticPointerInput`** | **Windows 10 1809** | PT_TOUCH ≤256（建议 10）；PT_PEN 必须为 1 | 压力 0–1024、旋转 0–359、倾斜 −90…90、`PEN_FLAG_BARREL/INVERTED/ERASER`、悬停 | 每个设备一个句柄，触摸设备和笔设备可以同时存在。**推荐** |
 | WinRT `InputInjector`（`Windows.UI.Input.Preview.Injection`） | 1809（笔） | 触摸、笔、鼠标、键盘 | 同上 | 要引入 WinRT 投影和新的 crate 特性；按 UWP 受限能力设计；底层能力与上一行相同。不推荐 |
 | HID 数字化仪（Farwing 驱动经 VHF 上报） | 驱动 INF 要求 19041（`FarwingInput.inf:11-12`） | 由驱动描述符决定 | 由描述符决定 | 系统当作真实硬件；但要改驱动并映射显示器，见 §2.7 |
@@ -243,7 +242,7 @@
 | UP | `UP`，位置等于上一帧 |
 | CANCEL | `UP \| CANCELED` |
 
-- 不做触摸悬停。Chromium 与 OpenUUYC 也都不做（`openuuyc:src/platform/windows/input/system.rs:349-354`、`:383-406`）。
+- 不做触摸悬停。Chromium 也不做。
 - 第一个按下的触点加 `POINTER_FLAG_PRIMARY`。是否必须由注入方设置，需实测。
 
 **笔**：每次调用 1 个样本。
@@ -265,14 +264,13 @@
 - 文档只说“按住要持续发帧，否则输入会被取消”，没有给出时长（InjectTouchInput 参考页）。
 - 公开实现：
   - Chromium 远程桌面观察到的超时“约 1 秒”，按 100 ms 的间隔重注入全部活动触点（`kKeepAliveInterval`）。它的注释还说，多点手势（例如捏合）不重注入就不能用。
-  - OpenUUYC 也是 100 ms（`openuuyc:src/platform/windows/input/system.rs:407-412`）。
 - **建议**：
   - 有活动触点（或笔处于接触、悬停），且距上次注入已 ≥100 ms 时，`Engine::tick()` 把当前帧原样再注入一次，全部用 UPDATE。
   - 笔悬停也补帧。是否必要需实测；补帧本身不改变状态。
-- **`ERROR_NOT_READY`**：参照 OpenUUYC 重试 3 次（`system.rs:266-283`）。
+- **`ERROR_NOT_READY`**：重试 3 次。
   - 注意 `thread::sleep(1 ms)` 在 Windows 上可能睡 1–15 ms。
   - 笔的合并样本要依次注入时，用自旋等待 ≥0.1 ms，或者只注入最后几个样本。
-- **其他失败**（尤其 `ERROR_INVALID_PARAMETER`）：Windows 已经取消了全部触点。被控清空自己的触点表，不重放；OpenUUYC 也是这样处理（`system.rs:281-289`）。
+- **其他失败**（尤其 `ERROR_INVALID_PARAMETER`）：Windows 已经取消了全部触点。被控清空自己的触点表，不重放。
 - **v1 不使用自定义时间戳**：规则太严（必须单调、不能超前、一旦使用就要用到全部 UP），网络抖动下难以保证。线上的 `time_us`/`age_us` 先只用于诊断（§5）。
 
 ### 2.5 坐标、DPI 与多屏
@@ -354,7 +352,7 @@
      - 触点表 `BTreeMap<wire_id, Slot{windows_id 0..=9, last_px, flags, rc, pressure, orientation}>`；
      - 笔状态（离开、悬停、接触）和最后一个样本；
      - `last_pointer_inject`、`last_pointer_input`。
-   - Windows 指针 id 取 0–9 中空闲的值。微软的示例从 0 开始；OpenUUYC 用 1–10（`system.rs:334-348`），是否可行未验证。用 0–9 最稳妥。
+   - Windows 指针 id 取 0–9 中空闲的值。微软的示例从 0 开始，用 0–9 最稳妥。
    - `apply_inner` 新增 `Event::Touch`、`Event::Pen` 两个分支：
      1. 查屏幕。缺省或不存在都算出错，释放全部。
      2. 换算成像素。
@@ -495,11 +493,11 @@
 
 ---
 
-## 4. OpenUUYC / UU 的做法与 Farwing 文档
+## 4. UU 的做法与 Farwing 文档
 
 ### 4.1 UU 原协议
 
-**触摸**：用 protobuf 编码，放在 SESSION 时代 `PbControlMessage` 的 oneof **tag 20 `InputEvent(bytes)`** 里（`openuuyc:src/features/stream_control/wire.rs:124-125`）。内部结构（`openuuyc:src/features/host/input/wire.rs:304-332`）：
+**触摸**：用 protobuf 编码，放在 SESSION 时代 `PbControlMessage` 的 oneof **tag 20 `InputEvent(bytes)`** 里。内部结构：
 
 ```proto
 message Input      { Touch touch = 1; }
@@ -507,27 +505,12 @@ message Touch      { int32 kind = 1; repeated TouchPoint points = 2; }  // kind 
 message TouchPoint { uint32 id = 1; float x = 2; float y = 3; float rx = 4; float ry = 5; float angle = 6; float pressure = 7; }
 ```
 
-- 校验：kind 1–4，≤10 点，id 唯一，x/y/pressure ∈ [0,1]，半径 0–65536 像素，角度 0–360（`wire.rs:333-378`）。
-- 阶段是**整帧一个**。触点消失，靠“这一帧里没有它”来推断（`system.rs:299-326`）。
+- 取值：kind 1–4，≤10 点，id 唯一，x/y/pressure ∈ [0,1]，半径 0–65536 像素，角度 0–360。
+- 阶段是**整帧一个**。触点消失，靠“这一帧里没有它”来推断。
 
-**其他移动端动作**：用 JSON，包括 `mouse_click`、`mouse_move_variety_relative`、`text_input`、`combination_keys_*`，另有 SimpleAction 快捷命令（`openuuyc:src/features/host/input/wire.rs:191-302`，`publisher.rs:517-556`）。
+**其他移动端动作**：用 JSON，包括 `mouse_click`、`mouse_move_variety_relative`、`text_input`、`combination_keys_*`，另有 SimpleAction 快捷命令。
 
 **笔**：没有任何消息。
-
-### 4.2 OpenUUYC 被控的触摸注入
-
-实现在 `openuuyc:src/platform/windows/input/system.rs:241-418`：
-
-- API：`InitializeTouchInjection(10, TOUCH_FEEDBACK_DEFAULT)` + `InjectTouchInput`（`:262`、`:269`）。
-- 出错：`ERROR_NOT_READY` 重试 3 次；`ERROR_INVALID_PARAMETER` 时清空触点表（`:266-291`）。
-- id 与标志：Windows id 取 1–10（`:334-348`）；标志为 `DOWN/UPDATE | INRANGE | INCONTACT`（`:349-354`）。
-- 属性：`touchMask = CONTACTAREA | ORIENTATION | PRESSURE`，压力换算为 `pressure × 1024`（`:360-370`）。
-- 阶段：`kind = 1` 时先取消旧触点；结束用 `UP`，取消用 `UP|CANCELED`（`:298-300`、`:383-406`）。
-- 保活：每 100 ms 补帧（`:407-412`）；`Drop` 时取消（`:414-418`）。
-- 屏幕：只往“当前屏”注入，不带 `screen_id`（`openuuyc:src/features/host/input/engine.rs:668-671`）。
-- 另外两端都没有：主控侧没有任何触摸采集；驱动也没有数字化仪（`openuuyc:drivers/input/reports.h:10-27`）。
-
-**可借鉴**：补帧，重试与失败时清空，id 映射，`Drop` 时取消。
 
 **不照搬**：
 
@@ -535,7 +518,7 @@ message TouchPoint { uint32 id = 1; float x = 2; float y = 3; float rx = 4; floa
 - 不带屏幕 id。
 - 半径用像素：与分辨率绑在一起。
 
-### 4.3 Farwing 文档的现有说法
+### 4.2 Farwing 文档的现有说法
 
 | 文档 | 内容 |
 |---|---|
@@ -601,7 +584,7 @@ enum TouchPhase { TOUCH_PHASE_UNSPECIFIED = 0; DOWN = 1; MOVE = 2; UP = 3; CANCE
    | 情况 | 处理 |
    |---|---|
    | DOWN，该 id 不在活动中，有空槽 | 分配 Windows id 0–9，注入 `DOWN` |
-   | DOWN，该 id 已在活动中 | 先取消旧触点，再按新触点处理（同 OpenUUYC 的 kind 1） |
+   | DOWN，该 id 已在活动中 | 先取消旧触点，再按新触点处理 |
    | DOWN，已有 10 个活动触点 | 忽略这个触点，并记住它的 id，之后它的 MOVE/UP 也忽略 |
    | MOVE/UP/CANCEL，id 未知 | 忽略。这多半是已经被取消的触点 |
    | 校验失败（见 §5.5） | 整帧作废，并**取消全部触点** |
@@ -792,12 +775,12 @@ enum PenPhase { PEN_PHASE_UNSPECIFIED = 0; HOVER = 1; DOWN = 2; MOVE = 3; UP = 4
 | 文档说法 | 代码事实 |
 |---|---|
 | `improvement-proposals.md:95`：被控的 control 入口“依次试 input→touch→files→draw→display→receive” | 现在的顺序是 input → POINTER → files → HELLO 颜色 → `publisher::receive`，已经没有 touch 解码器（`src/features/host/peer/ingress.rs:44-96`） |
-| `migration-status.md:115`：“键鼠注入、触摸……”需要双机测试 | Farwing 没有任何触摸注入代码（v2 已删除，`v2-design.md:384`），这一行里的“触摸”已过时 |
+| `migration-status.md:114`：“键鼠注入、触摸……”需要双机测试 | Farwing 没有任何触摸注入代码（v2 已删除，`v2-design.md:384`），这一行里的“触摸”已过时 |
 | `v2-design.md:241-242`：TOUCH、PEN 的通道为 control | 代码没有为它们绑定任何通道或处理函数。control 通道上的 TOUCH/PEN 落到 HELLO 解析后被静默丢弃（`ingress.rs:79`，`publisher.rs:380-383`）。`farwing-protocol.md:578-579` 写的“—”与代码一致 |
 | `crates/protocol/src/peer/mod.rs:76` 的注释：`touch` “Reserved for mobile controllers” | 本方案的主要使用者是原生 Windows 主控和浏览器，注释应改为通用说明 |
 | `v2-design.md:297`、`farwing-protocol.md:617`：`touch`、`pen` 已定义但不声明 | 与代码一致（`src/protocol/peer.rs:156-215`，测试见 `:322`）。但 HELLO 的规则是“只声明运行时具备的”（`crates/protocol/src/peer/mod.rs:42-43`），被控的特性表却是写死的。加入 `touch`/`pen` 时必须改为运行时生成 |
 | `web-console.md:10`：网页“支持触屏” | 只是鼠标模拟（`remoteInput.ts:126-244`）；笔经兼容鼠标事件当作鼠标处理 |
-| `src/features/host/input/mod.rs:25-26`、`:71-72` 的注释提到“contact boundary”“drawing/contact paths” | 被控没有任何触点事件。这些注释是 OpenUUYC 触摸代码的遗留（OpenUUYC 的引擎有 `Event::Touch`，`openuuyc:src/features/host/input/engine.rs:668-671`），新方案正好用得上 |
+| `src/features/host/input/mod.rs:25-26`、`:71-72` 的注释提到“contact boundary”“drawing/contact paths” | 被控没有任何触点事件。这些注释是 v2 删除的触摸代码的遗留，新方案正好用得上 |
 | `Cargo.toml:133` 开启了 `Win32_UI_Input_Pointer` | 全仓库没有代码用到。合成指针还需要 `Win32_UI_Controls`（或本地定义类型），并且必须动态加载 |
 | 控制简报 §6：原生主控“没有触摸转发” | 确实不发 TOUCH。但触摸原生画面时，提升出的鼠标原始输入可能已经被当作鼠标转发了（§3.1，未验证） |
 
@@ -824,7 +807,7 @@ enum PenPhase { PEN_PHASE_UNSPECIFIED = 0; HOVER = 1; DOWN = 2; MOVE = 3; UP = 4
      - 双指捏合；
      - 笔：悬停 → 落笔 → 压力渐变 → 倾斜 → 笔杆键 → 橡皮擦 → 抬笔 → 离开。
    - 观察：用本机上记录 Pointer Events 的网页（看 `pointerType`、`pressure`、`tiltX`、`buttons`）、画图或 Whiteboard。
-   - 不需要触屏或笔，因为注入的是本机桌面；但测试会占用正在使用的桌面（见 `migration-status.md:115`）。
+   - 不需要触屏或笔，因为注入的是本机桌面；但测试会占用正在使用的桌面（见 `migration-status.md:114`）。
 4. **引擎集成**：**[单机]**
    - 内容：
      - 触点表与 Windows id 0–9；
@@ -870,7 +853,7 @@ enum PenPhase { PEN_PHASE_UNSPECIFIED = 0; HOVER = 1; DOWN = 2; MOVE = 3; UP = 4
    - `v2-design.md` §5.2、§7；
    - `web-console.md` 的“触屏”一行；
    - 控制简报 §6 指向本文；
-   - `migration-status.md:115`；
+   - `migration-status.md:114`；
    - `crates/protocol/src/peer/mod.rs:76` 的注释。
 10. **可选（第三阶段）：Farwing HID 数字化仪**（§2.7）。
     - 内容：描述符、特性报告回调、`ValidReport/Neutral`、版本号、显示器映射；评估是否在安全桌面上启用。

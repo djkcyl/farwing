@@ -637,30 +637,15 @@ impl DeviceCenterApp {
             )
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
-                let (row, response) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
-                let response = response
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text(t().center.upstream_project);
-                response.widget_info(|| {
-                    egui::WidgetInfo::labeled(
-                        egui::WidgetType::Button,
-                        true,
-                        t().center.upstream_project_link,
-                    )
-                });
-                let title_color = if response.hovered() { BLUE } else { TEXT };
-                if response.clicked() {
-                    ui.ctx()
-                        .open_url(egui::OpenUrl::new_tab("https://github.com/djkcyl/openuuyc"));
-                }
+                let (row, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
                 let logo = crate::ui::branding::logo_size(LOGO_SIDEBAR);
                 crate::ui::branding::paint_logo(
                     ui.painter(),
                     row.center().x - logo.x * 0.5,
                     row.center().y,
                     LOGO_SIDEBAR,
-                    title_color,
+                    TEXT,
                 );
                 ui.add_space(24.0);
                 let count = self

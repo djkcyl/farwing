@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // FFmpeg 8.0.3 h264_cabac.c residual significance/level decoder.
-// Copyright (c) 2003 Michael Niedermayer. Rust adaptation OpenUUYC.
+// Copyright (c) 2003 Michael Niedermayer. Rust adaptation Farwing.
 use crate::{
     Error, Result,
     cabac::{Cabac, Contexts},

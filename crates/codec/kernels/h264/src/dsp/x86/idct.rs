@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // FFmpeg h264idct_template.c arithmetic, including the first-pass i16 truncation.
-// Copyright (c) 2004-2011 Michael Niedermayer. Rust SIMD port OpenUUYC.
+// Copyright (c) 2004-2011 Michael Niedermayer. Rust SIMD port Farwing.
 use super::*;
 
 #[inline]

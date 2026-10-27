@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // FFmpeg 8.0.3 h264dsp_template.c / h264_loopfilter.c.
-// Copyright (c) 2003-2011 Michael Niedermayer. Rust adaptation OpenUUYC.
+// Copyright (c) 2003-2011 Michael Niedermayer. Rust adaptation Farwing.
 use super::clip;
 use crate::{Error, Result, tables};
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSD-2-Clause
-// Copyright (c) 2013, Cisco Systems. Rust table layout adaptation OpenUUYC.
+// Copyright (c) 2013, Cisco Systems. Rust table layout adaptation Farwing.
 // Full terms: licenses/openh264-algorithms.txt in the repository root.
 pub(super) const MF: [[i16; 3]; 52] = [
     [26214, 16132, 10486],

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Packed implementation of the FFmpeg h264dsp_template.c luma filter arithmetic.
-// Original Copyright (c) 2003-2011 Michael Niedermayer; Rust port OpenUUYC.
+// Original Copyright (c) 2003-2011 Michael Niedermayer; Rust port Farwing.
 // Only this module contains unsafe intrinsics. x86_64 guarantees SSE2.
 use super::Block;
 use std::arch::x86_64::*;

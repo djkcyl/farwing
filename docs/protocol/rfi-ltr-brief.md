@@ -457,15 +457,9 @@ F.epoch == 当前纪元
 
 ---
 
-## 5. OpenUUYC 与现有文档的预留
+## 5. 原版 UU 与现有文档的预留
 
-- **OpenUUYC**（只读查看了 `D:\root\github\openuuyc`）：
-  - NVENC 参数与 Farwing 相同：无限 GOP、单参考、`encodePicFlags = 6`（`openuuyc/src/platform/windows/nvenc.rs:345`、`:363-364`、`:387-388`、`:401-402`、`:613`）；
-  - 被控 PLI 节流是固定的 600 ms（`openuuyc/src/features/host/keyframe.rs:66`）；
-  - 主控没有快速关键帧，只靠解码超时；
-  - 接收端注明是“Official-compatible UU/WebRTC video receive state machine”，同样用 `SeqNumOnlyRefFinder`（`openuuyc/src/transport/official_receiver/mod.rs:1`、`:14`、`:133`）；
-  - 全仓库没有 LTR、RFI 或参考帧失效的代码与字段。
-- **原版 UU 客户端**：仓库里没有可读资料（决策 14 已删除逆向地址）。OpenUUYC 的“与官方兼容”接收端只能处理关键帧恢复，可见原版 UU 至少在接收端没有 RFI/LTR。
+- **原版 UU 客户端**：仓库里没有可读资料（决策 14 已删除逆向地址）。
 - **Farwing 现有文档的预留**：
   - `improvement-proposals.md` §2.4 F2 提出 FPP `RecoveryRequest` 与“用 NVENC/AMF/QSV 的 LTR 或参考帧失效”；F4 提出首包的 `urn:farwing:frame-meta`（frame_id、关键帧/恢复标志、source_epoch、参考帧）。**两者都只有名字，没有字段，也没有实现。**
   - `farwing-protocol.md`：§5.4 没有相关帧类型；§5.5 没有相关特性；§6.3 的头扩展只有 7 项；§6.5 只有 PLI/FIR。
@@ -750,7 +744,7 @@ last_served: Option<{request, frame_id, at}>
 
 | 文档说法 | 代码事实 |
 |---|---|
-| `improvement-proposals.md` §2.4 F2“现状”：被控 PLI 节流 600 ms；NACK 放弃时不触发 PLI；要等解码超时（初始 3 s，稳态 1 s） | 这是 P5 之前的状态。现在节流为 `max(100 ms, 1.5×RTT)`（`keyframe.rs:65`）；NACK 重试用尽或缺包超过 `max(2.5×RTT, 60 ms)` 就立即发 PLI（`feedback.rs:305-306`、`:324-337`）；解码超时 1–3 s 仍然保留，作为兜底（`video_receiver/mod.rs:592-643`）。600 ms 只存在于 OpenUUYC |
+| `improvement-proposals.md` §2.4 F2“现状”：被控 PLI 节流 600 ms；NACK 放弃时不触发 PLI；要等解码超时（初始 3 s，稳态 1 s） | 这是 P5 之前的状态。现在节流为 `max(100 ms, 1.5×RTT)`（`keyframe.rs:65`）；NACK 重试用尽或缺包超过 `max(2.5×RTT, 60 ms)` 就立即发 PLI（`feedback.rs:305-306`、`:324-337`）；解码超时 1–3 s 仍然保留，作为兜底（`video_receiver/mod.rs:592-643`） |
 | 同上：“编码器无限 GOP、单参考” | 只对 NVENC 完全成立（`nvenc.rs:345`、`:364`、`:388`、`:402`）。AMF 没有设置参考帧数（`amf.rs:286-302`、`:515-545`）。QSV 的 `GopPicSize`、`IdrInterval`、`NumRefFrame` 都没设，由驱动默认（`qsv.rs:622-628`）。软件编码器在画面大变化时自己插 IDR（`encoder.rs:255`） |
 | `improvement-proposals.md` F4 / F2：`urn:farwing:frame-meta`、FPP `RecoveryRequest` | 都没有实现，也没有字段定义。视频头扩展是 7 项（`negotiation.rs:304-312`） |
 | `farwing-protocol.md` §6.5：缺包超时或 NACK 放弃就发 PLI | 正确，但没有写出：同一批次里有 PLI 时，NACK 不发（`feedback.rs:79-92`）；接收端自己请求关键帧时清空 NACK 表（`receive.rs:801-808`） |

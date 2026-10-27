@@ -101,7 +101,7 @@
 - 去掉 SESSION 内层的 seq、timestamp 和 Rpc 包装；主控用统一的待回复表加超时。
 - 被控只解码一次头部，按 FrameType 分派，每种消息只走规定的通道。删除 CONTROL 通道上的 FILE 入口（注释写着“iOS sends file RPCs here”）。
 - 新增 `HostEvent{updating|restarting|sleeping|session_switch|shutting_down, expected_downtime_ms}`，替代 `ReportError(-6)`，并与 §2.7 的“等待设备”联动。
-- 已有的 OpenUUYC 双端改进（`AUDIO_QUALITY` 的 set/applied/rejected + revision，ANNOTATION 的 token/request/result）可以直接作为样板。
+- 已有的双端扩展（`AUDIO_QUALITY` 的 set/applied/rejected + revision，ANNOTATION 的 token/request/result）可以直接作为样板。
 
 **工作量：** M–L。
 
@@ -139,7 +139,7 @@
     - `current/preferred/initial{w,h,refresh}`、`modes`；
     - `scale{cur,rec,list}`、`hdr{capable,enabled}`；
     - `ops{set_mode,set_scale,remove}`、`track`。
-  - `display_geometry`（上游 1.0 的双端改进）并入 `preferred`。
+  - `display_geometry` 扩展并入 `preferred`。
 - **`DisplayRequest` oneof：**
   - `SetMode{id,w,h,refresh,scale?,fallback: fail|exclusive_virtual}`
   - `CreateVirtual{w,h,refresh,scale,placement}`
@@ -414,8 +414,8 @@
 - **数据特性：**
   - 剪贴板的延迟渲染与回环防护；文件路径与句柄安全（safe_relative、重解析点检查、`.downloading` + rename）；文件 IO 在用户身份下执行。
   - 原生拖放的会话状态机；诊断包的脱敏、zstd、SHA-256；SCTP 中“整条消息预留后才分配 SSN”的不变量。
-- **OpenUUYC 双端扩展：** 原生批注 v1、AUDIO_QUALITY、原生拖放、诊断、display_geometry。它们是新消息的样板，保留语义，只换承载方式。
-- **插件 ABI、日志与诊断包结构；OpenUUYC 署名与 NOTICE。**
+- **双端扩展：** 原生批注 v1、AUDIO_QUALITY、原生拖放、诊断、display_geometry。它们是新消息的样板，保留语义，只换承载方式。
+- **插件 ABI、日志与诊断包结构。**
 
 ## 5. 需要你决策的问题
 
@@ -437,8 +437,7 @@
 12. **主控默认值：** 对自己账号下的设备，是否默认可控、默认开启剪贴板？
 13. **麦克风回声消除：** 是否引入 WebRTC APM 源码（体积、构建时间、许可），还是先用系统通讯音效过渡？
 14. **注释里的 UU 逆向地址（约 103 行）：** 直接删除，还是迁到独立的来源说明文档？
-15. **上游同步：** 完成 v2 后，剪贴板、文件、端口、控制面与 OpenUUYC 的同步基本失效（上游 `next` 分支也在转向 Farwing），是否接受？
-16. **打洞：** UU 增强打洞是保留为 Farwing 机制（需要服务端提供第二个 STUN 端点），还是回到标准 ICE？
+15. **打洞：** UU 增强打洞是保留为 Farwing 机制（需要服务端提供第二个 STUN 端点），还是回到标准 ICE？
 
 ## 6. 建议的实施顺序
 
@@ -471,8 +470,7 @@
 | 12 | 自己账号下的设备默认可控、默认开启剪贴板 |
 | 13 | 不引入 WebRTC APM（回声消除） |
 | 14 | 删除注释里的 UU 逆向地址 |
-| 15 | OpenUUYC 是用户本人的项目，Farwing 是脱离 UU 业务的下一代产品；不再要求与 OpenUUYC 同步 |
-| 16 | 打洞以提高成功率为目标设计 |
+| 15 | 打洞以提高成功率为目标设计 |
 
 待补充的细节问题见对话记录。
 
@@ -512,12 +510,12 @@
 **范围**
 - 局域网发现、IP/域名直连、免账号配对：在本轮其余工作完成后实施。
 - 手机主控：预留触控和笔的帧类型。
-- **麦克风：** 行为保持 OpenUUYC 原实现，只把消息迁移到 v2 格式。
+- **麦克风：** 行为不变，只把消息迁移到 v2 格式。
 - **版本号：** 0.1.0。
 
 **测试与驱动**
 - 允许在本机做键鼠注入测试；全部完成后提供双机手动测试清单。
-- 驱动用自签名证书（与 OpenUUYC 相同的方式），本机已安装 WDK。
+- 驱动用自签名证书，本机已安装 WDK。
 
 ## 8. 实施计划
 

@@ -1189,23 +1189,16 @@ impl Transport {
         Some((bound, packet, self.0.format_epoch.load(Ordering::Acquire)))
     }
     pub(crate) async fn probes(&self) {
-        // `FARWING_PROBE_PACING=0`: the previous sender (runtime timers, a
-        // cluster dropped 10 ms behind, one step per wakeup), for comparison.
-        let legacy = std::env::var("FARWING_PROBE_PACING").is_ok_and(|value| value == "0");
         // A probe cluster this far behind its byte clock is abandoned.
-        let late_limit_us: u64 = if legacy { 10_000 } else { 30_000 };
+        const LATE_LIMIT_US: u64 = 30_000;
         let mut active = None::<(ProbeClusterConfig, Instant, usize, i64)>;
         // The runtime's timers wake 5–15 ms late at the default Windows timer
         // resolution, far coarser than a cluster's 2 ms steps: while a cluster
         // is out, wait on a high-resolution waitable timer instead.
         let wake = Arc::new(tokio::sync::Notify::new());
-        let mut precise = (!legacy)
-            .then(|| {
-                crate::platform::windows::input::deadline::Timer::new(wake.clone())
-                    .map_err(|error| tracing::debug!(%error, "probe pacing falls back to runtime timers"))
-                    .ok()
-            })
-            .flatten();
+        let mut precise = crate::platform::windows::input::deadline::Timer::new(wake.clone())
+            .map_err(|error| tracing::debug!(%error, "probe pacing falls back to runtime timers"))
+            .ok();
         while self.active() {
             // Follow the cluster's byte clock. Sleeping another 2ms on every
             // iteration accumulates timer rounding and write time, lowering
@@ -1274,7 +1267,7 @@ impl Transport {
             // A late wakeup sends what is due by now, up to two steps, rather
             // than dropping the cluster: a cluster of one or two packets gives
             // no probe result. Give up only far behind.
-            if *probes > 0 && elapsed_us > schedule_us + late_limit_us {
+            if *probes > 0 && elapsed_us > schedule_us + LATE_LIMIT_US {
                 active = None;
                 continue;
             }
@@ -1284,11 +1277,7 @@ impl Transport {
             let delta = cluster.min_probe_delta.us().max(2_000) as u64;
             let step = ((rate as u128 * delta as u128) / 8_000_000).clamp(200, 128_000) as usize;
             let due = ((rate as u128 * u128::from(elapsed_us + delta)) / 8_000_000) as usize;
-            let burst = if legacy {
-                step
-            } else {
-                due.saturating_sub(*sent).clamp(step, step * 2)
-            };
+            let burst = due.saturating_sub(*sent).clamp(step, step * 2);
             let mut bytes = 0;
             while bytes < burst && self.active() {
                 let Some((bound, packet, epoch)) = owner.probe_packet() else {
@@ -1315,15 +1304,10 @@ impl Transport {
                     Ok(size) => {
                         bytes += size + self.network_overhead();
                         *sent += size + self.network_overhead();
-                        if !legacy {
-                            *probes += 1;
-                        }
+                        *probes += 1;
                     }
                     Err(_) => break,
                 }
-            }
-            if legacy {
-                *probes += 1;
             }
             // An unavailable payload/retired writer cannot advance the byte
             // clock. Retire this attempt instead of spinning on a past deadline.

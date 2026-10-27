@@ -125,8 +125,6 @@ mod tests {
             assert!(pattern.is_match(&target), "{target}");
         }
         for target in [
-            "user.com.openuuyc.session".to_owned(),
-            "user.openuuyc.session".to_owned(),
             "user.farwing.other".to_owned(),
             "user.farwing.Dev.session".to_owned(),
             format!("device.farwing.viewing.{hash}0"),

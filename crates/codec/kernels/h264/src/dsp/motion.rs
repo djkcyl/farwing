@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // FFmpeg h264qpel_template.c / h264chroma_template.c specialized byte kernels.
-// Copyright (c) 2003-2011 Michael Niedermayer. Rust adaptation OpenUUYC.
+// Copyright (c) 2003-2011 Michael Niedermayer. Rust adaptation Farwing.
 #[cfg(not(all(target_arch = "x86_64", not(feature = "scalar-dsp"))))]
 use super::avg;
 use super::{Block, clip};

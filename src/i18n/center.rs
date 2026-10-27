@@ -5,8 +5,6 @@ pub(crate) struct Center {
     pub page_friends: &'static str,
     pub page_this_device: &'static str,
     pub page_device_details: &'static str,
-    pub upstream_project: &'static str,
-    pub upstream_project_link: &'static str,
 
     // ------------------------------------------------------ account footer
     pub signing_out: &'static str,
@@ -387,8 +385,6 @@ pub(crate) const ZH_CN: Center = Center {
     page_friends: "好友",
     page_this_device: "本机",
     page_device_details: "设备详情",
-    upstream_project: "上游项目 OpenUUYC",
-    upstream_project_link: "在 GitHub 查看上游项目 OpenUUYC",
 
     signing_out: "正在退出登录…",
     signed_in: "已登录",
@@ -762,8 +758,6 @@ pub(crate) const EN: Center = Center {
     page_friends: "Friends",
     page_this_device: "This device",
     page_device_details: "Device details",
-    upstream_project: "Upstream project OpenUUYC",
-    upstream_project_link: "View the upstream project OpenUUYC on GitHub",
 
     signing_out: "Signing out…",
     signed_in: "Signed in",

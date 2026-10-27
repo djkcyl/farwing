@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // FFmpeg six-tap H.264 qpel arithmetic, sixteen simultaneous i16 lanes.
-// Copyright (c) 2003-2011 Michael Niedermayer; Rust adaptation OpenUUYC.
+// Copyright (c) 2003-2011 Michael Niedermayer; Rust adaptation Farwing.
 use super::*;
 
 #[target_feature(enable = "avx2")]

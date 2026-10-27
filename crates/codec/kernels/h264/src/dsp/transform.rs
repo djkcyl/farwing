@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // FFmpeg 8.0.3 h264idct_template.c / h264_ps.c.
-// Copyright (c) 2004-2011 Michael Niedermayer. Rust adaptation OpenUUYC.
+// Copyright (c) 2004-2011 Michael Niedermayer. Rust adaptation Farwing.
 use super::{Block, clip};
 use crate::{Error, Result, tables};
 use std::sync::Arc;

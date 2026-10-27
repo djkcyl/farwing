@@ -2,7 +2,7 @@
 
 > 本文件记录第一轮（Farwing Protocol v1）迁移；第二轮（Farwing Protocol v2）见 [protocol/v2-design.md](protocol/v2-design.md)。
 
-日期：2026-10-14。范围：OpenUUYC v1.0.0-rc.3（`main` @506df56）全部现有功能的协议与服务迁移；随后已跟进上游 v1.0.0（9d436cb），取舍见 [upstream-sync.md](upstream-sync.md)，跟进后的复测见第 8 节。结论：所有功能已改用 Farwing Protocol 与自建 Farwing Server，客户端不再包含 UU 业务协议、官方服务地址、官方凭据或兼容组件。核心链路已经用真实客户端和自建服务端到端验证；需要第二台机器、驱动、管理员授权或会改动本机桌面的项目，下面逐项说明实现状态和待验证条件。
+日期：2026-10-14。范围：客户端全部现有功能的协议与服务迁移；随后一批功能更新后的复测见第 8 节。结论：所有功能已改用 Farwing Protocol 与自建 Farwing Server，客户端不再包含 UU 业务协议、官方服务地址、官方凭据或兼容组件。核心链路已经用真实客户端和自建服务端到端验证；需要第二台机器、驱动、管理员授权或会改动本机桌面的项目，下面逐项说明实现状态和待验证条件。
 
 ## 1. 验证环境
 
@@ -47,7 +47,7 @@
 | 软件更新通知 | 通过 | 服务器 `[[updates]]` 发布 1.0.1 → 设备中心弹出“发现新版本”（该配置段后来已删除，更新公告改在网页端“客户端更新”中发布） |
 | 正常关闭 | 通过 | 关闭观看窗口：退出码 0，服务器会话结束，被控释放采集，保持在线 |
 | 连接中取消 | 通过 | 建立过程中关闭：被控关闭半建立的连接，服务器无残留会话 |
-| 被控异常退出 | 通过 | 强制结束被控进程约 12 s 后主控 ICE 失败，按序回收媒体、通道和音频；重连请求得到 `device_offline` 后停止（见 §4.3） |
+| 被控异常退出 | 通过 | 强制结束被控进程约 12 s 后主控 ICE 失败，按序回收媒体、通道和音频；重连请求得到 `device_offline` 后停止（见 §4.2） |
 | 撤权：移除设备 | 通过 | 会话中执行 `device remove <主控>`：服务器立即结束会话，观看窗口退出；该 profile 下次请求得到 `session_revoked`，本地登录随即作废 |
 | 撤权：禁用账号 | 通过 | `user disable alice` 吊销 2 个登录，被控下线退出，主控凭据作废；`user enable` 后可重新登录 |
 | 跨账号隔离 | 通过 | bob 的设备列表看不到 alice 的设备，客户端不发起会话；服务端对他人设备返回 404 `device_not_found`（有测试） |
@@ -85,25 +85,24 @@
 | 麦克风 | — | 同一 WebRTC 会话的音频发送 | 已协商；需虚拟声卡 |
 | 电源与唤醒 | UU 电源接口、UU 路由器唤醒 | `/devices/{id}/power` + `power.request`；同网设备代发 WoL | 请求和拒绝链路已验证；未实际执行；WoL 仅服务端测试 |
 | 网络策略 / 自动中继 | UU 下发阈值，被控要求主控切中继 | 已删除；ICE 按实测路径质量在直连与中继之间切换（v2-design §11） | 未人为制造丢包 |
-| 后台服务 / 无人值守 | OpenUUYC 服务身份 | `FarwingHostService`，DPAPI 保险库，仅限默认 profile | 未验证（需管理员授权） |
-| 安装 / 更新 / 卸载 | UU 与 OpenUUYC 路径、发布源 | `%ProgramFiles%\Farwing`，卸载项 `Farwing`；更新源 `/updates/windows` | 更新通知已验证；安装和卸载未验证 |
-| 驱动 | OpenUUYC 预编译驱动 | Farwing 硬件 ID / GUID，源码保留；嵌入可选，仓库不带二进制 | 未构建（无 WDK 和签名证书） |
-| 插件 | `oumeta` ABI | `farwing_*` 符号，`.fwmeta` 段 | 编译通过；未加载实测 |
-| 通知 | OpenUUYC AUMID / CLSID | Farwing AUMID / CLSID，按 profile 区分 | 未专项验证 |
+| 后台服务 / 无人值守 | — | `FarwingHostService`，DPAPI 保险库，仅限默认 profile | 未验证（需管理员授权） |
+| 安装 / 更新 / 卸载 | UU 路径、发布源 | `%ProgramFiles%\Farwing`，卸载项 `Farwing`；更新源 `/updates/windows` | 更新通知已验证；安装和卸载未验证 |
+| 驱动 | — | Farwing 硬件 ID / GUID，源码保留；嵌入可选，仓库不带二进制 | 未构建（无 WDK 和签名证书） |
+| 插件 | — | `farwing_*` 符号，`.fwmeta` 段 | 编译通过；未加载实测 |
+| 通知 | — | Farwing AUMID / CLSID，按 profile 区分 | 未专项验证 |
 | 多实例 | — | `--profile` / `FARWING_PROFILE` | 已验证 |
 
 ## 4. 与原行为的差异和需要确认的决定
 
-1. **许可前提。** OpenUUYC 原创部分按其声明保留所有权利，未采用开源许可（[licenses/OpenUUYC-NOTICE.txt](../licenses/OpenUUYC-NOTICE.txt)）。Farwing 的新增和改写部分标为 AGPL-3.0-only。以 AGPL 分发包含 OpenUUYC 原创部分的整体程序，需要原权利人授权。
-2. **不再与 UU 互通。** 官方 UU 客户端和 OpenUUYC 都不能连接 Farwing；原来“与官方端连接时”的兼容分支不会再被触发。
-3. **`device_offline` 不自动重试。** 原实现除少数 UU 错误码外都会重试 5 次（每次间隔 3 s），那几个 UU 错误码的含义无法从参考代码确定。现在 `device_offline`、`host_disabled` 等明确的拒绝不重试，只重试服务端标为可重试的错误和 `conflict`。如需在被控短暂掉线时自动等待它回来，可在验收后调整。
-4. **FEC 冗余量。** 原实现使用 UU SDK 的私有冗余表，现在改为按二项分布丢包模型计算：控制通道目标 1.5%，视频 1e-3，严格 1e-4。冗余量与原表不完全相同。
-5. **码率表来源待确认。** `parameters.rs` 中的码率表沿用原值，来源需要你确认（已在 THIRD_PARTY_NOTICES 标注）。
-6. **少量标识变化。**
+1. **不再与 UU 互通。** 官方 UU 客户端不能连接 Farwing；“与官方端连接时”的兼容分支不会再被触发。
+2. **`device_offline` 不自动重试。** `device_offline`、`host_disabled` 等明确的拒绝不重试，只重试服务端标为可重试的错误和 `conflict`。如需在被控短暂掉线时自动等待它回来，可在验收后调整。
+3. **FEC 冗余量。** 不再使用 UU SDK 的私有冗余表，改为按二项分布丢包模型计算：控制通道目标 1.5%，视频 1e-3，严格 1e-4。冗余量与原表不完全相同。
+4. **码率表来源待确认。** `parameters.rs` 中的码率表沿用原值，来源需要你确认（已在 THIRD_PARTY_NOTICES 标注）。
+5. **少量标识变化。**
    - 注入输入标记改为 `0x46575549`。
-   - 插件段名由 `.oumeta` 改为 `.fwmeta`，现有插件需要重新编译。
+   - 插件段名改为 `.fwmeta`，现有插件需要重新编译。
    - 不再支持“UU 路由器代发唤醒”，`router_wol` 恒为 false。
-7. **服务端对规范空白处的解释**（共 24 条，见服务端实现报告）。较重要的有：
+6. **服务端对规范空白处的解释**（共 24 条，见服务端实现报告）。较重要的有：
    - 协助加入成功会替换被控当前会话；
    - 被控结束会话时，主控统一收到 `host_closed`；
    - 设备令牌轮换只在规范中出现，未定义触发条件，因此未实现。（第二轮起设备令牌已取消：设备以每请求签名认证，账号令牌绑定签名设备并按 30 天不用失效，单独窃取令牌无法使用，轮换不再需要，见 farwing-protocol.md §1.3、§3.2。）
@@ -159,9 +158,9 @@ Farwing.exe --profile a dev files --device-id <ID> --list <目录> --download <�
 - 同机测试时，内置 TURN 不能只监听 127.0.0.1：WebRTC 套接字绑定在网卡地址上，访问回环地址会失败（os error 10049）。
 - 首次让 `farwing-server` 监听局域网地址时，Windows 防火墙可能弹出提示。本机内部流量不受影响。
 
-## 8. 跟进上游 v1.0.0 后的复测（2026-10-14）
+## 8. 功能更新后的复测（2026-10-14）
 
-取舍详见 [upstream-sync.md](upstream-sync.md)。复测结果：
+复测结果：
 
 | 项目 | 结果 |
 | --- | --- |

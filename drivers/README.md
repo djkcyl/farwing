@@ -1,6 +1,6 @@
 # Windows 驱动
 
-Farwing 包含输入驱动 `ROOT\FARWING_INPUT`、虚拟显示驱动 `ROOT\FARWING_DISPLAY`，以及可选的内核虚拟音频驱动 `ROOT\FARWING_AUDIO`。三者的硬件 ID、设备名、接口 GUID 与 OpenUUYC 不同（见 [docs/dev/identity.md](../docs/dev/identity.md)），两者可以共存。
+Farwing 包含输入驱动 `ROOT\FARWING_INPUT`、虚拟显示驱动 `ROOT\FARWING_DISPLAY`，以及可选的内核虚拟音频驱动 `ROOT\FARWING_AUDIO`。三者的硬件 ID、设备名与接口 GUID 见 [docs/dev/identity.md](../docs/dev/identity.md)。
 
 **仓库不附带预编译驱动包。** 驱动是可选组件：
 

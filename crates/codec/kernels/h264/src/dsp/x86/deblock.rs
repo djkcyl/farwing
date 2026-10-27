@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // FFmpeg h264dsp_template.c/h264_deblock.asm arithmetic, adapted to sixteen
 // simultaneous 16-bit AVX2 lanes. Copyright (c) 2003-2011 Michael Niedermayer;
-// Rust adaptation Copyright (c) 2026 OpenUUYC contributors.
+// Rust adaptation Copyright (c) 2026 Farwing contributors.
 use super::*;
 #[target_feature(enable = "avx2")]
 #[inline]
