@@ -100,7 +100,7 @@ def main():
         (f'server/{folder}.tar.gz', archive),
         ('server/windows/farwing-server.exe', windows),
         ('docs/client-usage.md', (root / 'docs/client-usage.md').read_bytes()),
-        ('docs/test-runsheet.md', (root / 'docs/dual-machine-runsheet.md').read_bytes()),
+        ('双机测试清单.md', (root / 'docs/dual-machine-runsheet.md').read_bytes()),
     ]
     package.append(('SHA256SUMS.txt', sums(package)))
     top = f'Farwing-{VERSION}'

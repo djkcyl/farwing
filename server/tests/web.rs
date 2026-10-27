@@ -467,8 +467,8 @@ async fn browser_logins_expire_sooner_and_web_caps_limit_browsers() {
         .await;
     assert_eq!(r.ok()["target"]["granted"], json!(["view", "audio"]));
 
-    // An idle browser login ends; a client login of the same age does not.
-    let idle = 31 * 60;
+    // A week-idle browser login ends; a client login of the same age does not.
+    let idle = 7 * 24 * 3600 + 60;
     srv.app()
         .db
         .call(move |c| {

@@ -26,7 +26,7 @@
 - `server/build-web.ps1` / `build-web.sh`：`npm ci` → `npm run check` → `npm run build` → `cargo build --release --locked`。Dockerfile 增加 Node 构建阶段。
 - 同一端口、同一 TLS：`/` 为网页（前端路由），接口仍在 `/api/v2/*`（没有另设 `/api/v2/web/*` 前缀，见 §8）。
 - 带路径前缀的反向代理：页面使用 `<base href>` 与相对资源路径，服务端按 `public_url` 的路径写入 `<base>`；前端的接口、路由与实时连接都相对于它。
-- 设置 `web`：`enabled`（默认开）、`admin_allow`（后台 IP 白名单）、`session_idle_minutes`（30）、`session_max_hours`（12）、`audit_days`（180）、`caps`（§7.1）。
+- 设置 `web`：`enabled`（默认开）、`admin_allow`（后台 IP 白名单）、`session_idle_minutes`（10080，即 7 天）、`session_max_hours`（720，即 30 天）、`audit_days`（180）、`caps`（§7.1）。
 - 响应头：CSP `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' wss: ws:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`，以及 `X-Frame-Options: DENY`、`nosniff`、`Referrer-Policy: no-referrer`、`Permissions-Policy`。
 
 ## 4. 账号、登录与安全

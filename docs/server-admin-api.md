@@ -193,7 +193,7 @@ curl "${H[@]}" -X POST $S/api/v2/admin/settings/relay-secret
 | `sfu.port` | 3481 | 转发器的 UDP 端口（所有转发连接共用；绑定 `turn.relay_bind`，候选地址为 `turn.public_ip`）；不能与中转端口相同 |
 | `web.enabled` | `true` | 网页端（关闭后页面返回 404，接口不受影响） |
 | `web.admin_allow` | `[]` | 允许管理的网络（CIDR），空 = 不限 |
-| `web.session_idle_minutes`、`web.session_max_hours` | 30、12 | 网页登录的空闲与最长期限 |
+| `web.session_idle_minutes`、`web.session_max_hours` | 10080（7 天）、720（30 天） | 网页登录的空闲与最长期限 |
 | `web.audit_days` | 180 | 审计日志保留天数 |
 | `web.caps` | 浏览器能用的全部 | 网页主控的能力上限（须包含 `view`） |
 | `limits.*` | | 心跳、超时、帧与 SDP 大小、信令速率、登录与设备登记限流、协助等待、游客凭据期限（键名见网页端“限额与超时”或导出的文档） |

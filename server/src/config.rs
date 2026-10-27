@@ -158,8 +158,10 @@ impl Default for WebConfig {
         Self {
             enabled: true,
             admin_allow: Vec::new(),
-            session_idle_minutes: 30,
-            session_max_hours: 12,
+            // A week unused, a month at most: the token works only with this
+            // browser's device key.
+            session_idle_minutes: 7 * 24 * 60,
+            session_max_hours: 30 * 24,
             audit_days: 180,
             caps: farwing_protocol::caps::WEB
                 .iter()

@@ -5,12 +5,12 @@
 | 路径 | 内容 |
 | --- | --- |
 | `GUIDE.md` | 部署与使用教程（先看这个） |
+| `双机测试清单.md` | 两台电脑实网测试的步骤与预期（第二十版），结果填在表里 |
 | `client/Farwing-v0.1.0-windows-x86_64.exe` | Windows 客户端，主控与被控同一个程序，免安装 |
 | `client/收集日志.ps1` | 出问题时打包本机日志 |
 | `server/farwing-server-0.1.0-linux.tar.gz` | Linux 服务端（x86_64、aarch64）与一键安装脚本 |
 | `server/windows/farwing-server.exe` | Windows 服务端（测试或小规模使用） |
 | `docs/client-usage.md` | 客户端功能详解 |
-| `docs/test-runsheet.md` | 双机实网测试清单（可选） |
 | `SHA256SUMS.txt` | 校验值 |
 
 ## 快速开始（Linux 服务器 + 域名）
