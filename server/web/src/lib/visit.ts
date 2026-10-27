@@ -22,7 +22,6 @@ interface AssistPending {
   trusted: boolean;
   pake: string[];
   key_confirm: string[];
-  host: AssistHost;
 }
 
 type AssistJoin = SessionTicket & { host: AssistHost };
@@ -132,11 +131,7 @@ export async function visitAdmission(
       options,
     );
     requestId = '';
-    if (
-      joined.host.device_id !== pending.host.device_id ||
-      joined.host.public_key !== pending.host.public_key ||
-      (await deviceIdOf(unb64(joined.host.public_key))) !== joined.host.device_id
-    ) {
+    if ((await deviceIdOf(unb64(joined.host.public_key))) !== joined.host.device_id) {
       throw new VisitError('identity');
     }
     onStep('joining');

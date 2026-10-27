@@ -91,7 +91,7 @@ pub(crate) enum Rotation {
 }
 impl Default for Rotation {
     fn default() -> Self {
-        Self::Hours(24)
+        Self::AfterVisit
     }
 }
 impl Rotation {
@@ -1394,12 +1394,12 @@ mod tests {
             code_made_at: 1_000,
             ..Settings::default()
         };
-        // Every day by default.
-        assert!(!settings.rotation_due(1_000 + 86_399, false));
-        assert!(settings.rotation_due(1_000 + 86_400, false));
-        settings.rotation = Rotation::AfterVisit;
+        // After each visit by default.
         assert!(!settings.rotation_due(10_000_000, false));
         assert!(settings.rotation_due(1_000, true));
+        settings.rotation = Rotation::Hours(24);
+        assert!(!settings.rotation_due(1_000 + 86_399, false));
+        assert!(settings.rotation_due(1_000 + 86_400, false));
         settings.rotation = Rotation::Never;
         assert!(!settings.rotation_due(10_000_000, true));
         // Unused codes stay.

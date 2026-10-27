@@ -219,6 +219,11 @@ impl DeviceCenterApp {
         }
         let mut picked = None;
         for (device, current) in devices {
+            let texture = self.center_ui.wallpapers.texture(
+                ui.ctx(),
+                &device.device_id,
+                &device.wallpaper_url,
+            );
             let status = self.device_status(device);
             let chips: Vec<(&str, Color32)> = if *current {
                 vec![(text.page_this_device, theme::ACCENT)]
@@ -233,7 +238,7 @@ impl DeviceCenterApp {
                         ui,
                         &device_list::Row {
                             title: display_alias(device),
-                            tile: Tile::Platform(device.platform),
+                            tile: Tile::of(texture.as_ref(), device.platform),
                             status: (!*current).then(|| (status.label(), status.color())),
                             chips: &chips,
                             grants: None,

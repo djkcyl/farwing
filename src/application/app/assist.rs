@@ -55,7 +55,8 @@ pub(super) enum AssistOperation {
     },
     Delete {
         kind: SavedKind,
-        publisher_id: String,
+        /// [`crate::account::assist::SavedDevice::key`].
+        key: String,
     },
     ClearRecent,
 }
@@ -165,8 +166,8 @@ pub(super) async fn execute(
             client.save_assist_favorite(&id, &remark, code).await?;
             AssistResult::Updated(t().app.favorite_updated)
         }
-        AssistOperation::Delete { kind, publisher_id } => {
-            client.delete_assist_saved(kind, &publisher_id).await?;
+        AssistOperation::Delete { kind, key } => {
+            client.delete_assist_saved(kind, &key).await?;
             AssistResult::Updated(t().app.record_removed)
         }
         AssistOperation::ClearRecent => {

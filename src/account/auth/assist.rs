@@ -52,15 +52,21 @@ impl AssistCodeStore {
     }
 
     pub(crate) fn load(&self, id: &str, publisher_id: Option<&str>) -> Result<Option<SavedCode>> {
-        if let Some(publisher_id) = publisher_id {
+        // An empty `publisher_id` (a favourite not yet connected to) finds
+        // only a code saved without a device.
+        if let Some(publisher_id) = publisher_id.filter(|id| !id.is_empty()) {
             crate::account::api::validate_device_id(publisher_id)?;
         }
         let value = Self::read(&self.entry(id)?)?;
         Ok(value.filter(|v| publisher_id.is_none_or(|id| v.publisher_id == id)))
     }
 
+    /// `publisher_id` is empty for a favourite not yet connected to: the
+    /// first successful connection binds the code to its device.
     pub(crate) fn save(&self, id: &str, publisher_id: &str, code: String) -> Result<()> {
-        crate::account::api::validate_device_id(publisher_id)?;
+        if !publisher_id.is_empty() {
+            crate::account::api::validate_device_id(publisher_id)?;
+        }
         validate_connect_code(&code)?;
         let _lock = credential_store_lock("assist-codes.lock")?;
         let entry = self.entry(id)?;

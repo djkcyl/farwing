@@ -129,9 +129,22 @@ impl SavedDevice {
             &self.remark
         }
     }
+    /// A favourite not yet connected to has no device.
     pub(crate) fn validate(&self) -> Result<()> {
         normalize_connect_id(&self.connect_id)?;
+        if self.publisher_device_id.is_empty() {
+            return Ok(());
+        }
         crate::account::api::validate_device_id(&self.publisher_device_id)
+    }
+    /// How the server's list names this entry: its device, or its short
+    /// number before a first connection.
+    pub(crate) fn key(&self) -> &str {
+        if self.publisher_device_id.is_empty() {
+            &self.connect_id
+        } else {
+            &self.publisher_device_id
+        }
     }
 }
 #[derive(Clone, Default)]

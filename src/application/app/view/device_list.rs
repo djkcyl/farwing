@@ -18,6 +18,53 @@ pub(super) enum Tile<'a> {
     Generic,
 }
 
+/// A device's wallpaper and system, when this account can see it (this
+/// device, its other devices, friends' shared ones).
+pub(super) type Picture = (Option<egui::TextureHandle>, farwing_protocol::Platform);
+
+pub(super) fn known_picture(
+    devices: Option<&crate::account::api::DeviceList>,
+    wallpapers: &mut crate::application::wallpaper::Wallpapers,
+    ctx: &egui::Context,
+    id: &str,
+) -> Option<Picture> {
+    let list = devices?;
+    let device = std::iter::once(&list.current_device)
+        .chain(&list.devices)
+        .chain(&list.shared)
+        .find(|d| d.device_id == id)?;
+    Some((
+        wallpapers.texture(ctx, &device.device_id, &device.wallpaper_url),
+        device.platform,
+    ))
+}
+
+/// Computers show their desktop; browsers and phones their system.
+pub(super) fn has_desktop(platform: farwing_protocol::Platform) -> bool {
+    use farwing_protocol::Platform;
+    matches!(platform, Platform::Windows | Platform::Macos | Platform::Linux)
+}
+
+impl<'a> Tile<'a> {
+    /// The tile of a device with `texture` as its wallpaper.
+    pub(super) fn of(texture: Option<&'a egui::TextureHandle>, platform: farwing_protocol::Platform) -> Self {
+        if has_desktop(platform) {
+            Tile::Wallpaper { texture, platform }
+        } else {
+            Tile::Platform(platform)
+        }
+    }
+
+    /// The tile of a [`known_picture`], or `fallback` for a device this
+    /// account cannot see.
+    pub(super) fn known(picture: Option<&'a Picture>, fallback: Self) -> Self {
+        match picture {
+            Some((texture, platform)) => Self::of(texture.as_ref(), *platform),
+            None => fallback,
+        }
+    }
+}
+
 /// What a row shows; its actions are laid out by the caller.
 pub(super) struct Row<'a> {
     pub title: &'a str,

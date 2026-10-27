@@ -5,8 +5,9 @@ import { useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
 import { ago, connectIdText, dateTime } from '../../lib/format';
 import { navigate } from '../../lib/router';
-import type { SavedDevice } from '../../lib/types';
+import type { DeviceList, SavedDevice } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
+import { DeviceShot } from '../../ui/DeviceCard';
 import { Alert, Button, Card, Empty, Field, IconButton, Input, Loading, PageHeader, Tabs } from '../../ui/kit';
 import { Dialog, useOverlay } from '../../ui/overlay';
 
@@ -25,6 +26,11 @@ export default function Favorites() {
   const [tab, setTab] = useState<Tab>('favorites');
   const favorites = useApi<{ saved: SavedDevice[] }>('/api/v2/assist/saved/favorites');
   const recent = useApi<{ saved: SavedDevice[] }>('/api/v2/assist/saved/recent');
+  // Wallpapers of the devices this account can see (its own, friends' shared).
+  const devices = useApi<DeviceList>('/api/v2/devices');
+  const known = new Map(
+    [...(devices.data?.own ?? []), ...(devices.data?.shared ?? [])].map((d) => [d.device_id, d] as const),
+  );
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<SavedDevice>();
   const [code, setCode] = useState('');
@@ -114,6 +120,7 @@ export default function Favorites() {
             <table className="table">
               <thead>
                 <tr>
+                  <th className="thumb-cell" />
                   <th>{m.device}</th>
                   <th>{t.account.connectId}</th>
                   <th>{tab === 'favorites' ? m.favoritedAt : m.lastConnected}</th>
@@ -123,6 +130,9 @@ export default function Favorites() {
               <tbody>
                 {list.map((s) => (
                   <tr key={s.connect_id + s.publisher_device_id}>
+                    <td className="thumb-cell">
+                      <DeviceShot device={known.get(s.publisher_device_id)} className="device-thumb" iconSize={16} />
+                    </td>
                     <td className="cell-main">{s.remark || <span className="muted">{t.common.noNote}</span>}</td>
                     <td className="mono">{connectIdText(s.connect_id)}</td>
                     <td className="nowrap muted">

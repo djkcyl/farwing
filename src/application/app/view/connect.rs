@@ -541,6 +541,14 @@ impl DeviceCenterApp {
             .map(|state| state.trusted)
             .unwrap_or_default();
         let pairing = self.direct.pairing_active();
+        let pictures: std::collections::HashMap<String, device_list::Picture> = found
+            .iter()
+            .filter_map(|h| {
+                let id = &h.announce.device_id;
+                device_list::known_picture(self.devices.as_ref(), &mut self.center_ui.wallpapers, ui.ctx(), id)
+                    .map(|picture| (id.clone(), picture))
+            })
+            .collect();
         let text = &t().center;
         enum Pick {
             Key(String, String),
@@ -614,7 +622,10 @@ impl DeviceCenterApp {
                         ui,
                         &device_list::Row {
                             title: &announce.name,
-                            tile: Tile::Platform(announce.platform),
+                            tile: Tile::known(
+                                pictures.get(&announce.device_id),
+                                Tile::Platform(announce.platform),
+                            ),
                             status: Some((t().common.online, GREEN)),
                             chips: &chips,
                             grants: None,
@@ -881,6 +892,15 @@ impl DeviceCenterApp {
                 &[item.title(), &item.publisher_device_id, &item.connect_id],
             )
         });
+        let pictures: std::collections::HashMap<String, device_list::Picture> = favorites
+            .iter()
+            .map(|item| item.publisher_device_id.clone())
+            .chain(rows.iter().filter_map(|row| row.device_id.clone()))
+            .filter_map(|id| {
+                device_list::known_picture(self.devices.as_ref(), &mut self.center_ui.wallpapers, ui.ctx(), &id)
+                    .map(|picture| (id, picture))
+            })
+            .collect();
         enum Pick {
             Connect(RecentRow),
             ConnectFavorite(String),
@@ -916,7 +936,7 @@ impl DeviceCenterApp {
                             ui,
                             &device_list::Row {
                                 title: item.title(),
-                                tile: Tile::Generic,
+                                tile: Tile::known(pictures.get(&item.publisher_device_id), Tile::Generic),
                                 status: None,
                                 chips: &[],
                                 grants: None,
@@ -1020,7 +1040,10 @@ impl DeviceCenterApp {
                         ui,
                         &device_list::Row {
                             title: &title,
-                            tile: Tile::Generic,
+                            tile: Tile::known(
+                                row.device_id.as_ref().and_then(|id| pictures.get(id)),
+                                Tile::Generic,
+                            ),
                             status: None,
                             chips: &chips,
                             grants: None,

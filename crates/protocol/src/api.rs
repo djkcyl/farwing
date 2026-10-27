@@ -718,6 +718,8 @@ pub struct AssistHost {
 }
 
 /// Successful reply of `POST /assist/join`: the host answered the PAKE.
+/// Nothing about the host before it admits the controller: its identity
+/// comes with [`AssistJoin`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AssistPending {
     pub request_id: String,
@@ -731,7 +733,6 @@ pub struct AssistPending {
     /// Host key confirmations (label `host`), one per slot.
     #[serde(default)]
     pub key_confirm: Vec<String>,
-    pub host: AssistHost,
 }
 
 /// `POST /assist/requests/{id}/accept` (controller, long poll).

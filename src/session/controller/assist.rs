@@ -236,12 +236,6 @@ async fn authorize(
             .unwrap_or_default();
         let mut joined =
             cancellable(cancel, client.assist_accept(&pending.request_id, confirm, visit)).await?;
-        anyhow::ensure!(
-            joined.host.device_id == pending.host.device_id
-                && joined.host.public_key == pending.host.public_key,
-            "{}",
-            t().session.error_peer_identity_changed
-        );
         crate::transport::signal::identity::check_key(&joined.host.device_id, &joined.host.public_key)?;
         joined.pake_key = key;
         // Listed under "最近与收藏", and reached without a code next time

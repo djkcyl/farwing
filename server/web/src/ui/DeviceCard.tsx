@@ -9,13 +9,24 @@ import { viewBlocker } from '../lib/devices';
 import { Icon } from './icons';
 import { Button, Online } from './kit';
 
-function Wallpaper({ device }: { device: Device }) {
+/// A device's desktop (its wallpaper), or its system's mark: a browser
+/// shows a globe, a computer without a wallpaper a screen.
+export function DeviceShot({
+  device,
+  className = 'device-shot',
+  iconSize = 34,
+}: {
+  device?: Pick<Device, 'wallpaper_url' | 'platform'>;
+  className?: string;
+  iconSize?: number;
+}) {
   const [url, setUrl] = useState<string>();
+  const wallpaper = device?.wallpaper_url;
   useEffect(() => {
-    if (!device.wallpaper_url) return;
+    if (!wallpaper) return;
     let alive = true;
     let objectUrl: string | undefined;
-    fetchBlob(device.wallpaper_url)
+    fetchBlob(wallpaper)
       .then((blob) => {
         objectUrl = URL.createObjectURL(blob);
         if (alive) setUrl(objectUrl);
@@ -26,10 +37,10 @@ function Wallpaper({ device }: { device: Device }) {
       alive = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [device.wallpaper_url]);
+  }, [wallpaper]);
   return (
-    <div className="device-shot" style={url ? { backgroundImage: `url(${url})` } : undefined}>
-      {!url && <Icon name="monitor" size={34} />}
+    <div className={className} style={url ? { backgroundImage: `url(${url})` } : undefined}>
+      {!url && <Icon name={device?.platform === 'web' ? 'globe' : 'monitor'} size={iconSize} />}
     </div>
   );
 }
@@ -41,7 +52,7 @@ export function DeviceCard({ device: d, shared }: { device: Device; shared?: boo
   return (
     <article className="device-card">
       <Link to={`/devices/${d.device_id}`} className="device-link" aria-label={d.alias}>
-        <Wallpaper device={d} />
+        <DeviceShot device={d} />
       </Link>
       <div className="device-info">
         <div className="row gap-sm">

@@ -89,6 +89,26 @@ pub(super) fn system_icon(p: &egui::Painter, rect: egui::Rect, platform: farwing
                 BG,
             );
         }
+        Platform::Web => {
+            // A globe: a browser login.
+            let blue = Color32::from_rgb(84, 163, 255);
+            let stroke = Stroke::new((r.width() * 0.08).max(1.2), blue);
+            let c = r.center();
+            let radius = r.width() * 0.46;
+            p.circle_stroke(c, radius, stroke);
+            p.line_segment([c - vec2(radius, 0.0), c + vec2(radius, 0.0)], stroke);
+            let meridian = (0..=16)
+                .map(|i| {
+                    let a = std::f32::consts::PI * (i as f32 / 16.0 - 0.5);
+                    c + vec2(a.cos() * radius * 0.45, a.sin() * radius)
+                })
+                .collect::<Vec<_>>();
+            p.add(egui::Shape::line(meridian.clone(), stroke));
+            p.add(egui::Shape::line(
+                meridian.iter().map(|q| egui::pos2(2.0 * c.x - q.x, q.y)).collect(),
+                stroke,
+            ));
+        }
         _ => paint_icon(p, r, Icon::Monitor, MUTED),
     }
 }

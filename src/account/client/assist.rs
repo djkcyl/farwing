@@ -173,36 +173,21 @@ impl AuthenticatedClient {
         }
         bail!("{}", t().session.favorite_unconfirmed)
     }
-    pub(crate) async fn delete_assist_saved(
-        &self,
-        kind: SavedKind,
-        publisher_id: &str,
-    ) -> Result<()> {
-        crate::account::api::validate_device_id(publisher_id)?;
+    /// `key`: [`SavedDevice::key`].
+    pub(crate) async fn delete_assist_saved(&self, kind: SavedKind, key: &str) -> Result<()> {
         let current = self.assist_saved(kind).await?;
-        if !current
-            .iter()
-            .any(|d| d.publisher_device_id == publisher_id)
-        {
+        if !current.iter().any(|d| d.key() == key) {
             return Ok(());
         }
-        let removed: Vec<_> = current
-            .into_iter()
-            .filter(|d| d.publisher_device_id == publisher_id)
-            .collect();
+        let removed: Vec<_> = current.into_iter().filter(|d| d.key() == key).collect();
         let result = self
-            .request(|api| async move { api.assist_delete_saved(kind, publisher_id).await })
+            .request(|api| async move { api.assist_delete_saved(kind, key).await })
             .await;
         if let Err(error) = result {
             if super::is_server_failure(&error) {
                 return Err(error);
             }
-            if self
-                .assist_saved(kind)
-                .await?
-                .iter()
-                .any(|d| d.publisher_device_id == publisher_id)
-            {
+            if self.assist_saved(kind).await?.iter().any(|d| d.key() == key) {
                 bail!("{}", t().session.delete_unconfirmed);
             }
         }

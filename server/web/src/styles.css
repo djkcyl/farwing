@@ -1275,6 +1275,25 @@ table.table {
   color: var(--faint);
   border-bottom: 1px solid var(--line);
 }
+.detail-shot {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+.device-thumb {
+  width: 64px;
+  aspect-ratio: 16 / 9;
+  background: linear-gradient(135deg, #1b2433, #121820) center / cover no-repeat;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  color: var(--faint);
+}
+.thumb-cell {
+  width: 64px;
+  padding-right: 0;
+}
 .device-info {
   padding: 12px 14px 14px;
   display: flex;

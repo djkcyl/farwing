@@ -275,7 +275,8 @@ async fn password_mode_with_pake() {
     assert_eq!(pending["mode"], "password");
     assert_eq!(pending["pake"].as_array().unwrap().len(), 2);
     assert_eq!(pending["key_confirm"].as_array().unwrap().len(), 2);
-    assert_eq!(pending["host"]["public_key"], s.host.public_key().as_str());
+    // Nothing about the host before it admits the controller.
+    assert!(pending.get("host").is_none());
     let keys = joined.host_keys.clone();
     let (rid, key) = joined.controller_key();
     let key = key.expect("the right code matches a host confirmation");
@@ -714,14 +715,15 @@ async fn saved_lists() {
     let saved = r.ok()["saved"].as_array().unwrap().clone();
     assert_eq!(saved.len(), 2);
     assert_eq!(saved[0]["connect_id"], "123456789");
-    assert_eq!(saved[1]["publisher_device_id"], s.host.id.as_str());
     assert_eq!(saved[1]["remark"], "Mom");
     assert_eq!(saved[1]["is_favorite"], true);
+    // Nothing about the device behind a short number before a connection.
+    for item in &saved {
+        assert_eq!(item["publisher_device_id"], "");
+        assert_eq!(item["public_key"], "");
+    }
     s.srv
-        .delete(
-            &format!("/api/v2/assist/saved/favorites/{}", s.host.id),
-            &ctrl,
-        )
+        .delete("/api/v2/assist/saved/favorites/123456789", &ctrl)
         .await
         .ok();
     let fav = s
@@ -731,6 +733,16 @@ async fn saved_lists() {
         .ok()
         .clone();
     assert_eq!(fav["saved"].as_array().unwrap().len(), 1);
+    // A successful connection binds the favourite to its device.
+    password_flow(&mut s, &ctrl, CODE).await.ok();
+    let fav = s
+        .srv
+        .get("/api/v2/assist/saved/favorites", &ctrl)
+        .await
+        .ok()
+        .clone();
+    assert_eq!(fav["saved"][0]["publisher_device_id"], s.host.id.as_str());
+    assert_eq!(fav["saved"][0]["public_key"], s.host.public_key().as_str());
 
     // Recent: populated by a session, then cleared.
     password_flow(&mut s, &ctrl, CODE).await.ok();

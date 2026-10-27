@@ -1722,12 +1722,15 @@ impl ServerApi {
     pub(crate) async fn assist_delete_saved(
         &self,
         kind: crate::account::assist::SavedKind,
-        publisher_id: &str,
+        key: &str,
     ) -> Result<()> {
-        validate_device_id(publisher_id)?;
+        // A device ID, or the short number of a favourite not yet connected to.
+        if crate::account::assist::normalize_connect_id(key).is_err() {
+            validate_device_id(key)?;
+        }
         self.call::<IgnoredAny>(
             Method::DELETE,
-            &path::assist_saved_entry(kind.path(), publisher_id),
+            &path::assist_saved_entry(kind.path(), key),
             Body::None,
             REQUEST_TIMEOUT,
             Auth::Session,

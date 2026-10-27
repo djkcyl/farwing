@@ -250,7 +250,6 @@ pub async fn join(
         trusted: reply.trusted,
         pake: reply.pake,
         key_confirm: reply.key_confirm,
-        host: host_info(&host),
     }))
 }
 
@@ -562,18 +561,20 @@ pub async fn saved_put(
     let rows = app
         .db
         .call(move |c| {
-            let mut items = Vec::new();
-            for f in &req.favorites {
-                let device_id = db::get_device_by_connect_id(c, &f.connect_id)?
-                    .map(|d| d.id)
-                    .unwrap_or_default();
-                items.push((
-                    f.connect_id.clone(),
-                    device_id,
-                    db::clip(&f.remark, 128),
-                    f.favorited_at,
-                ));
-            }
+            // Nothing about the device behind a short number until a
+            // connection to it succeeds (`record_recent` binds it).
+            let items: Vec<_> = req
+                .favorites
+                .iter()
+                .map(|f| {
+                    (
+                        f.connect_id.clone(),
+                        String::new(),
+                        db::clip(&f.remark, 128),
+                        f.favorited_at,
+                    )
+                })
+                .collect();
             db::replace_favorites(c, &uid, &items)?;
             db::list_favorites(c, &uid)
         })

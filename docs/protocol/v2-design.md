@@ -74,7 +74,7 @@ X-Farwing-Signature: base64url(ed25519(sk, "FWREQ2\n" + METHOD + "\n" + path_and
   3. 被控 `POST /api/v2/assist/requests/{id}/pake {allowed, mode, trusted, pake: [msgB_i], key_confirm: [HMAC(K_i, "FWAK2\nhost\n"+request_id)]}`：
      - 请求未带 `pake`、主控公钥在本机受信任设备中且本机允许连接：`{allowed: true, trusted: true}`，不跑 PAKE，也不要求确认。
      - 否则按访问码应答：未配置的槽用随机口令应答，不暴露配置；仅确认模式时 `pake` 为空。未开启访问码或暂时锁定时 `allowed: false`。
-  4. 服务端把应答作为 `AssistPending{request_id, mode, trusted, pake, key_confirm, host}` 返回主控。非 `trusted` 时，需要访问码而请求未带 `pake` 返回 `409 assist_code_required`；`allowed: false` 返回 `409 assist_unavailable`。
+  4. 服务端把应答作为 `AssistPending{request_id, mode, trusted, pake, key_confirm}` 返回主控（不含被控信息，放行后随 `AssistJoin` 给出）。非 `trusted` 时，需要访问码而请求未带 `pake` 返回 `409 assist_code_required`；`allowed: false` 返回 `409 assist_unavailable`。
   5. 主控：`trusted` 时直接 `accept`（确认值为空）。否则逐个计算 `K_i` 并比对 `key_confirm`；都不匹配就是访问码错误：本地报错并撤回请求（`…/cancel`），访问码本身从未发出。匹配则 `POST /api/v2/assist/requests/{id}/accept {key_confirm: HMAC(K, "FWAK2\ncontroller\n"+request_id)}`（长轮询）。
   6. 服务端推送被控 `assist.accept`。受信任的请求：被控再次核对仍允许连接、该设备仍受信任，然后 `POST …/decision {allowed: true, trusted: true}`。访客：校验确认值，需要时弹出本机确认，然后 `POST …/decision {allowed, refusal}`（`code_invalid | code_required | rejected | unavailable`）。允许后服务端建立会话（`purpose = desktop`、`connect_type = assist`、`relation = trusted | assist`、`grants` 为空），把 `AssistJoin{session ticket, host}` 返回主控。
   7. 使用访问码的会话，双方 SDP 增加 `a=x-farwing-pake:<base64url(HMAC(K, "FWDTLS2\n"+session_id+"\n\n"+role+"\n"+fingerprints))>`，互相校验；被控按会话保存 K，重连同一会话时继续使用。

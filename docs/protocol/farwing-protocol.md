@@ -249,9 +249,9 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `POST /assist/requests/{id}/decision` | 任一（目标被控） | `AssistDecision` `{allowed, refusal?, trusted}` | `{}` |
 | `POST /assist/identity` | 任一 | — | `{connect_id}` |
 | `GET /assist/saved/{recent\|favorites}` | 账号 | — | `{saved: [SavedDevice]}` |
-| `PUT /assist/saved/favorites` | 账号 | `{favorites: [{connect_id, remark, favorited_at}]}`（≤ 500） | `{saved: [..]}` |
+| `PUT /assist/saved/favorites` | 账号 | `{favorites: [{connect_id, remark, favorited_at}]}`（≤ 500） | `{saved: [..]}`；服务端不按短号查找设备，`publisher_device_id`、`public_key` 在第一次经该短号连接成功后才有 |
 | `DELETE /assist/saved/recent` | 账号 | — | `{}` |
-| `DELETE /assist/saved/{kind}/{device_id}` | 账号 | — | `{}` |
+| `DELETE /assist/saved/{kind}/{device_id}` | 账号 | — | `{}`；尚未连接过的收藏用短号 |
 | `POST /sfu/rooms` | 任一（被控） | `CreateRoomRequest` `{sessions, mode, offer}` | `RoomCreated` `{room, mode, answer, node?}` |
 | `PUT /sfu/rooms/{room}` | 任一（房间的被控） | `{sessions?, offer?}` | `{answer?}` |
 | `DELETE /sfu/rooms/{room}` | 任一（房间的被控） | — | `{}` |
@@ -366,7 +366,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 2. **被控** `POST /assist/requests/{id}/pake`，主体 `AssistPakeReply{allowed, mode, trusted, pake, key_confirm}`，`mode` 为 `password | confirmation | password_confirmation`：
    - 请求未带 `pake`、主控公钥在被控的受信任设备中且被控允许连接：`allowed: true, trusted: true`，`pake`、`key_confirm` 为空。
    - 否则 `pake: [msgB_0, msgB_1]`，`key_confirm: [HMAC(K_i, "FWAK2\nhost\n"+request_id)]`；仅确认模式 `pake` 为空。
-3. **服务端**返回主控 `AssistPending{request_id, mode, trusted, pake, key_confirm, host{device_id, alias, platform, version, public_key}}`。被控 `allowed: false` → `409 assist_unavailable`；非 `trusted` 且需要访问码而请求未带 `pake` → `409 assist_code_required`（`details.mode`）并推送 `assist.cancelled`；被控未应答 → `408 timeout`。
+3. **服务端**返回主控 `AssistPending{request_id, mode, trusted, pake, key_confirm}`：被控放行之前不透露它的任何信息（设备 ID、名称、系统、版本、公钥都在第 6 步的 `AssistJoin.host` 中）。被控 `allowed: false` → `409 assist_unavailable`；非 `trusted` 且需要访问码而请求未带 `pake` → `409 assist_code_required`（`details.mode`）并推送 `assist.cancelled`；被控未应答 → `408 timeout`。
 4. **主控**：`trusted` 时直接 `accept`（`key_confirm` 为空串）。否则逐槽计算 K 并核对 `key_confirm`；都不匹配即访问码错误：本地报错并 `POST …/cancel`。匹配（或仅确认模式）则 `POST /assist/requests/{id}/accept {key_confirm: HMAC(K, "FWAK2\ncontroller\n"+request_id)}`（长轮询，最多 65 秒；确认模式为空串）。
 5. **服务端**推送 `assist.accept{request_id, key_confirm}`；被控对受信任的请求重新核对该设备仍受信任，对访客校验确认值并在需要时弹出本机确认，然后 `POST …/decision`，主体 `AssistDecision{allowed, refusal?, trusted}`，`refusal ∈ code_invalid | code_required | rejected | unavailable`。
 6. 允许：服务端建立会话（`purpose = desktop`，`connect_type = assist`，`decision.trusted` 时 `relation = trusted`、否则 `assist`，`grants` 为空：被控套用为该受信任设备记录的能力或访客默认权限），返回 `AssistJoin` = `SessionTicket` 字段（`target.relation` 同上）+ `host`。拒绝映射：`code_invalid → 403 assist_code_invalid`，`code_required → 409 assist_code_required`，`rejected → 403 assist_rejected`，`unavailable → 409 assist_unavailable`。被控未决定 → `408 timeout` 并推送 `assist.cancelled`；请求已被取消 → `409 conflict`。

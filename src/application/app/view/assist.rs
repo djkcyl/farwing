@@ -255,7 +255,7 @@ impl DeviceCenterApp {
                     DeletePrompt::Recent => AssistOperation::ClearRecent,
                     DeletePrompt::Device(kind, item) => AssistOperation::Delete {
                         kind,
-                        publisher_id: item.publisher_device_id,
+                        key: item.key().to_owned(),
                     },
                 };
                 self.request_assist_operation(operation);

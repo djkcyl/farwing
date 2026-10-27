@@ -19,6 +19,7 @@ import { Link, navigate } from '../../lib/router';
 import type { DeviceDetail as Detail, DeviceList } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
 import { viewBlocker } from '../../lib/devices';
+import { DeviceShot } from '../../ui/DeviceCard';
 import { Icon } from '../../ui/icons';
 import { Button, Card, Copy, Empty, Field, Input, Online, PageHeader, PageState, Row, Rows } from '../../ui/kit';
 import { Dialog, useOverlay } from '../../ui/overlay';
@@ -122,6 +123,7 @@ export default function DeviceDetail({ params }: { params: Record<string, string
       />
       <div className="grid grid-2">
         <Card title={m.info}>
+          {device && <DeviceShot device={device} className="device-shot detail-shot" />}
           <Rows>
             <Row label={t.account.deviceId}>
               <Copy text={d.device_id} display={deviceIdText(d.device_id)} />

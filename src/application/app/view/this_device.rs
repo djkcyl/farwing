@@ -333,12 +333,18 @@ impl DeviceCenterApp {
                 ),
             );
             let sending = self.direct.sending;
+            let picture = device_list::known_picture(
+                self.devices.as_ref(),
+                &mut self.center_ui.wallpapers,
+                ui.ctx(),
+                &device.device_id,
+            );
             ui.push_id(&device.device_id, |ui| {
                 device_list::row(
                     ui,
                     &device_list::Row {
                         title: &device.name,
-                        tile: Tile::Generic,
+                        tile: Tile::known(picture.as_ref(), Tile::Generic),
                         status: None,
                         chips: if paired { &paired_chip[..] } else { &[] },
                         grants: Some(&device.grants),
