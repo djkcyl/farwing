@@ -157,7 +157,7 @@ enum Commands {
         /// 开启访问码（临时访问码，8–32 位，须同时含字母和数字）并保存
         #[arg(long)]
         access_code: Option<String>,
-        /// 临时访问码自动更换：after-visit（每次连接后）、1h、6h、12h、1d、3d、7d 或 never（默认）
+        /// 临时访问码自动更换：after-visit（每次连接后）、6h、1d、7d 或 never（默认）
         #[arg(long, requires = "access_code")]
         code_rotation: Option<String>,
         /// 不登录、不连接服务器，只接受局域网与地址直连（受信任设备、访问码）

@@ -95,13 +95,10 @@ impl Default for Rotation {
     }
 }
 impl Rotation {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 5] = [
         Self::AfterVisit,
-        Self::Hours(1),
         Self::Hours(6),
-        Self::Hours(12),
         Self::Hours(24),
-        Self::Hours(72),
         Self::Hours(168),
         Self::Never,
     ];
@@ -1406,13 +1403,13 @@ mod tests {
         settings.rotation = Rotation::Never;
         assert!(!settings.rotation_due(10_000_000, true));
         // Unused codes stay.
-        settings.rotation = Rotation::Hours(1);
+        settings.rotation = Rotation::Hours(6);
         settings.passwords = Passwords::Custom;
         assert!(!settings.rotation_due(10_000_000, true));
         settings.passwords = Passwords::Random;
         settings.mode = Mode::Confirmation;
         assert!(!settings.rotation_due(10_000_000, true));
-        settings.rotation = Rotation::Hours(5);
+        settings.rotation = Rotation::Hours(12);
         assert!(settings.validate().is_err());
     }
 
@@ -1422,7 +1419,8 @@ mod tests {
         assert_eq!(Rotation::parse("6h").unwrap(), Rotation::Hours(6));
         assert_eq!(Rotation::parse("7d").unwrap(), Rotation::Hours(168));
         assert_eq!(Rotation::parse("never").unwrap(), Rotation::Never);
-        assert!(Rotation::parse("5h").is_err());
+        assert_eq!(Rotation::parse("1d").unwrap(), Rotation::Hours(24));
+        assert!(Rotation::parse("12h").is_err());
         assert!(Rotation::parse("d").is_err());
     }
 }
