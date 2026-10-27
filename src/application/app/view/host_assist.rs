@@ -404,6 +404,8 @@ impl DeviceCenterApp {
                             let mut rotation = settings.rotation;
                             egui::ComboBox::from_id_salt("host-assist-rotation")
                                 .width(ui.available_width())
+                                // Every choice without scrolling.
+                                .height(f32::INFINITY)
                                 .selected_text(rotation.label())
                                 .show_ui(ui, |ui| {
                                     for choice in Rotation::ALL {
