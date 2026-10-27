@@ -98,9 +98,6 @@ pub(crate) struct ConnectOptions {
     pub screen_id: i32,
     pub params: Option<CaptureParams>,
     pub decoders: Vec<DecoderCapability>,
-    pub force_virtual: bool,
-    pub virtual_modes: Vec<VirtualMode>,
-    pub virtual_initial: Option<Resolution>,
     pub client_type: i32,
     /// The controller's device ID.
     pub device_id: String,
@@ -113,15 +110,6 @@ pub(crate) struct Resolution {
     pub width: i32,
     #[prost(int32, tag = "2")]
     pub height: i32,
-}
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct VirtualMode {
-    #[prost(int32, tag = "1")]
-    pub width: i32,
-    #[prost(int32, tag = "2")]
-    pub height: i32,
-    #[prost(int32, tag = "3")]
-    pub vsync: i32,
 }
 impl ConnectOptions {
     pub fn from_wire(wire: &farwing_protocol::session::ConnectOptions) -> Self {
@@ -158,17 +146,6 @@ impl ConnectOptions {
                     chroma: d.chroma,
                 })
                 .collect(),
-            force_virtual: wire.force_virtual,
-            virtual_modes: wire
-                .virtual_modes
-                .iter()
-                .map(|m| VirtualMode {
-                    width: m.width,
-                    height: m.height,
-                    vsync: m.vsync,
-                })
-                .collect(),
-            virtual_initial: wire.virtual_initial.as_ref().map(resolution),
             // Set by the host from the server's `session.incoming`.
             kind: 0,
             client_type: crate::protocol::peer_platform::WINDOWS_CLIENT_TYPE,

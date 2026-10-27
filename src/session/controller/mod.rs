@@ -505,13 +505,7 @@ impl ControllerConnection {
         );
         let control = match cancellable(
             cancel,
-            signal.start_control(
-                local,
-                profile,
-                connect_type,
-                preferences,
-                purpose,
-            ),
+            signal.start_control(local, profile, preferences, purpose),
         )
         .await
         {

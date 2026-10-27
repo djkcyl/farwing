@@ -22,14 +22,6 @@ pub struct Resolution {
     pub height: i32,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VirtualMode {
-    pub width: i32,
-    pub height: i32,
-    /// Refresh rate in Hz.
-    pub vsync: i32,
-}
-
 /// Initial capture parameters requested by the controller.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -87,9 +79,6 @@ pub struct ConnectOptions {
     pub screen_id: i32,
     pub capture: Option<CaptureParams>,
     pub decoders: Vec<DecoderCapability>,
-    pub force_virtual: bool,
-    pub virtual_modes: Vec<VirtualMode>,
-    pub virtual_initial: Option<Resolution>,
     /// Controller application version.
     pub version: String,
 }

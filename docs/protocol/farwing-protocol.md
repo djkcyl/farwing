@@ -509,7 +509,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 
 **客户端约定的载荷（服务端只校验大小并转发）**
 
-- `ConnectOptions`：`{screen_id, capture: CaptureParams?, decoders: [DecoderCapability], force_virtual, virtual_modes: [{width, height, vsync}], virtual_initial: {width, height}?, version}`。
+- `ConnectOptions`：`{screen_id, capture: CaptureParams?, decoders: [DecoderCapability], version}`。
   - `CaptureParams`：`{fps(1:30 2:60 3:90 4:144), quality(1 低码率 2 高清 3 超清 4 原画 5 自动 6 自定义), cursor_capture, resolution_type, local_resolution, chosen_resolution, chroma(1 4:2:0 3 4:4:4), bitrate(bit/s，0 自动), hdr, auto_quality, fps_count, weak_network(0 先降码率 1 先降帧率), cinema, codec(0 由被控选择，1 H.264 2 H.265 5 AV1：双方都支持时会话从这种编码开始)}`。
   - `DecoderCapability`：`{fps, codec(1 H.264 2 H.265 5 AV1), width, height, chroma}`。
 - `capability`（`session.start` 与 `session.setting{capability}`，`src/protocol/capability.rs`）：`{preferred_codec?, sdr_10bit, session_id, display_info: [{id, fps, type, hdr}], video_codec_capability: [{video_codec, width, height, chroma_sampling, bit_depth, codec_impl}]}`。

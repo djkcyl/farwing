@@ -395,9 +395,6 @@ export class Viewer {
             codec: this.options.codec?.() ?? 0,
           },
           decoders: this.decoders.map((d) => ({ fps: 60, codec: d.codec, width: 3840, height: 2160, chroma: 1 })),
-          force_virtual: false,
-          virtual_modes: [],
-          virtual_initial: null,
           version: 'web-0.1.0',
         },
         capability: {

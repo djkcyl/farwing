@@ -24,7 +24,6 @@ pub(super) struct Virtual {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(super) struct Preference {
-    pub default_virtual: bool,
     pub super_enabled: bool,
     pub super_size: Option<(u32, u32)>,
     pub super_dpi: u32,

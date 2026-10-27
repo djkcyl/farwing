@@ -39,16 +39,6 @@ impl Session {
         if let Some(previous) = previous {
             return self.select(&previous, options.screen_id).await;
         }
-        ensure!(
-            !options.force_virtual || self.lease.display_expansion_allowed(),
-            "{}",
-            t().features.screen_force_virtual_not_allowed
-        );
-        ensure!(
-            options.virtual_modes.len() <= 64,
-            "{}",
-            t().features.screen_too_many_virtual_modes
-        );
         if let Some(params) = &options.params {
             ensure!(
                 (0..=4).contains(&params.resolution_type),
@@ -60,17 +50,9 @@ impl Session {
                     .context(t().features.screen_resolution_missing)?])?;
             }
         }
-        let modes: Vec<_> = options
-            .virtual_modes
-            .iter()
-            .map(|m| Ok((u32::try_from(m.width)?, u32::try_from(m.height)?)))
-            .collect::<Result<_>>()?;
-        if !modes.is_empty() {
-            validate_modes(&modes)?;
-        }
         tokio::task::spawn_blocking(recovery::recover_abandoned).await??;
         let screen = self
-            .run(move |state, lease| state.prepare(options, modes, lease))
+            .run(move |state, lease| state.prepare(options, lease))
             .await?;
         *lock(&self.prepared) = Some(screen.clone());
         Ok(screen)
@@ -155,12 +137,7 @@ impl State {
         }
     }
 
-    fn prepare(
-        &mut self,
-        options: ConnectOptions,
-        modes: Vec<(u32, u32)>,
-        lease: &Lease,
-    ) -> Result<capture::Screen> {
+    fn prepare(&mut self, options: ConnectOptions, lease: &Lease) -> Result<capture::Screen> {
         if self.fallback_pin.is_none() {
             self.fallback_pin = fallback::pin().unwrap_or_else(|error| {
                 tracing::warn!(error=%format!("{error:#}"), "optional display driver unavailable");
@@ -168,12 +145,7 @@ impl State {
             });
         }
         let mut screens = capture::screens()?;
-        tracing::info!(
-            screens = screens.len(),
-            forced_virtual = options.force_virtual,
-            saved_virtual = self.preferences.default_virtual,
-            "host initial display selection"
-        );
+        tracing::info!(screens = screens.len(), "host initial display selection");
         let choice = options.params.as_ref().map_or(0, |p| p.resolution_type);
         let local = size(
             options
@@ -181,17 +153,12 @@ impl State {
                 .as_ref()
                 .and_then(|p| p.local_resolution.as_ref()),
         );
-        let virtual_size = if choice == 0 {
-            size(options.virtual_initial.as_ref())
-        } else {
-            local
-        }
-        .unwrap_or((1920, 1080));
+        // A screen the host creates (fallback, super screen): the
+        // controller's resolution when it asks for one.
+        let virtual_size = local.filter(|_| choice != 0).unwrap_or((1920, 1080));
         let mut automatic = None;
         let targets = Topology::query(true)?.metadata()?;
-        if !options.force_virtual
-            && !self.preferences.default_virtual
-            && !self.preferences.super_enabled
+        if !self.preferences.super_enabled
             && !targets.iter().any(|t| t.available && !t.foreign())
         {
             automatic = fallback::ensure(
@@ -203,32 +170,8 @@ impl State {
             )?;
             screens = capture::screens()?;
         }
-        if !options.force_virtual && self.preferences.super_enabled {
+        if self.preferences.super_enabled {
             return self.enter_super(virtual_size.0, virtual_size.1, 0, true, lease);
-        }
-        if options.force_virtual || self.preferences.default_virtual {
-            validate_modes(&[virtual_size])?;
-            let result = self.create(
-                Virtual {
-                    guid: uuid::Uuid::new_v4().to_string(),
-                    identity: None,
-                    width: virtual_size.0,
-                    height: virtual_size.1,
-                    hz: 144,
-                    dpi: 0,
-                    kind: 3,
-                    resolution_type: choice.max(1),
-                    modes,
-                    layout: None,
-                },
-                lease,
-                options.force_virtual || self.preferences.default_virtual,
-            );
-            if result.is_ok() && options.force_virtual && !self.has_saved_preferences {
-                self.preferences.default_virtual = true;
-                self.save_preferences()?;
-            }
-            return result;
         }
         let saved = self.preferences.manual.clone();
         ensure!(

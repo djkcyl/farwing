@@ -148,6 +148,21 @@ pub(in crate::application::viewer) fn missing(cap: &str) -> String {
     (t().viewer.permission_missing)(crate::application::app::friends::cap_label(cap))
 }
 
+/// A bitrate in the quality menu: `1.5M`, `8M`, `22M`.
+fn mbps(bps: u32) -> String {
+    let mbps = f64::from(bps) / 1_000_000.0;
+    if mbps < 9.95 {
+        let tenths = (mbps * 10.0).round() / 10.0;
+        if tenths.fract() == 0.0 {
+            format!("{tenths:.0}M")
+        } else {
+            format!("{tenths:.1}M")
+        }
+    } else {
+        format!("{:.0}M", mbps.round())
+    }
+}
+
 fn switch_row(ui: &mut egui::Ui, label: &str, value: &mut bool) -> egui::Response {
     let enabled = ui.is_enabled();
     let (row, mut response) =
@@ -751,8 +766,18 @@ pub(super) fn show_stream_control_window(
                                     snapshot.auto_quality_label.as_str(),
                                     String::new(),
                                 );
-                                let clear = (StreamQuality::Clear, t().viewer.quality_high, "8M".to_owned());
-                                let smooth = (StreamQuality::Fast, t().viewer.quality_smooth, "1.5M".to_owned());
+                                // Each tier's ceiling for this screen at the chosen frame
+                                // rate and colour, as the host computes it.
+                                let viewed = snapshot.screens.iter().find(|s| s.id == screen_id);
+                                let fps = settings.frame_rate.value(snapshot.local_display);
+                                let ceiling = |quality: StreamQuality| {
+                                    viewed
+                                        .and_then(|s| quality.ceiling(s, fps, settings.true_color))
+                                        .map(mbps)
+                                        .unwrap_or_default()
+                                };
+                                let clear = (StreamQuality::Clear, t().viewer.quality_high, ceiling(StreamQuality::Clear));
+                                let smooth = (StreamQuality::Fast, t().viewer.quality_smooth, ceiling(StreamQuality::Fast));
                                 // Sharing the picture: 自动, 高清 or 流畅; a stored
                                 // higher tier counts as 高清 meanwhile.
                                 let rows = if locked {
@@ -760,8 +785,8 @@ pub(super) fn show_stream_control_window(
                                 } else {
                                     vec![
                                         auto,
-                                        (StreamQuality::Original, t().viewer.quality_original, "30M".into()),
-                                        (StreamQuality::High, t().viewer.quality_very_high, "14M".into()),
+                                        (StreamQuality::Original, t().viewer.quality_original, ceiling(StreamQuality::Original)),
+                                        (StreamQuality::High, t().viewer.quality_very_high, ceiling(StreamQuality::High)),
                                         clear,
                                         smooth,
                                         (

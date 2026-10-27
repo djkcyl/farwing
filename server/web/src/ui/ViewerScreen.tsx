@@ -17,6 +17,7 @@ import { SystemCommand, Usage } from '../lib/input';
 import { PeerRequestError } from '../lib/peerio';
 import { sendViewerReport, VisitSummary } from '../lib/record';
 import { VideoCodec, type VideoCodecId } from '../lib/sdp';
+import { mbps, tierRate } from '../lib/quality';
 import { pathLabel, StatsSampler, type ViewStats } from '../lib/stats';
 import {
   failureText,
@@ -88,12 +89,12 @@ const RETRY_CODES = new Set(['device_offline', 'timeout', 'busy', 'unavailable',
 
 type ViewerMessages = Messages['viewer'];
 
-const QUALITIES: { id: number; key: keyof ViewerMessages['screen']['qualities']; hint?: string }[] = [
+const QUALITIES: { id: number; key: keyof ViewerMessages['screen']['qualities'] }[] = [
   { id: 5, key: 'auto' },
-  { id: 4, key: 'original', hint: '30M' },
-  { id: 3, key: 'ultra', hint: '14M' },
-  { id: 2, key: 'high', hint: '8M' },
-  { id: 1, key: 'smooth', hint: '1.5M' },
+  { id: 4, key: 'original' },
+  { id: 3, key: 'ultra' },
+  { id: 2, key: 'high' },
+  { id: 1, key: 'smooth' },
 ];
 /// Sharing the picture with others: 自动, 高清 or 流畅 (the forwarder's two
 /// streams); a stored higher tier counts as 高清 meanwhile.
@@ -1218,7 +1219,20 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
               <MenuItem
                 key={q.id}
                 selected={shownQuality === q.id}
-                hint={q.hint}
+                hint={
+                  // The tier's ceiling for this screen at the chosen frame
+                  // rate (the host caps it at the screen's refresh rate).
+                  q.id <= 4 && current
+                    ? mbps(
+                        tierRate(
+                          q.id,
+                          current.current.width,
+                          current.current.height,
+                          Math.min(fps, current.fps || fps),
+                        ),
+                      )
+                    : undefined
+                }
                 onClick={() => applyCapture(q.id, fps)}
               >
                 {t.viewer.screen.qualities[q.key]}

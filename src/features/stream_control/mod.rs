@@ -82,6 +82,22 @@ pub enum StreamQuality {
 }
 
 impl StreamQuality {
+    /// The tier's bitrate ceiling (bps) for `screen` at `fps` (the host
+    /// caps it at the screen's refresh rate); `None` for 自动 and 自定义.
+    pub(crate) fn ceiling(self, screen: &RemoteScreen, fps: u32, true_color: bool) -> Option<u32> {
+        let quality = self.capability_quality();
+        if !(1..=4).contains(&quality) || screen.width == 0 || screen.height == 0 {
+            return None;
+        }
+        let fps = if screen.refresh_hz > 0 { fps.min(screen.refresh_hz) } else { fps };
+        Some(crate::features::host::parameters::tier_rate(
+            quality,
+            (screen.width, screen.height),
+            fps.max(1),
+            true_color,
+        ))
+    }
+
     const fn capability_quality(self) -> i32 {
         match self {
             Self::Auto => 0,

@@ -22,7 +22,6 @@ pub(crate) mod capture;
 pub(crate) mod encoding;
 pub(crate) mod geometry;
 pub use crate::platform::display::detect_local_display;
-pub(crate) use crate::platform::display::local_display_dimensions;
 
 pub(crate) mod decode_api;
 

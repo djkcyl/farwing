@@ -341,9 +341,6 @@ impl Session {
             }
             let guid = uuid::Uuid::parse_str(&state.journal.owned[index].guid)?;
             lock(&state.driver()?.driver).remove(guid)?;
-            if state.journal.owned[index].kind == 3 {
-                state.preferences.default_virtual = false;
-            }
             state.journal.owned.remove(index);
             // Retain the completed removal even if Windows is still publishing
             // the old active path while monitor departure is being processed.

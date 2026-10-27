@@ -402,7 +402,6 @@ impl SignalSession {
         &mut self,
         local: identity::Local,
         profile: ConnectionMediaProfile,
-        connect_type: crate::session::negotiation::ControlConnectType,
         preferences: Option<crate::features::stream_control::StreamControlPreferences>,
         purpose: crate::session::negotiation::ControlPurpose,
     ) -> Result<ControlSessionInfo> {
@@ -416,7 +415,6 @@ impl SignalSession {
             &local.identity.device_id,
             &decoder_support,
             profile,
-            connect_type,
             preferences,
             purpose,
         )?;

@@ -8,7 +8,7 @@ use anyhow::{Result, bail};
 use farwing_protocol::api::Purpose;
 use farwing_protocol::realtime::SessionStart;
 use farwing_protocol::session::{
-    CaptureParams, ConnectOptions, ConnectType, DecoderCapability, Resolution, VirtualMode,
+    CaptureParams, ConnectOptions, ConnectType, DecoderCapability, Resolution,
 };
 use uuid::Uuid;
 
@@ -55,7 +55,6 @@ pub(crate) fn build_session_start(
     controller_device_id: &str,
     decoder_support: &DeviceCapability,
     profile: ConnectionMediaProfile,
-    connect_type: ControlConnectType,
     preferences: Option<crate::features::stream_control::StreamControlPreferences>,
     purpose: ControlPurpose,
 ) -> Result<SessionStart> {
@@ -66,10 +65,9 @@ pub(crate) fn build_session_start(
     if selected_capabilities.is_empty() {
         bail!("cannot build a session request without a usable video decoder");
     }
-    let _ = connect_type;
     Ok(SessionStart {
         attempt_id: Uuid::new_v4().to_string(),
-        options: connect_options(selected_capabilities, profile, preferences, purpose)?,
+        options: connect_options(selected_capabilities, profile, preferences)?,
         capability: serde_json::to_value(decoder_support)?,
         purpose: Some(purpose.wire()),
         visit: String::new(),
@@ -80,7 +78,6 @@ fn connect_options(
     selected_capabilities: &[CodecCapability],
     profile: ConnectionMediaProfile,
     preferences: Option<crate::features::stream_control::StreamControlPreferences>,
-    purpose: ControlPurpose,
 ) -> Result<ConnectOptions> {
     // Preserve the confirmed quality in the initial request and session rebuild.
     // Do not request Auto first and correct it only after receiving video.
@@ -151,25 +148,10 @@ fn connect_options(
             chroma: i32::from(chroma),
         });
     }
-    let virtual_modes = if purpose == ControlPurpose::Viewing {
-        crate::media::local_display_dimensions()
-            .into_iter()
-            .map(|(width, height)| VirtualMode {
-                width: width as i32,
-                height: height as i32,
-                vsync: 60,
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
     Ok(ConnectOptions {
         screen_id: -1,
         capture: Some(capture),
         decoders,
-        force_virtual: false,
-        virtual_modes,
-        virtual_initial: None,
         version: env!("CARGO_PKG_VERSION").to_owned(),
     })
 }

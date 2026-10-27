@@ -39,10 +39,16 @@ fn downgrade_threshold(maximum: u32) -> u32 {
     (maximum / 5 * 2).clamp(200_000, 15_000_000)
 }
 
+fn standard(format: Format, quality: i32, source: (u32, u32), fps: u32) -> Bounds {
+    Bounds::video(tier_rate(quality, source, fps, format.chroma == 3))
+}
+
 // 60 FPS ceilings in Mbps at 720p, 1080p, 1440p and 4K. Each codec has
 // independent quality anchors; compression savings are content-dependent.
 // 10-bit preserves gradients without a blanket raw-bit-depth surcharge.
-fn standard(format: Format, quality: i32, source: (u32, u32), fps: u32) -> Bounds {
+/// The bitrate ceiling (bps) of tier `quality` (1–4) for a `source` screen
+/// at `fps`, doubled for 4:4:4 (`true_color`). The quality menus show it.
+pub(crate) fn tier_rate(quality: i32, source: (u32, u32), fps: u32, true_color: bool) -> u32 {
     // One table for every codec: H.265 and AV1 spend their efficiency on
     // picture quality at the same rate, not on a lower rate.
     let rates = match quality {
@@ -68,11 +74,10 @@ fn standard(format: Format, quality: i32, source: (u32, u32), fps: u32) -> Bound
     // Like Moonlight's default-rate curve, high FPS grows sublinearly: adjacent
     // frames share more information. No 30/60/90/120 tier discontinuities.
     let ratio = f64::from(fps.clamp(1, 144)) / 60.0;
-    let color = if format.chroma == 3 { 2.0 } else { 1.0 };
-    let rate = (base * 1_000_000.0 * color * if fps <= 60 { ratio } else { ratio.sqrt() })
+    let color = if true_color { 2.0 } else { 1.0 };
+    (base * 1_000_000.0 * color * if fps <= 60 { ratio } else { ratio.sqrt() })
         .round()
-        .clamp(500_000.0, 500_000_000.0) as u32;
-    Bounds::video(rate)
+        .clamp(500_000.0, 500_000_000.0) as u32
 }
 
 pub(crate) fn fixed(
@@ -462,9 +467,19 @@ mod tests {
                 assert_eq!(standard(format(Codec::Av1), quality, source, fps).maximum, h264);
             }
         }
-        // The menu's figures at 1080p60: 高清 8M, 超清 14M.
+        // The table's anchors at 1080p60: 高清 8M, 超清 14M.
         assert_eq!(standard(format(Codec::Av1), 2, (1920, 1080), 60).maximum, 8_000_000);
         assert_eq!(standard(format(Codec::H265), 3, (1920, 1080), 60).maximum, 14_000_000);
+    }
+
+    #[test]
+    fn tier_rates_follow_size_frame_rate_and_colour() {
+        // 超清 on a 2560x1600 screen is output at 2304x1440.
+        assert_eq!(tier_rate(3, (2560, 1600), 60, false), 21_714_286);
+        assert_eq!(tier_rate(3, (2560, 1600), 30, false), 10_857_143);
+        assert_eq!(tier_rate(3, (2560, 1600), 60, true), 43_428_571);
+        // Above 60 FPS the rate grows with the square root.
+        assert_eq!(tier_rate(2, (1920, 1080), 144, false), 12_393_547);
     }
 
     #[test]

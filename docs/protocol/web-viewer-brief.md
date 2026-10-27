@@ -141,7 +141,7 @@ WS 消息上限为 `max_frame_bytes × 2`（`server/src/ws.rs:98-107`）。
                "chroma":1,"bitrate":0,"hdr":false,"auto_quality":2,"fps_count":60,
                "weak_network":0,"cinema":false,"codec":0},
     "decoders":[{"fps":60,"codec":1,"width":3840,"height":2160,"chroma":1}],
-    "force_virtual":false,"virtual_modes":[],"virtual_initial":null,"version":"web-0.1.0"
+    "version":"web-0.1.0"
   },
   "capability":{
     "sdr_10bit":false,"session_id":"","display_info":[],
@@ -211,9 +211,6 @@ ICE 服务器的构造见 `server/src/ice.rs:88-106`。
 | `capture.chroma` / `hdr` | 3 = 4:4:4；`hdr` = 请求 HDR（`src/features/host/desktop.rs:253-264`） | 1 / false |
 | `capture.weak_network` / `cinema` | 弱网策略；观影模式（质量优先） | 0 / false |
 | `decoders[]` | `Negotiated::new`：`codec` 与 `chroma`（2..=4 原样，其他值视为 1，`publisher.rs:219-226`）必须与某个 `video_codec_capability` 行一致，`width`/`height` ≥ 2；`fps` 按档位换算（≥117→144，75–116→90，45–74→60，其余 30，`publisher.rs:228-237`）。为空时拒绝（`host.rs:717-722`） | 每种 codec 一条，与 capability 对应 |
-| `force_virtual` | 需要 `display` 能力，否则准备失败（`initial.rs:26-29`） | false |
-| `virtual_modes` | 最多 64 个，每个 2..=16384（`initial.rs:30`、`:39-46`，`src/features/host/displays/mod.rs:573-583`） | `[]` |
-| `virtual_initial` | 只在 `resolution_type == 0` 时使用 | null |
 | `version` | 只记录日志 | 任意 |
 | `capability.video_codec_capability` | 不能为空（`host.rs:717-722`）。`(video_codec, chroma_sampling, bit_depth)` 必须与被控某个编码器格式完全一致，`width`/`height` ≥ 2（`src/features/host/format.rs:91-118`）。`DualCapability::negotiate` 取 min(编码器, 解码器) 后找不大于它的画质档 {1280×720, 1920×1080, 2560×1440, 3840×2160}；比较方式是 **(宽, 高) 元组的字典序**，低于 720p 则该行无效（`src/protocol/capability.rs:46-47`、`:82-185`）。AV1（`video_codec` = 5）只有双方都列出时才参与 | H.264：`{1, 3840, 2160, 1, 8, 32}`；可选 AV1：`{5, 3840, 2160, 1, 8, 37}`（见 §3.4） |
 | `capability.*.codec_impl` | 37 = 软件解码，其他值视为硬件解码（`format.rs:120`）。只影响被控对候选的排序（`src/media/selection.rs:13-34`：尺寸 > 硬件 > 首选格式 > 帧率 > …）以及 `preferred_hardware` | H.264 写 32，软件 AV1 写 37 |
