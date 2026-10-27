@@ -844,7 +844,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
   // Several watching and another one (or nobody) in control: one shared
   // picture, 高清 or 流畅.
   const me = people?.participants.find((p) => p.you)?.id;
-  const sharedView = (people?.participants.length ?? 0) > 1 && people?.controlling !== me;
+  const sharedView = (people?.participants.filter((p) => !p.listening).length ?? 0) > 1 && people?.controlling !== me;
   const shownQuality = sharedView && (frameQuality === 4 || frameQuality === 3) ? 2 : frameQuality;
   tierNow.current = shownQuality;
   const controller = people?.participants.find((p) => p.id === people.controlling);

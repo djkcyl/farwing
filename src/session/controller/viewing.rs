@@ -342,6 +342,17 @@ pub(super) async fn run_viewer_connection_owner(
                 Arc::clone(&resolved.client), resolved.target_device_id.clone(), switch_sender.clone(), cancel.clone());
             let session_control = controller.stream_control_handle();
             record.connected(&session_control);
+            if let Some((on, off)) = crate::features::stream_control::take_dev_audio_switch() {
+                let control = session_control.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(on)).await;
+                    tracing::info!("dev: audio only");
+                    control.request_audio_only(true);
+                    tokio::time::sleep(Duration::from_secs(off - on)).await;
+                    tracing::info!("dev: the picture again");
+                    control.request_audio_only(false);
+                });
+            }
             record.bind(
                 Some(Arc::clone(&resolved.client)),
                 &resolved.visit,

@@ -131,6 +131,7 @@ impl VisitRecord {
         let task = {
             let (tally, control) = (Arc::clone(&tally), Arc::clone(&control));
             tokio::spawn(async move {
+                let mut logged = 0u32;
                 let mut tick = tokio::time::interval(SAMPLE);
                 tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
@@ -145,6 +146,14 @@ impl VisitRecord {
                         .as_ref()
                         .is_some_and(|c| c.forwarded_e2ee().is_some());
                     lock(&tally).sample(&current, forwarded);
+                    logged += 1;
+                    if logged % (SAMPLES_PER_SECOND * 2) == 0 {
+                        let s = current.snapshot();
+                        let audio = lock(&control).as_ref().is_some_and(|c| c.audio().snapshot().receiving);
+                        tracing::debug!(target: "farwing::viewer_rate", mbps = s.bitrate_mbps,
+                            fps = s.actual_fps, size = ?s.decoded_resolution, route = %s.connection,
+                            forwarded, audio, "viewer rate");
+                    }
                 }
             })
         };

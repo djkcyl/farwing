@@ -404,16 +404,22 @@ impl Transport {
         super::allocation::share(&lock(&self.0.allocations), self.0.index, target, view)
     }
     pub(crate) fn pause(&self) {
-        let bounds = {
+        let (bounds, video) = {
             let mut streams = lock(&self.0.allocations);
             if streams.remove(&self.0.index).is_none() {
                 return;
             }
-            super::allocation::total(&streams)
+            // The audio's budget is kept under `usize::MAX`.
+            (super::allocation::total(&streams), streams.keys().any(|k| *k != usize::MAX))
         };
-        if bounds.maximum > 0 {
-            lock(&self.0.controller).configure(bounds, false);
+        let mut controller = lock(&self.0.controller);
+        if !video {
+            controller.pause_video();
         }
+        if bounds.maximum > 0 {
+            controller.configure(bounds, false);
+        }
+        drop(controller);
         self.invalidate();
     }
     pub(crate) fn invalidate(&self) {

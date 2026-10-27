@@ -633,9 +633,12 @@ impl Peer {
         // Data-only sessions (files, ports) are not shown as participants.
         let membership = handle.participant().filter(|_| !data_only).map(|key| {
             let lease = handle.clone();
-            Arc::new(super::participants::join(key, handle.profile(), move || {
-                lease.granted(farwing_protocol::caps::CONTROL)
-            }))
+            Arc::new(super::participants::join(
+                key,
+                handle.profile(),
+                move || lease.granted(farwing_protocol::caps::CONTROL),
+                !audio_only,
+            ))
         });
         // Multi-viewer forwarding (`docs/protocol/deployment-design.md` §5.4).
         let forwarding = handle
@@ -649,7 +652,7 @@ impl Peer {
                     key,
                     session,
                     reports.forwarded.clone(),
-                    true,
+                    !audio_only,
                     ice_servers.clone(),
                     handle.host(),
                     Arc::new(move || lease.granted(farwing_protocol::caps::AUDIO)),

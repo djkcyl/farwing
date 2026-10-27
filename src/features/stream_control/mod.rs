@@ -1054,6 +1054,18 @@ static DEV_AUTO_QUALITY: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
 /// (measurements: every run starts alike).
 static DEV_QUALITY: std::sync::OnceLock<StreamQuality> = std::sync::OnceLock::new();
 
+/// `connect --dev-audio-only A,B`: audio only A seconds after the first
+/// connection, the picture again at B seconds (once).
+static DEV_AUDIO_SWITCH: std::sync::Mutex<Option<(u64, u64)>> = std::sync::Mutex::new(None);
+
+pub(crate) fn set_dev_audio_switch(on: u64, off: u64) {
+    *DEV_AUDIO_SWITCH.lock().unwrap_or_else(|p| p.into_inner()) = Some((on, off));
+}
+
+pub(crate) fn take_dev_audio_switch() -> Option<(u64, u64)> {
+    DEV_AUDIO_SWITCH.lock().unwrap_or_else(|p| p.into_inner()).take()
+}
+
 /// `connect --dev-quality`: start at this tier (not saved).
 pub(crate) fn set_dev_quality(quality: StreamQuality) {
     let _ = DEV_QUALITY.set(quality);

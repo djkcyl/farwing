@@ -77,6 +77,10 @@ pub(crate) struct Participant {
     /// Unix time the participant joined, milliseconds.
     #[prost(int64, tag = "8")]
     pub joined_ms: i64,
+    /// Only hears the host (audio only): not one of the viewers of the
+    /// shared stream.
+    #[prost(bool, tag = "9")]
+    pub listening: bool,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]

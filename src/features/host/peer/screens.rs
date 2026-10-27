@@ -212,7 +212,16 @@ impl Screens {
     pub(super) fn update_media_intent(&self) -> VideoConfig {
         self.base
     }
+    /// Whether the participant watches the picture (not audio only): only
+    /// those watching share the viewers' stream and take part in forwarding.
+    fn watching(&self, watching: bool) {
+        if let Some(key) = self.lease.participant() {
+            crate::features::host::participants::set_watching(key, watching);
+            crate::features::host::forwarding::set_eligible(key, watching);
+        }
+    }
     pub(crate) async fn resume_capture(&mut self) -> Result<()> {
+        self.watching(true);
         if let Some(id) = self.prepare_video().await? {
             return self.start(id).await;
         }
@@ -663,6 +672,7 @@ impl Screens {
     }
     async fn stop_media(&mut self, screen: i32) -> Result<()> {
         if screen == -1 {
+            self.watching(false);
             for slot in &mut self.slots {
                 slot.awaiting_source = false;
             }

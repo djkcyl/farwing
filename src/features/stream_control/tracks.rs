@@ -10,7 +10,9 @@ use anyhow::{Result, anyhow, bail};
 impl StreamControlHandle {
     pub(crate) async fn set_video_enabled(&self, enabled: bool) -> Result<()> {
         if !enabled {
-            self.mouse.disable();
+            // Control goes back to the host too: another participant may
+            // take it while this one only listens.
+            let _ = self.suspend_mouse_control();
             self.set_viewing_enabled(false);
         }
         if enabled {

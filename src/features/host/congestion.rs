@@ -28,6 +28,12 @@ pub(crate) struct Controller {
     available: bool,
     generation: u64,
     route_at: Timestamp,
+    /// When the estimate last started over (a new route, or video back
+    /// after audio only): probes are rescued for a while after it.
+    probe_from: Timestamp,
+    /// The last video stream paused (audio only): the constraints stay
+    /// those of the video until it comes back.
+    video_paused: bool,
     /// Probes sent because the first ones measured nothing, and when the
     /// next may go.
     rescues: i32,
@@ -42,6 +48,8 @@ pub(crate) struct Controller {
     pressure: Pressure,
     burst: super::burst::Burst,
     pub feedback_count: u64,
+    /// The last `farwing::rate` debug line.
+    logged_at: Option<Timestamp>,
 }
 struct Tracked {
     packet: SentPacket,
@@ -111,6 +119,8 @@ impl Controller {
             available: false,
             generation: 0,
             route_at: at,
+            probe_from: at,
+            video_paused: false,
             rescues: 0,
             rescue_at: at,
             target: bounds.initial,
@@ -123,6 +133,7 @@ impl Controller {
             pressure: Pressure::default(),
             burst: super::burst::Burst::default(),
             feedback_count: 0,
+            logged_at: None,
         }
     }
     fn now(&self) -> Timestamp {
@@ -187,6 +198,7 @@ impl Controller {
     pub fn route_changed(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.route_at = self.now();
+        self.probe_from = self.route_at;
         self.rescues = 0;
         let update = self.core.on_network_route_change(NetworkRouteChange {
             at_time: self.now(),
@@ -201,6 +213,16 @@ impl Controller {
         self.probes.clear();
         self.apply(update);
     }
+    /// The last video stream paused (audio only). Its bounds would leave
+    /// the constraints and pull the estimate down to the audio's; climbing
+    /// back depends on probes that can measure nothing, and static content
+    /// barely raises it otherwise (restarting the estimators from the old
+    /// rate does not help: they start over from the audio's throughput). So
+    /// the video's constraints, and with them the estimate, stay until it
+    /// comes back; the audio alone never needs less.
+    pub fn pause_video(&mut self) {
+        self.video_paused = self.video_configured;
+    }
     pub fn configure(&mut self, bounds: super::parameters::Bounds, video: bool) {
         // File/audio connections may attach their first video later. Seed that
         // first video once, but never treat a quality/FPS revision as a route
@@ -208,6 +230,14 @@ impl Controller {
         // Until media has been acknowledged the estimate holds nothing
         // learnt: a start rate that changed meanwhile (the route chosen,
         // and with it the remembered rate) still replaces it.
+        if self.video_paused {
+            if !video {
+                return;
+            }
+            self.video_paused = false;
+            self.probe_from = self.now();
+            self.rescues = 0;
+        }
         let reseed = self.feedback_count == 0 && bounds.initial != self.bounds.initial;
         let start = (video && (!self.video_configured || reseed)).then_some(bounds.initial);
         self.video_configured |= video;
@@ -290,6 +320,13 @@ impl Controller {
         self.apply(update);
     }
     pub fn tick(&mut self, queued_bytes: usize) {
+        let now = self.now();
+        if self.logged_at.is_none_or(|at| now - at >= TimeDelta::from_seconds(2)) {
+            self.logged_at = Some(now);
+            tracing::debug!(target: "farwing::rate", target_bps = self.target, pacing_bps = self.pacing,
+                maximum_bps = self.maximum, initial_bps = self.bounds.initial, video = self.video_configured,
+                loss = self.loss, rtt_ms = self.rtt.ms(), "host rate");
+        }
         self.burst.tick(self.now().us(), self.rtt.us().max(0));
         let update = self.core.on_process_interval(ProcessInterval {
             at_time: self.now(),
@@ -306,7 +343,7 @@ impl Controller {
     /// twice the estimate, with longer clusters that survive a lost packet.
     fn rescue_probe(&mut self) {
         let now = self.now();
-        let age = now - self.route_at;
+        let age = now - self.probe_from;
         if !self.available
             || self.rescues >= RESCUE_PROBES
             || age < TimeDelta::from_millis(1500)
@@ -619,5 +656,45 @@ impl Pressure {
         } else if let Some(r) = correlation {
             self.random_loss = loss >= 0.03 && r < 0.6;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::features::host::parameters::Bounds;
+
+    fn video(initial: u32) -> Bounds {
+        Bounds {
+            reservation: 300_000,
+            maximum: 50_000_000,
+            initial,
+            probe: 50_000_000,
+        }
+    }
+
+    #[test]
+    fn audio_only_keeps_the_video_estimate() {
+        let audio = Bounds {
+            reservation: 256_000,
+            maximum: 256_000,
+            initial: 256_000,
+            probe: 256_000,
+        };
+        let mut c = Controller::new(video(3_000_000));
+        c.network(true);
+        c.configure(video(3_000_000), true);
+        let before = c.target;
+        assert!(before >= 3_000_000, "{before}");
+        // Audio only: the audio's bounds alone do not pull the estimate down.
+        c.pause_video();
+        c.configure(audio, false);
+        assert_eq!(c.target, before);
+        // The picture again: where it left off.
+        c.configure(video(3_000_000), true);
+        assert_eq!(c.target, before);
+        // Without a pause, the audio's bounds do apply.
+        c.configure(audio, false);
+        assert!(c.target <= 256_000, "{}", c.target);
     }
 }

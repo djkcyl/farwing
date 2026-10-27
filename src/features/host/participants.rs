@@ -50,6 +50,8 @@ struct Member {
     joined_ms: i64,
     control: Arc<dyn Fn() -> bool + Send + Sync>,
     pointer: Option<Last>,
+    /// Watches the picture (not audio only).
+    watching: bool,
 }
 
 struct Last {
@@ -100,6 +102,7 @@ pub(crate) fn join(
     key: u64,
     profile: Profile,
     control: impl Fn() -> bool + Send + Sync + 'static,
+    watching: bool,
 ) -> Membership {
     let mut state = state();
     let color = wire::PALETTE[state.joined % wire::PALETTE.len()];
@@ -113,6 +116,7 @@ pub(crate) fn join(
             joined_ms: chrono::Utc::now().timestamp_millis(),
             control: Arc::new(control),
             pointer: None,
+            watching,
         },
     );
     drop(state);
@@ -217,6 +221,7 @@ impl Membership {
                     control: (member.control)(),
                     you: *key == self.key,
                     joined_ms: member.joined_ms,
+                    listening: !member.watching,
                 })
                 .collect(),
             controlling: state.controlling.unwrap_or(0),
@@ -412,9 +417,28 @@ pub(crate) fn validate_holder() {
 /// Whether participant `key` watches the shared viewer stream: several
 /// participants are connected and `key` does not hold the control token.
 /// The holder (or a participant on its own) keeps its own settings.
+/// Whether participant `key` watches the shared stream: others watch the
+/// picture too (those listening only do not count) and it does not hold the
+/// control token.
 pub(crate) fn shared_viewer(key: Option<u64>) -> bool {
     let state = state();
-    state.members.len() > 1 && (key.is_none() || state.controlling != key)
+    state.members.values().filter(|m| m.watching).count() > 1
+        && (key.is_none() || state.controlling != key)
+}
+
+/// Participant `key` watches the picture again, or only listens (audio
+/// only).
+pub(crate) fn set_watching(key: u64, watching: bool) {
+    let mut state = state();
+    let Some(member) = state.members.get_mut(&key) else {
+        return;
+    };
+    if member.watching == watching {
+        return;
+    }
+    member.watching = watching;
+    drop(state);
+    bump(&HUB.members);
 }
 
 /// One participant for the host overlay and the host GUI.
@@ -493,12 +517,12 @@ mod tests {
         let alice = join(9101, Profile {
             nickname: "alice".into(),
             ..Default::default()
-        }, move || alice_control.load(std::sync::atomic::Ordering::Relaxed));
+        }, move || alice_control.load(std::sync::atomic::Ordering::Relaxed), true);
         let bob = join(9102, Profile {
             nickname: "bob".into(),
             ..Default::default()
-        }, || true);
-        let viewer = join(9103, Profile::default(), || false);
+        }, || true, true);
+        let viewer = join(9103, Profile::default(), || false, true);
         // Nobody holds it: everyone watches the shared stream.
         assert!(shared_viewer(Some(9101)) && shared_viewer(Some(9102)));
         // With others present, restoring control is not taking it.
@@ -532,16 +556,31 @@ mod tests {
     }
 
     #[test]
+    fn those_only_listening_do_not_share_the_stream() {
+        let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        let viewer = join(9201, Profile::default(), || true, true);
+        let listener = join(9202, Profile::default(), || true, false);
+        // Watching alone: its own settings.
+        assert!(!shared_viewer(Some(9201)));
+        set_watching(9202, true);
+        assert!(shared_viewer(Some(9201)) && shared_viewer(Some(9202)));
+        set_watching(9202, false);
+        assert!(!shared_viewer(Some(9201)));
+        drop(listener);
+        drop(viewer);
+    }
+
+    #[test]
     fn members_see_each_other_and_their_own_flag() {
         let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
         let a = join(9001, Profile {
             nickname: "alice".into(),
             ..Default::default()
-        }, || true);
+        }, || true, true);
         let b = join(9002, Profile {
             nickname: "bob".into(),
             ..Default::default()
-        }, || false);
+        }, || false, true);
         assert!(take_control(9001, false).is_ok());
         let frame = b.participants_frame();
         let body = crate::protocol::peer::body_of(crate::protocol::peer::FrameType::Participants, &frame).unwrap();

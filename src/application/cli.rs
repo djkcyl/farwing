@@ -817,6 +817,16 @@ pub fn dev_virtual_screen() {
     crate::features::stream_control::set_dev_virtual_screen();
 }
 
+/// `connect --dev-audio-only A,B`: audio only at A seconds, the picture
+/// again at B seconds.
+pub fn dev_audio_only(spec: &str) -> Result<()> {
+    let (on, off) = spec.split_once(',').context("expected A,B")?;
+    let (on, off): (u64, u64) = (on.trim().parse()?, off.trim().parse()?);
+    anyhow::ensure!(off > on, "B must come after A");
+    crate::features::stream_control::set_dev_audio_switch(on, off);
+    Ok(())
+}
+
 /// `connect --dev-quality`: start at this tier (not saved).
 pub fn dev_quality(quality: &str) -> Result<()> {
     use crate::features::stream_control::StreamQuality;

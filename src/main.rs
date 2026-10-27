@@ -223,6 +223,9 @@ enum Commands {
         /// 测量用：不声明 video.recovery，丢包后只用关键帧恢复
         #[arg(long, hide = true)]
         dev_no_recovery: bool,
+        /// 测量用：连上后第 A 秒切换为仅音频，第 B 秒切回画面（A,B）
+        #[arg(long, hide = true)]
+        dev_audio_only: Option<String>,
         /// 测量用：以观影模式（true）或非观影模式（false）观看（多人观看时也不变），不保存
         #[arg(long, hide = true, action = clap::ArgAction::Set)]
         dev_cinema: Option<bool>,
@@ -912,10 +915,14 @@ fn main() -> Result<()> {
             dev_loss,
             dev_quality,
             dev_no_recovery,
+            dev_audio_only,
             dev_cinema,
             dev_virtual_screen,
             dev_auto_quality,
         } => {
+            if let Some(spec) = dev_audio_only.as_deref() {
+                farwing::application::cli::dev_audio_only(spec)?;
+            }
             if dev_virtual_screen {
                 farwing::application::cli::dev_virtual_screen();
             }

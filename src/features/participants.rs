@@ -155,7 +155,7 @@ impl ParticipantsState {
     pub(crate) fn shared_view(&self) -> bool {
         let state = self.lock();
         state.list.as_ref().is_some_and(|list| {
-            list.participants.len() > 1
+            list.participants.iter().filter(|p| !p.listening).count() > 1
                 && !list
                     .participants
                     .iter()

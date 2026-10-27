@@ -490,6 +490,8 @@ export interface Participant {
   control: boolean;
   you: boolean;
   joinedMs: number;
+  /// Only hears the host (audio only).
+  listening: boolean;
 }
 
 export function parseParticipants(body: Uint8Array): { participants: Participant[]; controlling: string } {
@@ -505,6 +507,7 @@ export function parseParticipants(body: Uint8Array): { participants: Participant
       control: p.bool(6),
       you: p.bool(7),
       joinedMs: p.int64(8),
+      listening: p.bool(9),
     })),
   };
 }

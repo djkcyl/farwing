@@ -185,6 +185,21 @@ pub(crate) struct Registration {
     instruction: watch::Receiver<Option<MediaForward>>,
 }
 
+/// Participant `key` watches the picture again (a candidate for the room),
+/// or only listens (audio only: not in the room, nothing forwarded to it).
+pub(crate) fn set_eligible(key: u64, eligible: bool) {
+    let mut state = state();
+    let Some(entry) = state.entries.get_mut(&key) else {
+        return;
+    };
+    if entry.eligible == eligible {
+        return;
+    }
+    entry.eligible = eligible;
+    drop(state);
+    WAKE.notify_one();
+}
+
 /// Registers participant `key` of server session `session_id`; `forwarded`
 /// are the flags its tracks read.
 pub(crate) fn register(
