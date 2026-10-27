@@ -229,7 +229,6 @@ ReceiverStats {
   render_fps: float = 3
   decode_delay_ms: float = 4   // 到达到解码完成
   dropped_frames: uint32 = 5   // 自上次报告以来
-  display_hz: uint32 = 6
 }
 ```
 

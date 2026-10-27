@@ -593,7 +593,7 @@ message PbReportQosStats { string encoder_type = 1; string capture_type = 2; uin
 message MicrophoneState { int32 state = 1; }
 message ClipboardPermission { bool enabled = 1; }
 message CaptureControl { int32 screen_id = 1; bool start = 2; }
-message ReceiverStats { float receive_fps = 1; float decode_fps = 2; float render_fps = 3; float decode_delay_ms = 4; uint32 dropped_frames = 5; uint32 display_hz = 6; }
+message ReceiverStats { float receive_fps = 1; float decode_fps = 2; float render_fps = 3; float decode_delay_ms = 4; uint32 dropped_frames = 5; }
 message PbSendVideoTrackRequest { repeated int32 video_track_index = 1; }   // prost 打包编码（packed）
 message PbCaptureSettingRequest {
   int32 fps = 1; int32 frame_quality = 2; bool cursor_capture = 3; int32 screen_id = 4;

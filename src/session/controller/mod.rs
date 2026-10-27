@@ -66,17 +66,11 @@ pub struct ControllerConnection {
 
 pub struct ConnectionSummary {
     pub alias: String,
-    pub stream_fps: u32,
-    pub codec: &'static str,
-    pub display_detection_warning: Option<String>,
 }
 
 pub struct PlaybackSummary {
     pub track_id: String,
     pub codec: &'static str,
-    pub payload_type: u8,
-    pub requested_keyframe: bool,
-    pub player: &'static str,
 }
 
 async fn cancellable<T>(
@@ -647,21 +641,6 @@ impl ControllerConnection {
         )
     }
 
-    pub async fn start_native_viewer(
-        &mut self,
-        alias: &str,
-    ) -> Result<(NativeViewerSession, PlaybackSummary)> {
-        let (mut viewer, summary) = self
-            .start_native_viewer_with_progress(alias, None, ViewerDisplayHandle::default())
-            .await?;
-        // The progress-window entry awaits startup separately. This direct
-        // API must consume it before run() selects the native presenter.
-        tokio::time::timeout(Duration::from_secs(30), viewer.startup())
-            .await
-            .context("first-frame decoder startup timeout")??;
-        Ok((viewer, summary))
-    }
-
     pub(crate) async fn start_native_viewer_with_progress(
         &mut self,
         alias: &str,
@@ -765,9 +744,6 @@ impl ControllerConnection {
                 VideoCodec::H265 => "H.265",
                 VideoCodec::Av1 => "AV1",
             },
-            payload_type: video.payload_type,
-            requested_keyframe: true,
-            player: t().session.native_window,
         };
 
         Ok((viewer, summary))

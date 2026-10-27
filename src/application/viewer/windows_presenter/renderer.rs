@@ -61,76 +61,9 @@ pub(super) struct D3D11Presenter {
     pub(super) buffer_count: u32,
     pub(super) size: PhysicalSize<u32>,
     pub(super) content_top: u32,
-    pub(super) display_audit: Option<DisplayAudit>,
     /// Copy the next drawn frame before presenting it (reconnect backdrop).
     pub(super) snapshot_requested: bool,
     pub(super) snapshot: Option<egui::ColorImage>,
-}
-
-// Temporary, explicitly enabled diagnostic. Does not change presentation policy
-// or write to disk on the render path. DXGI samples are not necessarily updated
-// on every call (notably with hardware flip queues); preserve raw counters/errors.
-pub(super) struct DisplayAudit {
-    pub(super) path: std::path::PathBuf,
-    pub(super) origin: Instant,
-    pub(super) samples: Vec<(f64, u32, i32, DXGI_FRAME_STATISTICS, f64)>,
-}
-
-impl DisplayAudit {
-    pub(super) fn from_environment() -> Option<Self> {
-        std::env::var_os("FARWING_DISPLAY_AUDIT").map(|path| Self {
-            path: path.into(),
-            origin: Instant::now(),
-            // Covers the full ~3-minute mixed 30/60/90/120 FPS matrix,
-            // including its final high-bitrate 120 FPS segment.
-            samples: Vec::with_capacity(32_768),
-        })
-    }
-
-    pub(super) fn sample(&mut self, swap_chain: &IDXGISwapChain1) {
-        if self.samples.len() == self.samples.capacity() {
-            return;
-        }
-        let started = Instant::now();
-        let elapsed_ms = self.origin.elapsed().as_secs_f64() * 1_000.0;
-        let submitted = unsafe { swap_chain.GetLastPresentCount() }.unwrap_or(0);
-        let mut statistics = DXGI_FRAME_STATISTICS::default();
-        let status = unsafe { swap_chain.GetFrameStatistics(&mut statistics) }
-            .err()
-            .map_or(0, |error| error.code().0);
-        self.samples.push((
-            elapsed_ms,
-            submitted,
-            status,
-            statistics,
-            started.elapsed().as_secs_f64() * 1_000_000.0,
-        ));
-    }
-
-    pub(super) fn save(&self) -> std::io::Result<()> {
-        use std::io::Write;
-        // Never overwrite an earlier observation, including after device recovery.
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&self.path)?;
-        let mut output = std::io::BufWriter::new(file);
-        writeln!(
-            output,
-            "elapsed_ms,submitted,status,present_count,present_refresh,sync_refresh,sync_qpc,query_us"
-        )?;
-        for (elapsed, submitted, status, stats, query_us) in &self.samples {
-            writeln!(
-                output,
-                "{elapsed:.6},{submitted},{status},{},{},{},{},{query_us:.3}",
-                stats.PresentCount,
-                stats.PresentRefreshCount,
-                stats.SyncRefreshCount,
-                stats.SyncQPCTime
-            )?;
-        }
-        output.flush()
-    }
 }
 
 pub(super) struct CpuUploadTexture {
@@ -262,7 +195,6 @@ impl D3D11Presenter {
             buffer_count: swap_chain_creation.buffer_count,
             size: made,
             content_top: 0,
-            display_audit: DisplayAudit::from_environment(),
             captures: plugin_video::Captures::default(),
             plugin_state: None,
             effects: None,
@@ -791,9 +723,6 @@ impl D3D11Presenter {
         }
         let result = status.ok().context("present D3D11 video swap chain");
         self.release_active_input_sync();
-        if let Some(audit) = &mut self.display_audit {
-            audit.sample(&self.swap_chain);
-        }
         result
     }
 
@@ -938,11 +867,6 @@ impl D3D11Presenter {
 
 impl Drop for D3D11Presenter {
     fn drop(&mut self) {
-        if let Some(audit) = self.display_audit.take()
-            && let Err(error) = audit.save()
-        {
-            tracing::warn!(%error, "could not save opt-in DXGI display audit");
-        }
         self.release_active_input_sync();
         self.reset_video_resources();
         if self.frame_latency_waitable != 0 {

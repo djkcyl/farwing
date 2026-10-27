@@ -30,7 +30,6 @@ pub(super) struct ResolvedConnection {
     pub(super) preferences: Option<crate::features::stream_control::StreamControlPreferences>,
     pub(super) audio_preferences: Option<crate::media::audio::AudioSettings>,
     pub(super) target_platform: farwing_protocol::Platform,
-    pub(super) target_version: String,
     pub(super) refresh_after_upgrade: bool,
     pub(super) background: Option<crate::application::wallpaper::Source>,
 }
@@ -121,7 +120,7 @@ impl ResolvedConnection {
                 handle.set_feature_policy(
                     self.client
                         .feature_catalog()
-                        .policy(&self.target_device_id, self.target_platform),
+                        .policy(&self.target_device_id),
                 );
                 if self.target_platform == farwing_protocol::Platform::Windows {
                     handle.set_remote_upgrade(crate::features::remote_upgrade::RemoteUpgrade::new(cancel));
@@ -164,7 +163,6 @@ impl ResolvedConnection {
             pake_key = reply.pake_key;
             self.target_device_id = reply.host.device_id.clone();
             self.target_platform = reply.host.platform;
-            self.target_version = reply.host.version.clone();
             if !reply.host.alias.is_empty() {
                 self.summary.alias = reply.host.alias.clone();
             }
@@ -221,7 +219,6 @@ impl ResolvedConnection {
                 .find(|device| device.device_id == self.target_device_id)
                 .context(t().session.error_updated_device_missing)?;
             anyhow::ensure!(device.platform == farwing_protocol::Platform::Windows, "{}", t().session.error_updated_platform_changed);
-            self.target_version = device.version_name.clone();
             self.refresh_after_upgrade = false;
         }
         // Server policy may cap the video bitrate of this session.
@@ -248,7 +245,6 @@ impl ResolvedConnection {
                 Err(error) => persistence_error = Some(error.to_string()),
             }
         }
-        self.summary.codec = self.profile.codec.label();
         if self.preferences.is_none()
             && let Some(store) = &store
         {
@@ -300,7 +296,6 @@ impl ResolvedConnection {
                 .local_display
                 .refresh_hz
                 .max(self.profile.stream_fps);
-            self.summary.stream_fps = self.profile.stream_fps;
         }
 
         let local = crate::transport::signal::identity::Local {
@@ -319,7 +314,7 @@ impl ResolvedConnection {
             self.profile,
             self.client
                 .feature_catalog()
-                .policy(&self.target_device_id, self.target_platform),
+                .policy(&self.target_device_id),
             if self.assist.is_some() {
                 crate::session::negotiation::ControlConnectType::Assistance
             } else {
@@ -451,13 +446,10 @@ pub(super) async fn resolve_connection_with_client(
         .lock_owned()
         .await;
 
-    let (display, display_detection_warning) = match detect_local_display() {
-        Ok(display) => (display, None),
-        Err(error) => (
-            LocalDisplayInfo::FALLBACK,
-            Some((t().session.display_detection_failed)(&format!("{error:#}"))),
-        ),
-    };
+    let display = detect_local_display().unwrap_or_else(|error| {
+        tracing::warn!(error = %format!("{error:#}"), "local display not detected; using 1080p60");
+        LocalDisplayInfo::FALLBACK
+    });
     let profile = options.resolve(display)?;
     report_progress(
         reporter,
@@ -475,9 +467,6 @@ pub(super) async fn resolve_connection_with_client(
     let controller_device_id = devices.current_device.validated_device_id()?.to_owned();
     let summary = ConnectionSummary {
         alias: device.alias.clone(),
-        stream_fps: profile.stream_fps,
-        codec: profile.codec.label(),
-        display_detection_warning,
     };
     Ok(ResolvedConnection {
         client,
@@ -492,7 +481,6 @@ pub(super) async fn resolve_connection_with_client(
         preferences: None,
         audio_preferences: None,
         target_platform: device.platform,
-        target_version: device.version_name.clone(),
         refresh_after_upgrade: false,
         background: Some(background),
     })

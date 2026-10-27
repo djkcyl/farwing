@@ -444,8 +444,6 @@ pub(crate) struct ReceiverStats {
     /// Frames dropped before decode or presentation since the last report.
     #[prost(uint32, tag = "5")]
     pub(crate) dropped_frames: u32,
-    #[prost(uint32, tag = "6")]
-    pub(crate) display_hz: u32,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -547,7 +545,6 @@ mod receiver_stats_tests {
             render_fps: 143.0,
             decode_delay_ms: 3.5,
             dropped_frames: 0,
-            display_hz: 144,
         }));
         let received = decode(&frame).unwrap().expect("a SESSION frame");
         assert!(!received.response);

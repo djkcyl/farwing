@@ -42,9 +42,9 @@ impl PowerAction {
             }
             Self::Shutdown | Self::Reboot => {
                 let feature = if self == Self::Shutdown {
-                    crate::account::feature_ability::Feature::Shutdown
+                    crate::account::feature_ability::Feature::Power
                 } else {
-                    crate::account::feature_ability::Feature::Reboot
+                    crate::account::feature_ability::Feature::Power
                 };
                 if !features.policy_for(device).supports(feature) {
                     bail!("{}", t().session.power_action_unsupported);

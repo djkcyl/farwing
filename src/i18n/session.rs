@@ -33,7 +33,6 @@ pub(crate) struct Session {
     pub progress_waiting_picture: &'static str,
     pub progress_still_waiting_picture: &'static str,
     pub progress_picture_received: &'static str,
-    pub native_window: &'static str,
     pub progress_resuming: &'static str,
     pub progress_allowed: &'static str,
     pub progress_trusted: &'static str,
@@ -72,8 +71,6 @@ pub(crate) struct Session {
     pub target_short_number: fn(&str) -> String,
     /// Device ID
     pub target_device: fn(&str) -> String,
-    /// Error
-    pub display_detection_failed: fn(&str) -> String,
 
     // Connection errors
     pub error_update_wait_timeout: &'static str,
@@ -726,7 +723,6 @@ pub(crate) const ZH_CN: Session = Session {
     progress_waiting_picture: "正在等待画面",
     progress_still_waiting_picture: "仍在等待画面",
     progress_picture_received: "已收到画面",
-    native_window: "原生窗口",
     progress_resuming: "正在恢复会话",
     progress_allowed: "对方已允许连接",
     progress_trusted: "对方信任本机",
@@ -759,7 +755,6 @@ pub(crate) const ZH_CN: Session = Session {
     audio_only: "仅音频",
     target_short_number: |number| format!("短号 {number}"),
     target_device: |id| format!("设备 {id}"),
-    display_detection_failed: |error| format!("无法检测本机显示器：{error}"),
 
     error_update_wait_timeout: "等待被控端完成更新超时",
     error_updated_device_missing: "更新后的设备已不在当前账号中",
@@ -1335,7 +1330,6 @@ pub(crate) const EN: Session = Session {
     progress_waiting_picture: "Waiting for the picture",
     progress_still_waiting_picture: "Still waiting for the picture",
     progress_picture_received: "Picture received",
-    native_window: "Native window",
     progress_resuming: "Resuming the session",
     progress_allowed: "Connection allowed",
     progress_trusted: "Trusted by the remote device",
@@ -1366,7 +1360,6 @@ pub(crate) const EN: Session = Session {
     audio_only: "Audio only",
     target_short_number: |number| format!("Short ID {number}"),
     target_device: |id| format!("Device {id}"),
-    display_detection_failed: |error| format!("Couldn't detect the local display: {error}"),
 
     error_update_wait_timeout: "Timed out waiting for the remote device to finish updating",
     error_updated_device_missing: "After the update, the device is no longer in this account",

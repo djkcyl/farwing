@@ -429,7 +429,6 @@ impl AuthenticatedClient {
             task.abort();
             let _ = task.await;
         }
-        self.features.close().await;
         self.close_device_owner().await;
     }
 
@@ -856,7 +855,7 @@ impl AuthenticatedClient {
             .await?;
         if !target.device_id.is_empty() {
             self.features
-                .remember_target(&target.device_id, target.platform, &target.capabilities);
+                .remember_target(&target.device_id, &target.capabilities);
         }
         Ok(ticket)
     }

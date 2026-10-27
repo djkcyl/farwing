@@ -418,10 +418,6 @@ impl DeviceInfo {
         self.participants_info.len()
     }
 
-    pub fn has_capability(&self, name: &str) -> bool {
-        self.capabilities.iter().any(|value| value == name)
-    }
-
     /// A friend's device rather than one of this account's.
     pub fn is_shared(&self) -> bool {
         self.owner.is_some()

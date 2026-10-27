@@ -104,7 +104,6 @@ pub struct DisplayChangeStatus {
     pub pending: bool,
     pub message: String,
     pub error: bool,
-    pub awaiting_report: bool,
     pub requested_resolution: Option<RemoteDisplayMode>,
     pub requested_resolution_choice: Option<DisplayResolution>,
     pub requested_dpi: Option<u32>,
@@ -179,7 +178,6 @@ impl DisplayChanges {
                 pending: false,
                 message,
                 error: error.is_some(),
-                awaiting_report: error.is_some(),
                 requested_resolution: pending.target_mode,
                 requested_resolution_choice: pending.target_choice,
                 requested_dpi: pending.target_dpi,
@@ -214,7 +212,6 @@ impl DisplayChanges {
                 _ => t().features.stream_display_not_fully_reached,
             };
             if let Some(status) = self.status.get_mut(id) {
-                status.awaiting_report = false;
                 let message = (t().features.stream_display_result)(&observation.reason, actual);
                 if status.message != message {
                     tracing::info!(
@@ -335,7 +332,7 @@ impl DisplayChanges {
 }
 
 pub(super) fn supported(state: &StreamControlState) -> bool {
-    state.features.as_ref().is_some_and(|p| p.is_windows())
+    state.features.as_ref().is_some_and(|p| p.supports(crate::account::feature_ability::Feature::Host))
         && protocol(state) == StreamControlProtocol::CaptureSetting
 }
 
@@ -451,7 +448,7 @@ impl StreamControlHandle {
             screen_id == state.current_screen_id
                 || feature_supported(
                     &state,
-                    crate::account::feature_ability::Feature::MultiScreen
+                    crate::account::feature_ability::Feature::Host
                 ),
             "{}",
             t().features.stream_multi_display_settings_unavailable
@@ -499,7 +496,6 @@ impl StreamControlHandle {
                 }
                 .into(),
                 error: false,
-                awaiting_report: true,
                 requested_resolution: resolution.map(|(mode, _)| mode),
                 requested_resolution_choice: request.resolution,
                 requested_dpi: request.dpi,

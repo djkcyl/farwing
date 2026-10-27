@@ -347,7 +347,7 @@ Hello {
 - **快速关键帧：** 主控在缺包超过 max(2.5 × RTT, 60 ms) 或 NACK 放弃时立即发 PLI（间隔 ≥ max(100 ms, 1.5 × RTT)），不再等待约 1 s 的解码超时；被控对 PLI/FIR 的节流同为 max(100 ms, 1.5 × RTT)。
 - **RTP 头扩展：** 音频只协商 transport-cc 与 mid；视频协商 transport-cc、mid、video-timing、`urn:farwing:rtp-hdrext:sending-delay`、color-space、`urn:farwing:rtp-hdrext:capture-index`、`urn:farwing:rtp-hdrext:new-frame`。共 7 个扩展（音频与视频共用编号），始终使用一字节扩展头。删除 abs-send-time、toffset、playout-delay（主控本地决定播放缓冲）、CVO、video-content-type、rid。
 - **FEC：** 每帧一个 RSFEC 块，修复包紧跟该帧发出；开销受 FEC 预算（目标码率 × 丢包率，5%–35%）限制。
-- **接收端统计：** 主控每秒推送 SESSION `7 ReceiverStats{receive_fps, decode_fps, render_fps, decode_delay_ms, dropped_frames, display_hz}`。被控在连续 3 次“解码跟不上”（解码帧率 < 接收帧率 × 0.85，或解码耗时 > 1.5 × 帧间隔）后把帧率上限压到解码帧率（取 5 的倍数，最低 30）；连续 10 次健康且解码耗时 < 0.7 × 帧间隔后取消上限。
+- **接收端统计：** 主控每秒推送 SESSION `7 ReceiverStats{receive_fps, decode_fps, render_fps, decode_delay_ms, dropped_frames}`。被控在连续 3 次“解码跟不上”（解码帧率 < 接收帧率 × 0.85，或解码耗时 > 1.5 × 帧间隔）后把帧率上限压到解码帧率（取 5 的倍数，最低 30）；连续 10 次健康且解码耗时 < 0.7 × 帧间隔后取消上限。
 
 ### 6.4 其他帧
 

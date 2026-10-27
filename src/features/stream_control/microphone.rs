@@ -19,7 +19,7 @@ impl StreamControlHandle {
     pub(crate) fn microphone_available(&self) -> bool {
         let state = lock(&self.shared);
         state.features.as_ref().is_some_and(|p| {
-            p.is_windows() && p.supports(crate::account::feature_ability::Feature::Microphone)
+            p.supports(crate::account::feature_ability::Feature::Host)
         }) && self.microphone.configured()
     }
 
@@ -28,7 +28,7 @@ impl StreamControlHandle {
         if enabled {
             ensure_ready(&state)?;
             if !state.features.as_ref().is_some_and(|p| {
-                p.is_windows() && p.supports(crate::account::feature_ability::Feature::Microphone)
+                p.supports(crate::account::feature_ability::Feature::Host)
             }) {
                 bail!("{}", t().features.stream_microphone_unavailable);
             }

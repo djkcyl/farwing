@@ -75,7 +75,7 @@ impl StreamControlHandle {
             if screen_id != state.current_screen_id
                 && !feature_supported(
                     &state,
-                    crate::account::feature_ability::Feature::MultiScreen,
+                    crate::account::feature_ability::Feature::Host,
                 )
             {
                 bail!("{}", t().features.stream_multi_screen_unavailable);

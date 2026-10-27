@@ -120,13 +120,10 @@ pub(super) async fn resolve(
     }
     let controller_device_id = client.device_id();
     crate::account::api::validate_device_id(&controller_device_id)?;
-    let (display, warning) = match detect_local_display() {
-        Ok(display) => (display, None),
-        Err(error) => (
-            LocalDisplayInfo::FALLBACK,
-            Some((t().session.display_detection_failed)(&error.to_string())),
-        ),
-    };
+    let display = detect_local_display().unwrap_or_else(|error| {
+        tracing::warn!(%error, "local display not detected; using 1080p60");
+        LocalDisplayInfo::FALLBACK
+    });
     let profile = options.resolve(display)?;
     Ok(ResolvedConnection {
         client,
@@ -138,9 +135,6 @@ pub(super) async fn resolve(
         transport: options.transport,
         summary: ConnectionSummary {
             alias: alias.into(),
-            stream_fps: profile.stream_fps,
-            codec: profile.codec.label(),
-            display_detection_warning: warning,
         },
         assist: Some(AssistConnection {
             request,
@@ -150,7 +144,6 @@ pub(super) async fn resolve(
         preferences: None,
         audio_preferences: None,
         target_platform: farwing_protocol::Platform::Unknown,
-        target_version: String::new(),
         refresh_after_upgrade: false,
         background: None,
     })

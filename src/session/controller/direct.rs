@@ -328,7 +328,7 @@ async fn connect_once(
             pake: connected.pake_key,
         },
         profile,
-        crate::account::feature_ability::FeaturePolicy::direct(host.platform),
+        crate::account::feature_ability::FeaturePolicy::direct(),
         if connected.relation == Relation::Assist {
             crate::session::negotiation::ControlConnectType::Assistance
         } else {

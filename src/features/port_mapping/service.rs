@@ -168,7 +168,7 @@ async fn connect(
     );
     let policy = client.feature_catalog().policy_for(current);
     ensure!(
-        policy.supports(crate::account::feature_ability::Feature::PortMapping),
+        policy.supports(crate::account::feature_ability::Feature::Ports),
         "{}",
         t().features.mapping_host_unsupported
     );

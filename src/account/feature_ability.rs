@@ -10,38 +10,25 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use farwing_protocol::{Platform, capability as name};
+use farwing_protocol::capability as name;
 
+/// What a device offers, as its registered capabilities say.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Feature {
-    Microphone,
-    PortMapping,
-    Annotation,
-    CustomBitrate,
-    ScreenChroma,
-    SmartMouse,
-    ManualTransfer,
-    MultiScreen,
-    ManualSuperScreen,
-    FpsSuperScreen,
-    Shutdown,
-    Reboot,
+    /// Remote desktop and everything in its sessions.
+    Host,
+    Files,
+    Ports,
+    Power,
 }
 
 impl Feature {
     fn capability(self) -> &'static str {
         match self {
-            Self::PortMapping => name::PORTS,
-            Self::ManualTransfer => name::FILES,
-            Self::Shutdown | Self::Reboot => name::POWER,
-            Self::Microphone
-            | Self::Annotation
-            | Self::CustomBitrate
-            | Self::ScreenChroma
-            | Self::SmartMouse
-            | Self::MultiScreen
-            | Self::ManualSuperScreen
-            | Self::FpsSuperScreen => name::HOST,
+            Self::Host => name::HOST,
+            Self::Files => name::FILES,
+            Self::Ports => name::PORTS,
+            Self::Power => name::POWER,
         }
     }
 }
@@ -63,7 +50,7 @@ pub(crate) fn local_capabilities() -> Vec<String> {
 
 #[derive(Clone, Default)]
 pub(crate) struct FeatureCatalog {
-    devices: Arc<Mutex<HashMap<String, (Platform, Vec<String>)>>>,
+    devices: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
 impl FeatureCatalog {
@@ -72,71 +59,48 @@ impl FeatureCatalog {
         if device.device_id.is_empty() {
             return;
         }
-        self.devices
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(
-                device.device_id.clone(),
-                (device.platform, device.capabilities.clone()),
-            );
+        self.remember_target(&device.device_id, &device.capabilities);
     }
 
-    pub(crate) fn remember_target(
-        &self,
-        device_id: &str,
-        platform: Platform,
-        capabilities: &[String],
-    ) {
+    pub(crate) fn remember_target(&self, device_id: &str, capabilities: &[String]) {
         self.devices
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(device_id.to_owned(), (platform, capabilities.to_vec()));
+            .insert(device_id.to_owned(), capabilities.to_vec());
     }
 
     /// Policy for a device whose capabilities were seen in a device list.
-    pub(crate) fn policy(&self, device_id: &str, platform: Platform) -> FeaturePolicy {
+    pub(crate) fn policy(&self, device_id: &str) -> FeaturePolicy {
         let capabilities = self
             .devices
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(device_id)
-            .map(|(_, capabilities)| capabilities.clone())
+            .cloned()
             .unwrap_or_default();
-        FeaturePolicy {
-            platform,
-            capabilities,
-        }
+        FeaturePolicy { capabilities }
     }
 
     pub(crate) fn policy_for(&self, device: &crate::account::api::DeviceInfo) -> FeaturePolicy {
         self.remember(device);
         FeaturePolicy {
-            platform: device.platform,
             capabilities: device.capabilities.clone(),
         }
     }
-
-    pub(crate) async fn close(&self) {}
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct FeaturePolicy {
-    platform: Platform,
     capabilities: Vec<String>,
 }
 
 impl FeaturePolicy {
-    /// A host reached directly: a Farwing host of this build's platform
+    /// A host reached directly: a Farwing host of this build
     /// (`docs/protocol/v2-design.md` §12).
-    pub(crate) fn direct(platform: Platform) -> Self {
+    pub(crate) fn direct() -> Self {
         Self {
-            platform,
             capabilities: local_capabilities(),
         }
-    }
-
-    pub(crate) fn is_windows(&self) -> bool {
-        self.platform == Platform::Windows
     }
 
     pub(crate) fn supports(&self, feature: Feature) -> bool {
@@ -153,10 +117,10 @@ mod tests {
     #[test]
     fn capability_policy() {
         let catalog = FeatureCatalog::default();
-        catalog.remember_target("a1b2c3d4e5f6g7h8", Platform::Windows, &local_capabilities());
-        let policy = catalog.policy("a1b2c3d4e5f6g7h8", Platform::Windows);
-        assert!(policy.is_windows() && policy.supports(Feature::PortMapping));
-        assert!(policy.supports(Feature::Annotation));
-        assert!(!catalog.policy("unknown", Platform::Windows).supports(Feature::Reboot));
+        catalog.remember_target("a1b2c3d4e5f6g7h8", &local_capabilities());
+        let policy = catalog.policy("a1b2c3d4e5f6g7h8");
+        assert!(policy.supports(Feature::Ports));
+        assert!(policy.supports(Feature::Host));
+        assert!(!catalog.policy("unknown").supports(Feature::Power));
     }
 }

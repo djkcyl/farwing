@@ -61,7 +61,6 @@ pub struct DisplayTopologySupport {
     pub exit: bool,
     pub resolution_conversion: bool,
     pub fps_conversion: bool,
-    pub super_screen: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -247,14 +246,13 @@ pub(super) fn support(state: &StreamControlState) -> DisplayTopologySupport {
         enter: available
             && !super_screen
             && !state.assistance
-            && feature_supported(state, Feature::ManualSuperScreen),
+            && feature_supported(state, Feature::Host),
         exit: available && super_screen,
         resolution_conversion: available,
         fps_conversion: available
             && !super_screen
             && !state.assistance
-            && feature_supported(state, Feature::FpsSuperScreen),
-        super_screen,
+            && feature_supported(state, Feature::Host),
     }
 }
 

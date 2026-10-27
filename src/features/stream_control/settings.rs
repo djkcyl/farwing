@@ -51,7 +51,6 @@ impl StreamControlHandle {
                 render_fps: snapshot.render_fps as f32,
                 decode_delay_ms: snapshot.decode_pipeline_delay_ms as f32,
                 dropped_frames: u32::try_from(new_drops).unwrap_or(u32::MAX),
-                display_hz: state.baseline.fps_count,
             },
         )))
     }
@@ -120,32 +119,6 @@ impl StreamControlHandle {
         lock(&self.shared).custom_bitrate_limit = limit
             .filter(|v| (1..=MAX_CUSTOM_BITRATE_MBPS).contains(v))
             .unwrap_or(MAX_CUSTOM_BITRATE_MBPS);
-    }
-
-    pub fn apply_color(
-        &self,
-        screen_id: i32,
-        enabled: bool,
-        quality: Option<StreamQuality>,
-    ) -> Result<i64> {
-        let mut state = lock(&self.shared);
-        ensure_ready(&state)?;
-        anyhow::ensure!(
-            color_supported(&state),
-            "{}",
-            t().features.stream_color_unsupported
-        );
-        anyhow::ensure!(
-            state.screens.iter().any(|screen| screen.id == screen_id),
-            "{}",
-            t().features.stream_display_disconnected
-        );
-        let mut settings = state.settings;
-        settings.true_color = enabled;
-        if let Some(quality) = quality {
-            settings.quality = quality;
-        }
-        self.apply_settings_target(&mut state, settings, Some(screen_id))
     }
 
     pub(crate) fn propose_format(
@@ -474,19 +447,9 @@ pub(super) fn color_supported(state: &StreamControlState) -> bool {
     state.peer.has(crate::protocol::peer::feature::VIDEO_444)
         && feature_supported(
             state,
-            crate::account::feature_ability::Feature::ScreenChroma,
+            crate::account::feature_ability::Feature::Host,
         )
         && state.capability.is_some()
-}
-
-pub(super) fn validate_color(state: &StreamControlState, enabled: bool) -> Result<()> {
-    anyhow::ensure!(
-        color_supported(state),
-        "{}",
-        t().features.stream_color_unsupported
-    );
-    validate_format(state, state.settings.quality, enabled, state.settings.hdr)?;
-    Ok(())
 }
 
 pub(super) fn validate_format(

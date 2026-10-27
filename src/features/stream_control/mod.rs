@@ -26,8 +26,7 @@ use input::expire_cursor_request;
 use settings::{
     apply_reported_color, capture_setting_request, color_supported, encode_capture_request,
     format_pb_error, format_proposal, frame_rate_choice,
-    quality_from_capability, quality_name, restore_confirmed_capture, validate_color,
-    viewing_quality_label,
+    quality_name, restore_confirmed_capture, viewing_quality_label,
 };
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -308,8 +307,6 @@ pub struct StreamControlSnapshot {
     pub custom_bitrate_limit: u32,
     pub auto_quality_label: String,
     pub true_color_supported: bool,
-    pub true_color_unavailable: Option<String>,
-    pub true_color_max_quality: Option<StreamQuality>,
     pub mouse_preference: MouseMode,
     pub mouse_mode: MouseMode,
     pub mouse_pending: bool,
@@ -338,7 +335,6 @@ pub struct StreamControlSnapshot {
     pub ready: bool,
     pub waiting_for: Option<&'static str>,
     pub pending_sequence: Option<i64>,
-    pub pending_count: usize,
     pub last_applied_sequence: Option<i64>,
     pub last_error: Option<String>,
     pub last_notice: Option<String>,
@@ -757,7 +753,7 @@ impl StreamControlHandle {
         let mut network = self.network.snapshot();
         if !feature_supported(
             &state,
-            crate::account::feature_ability::Feature::ManualTransfer,
+            crate::account::feature_ability::Feature::Files,
         ) {
             network.available = false;
             network.unavailable_reason = Some(t().features.stream_manual_relay_unavailable);
@@ -786,15 +782,6 @@ impl StreamControlHandle {
                 state.baseline.auto_frame_quality,
             )),
             true_color_supported: color_supported(&state),
-            true_color_unavailable: validate_color(&state, true)
-                .err()
-                .map(|error| error.to_string()),
-            true_color_max_quality: state
-                .capability
-                .as_ref()
-                .map(|cap| cap.select(3, state.settings.hdr, 0))
-                .filter(|cap| cap.result == 0)
-                .and_then(|cap| quality_from_capability(cap.max_frame_quality)),
             mouse_preference: state.device_preferences.mouse_mode,
             mouse_mode: state.mouse.mode(),
             mouse_pending: state.mouse.waiting_for_neutral() || state.mouse.transport_recovering(),
@@ -831,11 +818,11 @@ impl StreamControlHandle {
             custom_bitrate_supported: custom_bitrate_supported(&state)
                 && feature_supported(
                     &state,
-                    crate::account::feature_ability::Feature::CustomBitrate,
+                    crate::account::feature_ability::Feature::Host,
                 ),
             mouse_modes_supported: feature_supported(
                 &state,
-                crate::account::feature_ability::Feature::SmartMouse,
+                crate::account::feature_ability::Feature::Host,
             ),
             control_channel_open: state.control_channel_open,
             text_channel_open: state.text_channel_open,
@@ -844,7 +831,6 @@ impl StreamControlHandle {
                 && active_protocol == StreamControlProtocol::CaptureSetting,
             waiting_for,
             pending_sequence: state.pending_sequences.back().copied(),
-            pending_count: state.pending_sequences.len(),
             last_applied_sequence: state.last_applied_sequence,
             last_error: state.last_error.clone(),
             last_notice: state.last_notice.clone(),
@@ -893,7 +879,7 @@ impl StreamControlHandle {
     pub fn set_relay_enabled(&self, enabled: bool) -> Result<()> {
         if !feature_supported(
             &lock(&self.shared),
-            crate::account::feature_ability::Feature::ManualTransfer,
+            crate::account::feature_ability::Feature::Files,
         ) {
             bail!("{}", t().features.stream_manual_relay_unavailable);
         }

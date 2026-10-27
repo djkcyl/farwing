@@ -849,7 +849,7 @@ impl StreamControlHandle {
 fn annotation_supported(s: &StreamControlState) -> bool {
     (s.annotation_extension.is_some()
         || s.features.as_ref().is_some_and(|f| {
-            f.is_windows() && f.supports(crate::account::feature_ability::Feature::Annotation)
+            f.supports(crate::account::feature_ability::Feature::Host)
         }))
         && protocol(s) == StreamControlProtocol::CaptureSetting
         && s.text_channel_open
