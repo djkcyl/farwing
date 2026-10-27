@@ -10,7 +10,7 @@ export default function Records() {
   return (
     <div className="stack">
       <PageHeader title={t.nav.records} />
-      <Tabs
+      <Tabs<'connections' | 'events'>
         value={tab}
         onChange={setTab}
         items={[
