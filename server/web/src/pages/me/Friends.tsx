@@ -415,6 +415,7 @@ export default function Friends() {
         open={!!accepting}
         title={accepting ? m.acceptTitle(displayName(accepting.request.user)) : ''}
         onClose={() => setAccepting(undefined)}
+        wide
         footer={
           <>
             <Button onClick={() => setAccepting(undefined)}>{t.common.cancel}</Button>

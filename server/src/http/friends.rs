@@ -58,6 +58,8 @@ async fn devices_seen_by(
             let caps = db::caps_on_devices(c, &owner, &viewer)?;
             Ok(db::list_user_devices(c, &owner)?
                 .into_iter()
+                // Browsers are never controlled; friends do not see them.
+                .filter(|row| row.platform != farwing_protocol::Platform::Web)
                 .map(|row| {
                     let granted = caps.get(&row.id).cloned().unwrap_or_default();
                     (row, granted)

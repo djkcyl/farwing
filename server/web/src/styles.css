@@ -110,6 +110,10 @@ code,
 .nowrap {
   white-space: nowrap;
 }
+/* Text whose line breaks are meant (one line per device). */
+.pre-line {
+  white-space: pre-line;
+}
 .ellipsis {
   overflow: hidden;
   text-overflow: ellipsis;

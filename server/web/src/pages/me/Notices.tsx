@@ -62,7 +62,7 @@ export default function Notices() {
                   <div className={`list-item ${n.read ? '' : 'notice-unread'}`} key={n.id}>
                     <div className="grow">
                       <div>{text.title}</div>
-                      {text.body && <div className="small muted">{text.body}</div>}
+                      {text.body && <div className="small muted pre-line">{text.body}</div>}
                     </div>
                     <span className="small faint nowrap" title={dateTime(n.created_at)}>
                       {ago(n.created_at)}
