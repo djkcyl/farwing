@@ -713,8 +713,6 @@ impl Session {
         crate::account::api::validate_device_id(&incoming.controller.device_id)
             .context("会话主控身份无效")?;
         options.device_id = incoming.controller.device_id.clone();
-        options.client_type =
-            crate::protocol::peer_platform::PeerPlatform::client_type(incoming.controller.platform);
         // The controller's SDP must be signed by the device key the server
         // (or the direct handshake) stated; code-verified assistance and
         // pairing are additionally bound to the PAKE.
@@ -769,7 +767,7 @@ impl Session {
             serde_json::from_value(capability).context("缺少主控解码能力")?;
         // The peer HELLO negotiates the in-session feature set.
         let audio_only = incoming.purpose == farwing_protocol::api::Purpose::Audio;
-        tracing::info!(client_type=options.client_type,kind=options.kind,connect_type=options.connect_type,
+        tracing::info!(kind=options.kind,connect_type=options.connect_type,
             decoders=?options.decoders,formats=?remote.video_codec_capability,
             "host incoming media capabilities");
         anyhow::ensure!(
@@ -987,9 +985,6 @@ impl Session {
                     options.control_screen_reports(),
                     negotiated,
                     deferred,
-                    crate::protocol::peer_platform::PeerPlatform::from_connect_client_type(
-                        options.client_type,
-                    ),
                     options.clipboard_level(),
                     options.file_capabilities(),
                     data_only,

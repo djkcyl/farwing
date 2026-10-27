@@ -12,7 +12,6 @@ pub(crate) mod drag_drop;
 pub(crate) mod host_event;
 pub(crate) mod participants;
 pub(crate) mod microphone;
-pub(crate) mod peer_platform;
 
 #[cfg(test)]
 mod dispatch_tests {

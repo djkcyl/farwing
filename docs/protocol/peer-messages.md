@@ -203,7 +203,7 @@ PbScreen {
   video_track_index: int32 = 12           // 对应 answer 中的 msid video_N
   display_geometry: PbDisplayGeometry = 100  // optional；驱动首选（面板原生）模式
 }                                         // 8（dpr）与 13（builtin_screen_type）已删除
-PbWinRect { left: int32 = 1, top: int32 = 2, width: int32 = 3, height: int32 = 4, pixel_width: int32 = 5, pixel_height: int32 = 6 }
+PbWinRect { left: int32 = 1, top: int32 = 2, width: int32 = 3, height: int32 = 4 }
 PbDpiScale { current_dpi: int32 = 1, recommended_dpi: int32 = 2, dpis: repeated int32 = 3 }
 PbDisplayGeometry {
   version: uint32 = 1     // 1
@@ -269,8 +269,6 @@ PbCaptureSettingRequest {
   codec_type: int32 = 13            // 1 H.264，2 H.265，5 AV1
   max_scale_width: int32 = 14       // 主控的缩放上限
   max_scale_height: int32 = 15
-  resolution_pixel_width: int32 = 16
-  resolution_pixel_height: int32 = 17
   fps_count: int32 = 18             // 主控显示刷新率上限
   weak_network: int32 = 19          // 0 优先降码率，1 优先降帧率
   cinema: bool = 20                 // 观影模式

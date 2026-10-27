@@ -474,8 +474,7 @@ impl StreamControlHandle {
                     && protocol(&state) == StreamControlProtocol::CaptureSetting,
             );
             handshake_changed = true;
-            state.last_error = (protocol(&state) == StreamControlProtocol::Unsupported)
-                .then(|| t().features.stream_protocol_unsupported.into());
+            state.last_error = None;
             tracing::info!(
                 features = hello.features.len(),
                 protocol = protocol(&state).label(),

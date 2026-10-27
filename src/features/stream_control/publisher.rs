@@ -97,7 +97,6 @@ pub(crate) struct ConnectOptions {
     pub kind: i32,
     pub params: Option<CaptureParams>,
     pub decoders: Vec<DecoderCapability>,
-    pub client_type: i32,
     /// The controller's device ID.
     pub device_id: String,
     pub connect_type: i32,
@@ -144,7 +143,6 @@ impl ConnectOptions {
                 .collect(),
             // Set by the host from the server's `session.incoming`.
             kind: 0,
-            client_type: crate::protocol::peer_platform::WINDOWS_CLIENT_TYPE,
             device_id: String::new(),
             connect_type: 0,
             // Every v2 controller is this build; its HELLO confirms the set.

@@ -7,8 +7,6 @@ use std::collections::BTreeMap;
 pub struct RemoteDisplayMode {
     pub width: u32,
     pub height: u32,
-    pub pixel_width: u32,
-    pub pixel_height: u32,
 }
 
 impl RemoteDisplayMode {
@@ -16,18 +14,10 @@ impl RemoteDisplayMode {
         Some(Self {
             width: u32::try_from(rect.width).ok().filter(|v| *v > 0)?,
             height: u32::try_from(rect.height).ok().filter(|v| *v > 0)?,
-            pixel_width: u32::try_from(rect.pixel_width).unwrap_or(0),
-            pixel_height: u32::try_from(rect.pixel_height).unwrap_or(0),
         })
     }
     pub fn label(self) -> String {
-        let hidpi = self.pixel_width > self.width || self.pixel_height > self.height;
-        format!(
-            "{} × {}{}",
-            self.width,
-            self.height,
-            if hidpi { " (HiDPI)" } else { "" }
-        )
+        format!("{} × {}", self.width, self.height)
     }
 }
 
@@ -54,7 +44,7 @@ impl RemoteDisplayInfo {
             .iter()
             .filter_map(RemoteDisplayMode::parse)
             .collect();
-        modes.sort_by_key(|m| (m.width, m.height, m.pixel_width, m.pixel_height));
+        modes.sort_by_key(|m| (m.width, m.height));
         modes.dedup();
         let dpi = screen.dpi_scale.as_ref();
         let mut dpis: Vec<_> = dpi
@@ -379,12 +369,7 @@ pub(super) fn expand_resolution(
                 .iter()
                 .find(|m| m.width == width && m.height == height)
                 .copied()
-                .unwrap_or(RemoteDisplayMode {
-                    width,
-                    height,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                });
+                .unwrap_or(RemoteDisplayMode { width, height });
             (mode, 2)
         }
     };
@@ -540,14 +525,10 @@ impl StreamControlHandle {
             .context(t().features.stream_display_disconnected)?;
         request.resolution_width = i32::try_from(screen.display.current.width)?;
         request.resolution_height = i32::try_from(screen.display.current.height)?;
-        request.resolution_pixel_width = i32::try_from(screen.display.current.pixel_width)?;
-        request.resolution_pixel_height = i32::try_from(screen.display.current.pixel_height)?;
         match step {
             Step::Resolution(mode, kind) => {
                 request.resolution_width = i32::try_from(mode.width)?;
                 request.resolution_height = i32::try_from(mode.height)?;
-                request.resolution_pixel_width = i32::try_from(mode.pixel_width)?;
-                request.resolution_pixel_height = i32::try_from(mode.pixel_height)?;
                 request.resolution_type = kind;
             }
             Step::Dpi(dpi) => request.dpi_scale = i32::try_from(dpi)?,

@@ -4,7 +4,6 @@ use super::{Clipboard, Settings, Status};
 use crate::features::drag_drop::{Endpoint, HostPolicy, Role};
 use crate::i18n::t;
 use crate::platform::windows::host_service::{pipe::Pipe, process, vault};
-use crate::protocol::peer_platform::PeerPlatform;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -47,7 +46,6 @@ fn is_drag(data: &[u8]) -> bool {
 #[derive(Serialize, Deserialize)]
 pub(super) struct Request {
     policy: Policy,
-    platform: PeerPlatform,
     pub(super) packet: Option<Vec<u8>>,
     close: bool,
 }
@@ -98,7 +96,7 @@ pub(super) struct Backend {
     worker: tokio::task::JoinHandle<()>,
 }
 impl Backend {
-    pub async fn new(platform: PeerPlatform, stop: CancellationToken) -> Result<Self> {
+    pub async fn new(stop: CancellationToken) -> Result<Self> {
         let policy = Arc::new(Mutex::new(Policy::default()));
         let status = Arc::new(Mutex::new(Status::default()));
         let (input, incoming) = mpsc::sync_channel(super::INBOX);
@@ -111,7 +109,6 @@ impl Backend {
         let worker = tokio::task::spawn_blocking(move || {
             let _activity = activity;
             let result = worker(
-                platform,
                 settings,
                 reported.clone(),
                 incoming,
@@ -201,15 +198,13 @@ struct Local {
     checked: std::cell::Cell<Option<std::time::Instant>>,
 }
 impl Local {
-    fn new(platform: PeerPlatform, wake: Arc<Wake>) -> Result<Self> {
+    fn new(wake: Arc<Wake>) -> Result<Self> {
         Self::with_clipboard(
-            platform,
             wake,
             Clipboard::guarded(Some(Arc::new(desktop_available))),
         )
     }
     fn with_clipboard(
-        platform: PeerPlatform,
         wake: Arc<Wake>,
         clipboard: Clipboard,
     ) -> Result<Self> {
@@ -218,7 +213,6 @@ impl Local {
             .enable_all()
             .thread_name("clipboard-send")
             .build()?;
-        clipboard.platform(platform.account_code().unwrap_or(0));
         let policy = Arc::new(Mutex::new(Policy::default()));
         let state = policy.clone();
         let (send, output) = mpsc::sync_channel(256);
@@ -381,7 +375,6 @@ impl Drop for Local {
 }
 
 fn worker(
-    platform: PeerPlatform,
     policy: Arc<Mutex<Policy>>,
     status: Arc<Mutex<Status>>,
     incoming: mpsc::Receiver<Outbound>,
@@ -393,7 +386,7 @@ fn worker(
     let local = if system {
         None
     } else {
-        Some(Local::new(platform, wake.clone())?)
+        Some(Local::new(wake.clone())?)
     };
     let mut remote = None;
     let result = (|| -> Result<()> {
@@ -454,7 +447,6 @@ fn worker(
                     remote.as_mut().unwrap().exchange(
                         Request {
                             policy: p,
-                            platform,
                             packet,
                             close: false,
                         },
@@ -492,7 +484,6 @@ fn worker(
                 &remote.pipe,
                 Request {
                     policy: Policy::default(),
-                    platform,
                     packet: None,
                     close: true,
                 },
@@ -598,7 +589,7 @@ pub(crate) fn run(name: &str, parent: u32) -> Result<()> {
                 break;
             }
             if local.is_none() {
-                local = Some(Local::new(request.platform, wake.clone())?);
+                local = Some(Local::new(wake.clone())?);
             }
             let local = local.as_ref().unwrap();
             local.update(request.policy)?;

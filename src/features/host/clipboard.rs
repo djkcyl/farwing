@@ -7,7 +7,6 @@ mod wake;
 
 use crate::features::clipboard::Clipboard;
 use crate::i18n::t;
-use crate::protocol::peer_platform::PeerPlatform;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::sync::{
@@ -120,7 +119,6 @@ pub(super) async fn run(
     lease: super::Lease,
     connected: Arc<AtomicBool>,
     cancel: CancellationToken,
-    platform: PeerPlatform,
     input: super::input::Receiver,
     screens: impl Fn() -> (Vec<crate::media::capture::Screen>, bool) + Send + Sync + 'static,
 ) {
@@ -139,7 +137,6 @@ pub(super) async fn run(
                 &lease,
                 &connected,
                 &cancel,
-                platform,
                 channel.clone(),
                 &input,
                 &screens,
@@ -179,7 +176,6 @@ async fn binding(
     lease: &super::Lease,
     connected: &Arc<AtomicBool>,
     cancel: &CancellationToken,
-    platform: PeerPlatform,
     channel: Arc<RTCDataChannel>,
     input: &super::input::Receiver,
     screens: &impl Fn() -> (Vec<crate::media::capture::Screen>, bool),
@@ -197,7 +193,7 @@ async fn binding(
     };
     let stop = cancel.child_token();
     let _stop_guard = stop.clone().drop_guard();
-    let backend = agent::Backend::new(platform, stop.clone()).await?;
+    let backend = agent::Backend::new(stop.clone()).await?;
     let (bulk_tx, bulk_rx) = mpsc::channel(64);
     let (fault_tx, mut faults) = mpsc::channel(1);
     let bulk_receiver = receiver.clone();

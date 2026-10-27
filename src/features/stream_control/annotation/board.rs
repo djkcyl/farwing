@@ -36,8 +36,8 @@ struct Metrics {
 impl Metrics {
     fn from_display(display: &ScreenBaseline) -> Self {
         Self {
-            width: display.pixel_width.max(display.width).max(1),
-            height: display.pixel_height.max(display.height).max(1),
+            width: display.width.max(1),
+            height: display.height.max(1),
             dpi: if display.display.current_dpi == 0 {
                 100
             } else {

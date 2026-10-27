@@ -362,7 +362,7 @@ impl StreamControlHandle {
     pub(crate) fn annotation_line_scale(&self, screen: i32, rendered_width: f32) -> f32 {
         let s = lock(&self.shared);
         s.screens.iter().find(|v| v.id == screen).map_or(1.0, |v| {
-            let physical = v.pixel_width.max(v.width).max(1) as f32;
+            let physical = v.width.max(1) as f32;
             let dpi = if v.display.current_dpi == 0 {
                 100
             } else {

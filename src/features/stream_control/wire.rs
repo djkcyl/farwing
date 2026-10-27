@@ -419,10 +419,6 @@ pub(crate) struct PbCaptureSettingRequest {
     pub(crate) max_scale_width: i32,
     #[prost(int32, tag = "15")]
     pub(crate) max_scale_height: i32,
-    #[prost(int32, tag = "16")]
-    pub(crate) resolution_pixel_width: i32,
-    #[prost(int32, tag = "17")]
-    pub(crate) resolution_pixel_height: i32,
     #[prost(int32, tag = "18")]
     pub(crate) fps_count: i32,
     /// What gives way on a weak network: 0 = bitrate first, 1 = frame rate first.
@@ -527,10 +523,6 @@ pub(crate) struct PbWinRect {
     pub(crate) width: i32,
     #[prost(int32, tag = "4")]
     pub(crate) height: i32,
-    #[prost(int32, tag = "5")]
-    pub(crate) pixel_width: i32,
-    #[prost(int32, tag = "6")]
-    pub(crate) pixel_height: i32,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]

@@ -242,9 +242,6 @@ impl StreamControlHandle {
             StreamControlProtocol::Negotiating => {
                 bail!("{}", t().features.stream_negotiation_pending)
             }
-            StreamControlProtocol::Unsupported => {
-                bail!("{}", t().features.stream_protocol_unsupported)
-            }
         };
         state.next_sequence = state.next_sequence.wrapping_add(1);
         state.pending_sequences.push_back(sequence);

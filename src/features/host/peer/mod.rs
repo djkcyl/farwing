@@ -121,7 +121,6 @@ impl Peer {
         control_screens: bool,
         negotiated: Arc<super::format::Negotiated>,
         deferred: Option<screens::Deferred>,
-        clipboard_platform: crate::protocol::peer_platform::PeerPlatform,
         clipboard_level: i32,
         file_capabilities: crate::features::file_transfer::host::Capabilities,
         data_only: bool,
@@ -673,7 +672,6 @@ impl Peer {
             handle.clone(),
             connected.clone(),
             cancel.clone(),
-            clipboard_platform,
             input.receiver(),
             move || {
                 let viewing = clipboard_screens

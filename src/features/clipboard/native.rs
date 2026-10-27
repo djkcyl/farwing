@@ -360,7 +360,7 @@ fn process(command: Command) {
                     ),
                     (formats::register("FileContents"), "FileContents".into()),
                 ];
-                let links = formats::outgoing(&ids, s.platform.load(Ordering::Acquire), true);
+                let links = formats::outgoing(&ids, true);
                 let source = Arc::new(LocalSource {
                     object: None,
                     files: true,
@@ -459,10 +459,9 @@ fn set_offer(s: Arc<Inner>, epoch: u64, offer: u32, formats: Vec<wire::Format>) 
         });
         return Ok(());
     }
-    let platform = s.platform.load(Ordering::Acquire);
     let mut links: Vec<Format> = formats
         .into_iter()
-        .filter_map(|f| formats::incoming(f, platform, s.file_allowed()))
+        .filter_map(|f| formats::incoming(f, s.file_allowed()))
         .collect();
     let descriptor = formats::register("FileGroupDescriptorW");
     let is_files = links.iter().any(|f| f.local == descriptor);
@@ -593,11 +592,7 @@ fn local_change() -> Result<()> {
         }
     });
     for session in sessions {
-        let links = formats::outgoing(
-            &ids,
-            session.platform.load(Ordering::Acquire),
-            session.file_allowed(),
-        );
+        let links = formats::outgoing(&ids, session.file_allowed());
         if links.is_empty() && !ids.is_empty() {
             STATE.with(|v| {
                 if let Some(v) = v.borrow_mut().as_mut() {
@@ -674,7 +669,7 @@ fn pull(s: &Arc<Inner>, epoch: u64, id: u32) -> Result<()> {
         return Ok(());
     }
     let (source, ids) = describe(object)?;
-    let links = formats::outgoing(&ids, s.platform.load(Ordering::Acquire), s.file_allowed());
+    let links = formats::outgoing(&ids, s.file_allowed());
     let offer = s.next_offer();
     STATE.with(|v| {
         if let Some(v) = v.borrow_mut().as_mut() {
@@ -772,7 +767,7 @@ struct LocalSource {
     prepared: Option<Arc<LocalFiles>>,
 }
 impl LocalSource {
-    fn data(&self, format: &Format, platform: i32) -> Result<Vec<u8>> {
+    fn data(&self, format: &Format) -> Result<Vec<u8>> {
         ensure!(!self.files, "{}", t().features.clipboard_files_need_request);
         let kind = if matches!(format.local, 14 | 0x8e) {
             TYMED_ENHMF
@@ -787,7 +782,7 @@ impl LocalSource {
             -1,
             kind.0 as u32,
         )?;
-        let data = if kind == TYMED_ENHMF {
+        Ok(if kind == TYMED_ENHMF {
             unsafe {
                 let h = medium.0.u.hEnhMetaFile;
                 let n = GetEnhMetaFileBits(h, None);
@@ -802,8 +797,7 @@ impl LocalSource {
             }
         } else {
             global_bytes(unsafe { medium.0.u.hGlobal })?
-        };
-        formats::convert(data, format, platform, true)
+        })
     }
     fn files(&self) -> Result<Arc<LocalFiles>> {
         ensure!(self.files, "{}", t().features.clipboard_no_files);
@@ -1161,7 +1155,7 @@ fn serve(s: &Arc<Inner>, epoch: u64, id: u32, body: Body) -> Result<()> {
                             && (wanted.name.is_empty() || wanted.name == f.wire.name)
                     })
                     .ok_or_else(|| anyhow!("{}", t().features.clipboard_format_not_offered))?;
-                source.data(format, s.platform.load(Ordering::Acquire))
+                source.data(format)
             })();
             match result {
                 Ok(data) if !data.is_empty() => s.respond_data(epoch, id, fetch.stream, data),
@@ -1563,14 +1557,6 @@ impl IDataObject_Impl for RemoteData_Impl {
                     .offer
                     .session
                     .data(self.offer.epoch, self.offer.offer, &f.wire)
-                    .and_then(|d| {
-                        formats::convert(
-                            d,
-                            f,
-                            self.offer.session.platform.load(Ordering::Acquire),
-                            false,
-                        )
-                    })
                     .map_err(com_error)?;
                 self.offer.valid().map_err(com_error)?;
                 {

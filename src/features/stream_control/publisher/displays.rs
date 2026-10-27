@@ -22,8 +22,6 @@ pub(crate) fn screen_states(
                     top: screen.top,
                     width: width as i32,
                     height: height as i32,
-                    pixel_width: width as i32,
-                    pixel_height: height as i32,
                 };
                 let mut sizes: Vec<_> = info
                     .target
@@ -545,8 +543,6 @@ fn configure_media(
     setting.screen_id = screen.id;
     setting.resolution_width = screen.width as i32;
     setting.resolution_height = screen.height as i32;
-    setting.resolution_pixel_width = screen.width as i32;
-    setting.resolution_pixel_height = screen.height as i32;
     setting.resolution_type = 1;
     setting.dpi_scale = 0;
     super::apply_capture_setting(&setting, screen, config, negotiated)

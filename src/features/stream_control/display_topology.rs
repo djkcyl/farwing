@@ -415,8 +415,6 @@ impl StreamControlHandle {
                 capture.screen_id = screen_id;
                 capture.resolution_width = i32::try_from(mode.width)?;
                 capture.resolution_height = i32::try_from(mode.height)?;
-                capture.resolution_pixel_width = i32::try_from(mode.pixel_width)?;
-                capture.resolution_pixel_height = i32::try_from(mode.pixel_height)?;
                 capture.resolution_type = kind;
                 request = SessionBody::CaptureSetting(capture);
             }

@@ -287,9 +287,6 @@ impl StreamControlHandle {
                 StreamControlProtocol::Negotiating => {
                     bail!("{}", t().features.stream_negotiation_pending)
                 }
-                StreamControlProtocol::Unsupported => {
-                    bail!("{}", t().features.stream_protocol_unsupported)
-                }
             };
             state.next_sequence = state.next_sequence.wrapping_add(1);
             state.pending_sequences.push_back(sequence);
@@ -433,7 +430,7 @@ pub(super) fn prepare_initial_capture_sync(
     let payload = match active_protocol {
         StreamControlProtocol::CaptureSetting => encode_capture_setting(sequence, baseline)?,
 
-        StreamControlProtocol::Negotiating | StreamControlProtocol::Unsupported => return Ok(None),
+        StreamControlProtocol::Negotiating => return Ok(None),
     };
     state.next_sequence = state.next_sequence.wrapping_add(1);
     state.pending_sequences.push_back(sequence);
@@ -656,8 +653,6 @@ pub(super) fn update_screen_baseline(state: &mut StreamControlState, screens: Pb
                 fps: u32::try_from(screen.fps).unwrap_or_default(),
                 width,
                 height,
-                pixel_width: u32::try_from(resolution.pixel_width).unwrap_or_default(),
-                pixel_height: u32::try_from(resolution.pixel_height).unwrap_or_default(),
                 dpi_scale: screen
                     .dpi_scale
                     .map(|dpi| u32::try_from(dpi.current_dpi).unwrap_or_default())
@@ -717,8 +712,6 @@ pub(super) fn refresh_active_screen(state: &mut StreamControlState) {
         video_track_index = screen.video_track_index,
         width = screen.width,
         height = screen.height,
-        pixel_width = screen.pixel_width,
-        pixel_height = screen.pixel_height,
         dpi_scale = screen.dpi_scale,
         resolution_type = screen.resolution_type,
         "active-screen baseline synchronized"
@@ -975,8 +968,6 @@ pub(super) fn capture_setting_request(
         codec_type: baseline.codec_type,
         max_scale_width: i32::try_from(baseline.max_scale_width)?,
         max_scale_height: i32::try_from(baseline.max_scale_height)?,
-        resolution_pixel_width: 0,
-        resolution_pixel_height: 0,
         fps_count: i32::try_from(baseline.fps_count)?,
         weak_network: baseline.weak_network,
         cinema: baseline.cinema,

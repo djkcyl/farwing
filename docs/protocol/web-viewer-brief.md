@@ -587,7 +587,7 @@ message PbScreen {
   int32 video_track_index = 12;                     // 对应 answer 中的 video_N；-1 表示未采集
   PbDisplayGeometry display_geometry = 100;
 }
-message PbWinRect { int32 left = 1; int32 top = 2; int32 width = 3; int32 height = 4; int32 pixel_width = 5; int32 pixel_height = 6; }
+message PbWinRect { int32 left = 1; int32 top = 2; int32 width = 3; int32 height = 4; }
 message PbDpiScale { int32 current_dpi = 1; int32 recommended_dpi = 2; repeated int32 dpis = 3; }
 message PbDisplayGeometry { uint32 version = 1; uint32 width = 2; uint32 height = 3; }
 message PbReportQosStats { string encoder_type = 1; string capture_type = 2; uint64 probe_bps = 3; int32 video_quality = 4; }
@@ -601,7 +601,7 @@ message PbCaptureSettingRequest {
   int32 resolution_width = 5; int32 resolution_height = 6; int32 chroma_format = 7; int32 max_custom_bitrate = 8;
   int32 dpi_scale = 9; int32 resolution_type = 10; bool enable_hdr = 11; int32 auto_frame_quality = 12;
   int32 codec_type = 13; int32 max_scale_width = 14; int32 max_scale_height = 15;
-  int32 resolution_pixel_width = 16; int32 resolution_pixel_height = 17; int32 fps_count = 18;
+  int32 fps_count = 18;
   int32 weak_network = 19; bool cinema = 20;
 }
 message PbCaptureSettingResponse { repeated PbError errors = 1; }
@@ -724,7 +724,6 @@ message Permissions { repeated string grants = 1; }
    | `auto_frame_quality` | 2..4 |
    | `codec_type` | 0 = 任意，1 = H.264，5 = AV1 |
    | `max_scale_width` / `max_scale_height` | 0 = 不限，否则必须 ≥ 2 |
-   | `resolution_pixel_width` / `resolution_pixel_height` | 0 |
    | `fps_count` | 帧率上限 |
    | `weak_network` | 0 |
    | `cinema` | bool |

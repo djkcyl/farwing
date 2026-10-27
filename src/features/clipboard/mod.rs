@@ -116,7 +116,6 @@ struct Inner {
     /// This side is the host: it answers `Pull`.
     host_role: AtomicBool,
     epoch: AtomicU64,
-    platform: AtomicI32,
     requests: AtomicU32,
     streams: AtomicU32,
     offers: AtomicU32,
@@ -270,7 +269,6 @@ impl Clipboard {
             allowed_files: AtomicBool::new(true),
             host_role: AtomicBool::new(false),
             epoch: AtomicU64::new(1),
-            platform: AtomicI32::new(1),
             requests: AtomicU32::new(0),
             streams: AtomicU32::new(0),
             offers: AtomicU32::new(0),
@@ -343,9 +341,6 @@ impl Clipboard {
     pub fn set_files(&self, enabled: bool) {
         self.0.files.store(enabled, Ordering::Release);
         self.apply();
-    }
-    pub fn platform(&self, platform: i32) {
-        self.0.platform.store(platform, Ordering::Release);
     }
     /// This side is the host and answers `Pull`.
     pub(crate) fn host_role(&self) {

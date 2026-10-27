@@ -136,15 +136,13 @@ impl StreamQuality {
 pub enum StreamControlProtocol {
     Negotiating,
     CaptureSetting,
-    Unsupported,
 }
 
 impl StreamControlProtocol {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Negotiating => "协商中",
+            Self::Negotiating => "negotiating",
             Self::CaptureSetting => "CaptureSetting",
-            Self::Unsupported => "串流协议不受支持",
         }
     }
 }
@@ -422,8 +420,6 @@ struct ScreenBaseline {
     fps: u32,
     width: u32,
     height: u32,
-    pixel_width: u32,
-    pixel_height: u32,
     dpi_scale: u32,
     resolution_type: i32,
     display: RemoteDisplayInfo,
@@ -916,8 +912,6 @@ impl StreamControlHandle {
         &self,
         policy: crate::account::feature_ability::FeaturePolicy,
     ) {
-        self.clipboard
-            .platform(if policy.is_windows() { 1 } else { 4 });
         lock(&self.shared).features = Some(policy);
     }
 
@@ -1015,11 +1009,8 @@ fn ensure_business_ready(state: &StreamControlState) -> Result<()> {
     if !state.text_channel_open {
         bail!("{}", t().features.stream_session_channel_closed);
     }
-    if !state.pb_connected {
+    if protocol(state) == StreamControlProtocol::Negotiating {
         bail!("{}", t().features.stream_peer_negotiation_pending);
-    }
-    if protocol(state) == StreamControlProtocol::Unsupported {
-        bail!("{}", t().features.stream_protocol_unsupported);
     }
     Ok(())
 }
@@ -1038,13 +1029,13 @@ fn feature_supported(
         .is_some_and(|policy| policy.supports(feature))
 }
 
+/// Every host speaks CaptureSetting once its HELLO is in (a closed session
+/// channel forgets it until the next one).
 fn protocol(state: &StreamControlState) -> StreamControlProtocol {
-    if !state.pb_connected {
-        StreamControlProtocol::Negotiating
-    } else if state.peer.known() {
+    if state.pb_connected && state.peer.known() {
         StreamControlProtocol::CaptureSetting
     } else {
-        StreamControlProtocol::Unsupported
+        StreamControlProtocol::Negotiating
     }
 }
 
