@@ -242,6 +242,12 @@ export const zh = {
     grants: '我的权限',
     monitor: '性能监控',
     details: '详情',
+    compact: '精简',
+    detailed: '详细',
+    off: '关闭',
+    hudRtt: (v: string) => `往返 ${v}`,
+    hudLoss: (v: string) => `丢包 ${v}`,
+    autoWith: (tier: string) => `自动（${tier}）`,
   },
   files: {
     /** Host file error codes (`FileError`). */
@@ -557,6 +563,12 @@ export const en: typeof zh = {
     grants: 'My permissions',
     monitor: 'Performance monitor',
     details: 'Details',
+    compact: 'Compact',
+    detailed: 'Detailed',
+    off: 'Off',
+    hudRtt: (v) => `RTT ${v}`,
+    hudLoss: (v) => `Loss ${v}`,
+    autoWith: (tier) => `Auto (${tier})`,
   },
   files: {
     errors: {

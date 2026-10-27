@@ -33,7 +33,13 @@ import { Button, Spinner } from './kit';
 import { Dialog, useOverlay } from './overlay';
 import { AnnotationLayer, type AnnotationTool } from './AnnotationLayer';
 import { useRemoteInput, type PictureMap } from './remoteInput';
-import { PERF_HISTORY, PerformanceOverlay, type PerfSample } from './PerformanceOverlay';
+import {
+  PERF_HISTORY,
+  PerformanceOverlay,
+  PerformanceSummary,
+  type PerfMode,
+  type PerfSample,
+} from './PerformanceOverlay';
 import { RoomNotices } from './RoomNotices';
 
 type Scale = 'fit' | 'fill' | 'original';
@@ -45,6 +51,8 @@ const CONTROL_KEY = 'farwing.viewer.control';
 const CLIPBOARD_KEY = 'farwing.viewer.clipboard';
 /// 'mouse': touch acts as mouse gestures even when the host takes touch.
 const TOUCH_KEY = 'farwing.viewer.touch';
+/// The performance monitor: compact (the default), detailed or off.
+const PERF_KEY = 'farwing.viewer.perf';
 /// While a session is open the web login counts as in use: the server
 /// expires idle web logins after `session_idle_minutes` (30 by default).
 const KEEP_ALIVE_MS = 5 * 60 * 1000;
@@ -192,7 +200,19 @@ function ToolButton({
   );
 }
 
-function Menu({ label, icon, text, children }: { label: string; icon: IconName; text?: string; children: ReactNode }) {
+function Menu({
+  label,
+  icon,
+  text,
+  active,
+  children,
+}: {
+  label: string;
+  icon: IconName;
+  text?: string;
+  active?: boolean;
+  children: ReactNode;
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -205,7 +225,13 @@ function Menu({ label, icon, text, children }: { label: string; icon: IconName; 
   }, [open]);
   return (
     <div className="tool-menu" ref={ref}>
-      <button type="button" className={`tool ${open ? 'active' : ''}`} title={label} onClick={() => setOpen(!open)}>
+      <button
+        type="button"
+        className={`tool ${open || active ? 'active' : ''}`}
+        title={label}
+        aria-label={label}
+        onClick={() => setOpen(!open)}
+      >
         <Icon name={icon} size={18} />
         {text && <span className="tool-text">{text}</span>}
       </button>
@@ -294,7 +320,15 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
   const [stats, setStats] = useState<ViewStats>();
   const [scale, setScale] = useState<Scale>('fit');
   const [panel, setPanel] = useState<Panel>('none');
-  const [perf, setPerf] = useState(false);
+  const [perf, setPerfState] = useState<PerfMode>(() => {
+    const stored = localStorage.getItem(PERF_KEY);
+    return stored === 'detailed' || stored === 'off' ? stored : 'compact';
+  });
+  const setPerf = (mode: PerfMode) => {
+    localStorage.setItem(PERF_KEY, mode);
+    setPerfState(mode);
+  };
+  const [audioTrack, setAudioTrack] = useState<MediaStreamTrack>();
   const [perfHistory, setPerfHistory] = useState<PerfSample[]>([]);
   const playingSince = useRef<number>(undefined);
   const [uptime, setUptime] = useState(0);
@@ -373,6 +407,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
           ended: (e) => onEnded(e),
           stream: (stream) => {
             if (video.current) video.current.srcObject = stream;
+            setAudioTrack(stream.getAudioTracks()[0]);
           },
           screens: setScreens,
           quality: setQuality,
@@ -858,6 +893,15 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
   const me = people?.participants.find((p) => p.you)?.id;
   const sharedView = (people?.participants.filter((p) => !p.listening).length ?? 0) > 1 && people?.controlling !== me;
   const shownQuality = sharedView && (frameQuality === 4 || frameQuality === 3) ? 2 : frameQuality;
+  const tierName = (id: number) => {
+    const tier = QUALITIES.find((q) => q.id === id);
+    return tier ? t.viewer.screen.qualities[tier.key] : '';
+  };
+  // Automatic names the tier the host reports.
+  const qualityText =
+    shownQuality === 5 && quality && quality.videoQuality >= 1 && quality.videoQuality <= 4
+      ? t.viewer.stats.autoWith(tierName(quality.videoQuality))
+      : tierName(shownQuality);
   tierNow.current = shownQuality;
   const controller = people?.participants.find((p) => p.id === people.controlling);
 
@@ -1210,7 +1254,14 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
           </div>
           <ToolButton icon="camera" label={t.viewer.screen.screenshot} onClick={screenshot} disabled={!playing} />
           <ToolButton icon="pip" label={t.viewer.screen.pip} onClick={pip} disabled={!playing} />
-          <ToolButton icon="chart" label={t.viewer.screen.stats} active={perf} onClick={() => setPerf(!perf)} />
+          <Menu label={t.viewer.screen.stats} icon="chart" active={perf !== 'off'}>
+            <div className="menu-label">{t.viewer.screen.stats}</div>
+            {(['compact', 'detailed', 'off'] as const).map((mode) => (
+              <MenuItem key={mode} selected={perf === mode} onClick={() => setPerf(mode)}>
+                {t.viewer.stats[mode]}
+              </MenuItem>
+            ))}
+          </Menu>
           <ToolButton
             icon="users"
             label={t.viewer.screen.people}
@@ -1333,7 +1384,18 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
           </button>
         )}
         {dragOver && <div className="drop-hint">{t.viewer.screen.dropHint}</div>}
-        {perf && playing && (
+        {perf === 'compact' && playing && (
+          <PerformanceSummary
+            stats={stats}
+            forwarding={forwarding}
+            uptime={uptime}
+            quality={qualityText}
+            audio={audioAllowed ? audioTrack : undefined}
+            muted={muted}
+            volume={volume}
+          />
+        )}
+        {perf === 'detailed' && playing && (
           <PerformanceOverlay
             stats={stats}
             history={perfHistory}
@@ -1343,7 +1405,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
             audioAllowed={audioAllowed}
             audioKbps={audioKbps}
             grants={grants}
-            onClose={() => setPerf(false)}
+            onClose={() => setPerf('off')}
           />
         )}
         {panel !== 'files' && transfers.length > 0 && (

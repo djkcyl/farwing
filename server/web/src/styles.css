@@ -1551,6 +1551,36 @@ html[lang='en'] .caps-group {
   flex-direction: column;
   gap: 6px;
 }
+.perf-summary {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  gap: 8px;
+  padding: 5px 7px;
+  background: rgba(0, 0, 0, 0.65);
+  border-radius: 4px;
+  font-family: 'Cascadia Mono', Consolas, 'SFMono-Regular', Menlo, monospace;
+  font-size: 11px;
+  line-height: 14px;
+  color: rgba(255, 255, 255, 0.78);
+  pointer-events: none;
+  z-index: 6;
+}
+.perf-summary-lines {
+  width: 104px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.perf-summary-lines > div {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.perf-meter {
+  width: 37px;
+  height: 98px;
+  flex: none;
+}
 .perf-head {
   display: flex;
   align-items: center;
