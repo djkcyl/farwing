@@ -83,20 +83,6 @@ enum SystemCommand { UNSPECIFIED = 0; SAS = 1 /* Ctrl+Alt+Del，需要被控服�
 - 主控按物理键的 set-1 扫描码（E0 扩展键记为 `0xE0xx`）查表得到 usage；被控有 HID 驱动时直接上报 usage，否则按扫描码注入。映射表在 `src/platform/windows/input/keyboard.rs`。不认识的 usage 被忽略。
 - `LockState` 的纠正规则见 v2-design §7；保活与按键释放超时见 farwing-protocol.md §5.8。
 
-## POINTER_POLICY（0x0102，被控→主控，JSON）—— `src/features/host/input/config.rs`、`src/features/stream_control/input.rs`
-
-```json
-{"mouse_mode": 0 | 1 | 2, "force_mode": true | false, "coordinate_x_scale": 0.5, "coordinate_y_scale": 0.5}
-```
-
-| `mouse_mode` | `force_mode` | 坐标 | 含义 |
-|--------------|--------------|------|------|
-| 0 | `true` | 不带 | 强制绝对指针 |
-| 1 | `true` | 不带 | 强制相对指针（游戏） |
-| 2 | `false` | 可带 | 恢复用户选择的模式；带坐标时把指针恢复到该屏内归一化位置 |
-
-帧体不超过 16 KiB。只在 control 通道接受。
-
 ## CURSOR（0x0103，被控→主控）—— `src/features/remote_cursor.rs`、`src/protocol/participants.rs`
 
 ```

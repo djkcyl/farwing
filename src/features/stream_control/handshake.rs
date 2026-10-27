@@ -7,7 +7,7 @@ use super::settings::{
 };
 use super::wire::{SessionBody, encode_pb_echo_response};
 use super::{
-    PbHandshakeStatus, PbMessageSource, StreamControlHandle, StreamControlProtocol,
+    PbHandshakeStatus, StreamControlHandle, StreamControlProtocol,
     StreamControlState, VIDEO_QUALITY_AUTO, ViewingPreferenceUpdate, lock, protocol,
 };
 use crate::i18n::t;
@@ -64,7 +64,6 @@ impl StreamControlHandle {
             state
                 .display_changes
                 .cancel_all(t().features.stream_display_disconnected_unconfirmed);
-            state.peer_mouse_relative = None;
             state.cursor_sync_needed = false;
             state.cursor_desired_capture = true;
             state.mouse_restore_point = None;
@@ -217,16 +216,11 @@ impl StreamControlHandle {
     }
 
     /// Handle a peer frame received on the control or session channel.
-    pub(crate) fn handle_protocol_message(
-        &self,
-        payload: &[u8],
-        source: PbMessageSource,
-    ) -> Result<()> {
+    pub(crate) fn handle_protocol_message(&self, payload: &[u8]) -> Result<()> {
         let (header, body) = peer::decode(payload)?;
         match header.frame_type() {
             Some(FrameType::Annotation) => return self.handle_native_annotation(payload).map(drop),
             Some(FrameType::Audio) => return self.handle_audio_quality(payload).map(drop),
-            Some(FrameType::PointerPolicy) => return self.handle_mouse_command(body, source),
             Some(FrameType::Hello) => return self.handle_hello(payload),
             Some(FrameType::Cursor) => return self.handle_cursor(body),
             Some(FrameType::HostEvent) => return self.handle_host_event(body),

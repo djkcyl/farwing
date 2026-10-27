@@ -2,7 +2,6 @@
 use crate::i18n::t;
 mod backend;
 pub(crate) mod broker;
-pub(crate) mod config;
 mod engine;
 mod locks;
 mod pointers;
@@ -125,9 +124,6 @@ struct Shared {
     round_trip: Box<dyn Fn() -> Option<Duration> + Send + Sync>,
     /// The participant has used the keyboard or mouse (its record says so).
     controlled: AtomicBool,
-
-    configuration: tokio::sync::watch::Sender<Arc<config::Configuration>>,
-    mouse_policy: tokio::sync::watch::Sender<config::MousePolicy>,
 }
 #[derive(Clone)]
 pub(crate) struct Receiver {
@@ -156,9 +152,6 @@ impl Session {
             geometry: Box::new(geometry),
             round_trip: Box::new(round_trip),
             controlled: AtomicBool::new(false),
-
-            configuration: tokio::sync::watch::channel(Arc::new(Default::default())).0,
-            mouse_policy: tokio::sync::watch::channel(Default::default()).0,
         });
         let tx = register(shared.clone())?;
         Ok(Self {
@@ -199,9 +192,6 @@ impl Receiver {
         if owned {
             gate.pending.retain(|p| !motion(&p.event));
         }
-    }
-    pub fn mouse_policy(&self) -> tokio::sync::watch::Receiver<config::MousePolicy> {
-        self.shared.mouse_policy.subscribe()
     }
     pub fn bind(&self, stream: u16) -> u64 {
         let mut gate = lock(&self.shared.gate);
@@ -479,14 +469,12 @@ struct Worker {
     binding: Option<u64>,
     attempts: u8,
     prepare_at: std::time::Instant,
-    configuration: tokio::sync::watch::Receiver<Arc<config::Configuration>>,
 }
 
 impl Worker {
     fn new(shared: Arc<Shared>) -> Self {
         Self {
             id: Arc::as_ptr(&shared) as usize,
-            configuration: shared.configuration.subscribe(),
             shared,
             generation: None,
             binding: None,
@@ -529,7 +517,6 @@ impl Worker {
             self.prepare_at = std::time::Instant::now();
         }
         if current != self.generation {
-            shared.mouse_policy.send_replace(Default::default());
             let mut released = true;
             // Only the participant in control holds keys or buttons.
             if hub.owner == Some(self.id) {
@@ -563,14 +550,8 @@ impl Worker {
             if hub.engine.is_none() && std::time::Instant::now() >= self.prepare_at {
                 self.attempts = self.attempts.saturating_add(1).min(5);
                 match Backend::new(hub.require_service, || shared.permitted()) {
-                    Ok(mut value) => {
+                    Ok(value) => {
                         hub.require_service |= value.service();
-                        let settings = (**self.configuration.borrow_and_update()).clone();
-                        if let Err(error) = value.configure(settings) {
-                            shared
-                                .lease
-                                .input_status(Some(value.backend()), Some(error.to_string()));
-                        }
                         hub.engine = Some(value);
                         let mut gate = lock(&shared.gate);
                         if gate.generation == current {
@@ -595,16 +576,6 @@ impl Worker {
                 }
             }
         }
-        if self.configuration.has_changed().unwrap_or(false)
-            && let Some(engine) = &mut hub.engine
-        {
-            let settings = (**self.configuration.borrow_and_update()).clone();
-            if let Err(error) = engine.configure(settings) {
-                shared
-                    .lease
-                    .input_status(Some(engine.backend()), Some(error.to_string()));
-            }
-        }
         let item = lock(&shared.gate).pending.pop_front();
         let busy = item.is_some();
         if let Some(item) = item {
@@ -616,17 +587,6 @@ impl Worker {
                     .lease
                     .input_status(Some(engine.backend()), Some(error.to_string()));
                 let _ = engine.release();
-            }
-            if self.generation.is_some() {
-                let policy = engine.mouse_policy();
-                shared.mouse_policy.send_if_modified(|current| {
-                    if *current == policy {
-                        false
-                    } else {
-                        *current = policy;
-                        true
-                    }
-                });
             }
         }
         if hub.engine.as_ref().is_some_and(|engine| !engine.healthy()) {

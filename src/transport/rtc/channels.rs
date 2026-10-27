@@ -2,7 +2,7 @@
 use super::workers::{SessionWorkers, std_mutex_lock};
 use crate::diagnostics::performance::PerformanceMonitor;
 use crate::features::stream_control::{
-    OutgoingControlMessage, PbMessageSource, StreamControlHandle, encode_pb_echo_request,
+    OutgoingControlMessage, StreamControlHandle, encode_pb_echo_request,
 };
 use crate::media::ConnectionMediaProfile;
 use crate::protocol::peer::{self, FrameType, channel as label};
@@ -301,20 +301,12 @@ async fn route_message(
             | FrameType::Session
             | FrameType::Annotation
             | FrameType::Audio
-            | FrameType::PointerPolicy
             | FrameType::Cursor
             | FrameType::HostEvent
             | FrameType::Permissions
             | FrameType::Participants,
         ) => stream_control
-            .handle_protocol_message(
-                data,
-                if label == label::CONTROL {
-                    PbMessageSource::Control
-                } else {
-                    PbMessageSource::Text
-                },
-            )
+            .handle_protocol_message(data)
             .map_err(|error| ("session", error)),
         Some(FrameType::Error) => {
             tracing::warn!(%label, "peer reported a protocol error");

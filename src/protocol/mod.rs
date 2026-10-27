@@ -19,11 +19,10 @@ mod dispatch_tests {
     //! FPP header type, never by sniffing payload contents.
     use super::peer::{self, FrameType};
 
-    const ALL: [FrameType; 22] = [
+    const ALL: [FrameType; 21] = [
         FrameType::Hello,
         FrameType::Error,
         FrameType::Input,
-        FrameType::PointerPolicy,
         FrameType::Cursor,
         FrameType::Touch,
         FrameType::Pen,

@@ -574,7 +574,7 @@ POST /sessions        session.start            首个 rtc.answer
 
 - `flags`：bit0 `RESPONSE`（0x01），bit1 `ERROR`（0x02），bit2 `MORE`（0x04，分片未完）；其余为 0。
 - **请求**：`request id` 非 0，由发送方在本连接内分配（递增）。**响应**：同一 `request id` 并置 `RESPONSE`；失败时置 `RESPONSE|ERROR`，帧体为 `PeerError`。**推送**：`request id` 为 0，不回复。
-- 帧体编码由类型决定：大多为 protobuf（[peer-messages.md](peer-messages.md)），`POINTER_POLICY` 与 `AUDIO` 为 JSON。
+- 帧体编码由类型决定：大多为 protobuf（[peer-messages.md](peer-messages.md)），`AUDIO` 为 JSON。
 - `PeerError{code, message, detail}`，`code ∈ unsupported | bad_request | forbidden | not_found | busy | unavailable | internal | timeout`。收到 `ERROR` 回复的一方按“请求失败”处理。
 - 接收方按帧头类型分发，不嗅探帧体；通道只决定服务质量。魔数或版本不符、超过 512 KiB 的数据被丢弃。未知帧类型被忽略；SESSION 中不认识的请求回 `RESPONSE|ERROR{unsupported}`。
 
@@ -588,7 +588,7 @@ POST /sessions        session.start            首个 rtc.answer
 
 | 标签 | 可靠性 | SCTP 优先级 | 帧类型 |
 |------|--------|------------|--------|
-| `farwing.control.v2` | 有序可靠；协商 FCT 后经 FCT（§5.6） | 高 | HELLO、INPUT、POINTER、CURSOR、POINTER_POLICY；以及主控声明 `display.config` 时被控的 SESSION `Screens` 推送、主控的 SESSION `VideoFeedback`（§6.6） |
+| `farwing.control.v2` | 有序可靠；协商 FCT 后经 FCT（§5.6） | 高 | HELLO、INPUT、POINTER、CURSOR；以及主控声明 `display.config` 时被控的 SESSION `Screens` 推送、主控的 SESSION `VideoFeedback`（§6.6） |
 | `farwing.session.v2` | 有序可靠 | 中 | SESSION、AUDIO、HOST_EVENT、CLIPBOARD、FILE、DRAG、ANNOTATION、DIAGNOSTICS、PERMISSIONS、PARTICIPANTS |
 | `farwing.bulk.v2` | 有序可靠 | 高 | TRANSFER、FLOW（文件、剪贴板、拖放、诊断包共用） |
 | `farwing.tunnel.v2` | 有序可靠 | 低 | PORT、FLOW（`channel = TUNNEL`） |
@@ -604,7 +604,6 @@ POST /sessions        session.start            首个 rtc.answer
 | `HELLO` | 0x0001 | control | 双向，请求/响应 | `Hello` | 版本与特性协商（§5.5） |
 | `ERROR` | 0x0002 | 任意 | — | `PeerError` | 保留；错误通常以 `RESPONSE\|ERROR` 回复，收到此类型只记录 |
 | `INPUT` | 0x0101 | control（FCT） | C→H 推送 | `InputMessage` | 键盘、锁定键、鼠标、系统命令、保活 |
-| `POINTER_POLICY` | 0x0102 | control | H→C 推送 | JSON | 指针模式（绝对 / 相对 / 恢复） |
 | `CURSOR` | 0x0103 | control | H→C 推送 | `CursorMessage` | 被控光标形状与隐藏；其他参与者的指针 |
 | `TOUCH` | 0x0104 | control（FCT） | C→H 推送 | `Touch` | 触摸：本参与者此刻的全部触点，每个带自己的阶段；空表取消全部 |
 | `PEN` | 0x0105 | control（FCT） | C→H 推送 | `Pen` | 笔：1–16 个样本（压力、倾斜、旋转、笔杆键、橡皮擦、悬停） |

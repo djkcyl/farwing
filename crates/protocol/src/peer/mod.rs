@@ -84,11 +84,10 @@ pub enum FrameType {
     Hello = 0x0001,
     Error = 0x0002,
     Input = 0x0101,
-    PointerPolicy = 0x0102,
     Cursor = 0x0103,
-    /// Reserved: touch input of mobile controllers.
+    /// Touch input (a browser on a touch screen).
     Touch = 0x0104,
-    /// Reserved: pen input.
+    /// Pen input.
     Pen = 0x0105,
     /// A participant's pointer (indicator or controller cursor).
     Pointer = 0x0106,
@@ -115,7 +114,6 @@ impl FrameType {
             0x0001 => Self::Hello,
             0x0002 => Self::Error,
             0x0101 => Self::Input,
-            0x0102 => Self::PointerPolicy,
             0x0103 => Self::Cursor,
             0x0104 => Self::Touch,
             0x0105 => Self::Pen,
@@ -143,7 +141,6 @@ impl FrameType {
             Self::Hello => "HELLO",
             Self::Error => "ERROR",
             Self::Input => "INPUT",
-            Self::PointerPolicy => "POINTER_POLICY",
             Self::Cursor => "CURSOR",
             Self::Touch => "TOUCH",
             Self::Pen => "PEN",

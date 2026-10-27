@@ -1,13 +1,13 @@
 //! Remote input and cursor policy transitions.
 use super::settings::encode_capture_setting;
 use super::{
-    OutgoingControlMessage, PbMessageSource, StreamControlHandle, StreamControlProtocol,
+    OutgoingControlMessage, StreamControlHandle, StreamControlProtocol,
     StreamControlState, ensure_ready, lock, protocol,
 };
 use crate::features::remote_cursor::RemoteCursor;
 use crate::features::remote_input::MouseMode;
 use crate::i18n::t;
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use std::time::Instant;
 
 impl StreamControlHandle {
@@ -22,7 +22,6 @@ impl StreamControlHandle {
             self.microphone.disconnect();
             self.clipboard.suspend();
             state.annotation.disconnect();
-            state.peer_mouse_relative = None;
             state.cursor_sync_needed = false;
             state.cursor_desired_capture = true;
             state.mouse_restore_point = None;
@@ -275,77 +274,6 @@ impl StreamControlHandle {
         result
     }
 
-    pub(super) fn handle_mouse_command(
-        &self,
-        payload: &[u8],
-        source: PbMessageSource,
-    ) -> Result<()> {
-        if source != PbMessageSource::Control {
-            return Ok(());
-        }
-        anyhow::ensure!(payload.len() <= 16 * 1024, "mouse command too large");
-        // Body of a POINTER_POLICY frame.
-        let value: serde_json::Value = serde_json::from_slice(payload)?;
-        let mode = value
-            .get("mouse_mode")
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| anyhow!("invalid mouse mode"))?;
-        let force = value
-            .get("force_mode")
-            .and_then(|v| v.as_bool())
-            .ok_or_else(|| anyhow!("invalid force mode"))?;
-        let x = value.get("coordinate_x_scale");
-        let y = value.get("coordinate_y_scale");
-        let (relative, restore) = match mode {
-            0 | 1 => {
-                anyhow::ensure!(
-                    force && x.is_none() && y.is_none(),
-                    "invalid forced mouse command"
-                );
-                (Some(mode == 1), None)
-            }
-            2 => {
-                anyhow::ensure!(
-                    !force || (x.is_none() && y.is_none()),
-                    "invalid mouse restore command"
-                );
-                let restore = match (x, y) {
-                    (None, None) => None,
-                    (Some(x), Some(y)) => {
-                        let x = x
-                            .as_f64()
-                            .ok_or_else(|| anyhow!("invalid mouse restore x"))?;
-                        let y = y
-                            .as_f64()
-                            .ok_or_else(|| anyhow!("invalid mouse restore y"))?;
-                        anyhow::ensure!(
-                            x.is_finite()
-                                && y.is_finite()
-                                && (0.0..=1.0).contains(&x)
-                                && (0.0..=1.0).contains(&y),
-                            "mouse restore outside screen"
-                        );
-                        Some([x, y])
-                    }
-                    _ => bail!("mouse restore coordinates must appear together"),
-                };
-                (None, restore)
-            }
-            _ => bail!("unknown mouse mode"),
-        };
-        let mut state = lock(&self.shared);
-        state.peer_mouse_relative = relative;
-        state.mouse_restore_point = if smart_mouse_requested(&state) {
-            restore.and_then(|point| state.remote_display.map(|screen| (screen.screen_id, point)))
-        } else {
-            None
-        };
-        self.refresh_mouse_policy(&mut state);
-        drop(state);
-        self.mouse.repaint();
-        Ok(())
-    }
-
     pub(super) fn refresh_mouse_policy(&self, state: &mut StreamControlState) {
         let mode = state.mouse.policy_mode();
         // The microphone does not depend on control: everyone may talk.
@@ -409,11 +337,8 @@ pub(super) fn mouse_policy(state: &StreamControlState, mode: MouseMode) -> (bool
         MouseMode::View => (false, true),
         MouseMode::Local => (false, false),
         MouseMode::Remote => (true, true),
-        MouseMode::Smart => match state.peer_mouse_relative {
-            Some(true) => (true, true),
-            Some(false) => (false, false),
-            None => (state.remote_cursor.hidden(), false),
-        },
+        // Relative while the host hides its cursor (a game took it).
+        MouseMode::Smart => (state.remote_cursor.hidden(), false),
     }
 }
 

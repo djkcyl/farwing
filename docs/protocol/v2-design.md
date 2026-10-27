@@ -236,7 +236,6 @@ code: UNSUPPORTED | BAD_REQUEST | FORBIDDEN | NOT_FOUND | BUSY | UNAVAILABLE | I
 | --- | --- | --- | --- |
 | HELLO | 0x0001 | session | 版本与特性协商（§5.4） |
 | INPUT | 0x0101 | control | 键鼠（§7） |
-| POINTER_POLICY | 0x0102 | control | 指针模式（原 MOUSE_POLICY） |
 | CURSOR | 0x0103 | control | 被控光标形状 / 状态、参与者光标 |
 | TOUCH | 0x0104 | control | 触摸触点（2026-10-17 实现，见 peer-messages.md） |
 | PEN | 0x0105 | control | 笔样本（2026-10-17 实现） |
@@ -260,7 +259,7 @@ code: UNSUPPORTED | BAD_REQUEST | FORBIDDEN | NOT_FOUND | BUSY | UNAVAILABLE | I
 
 | 标签 | id | 可靠性 | 用途 |
 | --- | --- | --- | --- |
-| `farwing.control.v2` | 0 | 有序可靠；协商 FCT 后经 FCT | INPUT / POINTER / CURSOR / POINTER_POLICY |
+| `farwing.control.v2` | 0 | 有序可靠；协商 FCT 后经 FCT | INPUT / POINTER / CURSOR |
 | `farwing.session.v2` | 2 | 有序可靠 | HELLO / SESSION / AUDIO / HOST_EVENT / CLIPBOARD / FILE / DRAG / ANNOTATION / DIAGNOSTICS / PERMISSIONS / PARTICIPANTS |
 | `farwing.bulk.v2` | 4 | 有序可靠 | TRANSFER、FLOW（文件、剪贴板、拖放、诊断包共用） |
 | `farwing.tunnel.v2` | 6 | 有序可靠 | PORT、FLOW |

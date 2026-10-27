@@ -43,7 +43,7 @@
   |<====== control：HELLO|RESPONSE ==========================================================================|  → 被控 handshake_answered
   |====== control：HELLO|RESPONSE（回答被控的请求）==========================================================>|  → 被控 handshake_complete
   |<====== session：PERMISSIONS、SESSION{Screens}、AUDIO{hello}、SESSION{Quality}、PARTICIPANTS …
-  |<====== control：CURSOR、POINTER_POLICY …
+  |<====== control：CURSOR …
   |<~~~~~~ RTP：video_0（H.264/AV1，从关键帧开始），audio_0（Opus）
   |  <video> 出首帧
   |<- ping（每 heartbeat_ms=20 s）--|  |-- pong -->|
@@ -439,7 +439,7 @@ webrtc-rs 的匹配规则（`vendor/webrtc`）：
 
 | 标签（`crates/protocol/src/peer/mod.rs:22-32`） | `RTCDataChannelInit` | 浏览器是否需要 |
 |---|---|---|
-| `farwing.control.v2` | `{ordered: true}` | **必需**（HELLO、CURSOR、POINTER_POLICY；声明 `display.config` 时 Screens 也走这里） |
+| `farwing.control.v2` | `{ordered: true}` | **必需**（HELLO、CURSOR；声明 `display.config` 时 Screens 也走这里） |
 | `farwing.session.v2` | `{ordered: true}` | **必需**（SESSION、AUDIO、HOST_EVENT、PERMISSIONS、PARTICIPANTS；Screens 默认走这里） |
 | `farwing.bulk.v2` | `{ordered: true}` | 可选（建了也只会忽略） |
 | `farwing.tunnel.v2` | `{ordered: true}` | 可选 |
@@ -518,7 +518,7 @@ pc.onicecandidate = e => { if (e.candidate && e.candidate.candidate) send(candid
 - 接收方先校验：总长 ≤ 524288（`MAX_PEER_FRAME`），≥ 10 字节，魔数为 `FW`，版本为 2；不符则丢弃（`:235-254`）。
 - **按帧头类型分发，不看是从哪个通道来的**（`src/transport/rtc/channels.rs:229-336`），未知类型忽略。
 - 带 MORE 的分片只出现在 CLIPBOARD、FILE 等请求或响应中（`src/protocol/peer.rs:34-96`），观看端不会遇到；遇到时可以丢弃。
-- 帧体编码：大多为 protobuf（prost，proto3 语义：零值与空值不编码，未知字段忽略，枚举按 int32）。`AUDIO`（0x0202）与 `POINTER_POLICY`（0x0102）为 UTF-8 JSON。
+- 帧体编码：大多为 protobuf（prost，proto3 语义：零值与空值不编码，未知字段忽略，枚举按 int32）。`AUDIO`（0x0202）为 UTF-8 JSON。
 
 ### 4.2 观看端用到的帧类型（`crates/protocol/src/peer/mod.rs:84-111`）
 
@@ -526,7 +526,6 @@ pc.onicecandidate = e => { if (e.candidate && e.candidate.candidate) send(candid
 |---|---|---|---|---|
 | HELLO | 0x0001 | 双向 | **control**（`src/features/host/peer/channels.rs:173-219`，`src/features/host/peer/ingress.rs:72-96`） | 必需 |
 | ERROR | 0x0002 | — | 任意 | 记录日志 |
-| POINTER_POLICY | 0x0102 | H→C | control（`channels.rs:609-618`） | 忽略 |
 | CURSOR | 0x0103 | H→C | control（`src/features/host/peer/cursor.rs`；`src/features/host/peer/participants.rs:97-123`） | 可选：其他参与者的指针 |
 | POINTER | 0x0106 | C→H | control | 可选（指示光标，不注入输入） |
 | SESSION | 0x0201 | 双向 | session；声明 `display.config` 时 Screens 走 control（`channels.rs:619-625`） | 解析 Screens 等；可选请求 |
@@ -676,7 +675,6 @@ message Permissions { repeated string grants = 1; }
 | 桌面声音音质 | AUDIO JSON `{"kind":"hello","revision","kbps","effective_bps"}` | session | 音频已协商且允许时（`:531-543`，`src/features/host/audio.rs:156-168`） |
 | 屏幕列表 | SESSION `screens`（tag 1） | 未声明 `display.config` 时走 session | 握手后，以及每次变化；内容相同不重发（`:619-625`；构造见 `src/features/stream_control/publisher/displays.rs:10-85`） |
 | 画质 | SESSION `quality`（tag 2）`{encoder_type, capture_type, probe_bps, video_quality}` | session | 编码器就绪后、变化时（`:639-674`） |
-| 指针模式 | POINTER_POLICY JSON | control | 变化时（`:609-618`） |
 | 麦克风状态 | SESSION `microphone`（tag 3） | session | 观看端可忽略 |
 | 被控光标 | CURSOR `{shape}` | control | 形状或所在屏幕变化时（`src/features/host/peer/cursor.rs`）。**不是实时位置**，`coordinate_x_scale/y` 只是形状变化时采样到的屏内归一化位置 |
 | 参与者列表与控制权 | PARTICIPANTS | session | 列表或持有者变化时（`src/features/host/peer/participants.rs:78-90`） |

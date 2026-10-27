@@ -144,21 +144,6 @@ impl Backend {
             Self::Service(e) => e.synchronize(geometry),
         }
     }
-    pub fn configure(&mut self, configuration: super::config::Configuration) -> Result<()> {
-        match self {
-            Self::Local(e) => {
-                e.check()?;
-                e.engine.configure(configuration)
-            }
-            Self::Service(e) => e.configure(configuration),
-        }
-    }
-    pub fn mouse_policy(&self) -> super::config::MousePolicy {
-        match self {
-            Self::Local(e) => e.engine.mouse_policy(),
-            Self::Service(e) => e.mouse_policy(),
-        }
-    }
     pub fn tick(&mut self) -> Result<()> {
         match self {
             Self::Local(e) => {

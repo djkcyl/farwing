@@ -29,7 +29,6 @@ enum Request {
     Release,
     Alive,
     Sync(Geometry),
-    Configure(super::config::Configuration),
     Close,
 }
 #[derive(Serialize, Deserialize)]
@@ -37,7 +36,6 @@ struct Reply {
     backend: String,
     error: Option<String>,
     sas: bool,
-    mouse_policy: super::config::MousePolicy,
 }
 
 /// Finish framing even when the input generation is revoked. A Release queued
@@ -78,7 +76,6 @@ pub(crate) struct Remote {
     last: Instant,
     failed: bool,
     geometry: Option<Geometry>,
-    mouse_policy: super::config::MousePolicy,
 }
 impl Remote {
     pub fn connect(permitted: impl Fn() -> bool) -> Result<Option<Self>> {
@@ -108,7 +105,6 @@ impl Remote {
             last: Instant::now(),
             failed: false,
             geometry: None,
-            mouse_policy: reply.mouse_policy,
         }))
     }
     pub fn backend(&self) -> &str {
@@ -131,7 +127,6 @@ impl Remote {
             Ok(reply) => {
                 self.last = Instant::now();
                 self.backend = reply.backend;
-                self.mouse_policy = reply.mouse_policy;
                 if let Some(error) = reply.error {
                     anyhow::bail!(error)
                 }
@@ -168,12 +163,6 @@ impl Remote {
             self.geometry = Some(geometry);
         }
         Ok(())
-    }
-    pub fn configure(&mut self, configuration: super::config::Configuration) -> Result<()> {
-        self.request(Request::Configure(configuration), || true)
-    }
-    pub fn mouse_policy(&self) -> super::config::MousePolicy {
-        self.mouse_policy.clone()
     }
     pub fn tick(&mut self) -> Result<()> {
         if self.last.elapsed() >= Duration::from_millis(100) {
@@ -249,7 +238,6 @@ pub(crate) fn agent(name: &str, parent: u32) -> Result<()> {
             backend: engine.backend().into(),
             error: None,
             sas: false,
-            mouse_policy: engine.mouse_policy(),
         },
         permitted,
     )?;
@@ -300,7 +288,6 @@ pub(crate) fn agent(name: &str, parent: u32) -> Result<()> {
                 geometry.validate()?;
                 engine.synchronize(geometry)
             }
-            Request::Configure(configuration) => engine.configure(configuration),
             Request::Hello { .. } | Request::SecureAttention { .. } => {
                 anyhow::bail!("输入会话请求无效")
             }
@@ -313,7 +300,6 @@ pub(crate) fn agent(name: &str, parent: u32) -> Result<()> {
                 backend: engine.backend().into(),
                 error: result.err().map(|e| e.to_string()),
                 sas: engine.take_sas(),
-                mouse_policy: engine.mouse_policy(),
             },
             permitted,
         )?;
@@ -351,7 +337,6 @@ pub(crate) fn serve(pipe: Pipe, permitted: impl Fn() -> bool) -> Result<()> {
                 backend: t().features.input_backend_service.into(),
                 error: result.err().map(|error| error.to_string()),
                 sas: false,
-                mouse_policy: Default::default(),
             },
             &permitted,
         );

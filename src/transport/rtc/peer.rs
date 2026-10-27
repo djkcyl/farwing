@@ -593,12 +593,7 @@ impl NativePeer {
         let control = self.data_channels.stream_control.clone();
         self.core.activate_control(
             mixed_kcp_version,
-            Arc::new(move |_, bytes| {
-                control.handle_protocol_message(
-                    bytes,
-                    crate::features::stream_control::PbMessageSource::Control,
-                )
-            }),
+            Arc::new(move |_, bytes| control.handle_protocol_message(bytes)),
         )?;
         Ok(())
     }

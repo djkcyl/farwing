@@ -23,7 +23,6 @@ export const Type = {
   HELLO: 0x0001,
   ERROR: 0x0002,
   INPUT: 0x0101,
-  POINTER_POLICY: 0x0102,
   TOUCH: 0x0104,
   PEN: 0x0105,
   CURSOR: 0x0103,

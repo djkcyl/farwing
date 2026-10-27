@@ -126,10 +126,6 @@ pub(crate) struct Engine {
     probes: u8,
     origin: u32,
     hid_failed: bool,
-    configuration: super::config::Configuration,
-    foreground: Option<u32>,
-    mouse_policy: super::config::MousePolicy,
-    game_simulation: Option<bool>,
     route_diagnostics: u16,
     privileged: bool,
     /// Touch contacts and the pen (synthetic pointers).
@@ -166,10 +162,6 @@ impl Engine {
             probes: 0,
             origin,
             hid_failed: false,
-            configuration: Default::default(),
-            foreground: None,
-            mouse_policy: Default::default(),
-            game_simulation: None,
             route_diagnostics: 0,
             privileged,
             pointers: Pointers::new(),
@@ -193,65 +185,6 @@ impl Engine {
     pub fn hold_timeout(&mut self, timeout: Duration) {
         self.threshold = timeout.clamp(MIN_HOLD, Duration::from_secs(10));
     }
-    pub fn configure(&mut self, configuration: super::config::Configuration) -> Result<()> {
-        configuration.validate()?;
-        self.configuration = configuration;
-        self.foreground = None;
-        if !self.configuration.keyboard_interrupts {
-            self.interruptible = false;
-        }
-        self.observe_foreground();
-        Ok(())
-    }
-    pub fn mouse_policy(&self) -> super::config::MousePolicy {
-        self.mouse_policy.clone()
-    }
-    fn observe_foreground(&mut self) {
-        let mut pid = 0;
-        unsafe {
-            GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid));
-        }
-        if self.foreground == Some(pid) {
-            return;
-        }
-        self.foreground = Some(pid);
-        let name = crate::platform::windows::host_service::process::image(pid)
-            .ok()
-            .and_then(|path| {
-                path.file_name()
-                    .map(|name| name.to_string_lossy().to_lowercase())
-            });
-        let rule = name
-            .as_ref()
-            .and_then(|name| self.configuration.games.get(name));
-        let mode = rule.map_or(2, |rule| rule.mode);
-        self.game_simulation = rule.map(|rule| rule.simulation);
-        if self.mouse_policy.mode.unwrap_or(2) == mode {
-            return;
-        }
-        let mut restore = None;
-        if mode == 2
-            && let Ok(screen) = self.geometry.screen(None)
-        {
-            let mut point = windows::Win32::Foundation::POINT::default();
-            if unsafe { GetCursorPos(&mut point) }.is_ok()
-                && let Ok(rect) = screen.rect()
-                && point.x >= rect.left
-                && point.x < rect.right
-                && point.y >= rect.top
-                && point.y < rect.bottom
-            {
-                restore = Some([
-                    (point.x - rect.left) as f64 / screen.width as f64,
-                    (point.y - rect.top) as f64 / screen.height as f64,
-                ]);
-            }
-        }
-        self.mouse_policy = super::config::MousePolicy {
-            mode: Some(mode),
-            restore,
-        };
-    }
     fn hid_allowed(&self) -> bool {
         // Input aimed back at its originating UI uses marked system events, so
         // it cannot be captured and retransmitted by the same viewer indefinitely.
@@ -266,7 +199,6 @@ impl Engine {
             self.release()?;
             self.geometry = geometry;
         }
-        self.observe_foreground();
         if let Some((desktop, name)) = self.desktop.changed()? {
             let release = self.release();
             // Synthetic devices are rebuilt on the new desktop when used.
@@ -506,7 +438,6 @@ impl Engine {
                     relative = matches!(self.mouse_mode, MouseMode::Relative),
                     keyboard_held = !self.keys.is_empty(),
                     primary = button == 1,
-                    legacy_simulation = ?self.game_simulation,
                     "host mouse button injection route"
                 );
             }
@@ -735,7 +666,7 @@ impl Engine {
                 repeat,
             } => {
                 self.last_key = self.last_input;
-                self.interruptible = self.configuration.keyboard_interrupts;
+                self.interruptible = true;
                 self.interrupted = false;
                 self.backspace = usage == BACKSPACE && down;
                 if down

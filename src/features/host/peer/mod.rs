@@ -702,7 +702,6 @@ impl Peer {
             cancel.clone(),
             kcp.clone(),
             screen.clone(),
-            input.receiver().mouse_policy(),
             audio.clone(),
             microphone.receiver().status(),
             handle.clone(),

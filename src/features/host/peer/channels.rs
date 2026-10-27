@@ -487,9 +487,6 @@ pub(super) async fn publish_state(
     cancel: CancellationToken,
     kcp: crate::transport::fct::FctControl,
     initial: Option<crate::features::host::capture::Screen>,
-    mut mouse_policy: tokio::sync::watch::Receiver<
-        crate::features::host::input::config::MousePolicy,
-    >,
     audio: super::super::audio::Audio,
     mut microphone: tokio::sync::watch::Receiver<super::super::microphone::Status>,
     lease: crate::features::host::Lease,
@@ -501,7 +498,6 @@ pub(super) async fn publish_state(
     let mut last_capture = None;
     let mut last_quality = None;
     let mut last_probe = None::<u32>;
-    let mut last_mouse_policy = None;
     let mut last_microphone = None;
     let mut last_audio_quality = None;
     let mut last_grants = None;
@@ -519,7 +515,6 @@ pub(super) async fn publish_state(
             _=cancel.cancelled()=>break,
             result=changed.changed()=>{if result.is_err(){break;} false},
             result=target.changed()=>{if result.is_err(){break;} false},
-            result=mouse_policy.changed()=>{if result.is_err(){break;} false},
             result=microphone.changed()=>{if result.is_err(){break;} false},
             _=timer.tick()=>true,
         };
@@ -560,7 +555,6 @@ pub(super) async fn publish_state(
             last_capture = None;
             last_quality = None;
             last_probe = None;
-            last_mouse_policy = None;
             last_microphone = None;
             last_audio_quality = None;
             last_grants = None;
@@ -643,16 +637,6 @@ pub(super) async fn publish_state(
             .filter(|(_, state)| state.capturing)
             .map(|(index, state)| (state.screen.id, *index))
             .collect();
-        let policy = mouse_policy.borrow_and_update().clone();
-        if last_mouse_policy.as_ref() != Some(&policy) {
-            if let Some(message) = policy.message() {
-                if send(true, message).await {
-                    last_mouse_policy = Some(policy);
-                }
-            } else {
-                last_mouse_policy = Some(policy);
-            }
-        }
         let screen = publisher::screen_states(&catalog, &mapping, current);
         if last_screen.as_ref() != Some(&screen)
             && send(routes.control_screens, screen.clone()).await

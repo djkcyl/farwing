@@ -128,20 +128,8 @@ message TurnResponse { bool held = 1; string message = 2; }   // H→C，RESPONS
 | 麦克风 | 与控制权无关：每个有 `microphone` 授权的人都可以同时说话（§5.3） |
 | 文件 | 每位参与者各自一套引擎，与控制权无关（§4.1） |
 
-### 1.6 指针模式（POINTER_POLICY 0x0102）
+### 1.6 指针模式
 
-- 被控按前台程序的“游戏规则”计算模式，在 control 通道发送 JSON（`src/features/host/input/config.rs:40-59`、`src/features/host/peer/channels.rs:609-618`）：
-
-  ```json
-  {"mouse_mode":0|1|2,"force_mode":bool,"coordinate_x_scale":x,"coordinate_y_scale":y}
-  ```
-
-  - 0 = 强制绝对，1 = 强制相对，2 = 自动。
-  - 只有在 2 时才可能带“恢复位置”坐标（`src/features/stream_control/input.rs:261-330`）。
-- **当前代码实际不会发送**：
-  - 输入配置只用默认值（`src/features/host/input/mod.rs:155`）。全仓库没有修改它的入口，所以游戏规则表为空（`config.rs:16-23`）。
-  - 模式恒为 2，与初始值相同，于是 `mouse_policy.mode` 一直是 `None`，`message()` 返回 `None`（`src/features/host/input/engine.rs:205-212`）。
-  - 浏览器应能解析这条消息，但不能依赖它。
 - 原生的鼠标模式（`src/features/remote_input.rs:55-61`）：观看、智能（默认，`src/features/viewing_settings.rs:86`）、本地（绝对）、远程（相对）。
 
   各模式下是否用相对坐标、是否让被控合成光标（`src/features/stream_control/input.rs:390-401`）：
@@ -859,7 +847,6 @@ message MicrophoneState { int32 state = 1; }       // tag 3，推送：1 ACTIVE�
 | `v2-design.md` §5.2：HELLO 在 session 通道；CLIPBOARD 的“数据走 TRANSFER” | HELLO 在 control 通道交换（观看简报 §4.4）；剪贴板数据 ≤ 32 KiB 时内联在 `Data` 中（`src/features/clipboard/wire.rs:14-15`） |
 | `v2-design.md` §7、`peer-messages.md`：`MouseRelative` 单位是“被控像素” | 被控按相对鼠标事件或 HID 报告注入，会叠加被控的指针加速；原生发送的是原始鼠标计数（`engine.rs:520-543`，`windows_mouse.rs:449-455`） |
 | `peer-messages.md`：“不认识的 usage 被忽略” | 合法页内不认识的 usage 被忽略；页不对或 id 为 0 是解析错误，记在被控本地（`src/features/host/input/wire.rs:104-110`） |
-| `peer-messages.md` 的 POINTER_POLICY 一节 | 当前没有设置游戏规则的入口，被控实际不会发这条消息（§1.6） |
 | `v2-design.md` §8.2：超过 64 KiB 分片 | CLIPBOARD 片长 60 KiB（`src/protocol/peer.rs:35`）；FILE 用自己的分片器，片长 65526 字节（`src/features/file_transfer/wire.rs:17`） |
 | `v2-design.md` §8.2：请求停滞后总会发 Abort | 只有 Data 请求停滞时才发（`src/features/clipboard/mod.rs:1019-1029`） |
 | `v2-design.md`、`peer-messages.md`：上传半成品名中的 `{key}` | 那是被控自己的记录 UUID，不是主控给的 key（`src/features/file_transfer/storage.rs:467-472`，`host/transfer.rs:189`） |

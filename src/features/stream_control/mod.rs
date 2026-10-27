@@ -372,12 +372,6 @@ pub struct StreamControlHandle {
     forward: tokio::sync::watch::Sender<Option<wire::MediaForward>>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PbMessageSource {
-    Control,
-    Text,
-}
-
 #[derive(Clone, Copy)]
 pub(crate) struct PbHandshakeStatus {
     pub generation: u64,
@@ -455,7 +449,6 @@ struct StreamControlState {
     device_persistence_error: Option<String>,
     restore_input_pending: bool,
     remote_cursor: crate::features::remote_cursor::RemoteCursorState,
-    peer_mouse_relative: Option<bool>,
     cursor_sync_needed: bool,
     cursor_desired_capture: bool,
     mouse_restore_point: Option<(i32, [f64; 2])>,
@@ -555,7 +548,6 @@ impl StreamControlHandle {
             turn_request: None,
             grants: None,
             remote_cursor: cursor.clone(),
-            peer_mouse_relative: None,
             cursor_sync_needed: false,
             cursor_desired_capture: true,
             mouse_restore_point: None,
