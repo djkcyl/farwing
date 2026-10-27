@@ -62,11 +62,6 @@ impl DeviceCenterApp {
             );
             ui.add_space(6.0);
             ui.label(
-                RichText::new(text.unaffiliated)
-                    .size(crate::ui::theme::COMPACT_TEXT)
-                    .color(MUTED),
-            );
-            ui.label(
                 RichText::new(text.ffmpeg_notice)
                     .size(crate::ui::theme::COMPACT_TEXT)
                     .color(MUTED),

@@ -7,7 +7,7 @@ import { useAuth } from '../lib/auth';
 import { Link, navigate, useLocation } from '../lib/router';
 import { Alert, Button, Field, Input } from '../ui/kit';
 import { LangSwitch } from '../ui/LangSwitch';
-import { BrandMark } from '../ui/Shell';
+import { BrandLogo } from '../ui/BrandLogo';
 import { instanceText } from '../lib/format';
 
 export function AuthFrame({
@@ -27,13 +27,8 @@ export function AuthFrame({
       <LangSwitch className="lang-corner" />
       <div className={`auth-card ${wide ? 'wide' : ''}`}>
         <div className="auth-brand">
-          <BrandMark size={40} />
-          <div>
-            <div className="brand-name">Farwing</div>
-            {instanceText(info?.instance_name) && (
-              <div className="small muted">{instanceText(info?.instance_name)}</div>
-            )}
-          </div>
+          <BrandLogo height={30} />
+          {instanceText(info?.instance_name) && <div className="small muted">{instanceText(info?.instance_name)}</div>}
         </div>
         <div className="auth-panel">
           <h1>{title}</h1>

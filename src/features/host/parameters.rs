@@ -422,7 +422,7 @@ impl ReceiverCap {
 }
 
 /// The explicitly enabled congestion-window admission path is separate from
-/// the SDK's disabled generic frame dropper.
+/// the generic frame dropper, which stays disabled.
 #[derive(Default)]
 pub(crate) struct WindowAdmission {
     counter: u64,

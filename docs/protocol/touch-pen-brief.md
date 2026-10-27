@@ -493,41 +493,16 @@
 
 ---
 
-## 4. UU 的做法与 Farwing 文档
-
-### 4.1 UU 原协议
-
-**触摸**：用 protobuf 编码，放在 SESSION 时代 `PbControlMessage` 的 oneof **tag 20 `InputEvent(bytes)`** 里。内部结构：
-
-```proto
-message Input      { Touch touch = 1; }
-message Touch      { int32 kind = 1; repeated TouchPoint points = 2; }  // kind 1 开始 2 移动 3 结束 4 取消
-message TouchPoint { uint32 id = 1; float x = 2; float y = 3; float rx = 4; float ry = 5; float angle = 6; float pressure = 7; }
-```
-
-- 取值：kind 1–4，≤10 点，id 唯一，x/y/pressure ∈ [0,1]，半径 0–65536 像素，角度 0–360。
-- 阶段是**整帧一个**。触点消失，靠“这一帧里没有它”来推断。
-
-**其他移动端动作**：用 JSON，包括 `mouse_click`、`mouse_move_variety_relative`、`text_input`、`combination_keys_*`，另有 SimpleAction 快捷命令。
-
-**笔**：没有任何消息。
-
-**不照搬**：
-
-- 整帧一个阶段：多指各自起落时信息不足。
-- 不带屏幕 id。
-- 半径用像素：与分辨率绑在一起。
-
-### 4.2 Farwing 文档的现有说法
+## 4. Farwing 文档的现有说法
 
 | 文档 | 内容 |
 |---|---|
 | `docs/protocol/v2-design.md:241-242` | TOUCH 0x0104、PEN 0x0105，通道 control，预留 |
 | `docs/protocol/v2-design.md:297` | HELLO 特性：“预留：`touch`、`pen`” |
-| `docs/protocol/v2-design.md:361`、`:384` | 删除 v1 的 `InputEvent`（SESSION 内触摸）和 UU 移动端动作；“TOUCH / PEN 帧类型保留未实现” |
+| `docs/protocol/v2-design.md:361`、`:384` | 删除 v1 的 `InputEvent`（SESSION 内触摸）和移动端动作；“TOUCH / PEN 帧类型保留未实现” |
 | `docs/protocol/farwing-protocol.md:578-579`、`:617` | 帧表中这两项都是“—/预留”；`touch`、`pen` 已定义名称，但当前不声明 |
 | `docs/protocol/peer-messages.md:727` | “`TOUCH`（0x0104）与 `PEN`（0x0105）尚未定义帧体。” |
-| `docs/improvement-proposals.md:220-222`、`:235`、`:512` | A4：UU 移动端接口（含触摸）没有发送方，删除或冻结；“触控和笔：后续实现”；“手机主控：预留触控和笔的帧类型” |
+| `docs/improvement-proposals.md:222-224`、`:237`、`:510` | A4：移动端接口（含触摸）没有发送方，删除或冻结；“触控和笔：后续实现”；“手机主控：预留触控和笔的帧类型” |
 | `docs/protocol/web-control-brief.md:48`、`:768-783` | 触摸未实现，建议浏览器用鼠标模拟（现已实现） |
 | `docs/web-console.md:10`、`:157` | 网页“支持触屏”，指的是鼠标手势 |
 
@@ -541,10 +516,10 @@ message TouchPoint { uint32 id = 1; float x = 2; float y = 3; float rx = 4; floa
   - 两种做法的兼容性相同：旧被控收到 TOUCH/PEN 会静默丢弃（§0.1）；收到 INPUT 里不认识的 oneof，也会当作空事件丢弃（`wire.rs:100-101`）。
   - 单独的类型号让文档更清晰，也给将来的移动端主控留出空间。
   - 被控在 `Receiver::receive` 里按帧类型分支，进入同一个门控和队列，与 INPUT 保持先后顺序。
-- **坐标**：与 `MouseAbsolute` 一样是屏内归一化值 [0,1]。`screen_id` 用 proto3 `optional`，并且**总是写出**。
+- **坐标**：与 `MouseAbsolute` 一样是屏内归一化值 [0,1]；接触区域的宽高也按屏幕归一化，不随分辨率变化。`screen_id` 用 proto3 `optional`，并且**总是写出**。
   - 数值用 `float`（4 字节）而不是 `double`。在 [0,1] 内 float32 的精度约 6×10⁻⁸，乘以 16384 像素也只有 0.001 像素。
   - 浏览器的 `Writer.float` 已经有了（`server/web/src/lib/pb.ts:66-73`）。
-- **TOUCH 一帧 = 一个 Windows 帧**：列出全部活动触点，每个触点带自己的阶段。被控可以直接组出 `InjectSyntheticPointerInput` 需要的帧。
+- **TOUCH 一帧 = 一个 Windows 帧**：列出全部活动触点，每个触点带自己的阶段（整帧只有一个阶段时，多指各自起落的信息不够）。被控可以直接组出 `InjectSyntheticPointerInput` 需要的帧。
 - **PEN 一帧 = 1–16 个样本**：保留 120–240 Hz 的笔的中间样本，同时把帧率压到画面帧率附近。被控队列只有 64 条，批次 16 条。
 - **0 表示“未报告”**：除 `screen_id` 外都不用 `optional`。这样浏览器编码器不必新增“值为 0 也写出”的 float 或 sint。
 - **时间**：`time_us` 是主控单调时钟的微秒数，uint32，会回绕，只有差值有意义。v1 的被控只把它用于诊断（HUD 上的输入延迟、抖动），注入时不用（§2.4）。
@@ -775,7 +750,7 @@ enum PenPhase { PEN_PHASE_UNSPECIFIED = 0; HOVER = 1; DOWN = 2; MOVE = 3; UP = 4
 | 文档说法 | 代码事实 |
 |---|---|
 | `improvement-proposals.md:95`：被控的 control 入口“依次试 input→touch→files→draw→display→receive” | 现在的顺序是 input → POINTER → files → HELLO 颜色 → `publisher::receive`，已经没有 touch 解码器（`src/features/host/peer/ingress.rs:44-96`） |
-| `migration-status.md:114`：“键鼠注入、触摸……”需要双机测试 | Farwing 没有任何触摸注入代码（v2 已删除，`v2-design.md:384`），这一行里的“触摸”已过时 |
+| `migration-status.md:112`：“键鼠注入、触摸……”需要双机测试 | Farwing 没有任何触摸注入代码（v2 已删除，`v2-design.md:384`），这一行里的“触摸”已过时 |
 | `v2-design.md:241-242`：TOUCH、PEN 的通道为 control | 代码没有为它们绑定任何通道或处理函数。control 通道上的 TOUCH/PEN 落到 HELLO 解析后被静默丢弃（`ingress.rs:79`，`publisher.rs:380-383`）。`farwing-protocol.md:578-579` 写的“—”与代码一致 |
 | `crates/protocol/src/peer/mod.rs:76` 的注释：`touch` “Reserved for mobile controllers” | 本方案的主要使用者是原生 Windows 主控和浏览器，注释应改为通用说明 |
 | `v2-design.md:297`、`farwing-protocol.md:617`：`touch`、`pen` 已定义但不声明 | 与代码一致（`src/protocol/peer.rs:156-215`，测试见 `:322`）。但 HELLO 的规则是“只声明运行时具备的”（`crates/protocol/src/peer/mod.rs:42-43`），被控的特性表却是写死的。加入 `touch`/`pen` 时必须改为运行时生成 |
@@ -807,7 +782,7 @@ enum PenPhase { PEN_PHASE_UNSPECIFIED = 0; HOVER = 1; DOWN = 2; MOVE = 3; UP = 4
      - 双指捏合；
      - 笔：悬停 → 落笔 → 压力渐变 → 倾斜 → 笔杆键 → 橡皮擦 → 抬笔 → 离开。
    - 观察：用本机上记录 Pointer Events 的网页（看 `pointerType`、`pressure`、`tiltX`、`buttons`）、画图或 Whiteboard。
-   - 不需要触屏或笔，因为注入的是本机桌面；但测试会占用正在使用的桌面（见 `migration-status.md:114`）。
+   - 不需要触屏或笔，因为注入的是本机桌面；但测试会占用正在使用的桌面（见 `migration-status.md:112`）。
 4. **引擎集成**：**[单机]**
    - 内容：
      - 触点表与 Windows id 0–9；
@@ -853,7 +828,7 @@ enum PenPhase { PEN_PHASE_UNSPECIFIED = 0; HOVER = 1; DOWN = 2; MOVE = 3; UP = 4
    - `v2-design.md` §5.2、§7；
    - `web-console.md` 的“触屏”一行；
    - 控制简报 §6 指向本文；
-   - `migration-status.md:114`；
+   - `migration-status.md:112`；
    - `crates/protocol/src/peer/mod.rs:76` 的注释。
 10. **可选（第三阶段）：Farwing HID 数字化仪**（§2.7）。
     - 内容：描述符、特性报告回调、`ValidReport/Neutral`、版本号、显示器映射；评估是否在安全桌面上启用。

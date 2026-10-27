@@ -228,17 +228,19 @@ fn title_regions(rect: egui::Rect, maximize: bool) -> (egui::Rect, egui::Rect) {
     )
 }
 
+/// The mark in the brand blue for a window's caption; the blue tile is the
+/// application icon (taskbar, window list, About).
 pub(crate) fn paint_brand_logo(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(
-        egui::Vec2::splat(crate::ui::theme::WINDOW_LOGO_SIZE),
-        egui::Sense::hover(),
+    use crate::ui::branding::{Art, paint};
+    let size = crate::ui::theme::WINDOW_LOGO_SIZE;
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
+    // As wide as the mark inside the tile would be.
+    let width = size * 0.8;
+    let mark = egui::Rect::from_center_size(
+        rect.center(),
+        egui::vec2(width, width / Art::Mark.aspect()),
     );
-    crate::ui::branding::paint(
-        ui.painter(),
-        rect,
-        crate::ui::branding::Art::App,
-        egui::Color32::WHITE,
-    );
+    paint(ui.painter(), mark, Art::Mark, crate::ui::theme::ACCENT);
 }
 
 pub(crate) fn handle_title_drag(window: &Window, response: &egui::Response) -> bool {

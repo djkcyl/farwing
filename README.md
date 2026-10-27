@@ -15,7 +15,7 @@ Farwing 是可自建、可独立部署的远程控制与桌面串流软件，定
 | Farwing Server | [`server/`](server/README.md) | Rust 服务端：HTTPS 管理面、WSS 在线与会话协调、SQLite、TURN 凭据与可选内置 STUN/TURN；自带网页端（用户中心、管理后台、浏览器里的远程桌面） |
 | Farwing Protocol | [`docs/protocol/`](docs/protocol/farwing-protocol.md)、[`crates/protocol`](crates/protocol) | 客户端与服务端共享的协议规范与线上类型 |
 
-Farwing 不连接、不依赖 UU 官方服务、官方客户端或官方凭据，也不与 UU 远程互通。媒体通过 WebRTC 端到端传输（DTLS-SRTP），中继使用标准 TURN，服务端不接触、不重编码音视频。
+媒体通过 WebRTC 端到端传输（DTLS-SRTP），中继使用标准 TURN，服务端不接触、不重编码音视频。
 
 **当前阶段：第二轮（Farwing Protocol v2）已实现，部分项目待双机验证。** 第一轮（v1，协议与自建服务迁移）的迁移情况和验证结果见 [docs/migration-status.md](docs/migration-status.md)；第二轮的设计、实现状态与待验证项见 [docs/protocol/v2-design.md](docs/protocol/v2-design.md)。Farwing 尚未发布，不提供与旧版本（包括 v1）的兼容：客户端与服务端须使用同一版本，服务端也不迁移旧数据库。
 
@@ -84,7 +84,6 @@ Farwing 以 [AGPL-3.0-only](LICENSE) 发布。
 
 第三方代码及其派生部分保留各自的许可（FFmpeg 派生部分为 LGPL-2.1-or-later，rav1d/dav1d 为 BSD-2-Clause 等），详见 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) 与各目录下的许可文件。
 
-Farwing 与网易及 UU 远程无关，不代表也不提供任何官方服务。
 
 ## 鸣谢
 

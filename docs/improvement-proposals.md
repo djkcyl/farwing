@@ -12,21 +12,21 @@
 6. 批注、协助、账号与服务端
 7. 被控运行时与横切部分
 
-评审目标是找出两类问题：一是为兼容官方 UU 协议而做出的妥协，二是迁移后留下的不一致，并给出 Farwing 原生的方案。标注“已核实”的条目，都由汇总人对照代码亲自确认过。行号以当前工作树为准。
+评审目标是找出两类问题：一是 v1 协议与实现中的结构性妥协，二是迁移后留下的不一致，并给出 Farwing 原生的方案。标注“已核实”的条目，都由汇总人对照代码亲自确认过。行号以当前工作树为准。
 
 ## 0. 结论摘要
 
 - **有 8 个问题应该立即修复（第 1 节）。**
   - 两个是安全漏洞：协助会话可以冒充账号会话来提权；“密码 + 确认”模式可以绕过密码。
-  - 其余是迁移带来的真实缺陷：离线判断仍在比较 UU 的状态字符串；显示设置失败后遮罩不会消失；无人值守首连可能超时；单 STUN 部署下 NAT 被误判，打洞变得过于激进；界面上还有 UU 字样。
+  - 其余是迁移带来的真实缺陷：离线判断比较的是服务端不会返回的状态字符串；显示设置失败后遮罩不会消失；无人值守首连可能超时；单 STUN 部署下 NAT 被误判，打洞变得过于激进；虚拟屏文案里的品牌名不是 Farwing。
   - 这些都不需要改协议，工作量小。
-- **UU 兼容留下的结构性妥协集中在 6 处（第 2 节）。** 建议在首次公开发布前，一次性升级到 **Farwing Protocol v2**。现在双端和服务端都还没发布，正是做不兼容清理成本最低的时候。
-  - **能力协商四套并存：** 账号能力表、`extensions`、HELLO 等级、`ConnectOptions` 里的 UU 数值码。
-  - **控制面仍是 UU 的 `PbControlMessage`：** 包装层把请求关联方式和错误模型各搞了三套。
+- **v1 的结构性妥协集中在 6 处（第 2 节）。** 建议在首次公开发布前，一次性升级到 **Farwing Protocol v2**。现在双端和服务端都还没发布，正是做不兼容清理成本最低的时候。
+  - **能力协商四套并存：** 账号能力表、`extensions`、HELLO 等级、`ConnectOptions` 里的数值码。
+  - **控制面仍是 `PbControlMessage`：** 包装层把请求关联方式和错误模型各搞了三套。
   - **视频把“画质档”和“分辨率盒”绑死：** 非 16:9 屏会被非整数缩放，文字发虚。
-  - **数据面全部挤在一个照搬 UU 的 SCTP 调度上：** 没有流控，存在跨通道队头阻塞。
+  - **数据面全部挤在同一个 SCTP 调度上：** 没有流控，存在跨通道队头阻塞。
   - **输入只传 Windows VK：** 键盘布局不同时字符出错；锁定键语义不对；光标位置不同步。
-  - **搬文件有四套实现，“官方”路径已经走不到：** 约 1500–2000 行代码在 Farwing 之间不可达。
+  - **搬文件有四套实现，非原生路径已经走不到：** 约 1500–2000 行代码在 Farwing 之间不可达。
 - **产品目标需要新的身份与授权模型（第 3 节）。** 局域网免账号、无服务器配对、观看与控制分开授权、多人共享，都依赖它：设备密钥、DTLS 指纹绑定、PAKE、按会话和按能力授予的权限。
 - **应保留的成熟部分见第 4 节，需要你决策的问题见第 5 节，建议的实施顺序见第 6 节。**
 
@@ -38,11 +38,11 @@
 | --- | --- | --- | --- | --- |
 | B1【安全·高，已核实】 | 被控按主控自报的 `options.connect_type` 决定是否按协助会话处理；服务端认证过的 `incoming.connect_type` / `incoming.controller` 从未被读取 | `src/transport/signal/host.rs:443-451`；服务端只校验信封层的 `connect_type`（`server/src/hub.rs:1061-1068`），`options` 原样转发 | 协助主控把 `options.connect_type` 改为 1，就能绕过协助限制，获得文件、端口、诊断、虚拟屏，被控关闭协助后会话也不会被撤销；还能伪造 `controller_device_id` 冒充别人 | 被控只信 `session.incoming` 的 `connect_type`/`controller`/`purpose`；从 `ConnectOptions` 删除这些字段；服务端拒绝不一致的请求 |
 | B2【安全·中高，已核实】 | `POST /assist/join/confirm` 在 `request_id` 为空时，不检查被控模式、也不验签，直接发起确认；被控收到确认推送时不检查自己的模式 | `server/src/http/assist.rs:197-209`；`src/features/host/assist.rs:611-639` | “密码 + 确认”模式下，只要骗到主人点一下就能进入；“仅密码”模式下任何人都能弹窗骚扰，且没有限速 | 纯确认请求只在被控模式为 confirmation 时受理；需要密码的模式必须带已验签的 `request_id`；被控按模式拒绝；加限速 |
-| B3【缺陷，已核实】 | 离线判断写成 `status == "DISCONNECTED"`（UU 的值），而 Farwing Server 只返回 `online`/`offline` | 7 处：`account/power.rs:35`，`app/power.rs:37,40,113`，`app/device_status.rs:91`，`app/view/devices.rs:108,202` | 设备中心的网络唤醒恒报“只有离线设备可以发送开机请求”；关机/重启完成检测不到，120 s 后报超时；“离线”筛选恒为 0 | 统一改为 `!is_connected()`，status 反序列化为枚举 |
-| B4【缺陷，已核实】 | 显示设置被拒绝或被控没有回应时，主控的“正在切换分辨率”遮罩不会消失：回执只记日志，没有超时 | `features/stream_control/display_settings.rs:289-301`（注释引用 UU 地址 G BB6970）；被控 `refresh()` 失败时不回复（`host/peer/channels.rs:366`） | 用户只能手动“继续观看” | 收到 -1/-2 就结束等待并显示原因；加 10 s 超时；被控对每个请求都回复 |
+| B3【缺陷，已核实】 | 离线判断写成 `status == "DISCONNECTED"`，而 Farwing Server 只返回 `online`/`offline` | 7 处：`account/power.rs:35`，`app/power.rs:37,40,113`，`app/device_status.rs:91`，`app/view/devices.rs:108,202` | 设备中心的网络唤醒恒报“只有离线设备可以发送开机请求”；关机/重启完成检测不到，120 s 后报超时；“离线”筛选恒为 0 | 统一改为 `!is_connected()`，status 反序列化为枚举 |
+| B4【缺陷，已核实】 | 显示设置被拒绝或被控没有回应时，主控的“正在切换分辨率”遮罩不会消失：回执只记日志，没有超时 | `features/stream_control/display_settings.rs:289-301`；被控 `refresh()` 失败时不回复（`host/peer/channels.rs:366`） | 用户只能手动“继续观看” | 收到 -1/-2 就结束等待并显示原因；加 10 s 超时；被控对每个请求都回复 |
 | B5【缺陷，已核实】 | 无人值守常驻进程的编码预检与上线并行，游客模式直接跳过预检 | `platform/windows/host_service/resident.rs:916-926` | 重启后未登录 Windows 这一核心场景，第一次连接可能撞上主控 12 s 的时限（实测冷探测约 11.5 s） | 与设备中心、命令行一致，预检完成后再上线；根治方案见 §2.7 |
-| B6【缺陷，已核实，WAN 影响待实测】 | 内置的 UU 打洞协调器按“STUN 服务器 ≥2 个”判定锥形 NAT；Farwing 一般只下发 1 个 STUN，于是双方都被判为 Random，进入 mode 9（向 100 个随机端口硬喷探测包，60 s 一轮） | `vendor/webrtc-ice/src/agent/punch.rs:90-111`；`punch/actor.rs:236-249,616-630` | 公网连接时打洞策略失准：探测量大、可能触发防火墙或运营商告警，成功率也未必更高。局域网 host↔host 会先被选中，所以测试中没有暴露 | 短期：只有一个 STUN 时标为 Unknown（不进入硬喷）。长期见 §2.7 |
-| B7【文案】 | 界面出现“UU虚拟显示器”“最多支持3个UU虚拟屏” | `viewer/stream_menu/topology_menu.rs:146`；`stream_control/display_topology.rs:222` | 品牌残留 | 改文案 |
+| B6【缺陷，已核实，WAN 影响待实测】 | 内置的增强打洞协调器按“STUN 服务器 ≥2 个”判定锥形 NAT；Farwing 一般只下发 1 个 STUN，于是双方都被判为 Random，进入 mode 9（向 100 个随机端口硬喷探测包，60 s 一轮） | `vendor/webrtc-ice/src/agent/punch.rs:90-111`；`punch/actor.rs:236-249,616-630` | 公网连接时打洞策略失准：探测量大、可能触发防火墙或运营商告警，成功率也未必更高。局域网 host↔host 会先被选中，所以测试中没有暴露 | 短期：只有一个 STUN 时标为 Unknown（不进入硬喷）。长期见 §2.7 |
+| B7【文案】 | 虚拟显示器名称与“最多支持 3 个虚拟屏”提示里的品牌名不是 Farwing | `viewer/stream_menu/topology_menu.rs:146`；`stream_control/display_topology.rs:222` | 品牌残留 | 改文案 |
 | B8【安全·中】 | 限速“先检查、失败后计数”，并发可绕过；`assist/mode` 不限速，可用于枚举；登录 Argon2 没有并发上限（游客默认开放，任何人都可登记设备后压测登录）；协助码允许 6 位纯数字（约 20 bit） | `server/src/ratelimit.rs:15-41`，`http/assist.rs:59-120`，`http/account.rs:29-57`，`host/assist.rs:95` | 在线猜码、枚举、资源耗尽 | 改为先预留再验证；按 connect_id 做全局失败锁定，并提示被控“有人在尝试”；`mode` 按账号限速；Argon2 用信号量限制并发；协助码 ≥8 位且字母数字混合 |
 
 另有两项需要先验证：
@@ -54,19 +54,19 @@
 
 ---
 
-## 2. Farwing Protocol v2：去掉 UU 形状的六处结构性妥协
+## 2. Farwing Protocol v2：去掉六处结构性妥协
 
-> 原则：媒体标准（WebRTC、RTP、Opus、H.264/HEVC/AV1）和成熟算法（goog_cc、libwebrtc 接收管线、NetEq、CM256）不动；替换的是 UU 业务语义的承载方式。双端和服务端一起升级，HELLO `protocol_version=2`。
+> 原则：媒体标准（WebRTC、RTP、Opus、H.264/HEVC/AV1）和成熟算法（goog_cc、libwebrtc 接收管线、NetEq、CM256）不动；替换的是业务语义的承载方式。双端和服务端一起升级，HELLO `protocol_version=2`。
 
 ### 2.1 能力与会话参数统一
 
 **现状：同一件事有四到五个来源，而且大多是常量。**
 
-- 服务器登记的设备 `capabilities`：静态列表，名字沿用 UU ability map，例如 `smart_mouse`、`manual_transfer`、`fps_super_screen`。它表达的是“能做什么”，不是“允许做什么”，例如被控没开远程电源，主控仍会显示关机按钮（`account/feature_ability.rs:58-79`）。
+- 服务器登记的设备 `capabilities`：静态列表，例如 `smart_mouse`、`manual_transfer`、`fps_super_screen`。它表达的是“能做什么”，不是“允许做什么”，例如被控没开远程电源，主控仍会显示关机按钮（`account/feature_ability.rs:58-79`）。
 - `session.start.extensions`：主控单向声明，恒为 true（`session/negotiation.rs:87-95`）。
-- HELLO 特性等级：`capture_setting=6` 是 UU 的单调版本阶梯（≥3 色度，≥4 自定义码率，≥5 DPI/虚拟屏，≥6 HDR）。另有 `qos/system_metrics/virtual_mouse/fct` 声明了但没人读；`simple_action/private_screen/update_acquire` 常量未使用。
+- HELLO 特性等级：`capture_setting=6` 是单调版本阶梯（≥3 色度，≥4 自定义码率，≥5 DPI/虚拟屏，≥6 HDR）。另有 `qos/system_metrics/virtual_mouse/fct` 声明了但没人读；`simple_action/private_screen/update_acquire` 常量未使用。
 - 各特性自带的带内 hello：DRAG、DIAG、ANNOTATION 各有一套。
-- `ConnectOptions` 里的 UU 数值码：`kind` 1/5/9 与 `purpose` 重复；`connect_type` 1/2 与信封重复（这正是 B1 的根源）；`client_type` 与账号 `platform` 是两套互相冲突的平台编号（1=iOS 对 1=Windows）。
+- `ConnectOptions` 里的数值码：`kind` 1/5/9 与 `purpose` 重复；`connect_type` 1/2 与信封重复（这正是 B1 的根源）；`client_type` 与账号 `platform` 是两套互相冲突的平台编号（1=iOS 对 1=Windows）。
 - `CaptureParams`：`fps` 用档位 1–4 再加 `fps_count`；`quality` 1–6（文档写 6=自动，代码里 5=自动）；`chroma` 1/3；`resolution_type` 1–4。
 
 **建议**
@@ -79,7 +79,7 @@
 - **删除：** `extensions` 布尔、特性等级阶梯、`client_type`、`kind`、`ConnectOptions.connect_type/controller_device_id`。
 - **平台统一为字符串枚举**，例如 `windows/macos/linux/android/ios`。
 - **服务端认证过的身份、目的、类型只存在于 `session.incoming`。**
-- **HELLO 只交换一次，带超时。** 现在是双方各发请求、每 500 ms 重发、最多 30 次（`transport/rtc/channels.rs:324-380`），这是 UU ECHO 的遗留；在可靠通道上没有必要。
+- **HELLO 只交换一次，带超时。** 现在是双方各发请求、每 500 ms 重发、最多 30 次（`transport/rtc/channels.rs:324-380`），在可靠通道上没有必要。
 
 **收益：** 消除 B1 这一类问题；门控能反映真实情况；以后新增功能只需加一个特性名。
 
@@ -89,7 +89,7 @@
 
 **现状**
 
-- SESSION 帧体仍是 UU 的 `PbControlMessage{seq, timestamp, oneof}`，里面嵌套 `RpcRequest(bytes)` / `RpcResponse(message)`、SimpleAction 数字码 + JSON 参数。
+- SESSION 帧体仍是 `PbControlMessage{seq, timestamp, oneof}`，里面嵌套 `RpcRequest(bytes)` / `RpcResponse(message)`、SimpleAction 数字码 + JSON 参数。
 - FPP 头的 `request_id` 和 RESPONSE/ERROR 标志实际无人使用，一律写 0。规范要求的“未知帧回 ERROR”也没有实现。
 - 错误模型有三套：`CaptureSettingResponse.errors[]` 里 0 也算一条“错误”，-5/-6 其实是带 JSON 详情的通知；DisplayResult 只有码没有文字；麦克风和视频轨道各有自己的结果结构。
 - 被控入站是“逐个解码器试探”：control 通道依次试 input→touch→files→draw→display→receive，同一帧最多解码 4–5 次；还残留 `bytes.first()==b'{'` 的 JSON 嗅探（`host/peer/ingress.rs:60-147`，`host/peer/channels.rs:175-343`）。主控已经是干净的按类型分发。
@@ -166,7 +166,7 @@
 - 状态（2026-10-18）：快修已在 P5 完成；长期部分按 [rfi-ltr-brief.md](protocol/rfi-ltr-brief.md) 实现了 NVENC H.264/HEVC 的 LTR 恢复（`frame-meta`、`VideoFeedback`），恢复帧比关键帧小约 30–40 倍；冻结时间仍由 2.5×RTT 的判定门限主导。
 
 **F3：媒体协商三条消息。**
-- 用 `MediaCapabilities`、`StreamRequest`、`StreamState` 取代以下几项：CaptureParams 的档位、DeviceCapability JSON（codec_impl 32/37 等 UU 数值）、两张码率表、四套画质编号、靠 sdr_10bit 打补丁的 10-bit/HDR 混用。
+- 用 `MediaCapabilities`、`StreamRequest`、`StreamState` 取代以下几项：CaptureParams 的档位、DeviceCapability JSON（codec_impl 32/37 等数值码）、两张码率表、四套画质编号、靠 sdr_10bit 打补丁的 10-bit/HDR 混用。
 - `StreamRequest` 使用精确整数 fps、kbps、分辨率策略，色度/动态范围/位深三者独立，并带编解码偏好和 latency_mode。
 - 由被控单方决策，并在 `StreamState` 回报实际值和原因码。
 - 顺带修正 H.264 fmtp 的 profile 声明：现在声明 Baseline 3.1，实际发的是 High/High444。
@@ -174,29 +174,29 @@
 **F4：RTP 头扩展精简。**
 - 现状：注册了 14 个视频扩展，ID 用到了 15，每个包被迫用两字节扩展头；发送时延被 toffset、sending-delay、video-timing 重复表达三次；playout-delay 恒为 0/0。
 - 只保留 tcc、mid，再加首包的 `urn:farwing:frame-meta`（frame_id、关键帧/新画面/换源/恢复标志、source_epoch、参考帧）；color-space 只在变化时发，video-timing 抽样。
-- 删除 SDP 和代码里 Farwing 被控从不发送的 RED、ULPFEC、FlexFEC-03、goog-remb、CVO、rid（这些只为官方被控存在）。
+- 删除 SDP 和代码里 Farwing 被控从不发送的 RED、ULPFEC、FlexFEC-03、goog-remb、CVO、rid。
 - 收益：单包有效载荷约多 4–7%（估算）。
 - 状态（2026-10-18）：视频扩展已是 8 项一字节头；`urn:farwing:rtp-hdrext:frame-meta` 已实现（纪元、帧号、参考帧号、关键帧 / 恢复 / 长期参考标志），新画面与换源仍用各自的扩展。
 
 **F5：FEC。**
-- 现状：沿用 UU 跨帧分组，小帧要攒够包数才封块，修复延迟约等于一个 RTT，并不比 NACK 快；冗余假设丢包相互独立，不适合 Wi-Fi 突发；FEC 与 RTX 会重复修复同一个包。
+- 现状：跨帧分组，小帧要攒够包数才封块，修复延迟约等于一个 RTT，并不比 NACK 快；冗余假设丢包相互独立，不适合 Wi-Fi 突发；FEC 与 RTX 会重复修复同一个包。
 - 方案：按帧封块；用 TWCC 的丢包游程估计突发模型；接收端在修复包预计到达前暂缓 NACK。
 - 需要弱网实测。
 
 **F6：发送节奏。**
-- 现状：6 ms 内排空整帧，近乎线速突发，再加 5 帧 VBV；这是 UU 屏幕共享的取向，浅缓冲链路上会自己造成丢包。
+- 现状：6 ms 内排空整帧，近乎线速突发，再加 5 帧 VBV；浅缓冲链路上会自己造成丢包。
 - 方案：在帧间隔的 α 倍内发完，α 随丢包和延迟自适应；保留突发学习器作为上限；低延迟模式用 1–2 帧 VBV。
 
 **F7：码率与自适应。**
 - 现状：起始速率 = 上限/5，截到 0.3–3 Mbps；Auto 每秒按档位跳。
 - 起始速率按路由类型和该对端上次会话的带宽估计设定。
 - 码率连续跟随 GCC；分辨率和帧率按 bpp 阶梯切换并带滞回；区分文字为主（保分辨率、降帧率）和运动为主（反之）。
-- 码率表的来源问题（已标记）可以借此改为基于 bpp 的公式。
+- 码率表可以借此改为基于 bpp 的公式。
 
 **F8–F12（P2）：**
 - 出帧策略保持现状（零缓冲解码 + 最新帧呈现 + 1 帧延迟的 waitable 交换链）：P 帧链在解码阶段不会丢帧；只有到达抖动接近一个刷新周期时才会合并呈现，常见 Wi-Fi/公网下不可感知（已核实：`transport/timing.rs`、`windows_presenter/worker.rs`、`renderer.rs:205-216,668-678`）。只建议增加可选的“平滑”（观影）模式做音画同步，并删除写死的 playout-delay 扩展（改由接收端本地决定）。
 - 轨池大小按被控屏幕数协商；不可见的轨道暂停编码；带宽按焦点加权。
-- 主控用 1 Hz 的 `ReceiverStats` 回报解码 p95、丢帧、刷新率；TWCC 间隔明确设为 20–33 ms（现在因为 8.1 Mbps 的 UU 常量，实际恒为 50 ms）。
+- 主控用 1 Hz 的 `ReceiverStats` 回报解码 p95、丢帧、刷新率；TWCC 间隔明确设为 20–33 ms（现在因为 8.1 Mbps 的固定常量，实际恒为 50 ms）。
 - SDR 改为全范围 BT.709/sRGB；SDR 10-bit 只在源本身是高位深时启用。
 - 帧率允许超过 144；静态画面降到 5–10 fps 保活。
 
@@ -212,19 +212,19 @@
 - 被控用 `KEYEVENTF_SCANCODE` 注入；HID 路径直接用 usage。
 
 **A2：锁定键。**
-- 现状：Caps/Num/Scroll 的按下被丢弃，只在松开时比较状态、补按一次（UU 的 `lockkeysstatus` 语义）；CapsLock 无法被按住，用它做按键说话或重映射的软件都会失效。
+- 现状：Caps/Num/Scroll 的按下被丢弃，只在松开时比较状态、补按一次（`lockkeysstatus` 语义）；CapsLock 无法被按住，用它做按键说话或重映射的软件都会失效。
 - 方案：锁定键改为普通键；另外同步 `LockState{caps,num,scroll,seq}`。
 
 **A3：卡键保护。**
-- 现状：是否启用由服务器 `/config` 的 `keylock_optimize` 决定，这是 UU 服务端下发的配置；超时固定 150 ms，Wi-Fi 抖动就会让游戏里按住的键被弹起。
+- 现状：是否启用由服务器 `/config` 的 `keylock_optimize` 决定；超时固定 150 ms，Wi-Fi 抖动就会让游戏里按住的键被弹起。
 - 方案：写进 FPP，不再读服务器配置；超时取 max(150 ms, 3×RTT + 抖动)；任何 `INPUT` 都算保活；删除移动端分支。
 
-**A4：UU 移动端输入接口。**
+**A4：移动端输入接口。**
 - 现状：`MouseClick`、`RelativeScaled`、`Text`、`Combination`、触摸、SimpleAction 快捷命令都没有发送方。
 - 方案：删除，或冻结为保留编号。`RelativeScaled` 的算法疑似有误（0.1 屏宽约移动 6553 像素）。
 
 **A5：光标。**
-- 现状：整张 PNG 借 UU 的 SystemStateChange 发送，没有缓存；被控上程序自己移动光标时，位置不会同步到主控。
+- 现状：整张 PNG 借 SystemStateChange 发送，没有缓存；被控上程序自己移动光标时，位置不会同步到主控。
 - 方案：启用保留的 `CURSOR` 帧：
   - `Shape{hash, hotspot, png 仅首次发送}`，主控做 LRU 缓存；
   - `State{seq, shape, visible, screen, x, y, origin}`，事件驱动；位置变化若来自被控上的程序（而不是主控的输入），就驱动主控移动本地光标。
@@ -247,7 +247,7 @@
   - 麦克风没有回声消除、降噪和自动增益，主控外放时被控那边会听到回声；且按立体声音乐模式 128 kbps 编码。
   - 方案：引入 WebRTC APM（AEC3/NS/AGC2），以本进程 NetEq 的输出作为参考信号；需要额外引入源码，见决策项。麦克风改用单声道 VOIP 32–48 kbps。
 - **B4：**
-  - 麦克风控制仍是 UU 形状：RPC 17 + SimpleAction 23–27 + 来自官方 4.41.2 的错误码；而且必须先开键鼠控制才能开麦克风。
+  - 麦克风控制仍是 RPC 17 + SimpleAction 23–27 + 数值错误码；而且必须先开键鼠控制才能开麦克风。
   - 方案：改为 `AUDIO_CONTROL` 帧，麦克风权限与键鼠控制解耦。
 - **B5：** 音画同步，用两路的发送端报告对齐，并在 HUD 显示偏差。
 
@@ -256,7 +256,7 @@
 **承载层（P0 级设计问题，已核实部分）**
 
 - 剪贴板、文件、端口、拖放共用一个 SCTP association，所有通道都是有序可靠的；通道优先级只写进了 DCEP，SCTP 并不使用。
-- 发送准入是一把锁加 2,000,000 B 的全局预算，代码注释写着“UU V4.7.3”。调度只在消息边界切换流、不交错（`vendor/webrtc-sctp/src/queue/pending_queue.rs:13-24,127-140`）。端口消息 524,160 B、剪贴板文件块 512,000 B、文件块 204,800 B，大消息会拖住 session 通道（没协商 FCT 时 control 通道也一样）。
+- 发送准入是一把锁加 2,000,000 B 的全局预算。调度只在消息边界切换流、不交错（`vendor/webrtc-sctp/src/queue/pending_queue.rs:13-24,127-140`）。端口消息 524,160 B、剪贴板文件块 512,000 B、文件块 204,800 B，大消息会拖住 session 通道（没协商 FCT 时 control 通道也一样）。
 - 接收端在 `on_message` 里 await 业务队列；对端没有基于信用的流控。推断（需压测）：读循环停住后共享的 rwnd 被占满，所有通道都会停。
 - 方案：
   - 按服务等级拆通道：`bulk`（文件、剪贴板大数据）、`tunnel`（端口 TCP）、`dgram`（无序、不重传，用于 UDP）。
@@ -296,8 +296,8 @@
 
 **拖放**
 
-- 删除“官方”路径：OleDrop、AutoSave、SendTarget 队列窗口、FILE_DROP 门控，约 1500 行。
-- 理由：主控恒声明 `drag_drop`，所以官方路径在 Farwing 之间基本不可达；而且它与原生路径的权限门控不一致。
+- 删除非原生路径：OleDrop、AutoSave、SendTarget 队列窗口、FILE_DROP 门控，约 1500 行。
+- 理由：主控恒声明 `drag_drop`，所以非原生路径在 Farwing 之间基本不可达；而且它与原生路径的权限门控不一致。
 - 原生拖放的会话状态机保留，数据面换成传输引擎。
 
 **PORT v2（P0/P1）**
@@ -344,14 +344,14 @@
 **信令**
 
 - 主控每次会话都新开一条 WSS（与在线连接分开），建立时多一次 TLS + WebSocket 握手。建议在在线连接上复用会话信令：信封已经带 `sid`。
-- `network` 取值 0–3 和自动切中继阈值是 UU 的模型。建议改为命名枚举；切换依据为两条路径的实测 RTT/丢包（保留中继候选对作备份），而不是单向阈值。在带宽有限的自建 TURN 上，盲目切到中继可能更差。
+- `network` 取值 0–3，自动切中继按单向阈值。建议改为命名枚举；切换依据为两条路径的实测 RTT/丢包（保留中继候选对作备份），而不是单向阈值。在带宽有限的自建 TURN 上，盲目切到中继可能更差。
 
 **NAT 打洞**
 
-- vendored webrtc-ice 内置了 UU 的增强打洞协调器：固定魔数探测包、按 NAT 类型选择 10 种 plan、端口预测（`vendor/webrtc-ice/src/agent/punch*`、`allocator.rs`、`uu_candidate_priority`）。
-- 它在 Farwing 之间能工作，但没有写进规范，而且依赖 UU 多 STUN 的部署（B6）。
+- vendored webrtc-ice 内置了增强打洞协调器：固定魔数探测包、按 NAT 类型选择 10 种 plan、端口预测（`vendor/webrtc-ice/src/agent/punch*`、`allocator.rs`）。
+- 它在 Farwing 之间能工作，但没有写进规范，而且依赖多个 STUN 服务器的部署（B6）。
 - 两种选择：
-  - **保留：** 作为 Farwing 机制写进规范；服务端提供两个 STUN 端点（内置 TURN 多监听一个端口或 IP），或实现 RFC 5780 行为探测；探测包带上由 ICE 凭据派生的令牌；改名去掉 `uu_`。
+  - **保留：** 作为 Farwing 机制写进规范；服务端提供两个 STUN 端点（内置 TURN 多监听一个端口或 IP），或实现 RFC 5780 行为探测；探测包带上由 ICE 凭据派生的令牌。
   - **去掉：** 回到标准 ICE + TURN 兜底。
 
 ### 2.8 服务端 API 清理（与 v2 一起冻结）
@@ -360,8 +360,8 @@
   - `/devices` 与 `/devices/groups`（desktop/mobile/tv）合并，分组交给客户端；
   - 设备详情从中文标签对改为结构化对象；
   - 平台改为字符串枚举。
-- **去掉 UU 字段名与无意义字段：** 客户端里的 `controlled_support`、`support_wol`、`version_name`、`participants_info`；恒为 0 的 `update_started_at`；恒为 false 的 `router_wol`。
-- **协助接口：** `assist_confirmation_required` 改为 `200 {"status":"pending_confirmation"}`，不再用错误信封加 HTTP 202（UU 错误码 1136 的翻版）。
+- **去掉多余字段：** 客户端里的 `controlled_support`、`support_wol`、`version_name`、`participants_info`；恒为 0 的 `update_started_at`；恒为 false 的 `router_wol`。
+- **协助接口：** `assist_confirmation_required` 改为 `200 {"status":"pending_confirmation"}`，不再用错误信封加 HTTP 202。
 - **connect_id：** 支持刷新；为临时协助提供一次性短号或邀请链接。
 - **电源与唤醒：**
   - 结果接口校验上报者；推送中带上请求者。
@@ -400,11 +400,11 @@
 
 ---
 
-## 4. 建议保留（成熟、与 UU 兼容无关或已是 Farwing 自有）
+## 4. 建议保留（成熟或已是 Farwing 自有）
 
 - **服务端实时面骨架：** 单次入场券、resume/epoch、对中转消息逐条校验 sid/attempt/方向/大小、吊销联动；Argon2id 参数、令牌只存哈希、扩展未知键透传。
 - **被控 Lease 所有权模型：** permission/media/stream 三层代次。它是 §3 授权逐项强制的天然落点。
-- **被控进程拆分：** 服务 / 常驻 / 采集代理 / 输入代理 / 用户后端。这是 Windows 安全边界（安全桌面、用户令牌、UIAccess）决定的，不是 UU 原因。还有 DPAPI 保险库，以及“全机组件只属于默认 profile”。
+- **被控进程拆分：** 服务 / 常驻 / 采集代理 / 输入代理 / 用户后端。这是 Windows 安全边界（安全桌面、用户令牌、UIAccess）决定的。还有 DPAPI 保险库，以及“全机组件只属于默认 profile”。
 - **媒体：** goog_cc 核心、libwebrtc 接收管线移植（PacketBuffer、FrameBuffer、NACK、VCMTiming）、CM256 与二项分布函数、RTX、PacerV2 突发学习器（作为上限）、WindowAdmission、编码器后端与跨 GPU 传输、各编码格式的 RTP 封包、RTCP RTT 测量。
 - **输入：**
   - `remote_input` 的所有权 / 释放检查点 / 代次 / 恢复；键盘钩子的双路排序；被控 SYSTEM 代理与 HID 租约。
@@ -427,7 +427,7 @@
 6. **默认画质与延迟：** 原生分辨率优先，还是流畅优先？是否增加“办公 / 游戏”内容模式？是否需要可选的“平滑（观影）”模式？（零缓冲出帧保持为默认，见 §2.4 F8 的更正）
 7. **视频投入：** 是否做按厂商的 RFI/LTR（需要 NVIDIA、AMD、Intel 三家测试机）？是否支持超过 144 fps 和超宽、5K 原生分辨率？FEC 冗余预算定多少？
 8. **数据面：**
-   - 删除官方拖放和被控“发送到主控”队列窗口？
+   - 删除非原生拖放和被控“发送到主控”队列窗口？
    - 端口目标只允许回环、白名单，还是任意内网地址？是否允许在被控侧解析主机名？
    - UDP 是否改为不可靠传输？
    - 队头阻塞用单 association + 调度（推荐）解决，还是给 bulk 单开一个 PeerConnection？
@@ -436,15 +436,14 @@
 11. **远端触发更新：** 实现服务器编排的更新，还是删除相关界面和能力？
 12. **主控默认值：** 对自己账号下的设备，是否默认可控、默认开启剪贴板？
 13. **麦克风回声消除：** 是否引入 WebRTC APM 源码（体积、构建时间、许可），还是先用系统通讯音效过渡？
-14. **注释里的 UU 逆向地址（约 103 行）：** 直接删除，还是迁到独立的来源说明文档？
-15. **打洞：** UU 增强打洞是保留为 Farwing 机制（需要服务端提供第二个 STUN 端点），还是回到标准 ICE？
+14. **打洞：** 增强打洞是保留为 Farwing 机制（需要服务端提供第二个 STUN 端点），还是回到标准 ICE？
 
 ## 6. 建议的实施顺序
 
 | 阶段 | 内容 | 规模 |
 | --- | --- | --- |
 | 0 | §1 的 B1–B8 加剪贴板等待超时；双机回归基线（键鼠、剪贴板、拖放、显示设置） | S，约 1–2 天 |
-| 1 | v2 基线：能力统一（§2.1）、控制面请求/错误模型（§2.2）、被控按类型分发、删除不可达的官方路径与 UU 字段（约 1500–2000 行）、服务端 API 清理（§2.8）、视频分辨率快修（§2.4 F1）与快速 PLI（F2 快修）、输入键码形状（A1）、`HostEvent` 与连接恢复（§2.7） | M–L |
+| 1 | v2 基线：能力统一（§2.1）、控制面请求/错误模型（§2.2）、被控按类型分发、删除不可达的非原生路径与多余字段（约 1500–2000 行）、服务端 API 清理（§2.8）、视频分辨率快修（§2.4 F1）与快速 PLI（F2 快修）、输入键码形状（A1）、`HostEvent` 与连接恢复（§2.7） | M–L |
 | 2 | 数据面承载与流控、统一传输引擎、FILE/剪贴板/PORT v2（§2.6）；显示管理 v2（§2.3）；媒体协商三消息、头扩展精简、发送节奏与自适应（§2.4）；光标、锁定键、音频修正（§2.5） | L |
 | 3 | 身份与授权（§3）：设备密钥与指纹绑定 → PAKE 协助 → grants 与 PERMISSIONS → 多参与者 → 局域网发现、配对与直连 | L，路线图 |
 
@@ -463,14 +462,13 @@
 | 5 | 键盘按位置传键，不保留 VK 模式，同步锁定键状态 |
 | 6 | 分辨率保持 720p / 1080p / 2K / 4K 档位逻辑，只修复竖屏（旋转后）缩放基准边错误；新增“观影模式”；新增“弱网策略”设置：带宽临时不足时由用户选择降码率或降帧率（不降分辨率，避免编码器重建造成卡顿）；不做办公/游戏模式 |
 | 7 | RFI/LTR 放到最后单独作为一个课题；新增 240 fps 档；其他分辨率暂不考虑；FEC 冗余由实现方决定 |
-| 8 | 删除官方拖放与被控“发送到主控”队列窗口；端口目标允许任意地址并允许在被控侧解析主机名；UDP 改为不可靠传输；队头阻塞采用单 association + 调度方案 |
+| 8 | 删除非原生拖放与被控“发送到主控”队列窗口；端口目标允许任意地址并允许在被控侧解析主机名；UDP 改为不可靠传输；队头阻塞采用单 association + 调度方案 |
 | 9 | 剪贴板默认双向且包含文件；遵守密码管理器的排除标记，不进入剪贴板历史 |
 | 10 | 被控离线或重启后，主控自动等待 2–5 分钟，可取消 |
 | 11 | 实现远端触发更新 |
 | 12 | 自己账号下的设备默认可控、默认开启剪贴板 |
 | 13 | 不引入 WebRTC APM（回声消除） |
-| 14 | 删除注释里的 UU 逆向地址 |
-| 15 | 打洞以提高成功率为目标设计 |
+| 14 | 打洞以提高成功率为目标设计 |
 
 待补充的细节问题见对话记录。
 
@@ -522,10 +520,10 @@
 | 阶段 | 内容 |
 | --- | --- |
 | P0 | §1 的缺陷修复（B1–B8，以及剪贴板等待超时） |
-| P1 v2 基线 | 协议 crate v2（HELLO 版本 2、能力按名称+版本、统一 Platform、FPP 请求/响应/错误、`HostEvent`、预留帧类型）；被控按类型分发；控制面类型化消息（取代 `PbControlMessage`）；删除不可达的官方路径、远端更新、UU 移动端输入和逆向地址注释；服务端 API 清理；版本号 0.1.0 |
+| P1 v2 基线 | 协议 crate v2（HELLO 版本 2、能力按名称+版本、统一 Platform、FPP 请求/响应/错误、`HostEvent`、预留帧类型）；被控按类型分发；控制面类型化消息（取代 `PbControlMessage`）；删除不可达的非原生路径、远端更新和移动端输入；服务端 API 清理；版本号 0.1.0 |
 | P2 身份与权限 | 设备密钥与请求签名、短期令牌；SDP 指纹签名；协助 PAKE；好友；grants；`PERMISSIONS`；被控端逐项强制 |
 | P3 多人 | 服务端单设备多会话；被控多 peer、共享编码；输入仲裁；剪贴板与麦克风规则；参与者列表与踢出；原生主控光标；协助不顶替 |
-| P4 数据面 | 通道按服务等级拆分、预协商、信用流控与调度；统一传输引擎；FILE、剪贴板（含隐私）、PORT、诊断 v2；删除官方拖放 |
+| P4 数据面 | 通道按服务等级拆分、预协商、信用流控与调度；统一传输引擎；FILE、剪贴板（含隐私）、PORT、诊断 v2；删除非原生拖放 |
 | P5 媒体与输入 | 竖屏缩放修复与 16:10 改进；自动档位固定；弱网策略；观影模式；快速 PLI；发送节奏；起始码率；头扩展精简；FEC 按帧；接收端统计；按位置传键、锁定键同步、按 RTT 自适应的保活、`SystemCommand`；`CURSOR` 帧；NetEq 插包时机 |
 | P6 连接 | 首连（先应答、并行准备、探测结果缓存）；三级恢复与自动等待；会话复用在线连接；NAT 行为探测（多端口、多 IP）、打洞规划、UPnP/NAT-PMP/PCP、优先 IPv6；中继切换改为按实测 |
 | P7 | 局域网发现、IP/域名直连、配对 |

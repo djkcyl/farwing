@@ -160,7 +160,6 @@ pub(crate) struct Settings {
 
     // About
     pub copyright_section: &'static str,
-    pub unaffiliated: &'static str,
     pub ffmpeg_notice: &'static str,
     pub license_notice: &'static str,
     pub third_party_notices: &'static str,
@@ -517,7 +516,6 @@ pub(crate) const ZH_CN: Settings = Settings {
     wol_issue_unconfirmed: |property| format!("{property}：未确认生效"),
 
     copyright_section: "著作权、协议与许可",
-    unaffiliated: "Farwing 与网易及 UU 远程无关",
     ffmpeg_notice: "包含 FFmpeg 派生组件（LGPL-2.1-or-later）",
     license_notice: "著作权与许可声明",
     third_party_notices: "第三方来源与许可",
@@ -877,7 +875,6 @@ pub(crate) const EN: Settings = Settings {
     wol_issue_unconfirmed: |property| format!("{property}: not confirmed"),
 
     copyright_section: "Copyright and licenses",
-    unaffiliated: "Farwing is not affiliated with NetEase or UU Remote",
     ffmpeg_notice: "Includes components derived from FFmpeg (LGPL-2.1-or-later)",
     license_notice: "Copyright and license notice",
     third_party_notices: "Third-party notices and licenses",

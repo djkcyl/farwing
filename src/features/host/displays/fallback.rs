@@ -45,7 +45,6 @@ pub(super) fn target<'a>(identity: &str, targets: &'a [Target]) -> Option<&'a Ta
 fn replacement(t: &Target, own: Option<&str>) -> bool {
     t.active
         && t.available
-        && t.virtual_provider != Some(VirtualProvider::Foreign)
         && own.is_none_or(|identity| identity != t.identity)
 }
 pub(crate) fn pin() -> Result<Option<Driver>> {

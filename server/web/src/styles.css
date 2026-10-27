@@ -178,17 +178,15 @@ code,
 
 .brand {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 18px 18px 14px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 20px 18px 14px;
 }
-.brand-mark {
+.brand-logo {
   display: block;
   flex: none;
-}
-.brand-name {
-  font-weight: 600;
-  font-size: 15px;
+  color: var(--text);
 }
 .brand-sub {
   font-size: 12px;
@@ -1134,8 +1132,9 @@ table.table {
 }
 .auth-brand {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
 }
 .auth-panel {
   background: var(--surface);

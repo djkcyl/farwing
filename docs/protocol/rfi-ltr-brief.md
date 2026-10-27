@@ -457,15 +457,13 @@ F.epoch == 当前纪元
 
 ---
 
-## 5. 原版 UU 与现有文档的预留
+## 5. 现有文档的预留
 
-- **原版 UU 客户端**：仓库里没有可读资料（决策 14 已删除逆向地址）。
-- **Farwing 现有文档的预留**：
-  - `improvement-proposals.md` §2.4 F2 提出 FPP `RecoveryRequest` 与“用 NVENC/AMF/QSV 的 LTR 或参考帧失效”；F4 提出首包的 `urn:farwing:frame-meta`（frame_id、关键帧/恢复标志、source_epoch、参考帧）。**两者都只有名字，没有字段，也没有实现。**
-  - `farwing-protocol.md`：§5.4 没有相关帧类型；§5.5 没有相关特性；§6.3 的头扩展只有 7 项；§6.5 只有 PLI/FIR。
-  - `peer-messages.md`：SESSION 中没有相关 tag，“预留”只有 TOUCH/PEN（`peer-messages.md:725-727`）。
-  - `v2-design.md`：§4.2 的组内规则只写了关键帧。
-  - SESSION oneof 已用 tag 1–5、7、10–17、20–23（`src/features/stream_control/wire.rs:40-96`），本文取 **tag 8**（§6.3）。
+- `improvement-proposals.md` §2.4 F2 提出 FPP `RecoveryRequest` 与“用 NVENC/AMF/QSV 的 LTR 或参考帧失效”；F4 提出首包的 `urn:farwing:frame-meta`（frame_id、关键帧/恢复标志、source_epoch、参考帧）。**两者都只有名字，没有字段，也没有实现。**
+- `farwing-protocol.md`：§5.4 没有相关帧类型；§5.5 没有相关特性；§6.3 的头扩展只有 7 项；§6.5 只有 PLI/FIR。
+- `peer-messages.md`：SESSION 中没有相关 tag，“预留”只有 TOUCH/PEN（`peer-messages.md:725-727`）。
+- `v2-design.md`：§4.2 的组内规则只写了关键帧。
+- SESSION oneof 已用 tag 1–5、7、10–17、20–23（`src/features/stream_control/wire.rs:40-96`），本文取 **tag 8**（§6.3）。
 
 ---
 

@@ -167,10 +167,6 @@ impl Screens {
                                 && i.target.as_ref().is_some_and(|t| {
                                     t.active
                                     && t.available
-                                    && t.virtual_provider
-                                        != Some(
-                                            crate::platform::display::topology::VirtualProvider::Foreign,
-                                        )
                                 })
                                 && (idle
                                     || self.slots.iter().enumerate().any(|(n, s)| {
@@ -211,13 +207,8 @@ impl Screens {
                 tokio::select! { _ = self.cancel.cancelled() => return Ok(()), _ = tokio::time::sleep(Duration::from_millis(200)) => {} }
                 self.refresh()?;
             }
-            let only_foreign = lock(&self.reports.catalog).iter().all(|info| {
-                info.target.as_ref().is_some_and(|t| {
-                    t.virtual_provider
-                        == Some(crate::platform::display::topology::VirtualProvider::Foreign)
-                })
-            });
-            if !self.headless.should_create(only_foreign, Instant::now()) {
+            let empty = lock(&self.reports.catalog).is_empty();
+            if !self.headless.should_create(empty, Instant::now()) {
                 return Ok(());
             }
             let current = self.reports.current.load(Ordering::Acquire);
@@ -300,10 +291,6 @@ impl Screens {
                     && i.target.as_ref().is_some_and(|t| {
                         t.active
                             && t.available
-                            && t.virtual_provider
-                                != Some(
-                                    crate::platform::display::topology::VirtualProvider::Foreign,
-                                )
                     })
             })
             .min_by_key(|i| (i.screen.identity != r.original.identity, !i.screen.primary))
@@ -474,10 +461,6 @@ impl Screens {
                         && i.target.as_ref().is_some_and(|t| {
                             t.active
                             && t.available
-                            && t.virtual_provider
-                                != Some(
-                                    crate::platform::display::topology::VirtualProvider::Foreign,
-                                )
                         })
                 })
                 .and_then(|i| i.screen.identity.clone())

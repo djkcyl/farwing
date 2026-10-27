@@ -358,7 +358,7 @@ Hello {
 
 ### 6.5 删除
 
-v1 的 `SimpleAction`（锁屏、显示桌面、任务视图、任务管理器、锁定键、延后更新、quitCapture、刷新状态）、`CaptureChange`、`ReportError`、`SystemMetrics`、`QuerySystemState`、`InputEvent`（SESSION 内触摸）、`MouseSwitch`、官方批注 `Draw` RPC（批注只走 ANNOTATION 帧）、`SystemStateChange` 的安全桌面 / 权限 / 私密屏 / UI 就绪状态全部删除。系统命令（锁屏、任务管理器等）在 P5 作为 INPUT `SystemCommand` 重新提供。
+v1 的 `SimpleAction`（锁屏、显示桌面、任务视图、任务管理器、锁定键、延后更新、quitCapture、刷新状态）、`CaptureChange`、`ReportError`、`SystemMetrics`、`QuerySystemState`、`InputEvent`（SESSION 内触摸）、`MouseSwitch`、批注 `Draw` RPC（批注只走 ANNOTATION 帧）、`SystemStateChange` 的安全桌面 / 权限 / 私密屏 / UI 就绪状态全部删除。系统命令（锁屏、任务管理器等）在 P5 作为 INPUT `SystemCommand` 重新提供。
 
 ## 7. 输入 v2（P5）
 
@@ -381,7 +381,7 @@ v1 的 `SimpleAction`（锁屏、显示桌面、任务视图、任务管理器�
 - **锁定键：** 按普通键发送。激活控制时、以及主控本地锁状态并非因已发送的锁定键而变化时（例如在其他窗口切换了 CapsLock），主控发送 `LockState`。`seq` 是此前已提交给传输的锁定键按下次数（不含重复）。被控按参与者统计收到的锁定键按下次数：若多于 `seq`，说明有按键与该状态交叉，不纠正；之后计数对齐到 `seq`。被控在本参与者最近的锁定键注入稳定（50 ms）且无锁定键按住后，只对不一致的位注入一次锁定键；`LockState` 之后的按键在纠正前同步翻转目标位。交接控制或断开时丢弃未执行的纠正。
 - **系统命令：** 只由主控菜单显式发送，被控先释放该参与者按住的键和按钮再执行。`SAS` 经已安装的被控服务执行（否则报“Ctrl+Alt+Del需要安装并启用被控服务”），`LOCK` 调用 `LockWorkStation`，其余以与布局无关的 VK 注入 Win+D、Win+Tab、Ctrl+Shift+Esc。
 - **保活：** 有按键按下时，主控在 50 ms 内没有发出任何 INPUT 帧就发一次 Heartbeat；任何 INPUT 帧都算保活。被控超时取 `max(150 ms, 3×RTT + 50 ms)`（RTT 上限按 3 s 计），取自该参与者的 RTCP RTT（被控传输层 `round_trip()`），不再读服务器配置。
-- **删除：** VK 键码、UU 移动端动作（点击、比例相对移动、文本、组合键、SESSION 内触摸）、经键流识别 Ctrl+Alt+Del / Win+L、`Key.interruptible` 与 `Key.lock_on`。TOUCH / PEN 帧类型保留未实现。
+- **删除：** VK 键码、移动端动作（点击、比例相对移动、文本、组合键、SESSION 内触摸）、经键流识别 Ctrl+Alt+Del / Win+L、`Key.interruptible` 与 `Key.lock_on`。TOUCH / PEN 帧类型保留未实现。
 
 ## 8. 统一传输（P4）
 
@@ -456,7 +456,7 @@ Pull {}                               → Offer { offer, formats }   // 主控 �
   - 自动同步：本机复制时向对端发 `Offer`，并应用对端的 `Offer`。被控只对“自动同步”参与者这样做：单人会话中拥有 `clipboard` 的参与者；多人会话中同时拥有 `clipboard` 与 `control` 的参与者（§4.2）。主控只在控制模式（非“仅观看”）且开启“剪贴板同步”时自动同步。
   - 手动获取（`Pull`）：任何拥有 `clipboard` 能力的参与者都可以发，不要求 `control`，也不受主控“剪贴板同步”开关影响；被控本机的剪贴板开关仍是上限（关闭则 `unavailable`），文件仍受“文件复制”开关约束。被控取当时的系统剪贴板，按与自动同步相同的规则过滤（来源标记 `ExcludeClipboardContentFromMonitorProcessing`、`Clipboard Viewer Ignore`、`CanUploadToCloudClipboard=0`、`CanIncludeInClipboardHistory=0` 时回复 `forbidden`），登记为该参与者的新 offer 并在响应中返回；主控把它装入本机剪贴板（按需渲染），之后的 `Fetch`/`ListFiles`/`ReadFile` 与自动同步相同。只有 `view` 没有 `clipboard` 的参与者不能获取，因为剪贴板内容可能包含密码等敏感信息。
   - 主控界面：观看窗口菜单“获取被控剪贴板”，在剪贴板通道就绪时始终可用（自动同步时也可用，等同于重新取一次）。
-- 实现状态：已实现并替换 v1 的 UU 形消息（`FormatList`/`FormatDataAsk`/`DataBlock`/`FileContentsRequest` 等、`err 1/2` 约定、文本改写请求、`DragDropAutoSave`/`OleDrop` 拖放动作）。被控执行仍在用户会话的剪贴板进程中（安装服务时为用户子进程，经管道转发帧）。单机验证见 `Farwing dev clipboard`（主控为内存剪贴板）；两台机器间的真实剪贴板同步须双机测试。
+- 实现状态：已实现并替换 v1 的消息（`FormatList`/`FormatDataAsk`/`DataBlock`/`FileContentsRequest` 等、`err 1/2` 约定、文本改写请求、`DragDropAutoSave`/`OleDrop` 拖放动作）。被控执行仍在用户会话的剪贴板进程中（安装服务时为用户子进程，经管道转发帧）。单机验证见 `Farwing dev clipboard`（主控为内存剪贴板）；两台机器间的真实剪贴板同步须双机测试。
 
 ### 8.3 DRAG v2
 
@@ -469,7 +469,7 @@ Files(bytes)    // 本次拖放的文件交换：一个完整的 CLIPBOARD 帧�
 - 每次拖放有独立的文件交换（不读写系统剪贴板）：拖出方发 `Offer`（`FileGroupDescriptorW` + `FileContents`），落点方在 OLE 目标读取时发 `ListFiles`/`ReadFile`。只接受文件格式，`Fetch` 与 `Pull` 回复 `forbidden`。
 - 文件内容为 `TRANSFER{kind: DRAG}` / `FLOW{kind: DRAG}`，直接在 bulk 通道发送（不包在 DRAG 帧里）；流号在进程内唯一，接收方据此找到对应的拖放。
 - 单个 DRAG 帧不超过 64 KiB。v1 的 `Data` 负载（tag 10）与 `DRAG_DATA` 帧类型删除。
-- 实现状态：已实现。被控端“发送到主控”窗口（UU 主控的 `DragDropAutoSave` 回退路径）在 v2 中不可达，已随 `FileDrop` 发布删除；拖放两个方向都只走原生拖放。原生拖放需要真实鼠标拖动，单机只验证了协议层（文件交换的回环测试与帧编码）；端到端拖放须双机测试。
+- 实现状态：已实现。被控端“发送到主控”窗口（`DragDropAutoSave` 回退路径）在 v2 中不可达，已随 `FileDrop` 发布删除；拖放两个方向都只走原生拖放。原生拖放需要真实鼠标拖动，单机只验证了协议层（文件交换的回环测试与帧编码）；端到端拖放须双机测试。
 
 ### 8.4 DIAGNOSTICS v2
 

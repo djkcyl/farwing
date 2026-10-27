@@ -1,5 +1,5 @@
 use super::*;
-use crate::features::host::assist::{Action, Mode, Passwords, Settings};
+use crate::features::host::assist::{Action, Mode, Passwords, Rotation, Settings};
 
 pub(super) struct PasswordEditor {
     generation: u64,
@@ -396,6 +396,24 @@ impl DeviceCenterApp {
                                 self.edit_assist_password(selected);
                             } else {
                                 settings.passwords = selected;
+                            }
+                        }
+                        if settings.passwords.random() {
+                            ui.add_space(12.0);
+                            ui.label(RichText::new(text.code_rotation).color(MUTED));
+                            let mut rotation = settings.rotation;
+                            egui::ComboBox::from_id_salt("host-assist-rotation")
+                                .width(ui.available_width())
+                                .selected_text(rotation.label())
+                                .show_ui(ui, |ui| {
+                                    for choice in Rotation::ALL {
+                                        ui.selectable_value(&mut rotation, choice, choice.label());
+                                    }
+                                });
+                            if rotation != settings.rotation {
+                                settings.rotation = rotation;
+                                // A new interval counts from now.
+                                settings.code_made_at = chrono::Utc::now().timestamp();
                             }
                         }
                         ui.add_space(12.0);

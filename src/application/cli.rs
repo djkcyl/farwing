@@ -85,6 +85,7 @@ pub async fn host(
     allow: Option<bool>,
     allow_ports: bool,
     assist_code: Option<String>,
+    code_rotation: Option<&str>,
     encoder: Option<&str>,
 ) -> Result<()> {
     use crate::features::host::EncoderMode;
@@ -125,11 +126,14 @@ pub async fn host(
             client.host.set_port_mapping_allowed(true)?;
         }
         if let Some(code) = &assist_code {
-            use crate::features::host::assist::{Mode, Passwords, Settings};
+            use crate::features::host::assist::{Mode, Passwords, Rotation, Settings};
+            // A code given here stays unless a rotation is given too.
             client.host.set_assistance(Settings {
                 enabled: true,
                 mode: Mode::Password,
                 code: code.clone(),
+                code_made_at: chrono::Utc::now().timestamp(),
+                rotation: code_rotation.map(Rotation::parse).transpose()?.unwrap_or(Rotation::Never),
                 passwords: Passwords::Random,
                 custom_code: String::new(),
                 grants: None,
@@ -1192,6 +1196,7 @@ pub async fn host_serverless(
     allow: Option<bool>,
     allow_ports: bool,
     assist_code: Option<String>,
+    code_rotation: Option<&str>,
 ) -> Result<()> {
     let client = crate::session::host_client::HostClient::local()?;
     let result = async {
@@ -1208,11 +1213,14 @@ pub async fn host_serverless(
             client.host.set_port_mapping_allowed(true)?;
         }
         if let Some(code) = &assist_code {
-            use crate::features::host::assist::{Mode, Passwords, Settings};
+            use crate::features::host::assist::{Mode, Passwords, Rotation, Settings};
+            // A code given here stays unless a rotation is given too.
             client.host.set_assistance(Settings {
                 enabled: true,
                 mode: Mode::Password,
                 code: code.clone(),
+                code_made_at: chrono::Utc::now().timestamp(),
+                rotation: code_rotation.map(Rotation::parse).transpose()?.unwrap_or(Rotation::Never),
                 passwords: Passwords::Random,
                 custom_code: String::new(),
                 grants: None,

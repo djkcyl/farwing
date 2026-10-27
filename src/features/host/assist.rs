@@ -81,11 +81,69 @@ impl Passwords {
     }
 }
 
+/// When the temporary code changes by itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Rotation {
+    /// Once the visitors it let in have left.
+    AfterVisit,
+    Hours(u32),
+    Never,
+}
+impl Default for Rotation {
+    fn default() -> Self {
+        Self::Hours(24)
+    }
+}
+impl Rotation {
+    pub const ALL: [Self; 8] = [
+        Self::AfterVisit,
+        Self::Hours(1),
+        Self::Hours(6),
+        Self::Hours(12),
+        Self::Hours(24),
+        Self::Hours(72),
+        Self::Hours(168),
+        Self::Never,
+    ];
+    /// `after-visit`, `never`, or hours (`6h`) or days (`1d`) of [`Self::ALL`].
+    pub fn parse(text: &str) -> Result<Self> {
+        let rotation = match text {
+            "after-visit" => Self::AfterVisit,
+            "never" => Self::Never,
+            _ => {
+                let (number, unit) = text.split_at(text.len().saturating_sub(1));
+                let number: u32 = number.parse().map_err(|_| anyhow::anyhow!("{text}"))?;
+                match unit {
+                    "h" => Self::Hours(number),
+                    "d" => Self::Hours(number.saturating_mul(24)),
+                    _ => anyhow::bail!("{text}"),
+                }
+            }
+        };
+        ensure!(Self::ALL.contains(&rotation), "{text}");
+        Ok(rotation)
+    }
+    pub fn label(self) -> String {
+        let text = &t().features;
+        match self {
+            Self::AfterVisit => text.assist_rotation_after_visit.into(),
+            Self::Hours(hours) if hours % 24 == 0 => (text.assist_rotation_days)(hours / 24),
+            Self::Hours(hours) => (text.assist_rotation_hours)(hours),
+            Self::Never => text.assist_rotation_never.into(),
+        }
+    }
+}
+
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Settings {
     pub enabled: bool,
     pub mode: Mode,
     pub code: String,
+    /// When `code` was made (Unix seconds).
+    #[serde(default)]
+    pub code_made_at: i64,
+    #[serde(default)]
+    pub rotation: Rotation,
     #[serde(default)]
     pub passwords: Passwords,
     #[serde(default)]
@@ -143,6 +201,7 @@ impl Settings {
             self.custom_code.is_empty() || Self::valid_custom_code(&self.custom_code),
             "{}", t().features.assist_fixed_code_invalid
         );
+        ensure!(Rotation::ALL.contains(&self.rotation), "{}", t().features.assist_temporary_code_invalid);
         ensure!(
             self.grants.as_ref().is_none_or(|grants| grants
                 .iter()
@@ -170,6 +229,18 @@ impl Settings {
                 .then_some(self.custom_code.as_str()),
         ]
     }
+    /// Whether the temporary code is due for a new one: by its age, or
+    /// `visit_ended` (the last visitor admitted while it was in use left).
+    pub fn rotation_due(&self, now: i64, visit_ended: bool) -> bool {
+        if !self.enabled || !self.mode.needs_password() || !self.passwords.random() {
+            return false;
+        }
+        match self.rotation {
+            Rotation::AfterVisit => visit_ended,
+            Rotation::Hours(hours) => now >= self.code_made_at + i64::from(hours) * 3600,
+            Rotation::Never => false,
+        }
+    }
     pub fn refresh_code(&mut self) {
         const LETTERS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
         const DIGITS: &[u8] = b"23456789";
@@ -183,6 +254,7 @@ impl Settings {
         }
         code.shuffle(&mut rng);
         self.code = code.into_iter().map(char::from).collect();
+        self.code_made_at = chrono::Utc::now().timestamp();
     }
 }
 
@@ -885,6 +957,20 @@ async fn run(client: HostClient, mut rx: mpsc::Receiver<Push>, stop: Cancellatio
                     .is_some_and(|at| at.elapsed() < Duration::from_secs(3)),
             )
         };
+        let visit_ended = client.host.take_visit_ended();
+        if client.is_active() && settings.rotation_due(chrono::Utc::now().timestamp(), visit_ended) {
+            let mut next = settings.clone();
+            next.refresh_code();
+            match client.host.set_assistance(next) {
+                Ok(()) => {
+                    tracing::info!(rotation = ?settings.rotation, "temporary access code changed");
+                    let host = client.host.clone();
+                    tokio::spawn(async move { host.persist_settings().await });
+                }
+                Err(error) => tracing::warn!(%error, "temporary access code could not change"),
+            }
+            continue;
+        }
         if requested_revision != revision {
             requested_revision = revision;
             identity_attempted = false;
@@ -1296,5 +1382,47 @@ impl Reply {
             Self::Pake(id, reply) => client.host_assist_pake(&id, reply).await,
             Self::Decision(id, decision) => client.host_assist_decision(&id, decision).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_temporary_code_changes_when_due() {
+        let mut settings = Settings {
+            enabled: true,
+            code: "AB2CD3EF".into(),
+            code_made_at: 1_000,
+            ..Settings::default()
+        };
+        // Every day by default.
+        assert!(!settings.rotation_due(1_000 + 86_399, false));
+        assert!(settings.rotation_due(1_000 + 86_400, false));
+        settings.rotation = Rotation::AfterVisit;
+        assert!(!settings.rotation_due(10_000_000, false));
+        assert!(settings.rotation_due(1_000, true));
+        settings.rotation = Rotation::Never;
+        assert!(!settings.rotation_due(10_000_000, true));
+        // Unused codes stay.
+        settings.rotation = Rotation::Hours(1);
+        settings.passwords = Passwords::Custom;
+        assert!(!settings.rotation_due(10_000_000, true));
+        settings.passwords = Passwords::Random;
+        settings.mode = Mode::Confirmation;
+        assert!(!settings.rotation_due(10_000_000, true));
+        settings.rotation = Rotation::Hours(5);
+        assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn rotations_parse_from_the_command_line() {
+        assert_eq!(Rotation::parse("after-visit").unwrap(), Rotation::AfterVisit);
+        assert_eq!(Rotation::parse("6h").unwrap(), Rotation::Hours(6));
+        assert_eq!(Rotation::parse("7d").unwrap(), Rotation::Hours(168));
+        assert_eq!(Rotation::parse("never").unwrap(), Rotation::Never);
+        assert!(Rotation::parse("5h").is_err());
+        assert!(Rotation::parse("d").is_err());
     }
 }

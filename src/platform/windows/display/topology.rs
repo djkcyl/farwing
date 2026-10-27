@@ -41,9 +41,6 @@ pub(crate) struct Dpi {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum VirtualProvider {
-    /// Another product's virtual display adapter (GameViewer).
-    /// Never owned, managed or counted as a real replacement display.
-    Foreign,
     /// This client's own Farwing Display adapter.
     Farwing,
 }
@@ -51,7 +48,6 @@ pub(crate) enum VirtualProvider {
 impl VirtualProvider {
     fn from_adapter_name(name: &str) -> Option<Self> {
         match name {
-            "GameViewer Virtual Display Adapter" => Some(Self::Foreign),
             "Farwing Virtual Display Adapter" => Some(Self::Farwing),
             _ => None,
         }

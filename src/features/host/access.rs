@@ -180,6 +180,8 @@ struct Ownership {
     allowed: bool,
     active: bool,
     dirty: bool,
+    /// The last visitor left (for a code that changes after each visit).
+    visit_ended: bool,
     last_controlled: Option<std::time::Instant>,
     connected_since: Option<std::time::Instant>,
     remote_action: Option<RemoteAction>,
@@ -333,6 +335,7 @@ impl Default for Handle {
                 allowed: false,
                 active: true,
                 dirty: false,
+                visit_ended: false,
                 last_controlled: None,
                 connected_since: None,
                 remote_action: None,
@@ -455,6 +458,12 @@ fn end_participant(state: &mut Ownership, key: u64) {
     };
     if participant.connected {
         state.last_controlled = Some(std::time::Instant::now());
+    }
+    if participant.connection.assistance
+        && participant.connected_since.is_some()
+        && !state.participants.values().any(|p| p.connection.assistance)
+    {
+        state.visit_ended = true;
     }
     if participant.connected_since.is_some()
         && let Some(report) = std::mem::take(&mut participant.record).finish()
@@ -1096,6 +1105,10 @@ impl Handle {
         self.desired.send_replace(allowed.then_some(AccessRequest {
             generation: state.permission,
         }));
+    }
+    /// Whether the last visitor left since the previous call.
+    pub(crate) fn take_visit_ended(&self) -> bool {
+        std::mem::take(&mut lock(&self.ownership).visit_ended)
     }
     pub(crate) fn set_assistance(&self, settings: super::assist::Settings) -> anyhow::Result<()> {
         let mut state = lock(&self.ownership);
