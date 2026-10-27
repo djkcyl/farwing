@@ -317,6 +317,8 @@ pub(super) struct Center {
     ended: EndNotices,
     /// Each participant's last shown source, for its end notice.
     last_source: HashMap<String, String>,
+    /// The account's notifications (`docs/notifications.md`), by ID.
+    account: Vec<(i64, Card)>,
 }
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -352,6 +354,7 @@ impl Center {
             assist_error: None,
             ended: EndNotices::default(),
             last_source: HashMap::new(),
+            account: Vec::new(),
         }
     }
     pub fn set_mode(&mut self, mode: Mode) {
@@ -364,6 +367,26 @@ impl Center {
     pub fn reopen(&mut self) {
         self.dismissed.clear();
         self.preview = self.cards.iter().map(|c| c.ticket.clone()).collect();
+    }
+    /// One of the account's notifications, shown for a while.
+    pub fn show_notice(&mut self, id: i64, title: String, body: String) {
+        self.account.retain(|(other, _)| *other != id);
+        self.account.push((
+            id,
+            Card {
+                disconnect: None,
+                ticket: String::new(),
+                title: clean(&title),
+                body: clean(&body),
+                detail: String::new(),
+                expires_at: chrono::Utc::now().timestamp() + 12,
+                confirmation: false,
+                pairing: false,
+                busy: false,
+                connected: false,
+                transfer: None,
+            },
+        ));
     }
     pub fn report(&mut self, error: String) {
         self.feedback = Some((error, chrono::Utc::now().timestamp() + 10));
@@ -599,6 +622,10 @@ impl Center {
                 },
                 None,
             ));
+        }
+        self.account.retain(|(_, card)| card.expires_at > now);
+        for (id, card) in &self.account {
+            items.push((format!("notice:{id}"), card.clone(), None));
         }
         let valid: HashSet<_> = items.iter().map(|(key, _, _)| key.clone()).collect();
         self.keys.retain(|key, _| valid.contains(key));

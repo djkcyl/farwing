@@ -1631,6 +1631,46 @@ impl ServerApi {
             .await
     }
 
+    /// The account's notifications, newest first, with the unread count.
+    pub(crate) async fn notices(&self, before: Option<i64>, limit: usize) -> Result<wire::NoticeList> {
+        let mut path = format!("{}?limit={limit}", path::NOTICES);
+        if let Some(before) = before {
+            path.push_str(&format!("&before={before}"));
+        }
+        self.call(Method::GET, &path, Body::None, REQUEST_TIMEOUT, Auth::Session)
+            .await
+    }
+
+    pub(crate) async fn read_notices(&self) -> Result<()> {
+        self.call::<IgnoredAny>(
+            Method::POST,
+            path::NOTICES_READ,
+            json(&wire::NoticeRead { ids: Vec::new(), all: true })?,
+            REQUEST_TIMEOUT,
+            Auth::Session,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    pub(crate) async fn notice_settings(&self) -> Result<wire::NoticeSettings> {
+        self.call(Method::GET, path::NOTICE_SETTINGS, Body::None, REQUEST_TIMEOUT, Auth::Session)
+            .await
+    }
+
+    pub(crate) async fn save_notice_setting(&self, kind: &str, enabled: bool) -> Result<wire::NoticeSettings> {
+        self.call(
+            Method::PUT,
+            path::NOTICE_SETTINGS,
+            json(&wire::NoticeSettings {
+                settings: vec![wire::NoticeSetting { kind: kind.to_owned(), enabled }],
+            })?,
+            REQUEST_TIMEOUT,
+            Auth::Session,
+        )
+        .await
+    }
+
     pub(crate) async fn assist_cancel(&self, request_id: &str) -> Result<()> {
         anyhow::ensure!(farwing_protocol::ids::is_uuid(request_id), "{}", crate::i18n::t().session.api_assist_id_invalid);
         self.call::<IgnoredAny>(

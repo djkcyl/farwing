@@ -26,6 +26,7 @@ mod host_assist;
 mod host_settings;
 mod logs;
 mod port_mapping;
+mod notices;
 mod power;
 mod records;
 mod settings;
@@ -49,6 +50,8 @@ enum Page {
     ThisDevice,
     /// Connections and account events.
     Records,
+    /// The account's notifications and which it receives.
+    Notices,
     DeviceDetails,
     Settings,
 }
@@ -60,6 +63,7 @@ impl Page {
             Self::Friends => text.center.page_friends,
             Self::ThisDevice => text.center.page_this_device,
             Self::Records => text.records.page,
+            Self::Notices => text.notices.page,
             Self::DeviceDetails => text.center.page_device_details,
             Self::Settings => text.common.settings,
         }
@@ -160,6 +164,8 @@ enum Icon {
     Host,
     /// Records: a clock.
     Records,
+    /// Notifications: a bell.
+    Notices,
 }
 
 pub(super) fn configure_visuals(ctx: &egui::Context) {
@@ -185,6 +191,23 @@ fn paint_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: Color32) {
             ));
         }
         Icon::Keyboard => crate::ui::controls::paint_keyboard(p, rect, color),
+        Icon::Notices => {
+            p.add(egui::Shape::closed_line(
+                vec![
+                    q(-7.0, 5.0),
+                    q(-5.5, 2.0),
+                    q(-5.5, -3.0),
+                    q(-3.0, -7.0),
+                    q(0.0, -8.0),
+                    q(3.0, -7.0),
+                    q(5.5, -3.0),
+                    q(5.5, 2.0),
+                    q(7.0, 5.0),
+                ],
+                s,
+            ));
+            p.line_segment([q(-2.0, 8.0), q(2.0, 8.0)], s);
+        }
         Icon::Records => {
             p.circle_stroke(c, 8.5, s);
             p.add(egui::Shape::line(vec![q(0.0, -5.0), q(0.0, 0.0), q(4.0, 3.0)], s));
@@ -533,7 +556,7 @@ fn remember_signed_out_view() {
 }
 
 impl DeviceCenterApp {
-    fn needs_login(&self) -> bool {
+    pub(super) fn needs_login(&self) -> bool {
         self.devices.is_none() && self.catalog.is_none()
     }
 
@@ -592,6 +615,8 @@ impl DeviceCenterApp {
                     self.this_device_page(ui);
                 } else if self.center_ui.page == Page::Records {
                     self.records_page(ui);
+                } else if self.center_ui.page == Page::Notices {
+                    self.notices_page(ui);
                 } else {
                     self.devices_page(ui);
                 }
@@ -709,6 +734,24 @@ impl DeviceCenterApp {
                         self.records.error = None;
                     }
                     self.center_ui.page = Page::Records;
+                }
+                let unread = Some(self.notices.unread as usize)
+                    .filter(|count| *count > 0 && access == Access::Account);
+                if nav_item(
+                    ui,
+                    Icon::Notices,
+                    Page::Notices.title(),
+                    unread,
+                    locked(Page::Notices),
+                    self.center_ui.page == Page::Notices,
+                ) {
+                    if self.center_ui.page != Page::Notices && !locked(Page::Notices) {
+                        // Opening the page shows the latest and reads them.
+                        self.notices.list = None;
+                        self.notices.settings = None;
+                        self.notices.error = None;
+                    }
+                    self.center_ui.page = Page::Notices;
                 }
                 ui.add_space(14.0);
                 ui.separator();

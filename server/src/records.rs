@@ -150,8 +150,9 @@ fn latest(
     .optional()
 }
 
-/// A session was admitted: a new record, or the visit's record reopened.
-pub fn open(c: &Connection, o: &Opened) -> R<()> {
+/// A session was admitted: a new record (`true`), or the visit's record
+/// reopened.
+pub fn open(c: &Connection, o: &Opened) -> R<bool> {
     let visit = visit_of(o);
     match latest(c, &o.controller.device_id, &o.host.device_id, visit)? {
         Some((seq, outcome, ended, sid))
@@ -166,12 +167,13 @@ pub fn open(c: &Connection, o: &Opened) -> R<()> {
                     params![seq, o.session_id, o.ip],
                 )?;
             }
+            Ok(false)
         }
         _ => {
             insert(c, o, visit, RecordOutcome::Open, false)?;
+            Ok(true)
         }
     }
-    Ok(())
 }
 
 /// An attempt that was not admitted: a record of its own.

@@ -164,6 +164,8 @@ pub async fn device_event(
         detail["other"] = json!(e.device_name);
         detail["other_id"] = json!(e.device_id);
     }
+    let data = json!({ "device": auth.device.alias, "what": e.kind, "other": e.device_name });
+    crate::notify::send(&app, &auth.user.id, farwing_protocol::api::notice::ACCESS_CHANGED, data, &[&auth.device.id]);
     super::me::audit(
         &app,
         Some((&auth.user.id, &auth.user.username)),

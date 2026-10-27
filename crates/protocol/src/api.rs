@@ -46,6 +46,11 @@ pub mod path {
     pub const ACCOUNT_EVENTS: &str = "/api/v2/me/events";
     /// An event of the calling device's settings ([`super::DeviceEvent`]).
     pub const SELF_EVENTS: &str = "/api/v2/devices/self/events";
+    /// Notifications of the current account (`docs/notifications.md`).
+    pub const NOTICES: &str = "/api/v2/me/notices";
+    pub const NOTICES_READ: &str = "/api/v2/me/notices/read";
+    /// Which notifications the account receives.
+    pub const NOTICE_SETTINGS: &str = "/api/v2/me/notice-settings";
 
     pub fn device(id: &str) -> String {
         format!("{DEVICES}/{id}")
@@ -1100,6 +1105,120 @@ pub struct DeviceEvent {
     /// The device concerned (trusted devices).
     pub device_id: String,
     pub device_name: String,
+}
+
+// ---------------------------------------------------------- notifications
+
+/// Notification kinds (`docs/notifications.md`).
+pub mod notice {
+    /// A device that never signed in to the account did.
+    pub const LOGIN_NEW_DEVICE: &str = "login.new_device";
+    /// Several failed sign-ins in a short time.
+    pub const LOGIN_FAILURES: &str = "login.failures";
+    /// The password or two-step verification changed.
+    pub const SECURITY_CHANGED: &str = "security.changed";
+    /// A device was removed, unbound, signed out or disconnected.
+    pub const DEVICE_REMOVED: &str = "device.removed";
+    /// A friend, visitor or trusted device connected to a device.
+    pub const CONNECTION_INCOMING: &str = "connection.incoming";
+    /// Someone tried to connect and was not admitted.
+    pub const CONNECTION_REFUSED: &str = "connection.refused";
+    /// A friend shut down, restarted or woke a device.
+    pub const POWER_REMOTE: &str = "power.remote";
+    pub const FRIEND_REQUEST: &str = "friend.request";
+    pub const FRIEND_ACCEPTED: &str = "friend.accepted";
+    /// A friend changed what this account may do on their devices.
+    pub const FRIEND_GRANTS: &str = "friend.grants";
+    /// One of the account's devices connected to another.
+    pub const CONNECTION_OWN: &str = "connection.own";
+    /// A device has been offline for a while.
+    pub const DEVICE_OFFLINE: &str = "device.offline";
+    /// A device's access code or trusted devices changed.
+    pub const ACCESS_CHANGED: &str = "access.changed";
+    /// Administrators: the automatic certificate could not be obtained.
+    pub const ADMIN_CERTIFICATE: &str = "admin.certificate";
+    /// Administrators: a relay node has been offline for a while.
+    pub const ADMIN_NODE_OFFLINE: &str = "admin.node_offline";
+    /// Administrators: an account registered with an invitation.
+    pub const ADMIN_REGISTERED: &str = "admin.registered";
+
+    /// A kind, whether it is on until the account says otherwise, and
+    /// whether only administrators receive it.
+    pub struct Kind {
+        pub kind: &'static str,
+        pub default: bool,
+        pub admin: bool,
+    }
+
+    const fn k(kind: &'static str, default: bool, admin: bool) -> Kind {
+        Kind { kind, default, admin }
+    }
+
+    pub const KINDS: [Kind; 16] = [
+        k(LOGIN_NEW_DEVICE, true, false),
+        k(LOGIN_FAILURES, true, false),
+        k(SECURITY_CHANGED, true, false),
+        k(DEVICE_REMOVED, true, false),
+        k(CONNECTION_INCOMING, true, false),
+        k(CONNECTION_REFUSED, true, false),
+        k(POWER_REMOTE, true, false),
+        k(FRIEND_REQUEST, true, false),
+        k(FRIEND_ACCEPTED, true, false),
+        k(FRIEND_GRANTS, true, false),
+        k(CONNECTION_OWN, false, false),
+        k(DEVICE_OFFLINE, false, false),
+        k(ACCESS_CHANGED, false, false),
+        k(ADMIN_CERTIFICATE, true, true),
+        k(ADMIN_NODE_OFFLINE, true, true),
+        k(ADMIN_REGISTERED, true, true),
+    ];
+
+    pub fn find(kind: &str) -> Option<&'static Kind> {
+        KINDS.iter().find(|k| k.kind == kind)
+    }
+}
+
+/// A notification (`GET /me/notices`, realtime `notice`). `data` holds the
+/// facts its text is made of, by kind.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Notice {
+    pub id: i64,
+    pub kind: String,
+    pub data: serde_json::Value,
+    pub created_at: i64,
+    pub read: bool,
+}
+
+/// `GET /me/notices?before=&after=&limit=`: newest first, and how many are
+/// unread (`limit=0`: only the count).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NoticeList {
+    pub notices: Vec<Notice>,
+    pub unread: u32,
+}
+
+/// `POST /me/notices/read`: these, or all.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NoticeRead {
+    pub ids: Vec<i64>,
+    pub all: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct NoticeSetting {
+    pub kind: String,
+    pub enabled: bool,
+}
+
+/// `GET`/`PUT /me/notice-settings`: every kind the account may receive.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NoticeSettings {
+    pub settings: Vec<NoticeSetting>,
 }
 
 /// [`DeviceEvent::kind`]s.

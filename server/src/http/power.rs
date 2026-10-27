@@ -208,6 +208,15 @@ async fn power_event(
     });
     let actor = Some((auth.user.id.as_str(), auth.user.username.as_str()));
     super::me::audit(app, actor, "device.power", owner, detail, true, ip).await;
+    // A friend did it: the owner hears of it.
+    if target.user_id.as_deref().is_some_and(|o| o != auth.user.id) {
+        let data = serde_json::json!({
+            "device": target.alias,
+            "who": auth.user.display_name(),
+            "action": action_str(action),
+        });
+        crate::notify::send_owner(app, &target.id, farwing_protocol::api::notice::POWER_REMOTE, data, &[&target.id]);
+    }
 }
 
 /// `POST /api/v2/power/{request_id}/result`: reported by the target device.

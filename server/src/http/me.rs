@@ -237,6 +237,8 @@ pub async fn set_password(
         }
     }
     audit(&app, actor, "password.change", &auth.user.username, Value::Null, true, ip).await;
+    let data = json!({ "what": "password" });
+    crate::notify::send(&app, &auth.user.id, farwing_protocol::api::notice::SECURITY_CHANGED, data, &[&auth.device.id]);
     Ok(Json(Empty {}))
 }
 
@@ -348,6 +350,8 @@ pub async fn totp_enable(
         ip,
     )
     .await;
+    let data = json!({ "what": "totp_on" });
+    crate::notify::send(&app, &auth.user.id, farwing_protocol::api::notice::SECURITY_CHANGED, data, &[&auth.device.id]);
     Ok(Json(RecoveryCodes {
         recovery_codes: codes,
     }))
@@ -384,6 +388,8 @@ pub async fn totp_disable(
         ip,
     )
     .await;
+    let data = json!({ "what": "totp_off" });
+    crate::notify::send(&app, &auth.user.id, farwing_protocol::api::notice::SECURITY_CHANGED, data, &[&auth.device.id]);
     Ok(Json(Empty {}))
 }
 
@@ -543,6 +549,11 @@ pub async fn register(
     )
     .await;
     tracing::info!(user_id = %user_id, "account registered with an invitation");
+    crate::notify::send_admins(
+        &app,
+        farwing_protocol::api::notice::ADMIN_REGISTERED,
+        json!({ "who": username, "invite": invite.note }),
+    );
     Ok(Json(LoginResponse {
         access_token: token,
         user_id,

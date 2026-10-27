@@ -56,7 +56,7 @@ impl Page {
     /// The page is only for an account. Accepting assistance works for
     /// guests; assisting others is gated on that page itself.
     pub(super) fn needs_account(self) -> bool {
-        matches!(self, Self::Friends | Self::Records | Self::DeviceDetails)
+        matches!(self, Self::Friends | Self::Records | Self::Notices | Self::DeviceDetails)
     }
 }
 

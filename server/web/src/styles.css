@@ -1233,6 +1233,13 @@ table.table {
   gap: 4px;
 }
 
+.notice-unread {
+  background: rgba(75, 136, 235, 0.08);
+}
+.notice-unread .grow > div:first-child {
+  font-weight: 500;
+}
+
 .pager {
   display: flex;
   justify-content: center;

@@ -77,6 +77,10 @@ pub(super) enum GuiCommand {
         generation: u64,
         operation: super::records::RecordOperation,
     },
+    Notices {
+        generation: u64,
+        operation: super::notices::NoticeOperation,
+    },
     AssistOperation {
         generation: u64,
         sequence: u64,
@@ -131,6 +135,7 @@ pub(super) enum GuiEvent {
     AssistOperation(u64, u64, std::result::Result<AssistResult, String>),
     Friends(u64, std::result::Result<super::friends::FriendResult, String>),
     Records(u64, std::result::Result<super::records::RecordResult, String>),
+    Notices(u64, std::result::Result<super::notices::NoticeResult, String>),
     Devices(u64, DeviceList),
     /// The last device list, while the server cannot be reached at startup.
     /// The saved device list (or this device alone) and the saved

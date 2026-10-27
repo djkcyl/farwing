@@ -227,6 +227,8 @@ pub async fn send_request(
         SendOutcome::Accepted(since) => {
             tracing::info!(user_id = %auth.user.id, friend = %other.id, "friends (mutual request)");
             announce_friendship(&app, &auth.user, &other).await?;
+            let data = serde_json::json!({ "who": display(&auth.user) });
+            crate::notify::send(&app, &other.id, farwing_protocol::api::notice::FRIEND_ACCEPTED, data, &[]);
             FriendRequestOutcome::Accepted {
                 friend: Friend {
                     user: user_summary(&other),
@@ -240,6 +242,8 @@ pub async fn send_request(
         SendOutcome::Created(r) => {
             push_friend_changed(&app, &other.id, FriendChangeKind::RequestReceived, &auth.user)
                 .await;
+            let data = serde_json::json!({ "who": display(&auth.user) });
+            crate::notify::send(&app, &other.id, farwing_protocol::api::notice::FRIEND_REQUEST, data, &[]);
             FriendRequestOutcome::Sent {
                 request: request(r),
             }
@@ -295,6 +299,8 @@ pub async fn accept_request(
         .await?;
     tracing::info!(user_id = %auth.user.id, friend = %other.id, "friend request accepted");
     friend_event(&app, &auth, &other, "friend.add", ip).await;
+    let data = serde_json::json!({ "who": display(&auth.user) });
+    crate::notify::send(&app, &other.id, farwing_protocol::api::notice::FRIEND_ACCEPTED, data, &[]);
     announce_friendship(&app, &auth.user, &other).await?;
     Ok(Json(Friend {
         user: user_summary(&other),
@@ -444,6 +450,8 @@ pub async fn put_grants(
     tracing::info!(user_id = %auth.user.id, friend = %other.id, "grants changed");
     if as_map(&before) != as_map(&after) {
         friend_event(&app, &auth, &other, "grants.update", ip).await;
+        let data = serde_json::json!({ "who": display(&auth.user) });
+        crate::notify::send(&app, &other.id, farwing_protocol::api::notice::FRIEND_GRANTS, data, &[]);
     }
     app.hub.regrant(&other.id, &as_map(&after));
     push_friend_changed(&app, &other.id, FriendChangeKind::GrantsChanged, &auth.user).await;

@@ -15,6 +15,7 @@ pub(crate) mod common;
 pub(crate) mod controls;
 pub(crate) mod errors;
 pub(crate) mod features;
+pub(crate) mod notices;
 pub(crate) mod records;
 pub(crate) mod session;
 pub(crate) mod settings;
@@ -160,6 +161,7 @@ pub(crate) struct Messages {
     pub errors: errors::Errors,
     pub features: features::Features,
     pub records: records::Records,
+    pub notices: notices::Notices,
     pub session: session::Session,
     pub settings: settings::Settings,
     pub system: system::System,
@@ -174,6 +176,7 @@ static ZH_CN: Messages = Messages {
     errors: errors::ZH_CN,
     features: features::ZH_CN,
     records: records::ZH_CN,
+    notices: notices::ZH_CN,
     session: session::ZH_CN,
     settings: settings::ZH_CN,
     system: system::ZH_CN,
@@ -188,6 +191,7 @@ static EN: Messages = Messages {
     errors: errors::EN,
     features: features::EN,
     records: records::EN,
+    notices: notices::EN,
     session: session::EN,
     settings: settings::EN,
     system: system::EN,

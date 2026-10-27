@@ -325,6 +325,24 @@ export interface ConnectionRecord {
   host_report: HostReport | null;
 }
 
+/// A notification (`docs/notifications.md`).
+export interface Notice {
+  id: number;
+  kind: string;
+  data: Record<string, unknown> | null;
+  created_at: number;
+  read: boolean;
+}
+
+export interface NoticeList {
+  notices: Notice[];
+  unread: number;
+}
+
+export interface NoticeSettings {
+  settings: { kind: string; enabled: boolean }[];
+}
+
 /// An event of the account.
 export interface AccountEvent {
   id: number;

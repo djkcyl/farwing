@@ -641,7 +641,8 @@ impl Ws {
         }
     }
 
-    /// Next frame of `kind`, skipping server pings and device/friend pushes.
+    /// Next frame of `kind`, skipping server pings, device and friend pushes
+    /// and notifications.
     pub async fn recv_type(&mut self, kind: &str) -> Value {
         loop {
             match self.next(Duration::from_secs(10)).await {
@@ -649,7 +650,8 @@ impl Ws {
                 Some(Ok(v))
                     if v["type"] == "ping"
                         || v["type"] == "device.changed"
-                        || v["type"] == "friend.changed" =>
+                        || v["type"] == "friend.changed"
+                        || v["type"] == "notice" =>
                 {
                     continue;
                 }
@@ -709,6 +711,7 @@ impl Ws {
                         t == "ping"
                             || t == "device.changed"
                             || t == "friend.changed"
+                            || t == "notice"
                             || skip.contains(&t),
                         "unexpected frame before close: {v}"
                     );
@@ -719,7 +722,8 @@ impl Ws {
         }
     }
 
-    /// No frame (other than pings and device pushes) arrives within `wait`.
+    /// No frame (other than pings, device pushes and notifications) arrives
+    /// within `wait`.
     pub async fn expect_silence(&mut self, wait: Duration) {
         let deadline = tokio::time::Instant::now() + wait;
         loop {
@@ -729,7 +733,11 @@ impl Ws {
             }
             match self.next(left).await {
                 None => return,
-                Some(Ok(v)) if v["type"] == "ping" || v["type"] == "device.changed" => continue,
+                Some(Ok(v))
+                    if v["type"] == "ping" || v["type"] == "device.changed" || v["type"] == "notice" =>
+                {
+                    continue;
+                }
                 Some(other) => panic!("expected silence, got {other:?}"),
             }
         }

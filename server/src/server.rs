@@ -101,6 +101,7 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
         forwarding,
         local_relay: Default::default(),
         control: OnceLock::new(),
+        watch: Default::default(),
     });
     let router = http::router(Arc::clone(&app));
     let started = Components::start(Arc::clone(&app), router, listener).await?;
@@ -118,28 +119,35 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
             }
         }));
     }
-    // Ordered persistence of session state.
+    // Ordered persistence of session state; a new connection record is
+    // also a notification.
     {
         let db = db.clone();
+        let app = Arc::clone(&app);
         let mut rx = channels.persist;
         tasks.push(tokio::spawn(async move {
             while let Some(job) = rx.recv().await {
                 let res = db
                     .call(move |c| match job {
-                        PersistJob::SessionCreated(rec, opened) => db::insert_session(c, &rec)
-                            .and_then(|()| crate::records::open(c, &opened)),
+                        PersistJob::SessionCreated(rec, opened) => {
+                            db::insert_session(c, &rec)?;
+                            Ok(crate::records::open(c, &opened)?.then_some(opened))
+                        }
                         PersistJob::SessionState {
                             id,
                             state,
                             started_at,
-                        } => db::set_session_state(c, &id, state, started_at),
+                        } => db::set_session_state(c, &id, state, started_at).map(|()| None),
                         PersistJob::SessionEnded { id, reason } => db::end_session(c, &id, &reason)
-                            .and_then(|()| crate::records::end(c, &id, &reason)),
-                        PersistJob::LastSeen(id) => db::touch_last_seen(c, &id).map(|_| ()),
+                            .and_then(|()| crate::records::end(c, &id, &reason))
+                            .map(|()| None),
+                        PersistJob::LastSeen(id) => db::touch_last_seen(c, &id).map(|_| None),
                     })
                     .await;
-                if let Err(e) = res {
-                    tracing::warn!(error = %format!("{e:#}"), "persisting realtime state failed");
+                match res {
+                    Ok(Some(opened)) => crate::notify::connection(&app, &opened),
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(error = %format!("{e:#}"), "persisting realtime state failed"),
                 }
             }
         }));
@@ -152,6 +160,7 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
             while let Some(ev) = rx.recv().await {
                 match ev {
                     HubEvent::PresenceChanged(device_id) => {
+                        crate::notify::presence_changed(&app, &device_id);
                         http::devices::notify_changed(
                             &app,
                             &device_id,
@@ -187,7 +196,18 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
             }
         }));
     }
-    // Audit log and connection record retention (`web.audit_days`).
+    // Notifications of what has been down for a while.
+    {
+        let app = Arc::clone(&app);
+        tasks.push(tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                crate::notify::sweep(&app).await;
+            }
+        }));
+    }
+    // Audit log, connection record and notification retention (`web.audit_days`).
     {
         let app = Arc::clone(&app);
         tasks.push(tokio::spawn(async move {
@@ -198,7 +218,9 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
                 match app
                     .db
                     .call(move |c| {
-                        Ok(crate::webdb::prune_audit(c, keep)? + crate::records::prune(c, keep)?)
+                        Ok(crate::webdb::prune_audit(c, keep)?
+                            + crate::records::prune(c, keep)?
+                            + crate::notify::prune(c, keep)?)
                     })
                     .await
                 {

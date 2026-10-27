@@ -264,6 +264,19 @@ CREATE INDEX IF NOT EXISTS records_visit ON records(controller_device_id, visit)
 CREATE INDEX IF NOT EXISTS records_session ON records(session_id);
 CREATE INDEX IF NOT EXISTS records_host_user ON records(host_user_id);
 CREATE INDEX IF NOT EXISTS records_controller_user ON records(controller_user_id);
+CREATE TABLE IF NOT EXISTS notices (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    data       TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL,
+    read_at    INTEGER
+);
+CREATE INDEX IF NOT EXISTS notices_user ON notices(user_id, id);
+CREATE TABLE IF NOT EXISTS notice_prefs (
+    user_id TEXT PRIMARY KEY,
+    prefs   TEXT NOT NULL DEFAULT '{}'
+);
 "#;
 
 impl Db {

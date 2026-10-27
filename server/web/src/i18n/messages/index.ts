@@ -8,6 +8,7 @@ import * as common from './common';
 import * as devices from './devices';
 import * as format from './format';
 import * as nav from './nav';
+import * as notices from './notices';
 import * as records from './records';
 import * as setup from './setup';
 import * as viewer from './viewer';
@@ -23,6 +24,7 @@ const zh = {
   setup: setup.zh,
   viewer: viewer.zh,
   records: records.zh,
+  notices: notices.zh,
 };
 
 export type Messages = typeof zh;
@@ -38,6 +40,7 @@ const en: Messages = {
   setup: setup.en,
   viewer: viewer.en,
   records: records.en,
+  notices: notices.en,
 };
 
 export const messages: Record<Lang, Messages> = { 'zh-CN': zh, en };

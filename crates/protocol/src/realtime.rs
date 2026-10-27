@@ -112,6 +112,8 @@ pub mod types {
     /// Server → presence connections: the address clients connect to or the
     /// server's certificate changed ([`ServerChanged`]).
     pub const SERVER_CHANGED: &str = "server.changed";
+    /// Server → the account's devices: a notification (`api::Notice`).
+    pub const NOTICE: &str = "notice";
     /// Device → server on its presence connection: round trips to the relay
     /// nodes of `Hello::probe_nodes` ([`NodesRtt`]).
     pub const NODES_RTT: &str = "nodes.rtt";

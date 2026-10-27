@@ -8,6 +8,7 @@ pub mod devices;
 pub mod friends;
 pub mod me;
 pub mod misc;
+pub mod notices;
 pub mod nodes;
 pub mod power;
 pub mod records;
@@ -71,6 +72,8 @@ pub struct AppState {
     pub local_relay: parking_lot::RwLock<crate::turn_server::RelayStats>,
     /// The task that applies settings (`crate::runtime`).
     pub control: std::sync::OnceLock<crate::runtime::Control>,
+    /// What notifications watch for (`crate::notify`).
+    pub watch: crate::notify::Watch,
 }
 
 impl AppState {
@@ -372,6 +375,9 @@ pub fn router(app: App) -> Router {
         .route(path::ME, get(account::me).patch(me::set_profile))
         .route("/api/v2/me/security", get(me::security))
         .route(path::ACCOUNT_EVENTS, get(records::account_events))
+        .route(path::NOTICES, get(notices::list))
+        .route(path::NOTICES_READ, post(notices::read))
+        .route(path::NOTICE_SETTINGS, get(notices::settings).put(notices::save_settings))
         .route("/api/v2/me/password", post(me::set_password))
         .route("/api/v2/me/totp/setup", post(me::totp_setup))
         .route("/api/v2/me/totp/enable", post(me::totp_enable))

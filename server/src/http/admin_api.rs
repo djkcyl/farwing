@@ -490,6 +490,8 @@ pub async fn reset_password(
         .ok_or_else(ApiError::not_found)?;
     app.hub.revoke_user(&id);
     log(&app, &admin, "user.password", &username, Value::Null).await;
+    let data = serde_json::json!({ "what": "password", "by": admin.user().username });
+    crate::notify::send(&app, &id, farwing_protocol::api::notice::SECURITY_CHANGED, data, &[]);
     Ok(Json(NewPassword {
         password: generated,
     }))
@@ -514,6 +516,8 @@ pub async fn reset_totp(
         .await?
         .ok_or_else(ApiError::not_found)?;
     log(&app, &admin, "user.totp_reset", &username, Value::Null).await;
+    let data = serde_json::json!({ "what": "totp_reset", "by": admin.user().username });
+    crate::notify::send(&app, &id, farwing_protocol::api::notice::SECURITY_CHANGED, data, &[]);
     Ok(Json(Empty {}))
 }
 
@@ -697,7 +701,7 @@ pub async fn unbind_device(
                 return Ok(None);
             };
             let owner = match &d.user_id {
-                Some(uid) => db::get_user(c, uid)?.map(|u| u.username),
+                Some(uid) => db::get_user(c, uid)?,
                 None => None,
             };
             db::revoke_tokens_for_device(c, &d.id, "removed_by_admin")?;
@@ -709,7 +713,12 @@ pub async fn unbind_device(
     app.hub.revoke_device(&id);
     // The owner's username as the target: the owner sees it among its events.
     let detail = serde_json::json!({ "device": alias, "device_id": id });
-    log(&app, &admin, "device.unbind", &owner.unwrap_or_default(), detail).await;
+    let owner_name = owner.as_ref().map(|o| o.username.clone()).unwrap_or_default();
+    log(&app, &admin, "device.unbind", &owner_name, detail).await;
+    if let Some(owner) = &owner {
+        let data = serde_json::json!({ "device": alias, "how": "unbound", "by": admin.user().username });
+        crate::notify::send(&app, &owner.id, farwing_protocol::api::notice::DEVICE_REMOVED, data, &[&id]);
+    }
     Ok(Json(Empty {}))
 }
 
@@ -729,14 +738,19 @@ pub async fn disconnect_device(
                 return Ok((String::new(), None));
             };
             let owner = match &d.user_id {
-                Some(uid) => db::get_user(c, uid)?.map(|u| u.username),
+                Some(uid) => db::get_user(c, uid)?,
                 None => None,
             };
             Ok((d.alias, owner))
         })
         .await?;
     let detail = serde_json::json!({ "device": alias, "device_id": id });
-    log(&app, &admin, "device.disconnect", &owner.unwrap_or_default(), detail).await;
+    let owner_name = owner.as_ref().map(|o| o.username.clone()).unwrap_or_default();
+    log(&app, &admin, "device.disconnect", &owner_name, detail).await;
+    if let Some(owner) = &owner {
+        let data = serde_json::json!({ "device": alias, "how": "disconnected", "by": admin.user().username });
+        crate::notify::send(&app, &owner.id, farwing_protocol::api::notice::DEVICE_REMOVED, data, &[&id]);
+    }
     Ok(Json(Empty {}))
 }
 

@@ -969,6 +969,7 @@ fn is_push(kind: &str) -> bool {
             | types::POWER_REQUEST
             | types::WOL_WAKE
             | types::SERVER_CHANGED
+            | types::NOTICE
     )
 }
 

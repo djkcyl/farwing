@@ -22,6 +22,7 @@ const USER_ROUTES: [string, Page][] = [
   ['/friends', page(() => import('./pages/me/Friends'))],
   ['/favorites', page(() => import('./pages/me/Favorites'))],
   ['/records', page(() => import('./pages/me/Records'))],
+  ['/notifications', page(() => import('./pages/me/Notices'))],
   ['/account', page(() => import('./pages/me/Account'))],
   ['/connect', page(() => import('./pages/me/Connect'))],
 ];

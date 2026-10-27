@@ -384,6 +384,24 @@ async fn assist_record(
 }
 
 async fn record_refusal(app: &App, record: records::Opened, outcome: RecordOutcome) {
+    let who = if record.controller.nickname.is_empty() {
+        &record.controller.username
+    } else {
+        &record.controller.nickname
+    };
+    let data = json!({
+        "host": record.host.name,
+        "who": who,
+        "controller": record.controller.name,
+        "outcome": outcome.as_str(),
+    });
+    crate::notify::send(
+        app,
+        &record.host.user_id,
+        farwing_protocol::api::notice::CONNECTION_REFUSED,
+        data,
+        &[&record.host.device_id],
+    );
     if let Err(e) = app.db.call(move |c| records::refused(c, &record, outcome)).await {
         tracing::warn!(error = %format!("{e:#}"), "recording a refused attempt failed");
     }

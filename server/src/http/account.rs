@@ -14,6 +14,7 @@ use farwing_protocol::api::{
 use farwing_protocol::error::reason;
 use farwing_protocol::realtime::DeviceChangeKind;
 use farwing_protocol::{ErrorCode, ids};
+use farwing_protocol::api::notice as NOTICE;
 use serde_json::json;
 use std::time::Duration;
 
@@ -69,10 +70,23 @@ pub async fn login(
     })
     .await
     .unwrap_or(false);
+    let known = user.as_ref().map(|u| (u.id.clone(), u.username.clone()));
     let Some(user) = user.filter(|_| ok) else {
         tracing::info!(%ip, "login failed");
         let failed = super::me::failure(reason::LOGIN_FAILED);
         super::me::audit(&app, None, "login", &username, failed, false, ip).await;
+        // The account hears of it once a run of failures reaches the mark.
+        if let Some((target, name)) = known {
+            let failures = app
+                .db
+                .call(move |c| crate::notify::recent_failures(c, &name))
+                .await
+                .unwrap_or_default();
+            if failures == crate::notify::FAILURES {
+                let data = json!({ "count": failures, "ip": ip.to_string() });
+                crate::notify::send(&app, &target, NOTICE::LOGIN_FAILURES, data, &[]);
+            }
+        }
         return Err(ApiError::reason(
             ErrorCode::Unauthorized,
             reason::LOGIN_FAILED,
@@ -94,6 +108,12 @@ pub async fn login(
         None
     };
     let (did, uid) = (device.id.clone(), user.id.clone());
+    let new_device = {
+        let (did, uid) = (did.clone(), uid.clone());
+        app.db
+            .call(move |c| crate::notify::new_sign_in_device(c, &uid, &did))
+            .await?
+    };
     app.db
         .call(move |c| {
             let tx = c.transaction()?;
@@ -111,6 +131,14 @@ pub async fn login(
         notify_changed(&app, &device.id, DeviceChangeKind::Added, false).await;
     }
     tracing::info!(user_id = %user.id, device_id = %device.id, "login");
+    if new_device {
+        let data = json!({
+            "device": device.alias,
+            "platform": device.platform.as_str(),
+            "ip": ip.to_string(),
+        });
+        crate::notify::send(&app, &user.id, NOTICE::LOGIN_NEW_DEVICE, data, &[&device.id]);
+    }
     super::me::audit(
         &app,
         Some((&user.id, &user.username)),
@@ -217,6 +245,8 @@ pub async fn revoke_auth_session(
     let detail = json!({ "device": alias, "device_id": device_id });
     let actor = Some((auth.user.id.as_str(), auth.user.username.as_str()));
     super::me::audit(&app, actor, "auth.revoke", &auth.user.username, detail, true, ip).await;
+    let data = json!({ "device": alias, "how": "signed_out" });
+    crate::notify::send(&app, &auth.user.id, NOTICE::DEVICE_REMOVED, data, &[&auth.device.id, &device_id]);
     Ok(Json(Empty {}))
 }
 

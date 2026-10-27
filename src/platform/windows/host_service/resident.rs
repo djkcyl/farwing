@@ -156,6 +156,9 @@ pub(crate) struct Snapshot {
     /// When this process next tries the server again, if it is waiting.
     #[serde(default)]
     pub retry_in_ms: Option<u64>,
+    /// Notification pushes this process received (`account::notices`).
+    #[serde(default)]
+    pub notices: u64,
 }
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Reply {
@@ -896,6 +899,7 @@ async fn run_authorized_account(
                                     retry_in_ms: crate::session::reconnect::next().map(|at| {
                                         at.saturating_duration_since(std::time::Instant::now()).as_millis() as u64
                                     }),
+                                    notices: crate::account::notices::pushes(),
                                 })))},
                                 Request::DirectState => Ok(Reply::DirectState {
                                     account,

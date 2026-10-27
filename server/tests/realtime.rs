@@ -42,7 +42,9 @@ async fn open_session(p: &mut Pair, ctrl: &Dev, attempt: &str) -> (Ws, String, V
     assert!(
         before
             .iter()
-            .all(|v| v["type"] == "session.ended" || v["type"] == "device.changed"),
+            .all(|v| v["type"] == "session.ended"
+                || v["type"] == "device.changed"
+                || v["type"] == "notice"),
         "{before:?}"
     );
     assert_eq!(incoming["sid"], sid.as_str());

@@ -7,6 +7,7 @@ pub mod client;
 pub(crate) mod device_change;
 pub(crate) mod http;
 pub mod login;
+pub(crate) mod notices;
 pub(crate) mod power;
 pub(crate) mod records;
 pub mod server;

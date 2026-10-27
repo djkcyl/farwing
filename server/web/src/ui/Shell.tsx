@@ -5,6 +5,7 @@ import type { Messages } from '../i18n';
 import { useT } from '../i18n/react';
 import { useAuth } from '../lib/auth';
 import { displayName, instanceText } from '../lib/format';
+import { useUnreadNotices } from '../lib/notices';
 import { Link, useLocation } from '../lib/router';
 import { Icon, type IconName } from './icons';
 import { IconButton } from './kit';
@@ -25,6 +26,7 @@ const USER_NAV: NavItem[] = [
   { to: '/friends', label: 'friends', icon: 'users' },
   { to: '/favorites', label: 'favorites', icon: 'star' },
   { to: '/records', label: 'records', icon: 'history' },
+  { to: '/notifications', label: 'notifications', icon: 'bell' },
   { to: '/account', label: 'account', icon: 'shield' },
   { to: '/connect', label: 'connect', icon: 'link' },
 ];
@@ -69,12 +71,14 @@ export function Shell({ children }: { children: ReactNode }) {
   const { confirm } = useOverlay();
   const [open, setOpen] = useState(false);
   const name = displayName(auth.me);
+  const unread = useUnreadNotices(auth.status === 'signed_in');
 
   const nav = (items: NavItem[]) =>
     items.map((item) => (
       <Link key={item.to} to={item.to} className={active(item, path) ? 'active' : ''} onClick={() => setOpen(false)}>
         <Icon name={item.icon} size={17} />
         <span>{t.nav[item.label]}</span>
+        {item.to === '/notifications' && unread > 0 && <span className="nav-count">{unread}</span>}
       </Link>
     ));
 

@@ -10,6 +10,7 @@ import type { AuthSession } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
 import { Alert, Badge, Button, Card, Copy, Empty, Field, Input, Loading, PageHeader, Row, Rows } from '../../ui/kit';
 import { Dialog, useOverlay } from '../../ui/overlay';
+import { NoticeSettings } from '../../ui/NoticeSettings';
 
 function QrCode({ text }: { text: string }) {
   const t = useT();
@@ -417,6 +418,7 @@ export default function Account() {
         <Password />
       </div>
       <TwoStep />
+      <NoticeSettings />
       <Logins />
     </div>
   );

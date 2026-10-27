@@ -24,6 +24,7 @@ use view::{CenterUi, configure_visuals};
 mod assist;
 mod direct;
 pub(crate) mod friends;
+mod notices;
 mod records;
 mod catalog;
 mod controlled_caption;
@@ -144,6 +145,7 @@ struct DeviceCenterApp {
     assist: AssistUi,
     friends: friends::FriendsUi,
     records: records::RecordsUi,
+    notices: notices::NoticesUi,
     direct: direct::DirectUi,
     worker: GuiWorker,
     devices: Option<DeviceList>,
@@ -205,6 +207,7 @@ impl DeviceCenterApp {
             assist: AssistUi::default(),
             friends: Default::default(),
             records: Default::default(),
+            notices: Default::default(),
             direct: Default::default(),
             worker: GuiWorker::spawn(),
             devices: None,
@@ -519,6 +522,7 @@ impl DeviceCenterApp {
                             // the login flow before exposing the new epoch.
                             self.login_generation = generation.wrapping_add(1);
                             self.records = Default::default();
+                            self.notices = Default::default();
                             self.login_form.clear_private();
                             self.sync_login_running();
                             self.login_restoring = true;
@@ -648,6 +652,12 @@ impl DeviceCenterApp {
                         continue;
                     }
                     self.finish_records(result);
+                }
+                GuiEvent::Notices(generation, result) => {
+                    if generation != self.login_generation || self.logout_pending {
+                        continue;
+                    }
+                    self.finish_notices(result);
                 }
                 GuiEvent::AssistOperation(generation, sequence, result) => {
                     if generation != self.login_generation
@@ -1155,6 +1165,8 @@ impl crate::ui::App for DeviceCenterApp {
         let ctx = ui.ctx().clone();
         self.drain_events(&ctx);
         self.tick_notifications();
+        let signed_in = !self.needs_login();
+        self.tick_notices(signed_in);
         self.tick_power();
         self.draw_center(ui);
         self.draw_dialogs(&ctx);

@@ -483,6 +483,8 @@ pub async fn remove(
     let detail = serde_json::json!({ "device": row.alias, "device_id": row.id });
     let actor = Some((auth.user.id.as_str(), auth.user.username.as_str()));
     super::me::audit(&app, actor, "device.remove", &auth.user.username, detail, true, ip).await;
+    let data = serde_json::json!({ "device": row.alias, "how": "removed" });
+    crate::notify::send(&app, &auth.user.id, farwing_protocol::api::notice::DEVICE_REMOVED, data, &[&auth.device.id, &row.id]);
     Ok(Json(Empty {}))
 }
 

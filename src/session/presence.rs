@@ -281,6 +281,10 @@ async fn serve_presence(
             if crate::account::server_changed::push(push) {
                 return;
             }
+            if push.kind == farwing_protocol::realtime::types::NOTICE {
+                crate::account::notices::pushed();
+                return;
+            }
             if push_client.host.assistance.push(push) {
                 return;
             }
@@ -468,6 +472,8 @@ async fn run_remote(
     // logout/account changes and portable/resident storage transitions.
     let sessions = KeyringSessionStore::new()?;
     let mut device_cursor = None;
+    // The service's notification pushes, as last seen.
+    let mut notices = None::<u64>;
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     while !cancel.is_cancelled() {
@@ -516,6 +522,10 @@ async fn run_remote(
                         .map(|ms| Instant::now() + Duration::from_millis(ms)),
                 );
                 crate::account::reporting::replace(snapshot.publication.clone());
+                if notices.is_some_and(|seen| seen != snapshot.notices) {
+                    crate::account::notices::pushed();
+                }
+                notices = Some(snapshot.notices);
                 crate::transport::direct::managed::sync_local_settings(&snapshot.direct.settings);
                 crate::transport::direct::managed::remember(snapshot.direct.clone());
                 let _ = events.send(PresenceEvent::State(snapshot.online.clone()));

@@ -14,6 +14,7 @@ pub mod error;
 pub mod forwarding;
 pub mod http;
 pub mod hub;
+pub mod notify;
 pub mod ice;
 pub mod ratelimit;
 pub mod records;
