@@ -11,7 +11,7 @@ use super::ingress::{
 };
 use super::negotiation::{
     REPAIRED_RTP_STREAM_ID_URI, RTP_STREAM_ID_URI, VIDEO_CAPTURE_INDEX_URI,
-    VIDEO_CONTENT_TYPE_URI, VIDEO_FRAME_SENDING_DELAY_URI, VIDEO_IS_NEW_FRAME_URI,
+    VIDEO_FRAME_SENDING_DELAY_URI, VIDEO_IS_NEW_FRAME_URI,
     VIDEO_TIMING_URI,
 };
 use super::tracks::{
@@ -269,8 +269,6 @@ pub(super) async fn forward_video_track(
     let mut receiver = match VideoStreamReceiver::new(
         &codec,
         VideoHeaderExtensions {
-            orientation: track.header_extension_id("urn:3gpp:video-orientation"),
-            content_type: track.header_extension_id(VIDEO_CONTENT_TYPE_URI),
             capture_index: track.header_extension_id(VIDEO_CAPTURE_INDEX_URI),
             is_new_picture: track.header_extension_id(VIDEO_IS_NEW_FRAME_URI),
             timing: track.header_extension_id(VIDEO_TIMING_URI),
@@ -278,7 +276,6 @@ pub(super) async fn forward_video_track(
             color_space: track.header_extension_id(crate::media::video_color::COLOR_SPACE_URI),
             frame_meta: track.header_extension_id(crate::media::frame_meta::URI),
         },
-        &codec_fmtp,
     ) {
         Ok(receiver) => receiver,
         Err(error) => {
@@ -292,11 +289,6 @@ pub(super) async fn forward_video_track(
     // `dev video --loss`: losses no repair can undo.
     let mut impairment = super::impair::Injector::new();
     let mutable_extensions = [
-        ("urn:ietf:params:rtp-hdrext:toffset", 0),
-        (
-            "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
-            0,
-        ),
         (
             "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
             0,
@@ -316,7 +308,6 @@ pub(super) async fn forward_video_track(
     let mut fec_receiver = rsfec_config
         .map(|config| RsFecReceiver::new(track.ssrc(), config.max_k, mutable_extensions.clone()));
     let mut pending_media = VecDeque::<PendingMediaPacket>::new();
-    let mut configured_payload_type = track.payload_type();
     let mut rtcp_feedback = RtcpFeedbackBuffer::default();
     let rid_extension_id = track.header_extension_id(RTP_STREAM_ID_URI);
     let repaired_rid_extension_id = track.header_extension_id(REPAIRED_RTP_STREAM_ID_URI);
@@ -608,7 +599,7 @@ pub(super) async fn forward_video_track(
                     recover_instead(&mut nack.batch, &mut loss_recovery, &receiver, nack_requester.rtt);
                     rtcp_feedback.buffer(nack.batch);
                 } else {
-                    let Some((mime, fmtp)) = video_payload_codecs.get(&payload_type) else {
+                    let Some((mime, _)) = video_payload_codecs.get(&payload_type) else {
                         tracing::debug!(payload_type, "ignoring unrecognized video payload type");
                         if let Some(source) = media.rsfec_source.take() {
                             remember_fec_source(
@@ -644,10 +635,6 @@ pub(super) async fn forward_video_track(
                         }
                         continue;
                     };
-                    if configured_payload_type != payload_type {
-                        receiver.configure_codec(packet_codec, fmtp);
-                        configured_payload_type = payload_type;
-                    }
                     let Some(mut parsed) =
                         receiver.parse_video_packet(&media.packet, media.received_at, packet_codec)
                     else {
@@ -947,8 +934,6 @@ pub(super) async fn emit_video_receiver_result(
             received_at: frame.received_at,
             assembled_at: frame.assembled_at,
             keyframe: frame.keyframe,
-            rotation: frame.rotation,
-            content_type: frame.content_type,
             video_capture_index: frame.video_capture_index,
             is_new_picture: frame.is_new_picture,
             frame_meta: frame.frame_meta,

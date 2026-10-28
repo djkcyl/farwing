@@ -31,8 +31,6 @@ impl Sender {
             .filter_map(|e| {
                 let preserve = match e.uri.as_str() {
                     "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
-                    | "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"
-                    | "urn:ietf:params:rtp-hdrext:toffset"
                     | "urn:farwing:rtp-hdrext:sending-delay" => 0,
                     "http://www.webrtc.org/experiments/rtp-hdrext/video-timing" => 7,
                     _ => return None,

@@ -22,7 +22,7 @@ use winit::window::{Cursor, CursorGrabMode, CursorIcon, CustomCursor, Window};
 
 use super::windows_presenter::fit_rect;
 use super::windows_presenter::title_bar_height_pixels;
-type VideoSize = Arc<Mutex<Option<(u32, u32, u16)>>>;
+type VideoSize = Arc<Mutex<Option<(u32, u32)>>>;
 use crate::features::remote_input::{BUTTONS, MouseMode, RemoteInput};
 use crate::features::stream_control::StreamControlHandle;
 
@@ -114,13 +114,8 @@ impl Target {
             .is_ok()
     }
     pub(super) fn position(&self, mut point: POINT, dragging: bool) -> Option<(i32, f64, f64)> {
-        let (width, height, rotation) =
+        let (width, height) =
             (*self.video_size.lock().unwrap_or_else(|p| p.into_inner()))?;
-        let (width, height) = if matches!(rotation, 90 | 270) {
-            (height, width)
-        } else {
-            (width, height)
-        };
         if !unsafe { ScreenToClient(HWND(self.hwnd as _), &mut point).as_bool() } {
             return None;
         }
@@ -235,15 +230,10 @@ impl RawRouter {
         {
             return false;
         }
-        let Some((width, height, rotation)) =
+        let Some((width, height)) =
             *target.video_size.lock().unwrap_or_else(|p| p.into_inner())
         else {
             return false;
-        };
-        let (width, height) = if matches!(rotation, 90 | 270) {
-            (height, width)
-        } else {
-            (width, height)
         };
         let (width, height) = target
             .control
@@ -907,13 +897,8 @@ impl WindowMouse {
         if !relative {
             let mut remote_position = None;
             if let Some(point) = control.take_mouse_restore_point(track)
-                && let Some((width, height, rotation)) = frame_size
+                && let Some((width, height)) = frame_size
             {
-                let (width, height) = if matches!(rotation, 90 | 270) {
-                    (height, width)
-                } else {
-                    (width, height)
-                };
                 let size = window.inner_size();
                 let top = title_bar_height_pixels(window);
                 let (width, height) = control.presentation_size(track, (width, height));
@@ -965,12 +950,7 @@ impl WindowMouse {
             resize_edges: !window.is_maximized() && window.fullscreen().is_none(),
             raw_since: 0,
         };
-        if relative && let Some((width, height, rotation)) = frame_size {
-            let (width, height) = if matches!(rotation, 90 | 270) {
-                (height, width)
-            } else {
-                (width, height)
-            };
+        if relative && let Some((width, height)) = frame_size {
             let (width, height) = control.presentation_size(track, (width, height));
             let rect = fit_rect(
                 width,
@@ -1032,14 +1012,9 @@ impl WindowMouse {
                     .as_ref()
                     .is_none_or(|shape| !Arc::ptr_eq(shape, &remote.image));
                 let scale = match (frame_size, control.mouse_screen(track)) {
-                    (Some((width, height, rotation)), Some((_, remote_w, remote_h)))
+                    (Some((width, height)), Some((_, remote_w, remote_h)))
                         if remote_w > 0 && remote_h > 0 =>
                     {
-                        let (width, height) = if matches!(rotation, 90 | 270) {
-                            (height, width)
-                        } else {
-                            (width, height)
-                        };
                         let (width, height) = control.presentation_size(track, (width, height));
                         let rect = fit_rect(
                             width,

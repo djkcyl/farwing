@@ -63,7 +63,6 @@ impl std::fmt::Debug for WindowsGpuVideoFrame {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowsCpuFormat {
     Nv12,
-    I444,
     P010,
     Ayuv,
     Y410,
@@ -114,7 +113,6 @@ fn software_frame(
         data: frame.data,
         format: match frame.format {
             F::Nv12 => WindowsCpuFormat::Nv12,
-            F::I444 => WindowsCpuFormat::I444,
             F::P010 => WindowsCpuFormat::P010,
             F::Ayuv => WindowsCpuFormat::Ayuv,
             F::Y410 => WindowsCpuFormat::Y410,

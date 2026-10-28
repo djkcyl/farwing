@@ -289,7 +289,6 @@ impl D3D11SurfaceWriter {
             WindowsCpuFormat::P010 => (DXGI_FORMAT_P010, 2, true),
             WindowsCpuFormat::Ayuv => (DXGI_FORMAT_AYUV, 4, false),
             WindowsCpuFormat::Y410 => (DXGI_FORMAT_Y410, 4, false),
-            WindowsCpuFormat::I444 => bail!("planar I444 is not a packed upload format"),
         };
         let (w, h) = (frame.coded_width, frame.coded_height);
         anyhow::ensure!(

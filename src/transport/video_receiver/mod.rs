@@ -60,8 +60,6 @@ pub(crate) struct ParsedVideoPacket {
     nalus: Vec<NaluInfo>,
     parameter_format: Option<VideoFormatSignature>,
     color_space: Option<VideoColorSpace>,
-    rotation: Option<u16>,
-    content_type: Option<u8>,
     video_capture_index: Option<u16>,
     is_new_picture: Option<bool>,
     frame_meta: Option<FrameMeta>,
@@ -96,8 +94,6 @@ pub(crate) struct ReceivedVideoFrame {
     pub rtp_timestamp: u32,
     pub keyframe: bool,
     pub color_space: Option<VideoColorSpace>,
-    pub rotation: u16,
-    pub content_type: u8,
     pub video_capture_index: Option<u16>,
     pub is_new_picture: Option<bool>,
     pub frame_meta: Option<FrameMeta>,
@@ -126,8 +122,6 @@ pub(crate) struct ReceiverResult {
 
 #[derive(Clone)]
 pub(crate) struct VideoHeaderExtensions {
-    pub orientation: Option<u8>,
-    pub content_type: Option<u8>,
     pub capture_index: Option<u8>,
     pub is_new_picture: Option<u8>,
     pub timing: Option<u8>,
@@ -178,33 +172,20 @@ impl VideoStreamReceiver {
         let anchor = self
             .last_completed_picture_id
             .saturating_add(i64::from(u16::MAX));
-        let mut next = Self::new(codec, self.extensions.clone(), "").expect("known video codec");
+        let mut next = Self::new(codec, self.extensions.clone()).expect("known video codec");
         next.reference_finder = SeqNumOnlyRefFinder::with_unwrap_anchor(anchor);
         next.last_completed_picture_id = anchor;
         *self = next;
     }
-    pub(crate) fn new(
-        mime_type: &str,
-        extensions: VideoHeaderExtensions,
-        codec_fmtp: &str,
-    ) -> Result<Self> {
-        let codec = if mime_type.eq_ignore_ascii_case("video/H264") {
-            VideoCodecKind::H264
-        } else if mime_type.eq_ignore_ascii_case("video/AV1") {
-            VideoCodecKind::Av1
-        } else if mime_type.eq_ignore_ascii_case("video/H265")
-            || mime_type.eq_ignore_ascii_case("video/HEVC")
-        {
-            VideoCodecKind::H265
-        } else {
-            anyhow::bail!("unsupported receiver codec {mime_type}");
-        };
-        let mut packet_buffer = PacketBuffer::new();
-        if matches!(codec, VideoCodecKind::H264) {
-            packet_buffer.install_h264_sprop(codec_fmtp);
-        }
+    pub(crate) fn new(mime_type: &str, extensions: VideoHeaderExtensions) -> Result<Self> {
+        anyhow::ensure!(
+            ["video/H264", "video/AV1", "video/H265", "video/HEVC"]
+                .iter()
+                .any(|known| mime_type.eq_ignore_ascii_case(known)),
+            "unsupported receiver codec {mime_type}"
+        );
         Ok(Self {
-            packet_buffer,
+            packet_buffer: PacketBuffer::new(),
             reference_finder: SeqNumOnlyRefFinder::new(),
             frame_buffer: FrameBuffer::new(),
             in_flight: HashMap::new(),
@@ -241,12 +222,6 @@ impl VideoStreamReceiver {
         self.recovery.snapshot()
     }
 
-    pub(crate) fn configure_codec(&mut self, codec: VideoCodecKind, fmtp: &str) {
-        if matches!(codec, VideoCodecKind::H264) {
-            self.packet_buffer.install_h264_sprop(fmtp);
-        }
-    }
-
     pub(crate) fn parse_video_packet(
         &mut self,
         packet: &RtpPacket,
@@ -273,23 +248,6 @@ impl VideoStreamReceiver {
             parsed.packet_keyframe,
             color_extension.as_deref(),
         );
-        // Standard 3GPP CVO (urn:3gpp:video-orientation): clockwise rotation the
-        // receiver applies. Farwing hosts send upright frames and never reverse
-        // 90/270, so the value is used as defined.
-        parsed.rotation = self
-            .extensions
-            .orientation
-            .and_then(|id| packet.header.get_extension(id))
-            .and_then(|payload| payload.first().copied())
-            .map(|value| u16::from(value & 0x03) * 90);
-        parsed.content_type = self
-            .extensions
-            .content_type
-            .and_then(|id| packet.header.get_extension(id))
-            .and_then(|payload| match payload.as_ref() {
-                [value] if value & 0x80 == 0 => Some(value & 0x03),
-                _ => None,
-            });
         parsed.video_capture_index = self
             .extensions
             .capture_index
@@ -622,8 +580,6 @@ impl VideoStreamReceiver {
                 rtp_timestamp: frame.timestamp,
                 keyframe: frame.keyframe,
                 color_space: frame.color_space,
-                rotation: frame.rotation,
-                content_type: frame.content_type,
                 video_capture_index: frame.video_capture_index,
                 is_new_picture: frame.is_new_picture,
                 frame_meta: frame.frame_meta,

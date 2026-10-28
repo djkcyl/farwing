@@ -323,31 +323,8 @@ struct DecodedVideoFrame {
     assembly_delay: Duration,
     input_queue_delay: Duration,
     decode_pipeline_delay: Duration,
-    rotation: u16,
     sender_timing: FrameSenderTiming,
     rtp_timestamp: u32,
-}
-
-#[cfg(test)]
-impl DecodedVideoFrame {
-    fn test(rtp_timestamp: u32) -> Self {
-        let now = Instant::now();
-        Self {
-            is_new_picture: None,
-            width: 1,
-            height: 1,
-            surface: RenderSurface::CpuRgba8(Vec::new()),
-            color: RenderColor::default(),
-            received_at: now,
-            decoded_at: now,
-            assembly_delay: Duration::ZERO,
-            input_queue_delay: Duration::ZERO,
-            decode_pipeline_delay: Duration::ZERO,
-            rotation: 0,
-            sender_timing: FrameSenderTiming::default(),
-            rtp_timestamp,
-        }
-    }
 }
 
 const DECODER_INFLIGHT_LIMIT: usize = 100;

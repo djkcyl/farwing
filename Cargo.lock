@@ -1616,7 +1616,6 @@ dependencies = [
  "windows",
  "windows-core",
  "winit",
- "yuv",
  "zip",
 ]
 

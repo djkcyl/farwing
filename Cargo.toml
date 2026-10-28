@@ -63,7 +63,6 @@ url = "2.5.8"
 uuid = { version = "1.25.0", features = ["v4"] }
 webrtc = { path = "vendor/webrtc" }
 webrtc-srtp = "0.17.2"
-yuv = "0.8.17"
 object = { version = "0.37.3", default-features = false, features = ["read_core", "std", "pe"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
 regex = "1.13.1"

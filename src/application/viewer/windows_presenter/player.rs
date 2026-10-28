@@ -23,7 +23,6 @@ use anyhow::{Result, bail};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use windows::Win32::Graphics::Direct3D11::*;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
@@ -82,9 +81,6 @@ pub(in crate::application::viewer) struct ThreadedWindowsApp {
     pub(in crate::application::viewer) _session: Arc<NativeViewerSession>,
     pub(in crate::application::viewer) video_window: VideoWindow,
     pub(in crate::application::viewer) ui_presenter: UiPresenter,
-    // Only successive video workers use this context; each previous worker is joined first.
-    pub(in crate::application::viewer) cpu_device:
-        Arc<Mutex<Option<(ID3D11Device, ID3D11DeviceContext)>>>,
 }
 
 impl ThreadedWindowsApp {
@@ -123,7 +119,6 @@ impl ThreadedWindowsApp {
             size,
             &session,
             &self.egui_context,
-            Arc::clone(&self.cpu_device),
         )?;
         self.title = session.title.clone();
         self.performance = session.performance.clone();
@@ -156,13 +151,11 @@ impl ThreadedWindowsApp {
             None => VideoWindow::new(window)?,
         };
         let size = video_window.resize(window, window.inner_size())?;
-        let cpu_device = Arc::new(Mutex::new(None));
         let renderer = RenderWorker::spawn(
             video_window.handle(),
             size,
             &session,
             &connecting.egui_context,
-            Arc::clone(&cpu_device),
         )?;
         Ok(Self {
             fullscreen_chrome: super::fullscreen::FullscreenChrome::default(),
@@ -214,7 +207,6 @@ impl ThreadedWindowsApp {
             _session: session,
             video_window,
             ui_presenter: connecting.presenter,
-            cpu_device,
         })
     }
 
@@ -812,12 +804,7 @@ impl ThreadedWindowsApp {
     }
 
     pub(in crate::application::viewer) fn current_presentation_size(&self) -> Option<(u32, u32)> {
-        mutex_lock(&self.renderer.current_video_size).map(|(width, height, rotation)| {
-            let size = if rotation == 90 || rotation == 270 {
-                (height, width)
-            } else {
-                (width, height)
-            };
+        mutex_lock(&self.renderer.current_video_size).map(|size| {
             self.display_aspect.unwrap_or(size)
         })
     }
@@ -843,12 +830,7 @@ impl ThreadedWindowsApp {
     }
 
     pub(in crate::application::viewer) fn resize_window_one_to_one(&mut self, window: &Window) {
-        let video_size = mutex_lock(&self.renderer.current_video_size).map(|(w, h, rotation)| {
-            let size = if matches!(rotation, 90 | 270) {
-                (h, w)
-            } else {
-                (w, h)
-            };
+        let video_size = mutex_lock(&self.renderer.current_video_size).map(|size| {
             crate::media::geometry::DisplayAspect::size(size, self.display_aspect)
         });
         if let Some(video_size) = video_size {

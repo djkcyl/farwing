@@ -4,7 +4,6 @@
 use crate::media::video_format::{
     self, BitReader, VideoFormatSignature, remove_emulation_prevention,
 };
-use base64::Engine;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug)]
@@ -32,13 +31,11 @@ impl NaluInfo {
 struct Sps {
     parent: i32,
     format: Option<VideoFormatSignature>,
-    out_of_band: Option<Vec<u8>>,
 }
 
 #[derive(Default)]
 struct Pps {
     sps: i32,
-    out_of_band: Option<Vec<u8>>,
 }
 
 #[derive(Default)]
@@ -51,60 +48,12 @@ pub(crate) struct ParameterTracker {
 }
 
 impl ParameterTracker {
-    pub(crate) fn install_h264_sprop(&mut self, fmtp: &str) {
-        let Some(value) = fmtp.split(';').find_map(|part| {
-            let (name, value) = part.trim().split_once('=')?;
-            name.eq_ignore_ascii_case("sprop-parameter-sets")
-                .then_some(value.trim())
-        }) else {
-            return;
-        };
-        let parsed = (|| {
-            // The sprop parser consumes one comma-separated SPS/PPS pair.
-            let (sps, pps) = value.split_once(',')?;
-            let sps = base64::engine::general_purpose::STANDARD.decode(sps).ok()?;
-            let pps = base64::engine::general_purpose::STANDARD.decode(pps).ok()?;
-            if sps.first()? & 31 != 7 || pps.first()? & 31 != 8 {
-                return None;
-            }
-            let header = h264_sps_header(&sps)?;
-            let (pps_id, sps_id) = h264_pps_full_ids(&pps)?;
-            Some((sps, pps, header.id, pps_id, sps_id))
-        })();
-        let Some((sps, pps, id, pps_id, parent)) = parsed else {
-            tracing::warn!("ignoring malformed H.264 out-of-band parameter pair");
-            return;
-        };
-        self.h264_sps.insert(
-            id,
-            Sps {
-                format: video_format::parse_h264_sps(&sps),
-                out_of_band: Some(sps),
-                ..Default::default()
-            },
-        );
-        self.h264_pps.insert(
-            pps_id,
-            Pps {
-                sps: parent,
-                out_of_band: Some(pps),
-            },
-        );
-        tracing::debug!(
-            sps_id = id,
-            pps_id,
-            "installed H.264 out-of-band parameter pair"
-        );
-    }
-
     pub(crate) fn h264(
         &mut self,
         nalus: &mut Vec<NaluInfo>,
         first: bool,
-        payload: &mut Vec<u8>,
     ) -> Result<Option<VideoFormatSignature>, &'static str> {
         let mut format = None;
-        let mut prefix_pair = None;
         for nalu in nalus.iter() {
             match nalu.kind {
                 7 => {
@@ -126,37 +75,8 @@ impl ParameterTracker {
                         .get(&pps.sps)
                         .ok_or("H.264 PPS references missing SPS")?;
                     format = sps.format;
-                    if sps.out_of_band.is_some() && pps.out_of_band.is_some() {
-                        prefix_pair = Some((pps.sps, nalu.pps));
-                    }
                 }
                 _ => {}
-            }
-        }
-        if let Some((sps_id, pps_id)) = prefix_pair {
-            let sps = self.h264_sps[&sps_id]
-                .out_of_band
-                .as_ref()
-                .expect("checked out-of-band SPS");
-            let pps = self.h264_pps[&pps_id]
-                .out_of_band
-                .as_ref()
-                .expect("checked out-of-band PPS");
-            let mut output = Vec::with_capacity(sps.len() + pps.len() + payload.len() + 8);
-            output.extend_from_slice(&[0, 0, 0, 1]);
-            output.extend_from_slice(sps);
-            output.extend_from_slice(&[0, 0, 0, 1]);
-            output.extend_from_slice(pps);
-            output.append(payload);
-            *payload = output;
-            if nalus.len() + 2 <= 10 {
-                let mut sps_info = NaluInfo::unknown(7);
-                sps_info.sps = sps_id;
-                sps_info.format = format;
-                let mut pps_info = NaluInfo::unknown(8);
-                pps_info.sps = sps_id;
-                pps_info.pps = pps_id;
-                nalus.extend([sps_info, pps_info]);
             }
         }
         Ok(format)
@@ -462,55 +382,6 @@ fn h264_sps_header(unit: &[u8]) -> Option<H264SpsHeader> {
         vui_bit,
         vui_present,
     })
-}
-
-fn h264_pps_full_ids(unit: &[u8]) -> Option<(i32, i32)> {
-    let rbsp = remove_emulation_prevention(unit.get(1..)?);
-    let mut r = BitReader::new(&rbsp);
-    let pps = r.read_ue()? as i32;
-    let sps = r.read_ue()? as i32;
-    r.skip_bits(2)?;
-    let groups = r.read_ue()?;
-    if groups != 0 {
-        match r.read_ue()? {
-            0 => {
-                for _ in 0..=groups {
-                    r.read_ue()?;
-                }
-            }
-            2 => {
-                for _ in 0..=groups {
-                    r.read_ue()?;
-                    r.read_ue()?;
-                }
-            }
-            3..=5 => {
-                r.read_bit()?;
-                r.read_ue()?;
-            }
-            6 => {
-                let size = r.read_ue()?.checked_add(1)?;
-                // floor(log2(groups)) + 2.
-                let bits = 33 - groups.leading_zeros();
-                let skip = u64::from(size) * u64::from(bits);
-                if skip >= (1 << 31) {
-                    return None;
-                }
-                r.skip_bits(skip.try_into().ok()?)?;
-            }
-            _ => {}
-        }
-    }
-    r.read_ue()?;
-    r.read_ue()?;
-    r.skip_bits(3)?;
-    if !(-26..=25).contains(&r.read_se()?) {
-        return None;
-    }
-    r.read_ue()?;
-    r.read_ue()?;
-    r.skip_bits(3)?;
-    Some((pps, sps))
 }
 
 /// Preserve video signal/colour information; the receive caller passes no

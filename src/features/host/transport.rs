@@ -177,7 +177,8 @@ struct Shared {
     repairs: Mutex<(VecDeque<(u32, u16)>, HashSet<(u32, u16)>)>,
     wake: tokio::sync::Notify,
     tcc_id: AtomicU64,
-    timing_ids: Mutex<[u8; 4]>,
+    /// `video-timing` and `sending-delay` extension IDs.
+    timing_ids: Mutex<[u8; 2]>,
     queued_at: Mutex<Option<Instant>>,
     /// The kind of the selected route (`LAN`, `P2P`, `relay`), once chosen.
     route: Mutex<Option<&'static str>>,
@@ -323,7 +324,7 @@ impl Transport {
             repairs: Mutex::new((VecDeque::new(), HashSet::new())),
             wake: tokio::sync::Notify::new(),
             tcc_id: AtomicU64::new(0),
-            timing_ids: Mutex::new([0; 4]),
+            timing_ids: Mutex::new([0; 2]),
             queued_at: Mutex::new(None),
             route: Mutex::new(None),
             probe_after: Mutex::new(None),
@@ -890,7 +891,7 @@ impl Transport {
         }
         let id = self.0.tcc_id.load(Ordering::Relaxed) as u8;
         let mut packet = packet.clone();
-        let [absolute, timing, sending_delay, offset] = *lock(&self.0.timing_ids);
+        let [timing, sending_delay] = *lock(&self.0.timing_ids);
         let now = Instant::now();
         let (capture, delay) = {
             let mut h = lock(&self.0.history);
@@ -922,15 +923,6 @@ impl Transport {
                 (None, None)
             }
         };
-        if absolute != 0 && packet.header.get_extension(absolute).is_some() {
-            let ntp = webrtc::rtp::extension::abs_send_time_extension::unix2ntp(
-                std::time::SystemTime::now(),
-            );
-            let value = ((ntp >> 14) as u32 & 0xFFFFFF).to_be_bytes();
-            packet
-                .header
-                .set_extension(absolute, Bytes::copy_from_slice(&value[1..]))?;
-        }
         if let Some(capture) = capture {
             let delta = ((now.saturating_duration_since(capture).as_micros() + 500) / 1000)
                 .min(u16::MAX.into()) as u16;
@@ -942,13 +934,6 @@ impl Transport {
             {
                 value[7..9].copy_from_slice(&delta.to_be_bytes());
                 packet.header.set_extension(timing, value.into())?;
-            }
-            if offset != 0 && packet.header.get_extension(offset).is_some() {
-                let ticks = (now.saturating_duration_since(capture).as_micros() * 9 / 100)
-                    .min(0x7FFFFF) as u32;
-                packet
-                    .header
-                    .set_extension(offset, Bytes::copy_from_slice(&ticks.to_be_bytes()[1..]))?;
             }
         }
         if let Some(delay) = delay
@@ -1765,10 +1750,8 @@ impl Transport {
     async fn bind_stream(&self, info: &StreamInfo, writer: Writer) -> Writer {
         for ext in &info.rtp_header_extensions {
             let index = match ext.uri.as_str() {
-                "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time" => 0,
-                "http://www.webrtc.org/experiments/rtp-hdrext/video-timing" => 1,
-                "urn:farwing:rtp-hdrext:sending-delay" => 2,
-                "urn:ietf:params:rtp-hdrext:toffset" => 3,
+                "http://www.webrtc.org/experiments/rtp-hdrext/video-timing" => 0,
+                "urn:farwing:rtp-hdrext:sending-delay" => 1,
                 _ => continue,
             };
             if (1..=255).contains(&ext.id) {

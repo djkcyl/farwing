@@ -26,7 +26,6 @@ pub(super) struct FrameTiming {
     pub(super) received_at: Instant,
     pub(super) assembled_at: Instant,
     pub(super) submitted_at: Instant,
-    pub(super) rotation: u16,
     pub(super) keyframe: bool,
     pub(super) sender_timing: FrameSenderTiming,
     pub(super) frame_meta: Option<crate::media::frame_meta::FrameMeta>,
@@ -62,7 +61,6 @@ pub(super) struct DecoderCutoverDecision {
     pub(super) reset_decoder: bool,
     pub(super) hard_reset: bool,
     pub(super) source_changed: bool,
-    pub(super) content_changed: bool,
     pub(super) resolution_changed: bool,
     pub(super) pressure_recovery: bool,
 }
@@ -71,7 +69,6 @@ pub(super) struct DecoderCutoverState {
     pub(super) waiting_for_keyframe: bool,
     pub(super) pressure_recovery: bool,
     pub(super) current_source_id: Option<u16>,
-    pub(super) current_content_type: u8,
     pub(super) current_width: u32,
     pub(super) current_height: u32,
     pub(super) generation: u32,
@@ -83,7 +80,6 @@ impl DecoderCutoverState {
             waiting_for_keyframe: false,
             pressure_recovery: false,
             current_source_id: None,
-            current_content_type: 0,
             current_width: 0,
             current_height: 0,
             generation: 0,
@@ -102,7 +98,6 @@ impl DecoderCutoverState {
                 reset_decoder: false,
                 hard_reset: false,
                 source_changed: false,
-                content_changed: false,
                 resolution_changed: false,
                 pressure_recovery: true,
             };
@@ -112,8 +107,6 @@ impl DecoderCutoverState {
             .video_capture_index
             .zip(self.current_source_id)
             .is_some_and(|(source, previous)| source != previous);
-        let content_changed =
-            frame.content_type != 0 && frame.content_type != self.current_content_type;
         let (next_width, next_height) =
             format.map_or((0, 0), |format| (format.coded_width, format.coded_height));
         let resolution_changed = frame.keyframe
@@ -122,7 +115,7 @@ impl DecoderCutoverState {
             && self.current_width != 0
             && self.current_height != 0
             && (next_width != self.current_width || next_height != self.current_height);
-        let cutover = frame.keyframe || source_changed || content_changed;
+        let cutover = frame.keyframe || source_changed;
 
         if self.waiting_for_keyframe {
             if !frame.keyframe {
@@ -132,7 +125,6 @@ impl DecoderCutoverState {
                     reset_decoder: false,
                     hard_reset: false,
                     source_changed,
-                    content_changed,
                     resolution_changed,
                     pressure_recovery: self.pressure_recovery,
                 };
@@ -146,7 +138,6 @@ impl DecoderCutoverState {
                 reset_decoder: false,
                 hard_reset: false,
                 source_changed,
-                content_changed,
                 resolution_changed,
                 pressure_recovery: self.pressure_recovery,
             };
@@ -155,15 +146,11 @@ impl DecoderCutoverState {
         let pressure_recovery = self.pressure_recovery;
         let hard_reset = pressure_recovery
             || source_changed
-            || (self.current_content_type != 0 && content_changed)
             || resolution_changed;
         let reset_decoder = frame.keyframe && (self.pressure_recovery || cutover);
         if reset_decoder {
             self.generation = self.generation.wrapping_add(1);
             self.pressure_recovery = false;
-        }
-        if content_changed {
-            self.current_content_type = frame.content_type;
         }
         if let Some(source) = frame.video_capture_index {
             self.current_source_id = Some(source);
@@ -179,7 +166,6 @@ impl DecoderCutoverState {
             reset_decoder,
             hard_reset,
             source_changed,
-            content_changed,
             resolution_changed,
             pressure_recovery,
         }
@@ -404,7 +390,6 @@ pub(super) fn decoder_manager(
             received_at: frame.received_at,
             assembled_at: frame.assembled_at,
             submitted_at,
-            rotation: frame.rotation,
             keyframe,
             sender_timing: frame.sender_timing,
             frame_meta: frame.frame_meta,
@@ -485,7 +470,6 @@ pub(super) fn decoder_manager(
             tracing::debug!(
                 hard_reset = cutover.hard_reset,
                 source_changed = cutover.source_changed,
-                content_changed = cutover.content_changed,
                 resolution_changed = cutover.resolution_changed,
                 pressure_recovery = cutover.pressure_recovery,
                 "decoder keyframe cutover"
@@ -707,7 +691,7 @@ pub(super) fn process_decoded_batch(
     mut context: DecodedForwardContext<'_>,
 ) -> Option<anyhow::Error> {
     // A later callback failure never rolls back successful earlier output.
-    forward_decoded_frames(batch.frames, timings, &mut context, pool);
+    forward_decoded_frames(batch.frames, timings, &mut context);
     for issue in batch.output_issues {
         match issue {
             DecoderOutputIssue::Dropped(token) => {
@@ -734,7 +718,6 @@ pub(super) fn forward_decoded_frames(
     decoded: Vec<DecodedFrame>,
     timings: &mut VecDeque<FrameTiming>,
     context: &mut DecodedForwardContext<'_>,
-    pool: &mut DecoderPool,
 ) {
     for image in decoded {
         let Some(timestamp) = context.inflight.remove(&image.pts) else {
@@ -751,17 +734,7 @@ pub(super) fn forward_decoded_frames(
             );
             continue;
         };
-        let surface = match image
-            .surface
-            .prepare(image.width, image.height, timing.color)
-        {
-            Ok(surface) => surface,
-            Err(error) => {
-                tracing::warn!(decode_token = image.pts, %error, "native decoded color conversion failed");
-                pool.callback_failed(&error);
-                continue;
-            }
-        };
+        let surface = image.surface;
         let decoded_at = image.ready_at;
         let _ = context
             .receiver_feedback
@@ -777,17 +750,7 @@ pub(super) fn forward_decoded_frames(
             decoded_at.saturating_duration_since(timing.received_at),
         );
         if let Some(observer) = context.observer {
-            let picture = match &surface {
-                crate::media::decoder::RenderSurface::CpuRgba8(pixels) => {
-                    use std::hash::Hasher;
-                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                    hasher.write(bytemuck::cast_slice(pixels));
-                    Some(hasher.finish())
-                }
-                crate::media::decoder::RenderSurface::D3D11(surface) => {
-                    surface.luma_hash(image.width, image.height).ok()
-                }
-            };
+            let picture = surface.luma_hash(image.width, image.height).ok();
             let _ = observer.send(DecodedObservation {
                 picture,
                 rtp_timestamp: timing.rtp_timestamp,
@@ -814,7 +777,6 @@ pub(super) fn forward_decoded_frames(
             assembly_delay: timing.assembled_at.duration_since(timing.received_at),
             input_queue_delay: timing.submitted_at.duration_since(timing.assembled_at),
             decode_pipeline_delay: decoded_at.duration_since(timing.submitted_at),
-            rotation: timing.rotation,
             sender_timing: timing.sender_timing,
             rtp_timestamp: timing.rtp_timestamp,
         }, Instant::now());

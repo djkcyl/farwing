@@ -468,7 +468,6 @@ pub(super) async fn send_remote_input(
     kcp: FctControl,
     stream_control: StreamControlHandle,
 ) {
-    use crate::transport::fct::INPUT_SEND_BUDGET_BYTES;
     let mouse = stream_control.mouse().clone();
     let mut heartbeat = tokio::time::interval(Duration::from_millis(15));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -498,17 +497,14 @@ pub(super) async fn send_remote_input(
             result = tokio::time::timeout(event.event.send_timeout(),
                 async {
                     let release=event.event.releases();
+                    anyhow::ensure!(kcp.is_negotiated(), "control transport not negotiated");
                     if !release {
-                        if kcp.is_negotiated() {
-                            kcp.wait_input_capacity().await?;
-                        } else {
-                            channel.wait_input_capacity(INPUT_SEND_BUDGET_BYTES).await?;
-                        }
+                        kcp.wait_input_capacity().await?;
                     }
                     anyhow::ensure!(mouse.refresh_pending(&mut event), "input no longer current before submission");
-                    let state=mouse.clone();let guarded=event.clone();
-                    if kcp.is_negotiated(){kcp.send_input(channel.id(),event.event.encode(),Arc::new(move||state.is_current(&guarded)),release).await}
-                    else {kcp.send_control(&channel,event.event.encode()).await}
+                    let state = mouse.clone();
+                    let guarded = event.clone();
+                    kcp.send_input(channel.id(), event.event.encode(), Arc::new(move || state.is_current(&guarded)), release).await
                 }) => result
                 .map_err(|_| { timed_out = true; match kcp.send_failure_reason() {
                     Some(reason) => anyhow::anyhow!("{}", (crate::i18n::t().session.input_send_timeout_reason)(&reason.to_string())),
@@ -574,38 +570,19 @@ async fn recover_remote_input(
     let recover = async {
         // One release pass followed by a harmless, reliably acknowledged probe.
         // Never resubmit the failed press/motion or switch carriers on failure.
+        anyhow::ensure!(kcp.is_negotiated(), "control transport not negotiated");
         for event in recovery.releases.into_iter().chain([InputEvent::Heartbeat]) {
             anyhow::ensure!(mouse.recovery_current(epoch), "input recovery cancelled");
-            if kcp.is_negotiated() {
-                let state = mouse.clone();
-                kcp.send_input(
-                    channel.id(),
-                    event.encode(),
-                    Arc::new(move || state.recovery_current(epoch)),
-                    true,
-                )
-                .await?;
-            } else {
-                kcp.send_control(channel, event.encode()).await?;
-            }
+            let state = mouse.clone();
+            kcp.send_input(
+                channel.id(),
+                event.encode(),
+                Arc::new(move || state.recovery_current(epoch)),
+                true,
+            )
+            .await?;
         }
-        if kcp.is_negotiated() {
-            kcp.drain().await?;
-        } else {
-            // This SCTP implementation releases buffered bytes on SACK. Sending
-            // the probe alone only means local enqueue, not a healthy carrier.
-            loop {
-                anyhow::ensure!(
-                    channel.ready_state()
-                        == webrtc::data_channel::data_channel_state::RTCDataChannelState::Open,
-                    "control channel closed during input recovery"
-                );
-                if channel.buffered_amount().await == 0 {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        }
+        kcp.drain().await?;
         Ok(())
     };
     tokio::select! {

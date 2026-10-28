@@ -45,7 +45,6 @@ impl Format {
 pub enum PixelFormat {
     Bgra,
     Nv12,
-    I444,
     P010,
     Ayuv,
     Y410,
@@ -61,13 +60,12 @@ impl PixelFormat {
             return None;
         }
         let row = width.checked_mul(match self {
-            Self::Nv12 | Self::I444 => 1,
+            Self::Nv12 => 1,
             Self::P010 => 2,
             _ => 4,
         })?;
         let rows = match self {
             Self::Nv12 | Self::P010 => height.checked_add(height / 2)?,
-            Self::I444 => height.checked_mul(3)?,
             _ => height,
         };
         Some((row, rows))

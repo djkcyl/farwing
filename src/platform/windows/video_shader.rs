@@ -48,7 +48,6 @@ struct VideoGeometryKey {
     output_width: u32,
     output_height: u32,
     content_top: u32,
-    rotation: u16,
 }
 
 struct CachedVideoShaderViews {
@@ -86,7 +85,6 @@ pub(crate) struct VideoTextureView {
     pub(crate) coded_height: u32,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) rotation: u16,
 }
 
 impl VideoShaderRenderer {
@@ -253,7 +251,6 @@ impl VideoShaderRenderer {
             output_width: output_size.width,
             output_height: output_size.height,
             content_top,
-            rotation: view.rotation,
         };
         if self
             .geometry
@@ -338,13 +335,9 @@ impl VideoShaderRenderer {
         let stride = std::mem::size_of::<VideoVertex>() as u32;
         let offset = 0_u32;
         let resources = [Some(plane_0), plane_1];
-        // Select point sampling when
-        // rotated visible dimensions match the video HWND within one pixel.
-        let (display_width, display_height) = if view.rotation == 90 || view.rotation == 270 {
-            (view.height, view.width)
-        } else {
-            (view.width, view.height)
-        };
+        // Select point sampling when the visible dimensions match the
+        // video HWND within one pixel.
+        let (display_width, display_height) = (view.width, view.height);
         let sampler = if display_width.abs_diff(output_size.width) <= 1
             && display_height.abs_diff(output_size.height.saturating_sub(content_top)) <= 1
         {
@@ -534,11 +527,7 @@ fn create_video_shader_resource_view(
 }
 
 fn video_vertices(key: VideoGeometryKey) -> [VideoVertex; 4] {
-    let (display_width, display_height) = if key.rotation == 90 || key.rotation == 270 {
-        (key.height, key.width)
-    } else {
-        (key.width, key.height)
-    };
+    let (display_width, display_height) = (key.width, key.height);
     let (display_width, display_height) = key
         .display_aspect
         .unwrap_or((display_width, display_height));
@@ -558,12 +547,7 @@ fn video_vertices(key: VideoGeometryKey) -> [VideoVertex; 4] {
     let v0 = key.visible_y as f32 / key.coded_height.max(1) as f32;
     let u1 = key.visible_x.saturating_add(key.width) as f32 / key.coded_width.max(1) as f32;
     let v1 = key.visible_y.saturating_add(key.height) as f32 / key.coded_height.max(1) as f32;
-    let texcoords = match key.rotation {
-        90 => [[u0, v1], [u0, v0], [u1, v1], [u1, v0]],
-        180 => [[u1, v1], [u0, v1], [u1, v0], [u0, v0]],
-        270 => [[u1, v0], [u1, v1], [u0, v0], [u0, v1]],
-        _ => [[u0, v0], [u1, v0], [u0, v1], [u1, v1]],
-    };
+    let texcoords = [[u0, v0], [u1, v0], [u0, v1], [u1, v1]];
     [
         VideoVertex {
             position: [left, top],

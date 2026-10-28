@@ -191,8 +191,6 @@ pub(crate) struct EncodedVideoFrame {
     pub received_at: Instant,
     pub assembled_at: Instant,
     pub keyframe: bool,
-    pub rotation: u16,
-    pub content_type: u8,
     pub video_capture_index: Option<u16>,
     pub is_new_picture: Option<bool>,
     pub frame_meta: Option<crate::media::frame_meta::FrameMeta>,

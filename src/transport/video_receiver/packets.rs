@@ -24,8 +24,6 @@ pub(super) struct EncodedFrame {
     pub(super) timestamp: u32,
     pub(super) keyframe: bool,
     pub(super) color_space: Option<VideoColorSpace>,
-    pub(super) rotation: u16,
-    pub(super) content_type: u8,
     pub(super) video_capture_index: Option<u16>,
     pub(super) is_new_picture: Option<bool>,
     pub(super) frame_meta: Option<crate::media::frame_meta::FrameMeta>,
@@ -81,18 +79,13 @@ impl PacketBuffer {
         }
     }
 
-    pub(super) fn install_h264_sprop(&mut self, fmtp: &str) {
-        self.parameters.install_h264_sprop(fmtp);
-    }
 
     pub(super) fn prepare_parameters(&mut self, packet: &mut ParsedVideoPacket) -> bool {
         let tracked = match packet.codec {
             VideoCodecKind::Av1 => return true,
-            VideoCodecKind::H264 => self.parameters.h264(
-                &mut packet.nalus,
-                packet.is_first_packet_in_frame,
-                &mut packet.payload,
-            ),
+            VideoCodecKind::H264 => self
+                .parameters
+                .h264(&mut packet.nalus, packet.is_first_packet_in_frame),
             VideoCodecKind::H265 => self
                 .parameters
                 .h265(&packet.nalus, packet.is_first_packet_in_frame),
@@ -344,8 +337,6 @@ impl PacketBuffer {
                 let mut idr = false;
                 let mut parameter_format = None;
                 let mut color_space = None;
-                let mut rotation = None;
-                let mut content_type = None;
                 let mut video_capture_index = None;
                 let mut is_new_picture = None;
                 let mut frame_meta = None;
@@ -386,8 +377,6 @@ impl PacketBuffer {
                     if packet.packet.marker {
                         color_space = packet.packet.color_space;
                     }
-                    rotation = rotation.or(packet.packet.rotation);
-                    content_type = content_type.or(packet.packet.content_type);
                     video_capture_index = video_capture_index.or(packet.packet.video_capture_index);
                     // First valid marker in sequence order, including a false
                     // value; never inherit the previous frame's marker.
@@ -437,8 +426,6 @@ impl PacketBuffer {
                     timestamp,
                     keyframe,
                     color_space,
-                    rotation: rotation.unwrap_or(0),
-                    content_type: content_type.unwrap_or(0),
                     video_capture_index,
                     is_new_picture,
                     frame_meta,

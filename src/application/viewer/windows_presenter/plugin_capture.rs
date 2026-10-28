@@ -17,17 +17,13 @@ pub(super) struct Capture {
     renderer: VideoShaderRenderer,
     slots: Vec<Slot>,
     size: PhysicalSize<u32>,
-    source: (u32, u32, u16),
+    source: (u32, u32),
     next: Instant,
     sequence: u64,
 }
 impl Capture {
     pub fn for_view(device: &ID3D11Device, view: &VideoTextureView) -> Result<Self> {
-        let (w, h) = if matches!(view.rotation, 90 | 270) {
-            (view.height, view.width)
-        } else {
-            (view.width, view.height)
-        };
+        let (w, h) = (view.width, view.height);
         let ratio = (640.0 / w.max(h).max(1) as f64).min(1.0);
         let size = PhysicalSize::new(
             (w as f64 * ratio).round().max(1.0) as u32,
@@ -73,13 +69,13 @@ impl Capture {
             renderer: VideoShaderRenderer::new(device)?,
             slots,
             size,
-            source: (view.width, view.height, view.rotation),
+            source: (view.width, view.height),
             next: Instant::now(),
             sequence: 0,
         })
     }
     pub fn matches(&self, view: &VideoTextureView) -> bool {
-        self.source == (view.width, view.height, view.rotation)
+        self.source == (view.width, view.height)
     }
     #[allow(clippy::too_many_arguments)]
     pub fn tick(

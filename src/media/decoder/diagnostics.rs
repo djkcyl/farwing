@@ -411,18 +411,12 @@ fn decode_sample(
                 }
                 WindowsDecodedFrame::Cpu(frame) => {
                     use crate::platform::decoder::WindowsCpuFormat;
-                    let expected = if format.codec == VideoCodec::Av1 {
-                        match (format.chroma, format.depth) {
-                            (1, 8) => WindowsCpuFormat::Nv12,
-                            (1, 10) => WindowsCpuFormat::P010,
-                            (3, 8) => WindowsCpuFormat::Ayuv,
-                            (3, 10) => WindowsCpuFormat::Y410,
-                            _ => unreachable!(),
-                        }
-                    } else if format.chroma == 3 {
-                        WindowsCpuFormat::I444
-                    } else {
-                        WindowsCpuFormat::Nv12
+                    let expected = match (format.chroma, format.depth) {
+                        (1, 8) => WindowsCpuFormat::Nv12,
+                        (1, 10) => WindowsCpuFormat::P010,
+                        (3, 8) => WindowsCpuFormat::Ayuv,
+                        (3, 10) => WindowsCpuFormat::Y410,
+                        _ => unreachable!(),
                     };
                     ensure!(frame.format == expected, "{}", crate::i18n::t().session.probe_software_format_mismatch);
                     ensure!(
@@ -435,7 +429,7 @@ fn decode_sample(
                     let plane = cw * ch;
                     let length = match frame.format {
                         WindowsCpuFormat::Nv12 => plane * 3 / 2,
-                        WindowsCpuFormat::P010 | WindowsCpuFormat::I444 => plane * 3,
+                        WindowsCpuFormat::P010 => plane * 3,
                         _ => plane * 4,
                     };
                     ensure!(frame.data.len() == length, "{}", crate::i18n::t().session.probe_software_plane_mismatch);
@@ -453,11 +447,6 @@ fn decode_sample(
                                         frame.data[uv + 1] as u16,
                                     ]
                                 }
-                                WindowsCpuFormat::I444 => [
-                                    frame.data[at] as u16,
-                                    frame.data[plane + at] as u16,
-                                    frame.data[2 * plane + at] as u16,
-                                ],
                                 WindowsCpuFormat::P010 => {
                                     let uv = plane + y / 2 * cw + x / 2 * 2;
                                     let get = |i: usize| {

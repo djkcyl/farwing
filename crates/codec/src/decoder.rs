@@ -96,6 +96,13 @@ impl Decoder {
                     let picture = output.picture;
                     let mut packed = Vec::new();
                     picture.pack_into(&mut packed).map_err(h264_error)?;
+                    let yuv444 = picture.chroma == farwing_h264::picture::Chroma::Yuv444;
+                    if yuv444 {
+                        packed = planar_to_ayuv(
+                            &packed,
+                            picture.crop.width as usize * picture.crop.height as usize,
+                        );
+                    }
                     if self.cancel.load(Ordering::Acquire) {
                         core.reset().map_err(h264_error)?;
                         return Err(Error::Closed);
@@ -106,11 +113,7 @@ impl Decoder {
                         height: picture.crop.height as u32,
                         coded_width: picture.crop.width as u32,
                         coded_height: picture.crop.height as u32,
-                        format: if picture.chroma == farwing_h264::picture::Chroma::Yuv444 {
-                            PixelFormat::I444
-                        } else {
-                            PixelFormat::Nv12
-                        },
+                        format: if yuv444 { PixelFormat::Ayuv } else { PixelFormat::Nv12 },
                         data: Bytes::from(packed),
                     });
                 }
@@ -119,6 +122,18 @@ impl Decoder {
         }
     }
 }
+/// Planar 4:4:4 (Y, U, V planes of `plane` samples) as packed AYUV, the
+/// layout the renderer samples (V, U, Y, A per pixel).
+fn planar_to_ayuv(planar: &[u8], plane: usize) -> Vec<u8> {
+    let (y, chroma) = planar.split_at(plane);
+    let (u, v) = chroma.split_at(plane);
+    let mut packed = Vec::with_capacity(plane * 4);
+    for ((y, u), v) in y.iter().zip(u).zip(&v[..plane]) {
+        packed.extend_from_slice(&[*v, *u, *y, 255]);
+    }
+    packed
+}
+
 fn h264_error(error: farwing_h264::Error) -> Error {
     use farwing_h264::Error as E;
     match error {
@@ -126,5 +141,15 @@ fn h264_error(error: farwing_h264::Error) -> Error {
         E::Unsupported(_) => Error::Unsupported,
         E::Allocation => Error::Allocation,
         E::NeedKeyframe | E::Truncated | E::Invalid(_) => Error::NeedKeyframe,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn planar_444_packs_as_vuya() {
+        // Two pixels: Y 10 20, U 30 40, V 50 60.
+        let packed = super::planar_to_ayuv(&[10, 20, 30, 40, 50, 60], 2);
+        assert_eq!(packed, [50, 30, 10, 255, 60, 40, 20, 255]);
     }
 }

@@ -83,8 +83,19 @@ const HELD_MS: f64 = 200.0;
 /// change of timeline, not a step.
 const OTHER_TIMELINE_MS: f64 = 5_000.0;
 
-pub(super) struct PresentQueue {
-    frames: VecDeque<DecodedVideoFrame>,
+/// What the queue needs to know of a picture.
+pub(super) trait Picture {
+    fn rtp_timestamp(&self) -> u32;
+}
+
+impl Picture for DecodedVideoFrame {
+    fn rtp_timestamp(&self) -> u32 {
+        self.rtp_timestamp
+    }
+}
+
+pub(super) struct PresentQueue<F = DecodedVideoFrame> {
+    frames: VecDeque<F>,
     catch_up: bool,
     last_push: Option<(Instant, u32)>,
     interval: Duration,
@@ -96,13 +107,13 @@ pub(super) struct PresentQueue {
     pub(super) pushed: u64,
 }
 
-impl Default for PresentQueue {
+impl<F: Picture> Default for PresentQueue<F> {
     fn default() -> Self {
         Self::new(catch_up_override().unwrap_or(true))
     }
 }
 
-impl PresentQueue {
+impl<F: Picture> PresentQueue<F> {
     fn new(catch_up: bool) -> Self {
         Self {
             frames: VecDeque::new(),
@@ -117,10 +128,10 @@ impl PresentQueue {
     }
 
     /// A decoded picture; returns the pictures it replaces (never shown).
-    pub(super) fn push(&mut self, frame: DecodedVideoFrame, now: Instant) -> Vec<DecodedVideoFrame> {
+    pub(super) fn push(&mut self, frame: F, now: Instant) -> Vec<F> {
         self.pushed += 1;
         if let Some((at, rtp_timestamp)) = self.last_push {
-            let step = frame.rtp_timestamp.wrapping_sub(rtp_timestamp);
+            let step = frame.rtp_timestamp().wrapping_sub(rtp_timestamp);
             let content = Duration::from_micros(u64::from(step) * 1000 / 90);
             // The content follows on (a small step): the picture was held
             // back, not lost, and more held-back pictures follow. A large
@@ -142,7 +153,7 @@ impl PresentQueue {
                 self.window = Some(now + self.interval * WINDOW_INTERVALS);
             }
         }
-        self.last_push = Some((now, frame.rtp_timestamp));
+        self.last_push = Some((now, frame.rtp_timestamp()));
         if self.window.is_some_and(|until| now >= until) {
             self.window = None;
         }
@@ -161,12 +172,12 @@ impl PresentQueue {
     }
 
     /// The next picture to show (the oldest waiting).
-    pub(super) fn take(&mut self) -> Option<DecodedVideoFrame> {
+    pub(super) fn take(&mut self) -> Option<F> {
         self.frames.pop_front()
     }
 
     /// Put back a picture just taken when it could not be shown yet.
-    pub(super) fn restore(&mut self, frame: DecodedVideoFrame) -> Option<DecodedVideoFrame> {
+    pub(super) fn restore(&mut self, frame: F) -> Option<F> {
         if self.frames.is_empty() {
             self.frames.push_back(frame);
             None
@@ -221,8 +232,16 @@ impl PresentQueue {
 mod tests {
     use super::*;
 
-    fn frame(rtp_timestamp: u32) -> DecodedVideoFrame {
-        DecodedVideoFrame::test(rtp_timestamp)
+    struct Frame(u32);
+
+    impl Picture for Frame {
+        fn rtp_timestamp(&self) -> u32 {
+            self.0
+        }
+    }
+
+    fn frame(rtp_timestamp: u32) -> Frame {
+        Frame(rtp_timestamp)
     }
 
     #[test]
@@ -234,7 +253,7 @@ mod tests {
         assert_eq!(queue.push(frame(1500), now + Duration::from_millis(200)).len(), 1);
         assert_eq!(queue.push(frame(3000), now + Duration::from_millis(202)).len(), 1);
         assert_eq!(queue.len(), 1);
-        assert_eq!(queue.take().unwrap().rtp_timestamp, 3000);
+        assert_eq!(queue.take().unwrap().0, 3000);
     }
 
     #[test]
@@ -257,9 +276,9 @@ mod tests {
         assert!(queue.push(frame(rtp + 1500), now + Duration::from_millis(2)).is_empty());
         // Full: the newest waiting one gives way, the oldest stays.
         let replaced = queue.push(frame(rtp + 3000), now + Duration::from_millis(4));
-        assert_eq!(replaced[0].rtp_timestamp, rtp + 1500);
-        assert_eq!(queue.take().unwrap().rtp_timestamp, rtp);
-        assert_eq!(queue.take().unwrap().rtp_timestamp, rtp + 3000);
+        assert_eq!(replaced[0].0, rtp + 1500);
+        assert_eq!(queue.take().unwrap().0, rtp);
+        assert_eq!(queue.take().unwrap().0, rtp + 3000);
         // After the window, the newest replaces again.
         assert!(queue.push(frame(rtp + 4500), now + Duration::from_millis(30)).is_empty());
         assert_eq!(queue.push(frame(rtp + 6000), now + Duration::from_millis(75)).len(), 1);
@@ -296,7 +315,7 @@ mod tests {
 
     #[test]
     fn content_steps_count_jumps() {
-        let mut queue = PresentQueue::new(false);
+        let mut queue = PresentQueue::<Frame>::new(false);
         for rtp in [0u32, 1500, 3000, 3000 + 90 * 120, 3000 + 90 * 120 + 1500] {
             queue.shown(rtp);
         }

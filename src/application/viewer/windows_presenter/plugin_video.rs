@@ -109,7 +109,7 @@ pub(super) struct Engine {
     last: Option<Picture>,
     delay: Duration,
     late_limit: Duration,
-    signature: Option<(u32, u32, u16, i32, RenderColor)>,
+    signature: Option<(u32, u32, i32, RenderColor)>,
 }
 fn buffer(device: &ID3D11Device, data: &[f32; 4]) -> Result<ID3D11Buffer> {
     let desc = D3D11_BUFFER_DESC {
@@ -137,7 +137,6 @@ pub(super) fn view(target: &Target, color: RenderColor) -> VideoTextureView {
         coded_height: target.size.height,
         width: target.size.width,
         height: target.size.height,
-        rotation: 0,
     }
 }
 impl Engine {
@@ -226,7 +225,6 @@ impl Engine {
         let signature = (
             input.width,
             input.height,
-            input.rotation,
             input.input_format.0,
             input.color,
         );
@@ -239,11 +237,7 @@ impl Engine {
                 }
             }
         }
-        let size = if matches!(input.rotation, 90 | 270) {
-            PhysicalSize::new(input.height, input.width)
-        } else {
-            PhysicalSize::new(input.width, input.height)
-        };
+        let size = PhysicalSize::new(input.width, input.height);
         let normalized = self.pool.get(device, size)?;
         self.normalizer
             .draw(device, context, &normalized.rtv, texture, input, size, 0)?;
@@ -518,7 +512,6 @@ pub(crate) fn dev_render(graph: &Graph, pixels: &[[u8; 4]], width: u32, height: 
             coded_height: height,
             width,
             height,
-            rotation: 0,
         };
         engine.process(
             &device,

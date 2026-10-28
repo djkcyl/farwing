@@ -541,7 +541,9 @@ impl NativePeer {
 
     pub async fn set_remote_answer(&self, mut sdp: String, restart_ice: bool) -> Result<()> {
         tracing::debug!(restart_ice, "installing remote SDP answer");
-        let mixed_kcp_version = negotiated_mixed_kcp_version(&sdp)?;
+        // Input and control travel on FCT; every Farwing host takes it.
+        let mixed_kcp_version = negotiated_mixed_kcp_version(&sdp)?
+            .context("the host answered without the control transport (FCT)")?;
         if self.p2p_only.load(Ordering::Acquire) {
             sdp = remove_relay_candidates_from_sdp(&sdp);
         }
@@ -560,7 +562,7 @@ impl NativePeer {
             .configure(microphone_encoding);
         let control = self.data_channels.stream_control.clone();
         self.core.activate_control(
-            mixed_kcp_version,
+            Some(mixed_kcp_version),
             Arc::new(move |_, bytes| control.handle_protocol_message(bytes)),
         )?;
         Ok(())

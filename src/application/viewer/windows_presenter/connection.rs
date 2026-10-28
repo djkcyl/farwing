@@ -1,19 +1,17 @@
 //! Window connection lifecycle and event-loop integration.
 use crate::i18n::t;
 use super::chrome::borderless_resize;
-use super::player::ThreadedWindowsApp;
 use super::screen_windows::ScreenWindows;
 use crate::application::viewer::windows_ui::{UiPresenter, UiTimingAudit, VideoWindow};
 use crate::application::viewer::{
     ConnectionProgress, ConnectionProgressApp, NativeViewerSession, ViewerDisplayHandle,
-    ViewerWindowEvent, configure_viewer_visuals, mutex_lock,
+    ViewerWindowEvent, configure_viewer_visuals,
 };
 use crate::ui::chrome::{
     configure_dwm_window, title_bar_height, title_bar_panel, window_title_bar,
 };
 use crate::ui::window_manager::{Event as UiEvent, Repaint as UiRepaintEvent};
 use anyhow::{Context, Result, anyhow, bail};
-use std::sync::atomic::Ordering;
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
@@ -119,7 +117,6 @@ pub(crate) struct ConnectingWindowsRunner {
         Option<tokio::sync::oneshot::Sender<ViewerDisplayHandle>>,
     pub(in crate::application::viewer) window: Option<Window>,
     pub(in crate::application::viewer) connecting: Option<WindowsConnectionApp>,
-    pub(in crate::application::viewer) playing: Option<ThreadedWindowsApp>,
     pub(in crate::application::viewer) fatal_error: Option<String>,
     pub(in crate::application::viewer) next_ui_update: Instant,
     pub(in crate::application::viewer) next_repaint: Option<Instant>,
@@ -204,10 +201,6 @@ impl ApplicationHandler<UiEvent> for ConnectingWindowsRunner {
             return;
         }
         if event == WindowEvent::CloseRequested {
-            if let Some(app) = self.playing.as_mut() {
-                app.mouse.release(window);
-                app.shutdown.store(true, Ordering::Release);
-            }
             self.exit(event_loop);
             return;
         }
@@ -234,9 +227,7 @@ impl ApplicationHandler<UiEvent> for ConnectingWindowsRunner {
             self.next_repaint = None;
             self.last_ui_frame = Some(Instant::now());
         }
-        let result = if let Some(app) = self.playing.as_mut() {
-            app.on_window_event(window, &event, event_loop)
-        } else if let Some(app) = self.connecting.as_mut() {
+        let result = if let Some(app) = self.connecting.as_mut() {
             app.on_window_event(window, &event)
         } else {
             Ok(())
@@ -254,7 +245,6 @@ impl ApplicationHandler<UiEvent> for ConnectingWindowsRunner {
             window.set_visible(false);
         }
         self.screens.take();
-        self.playing.take();
         self.connecting.take();
         self.window.take();
     }
@@ -277,33 +267,20 @@ impl ApplicationHandler<UiEvent> for ConnectingWindowsRunner {
         // Match egui's callback contract: requests from the just
         // completed pass are valid; older requests have already been serviced.
         // A replaced room has a new Context and must reject the old callbacks.
-        let context = self
-            .playing
-            .as_ref()
-            .map(|app| &app.egui_context)
-            .or_else(|| self.connecting.as_ref().map(|app| &app.egui_context));
+        let context = self.connecting.as_ref().map(|app| &app.egui_context);
         if event.generation == self.ui_generation
             && let Some(context) = context
         {
             let current = context.cumulative_pass_nr();
             if current == event.pass || current == event.pass.saturating_add(1) {
-                let interval = if self.playing.is_some() {
-                    self.ui_frame_interval
-                } else {
-                    self.ui_frame_interval.max(WAITING_FRAME_INTERVAL)
-                };
+                let interval = self.ui_frame_interval.max(WAITING_FRAME_INTERVAL);
                 let when = self
                     .last_ui_frame
                     .map_or(event.when, |at| event.when.max(at + interval));
                 self.next_repaint = Some(self.next_repaint.map_or(when, |old| old.min(when)));
             }
         }
-        if self.close_requested
-            || self
-                .playing
-                .as_ref()
-                .is_some_and(|app| app.close_requested || app.shutdown.load(Ordering::Acquire))
-        {
+        if self.close_requested {
             self.exit(event_loop);
         }
     }
@@ -323,22 +300,7 @@ impl ApplicationHandler<UiEvent> for ConnectingWindowsRunner {
             }
             return;
         }
-        if let Some(app) = self.playing.as_mut() {
-            if app.close_requested {
-                self.exit(event_loop);
-                return;
-            }
-            if let Some(window) = &self.window {
-                app.refresh_mouse(window, event_loop);
-            }
-            if app.shutdown.load(Ordering::Acquire) {
-                if let Some(error) = mutex_lock(&app.fatal_error).clone() {
-                    self.fatal_error = Some(error);
-                }
-                self.exit(event_loop);
-                return;
-            }
-        } else if self.connecting.is_none() {
+        if self.connecting.is_none() {
             return;
         }
         if self
@@ -358,12 +320,7 @@ impl ApplicationHandler<UiEvent> for ConnectingWindowsRunner {
             }
             self.next_repaint = None;
             if maintenance_due {
-                self.next_ui_update = now
-                    + if self.playing.is_some() {
-                        Duration::from_millis(250)
-                    } else {
-                        Duration::from_millis(33)
-                    };
+                self.next_ui_update = now + Duration::from_millis(33);
             }
         }
         let wake_at = self
@@ -396,7 +353,6 @@ impl ConnectingWindowsRunner {
             display_sender: needs_display.then_some(config.display_sender),
             window: None,
             connecting: None,
-            playing: None,
             fatal_error: None,
             next_ui_update: Instant::now(),
             next_repaint: None,
@@ -474,19 +430,13 @@ impl ConnectingWindowsRunner {
                     let last_frame = self
                         .screens
                         .as_ref()
-                        .and_then(|screens| screens.snapshot(preferred))
-                        .or_else(|| {
-                            self.playing
-                                .as_ref()
-                                .and_then(|playing| playing.renderer.snapshot())
-                        });
+                        .and_then(|screens| screens.snapshot(preferred));
                     tracing::debug!(captured = last_frame.is_some(), "reconnect backdrop");
                     if let Some(mut screens) = self.screens.take() {
                         self.window = screens.take_window(preferred);
                     }
                     // Keep the OS window, but join and discard the old room's
                     // render/decoder owners before attaching a new media peer.
-                    self.playing.take();
                     self.connecting.take();
                     self.ui_generation = self.ui_generation.wrapping_add(1);
                     self.next_repaint = None;
@@ -563,9 +513,6 @@ impl ConnectingWindowsRunner {
     ) {
         tracing::error!(%message);
         self.fatal_error = Some(message);
-        if let Some(app) = self.playing.as_ref() {
-            app.shutdown.store(true, Ordering::Release);
-        }
         self.exit(event_loop);
     }
 }

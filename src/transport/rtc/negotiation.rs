@@ -4,8 +4,6 @@ use webrtc::api::media_engine::MediaEngine;
 // SDP, codec and extension registration; no session ownership.
 pub(super) const MAX_DATA_CHANNEL_MESSAGE_SIZE: u32 = 524_288;
 
-pub(super) const VIDEO_CONTENT_TYPE_URI: &str =
-    "http://www.webrtc.org/experiments/rtp-hdrext/video-content-type";
 
 pub(super) const VIDEO_CAPTURE_INDEX_URI: &str =
     "urn:farwing:rtp-hdrext:capture-index";

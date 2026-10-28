@@ -6,12 +6,10 @@ use crate::application::viewer::{
     DecodedVideoFrame, NativeViewerSession, mutex_lock, take_next_frame,
 };
 use crate::diagnostics::performance::{PerformanceMonitor, RenderedFrameTiming};
-use crate::media::decoder::RenderSurface;
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::{Duration, Instant};
-use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::System::Threading::{
     GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
 };
@@ -32,7 +30,7 @@ pub(in crate::application::viewer) struct RenderWorker {
     pub(in crate::application::viewer) commands: std_mpsc::Sender<RenderCommand>,
     pub(in crate::application::viewer) wake: std::thread::Thread,
     pub(in crate::application::viewer) thread: Option<std::thread::JoinHandle<()>>,
-    pub(in crate::application::viewer) current_video_size: Arc<Mutex<Option<(u32, u32, u16)>>>,
+    pub(in crate::application::viewer) current_video_size: Arc<Mutex<Option<(u32, u32)>>>,
     pub(in crate::application::viewer) first_presented: Arc<AtomicBool>,
 }
 
@@ -42,7 +40,6 @@ impl RenderWorker {
         mut size: PhysicalSize<u32>,
         session: &NativeViewerSession,
         context: &egui::Context,
-        cpu_device: Arc<Mutex<Option<(ID3D11Device, ID3D11DeviceContext)>>>,
     ) -> Result<Self> {
         let started = Instant::now();
         let screen_id = session.screen_id();
@@ -241,10 +238,9 @@ impl RenderWorker {
                         // Shared handles cross devices on one GPU, not arbitrary GPUs.
                         // Follow the decoder adapter; adopt non-shared resources directly.
                         // Release the old swap chain before constructing its replacement.
-                        let changed = presenter.as_ref().is_some_and(|p| {
-                            matches!(&frame.surface, RenderSurface::D3D11(surface)
-                            if !p.can_render_surface(surface))
-                        });
+                        let changed = presenter
+                            .as_ref()
+                            .is_some_and(|p| !p.can_render_surface(&frame.surface));
                         if changed {
                             presenter.take();
                         }
@@ -252,13 +248,12 @@ impl RenderWorker {
                             // `filter` drops a prepared presenter that cannot
                             // show this picture before another swap chain is
                             // built: one per window.
-                            let ready = prepared.take().filter(|ready| {
-                                matches!(&frame.surface, RenderSurface::D3D11(surface)
-                                    if ready.can_render_surface(surface))
-                            });
+                            let ready = prepared
+                                .take()
+                                .filter(|ready| ready.can_render_surface(&frame.surface));
                             let created = match ready {
                                 Some(ready) => Ok(ready),
-                                None => D3D11Presenter::for_frame(hwnd, size, frame, &cpu_device),
+                                None => D3D11Presenter::for_frame(hwnd, size, frame),
                             };
                             match created {
                                 Ok(p) => {
@@ -339,7 +334,7 @@ impl RenderWorker {
                                         not_ready = 0;
                                     }
                                     *mutex_lock(&worker_video_size) =
-                                        Some((frame.width, frame.height, frame.rotation));
+                                        Some((frame.width, frame.height));
                                     current_frame = Some(frame);
                                 }
                             }
@@ -388,12 +383,6 @@ impl RenderWorker {
                 // GPU resources and retained samples go away before the child HWND.
                 drop(presenter);
                 drop(current_frame);
-                if let Some((_, context)) = mutex_lock(&cpu_device).as_ref() {
-                    // Release bindings held by the retained context before another track uses it.
-                    unsafe {
-                        context.ClearState();
-                    }
-                }
                 mutex_lock(&frame_queue).clear();
                 performance.set_presentation_queue_frames(0);
             })
@@ -533,18 +522,7 @@ pub(in crate::application::viewer) fn render_thread_frame(
     let result = if !presenter.analysis_new && presenter.effects.is_some() {
         presenter.draw_effect_output(frame.color, true)
     } else {
-        match &frame.surface {
-            RenderSurface::D3D11(surface) => presenter.draw_video(
-                surface,
-                frame.width,
-                frame.height,
-                frame.rotation,
-                frame.color,
-            ),
-            RenderSurface::CpuRgba8(pixels) => {
-                presenter.draw_cpu_video(pixels, frame.width, frame.height, frame.rotation)
-            }
-        }
+        presenter.draw_video(&frame.surface, frame.width, frame.height, frame.color)
     };
     result.map_err(VideoRenderError::prepare)?;
     if !presenter.drew {

@@ -123,8 +123,6 @@ pub(super) fn parsed_packet(
         nalus,
         parameter_format,
         color_space: None,
-        rotation: None,
-        content_type: None,
         video_capture_index: None,
         is_new_picture: None,
         frame_meta: None,

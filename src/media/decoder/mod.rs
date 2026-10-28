@@ -2,9 +2,7 @@ use crate::media::decode_api::{DecodeError, DecoderMode, VideoDecoderConfig};
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use windows::Win32::Graphics::Direct3D11::ID3D11Device;
-use yuv::{YuvBiPlanarImage, YuvConversionMode, YuvRange, YuvStandardMatrix, yuv_nv12_to_rgba};
 
-use crate::media::video_color::{ColorMatrix, RenderColor};
 use crate::media::{ConnectionMediaProfile, VideoCodec};
 use farwing_protocol::session::Decoder;
 
@@ -30,7 +28,7 @@ pub(crate) struct DecodedFrame {
     pub pts: i64,
     pub width: u32,
     pub height: u32,
-    pub surface: DecodedSurface,
+    pub surface: windows_surface::D3D11Surface,
     pub ready_at: std::time::Instant,
 }
 
@@ -49,51 +47,14 @@ pub(crate) enum DecoderOutputIssue {
     },
 }
 
-#[derive(Debug)]
-pub(crate) enum DecodedSurface {
-    CpuNv12(Bytes),
-
-    CpuI444(Bytes),
-
-    D3D11(windows_surface::D3D11Surface),
-}
-
-#[derive(Debug)]
-pub(crate) enum RenderSurface {
-    CpuRgba8(Vec<Rgba8>),
-
-    D3D11(windows_surface::D3D11Surface),
-}
-
-#[repr(C, align(4))]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub(crate) struct Rgba8(pub [u8; 4]);
-
-impl DecodedSurface {
-    // Associate the decoder token with its input frame before choosing color.
-    // CPU conversion remains on the decoder worker, outside the frame-queue lock.
-    pub(crate) fn prepare(
-        self,
-        width: u32,
-        height: u32,
-        color: RenderColor,
-    ) -> Result<RenderSurface> {
-        match self {
-            Self::CpuI444(data) => {
-                i444_to_rgba_pixels(width, height, &data, color).map(RenderSurface::CpuRgba8)
-            }
-            Self::CpuNv12(data) => {
-                nv12_to_rgba_pixels(width, height, &data, color).map(RenderSurface::CpuRgba8)
-            }
-
-            Self::D3D11(surface) => Ok(RenderSurface::D3D11(surface)),
-        }
-    }
-}
+/// What the presenter draws: every decoder's output is a D3D11 texture
+/// (software pictures are uploaded on the decoder thread).
+pub(crate) type RenderSurface = windows_surface::D3D11Surface;
 
 pub(crate) struct NativeVideoDecoder {
     decoder: Box<WindowsVideoDecoder>,
-    frame_reader: FrameReader,
+    /// Wraps hardware output and uploads software pictures.
+    writer: windows_surface::D3D11SurfaceWriter,
     candidate: DecoderCandidate,
     label: String,
 
@@ -276,16 +237,11 @@ impl NativeVideoDecoder {
                     extra_data,
                 );
                 let decoder = WindowsVideoDecoder::open(&config)?;
-                let frame_reader = if codec == VideoCodec::Av1 {
-                    FrameReader::Windows(
-                        surface_writer.map_or_else(windows_surface::D3D11SurfaceWriter::new, Ok)?,
-                    )
-                } else {
-                    FrameReader::Cpu
-                };
+                let writer =
+                    surface_writer.map_or_else(windows_surface::D3D11SurfaceWriter::new, Ok)?;
                 Ok(Self {
                     decoder: Box::new(decoder),
-                    frame_reader,
+                    writer,
                     candidate,
                     label: crate::i18n::t().session.decoder_software.to_owned(),
 
@@ -334,10 +290,7 @@ impl NativeVideoDecoder {
     }
 
     pub(crate) fn surface_writer(&self) -> Option<windows_surface::D3D11SurfaceWriter> {
-        match &self.frame_reader {
-            FrameReader::Windows(writer) => Some(writer.clone()),
-            FrameReader::Cpu => None,
-        }
+        Some(self.writer.clone())
     }
 
     fn open_windows_hardware(
@@ -366,7 +319,7 @@ impl NativeVideoDecoder {
         );
         Ok(Self {
             decoder: Box::new(backend),
-            frame_reader: FrameReader::Windows(reader),
+            writer: reader,
             candidate: DecoderCandidate::WindowsD3d11 { adapter },
             label: (crate::i18n::t().session.decoder_hardware)(
                 &crate::platform::capture::encoding_adapters()
@@ -401,23 +354,23 @@ impl NativeVideoDecoder {
             .push_packet(&frame.data, decode_token)
             .context("submit encoded video frame to native decoder")
             .err();
-        let mut batch = poll_platform_decoder(&mut self.decoder, &mut self.frame_reader);
+        let mut batch = poll_platform_decoder(&mut self.decoder, &self.writer);
         batch.input_error = input_error;
         batch
     }
 
     pub(crate) fn poll(&mut self) -> DecodedBatch {
-        poll_platform_decoder(&mut self.decoder, &mut self.frame_reader)
+        poll_platform_decoder(&mut self.decoder, &self.writer)
     }
 }
 
 fn poll_platform_decoder(
     decoder: &mut WindowsVideoDecoder,
-    frame_reader: &mut FrameReader,
+    writer: &windows_surface::D3D11SurfaceWriter,
 ) -> DecodedBatch {
     let mut batch = DecodedBatch::default();
 
-    use crate::platform::decoder::{WindowsCpuFormat, WindowsDecodedFrame};
+    use crate::platform::decoder::WindowsDecodedFrame;
     loop {
         let frame = match decoder
             .poll_owned_frame()
@@ -438,27 +391,10 @@ fn poll_platform_decoder(
                 frame.pts(),
                 frame.width(),
                 frame.height(),
-                match frame_reader {
-                    FrameReader::Windows(writer) => writer
-                        .wrap_decoded_surface(frame)
-                        .map(DecodedSurface::D3D11),
-                    _ => Err(anyhow!("GPU decoder output has no owning device")),
-                },
+                writer.wrap_decoded_surface(frame),
             ),
             WindowsDecodedFrame::Cpu(frame) => {
-                let surface = if let FrameReader::Windows(writer) = frame_reader {
-                    writer.upload_cpu(&frame).map(DecodedSurface::D3D11)
-                } else {
-                    match frame.format {
-                        WindowsCpuFormat::Nv12 => {
-                            nv12_layout(frame.width, frame.height, &frame.data)
-                                .map(|_| DecodedSurface::CpuNv12(frame.data))
-                        }
-                        WindowsCpuFormat::I444 => Ok(DecodedSurface::CpuI444(frame.data)),
-                        _ => Err(anyhow!("software video format requires a texture uploader")),
-                    }
-                };
-                (frame.pts, frame.width, frame.height, surface)
+                (frame.pts, frame.width, frame.height, writer.upload_cpu(&frame))
             }
         };
         match surface {
@@ -682,122 +618,9 @@ fn decoder_config(
     }
 }
 
-fn nv12_layout(width: u32, height: u32, nv12: &[u8]) -> Result<(usize, usize)> {
-    if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
-        bail!("packed NV12 requires positive even dimensions, got {width}x{height}");
-    }
-    let width_usize = usize::try_from(width).context("decoded width does not fit usize")?;
-    let height_usize = usize::try_from(height).context("decoded height does not fit usize")?;
-    let luma_len = width_usize
-        .checked_mul(height_usize)
-        .context("decoded luma dimensions overflow")?;
-    let expected_len = luma_len
-        .checked_add(luma_len / 2)
-        .context("decoded NV12 dimensions overflow")?;
-    if nv12.len() < expected_len {
-        bail!(
-            "native decoder returned short NV12 frame: {} bytes for {}x{} (need {})",
-            nv12.len(),
-            width,
-            height,
-            expected_len
-        );
-    }
-    Ok((luma_len, expected_len))
-}
-
-fn i444_to_rgba_pixels(
-    width: u32,
-    height: u32,
-    data: &[u8],
-    color: RenderColor,
-) -> Result<Vec<Rgba8>> {
-    let plane = (width as usize)
-        .checked_mul(height as usize)
-        .context("I444 dimensions overflow")?;
-    if plane == 0 || plane.checked_mul(3) != Some(data.len()) {
-        bail!(
-            "invalid packed I444 frame {width}x{height}: {} bytes",
-            data.len()
-        );
-    }
-    let mut pixels = vec![Rgba8([0, 0, 0, 255]); plane];
-    let image = yuv::YuvPlanarImage {
-        y_plane: &data[..plane],
-        y_stride: width,
-        u_plane: &data[plane..2 * plane],
-        u_stride: width,
-        v_plane: &data[2 * plane..],
-        v_stride: width,
-        width,
-        height,
-    };
-    yuv::yuv444_to_rgba(
-        &image,
-        bytemuck::cast_slice_mut(&mut pixels),
-        width.checked_mul(4).context("RGBA stride overflow")?,
-        if color.full_range {
-            YuvRange::Full
-        } else {
-            YuvRange::Limited
-        },
-        match color.matrix {
-            ColorMatrix::Bt601 => YuvStandardMatrix::Bt601,
-            ColorMatrix::Bt709 => YuvStandardMatrix::Bt709,
-            ColorMatrix::Bt2020 => YuvStandardMatrix::Bt2020,
-        },
-    )
-    .map_err(|error| anyhow!("convert I444 to RGBA: {error}"))?;
-    Ok(pixels)
-}
-
-fn nv12_to_rgba_pixels(
-    width: u32,
-    height: u32,
-    nv12: &[u8],
-    color: RenderColor,
-) -> Result<Vec<Rgba8>> {
-    let (luma_len, expected_len) = nv12_layout(width, height, nv12)?;
-    let pixel_count = luma_len;
-    let mut pixels = vec![Rgba8([0, 0, 0, 255]); pixel_count];
-    let image = YuvBiPlanarImage {
-        y_plane: &nv12[..luma_len],
-        y_stride: width,
-        uv_plane: &nv12[luma_len..expected_len],
-        uv_stride: width,
-        width,
-        height,
-    };
-    yuv_nv12_to_rgba(
-        &image,
-        bytemuck::cast_slice_mut(&mut pixels),
-        width
-            .checked_mul(4)
-            .context("decoded RGBA stride overflow")?,
-        if color.full_range {
-            YuvRange::Full
-        } else {
-            YuvRange::Limited
-        },
-        match color.matrix {
-            ColorMatrix::Bt601 => YuvStandardMatrix::Bt601,
-            ColorMatrix::Bt709 => YuvStandardMatrix::Bt709,
-            ColorMatrix::Bt2020 => YuvStandardMatrix::Bt2020,
-        },
-        YuvConversionMode::Balanced,
-    )
-    .map_err(|error| anyhow!("convert native NV12 frame to RGBA: {error}"))?;
-    Ok(pixels)
-}
-
 use crate::platform::decoder::WindowsVideoDecoder;
 
 fn platform_label() -> &'static str {
     "DXVA11"
 }
 
-enum FrameReader {
-    Cpu,
-
-    Windows(windows_surface::D3D11SurfaceWriter),
-}

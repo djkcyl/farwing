@@ -6,13 +6,12 @@ use super::swapchain::{
     create_swap_chain, is_device_lost, swap_chain_output_size, validate_visible_geometry,
 };
 use crate::application::viewer::{DecodedVideoFrame, mutex_lock};
-use crate::media::decoder::RenderSurface;
 use crate::media::video_color::RenderColor;
 use crate::platform::graphics::{create_backbuffer, nonzero_size};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Graphics::Direct3D11::*;
@@ -53,7 +52,6 @@ pub(super) struct D3D11Presenter {
     pub(super) render_target: Option<ID3D11RenderTargetView>,
     pub(super) backbuffer: Option<ID3D11Texture2D>,
     pub(super) video_renderer: VideoShaderRenderer,
-    pub(super) cpu_upload: Option<CpuUploadTexture>,
     pub(super) shared_textures: VecDeque<ImportedSharedTexture>,
     pub(super) active_input_sync: Option<IDXGIKeyedMutex>,
     pub(super) allow_tearing: bool,
@@ -64,12 +62,6 @@ pub(super) struct D3D11Presenter {
     /// Copy the next drawn frame before presenting it (reconnect backdrop).
     pub(super) snapshot_requested: bool,
     pub(super) snapshot: Option<egui::ColorImage>,
-}
-
-pub(super) struct CpuUploadTexture {
-    pub(super) width: u32,
-    pub(super) height: u32,
-    pub(super) texture: ID3D11Texture2D,
 }
 
 pub(super) struct ImportedSharedTexture {
@@ -100,29 +92,12 @@ impl D3D11Presenter {
         hwnd: isize,
         size: PhysicalSize<u32>,
         frame: &DecodedVideoFrame,
-        cpu_device: &Mutex<Option<(ID3D11Device, ID3D11DeviceContext)>>,
     ) -> Result<Self> {
-        let (device, context) = match &frame.surface {
-            RenderSurface::D3D11(surface) if surface.shared_handle().is_none() => {
-                (surface.device().clone(), surface.context().clone())
-            }
-            RenderSurface::D3D11(surface) => surface.create_renderer_device()?,
-            RenderSurface::CpuRgba8(_) => {
-                let mut cached = mutex_lock(cpu_device);
-                if cached
-                    .as_ref()
-                    .is_some_and(|(device, _)| unsafe { device.GetDeviceRemovedReason().is_err() })
-                {
-                    cached.take();
-                }
-                if cached.is_none() {
-                    *cached = Some(
-                        crate::platform::surface::D3D11SurfaceWriter::new()?
-                            .create_renderer_device()?,
-                    );
-                }
-                cached.as_ref().expect("CPU presentation device").clone()
-            }
+        let surface = &frame.surface;
+        let (device, context) = if surface.shared_handle().is_none() {
+            (surface.device().clone(), surface.context().clone())
+        } else {
+            surface.create_renderer_device()?
         };
         Self::from_device_for_window(HWND(hwnd as *mut std::ffi::c_void), size, device, context)
     }
@@ -187,7 +162,6 @@ impl D3D11Presenter {
             render_target: Some(render_target),
             backbuffer: Some(backbuffer),
             video_renderer,
-            cpu_upload: None,
             shared_textures: VecDeque::with_capacity(SHARED_TEXTURE_CACHE_SIZE),
             active_input_sync: None,
             allow_tearing,
@@ -336,7 +310,6 @@ impl D3D11Presenter {
     pub(super) fn reset_video_resources(&mut self) {
         self.release_active_input_sync();
         self.video_renderer.reset_input_cache();
-        self.cpu_upload = None;
         self.shared_textures.clear();
         unsafe {
             self.context.ClearState();
@@ -349,7 +322,6 @@ impl D3D11Presenter {
         surface: &crate::platform::surface::D3D11Surface,
         width: u32,
         height: u32,
-        rotation: u16,
         color: RenderColor,
     ) -> Result<()> {
         let (coded_width, coded_height) = surface.coded_size();
@@ -376,7 +348,6 @@ impl D3D11Presenter {
                 coded_height,
                 width,
                 height,
-                rotation,
             },
         );
         if result.is_err() {
@@ -451,102 +422,6 @@ impl D3D11Presenter {
         {
             tracing::warn!(%error, "failed to release decoder shared texture sync");
         }
-    }
-
-    pub(super) fn draw_cpu_video(
-        &mut self,
-        pixels: &[crate::media::decoder::Rgba8],
-        width: u32,
-        height: u32,
-        rotation: u16,
-    ) -> Result<()> {
-        let expected = usize::try_from(width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .context("CPU decoded dimensions overflow")?;
-        if pixels.len() < expected {
-            bail!("CPU decoded surface is shorter than its dimensions");
-        }
-        let recreate = self
-            .cpu_upload
-            .as_ref()
-            .is_none_or(|upload| upload.width != width || upload.height != height);
-        if recreate {
-            let desc = D3D11_TEXTURE2D_DESC {
-                Width: width,
-                Height: height,
-                MipLevels: 1,
-                ArraySize: 1,
-                Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-                SampleDesc: DXGI_SAMPLE_DESC {
-                    Count: 1,
-                    Quality: 0,
-                },
-                Usage: D3D11_USAGE_DYNAMIC,
-                BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
-                CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
-                ..Default::default()
-            };
-            let mut texture = None;
-            unsafe {
-                self.device
-                    .CreateTexture2D(&desc, None, Some(&raw mut texture))
-            }
-            .context("create D3D11 CPU fallback upload texture")?;
-            self.cpu_upload = Some(CpuUploadTexture {
-                width,
-                height,
-                texture: texture.context("D3D11 did not return a CPU upload texture")?,
-            });
-        }
-        let upload = self
-            .cpu_upload
-            .as_ref()
-            .context("CPU upload texture was not initialized")?;
-        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-        unsafe {
-            self.context.Map(
-                &upload.texture,
-                0,
-                D3D11_MAP_WRITE_DISCARD,
-                0,
-                Some(&raw mut mapped),
-            )
-        }
-        .context("map D3D11 CPU fallback upload texture")?;
-        let source = bytemuck::cast_slice::<crate::media::decoder::Rgba8, u8>(&pixels[..expected]);
-        let source_pitch = usize::try_from(width).expect("u32 fits usize") * 4;
-        let destination_pitch = mapped.RowPitch as usize;
-        for row in 0..usize::try_from(height).expect("u32 fits usize") {
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    source.as_ptr().add(row * source_pitch),
-                    (mapped.pData as *mut u8).add(row * destination_pitch),
-                    source_pitch,
-                );
-            }
-        }
-        unsafe { self.context.Unmap(&upload.texture, 0) };
-        let texture = upload.texture.clone();
-        self.draw_texture(
-            &texture,
-            VideoTextureView {
-                array_slice: 0,
-                color: RenderColor::default(), // Already converted RGBA; no YUV transform.
-                input_format: DXGI_FORMAT_R8G8B8A8_UNORM,
-                visible_x: 0,
-                visible_y: 0,
-                coded_width: width,
-                coded_height: height,
-                width,
-                height,
-                rotation,
-            },
-        )
     }
 
     pub(super) fn draw_texture(
