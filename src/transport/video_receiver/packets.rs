@@ -59,7 +59,6 @@ pub(super) struct SequenceUnwrapper {
 
 pub(super) struct PacketInsertResult {
     pub(super) frames: Vec<EncodedFrame>,
-    pub(super) duplicate: bool,
     pub(super) cleared: bool,
     pub(super) parameter_rejected: bool,
 }
@@ -139,9 +138,7 @@ impl PacketBuffer {
             .as_ref()
             .is_some_and(|stored| stored.packet.sequence_number == sequence_number)
         {
-            let mut result = PacketInsertResult::empty();
-            result.duplicate = true;
-            return result;
+            return PacketInsertResult::empty();
         }
         while self.buffer[index].is_some() {
             let collided_sequence = self.buffer[index]
@@ -177,7 +174,6 @@ impl PacketBuffer {
             self.clear();
             return PacketInsertResult {
                 frames: Vec::new(),
-                duplicate: false,
                 cleared: true,
                 parameter_rejected: false,
             };
@@ -193,7 +189,6 @@ impl PacketBuffer {
             .retain(|padding| sequence_at_or_ahead(*padding, oldest_padding));
         PacketInsertResult {
             frames: self.find_frames(sequence_number),
-            duplicate: false,
             cleared: false,
             parameter_rejected: std::mem::take(&mut self.malformed_av1),
         }
@@ -204,7 +199,6 @@ impl PacketBuffer {
         self.received_padding.insert(sequence_number);
         PacketInsertResult {
             frames: self.find_frames(sequence_number.wrapping_add(1)),
-            duplicate: false,
             cleared: false,
             parameter_rejected: std::mem::take(&mut self.malformed_av1),
         }
@@ -495,7 +489,6 @@ impl PacketInsertResult {
     pub(super) fn empty() -> Self {
         Self {
             frames: Vec::new(),
-            duplicate: false,
             cleared: false,
             parameter_rejected: false,
         }

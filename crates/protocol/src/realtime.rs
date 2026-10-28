@@ -168,8 +168,6 @@ impl Default for Limits {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Hello {
-    pub conn_id: String,
-    pub role: Role,
     #[serde(default)]
     pub epoch: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,11 +176,7 @@ pub struct Hello {
     pub heartbeat_ms: u32,
     pub idle_timeout_ms: u32,
     #[serde(default)]
-    pub limits: Limits,
-    #[serde(default)]
     pub resumed: bool,
-    #[serde(default)]
-    pub server_time_ms: i64,
     /// Presence connections: relay nodes whose round trip the device
     /// measures and reports (`nodes.rtt`), now and every 30 minutes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -206,7 +200,6 @@ pub struct NodesRtt {
 impl std::fmt::Debug for Hello {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Hello")
-            .field("role", &self.role)
             .field("epoch", &self.epoch)
             .field("resumed", &self.resumed)
             .field("heartbeat_ms", &self.heartbeat_ms)

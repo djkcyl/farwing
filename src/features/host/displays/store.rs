@@ -29,15 +29,6 @@ pub(super) struct Preference {
     pub super_dpi: u32,
     pub super_resolution_type: i32,
     pub manual: Vec<Virtual>,
-    pub physical: Vec<Physical>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(super) struct Physical {
-    pub identity: String,
-    pub width: u32,
-    pub height: u32,
-    pub dpi: u32,
-    pub resolution_type: i32,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct Journal {

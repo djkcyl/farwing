@@ -21,14 +21,11 @@ export interface Envelope<T = unknown> {
 }
 
 export interface ServerHello {
-  conn_id: string;
-  role: string;
   session_id: string;
   resume_token: string;
   heartbeat_ms: number;
   idle_timeout_ms: number;
   resumed: boolean;
-  server_time_ms: number;
 }
 
 export interface ErrorBody {

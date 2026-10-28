@@ -294,7 +294,7 @@ impl StreamControlHandle {
                     }
                     state.performance.set_quality(viewing_quality_label(&state));
                 }
-                tracing::debug!(encoder_type = %qos.encoder_type, capture_type = %qos.capture_type, probe_bps = qos.probe_bps, video_quality = qos.video_quality,
+                tracing::debug!(encoder_type = %qos.encoder_type, capture_type = %qos.capture_type, video_quality = qos.video_quality,
                     "QoS quality status received");
             }
             SessionBody::Screens(screens) => update_screen_baseline(&mut state, screens),
@@ -378,7 +378,7 @@ impl StreamControlHandle {
     fn handle_host_event(&self, body: &[u8]) -> Result<()> {
         use crate::protocol::host_event::kind;
         let event = crate::protocol::host_event::decode(body)?;
-        tracing::info!(kind = event.kind, downtime_ms = event.expected_downtime_ms, "host event received");
+        tracing::info!(kind = event.kind, "host event received");
         let mut state = lock(&self.shared);
         match event.kind {
             kind::UPDATING => {

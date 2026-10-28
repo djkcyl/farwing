@@ -590,19 +590,6 @@ pub async fn put_wallpaper(
     }))
 }
 
-/// `DELETE /api/v2/devices/self/wallpaper`
-pub async fn delete_wallpaper(State(app): State<App>, auth: AccountAuth) -> ApiResult<Json<Empty>> {
-    let id = auth.device.id.clone();
-    app.db
-        .call(move |c| db::set_wallpaper(c, &id, None, None))
-        .await?;
-    let _ = tokio::fs::remove_file(wallpaper_path(&app, &auth.device.id)).await;
-    if auth.device.wallpaper_etag.is_some() {
-        notify_changed(&app, &auth.device.id, DeviceChangeKind::Updated, false).await;
-    }
-    Ok(Json(Empty {}))
-}
-
 /// `GET /api/v2/devices/{id}/wallpaper` (own and shared devices).
 pub async fn get_wallpaper(
     State(app): State<App>,

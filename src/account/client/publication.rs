@@ -133,9 +133,8 @@ impl AuthenticatedClient {
                                 if !explicit && attempted_digest == hash {
                                     return Ok(());
                                 }
-                                attempted_digest = hash.clone();
+                                attempted_digest = hash;
                                 reporting::update(|s| {
-                                    s.wallpaper_digest = hash;
                                     s.wallpaper = crate::i18n::t().session.wallpaper_checking.into();
                                 });
                                 let current = api.list_devices().await?;

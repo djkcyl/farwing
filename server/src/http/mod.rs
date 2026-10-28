@@ -506,7 +506,7 @@ pub fn router(app: App) -> Router {
         .route(path::SELF_FRIEND_ACCESS, get(devices::friend_access))
         .route(
             path::SELF_WALLPAPER,
-            put(devices::put_wallpaper).delete(devices::delete_wallpaper),
+            put(devices::put_wallpaper),
         )
         .route(path::SELF_WOL, put(power::set_wol_info))
         .route("/api/v2/power/{request_id}/result", post(power::result))

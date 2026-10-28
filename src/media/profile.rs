@@ -193,7 +193,11 @@ impl std::str::FromStr for TransportChoice {
 #[derive(Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ConnectionMediaOptions {
+    /// This connection only (never saved).
+    #[serde(skip)]
     pub audio_only: bool,
+    /// This connection only (never saved).
+    #[serde(skip)]
     pub muted: bool,
     pub frame_rate: FrameRateChoice,
     pub codec: CodecPreference,

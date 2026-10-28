@@ -153,24 +153,15 @@ export const VIEWER_FEATURES = [
 export interface Hello {
   protocolVersion: number;
   minProtocolVersion: number;
-  role: number;
   clientVersion: string;
   features: Record<string, number>;
-  platform: string;
 }
 
-export function helloBody(
-  maxMessageBytes: number,
-  video: string[] = ['video.h264'],
-  color = 0,
-  nickname = '',
-): Uint8Array {
-  const w = new Writer().int(1, 2).int(2, 2).int(3, 1).string(4, 'web-0.1.0');
+export function helloBody(video: string[] = ['video.h264']): Uint8Array {
+  const w = new Writer().int(1, 2).int(2, 2).string(4, 'web-0.1.0');
   for (const name of [...video, ...VIEWER_FEATURES]) {
     w.message(5, new Writer().string(1, name).int(2, 1));
   }
-  w.int(6, maxMessageBytes).string(7, 'web');
-  if (color || nickname) w.message(8, new Writer().string(1, nickname).int(2, color));
   return w.finish();
 }
 
@@ -181,10 +172,8 @@ export function parseHello(body: Uint8Array): Hello {
   return {
     protocolVersion: f.uint32(1),
     minProtocolVersion: f.uint32(2),
-    role: f.int32(3),
     clientVersion: f.string(4),
     features,
-    platform: f.string(7),
   };
 }
 
@@ -230,7 +219,6 @@ export interface Screens {
 export interface Quality {
   encoder: string;
   capture: string;
-  probeBps: number;
   videoQuality: number;
 }
 
@@ -299,7 +287,6 @@ export function parseSession(body: Uint8Array): SessionMessage {
       value: {
         encoder: quality.string(1),
         capture: quality.string(2),
-        probeBps: Number(quality.uint64(3)),
         videoQuality: quality.int32(4),
       },
     };
@@ -588,7 +575,6 @@ export function parsePermissions(body: Uint8Array): string[] {
 
 export interface HostEvent {
   kind: number;
-  downtimeMs: number;
   /** DISPLAY_CHANGING: who changed the displays (nickname; may be empty). */
   actor: string;
 }
@@ -604,7 +590,7 @@ export const HostEventKind = {
 
 export function parseHostEvent(body: Uint8Array): HostEvent {
   const f = new Fields(body);
-  return { kind: f.int32(1), downtimeMs: f.uint32(2), actor: f.string(3) };
+  return { kind: f.int32(1), actor: f.string(3) };
 }
 
 export interface AudioState {

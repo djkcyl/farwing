@@ -16,7 +16,6 @@ pub(crate) mod encoder;
 pub(crate) mod file_locations;
 pub(crate) mod gdi;
 pub(crate) mod gpu_conversion;
-pub(crate) mod gpu_diagnostics;
 mod gpu_readback;
 mod gpu_scheduling;
 pub(crate) mod host_lifecycle;

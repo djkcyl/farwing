@@ -273,6 +273,7 @@ fn recover(path: &std::path::Path) -> Result<()> {
         path: path.into(),
         preferences: Preference::default(),
         preference_path: None,
+        physical: Default::default(),
         driver: None,
         fallback_pin: fallback::pin()?,
         render_adapter: None,

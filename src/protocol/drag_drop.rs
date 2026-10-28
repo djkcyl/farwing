@@ -12,7 +12,6 @@ pub(crate) const MAX_PACKET: usize = 64 * 1024;
 /// Largest side of a drag image, so its pixels fit one frame.
 pub(crate) const MAX_IMAGE: u32 = 120;
 pub(crate) const COPY: u32 = 1;
-pub(crate) const NATIVE_RETURN: u32 = 2;
 #[derive(Clone, PartialEq, Message)]
 pub(crate) struct Packet {
     #[prost(fixed64, tag = "1")]
@@ -21,9 +20,6 @@ pub(crate) struct Packet {
     pub drag: u64,
     #[prost(uint64, tag = "3")]
     pub sequence: u64,
-    // Optional envelope capability.
-    #[prost(uint32, tag = "17")]
-    pub capabilities: u32,
     #[prost(
         oneof = "Payload",
         tags = "4,5,6,7,8,9,11,12,13,14,15,16,20,21,22,23,24"
@@ -253,7 +249,6 @@ mod tests {
             token: 1,
             drag: 7,
             sequence: 3,
-            capabilities: NATIVE_RETURN,
             payload: Some(Payload::Files(files.clone())),
         })
         .unwrap();
@@ -265,7 +260,6 @@ mod tests {
                 token: 1,
                 drag: 7,
                 sequence: 4,
-                capabilities: 0,
                 payload: Some(Payload::Files(vec![1, 2, 3])),
             })
             .is_err()
@@ -280,7 +274,6 @@ mod tests {
             token: 1,
             drag: 7,
             sequence: 5,
-            capabilities: 0,
             payload: Some(Payload::Image(image)),
         })
         .unwrap();

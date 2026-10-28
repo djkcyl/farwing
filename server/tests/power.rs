@@ -38,14 +38,14 @@ async fn reboot_push_and_result() {
     srv.post(
         &format!("/api/v2/power/{rid}/result"),
         &ctrl,
-        json!({"code": 0, "message": "", "state": "accepted"}),
+        json!({"code": 0, "message": ""}),
     )
     .await
     .err(403, "forbidden");
     srv.post(
         &format!("/api/v2/power/{rid}/result"),
         &host,
-        json!({"code": 0, "message": "", "state": "accepted"}),
+        json!({"code": 0, "message": ""}),
     )
     .await
     .ok();
@@ -129,7 +129,7 @@ async fn reboot_push_and_result() {
     srv.post(
         &format!("/api/v2/power/{rid}/result"),
         &host,
-        json!({"code": 1, "message": "declined", "state": "rejected"}),
+        json!({"code": 1, "message": "declined"}),
     )
     .await
     .ok();

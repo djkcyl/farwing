@@ -482,7 +482,6 @@ pub(super) async fn send_business(
 pub(super) async fn publish_state(
     screens: Arc<tokio::sync::Mutex<super::screens::Screens>>,
     reports: Arc<super::screens::Reports>,
-    transports: Vec<crate::features::host::transport::Transport>,
     mut target: tokio::sync::watch::Receiver<ReportRoutes>,
     cancel: CancellationToken,
     kcp: crate::transport::fct::FctControl,
@@ -497,7 +496,6 @@ pub(super) async fn publish_state(
     let mut last_screen = None;
     let mut last_capture = None;
     let mut last_quality = None;
-    let mut last_probe = None::<u32>;
     let mut last_microphone = None;
     let mut last_audio_quality = None;
     let mut last_grants = None;
@@ -554,7 +552,6 @@ pub(super) async fn publish_state(
             last_screen = None;
             last_capture = None;
             last_quality = None;
-            last_probe = None;
             last_microphone = None;
             last_audio_quality = None;
             last_grants = None;
@@ -657,11 +654,10 @@ pub(super) async fn publish_state(
         if last_screen.is_some() && last_capture.is_some() {
             reports.media_ready.set(true);
         }
-        if let Some((index, state)) = selected
+        if let Some((_, state)) = selected
             && let Some(encoder) = state.encoder
             && state.quality > 0
         {
-            let probe = transports[*index].automatic_rates().probe;
             let key = (
                 state.screen.id,
                 state.quality,
@@ -673,24 +669,14 @@ pub(super) async fn publish_state(
                 state.screen.width,
                 state.screen.height,
             );
-            if (last_quality.as_ref() != Some(&key)
-                || last_probe.is_none_or(|old| old.abs_diff(probe) >= 102_400))
+            if last_quality.as_ref() != Some(&key)
                 && send(
                     false,
-                    publisher::quality_report(
-                        state.format,
-                        state.quality,
-                        probe,
-                        state.budget_size,
-                        state.fps,
-                        encoder,
-                        &state.capture,
-                    ),
+                    publisher::quality_report(state.quality, encoder, &state.capture),
                 )
                 .await
             {
                 last_quality = Some(key);
-                last_probe = Some(probe);
             }
         }
     }

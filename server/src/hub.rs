@@ -8,7 +8,7 @@
 //! which then carries it by `sid` (`docs/protocol/v2-design.md` §11).
 
 use crate::crypto::{new_token, new_uuid, token_hash};
-use crate::db::{self, now_ms, now_s};
+use crate::db::{self, now_s};
 use crate::ice::IceProvider;
 use farwing_protocol::api::{Participant, Purpose, Relation};
 use farwing_protocol::ids;
@@ -355,10 +355,6 @@ impl Hub {
         *self.ice.write() = ice;
     }
 
-    /// Relay (TURN) credentials are issued (by this server or a node).
-    pub fn has_turn(&self) -> bool {
-        self.ice.read().has_turn() || !self.edges.probe_list().is_empty()
-    }
 
     /// The relays one side of session `sid` gets: this server's, then the
     /// edge nodes nearest to `device_id`.
@@ -546,20 +542,16 @@ impl Hub {
             })
     }
 
-    fn hello(&self, link: &Link, conn_id: &str, resume_token: &str, resumed: bool) -> Envelope {
+    fn hello(&self, link: &Link, resume_token: &str, resumed: bool) -> Envelope {
         Envelope::new(
             types::HELLO,
             Hello {
-                conn_id: conn_id.to_owned(),
-                role: link.role,
                 epoch: link.epoch,
                 session_id: link.session_id.clone(),
                 resume_token: resume_token.to_owned(),
                 heartbeat_ms: self.cfg.read().heartbeat_ms,
                 idle_timeout_ms: self.cfg.read().idle_timeout_ms,
-                limits: self.cfg.read().limits.clone(),
                 resumed,
-                server_time_ms: now_ms(),
                 probe_nodes: if link.role == Role::Host {
                     self.edges.probe_list()
                 } else {
@@ -627,7 +619,7 @@ impl Hub {
             conn: Some(conn.clone()),
             detached_at: None,
         };
-        conn.send(&self.hello(&link, &conn.conn_id, &token, false));
+        conn.send(&self.hello(&link, &token, false));
         let id = link.id.clone();
         st.resume.insert(link.resume_hash.clone(), id.clone());
         st.presence.insert(device_id.to_owned(), id.clone());
@@ -672,7 +664,7 @@ impl Hub {
         };
         s.controller_link = Some(link.id.clone());
         s.ticket_deadline = None;
-        conn.send(&self.hello(&link, &conn.conn_id, &token, false));
+        conn.send(&self.hello(&link, &token, false));
         let id = link.id.clone();
         st.resume.insert(link.resume_hash.clone(), id.clone());
         st.links.insert(id.clone(), link);
@@ -703,7 +695,7 @@ impl Hub {
         }
         let was_detached = link.detached_at.take().is_some();
         link.conn = Some(conn.clone());
-        let hello = self.hello(link, &conn.conn_id, token, true);
+        let hello = self.hello(link, token, true);
         conn.send(&hello);
         let (role, device, epoch) = (link.role, link.device_id.clone(), link.epoch);
         if role == Role::Host && was_detached {

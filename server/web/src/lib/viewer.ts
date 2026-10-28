@@ -258,7 +258,6 @@ export class Viewer {
   private tracks = new Map<string, number>();
   private helloTimer = 0;
   private helloAnswered = false;
-  private hostHello?: fpp.Hello;
   private negotiateTimer = 0;
   private stream = new MediaStream();
   /// The host's own video and sound, played again when forwarding ends.
@@ -837,10 +836,6 @@ export class Viewer {
     dc.send(fpp.encode(type, body) as Uint8Array<ArrayBuffer>);
   }
 
-  private maxMessage(): number {
-    return Math.min(this.pc?.sctp?.maxMessageSize ?? 262144, fpp.MAX_FRAME) || 262144;
-  }
-
   /// Our HELLO request every 500 ms (30 times) until the host answers.
   private sendHello() {
     if (this.helloAnswered || this.helloTimer || !this.control()) return;
@@ -903,7 +898,6 @@ export class Viewer {
         }
         if (response) {
           this.helloAnswered = true;
-          this.hostHello = hello;
           this.events.hostFeatures?.(hello.features);
           window.clearInterval(this.helloTimer);
           this.helloTimer = 0;
@@ -1191,10 +1185,6 @@ export class Viewer {
     return this.forward?.connection;
   }
 
-  get host(): fpp.Hello | undefined {
-    return this.hostHello;
-  }
-
   get relation(): string | undefined {
     return this.started?.relation;
   }
@@ -1245,10 +1235,7 @@ export class Viewer {
   }
 
   private helloBody(): Uint8Array {
-    return fpp.helloBody(
-      this.maxMessage(),
-      this.decoders.map((d) => HELLO_VIDEO[d.codec]),
-    );
+    return fpp.helloBody(this.decoders.map((d) => HELLO_VIDEO[d.codec]));
   }
 
   /// The host's capability (`session.setting` kind capability).

@@ -130,10 +130,7 @@ CREATE TABLE IF NOT EXISTS power_requests (
     requester_device_id TEXT NOT NULL,
     action              TEXT NOT NULL,
     created_at          INTEGER NOT NULL,
-    result_code         INTEGER,
-    result_message      TEXT,
-    result_state        TEXT,
-    result_at           INTEGER
+    result_code         INTEGER
 );
 CREATE TABLE IF NOT EXISTS friendships (
     user_a     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1602,11 +1599,10 @@ pub fn get_power_request(c: &Connection, id: &str) -> R<Option<PowerRequestRow>>
     .optional()
 }
 
-pub fn set_power_result(c: &Connection, id: &str, code: i32, message: &str, state: &str) -> R<()> {
+pub fn set_power_result(c: &Connection, id: &str, code: i32) -> R<()> {
     c.execute(
-        "UPDATE power_requests SET result_code = ?2, result_message = ?3, result_state = ?4, result_at = ?5
-         WHERE id = ?1",
-        params![id, code, clip(message, 512), clip(state, 64), now_s()],
+        "UPDATE power_requests SET result_code = ?2 WHERE id = ?1",
+        params![id, code],
     )?;
     Ok(())
 }

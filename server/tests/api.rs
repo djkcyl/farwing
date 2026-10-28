@@ -33,10 +33,6 @@ async fn server_info_health_and_headers() {
     );
     assert_eq!(v["server"]["name"], "Farwing Server");
     assert_eq!(v["server"]["instance_name"], "test");
-    assert_eq!(v["features"]["turn"], true);
-    assert_eq!(v["features"]["guest_hosts"], true);
-    assert_eq!(v["features"]["updates"], false);
-    assert_eq!(v["features"]["friends"], true);
     assert!(v["time_ms"].as_i64().unwrap() > 1_700_000_000_000);
     assert_eq!(r.headers[headers::PROTOCOL], "2");
     assert_eq!(
@@ -697,8 +693,6 @@ async fn guest_registration_and_restrictions() {
         .err(401, "unauthorized");
     srv.login(&mut d, "erin").await;
     srv.post_empty("/api/v2/presence/ticket", &d).await.ok();
-    let info = srv.send(srv.raw(Method::GET, "/api/v2/server")).await;
-    assert_eq!(info.ok()["features"]["guest_hosts"], false);
     srv.shutdown().await;
 
     let srv = start().await;
@@ -806,10 +800,6 @@ async fn wallpaper_upload_download() {
         .unwrap();
     assert_eq!(resp.status(), 304);
 
-    srv.delete("/api/v2/devices/self/wallpaper", &a).await.ok();
-    srv.get(&format!("/api/v2/devices/{}/wallpaper", a.id), &b)
-        .await
-        .err(404, "not_found");
     srv.shutdown().await;
 }
 
@@ -918,8 +908,6 @@ async fn updates_and_config() {
         .send(srv.raw(Method::GET, "/api/v2/updates/android"))
         .await;
     assert_eq!(v.ok(), &json!({"latest": null}));
-    let info = srv.send(srv.raw(Method::GET, "/api/v2/server")).await;
-    assert_eq!(info.ok()["features"]["updates"], true);
     // The configured limit is in effect.
     assert_eq!(srv.app().cfg().bitrate_limit_mbps, Some(40));
     tokio::time::sleep(Duration::from_millis(10)).await;

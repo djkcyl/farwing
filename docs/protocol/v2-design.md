@@ -304,7 +304,7 @@ Hello {
 | tag | 消息 | 方向 | 内容 | 说明 |
 | --- | --- | --- | --- | --- |
 | 1 | `Screens` | H→C | `PbScreenSources{screens[], current_screen_id}` | 屏幕列表或任一屏幕变化时发送（字节相同不重发）。`PbScreen` 去掉恒定的 `dpr` 与 `builtin_screen_type`；`display_geometry`（tag 100）为驱动首选模式 |
-| 2 | `Quality` | H→C | `{encoder_type, capture_type, probe_bps, video_quality}` | `video_quality` 为生效档位 1..4（自动已解析）或 6=自定义；主控仅在自动画质下用它更新自动档位。去掉只用于日志的四档参考码率 |
+| 2 | `Quality` | H→C | `{encoder_type, capture_type, video_quality}` | `video_quality` 为生效档位 1..4（自动已解析）或 6=自定义；主控仅在自动画质下用它更新自动档位。去掉只用于日志的四档参考码率 |
 | 3 | `Microphone` | H→C | `{state: 1 ACTIVE / 2 INACTIVE / 3 RESTART}` | 被控虚拟麦克风状态；RESTART 表示被控音频链路出错，主控重启本地采集 |
 | 4 | `ClipboardFiles` | H→C | `{enabled}` | 被控是否接收剪贴板文件 |
 | 5 | `Capture` | C→H | `{screen_id, start}` | 开始/停止采集某块屏幕；`-1` 表示本会话全部屏幕（停止保留槽位，`start(-1)` 恢复）。无回复，状态变化以随后的 `Screens` 为准 |
@@ -514,7 +514,7 @@ PortDatagram { stream: uint32, data: bytes }                             // PORT
 ## 10. 被控生命周期事件
 
 ```
-HostEvent { kind: UPDATING|RESTARTING|SLEEPING|SHUTTING_DOWN|SESSION_SWITCH|DISPLAY_CHANGING, expected_downtime_ms, message }
+HostEvent { kind: UPDATING|RESTARTING|SLEEPING|SHUTTING_DOWN|SESSION_SWITCH|DISPLAY_CHANGING, actor }
 ```
 
 - 主控收到后进入“等待设备”状态（最长 5 分钟，可取消）。被控重新上线后，由在线推送触发自动重建会话，并恢复窗口布局与画面设置。

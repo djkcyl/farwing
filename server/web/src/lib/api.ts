@@ -182,7 +182,6 @@ const SIGNED_OUT = new Set(['unauthorized', 'session_revoked', 'device_mismatch'
 
 export interface ServerInfo {
   server: { name: string; version: string; instance_name: string };
-  features: { guest_hosts: boolean; turn: boolean; friends: boolean };
   time_ms: number;
 }
 

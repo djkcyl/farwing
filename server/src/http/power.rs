@@ -235,10 +235,9 @@ pub async fn result(
     if row.device_id != auth.device.id {
         return Err(ApiError::forbidden("only the target device reports the result"));
     }
-    let (id, msg, state) = (row.id.clone(), res.message.clone(), res.state.clone());
-    let code = res.code;
+    let (id, code) = (row.id.clone(), res.code);
     app.db
-        .call(move |c| db::set_power_result(c, &id, code, &msg, &state))
+        .call(move |c| db::set_power_result(c, &id, code))
         .await?;
     tracing::info!(
         request_id = %row.id,
@@ -246,7 +245,6 @@ pub async fn result(
         requester = %row.requester_device_id,
         action = %row.action,
         code = res.code,
-        state = %db::clip(&res.state, 64),
         message = %db::clip(&res.message, 200),
         "power result"
     );

@@ -217,7 +217,6 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `PUT /devices/self/policy` | 任一 | `DevicePolicy` | 规范化后的 `DevicePolicy` |
 | `GET /devices/self/friend-access` | 账号 | — | `FriendAccessList`（§3.12） |
 | `PUT /devices/self/wallpaper` | 账号 | PNG/JPEG/BMP 原始字节（≤ 4 MiB） | `{wallpaper_url}` |
-| `DELETE /devices/self/wallpaper` | 账号 | — | `{}` |
 | `PUT /devices/self/wol` | 账号 | `{mac, inner_ip, subnet_mask}` | `{supported}` |
 | `POST /power/{request_id}/result` | 任一 | `{code, message, state}` | `{}` |
 | `GET /updates/{platform}?channel=stable\|beta` | 无 | — | `{latest: ReleaseInfo \| null}` |
@@ -267,8 +266,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 {
   "protocol": {"name": "farwing", "min": 2, "max": 2},
   "server": {"name": "Farwing Server", "version": "0.1.0", "instance_name": "home"},
-  "features": {"guest_hosts": true, "turn": true, "force_relay": false, "updates": false, "friends": true,
-               "nat_discovery": ["stun:203.0.113.10:3479", "stun:203.0.113.10:3480"]},
+  "features": {"nat_discovery": ["stun:203.0.113.10:3479", "stun:203.0.113.10:3480"]},
   "time_ms": 1760000000000
 }
 ```
@@ -421,10 +419,9 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 
 ```json
 {"v":2,"type":"hello","data":{
-  "conn_id":"uuid","role":"host"|"controller","epoch":7,"session_id":"(仅主控连接)",
+  "epoch":7,"session_id":"(仅主控连接)",
   "resume_token":"fwr_…","heartbeat_ms":20000,"idle_timeout_ms":60000,
-  "limits":{"max_frame_bytes":1048576,"max_sdp_bytes":1048576,"max_candidates":256,"rate_per_s":200},
-  "resumed":false,"server_time_ms":0}}
+  "resumed":false}}
 ```
 
 恢复时 `resumed: true`：逻辑连接（在线状态、会话、承载关系）保留，但**不**重放断线期间的消息；双方重新发送当前快照（被控重新发送 `session.setting{kind:"capability"}`）。新的被控在线连接（非恢复）取代旧的（旧连接以 `4001` 关闭），递增 `epoch` 并以 `host_offline` 结束旧连接上的被控会话。
@@ -672,11 +669,11 @@ v1 的 `MOUSE_POLICY`、`AUDIO_QUALITY`、`FILE_BLOCK`、`DRAG_DATA`（0x0502）
 - **INPUT**：键按物理位置传 HID usage；锁定键状态以 `LockState` 纠正；系统命令只由主控菜单显式发送，被控先释放该参与者按住的键和按钮再执行。有键按下时主控在 50 ms 内没有发出任何 INPUT 帧就发一次 `Heartbeat`；被控在 `max(150 ms, 3×RTT + 50 ms)`（RTT 上限按 3 秒计，无 RTT 时取 150 ms）内收不到该参与者的 INPUT 即释放其按住的键。
 - **多人**：每位参与者各自一个 PeerConnection。同一时刻只有一位参与者持有控制权：开启键鼠控制时以 SESSION `ControlTurn` 获取，先到先得（重连后的自动恢复只在独自一人时生效）；只在持有者关闭键鼠控制、离开或失去 `control` 能力时释放。被控只注入持有者的键鼠，其他人的键鼠被丢弃。其他参与者共用一路多人观看流（1080p、60 fps、观影模式，见 v2-design §4.4）。被控以 `PARTICIPANTS` 广播列表与控制权持有者（列表或持有者变化时），以 `CURSOR`（`pointers = true`）把其他参与者的指针转发给每位参与者（接收方空闲 3 秒后淡出）。
 - **PERMISSIONS**：握手完成后与生效能力变化时由被控发送（服务端 `session.permissions`、被控本机开关或“禁止控制”）；生效能力 = 授予能力（本账号设备与好友由服务端给出，直连时由被控按缓存；受信任设备为被控为它记录的能力；访客为访客默认权限）∩ 被控本机上限。主控据此启停文件、剪贴板等功能。
-- **HOST_EVENT**：被控在本机更新（`UPDATING`）、远程重启/关机前（`RESTARTING` 预计 90 秒 / `SHUTTING_DOWN`，约 400 ms 后以 `host_closed` 结束会话）、即将睡眠（`SLEEPING`）、活动 Windows 会话变化（`SESSION_SWITCH`，预计 5 秒）时发送；参与者修改显示设置后被控向其他参与者发送 `DISPLAY_CHANGING`（`expected_downtime_ms = 2000`，`message` 为提示文字）。
+- **HOST_EVENT**：被控在本机更新（`UPDATING`）、远程重启/关机前（`RESTARTING` / `SHUTTING_DOWN`，约 400 ms 后以 `host_closed` 结束会话）、即将睡眠（`SLEEPING`）、活动 Windows 会话变化（`SESSION_SWITCH`）时发送；参与者修改显示设置后被控向其他参与者发送 `DISPLAY_CHANGING`（`actor` 为修改者的昵称）。
 - **AUDIO**：被控发送当前音质 `hello`；主控以 `set{request, kbps}` 请求修改，被控回 `applied` 或 `rejected`（`request` 关联请求，不使用 FPP 的 `request id`）。
 - **CLIPBOARD**：两端都可发请求。内容按需渲染：先推送 `Offer`（格式清单），应用粘贴时才 `Fetch`；内容 ≤ 32 KiB 在 `Data.inline` 中，更大时以 `TRANSFER{kind: CLIPBOARD, stream: 请求中的 stream, entry: 0}` 发送，按请求方的 `FLOW` 信用（单个格式最多 128 MiB；30 秒无进展即放弃并推送 `Abort`）。文件以 `ListFiles` 固定清单、`ReadFile` 按下标读取（每次 ≤ 1 MiB），结束后 `Release`。自动同步：被控只对单人会话中拥有 `clipboard` 的参与者、或多人会话中同时拥有 `clipboard` 与 `control` 的参与者这样做；主控只在控制模式且开启“剪贴板同步”时自动同步。`Pull`（C→H）让拥有 `clipboard` 的参与者手动获取被控当前剪贴板。失败码：`not_found`、`forbidden`、`unavailable`、`bad_request`、`internal`。
 - **FILE**：主控发请求，被控以 `RESPONSE` 回复，失败回复 `Failed`（`RESPONSE|ERROR` + `PeerError` 按 `Failed` 处理）；请求 60 秒未获响应视为失败。数据走 `TRANSFER{kind: FILE, stream: transfer}` 与 `FLOW{channel: BULK, kind: FILE}`。上传：`Upload` → `Plan` → `UploadStart` → 主控发送；下载：`Download` → `Manifest` → `DownloadStart` → `Accepted` → 被控发送。续传以接收方已有的字节数与末尾（≤ 1 MiB）的 SHA-256 核对。被控的磁盘操作在被控用户的普通权限进程中执行，拒绝 `..`、设备名、链接与重解析点。
-- **DRAG**：每次拖放有独立的文件交换，不读写系统剪贴板：`Packet.Files` 中携带一个完整的 CLIPBOARD 帧（`Offer`/`ListFiles`/`Files`/`ReadFile`/`Data`/`Release`/`Abort`），文件内容为 `TRANSFER{kind: DRAG}` / `FLOW{kind: DRAG}`。只接受文件格式（`Fetch`、`Pull` 回复 `forbidden`）。单个 DRAG 帧不超过 64 KiB。能力协商：被控发 `Hello(1)`，主控回 `HelloAck(1)`，`Packet.capabilities` 中的 `NATIVE_RETURN` 表示支持拖回主控。
+- **DRAG**：每次拖放有独立的文件交换，不读写系统剪贴板：`Packet.Files` 中携带一个完整的 CLIPBOARD 帧（`Offer`/`ListFiles`/`Files`/`ReadFile`/`Data`/`Release`/`Abort`），文件内容为 `TRANSFER{kind: DRAG}` / `FLOW{kind: DRAG}`。只接受文件格式（`Fetch`、`Pull` 回复 `forbidden`）。单个 DRAG 帧不超过 64 KiB。握手：被控发 `Hello(1)`，主控回 `HelloAck(1)`；之后双方都支持拖回主控。
 - **ANNOTATION**：被控在 session 通道打开时发送 `Hello(1)`（带本连接的 `token`）；主控以 `Command` 请求绘制，被控以 `Result` 回复（`request` 关联，不使用 FPP 的 `request id`）。单帧不超过 512 KiB。
 - **PORT**：主控分配 `stream` 并发 `Open`；目标可以是任意地址，主机名在被控侧解析（超时 5 秒），TCP 连接超时 10 秒；被控只连接单播地址。TCP 两个方向各自 `ShutdownWrite`，`Reset` 中止（`CLOSED` 表示正常结束）。UDP 数据报走 dgram 通道，超出预算只丢弃单个数据报；UDP 关联空闲 60 秒结束。转发规则只存在于主控，不上线。需要 `ports` 能力与被控本机端口转发开关。
 - **DIAGNOSTICS**：被控在 session 通道打开时与变化时推送 `Status{allowed}`（主控声明 `diagnostics` 且本参与者拥有 `diagnostics` 能力时为真）。主控登记流后发 `Request{stream}`，被控生成期间推送 `Progress`（约 200 ms 一次），以 `Ready{size, sha256, …}` 响应后以 `TRANSFER{kind: DIAGNOSTICS}` 发送；主控收到最后一块后核对大小与 SHA-256。被控只发送自己的脱敏诊断包，不接受路径。

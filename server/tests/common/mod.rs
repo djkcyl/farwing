@@ -529,7 +529,6 @@ impl TestServer {
             .await
             .expect("presence connects");
         let hello = ws.recv_type("hello").await;
-        assert_eq!(hello["data"]["role"], "host");
         (ws, hello)
     }
 
@@ -561,7 +560,6 @@ impl TestServer {
             .await
             .expect("controller connects");
         let hello = ws.recv_type("hello").await;
-        assert_eq!(hello["data"]["role"], "controller");
         assert_eq!(hello["data"]["session_id"], sid.as_str());
         (ws, sid, v)
     }

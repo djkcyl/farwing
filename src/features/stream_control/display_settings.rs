@@ -58,11 +58,7 @@ impl RemoteDisplayInfo {
             preferred: screen
                 .display_geometry
                 .as_ref()
-                .filter(|g| {
-                    g.version == 1
-                        && (1..=16384).contains(&g.width)
-                        && (1..=16384).contains(&g.height)
-                })
+                .filter(|g| (1..=16384).contains(&g.width) && (1..=16384).contains(&g.height))
                 .map(|g| (g.width, g.height)),
             current: RemoteDisplayMode::parse(rect)?,
             initial: screen

@@ -14,16 +14,12 @@
 Hello {
   protocol_version: uint32 = 1         // 2
   min_protocol_version: uint32 = 2     // 2
-  role: Role = 3                       // 0 未指定，1 主控，2 被控
   client_version: string = 4           // 发送方程序版本
   features: map<string, uint32> = 5    // 特性名 → 版本（当前均为 1）
-  max_message_bytes: uint32 = 6        // 524288
-  platform: string = 7                 // windows | macos | linux | android | ios
   profile: Profile = 8                 // optional，仅主控
 }
 Profile {
-  nickname: string = 1                 // 当前不填；显示名取自服务端或直连身份
-  color: uint32 = 2                    // 指针颜色 0xRRGGBB，0 由被控按加入顺序分配
+  color: uint32 = 2                    // 指针颜色 0xRRGGBB，0 由被控按加入顺序分配；显示名取自服务端或直连身份
 }
 ```
 
@@ -35,9 +31,8 @@ Profile {
 
 ```
 PeerError {
-  code: string = 1      // unsupported | bad_request | forbidden | not_found | busy | unavailable | internal | timeout
+  code: string = 1      // unsupported | bad_request | forbidden | not_found | busy | unavailable | internal
   message: string = 2   // 供显示的说明
-  detail: string = 3    // 可选的机器可读细节（JSON）
 }
 ```
 
@@ -192,7 +187,6 @@ PbScreen {
 PbWinRect { left: int32 = 1, top: int32 = 2, width: int32 = 3, height: int32 = 4 }
 PbDpiScale { current_dpi: int32 = 1, recommended_dpi: int32 = 2, dpis: repeated int32 = 3 }
 PbDisplayGeometry {
-  version: uint32 = 1     // 1
   width: uint32 = 2       // 已按当前旋转方向调整，1–16384
   height: uint32 = 3
 }
@@ -200,7 +194,6 @@ PbDisplayGeometry {
 PbReportQosStats {
   encoder_type: string = 1   // software | hardware
   capture_type: string = 2   // 采集后端名
-  probe_bps: uint64 = 3      // 传输探测码率
   video_quality: int32 = 4   // 生效档位 1..4（自动已解析）或 6 自定义
 }
 MicrophoneState { state: int32 = 1 }       // 1 ACTIVE（正在播放主控麦克风），2 INACTIVE，3 RESTART（被控音频链路出错，主控重启本地采集）
@@ -263,7 +256,6 @@ PbError { error_code: int32 = 1, error_message: string = 2, error_detail: string
 
 PbCreateVirtualDisplay {
   local_resolution: repeated PbScreenResolution = 1
-  virtual_display_count: int32 = 2   // 必须为 1
 }
 PbScreenResolution { width: int32 = 1, height: int32 = 2 }
 PbRemoveVirtualDisplay { screen_id: repeated int32 = 1 }   // 取第一个；只能删除 Farwing 创建的虚拟屏
@@ -336,8 +328,7 @@ TurnResponse {
 ```
 HostEvent {
   kind: int32 = 1                    // 1 UPDATING，2 RESTARTING，3 SLEEPING，4 SHUTTING_DOWN，5 SESSION_SWITCH，6 DISPLAY_CHANGING
-  expected_downtime_ms: uint32 = 2   // 预计不可用时长，0 表示未知
-  message: string = 3                // 提示文字（DISPLAY_CHANGING 时为“<昵称> 修改了被控端的显示设置”）
+  actor: string = 3                  // DISPLAY_CHANGING：修改者的昵称（可为空）；文字由接收方按自己的语言生成
 }
 ```
 
@@ -524,7 +515,6 @@ Packet {
   token: fixed64 = 1          // 本连接的拖放标识，非 0
   drag: fixed64 = 2           // 拖放任务标识；Hello/HelloAck/Available 时为 0，其他非 0
   sequence: uint64 = 3        // 任务内序号，非 0（握手消息除外）
-  capabilities: uint32 = 17   // 位标志：2（NATIVE_RETURN）表示支持拖回主控
   oneof payload {
     uint32 hello = 4          // 被控 → 主控，原生拖放版本（1）
     uint32 hello_ack = 5      // 主控 → 被控（1）

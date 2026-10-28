@@ -359,7 +359,6 @@ impl StreamControlHandle {
                 );
                 request = SessionBody::CreateVirtualDisplay(PbCreateVirtualDisplay {
                     local_resolution: vec![resolution(width, height)?],
-                    virtual_display_count: 1,
                 });
             }
             DisplayTopologyAction::Remove { screen_id } => {
@@ -640,8 +639,6 @@ pub(crate) struct PbScreenResolution {
 pub(crate) struct PbCreateVirtualDisplay {
     #[prost(message, repeated, tag = "1")]
     pub(super) local_resolution: Vec<PbScreenResolution>,
-    #[prost(int32, tag = "2")]
-    pub(super) virtual_display_count: i32,
 }
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct PbRemoveVirtualDisplay {

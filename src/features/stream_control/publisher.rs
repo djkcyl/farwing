@@ -81,7 +81,7 @@ pub(crate) fn microphone_event(state: i32) -> Vec<u8> {
 
 /// `HOST_EVENT` announcing a locally confirmed update of this host.
 pub(crate) fn update_started() -> Vec<u8> {
-    crate::protocol::host_event::encode(crate::protocol::host_event::kind::UPDATING, 0, "")
+    crate::protocol::host_event::encode(crate::protocol::host_event::kind::UPDATING, "")
 }
 
 /// Session kinds of [`ConnectOptions::kind`], from the server-stated purpose.
@@ -264,19 +264,13 @@ impl From<Vec<Vec<u8>>> for Received {
     }
 }
 pub(crate) fn quality_report(
-    format: crate::features::host::format::Format,
     quality: i32,
-    probe: u32,
-    source: (u32, u32),
-    fps: u32,
     encoder: crate::features::host::format::Backend,
     capture: &str,
 ) -> Vec<u8> {
-    let _ = (format, source, fps);
     super::wire::push(SessionBody::Quality(PbReportQosStats {
         encoder_type: encoder.qos_type().into(),
         capture_type: capture.into(),
-        probe_bps: probe.into(),
         video_quality: quality,
     }))
 }

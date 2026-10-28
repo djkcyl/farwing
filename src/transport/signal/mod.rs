@@ -282,7 +282,7 @@ impl SignalSession {
             .ok_or_else(|| SignalFailure::Socket(crate::i18n::t().session.online_connection_unavailable.into()))?;
         let transport = SignalTransport::carried(&carrier, session_id)
             .map_err(|error| SignalFailure::Socket(format!("{error:#}")))?;
-        let mut hello = Self::local_hello(farwing_protocol::realtime::Role::Controller);
+        let mut hello = Self::local_hello();
         hello.session_id = Some(session_id.to_owned());
         let mut session = Self::with_transport(transport, hello);
         session.request_prefix = format!("p{}-", session_id.get(..8).unwrap_or(session_id));
@@ -290,18 +290,14 @@ impl SignalSession {
     }
 
     /// The `hello` of a connection that has no server.
-    fn local_hello(role: farwing_protocol::realtime::Role) -> Hello {
+    fn local_hello() -> Hello {
         Hello {
-            conn_id: "direct".into(),
-            role,
             epoch: 0,
             session_id: None,
             resume_token: String::new(),
             heartbeat_ms: farwing_protocol::direct::PING_INTERVAL_MS as u32,
             idle_timeout_ms: farwing_protocol::direct::IDLE_TIMEOUT_MS as u32,
-            limits: Default::default(),
             resumed: false,
-            server_time_ms: 0,
             probe_nodes: Vec::new(),
         }
     }
@@ -310,7 +306,7 @@ impl SignalSession {
     pub(crate) fn offline(router: std::sync::Arc<router::Router>) -> Self {
         let mut session = Self::with_transport(
             SignalTransport::offline(),
-            Self::local_hello(farwing_protocol::realtime::Role::Host),
+            Self::local_hello(),
         );
         session.router = Some(router);
         session
@@ -330,7 +326,7 @@ impl SignalSession {
     {
         let mut session = Self::with_transport(
             SignalTransport::direct(reader, writer),
-            Self::local_hello(farwing_protocol::realtime::Role::Controller),
+            Self::local_hello(),
         );
         session.dialed = Some(dialed);
         session

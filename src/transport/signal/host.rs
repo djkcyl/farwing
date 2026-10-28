@@ -229,11 +229,11 @@ impl Session {
                     // Tell every participant first, so its viewer waits for the
                     // host to come back instead of reporting a closed session.
                     use crate::protocol::host_event::kind;
-                    let (event, downtime) = match request.action() {
-                        crate::features::host::power::Action::Reboot => (kind::RESTARTING, 90_000),
-                        crate::features::host::power::Action::Shutdown => (kind::SHUTTING_DOWN, 0),
+                    let event = match request.action() {
+                        crate::features::host::power::Action::Reboot => kind::RESTARTING,
+                        crate::features::host::power::Action::Shutdown => kind::SHUTTING_DOWN,
                     };
-                    crate::features::host::participants::broadcast_host_event(event, downtime);
+                    crate::features::host::participants::broadcast_host_event(event);
                     tokio::time::sleep(Duration::from_millis(400)).await;
                     self.end_all(signal, reason::HOST_CLOSED).await;
                     // Keep the presence access lease: Windows may cancel shutdown for

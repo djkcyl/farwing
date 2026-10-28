@@ -17,7 +17,6 @@ pub(crate) struct Snapshot {
     pub registered_at: Option<i64>,
     pub wallpaper: String,
     pub wallpaper_file: String,
-    pub wallpaper_digest: String,
     pub wallpaper_url: String,
     pub wallpaper_at: Option<i64>,
 }

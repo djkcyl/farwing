@@ -37,7 +37,7 @@ impl Actor {
             return Ok(());
         };
         if (entry.reverse && !entry.preserve_source && !entry.source_released)
-            || (self.shared.return_capable.load(Ordering::Acquire) && entry.image.is_none())
+            || (self.shared.ready.load(Ordering::Acquire) && entry.image.is_none())
         {
             return Ok(());
         }
@@ -53,7 +53,7 @@ impl Actor {
             return Ok(());
         };
         ensure!(
-            self.shared.return_capable.load(Ordering::Acquire)
+            self.shared.ready.load(Ordering::Acquire)
                 && entry
                     .release_source
                     .as_ref()
@@ -76,7 +76,7 @@ impl Actor {
     pub(super) async fn receive_return(&mut self, id: u64, point: Point) -> Result<()> {
         ensure!(
             self.role == Role::Host
-                && self.shared.return_capable.load(Ordering::Acquire)
+                && self.shared.ready.load(Ordering::Acquire)
                 && self.shared.enabled.load(Ordering::Acquire),
             "{}",
             t().features.drag_return_denied

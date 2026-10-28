@@ -36,11 +36,7 @@ pub(crate) fn screen_states(
                     // while a fullscreen game uses a 4:3 source. Report the
                     // driver's preferred mode consistently.
                     display_geometry: info.target.as_ref().and_then(|t| t.preferred_mode).map(
-                        |(width, height)| super::super::wire::PbDisplayGeometry {
-                            version: 1,
-                            width,
-                            height,
-                        },
+                        |(width, height)| super::super::wire::PbDisplayGeometry { width, height },
                     ),
                     id: screen.id,
                     fps: screen.fps.min(i32::MAX as u32) as i32,
@@ -149,10 +145,6 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
                 anyhow::ensure!(
                     session.authorization().display_expansion_allowed(),
                     "本次会话不允许添加虚拟屏"
-                );
-                anyhow::ensure!(
-                    create.virtual_display_count == 1,
-                    "每次只能添加一块虚拟屏"
                 );
                 let resolutions = create
                     .local_resolution

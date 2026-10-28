@@ -164,7 +164,7 @@ impl Controller {
             .endpoint
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("{}", t().features.drag_connection_closed))?;
-        let hold = if endpoint.shared.return_capable.load(Ordering::Acquire) {
+        let hold = if endpoint.shared.ready.load(Ordering::Acquire) {
             Some(input.hold_drag(owner)?)
         } else {
             None
@@ -228,7 +228,7 @@ impl Controller {
         if binding.reverse_owner != Some(owner) {
             return None;
         }
-        if !endpoint.available() || !endpoint.shared.return_capable.load(Ordering::Acquire) {
+        if !endpoint.available() || !endpoint.shared.ready.load(Ordering::Acquire) {
             return None;
         }
         binding.active.upgrade().filter(|ticket| {

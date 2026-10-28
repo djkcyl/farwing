@@ -104,7 +104,6 @@ pub(crate) fn error_response(kind: FrameType, request_id: u32, code: &str, messa
         &farwing_protocol::peer::PeerError {
             code: code.to_owned(),
             message: message.to_owned(),
-            detail: String::new(),
         },
     )
 }
@@ -244,14 +243,12 @@ fn host_static_features() -> BTreeMap<String, u32> {
 
 fn hello(role: Role, profile: Option<farwing_protocol::peer::Profile>) -> Hello {
     let mut hello = Hello::new(
-        role,
         env!("CARGO_PKG_VERSION"),
         match role {
             Role::Host => host_features(),
             _ => controller_features(),
         },
     );
-    hello.platform = farwing_protocol::Platform::Windows.as_str().to_owned();
     hello.profile = profile;
     hello
 }
@@ -334,15 +331,11 @@ mod tests {
 
     #[test]
     fn hello_round_trip() {
-        let request = hello_request_with(farwing_protocol::peer::Profile {
-            nickname: "alice".into(),
-            color: 0x3080ff,
-        });
+        let request = hello_request_with(farwing_protocol::peer::Profile { color: 0x3080ff });
         let received = decode_hello(&request).unwrap().unwrap();
         assert!(!received.response);
         assert!(received.features().has(feature::DISPLAY_CONFIG));
-        assert_eq!(received.hello.platform, "windows");
-        assert_eq!(received.hello.profile.unwrap().nickname, "alice");
+        assert_eq!(received.hello.profile.unwrap().color, 0x3080ff);
         let response = hello_response(Role::Host, 3);
         let received = decode_hello(&response).unwrap().unwrap();
         assert!(received.response && received.request_id == 3);

@@ -30,11 +30,6 @@ pub(super) fn save_to(path: &std::path::Path, options: ConnectionMediaOptions) -
     options.validate()?;
     let parent = path.parent().context(crate::i18n::t().session.media_settings_folder_invalid)?;
     std::fs::create_dir_all(parent)?;
-    let options = ConnectionMediaOptions {
-        audio_only: false,
-        muted: false,
-        ..options
-    };
     let temp = parent.join(format!(".media-preferences-{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| -> Result<()> {
         let mut file = std::fs::OpenOptions::new()

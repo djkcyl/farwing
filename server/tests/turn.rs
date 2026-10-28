@@ -54,10 +54,6 @@ async fn external_turn_rest_credentials() {
             "{side}: coturn use-auth-secret compatible"
         );
     }
-    let info = srv
-        .send(srv.raw(reqwest::Method::GET, "/api/v2/server"))
-        .await;
-    assert_eq!(info.ok()["features"]["force_relay"], true);
     srv.shutdown().await;
 }
 
@@ -77,10 +73,6 @@ async fn builtin_without_relay_offers_stun_only() {
     let s = srv.server.as_ref().unwrap();
     assert!(s.turn_udp.is_none() && s.turn_tls.is_none());
     let stun = s.stun_udp[0];
-    let info = srv
-        .send(srv.raw(reqwest::Method::GET, "/api/v2/server"))
-        .await;
-    assert_eq!(info.ok()["features"]["turn"], false);
     let (_sid, incoming, ack) = srv.ice_for_session().await;
     for body in [&incoming, &ack] {
         assert_eq!(

@@ -19,11 +19,6 @@ pub async fn healthz() -> &'static str {
 
 /// `GET /api/v2/server`
 pub async fn server_info(State(app): State<App>) -> Json<ServerInfo> {
-    let updates = app
-        .db
-        .call(|c| Ok(!crate::webdb::announcements(c)?.is_empty()))
-        .await
-        .unwrap_or(false);
     Json(ServerInfo {
         protocol: ProtocolRange {
             name: farwing_protocol::PROTOCOL_NAME.to_owned(),
@@ -36,11 +31,6 @@ pub async fn server_info(State(app): State<App>) -> Json<ServerInfo> {
             instance_name: app.cfg().instance_name.clone(),
         },
         features: ServerFeatures {
-            guest_hosts: app.cfg().guest.enabled,
-            turn: app.hub.has_turn(),
-            force_relay: app.cfg().turn.force_relay,
-            updates,
-            friends: true,
             nat_discovery: app
                 .nat_discovery
                 .read()

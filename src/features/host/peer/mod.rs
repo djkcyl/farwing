@@ -697,7 +697,6 @@ impl Peer {
         let publisher = tokio::spawn(publish_state(
             screens.clone(),
             reports.clone(),
-            stream_transports.clone(),
             report_receiver,
             cancel.clone(),
             kcp.clone(),

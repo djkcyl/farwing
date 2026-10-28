@@ -19,10 +19,7 @@ pub(crate) fn encode_pb_echo_request() -> Vec<u8> {
     if color == 0 {
         return peer::hello_request(peer::Role::Controller);
     }
-    peer::hello_request_with(farwing_protocol::peer::Profile {
-        nickname: String::new(),
-        color,
-    })
+    peer::hello_request_with(farwing_protocol::peer::Profile { color })
 }
 
 /// The cursor colour setting during a session: a changed colour is sent as
@@ -55,10 +52,7 @@ impl ProfileWatch {
             return None;
         }
         self.color = color;
-        Some(peer::hello_request_with(farwing_protocol::peer::Profile {
-            nickname: String::new(),
-            color,
-        }))
+        Some(peer::hello_request_with(farwing_protocol::peer::Profile { color }))
     }
 }
 
@@ -283,7 +277,6 @@ pub(crate) fn error_response(request_id: u32, code: &str, message: impl Into<Str
         &farwing_protocol::peer::PeerError {
             code: code.to_owned(),
             message: message.into(),
-            detail: String::new(),
         },
     )
 }
@@ -373,9 +366,6 @@ pub(crate) struct PbReportQosStats {
     /// Capture backend name.
     #[prost(string, tag = "2")]
     pub(crate) capture_type: String,
-    /// Transport probe rate, bits/s.
-    #[prost(uint64, tag = "3")]
-    pub(crate) probe_bps: u64,
     /// Effective quality tier 1..4 (automatic already resolved) or 6 = custom.
     #[prost(int32, tag = "4")]
     pub(crate) video_quality: i32,
@@ -503,8 +493,6 @@ pub(crate) struct PbScreen {
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct PbDisplayGeometry {
-    #[prost(uint32, tag = "1")]
-    pub version: u32,
     #[prost(uint32, tag = "2")]
     pub width: u32,
     #[prost(uint32, tag = "3")]

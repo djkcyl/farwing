@@ -120,7 +120,6 @@ struct Shared {
     enabled: AtomicBool,
     ready: AtomicBool,
     peer_enabled: AtomicBool,
-    return_capable: AtomicBool,
     token: AtomicU64,
     screens: Mutex<Vec<Screen>>,
     stop: CancellationToken,
@@ -221,7 +220,6 @@ impl Endpoint {
             enabled: AtomicBool::new(false),
             ready: AtomicBool::new(false),
             peer_enabled: AtomicBool::new(role == Role::Host),
-            return_capable: AtomicBool::new(false),
             token: AtomicU64::new(0),
             screens: Mutex::default(),
             stop: stop.clone(),
@@ -511,7 +509,6 @@ impl Actor {
         };
         let data = wire::encode(Packet {
             token: self.token,
-            capabilities: wire::NATIVE_RETURN,
             drag: id,
             sequence,
             payload: Some(payload),
@@ -725,7 +722,7 @@ impl Actor {
             Command::Image(id, image) => {
                 if let Some(entry) = self.entries.get_mut(&id) {
                     entry.image = Some(image.clone());
-                    if self.shared.return_capable.load(Ordering::Acquire) {
+                    if self.shared.ready.load(Ordering::Acquire) {
                         self.emit(id, Payload::Image(image), false).await?;
                     }
                 }
@@ -754,7 +751,7 @@ impl Actor {
                 let point = *lock(&ticket.point);
                 let mut entry = self.entry(id, point, false, Some(ticket))?;
                 entry.reverse = true;
-                entry.preserve_source = self.shared.return_capable.load(Ordering::Acquire)
+                entry.preserve_source = self.shared.ready.load(Ordering::Acquire)
                     && release.current.as_ref().is_some_and(|f| f());
                 entry.release_source = Some(release);
                 self.entries.insert(id, entry);
@@ -1123,7 +1120,6 @@ impl Actor {
             self.token = token;
             self.reported = None;
             self.shared.ready.store(false, Ordering::Release);
-            self.shared.return_capable.store(false, Ordering::Release);
             if token != 0 {
                 self.emit(0, Payload::Hello(1), false).await?;
             }
@@ -1149,10 +1145,6 @@ impl Actor {
                 self.token = packet.token;
                 self.shared.token.store(self.token, Ordering::Release);
             }
-            self.shared.return_capable.store(
-                packet.capabilities & wire::NATIVE_RETURN != 0,
-                Ordering::Release,
-            );
             self.shared.ready.store(true, Ordering::Release);
             self.emit(0, Payload::HelloAck(1), false).await?;
             return Ok(());
@@ -1164,10 +1156,6 @@ impl Actor {
         let commit = matches!(&packet.payload, Some(Payload::Commit(_)));
         match packet.payload.unwrap() {
             Payload::HelloAck(1) if self.role == Role::Host => {
-                self.shared.return_capable.store(
-                    packet.capabilities & wire::NATIVE_RETURN != 0,
-                    Ordering::Release,
-                );
                 self.shared.ready.store(true, Ordering::Release)
             }
             Payload::Resume(point) => self.receive_return(id, point).await?,
@@ -1193,7 +1181,7 @@ impl Actor {
             }
             Payload::Image(image) => {
                 ensure!(
-                    self.shared.return_capable.load(Ordering::Acquire),
+                    self.shared.ready.load(Ordering::Acquire),
                     "{}",
                     t().features.drag_image_not_negotiated
                 );
@@ -1378,7 +1366,7 @@ impl Actor {
                 let alive = entry.ticket.alive.clone();
                 entry.portal = Some(native::portal::Portal::start(
                     position,
-                    self.shared.return_capable.load(Ordering::Acquire),
+                    self.shared.ready.load(Ordering::Acquire),
                     guard,
                     Arc::new(move |event| {
                         if commands.try_send(Command::Portal(id, event)).is_err() {

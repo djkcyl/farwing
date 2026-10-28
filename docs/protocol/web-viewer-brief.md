@@ -545,18 +545,15 @@ syntax = "proto3";
 package farwing.peer;
 
 // crates/protocol/src/peer/mod.rs:256-341
-message Profile { string nickname = 1; uint32 color = 2; }          // color: 0xRRGGBB，0 = 由被控分配
+message Profile { uint32 color = 2; }                               // color: 0xRRGGBB，0 = 由被控分配
 message Hello {
   uint32 protocol_version = 1;        // 2
   uint32 min_protocol_version = 2;    // 2
-  int32  role = 3;                    // 0 未指定，1 主控，2 被控
   string client_version = 4;
   map<string, uint32> features = 5;   // 特性名 → 1
-  uint32 max_message_bytes = 6;
-  string platform = 7;
   Profile profile = 8;                // optional，只有主控填写
 }
-message PeerError { string code = 1; string message = 2; string detail = 3; }
+message PeerError { string code = 1; string message = 2; }
 
 // src/features/stream_control/wire.rs:39-414
 message SessionMessage {
@@ -588,8 +585,8 @@ message PbScreen {
 }
 message PbWinRect { int32 left = 1; int32 top = 2; int32 width = 3; int32 height = 4; }
 message PbDpiScale { int32 current_dpi = 1; int32 recommended_dpi = 2; repeated int32 dpis = 3; }
-message PbDisplayGeometry { uint32 version = 1; uint32 width = 2; uint32 height = 3; }
-message PbReportQosStats { string encoder_type = 1; string capture_type = 2; uint64 probe_bps = 3; int32 video_quality = 4; }
+message PbDisplayGeometry { uint32 width = 2; uint32 height = 3; }
+message PbReportQosStats { string encoder_type = 1; string capture_type = 2; int32 video_quality = 4; }
 message MicrophoneState { int32 state = 1; }
 message ClipboardPermission { bool enabled = 1; }
 message CaptureControl { int32 screen_id = 1; bool start = 2; }
@@ -623,7 +620,7 @@ message Participant { uint64 id = 1; string nickname = 2; string device_name = 3
 message Participants { repeated Participant participants = 1; uint64 controlling = 2; }
 
 // src/protocol/host_event.rs:10-58
-message HostEvent { int32 kind = 1; uint32 expected_downtime_ms = 2; string message = 3; }
+message HostEvent { int32 kind = 1; string actor = 3; }
 message Permissions { repeated string grants = 1; }
 ```
 
@@ -642,25 +639,21 @@ message Permissions { repeated string grants = 1; }
   - **不要**声明 `display.config`（Screens 走 session 通道，更简单）、`clipboard*`、`files`、`drag`、`annotation`、`ports.*`、`diagnostics`、`fct`、`audio.microphone`。
   - 原生声明的完整集合见 `src/protocol/peer.rs:155-184`。
 - **profile**：被控只读 `profile.color`（≠ 0 时作为本参与者在其他人画面上的指针颜色，`ingress.rs:72-78`）；昵称以服务端为准。
-- `platform` 与 `max_message_bytes` 被控不读。原生的 `platform` 硬编码为 `"windows"`，`max_message_bytes` 为 524288（`src/protocol/peer.rs:217-229`）。观看端可写 `"web"`，`max_message_bytes` 写浏览器实际的 SCTP 上限。
 - 时序：被控在 HELLO 双向完成之前，按完整的 v2 主控特性集准备会话（`publisher.rs:174-175`）。
 
 #### 4.4.2 字节示例
 
-最小的主控 HELLO 请求：`features = {"video.h264": 1}`，`client_version = "web"`，`max_message_bytes = 262144`，`platform = "web"`。
+最小的主控 HELLO 请求：`features = {"video.h264": 1}`，`client_version = "web"`。
 
 ```
 帧头: 46 57 02 00 00 01 00 00 00 00
-帧体 (36 字节):
+帧体 (25 字节):
   08 02                    protocol_version = 2
   10 02                    min_protocol_version = 2
-  18 01                    role = 1 (主控)
   22 03 77 65 62           client_version = "web"
   2a 0e                    features 条目 (field 5, len 14)
      0a 0a 76 69 64 65 6f 2e 68 32 36 34   key = "video.h264"
      10 01                                  value = 1
-  30 80 80 10              max_message_bytes = 262144
-  3a 03 77 65 62           platform = "web"
 ```
 
 回答被控请求时内容相同，只是帧头第 4 字节（flags）为 `01`：`46 57 02 01 00 01 00 00 00 00 …`。
@@ -674,7 +667,7 @@ message Permissions { repeated string grants = 1; }
 | 生效能力 | PERMISSIONS `{grants}`（`src/protocol/host_event.rs:49-62`） | session | 握手后，以及每次变化（`:570-580`） |
 | 桌面声音音质 | AUDIO JSON `{"kind":"hello","revision","kbps","effective_bps"}` | session | 音频已协商且允许时（`:531-543`，`src/features/host/audio.rs:156-168`） |
 | 屏幕列表 | SESSION `screens`（tag 1） | 未声明 `display.config` 时走 session | 握手后，以及每次变化；内容相同不重发（`:619-625`；构造见 `src/features/stream_control/publisher/displays.rs:10-85`） |
-| 画质 | SESSION `quality`（tag 2）`{encoder_type, capture_type, probe_bps, video_quality}` | session | 编码器就绪后、变化时（`:639-674`） |
+| 画质 | SESSION `quality`（tag 2）`{encoder_type, capture_type, video_quality}` | session | 编码器就绪后、变化时（`:639-674`） |
 | 麦克风状态 | SESSION `microphone`（tag 3） | session | 观看端可忽略 |
 | 被控光标 | CURSOR `{shape}` | control | 形状或所在屏幕变化时（`src/features/host/peer/cursor.rs`）。**不是实时位置**，`coordinate_x_scale/y` 只是形状变化时采样到的屏内归一化位置 |
 | 参与者列表与控制权 | PARTICIPANTS | session | 列表或持有者变化时（`src/features/host/peer/participants.rs:78-90`） |
@@ -774,7 +767,7 @@ message Permissions { repeated string grants = 1; }
 ### 4.10 PERMISSIONS（0x0901）与 HOST_EVENT（0x0203）
 
 - PERMISSIONS `{grants:[…]}`：网页通常为 `["view","audio"]` 或其子集；未知名称丢弃（`src/protocol/host_event.rs:48-62`）。
-- HOST_EVENT `{kind, expected_downtime_ms, message}`（`host_event.rs:10-32`）：
+- HOST_EVENT `{kind, actor}`（`host_event.rs:10-32`）：
 
   | kind | 含义 |
   |---|---|

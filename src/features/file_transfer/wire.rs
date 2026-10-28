@@ -633,7 +633,7 @@ fn decode_message(header: &Header, body: &[u8]) -> Result<Received> {
             code: match error.code.as_str() {
                 peer::FORBIDDEN => code::DENIED,
                 peer::NOT_FOUND => code::NOT_FOUND,
-                peer::BUSY | peer::UNAVAILABLE | peer::TIMEOUT => code::BUSY,
+                peer::BUSY | peer::UNAVAILABLE => code::BUSY,
                 peer::INTERNAL => code::IO,
                 _ => code::PROTOCOL,
             },
@@ -752,7 +752,6 @@ mod tests {
             &farwing_protocol::peer::PeerError {
                 code: farwing_protocol::peer::error_code::UNSUPPORTED.into(),
                 message: "unsupported".into(),
-                detail: String::new(),
             },
         );
         let received = decode(&error).unwrap().unwrap();

@@ -12,7 +12,6 @@ pub(crate) struct Request {
 }
 
 pub(crate) struct Converter {
-    timing: Option<super::gpu_diagnostics::Timing>,
     vertex: ID3D11VertexShader,
     pixel: ID3D11PixelShader,
     sampler: ID3D11SamplerState,
@@ -50,7 +49,6 @@ impl Converter {
                 Some(&mut params),
             )?;
             Ok(Self {
-                timing: super::gpu_diagnostics::Timing::new(device, "capture preprocess"),
                 vertex: vertex.context(t().system.capture_create_vertex_shader)?,
                 pixel: pixel.context(t().system.capture_create_pixel_shader)?,
                 sampler: sampler.context(t().system.capture_create_sampler)?,
@@ -74,7 +72,6 @@ impl Converter {
         request: Request,
         pointer: Option<(ID3D11ShaderResourceView, [f32; 8])>,
     ) -> Result<ID3D11Texture2D> {
-        let _span = self.timing.as_mut().and_then(|timer| timer.begin());
         unsafe {
             if self.source != (desc.Width, desc.Height, desc.Format) {
                 let mut copy = None;

@@ -72,10 +72,6 @@ async fn presence_hello_heartbeat_and_resume() {
     assert_eq!(d["resumed"], false);
     assert_eq!(d["heartbeat_ms"], 200);
     assert_eq!(d["idle_timeout_ms"], 5000);
-    assert_eq!(
-        d["limits"],
-        json!({"max_frame_bytes": 1048576, "max_sdp_bytes": 1048576, "max_candidates": 256, "rate_per_s": 200})
-    );
     assert!(d.get("session_id").is_none());
     let token1 = d["resume_token"].as_str().unwrap().to_owned();
     assert!(farwing_protocol::ids::is_token(&token1, "fwr_"));
@@ -126,7 +122,6 @@ async fn presence_hello_heartbeat_and_resume() {
     let hello = ws.recv_type("hello").await;
     assert_eq!(hello["data"]["resumed"], true);
     assert_eq!(hello["data"]["epoch"], 1);
-    assert_eq!(hello["data"]["role"], "host");
     srv.wait_online(&dev.id, true).await;
     let list = srv.get("/api/v2/devices", &dev).await.ok().clone();
     assert_eq!(list["current_device"]["status"], "online");

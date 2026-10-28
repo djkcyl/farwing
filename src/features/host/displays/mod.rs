@@ -80,6 +80,9 @@ struct State {
     path: PathBuf,
     preferences: Preference,
     preference_path: Option<PathBuf>,
+    /// The resolution choice per physical monitor (identity) while this
+    /// host runs.
+    physical: std::collections::HashMap<String, i32>,
     driver: Option<Heartbeat>,
     fallback_pin: Option<Driver>,
     render_adapter: Option<u64>,
@@ -149,6 +152,7 @@ impl Session {
                 },
                 preferences,
                 preference_path,
+                physical: Default::default(),
                 driver: None,
                 fallback_pin: None,
                 render_adapter: None,
@@ -208,12 +212,12 @@ impl Session {
                         .as_ref()
                         .is_some_and(|t| t.virtual_provider.is_some()),
                 ),
-                state
-                    .preferences
-                    .physical
-                    .iter()
-                    .find(|p| screen.identity.as_deref() == Some(p.identity.as_str()))
-                    .map_or(1, |p| p.resolution_type),
+                screen
+                    .identity
+                    .as_ref()
+                    .and_then(|identity| state.physical.get(identity))
+                    .copied()
+                    .unwrap_or(1),
             ));
         };
         screen.id = display::source_id(&format!("farwing-virtual/{}", owned.guid))?;
@@ -746,9 +750,7 @@ impl State {
     }
     fn save_preferences(&self) -> Result<()> {
         if let Some(path) = &self.preference_path {
-            let mut saved = self.preferences.clone();
-            saved.physical.clear();
-            store::write(path, &saved)?;
+            store::write(path, &self.preferences)?;
         }
         Ok(())
     }
@@ -780,22 +782,9 @@ impl State {
         {
             return Ok(());
         }
-        let screen = find_screen(identity)?;
-        let resolution_type = choice.unwrap_or_else(|| {
-            self.preferences
-                .physical
-                .iter()
-                .find(|p| p.identity == identity)
-                .map_or(1, |p| p.resolution_type)
-        });
-        self.preferences.physical.retain(|p| p.identity != identity);
-        self.preferences.physical.push(store::Physical {
-            identity: identity.into(),
-            width: screen.width,
-            height: screen.height,
-            dpi: screen.dpi_scale.unwrap_or(0),
-            resolution_type,
-        });
+        let resolution_type = choice
+            .unwrap_or_else(|| self.physical.get(identity).copied().unwrap_or(1));
+        self.physical.insert(identity.into(), resolution_type);
         Ok(())
     }
     fn applied(&mut self) -> Result<()> {

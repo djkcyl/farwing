@@ -7,7 +7,6 @@ use windows::Win32::Graphics::{
 };
 
 pub(crate) struct Conversion {
-    timing: Option<super::gpu_diagnostics::Timing>,
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     engine: Engine,
@@ -258,7 +257,6 @@ impl Conversion {
             };
             Ok(Self {
                 inputs: Vec::with_capacity(4),
-                timing: super::gpu_diagnostics::Timing::new(device, "encode conversion"),
                 device: device.clone(),
                 context: device.GetImmediateContext()?,
                 engine,
@@ -307,7 +305,6 @@ impl Conversion {
             device.CreateComputeShader(bytes, None, Some(&mut shader))?;
             Ok(Self {
                 inputs: Vec::with_capacity(4),
-                timing: super::gpu_diagnostics::Timing::new(device, "encode conversion"),
                 device: device.clone(),
                 context: device.GetImmediateContext()?,
                 engine: Engine::Compute {
@@ -321,7 +318,6 @@ impl Conversion {
         }
     }
     pub fn convert(&mut self, source: &ID3D11Texture2D) -> Result<()> {
-        let _span = self.timing.as_mut().and_then(|timer| timer.begin());
         unsafe {
             let mut desc = D3D11_TEXTURE2D_DESC::default();
             source.GetDesc(&mut desc);

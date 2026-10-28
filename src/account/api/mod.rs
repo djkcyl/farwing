@@ -1428,7 +1428,6 @@ impl ServerApi {
             json(&wire::PowerResult {
                 code,
                 message,
-                state: if code == 0 { "accepted" } else { "failed" }.into(),
             })?,
             REQUEST_TIMEOUT,
             Auth::Session,

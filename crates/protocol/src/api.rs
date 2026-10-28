@@ -146,11 +146,6 @@ pub struct ServerIdentity {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerFeatures {
-    pub guest_hosts: bool,
-    pub turn: bool,
-    pub force_relay: bool,
-    pub updates: bool,
-    pub friends: bool,
     /// `stun:` URLs of the RFC 5780 NAT discovery endpoints (`[[turn.stun]]`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub nat_discovery: Vec<String>,
@@ -894,8 +889,6 @@ pub struct PowerResult {
     pub code: i32,
     #[serde(default)]
     pub message: String,
-    #[serde(default)]
-    pub state: String,
 }
 
 // ---------------------------------------------------------------- records

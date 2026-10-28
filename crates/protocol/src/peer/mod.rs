@@ -258,11 +258,10 @@ pub enum Role {
     Host = 2,
 }
 
-/// How a participant is shown to others (cursor label, participant list).
+/// How a participant is shown to others: its cursor colour (the name comes
+/// from the server).
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct Profile {
-    #[prost(string, tag = "1")]
-    pub nickname: String,
     /// Preferred cursor colour as 0xRRGGBB; 0 lets the host choose.
     #[prost(uint32, tag = "2")]
     pub color: u32,
@@ -276,32 +275,22 @@ pub struct Hello {
     pub protocol_version: u32,
     #[prost(uint32, tag = "2")]
     pub min_protocol_version: u32,
-    #[prost(enumeration = "Role", tag = "3")]
-    pub role: i32,
     #[prost(string, tag = "4")]
     pub client_version: String,
     /// Feature name → version. See [`feature`].
     #[prost(btree_map = "string, uint32", tag = "5")]
     pub features: BTreeMap<String, u32>,
-    #[prost(uint32, tag = "6")]
-    pub max_message_bytes: u32,
-    /// [`crate::Platform`] name.
-    #[prost(string, tag = "7")]
-    pub platform: String,
     #[prost(message, optional, tag = "8")]
     pub profile: Option<Profile>,
 }
 
 impl Hello {
-    pub fn new(role: Role, client_version: &str, features: BTreeMap<String, u32>) -> Self {
+    pub fn new(client_version: &str, features: BTreeMap<String, u32>) -> Self {
         Self {
             protocol_version: crate::PROTOCOL_VERSION,
             min_protocol_version: crate::MIN_PROTOCOL_VERSION,
-            role: role as i32,
             client_version: client_version.to_owned(),
             features,
-            max_message_bytes: crate::limits::MAX_PEER_FRAME as u32,
-            platform: String::new(),
             profile: None,
         }
     }
@@ -331,9 +320,6 @@ pub struct PeerError {
     pub code: String,
     #[prost(string, tag = "2")]
     pub message: String,
-    /// Optional machine-readable detail (JSON).
-    #[prost(string, tag = "3")]
-    pub detail: String,
 }
 
 /// [`PeerError::code`] values.
@@ -345,7 +331,6 @@ pub mod error_code {
     pub const BUSY: &str = "busy";
     pub const UNAVAILABLE: &str = "unavailable";
     pub const INTERNAL: &str = "internal";
-    pub const TIMEOUT: &str = "timeout";
 }
 
 #[cfg(test)]
@@ -355,7 +340,7 @@ mod tests {
 
     #[test]
     fn frame_round_trip() {
-        let hello = Hello::new(Role::Controller, "1.0.0", BTreeMap::from([("files".into(), 2)]));
+        let hello = Hello::new("1.0.0", BTreeMap::from([("files".into(), 2)]));
         let body = hello.encode_to_vec();
         let frame = encode(FrameType::Hello, flags::RESPONSE, 7, &body);
         assert!(is_frame(&frame));

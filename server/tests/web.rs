@@ -552,7 +552,7 @@ async fn browser_realtime_admission_by_subprotocol() {
         tokio_tungstenite::tungstenite::Message::Text(t) => serde_json::from_str(&t).unwrap(),
         other => panic!("unexpected {other:?}"),
     };
-    assert_eq!((hello["type"].as_str(), hello["data"]["role"].as_str()), (Some("hello"), Some("controller")));
+    assert_eq!(hello["type"].as_str(), Some("hello"));
     // Tickets are single-use.
     assert!(connect(format!("farwing.v2, ticket.{ticket}")).await.is_err());
     srv.shutdown().await;
