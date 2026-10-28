@@ -361,7 +361,7 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
             Ok(vec![crate::features::stream_control::wire::error_response(
                 id,
                 farwing_protocol::peer::error_code::UNSUPPORTED,
-                (t().features.stream_unsupported_session_request)(other.name()),
+                other.name(),
             )]
             .into())
         }

@@ -75,8 +75,6 @@ struct Cancel {
 struct Failed {
     #[prost(uint32, tag = "1")]
     stream: u32,
-    #[prost(string, tag = "2")]
-    message: String,
 }
 #[derive(Clone, PartialEq, prost::Oneof)]
 enum Body {

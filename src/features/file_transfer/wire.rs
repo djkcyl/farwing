@@ -356,6 +356,7 @@ pub(crate) struct ItemDone {
     /// One of [`code`]; [`code::OK`] once an uploaded item is saved.
     #[prost(int32, tag = "3")]
     pub error_code: i32,
+    /// See [`Failure::detail`].
     #[prost(string, tag = "4")]
     pub message: String,
 }
@@ -365,6 +366,7 @@ pub(crate) struct Failed {
     /// One of [`code`].
     #[prost(int32, tag = "1")]
     pub code: i32,
+    /// See [`Failure::detail`].
     #[prost(string, tag = "2")]
     pub message: String,
 }
@@ -381,6 +383,15 @@ impl Failure {
         Self {
             code,
             message: message.into(),
+        }
+    }
+    /// What the host sends with the code: its own detail for [`code::IO`]
+    /// and [`code::PROTOCOL`] only; the controller words every other code.
+    pub(crate) fn detail(&self) -> String {
+        if matches!(self.code, code::IO | code::PROTOCOL) {
+            self.message.clone()
+        } else {
+            String::new()
         }
     }
 
@@ -505,7 +516,7 @@ pub(crate) fn failed(request_id: u32, failure: &Failure) -> Vec<Vec<u8>> {
         request_id,
         Body::Failed(Failed {
             code: failure.code,
-            message: failure.message.clone(),
+            message: failure.detail(),
         }),
     )
 }

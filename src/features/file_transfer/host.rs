@@ -461,7 +461,7 @@ impl Engine {
                     transfer,
                     entry: active.entry.load(std::sync::atomic::Ordering::Acquire),
                     error_code: code::DENIED,
-                    message: t().features.transfer_permission_revoked.into(),
+                    message: String::new(),
                 }))
             })
             .collect()

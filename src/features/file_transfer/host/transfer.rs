@@ -126,7 +126,7 @@ async fn conclude(
                     transfer: id,
                     entry,
                     error_code: failure.code,
-                    message: failure.message,
+                    message: failure.detail(),
                 })))
                 .await
         }

@@ -483,7 +483,7 @@ ItemDone {
 Failed { code: int32 = 1, message: string = 2 }
 ```
 
-- `Failed.code` / `ItemDone.error_code`：0 OK，1 PROTOCOL，2 DENIED，3 NOT_FOUND，4 EXISTS，5 NO_SPACE，6 IO，7 BUSY，8 CHANGED，9 CANCELLED。带 ERROR 标志的 `PeerError` 回复按 `Failed{PROTOCOL}` 处理。
+- `Failed.code` / `ItemDone.error_code`：0 OK，1 PROTOCOL，2 DENIED，3 NOT_FOUND，4 EXISTS，5 NO_SPACE，6 IO，7 BUSY，8 CHANGED，9 CANCELLED。主控按代码措辞；`message` 只在 PROTOCOL 与 IO 时带被控的原因，其余为空。带 ERROR 标志的 `PeerError` 回复按 `Failed{PROTOCOL}` 处理。
 - 帧体超过 64 KiB − 10 时分片（farwing-protocol.md §5.2），重组后最多 32 MiB；推送不分片。
 - 清单包含文件与空目录；未 `skip` 的条目按清单顺序以 `TRANSFER{kind: FILE, stream: transfer, entry: 下标}` 发送。部分文件写在目标目录的隐藏临时文件 `.{名称}.{key}.downloading`，完成后按冲突策略改名并设置 mtime。
 
@@ -666,10 +666,10 @@ Ready {
   warnings: uint32 = 4
 }
 Cancel { stream: uint32 = 1 }
-Failed { stream: uint32 = 1, message: string = 2 }
+Failed { stream: uint32 = 1 }
 ```
 
-`Request` 的错误回复：`unsupported`（被控不提供诊断包）、`forbidden`（本参与者无权获取）、`busy`（正在生成）、`internal`。诊断包内容为 `TRANSFER{kind: DIAGNOSTICS, stream}`；主控无响应 30 秒即放弃。
+`Request` 的错误回复（`message` 为空，主控按代码措辞）：`unsupported`（被控不提供诊断包）、`forbidden`（本参与者无权获取）、`busy`（正在生成）、`internal`。诊断包内容为 `TRANSFER{kind: DIAGNOSTICS, stream}`；主控无响应 30 秒即放弃。
 
 ## PERMISSIONS（0x0901，被控→主控）—— `src/protocol/host_event.rs`
 

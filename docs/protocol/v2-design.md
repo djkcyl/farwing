@@ -480,7 +480,7 @@ Request { stream }                          // 请求 主控 → 被控 → Read
 Progress { stream, stage, completed, total } // 推送 被控 → 主控：生成进度（约 200 ms 一次）
 Ready { size, sha256, logs, warnings }      // Request 的响应；随后包内容以 TRANSFER{kind: DIAGNOSTICS, stream} 发送
 Cancel { stream }                           // 推送 主控 → 被控：停止
-Failed { stream, message }                  // 推送 被控 → 主控：Ready 之后发送中断（读取失败、权限撤销）
+Failed { stream }                           // 推送 被控 → 主控：Ready 之后发送中断（读取失败、权限撤销）
 ```
 
 - 允许条件：主控声明 `diagnostics` 特性，且本参与者拥有 `diagnostics` 能力（访客默认权限不含该能力）。

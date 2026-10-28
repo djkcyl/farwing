@@ -95,9 +95,11 @@ impl Host {
         tokio::time::timeout(TIMEOUT, channel.send(&Bytes::from(frame))).await??;
         Ok(())
     }
-    async fn refuse(&self, id: u32, code: &str, message: &str) {
+    /// Refuses request `id`; the controller words the code, the reason
+    /// stays in this side's log.
+    async fn refuse(&self, id: u32, code: &str) {
         let _ = self
-            .send(peer::error_response(FrameType::Diagnostics, id, code, message))
+            .send(peer::error_response(FrameType::Diagnostics, id, code, ""))
             .await;
     }
     async fn run(
@@ -135,7 +137,7 @@ impl Host {
                 continue;
             };
             if !allowed() {
-                self.refuse(id, farwing_protocol::peer::error_code::FORBIDDEN, crate::i18n::t().session.diag_forbidden).await;
+                self.refuse(id, farwing_protocol::peer::error_code::FORBIDDEN).await;
                 continue;
             }
             let job = stop.child_token();
@@ -160,7 +162,7 @@ impl Host {
                 Err(Outcome::Before(error)) => {
                     tracing::debug!(error = %format!("{error:#}"), "remote diagnostic export failed");
                     if !stop.is_cancelled() {
-                        self.refuse(id, farwing_protocol::peer::error_code::INTERNAL, &format!("{error:#}")).await;
+                        self.refuse(id, farwing_protocol::peer::error_code::INTERNAL).await;
                     }
                 }
                 Err(Outcome::After(error)) => {
@@ -172,7 +174,6 @@ impl Host {
                                 0,
                                 Body::Failed(Failed {
                                     stream: request.stream,
-                                    message: format!("{error:#}"),
                                 }),
                             ))
                             .await;
@@ -194,7 +195,7 @@ impl Host {
                 Err(Outcome::Cancelled)
             }
             Some(Received::Request(id, _)) => {
-                self.refuse(id, farwing_protocol::peer::error_code::BUSY, crate::i18n::t().session.diag_busy).await;
+                self.refuse(id, farwing_protocol::peer::error_code::BUSY).await;
                 Ok(())
             }
             Some(_) => Ok(()),
