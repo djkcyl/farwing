@@ -16,16 +16,16 @@ describe('peer protocol', () => {
   });
 
   test('minimal HELLO as in the brief', () => {
-    const w = new Writer().int(1, 2).int(2, 2).string(4, 'web');
-    w.message(5, new Writer().string(1, 'video.h264').int(2, 1));
-    expect(hex(w.finish())).toBe('0802' + '1002' + '2203776562' + '2a0e0a0a766964656f2e683236341001');
+    const w = new Writer().int(1, 3).int(2, 3).string(4, 'web');
+    w.message(5, new Writer().string(1, 'files').int(2, 1));
+    expect(hex(w.finish())).toBe('0803' + '1003' + '2203776562' + '2a090a0566696c65731001');
   });
 
   test('our HELLO round-trips and is compatible', () => {
     const hello = fpp.parseHello(fpp.helloBody());
-    expect(hello.protocolVersion).toBe(2);
-    expect(hello.minProtocolVersion).toBe(2);
-    expect(hello.features['video.h264']).toBe(1);
+    expect(hello.protocolVersion).toBe(3);
+    expect(hello.minProtocolVersion).toBe(3);
+    expect(hello.features['clipboard']).toBe(1);
     expect(hello.features['display.config']).toBeUndefined();
     expect(fpp.compatible(hello)).toBe(true);
   });

@@ -192,7 +192,7 @@ async fn connect(identity: &Identity, key: &DeviceKey) -> Result<Socket> {
     let mut request = ws_url.as_str().into_client_request()?;
     let timestamp = crate::db::now_ms();
     let h = request.headers_mut();
-    h.insert(headers::PROTOCOL, "2".parse()?);
+    h.insert(headers::PROTOCOL, farwing_protocol::PROTOCOL_VERSION.into());
     h.insert(headers::TIMESTAMP, timestamp.to_string().parse()?);
     match &identity.join {
         Some(token) => {

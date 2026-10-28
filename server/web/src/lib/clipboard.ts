@@ -170,7 +170,7 @@ export class ClipboardSync {
     if (fetch && frame.requestId !== 0) {
       const current = this.current;
       if (!current || fetch.uint32(1) !== current.offer || fetch.message(2)?.uint32(1) !== TEXT) {
-        this.io.replyError(fpp.Type.CLIPBOARD, frame.requestId, 'not_found');
+        this.io.replyError(fpp.Type.CLIPBOARD, frame.requestId, 'not_found', 'format_unavailable');
         return;
       }
       const stream = fetch.uint32(3);
@@ -179,7 +179,7 @@ export class ClipboardSync {
         return;
       }
       if (!stream) {
-        this.io.replyError(fpp.Type.CLIPBOARD, frame.requestId, 'internal', 'no stream for large data');
+        this.io.replyError(fpp.Type.CLIPBOARD, frame.requestId, 'internal', 'failed');
         return;
       }
       this.io.reply(fpp.Type.CLIPBOARD, frame.requestId, dataMessage(current.data.length, new Uint8Array()));
@@ -195,7 +195,8 @@ export class ClipboardSync {
       }
       return;
     }
-    if (frame.requestId !== 0) this.io.replyError(fpp.Type.CLIPBOARD, frame.requestId, 'bad_request');
+    if (frame.requestId !== 0)
+      this.io.replyError(fpp.Type.CLIPBOARD, frame.requestId, 'bad_request', 'invalid_request');
   }
 
   private async sendStream(stream: number, data: Uint8Array) {

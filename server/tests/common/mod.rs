@@ -27,7 +27,7 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
 pub const PASSWORD: &str = "correct-horse-battery";
 /// Protocol version sent in `X-Farwing-Protocol` and realtime envelopes.
-pub const V: u32 = 2;
+pub const V: u32 = farwing_protocol::PROTOCOL_VERSION;
 
 pub struct TestServer {
     pub server: Option<RunningServer>,

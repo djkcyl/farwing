@@ -19,9 +19,8 @@ mod dispatch_tests {
     //! FPP header type, never by sniffing payload contents.
     use super::peer::{self, FrameType};
 
-    const ALL: [FrameType; 21] = [
+    const ALL: [FrameType; 20] = [
         FrameType::Hello,
-        FrameType::Error,
         FrameType::Input,
         FrameType::Cursor,
         FrameType::Touch,
@@ -97,10 +96,23 @@ mod dispatch_tests {
         let hello = peer::hello_request(peer::Role::Controller);
         let received = peer::decode_hello(&hello).unwrap().expect("hello frame");
         assert!(!received.response);
+        assert_ne!(received.request_id, 0, "a HELLO is a request");
         let response = peer::hello_response(peer::Role::Host, received.request_id);
         let answered = peer::decode_hello(&response).unwrap().expect("hello response");
         assert!(answered.response);
         assert_eq!(answered.request_id, received.request_id);
+    }
+
+    #[test]
+    fn unknown_requests_are_answered_unsupported() {
+        let request = peer::framed(FrameType::Drag, 0, 9, &farwing_protocol::peer::Profile { color: 1 });
+        let reply = peer::unsupported(&request).expect("a request is answered");
+        let (header, body) = peer::decode(&reply).unwrap();
+        assert!(header.is_response() && header.is_error());
+        assert_eq!((header.frame_type(), header.request_id), (Some(FrameType::Drag), 9));
+        let error = <farwing_protocol::peer::PeerError as prost::Message>::decode(body).unwrap();
+        assert_eq!(error.code, farwing_protocol::peer::error_code::UNSUPPORTED);
+        assert!(peer::unsupported(&peer::frame(FrameType::Drag, &[])).is_none(), "pushes are not");
     }
 
     #[test]

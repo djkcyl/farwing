@@ -29,12 +29,12 @@ async fn server_info_health_and_headers() {
     let v = r.ok();
     assert_eq!(
         v["protocol"],
-        json!({"name": "farwing", "min": 2, "max": 2})
+        json!({"name": "farwing", "min": V, "max": V})
     );
     assert_eq!(v["server"]["name"], "Farwing Server");
     assert_eq!(v["server"]["instance_name"], "test");
     assert!(v["time_ms"].as_i64().unwrap() > 1_700_000_000_000);
-    assert_eq!(r.headers[headers::PROTOCOL], "2");
+    assert_eq!(r.headers[headers::PROTOCOL], V.to_string());
     assert_eq!(
         r.headers[headers::REQUEST_ID],
         "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
@@ -56,7 +56,7 @@ async fn protocol_header_and_version_errors() {
         )
         .await;
     r.err(400, "bad_request");
-    assert_eq!(r.headers[headers::PROTOCOL], "2");
+    assert_eq!(r.headers[headers::PROTOCOL], V.to_string());
     // Unsupported protocol version.
     let r = srv
         .send(
@@ -66,8 +66,8 @@ async fn protocol_header_and_version_errors() {
         )
         .await;
     r.err(426, "protocol_unsupported");
-    assert_eq!(r.body["error"]["details"]["min"], 2);
-    assert_eq!(r.body["error"]["details"]["max"], 2);
+    assert_eq!(r.body["error"]["details"]["min"], V);
+    assert_eq!(r.body["error"]["details"]["max"], V);
     assert_eq!(r.body["error"]["retryable"], false);
 
     // Realtime handshake with a bad ticket.
@@ -958,7 +958,7 @@ async fn proxy_mode_serves_plain_http_behind_tls_proxy() {
         .into_client_request()
         .unwrap();
     req.headers_mut()
-        .insert(headers::PROTOCOL, "2".parse().unwrap());
+        .insert(headers::PROTOCOL, V.to_string().parse().unwrap());
     req.headers_mut().insert(
         headers::TICKET,
         r.ok()["ticket"].as_str().unwrap().parse().unwrap(),

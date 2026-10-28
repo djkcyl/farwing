@@ -135,20 +135,7 @@ export function decode(data: ArrayBuffer): Frame | undefined {
 /// `clipboard.files`). Not declared: display.config (screens arrive on the
 /// session channel), drag, ports, diagnostics, fct (viewer brief §4.4.1,
 /// control brief §0.2).
-export const VIEWER_FEATURES = [
-  'cursor.shape',
-  'cursor.participants',
-  'permissions',
-  'participants',
-  'host_event',
-  'audio.quality',
-  'audio.microphone',
-  'clipboard',
-  'files',
-  'annotation',
-  'touch',
-  'pen',
-];
+export const VIEWER_FEATURES = ['cursor.participants', 'clipboard', 'files', 'touch', 'pen'];
 
 export interface Hello {
   protocolVersion: number;
@@ -157,9 +144,12 @@ export interface Hello {
   features: Record<string, number>;
 }
 
-export function helloBody(video: string[] = ['video.h264']): Uint8Array {
-  const w = new Writer().int(1, 2).int(2, 2).string(4, 'web-0.1.0');
-  for (const name of [...video, ...VIEWER_FEATURES]) {
+/// The peer protocol version (`farwing_protocol::PROTOCOL_VERSION`).
+export const PROTOCOL = 3;
+
+export function helloBody(): Uint8Array {
+  const w = new Writer().int(1, PROTOCOL).int(2, PROTOCOL).string(4, 'web-0.1.0');
+  for (const name of VIEWER_FEATURES) {
     w.message(5, new Writer().string(1, name).int(2, 1));
   }
   return w.finish();
@@ -178,17 +168,18 @@ export function parseHello(body: Uint8Array): Hello {
 }
 
 export function compatible(hello: Hello): boolean {
-  return hello.protocolVersion >= 2 && hello.minProtocolVersion <= 2;
+  return hello.protocolVersion >= PROTOCOL && hello.minProtocolVersion <= PROTOCOL;
 }
 
-export function parseError(body: Uint8Array): { code: string; message: string } {
+/// A `PeerError`: a code and the feature's reason key (worded here).
+export function parseError(body: Uint8Array): { code: string; reason: string } {
   const f = new Fields(body);
-  return { code: f.string(1), message: f.string(2) };
+  return { code: f.string(1), reason: f.string(2) };
 }
 
 /// A `PeerError` body (with the ERROR flag).
-export function errorBody(code: string, message = ''): Uint8Array {
-  return new Writer().string(1, code).string(2, message).finish();
+export function errorBody(code: string, reason = ''): Uint8Array {
+  return new Writer().string(1, code).string(2, reason).finish();
 }
 
 // SESSION ------------------------------------------------------------------

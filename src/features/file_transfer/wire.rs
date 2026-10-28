@@ -648,7 +648,7 @@ fn decode_message(header: &Header, body: &[u8]) -> Result<Received> {
                 peer::INTERNAL => code::IO,
                 _ => code::PROTOCOL,
             },
-            message: error.message,
+            message: error.reason,
         })
     } else {
         FileMessage::decode(body)
@@ -762,7 +762,7 @@ mod tests {
             9,
             &farwing_protocol::peer::PeerError {
                 code: farwing_protocol::peer::error_code::UNSUPPORTED.into(),
-                message: "unsupported".into(),
+                reason: String::new(),
             },
         );
         let received = decode(&error).unwrap().unwrap();

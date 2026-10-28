@@ -427,17 +427,28 @@ pub(super) async fn bind_channel(
                 tag = message.data.first().copied(),
                 "host business message received"
             );
-            let responses = if crate::protocol::peer::is_type(
-                &message.data,
-                &[crate::protocol::peer::FrameType::Hello],
-            ) {
-                crate::features::stream_control::publisher::receive(&message.data)
-            } else {
-                crate::features::stream_control::publisher::receive_session(
-                    &mut *screens.lock().await,
-                    &message.data,
-                )
-                .await
+            let responses = match farwing_protocol::peer::decode(&message.data)
+                .ok()
+                .and_then(|(header, _)| header.frame_type())
+            {
+                Some(crate::protocol::peer::FrameType::Hello) => {
+                    crate::features::stream_control::publisher::receive(&message.data)
+                }
+                Some(crate::protocol::peer::FrameType::Session) => {
+                    crate::features::stream_control::publisher::receive_session(
+                        &mut *screens.lock().await,
+                        &message.data,
+                    )
+                    .await
+                }
+                _ => {
+                    if let Some(reply) = crate::protocol::peer::unsupported(&message.data)
+                        && let Err(error) = channel.send(&Bytes::from(reply)).await
+                    {
+                        tracing::debug!(%error, "host unsupported-request reply failed");
+                    }
+                    return;
+                }
             };
             match responses {
                 Ok(responses) => {

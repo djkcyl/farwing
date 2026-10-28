@@ -100,7 +100,6 @@ async fn an_edge_node_joins_and_relays() {
         assert_eq!(entry["urls"][0], format!("turn:{udp}?transport=udp"));
     }
     let info = srv.send(srv.raw(Method::GET, "/api/v2/server")).await;
-    assert_eq!(info.ok()["features"]["turn"], true);
     let stun = status["health"]["stun"][0].as_str().unwrap();
     assert!(
         info.ok()["features"]["nat_discovery"]

@@ -224,11 +224,12 @@ grants(owner_user, grantee_user, device_id NULL, caps TEXT, updated_at)
 - 推送（无需回复）的 `request_id` 为 0。
 
 ```
-PeerError { code: enum, message: string, detail: string }
-code: UNSUPPORTED | BAD_REQUEST | FORBIDDEN | NOT_FOUND | BUSY | UNAVAILABLE | INTERNAL | TIMEOUT
+PeerError { code: string, reason: string }
+code: unsupported | bad_request | forbidden | not_found | busy | unavailable | internal
 ```
 
-- 收到未知帧类型：带 request_id 的回 `ERROR{UNSUPPORTED}`，推送直接忽略。
+- `reason` 是特性定义的原因键，由接收方翻译；超时由请求方自行判定。
+- 收到不认识的请求（含未知帧类型）：回 `ERROR{unsupported}`；推送直接忽略。
 
 ### 5.2 帧类型
 
@@ -275,25 +276,18 @@ code: UNSUPPORTED | BAD_REQUEST | FORBIDDEN | NOT_FOUND | BUSY | UNAVAILABLE | I
 
 ```
 Hello {
-  protocol_version: 2,
-  role: controller|host,
+  protocol_version: 3,
+  min_protocol_version: 3,
   client_version: string,
-  platform: string,
-  features: map<string, uint32>,     // 特性名 → 版本，只列运行时可用的
-  profile: { nickname, color? },     // 参与者显示信息（主控）
+  features: map<string, uint32>,     // 特性名 → 版本，只列运行时可用、对端会据此改变行为的
+  profile: { color? },               // 主控的指针颜色
 }
 ```
 
-- 主控在 session 通道打开后发送 HELLO 请求，被控以 HELLO 响应（RESPONSE）。只交换一次，5 s 超时视为失败。
-- 帧头版本字节为 2，数据通道标签见 §5.3；版本不符的帧直接丢弃。
-- 两端同为 v2 构建，特性集合相同；门控只看特性名，不再有数值“等级”。连接建立之前（HELLO 到达前）被控按完整 v2 特性集合准备会话。
-- **特性名（v2 初始集合）：**
-  - 画面与显示：`video.av1`、`video.hevc`、`video.h264`、`video.444`、`video.hdr`、`video.10bit`、`display.config`、`display.virtual`、`display.exclusive`、`display.geometry`
-  - 音频：`audio.quality`、`audio.microphone`
-  - 输入与光标：`input.keyboard_usage`、`input.pointer`、`cursor.shape`、`cursor.participants`
-  - 数据特性：`clipboard`、`files`、`drag`、`annotation`、`ports.tcp`、`ports.udp`、`diagnostics`
-  - 传输：`fct`
-  - `touch`、`pen`：被控运行时具备合成指针才声明（2026-10-17）
+- HELLO 是普通请求（request_id 非 0），被控以 HELLO 响应（RESPONSE）。
+- 帧头版本字节为 2，数据通道标签见 §5.3；版本不符的帧直接丢弃。协议版本（3）只在 HELLO、HTTPS 头与信令信封中协商。
+- 门控只看特性名，不再有数值“等级”。连接建立之前（HELLO 到达前）被控按原生主控的特性集合准备会话。
+- **特性名：** `video.444`、`video.hdr`、`display.config`、`display.virtual`、`cursor.participants`、`clipboard`、`clipboard.files`、`files`、`video.recovery`、`touch`、`pen`（完整说明见 farwing-protocol.md §5.5）。其余功能两端总是具备，不作为特性声明。
 
 ## 6. SESSION v2：媒体与显示控制
 

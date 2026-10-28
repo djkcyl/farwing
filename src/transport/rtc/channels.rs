@@ -308,10 +308,6 @@ async fn route_message(
         ) => stream_control
             .handle_protocol_message(data)
             .map_err(|error| ("session", error)),
-        Some(FrameType::Error) => {
-            tracing::warn!(%label, "peer reported a protocol error");
-            Ok(())
-        }
         Some(other) => {
             tracing::debug!(%label, kind = other.name(), "ignored peer frame without a controller consumer");
             Ok(())

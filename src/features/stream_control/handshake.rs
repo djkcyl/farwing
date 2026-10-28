@@ -253,7 +253,7 @@ impl StreamControlHandle {
         };
         if let Some(error) = &received.error {
             // A failed reply settles the request exactly like a lost send.
-            tracing::warn!(code = %error.code, message = %error.message, "host rejected a session request");
+            tracing::warn!(code = %error.code, reason = %error.reason, "host rejected a session request");
             // Its message is in the host's language: the log keeps it.
             self.mark_send_failed(received.sequence(), t().features.stream_host_refused_request);
             return Ok(());

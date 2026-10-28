@@ -268,17 +268,10 @@ pub(crate) fn response(request_id: u32, body: SessionBody) -> Vec<u8> {
     )
 }
 
-/// A failed reply to request `request_id`.
-pub(crate) fn error_response(request_id: u32, code: &str, message: impl Into<String>) -> Vec<u8> {
-    peer::framed(
-        FrameType::Session,
-        flags::RESPONSE | flags::ERROR,
-        request_id,
-        &farwing_protocol::peer::PeerError {
-            code: code.to_owned(),
-            message: message.into(),
-        },
-    )
+/// A failed reply to request `request_id`; `reason` is worded by the
+/// controller.
+pub(crate) fn error_response(request_id: u32, code: &str, reason: &str) -> Vec<u8> {
+    peer::error_response(FrameType::Session, request_id, code, reason)
 }
 
 /// A decoded `SESSION` frame.

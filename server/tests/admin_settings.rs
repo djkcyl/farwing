@@ -237,8 +237,6 @@ async fn the_builtin_relay_starts_and_stops_with_the_settings() {
     .await;
     assert_eq!(r.ok()["outcome"]["relay_restarted"], true);
     let udp = r.ok()["relay"]["turn_udp"].as_str().unwrap().to_owned();
-    let info = srv.send(srv.raw(Method::GET, "/api/v2/server")).await;
-    assert_eq!(info.ok()["features"]["turn"], true);
     let (_sid, incoming, _ack) = srv.ice_for_session().await;
     let urls = incoming["ice_servers"].to_string();
     assert!(urls.contains(&format!("turn:{udp}?transport=udp")), "{urls}");
@@ -285,7 +283,7 @@ async fn a_listen_change_is_confirmed_or_reverted() {
     let at = |port: u16, method: Method, path: &str| {
         srv.http
             .request(method, format!("https://127.0.0.1:{port}{path}"))
-            .header("x-farwing-protocol", "2")
+            .header("x-farwing-protocol", common::V.to_string())
             .header("authorization", format!("Bearer {token}"))
     };
     let first = srv.port;
@@ -402,7 +400,7 @@ async fn certificate_upload_export_and_import() {
         .unwrap();
     let r = fresh
         .get(srv.url("/api/v2/server"))
-        .header("x-farwing-protocol", "2")
+        .header("x-farwing-protocol", common::V.to_string())
         .send()
         .await
         .unwrap();
@@ -421,7 +419,7 @@ async fn certificate_upload_export_and_import() {
     doc["instance_name"] = json!("Imported");
     let r = fresh
         .post(srv.url("/api/v2/admin/settings/import"))
-        .header("x-farwing-protocol", "2")
+        .header("x-farwing-protocol", common::V.to_string())
         .header("authorization", format!("Bearer {token}"))
         .json(&doc)
         .send()
@@ -433,7 +431,7 @@ async fn certificate_upload_export_and_import() {
     doc["unknown_key"] = json!(1);
     let r = fresh
         .post(srv.url("/api/v2/admin/settings/import"))
-        .header("x-farwing-protocol", "2")
+        .header("x-farwing-protocol", common::V.to_string())
         .header("authorization", format!("Bearer {token}"))
         .json(&doc)
         .send()

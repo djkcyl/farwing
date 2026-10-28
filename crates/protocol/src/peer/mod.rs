@@ -1,4 +1,4 @@
-//! Farwing Peer Protocol (FPP) v2: the frame layer on WebRTC data channels
+//! Farwing Peer Protocol (FPP): the frame layer on WebRTC data channels
 //! (`docs/protocol/v2-design.md` §5).
 //!
 //! ```text
@@ -8,9 +8,11 @@
 //! +------+-------+-------+--------+---------------+---------+
 //! ```
 //!
-//! A request carries a non-zero request ID chosen by its sender; the reply
-//! repeats it with `RESPONSE` set (and `ERROR` with a [`PeerError`] body on
-//! failure). Pushes carry request ID 0.
+//! Every feature follows one convention. A request carries a non-zero
+//! request ID from its sender's counter; the reply repeats it with
+//! `RESPONSE` set, or `RESPONSE|ERROR` with a [`PeerError`] body. Pushes
+//! carry request ID 0 and are never answered. A request of a type the
+//! receiver does not take is answered `ERROR` [`error_code::UNSUPPORTED`].
 
 use std::collections::BTreeMap;
 
@@ -42,37 +44,21 @@ pub mod flags {
 /// In-session feature names declared in [`Hello::features`] (name → version).
 /// A peer only declares what it can do at runtime.
 pub mod feature {
-    pub const VIDEO_H264: &str = "video.h264";
-    pub const VIDEO_HEVC: &str = "video.hevc";
-    pub const VIDEO_AV1: &str = "video.av1";
     /// Full-chroma (4:4:4) video.
     pub const VIDEO_444: &str = "video.444";
     pub const VIDEO_HDR: &str = "video.hdr";
     /// Resolution, DPI and display-step requests.
     pub const DISPLAY_CONFIG: &str = "display.config";
     pub const DISPLAY_VIRTUAL: &str = "display.virtual";
-    /// Exclusive (super) screen.
-    pub const DISPLAY_EXCLUSIVE: &str = "display.exclusive";
-    pub const AUDIO_QUALITY: &str = "audio.quality";
-    pub const AUDIO_MICROPHONE: &str = "audio.microphone";
-    pub const CURSOR_SHAPE: &str = "cursor.shape";
     pub const CURSOR_PARTICIPANTS: &str = "cursor.participants";
     pub const CLIPBOARD: &str = "clipboard";
     pub const CLIPBOARD_FILES: &str = "clipboard.files";
     pub const FILES: &str = "files";
-    pub const DRAG: &str = "drag";
-    pub const ANNOTATION: &str = "annotation";
-    pub const PORTS_TCP: &str = "ports.tcp";
-    pub const PORTS_UDP: &str = "ports.udp";
-    pub const DIAGNOSTICS: &str = "diagnostics";
-    pub const PERMISSIONS: &str = "permissions";
-    pub const PARTICIPANTS: &str = "participants";
-    pub const HOST_EVENT: &str = "host_event";
-    pub const FCT: &str = "fct";
     /// Loss recovery with long-term references: `frame-meta` RTP extension
     /// and SESSION `VideoFeedback` (`docs/protocol/rfi-ltr-brief.md`).
     pub const VIDEO_RECOVERY: &str = "video.recovery";
-    /// Reserved for mobile controllers.
+    /// Touch and pen input: a host declares them where it can synthesize
+    /// them.
     pub const TOUCH: &str = "touch";
     pub const PEN: &str = "pen";
 }
@@ -82,7 +68,6 @@ pub mod feature {
 #[repr(u16)]
 pub enum FrameType {
     Hello = 0x0001,
-    Error = 0x0002,
     Input = 0x0101,
     Cursor = 0x0103,
     /// Touch input (a browser on a touch screen).
@@ -112,7 +97,6 @@ impl FrameType {
     pub fn from_u16(value: u16) -> Option<Self> {
         Some(match value {
             0x0001 => Self::Hello,
-            0x0002 => Self::Error,
             0x0101 => Self::Input,
             0x0103 => Self::Cursor,
             0x0104 => Self::Touch,
@@ -139,7 +123,6 @@ impl FrameType {
     pub fn name(self) -> &'static str {
         match self {
             Self::Hello => "HELLO",
-            Self::Error => "ERROR",
             Self::Input => "INPUT",
             Self::Cursor => "CURSOR",
             Self::Touch => "TOUCH",
@@ -318,8 +301,10 @@ pub struct PeerError {
     /// One of [`error_code`].
     #[prost(string, tag = "1")]
     pub code: String,
+    /// Why, as one of the feature's reason keys (or empty); the receiver
+    /// words it. Never text in the sender's language.
     #[prost(string, tag = "2")]
-    pub message: String,
+    pub reason: String,
 }
 
 /// [`PeerError::code`] values.

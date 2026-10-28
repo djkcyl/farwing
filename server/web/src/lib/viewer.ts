@@ -28,7 +28,6 @@ import {
   offerDependencyDescriptor,
   opusStereo,
   sessionAttribute,
-  VideoCodec,
   videoCodecPreferences,
   videoTracks,
   withoutAv1Level,
@@ -143,12 +142,6 @@ const BULK_HIGH = 4 * 1024 * 1024;
 /// The automatic-quality tier the host last reported, per host: the next
 /// session starts there (as the native viewer does).
 const AUTO_TIER_KEY = 'farwing.viewer.auto.';
-
-const HELLO_VIDEO: Record<VideoCodecId, string> = {
-  [VideoCodec.H264]: 'video.h264',
-  [VideoCodec.H265]: 'video.hevc',
-  [VideoCodec.AV1]: 'video.av1',
-};
 
 /// Why the host kept control, from its code (`control_turn.rs` `refusal`).
 function refusalText(code: number, holder: string): string {
@@ -312,8 +305,8 @@ export class Viewer {
       request: (type, body, timeoutMs) => this.request(type, body, timeoutMs),
       push: (type, body) => this.sendSession(type, body),
       reply: (type, rid, body) => this.sendSession(type, body, fpp.Flag.RESPONSE, rid),
-      replyError: (type, rid, code, message) =>
-        this.sendSession(type, fpp.errorBody(code, message), fpp.Flag.RESPONSE | fpp.Flag.ERROR, rid),
+      replyError: (type, rid, code, reason) =>
+        this.sendSession(type, fpp.errorBody(code, reason), fpp.Flag.RESPONSE | fpp.Flag.ERROR, rid),
       bulk: (type, body) => this.sendBulk(type, body),
     };
     this.input = new InputController({
@@ -808,13 +801,14 @@ export class Viewer {
   /// A request on the session channel and its response body.
   private request(type: number, body: Uint8Array, timeoutMs = 15_000): Promise<Uint8Array> {
     const dc = this.channels.get('farwing.session.v2');
-    if (dc?.readyState !== 'open') return Promise.reject(new PeerRequestError('unavailable', t().viewer.peer.notReady));
+    if (dc?.readyState !== 'open')
+      return Promise.reject(new PeerRequestError('unavailable', '', t().viewer.peer.notReady));
     const rid = this.nextRequest();
     const key = `${type}:${rid}`;
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.requests.delete(key);
-        reject(new PeerRequestError('timeout', t().viewer.peer.noResponse));
+        reject(new PeerRequestError('timeout', '', t().viewer.peer.noResponse));
       }, timeoutMs);
       this.requests.set(key, { resolve, reject, timer });
       this.sendSession(type, body, 0, rid);
@@ -824,7 +818,7 @@ export class Viewer {
   /// A frame on the bulk channel once it has room.
   private async sendBulk(type: number, body: Uint8Array) {
     const dc = this.channels.get('farwing.bulk.v2');
-    const closed = () => new PeerRequestError('unavailable', t().viewer.peer.closed);
+    const closed = () => new PeerRequestError('unavailable', '', t().viewer.peer.closed);
     if (dc?.readyState !== 'open') throw closed();
     while (dc.bufferedAmount > BULK_HIGH) {
       await new Promise<void>((resolve) => {
@@ -846,8 +840,9 @@ export class Viewer {
         this.helloTimer = 0;
         return;
       }
-      this.sendFrame('farwing.control.v2', fpp.encode(fpp.Type.HELLO, this.helloBody()));
+      this.sendFrame('farwing.control.v2', fpp.encode(fpp.Type.HELLO, fpp.helloBody(), 0, rid));
     };
+    const rid = this.nextRequest();
     once();
     this.helloTimer = window.setInterval(once, 500);
   }
@@ -877,7 +872,7 @@ export class Viewer {
         window.clearTimeout(pending.timer);
         if (error) {
           const e = fpp.parseError(frame.body);
-          pending.reject(new PeerRequestError(e.code, e.message));
+          pending.reject(new PeerRequestError(e.code, e.reason));
         } else {
           pending.resolve(frame.body);
         }
@@ -886,7 +881,7 @@ export class Viewer {
     }
     if (error) {
       const e = fpp.parseError(frame.body);
-      this.log(`peer error 0x${frame.type.toString(16)}: ${e.code} ${e.message}`);
+      this.log(`peer error 0x${frame.type.toString(16)}: ${e.code} ${e.reason}`);
       return;
     }
     switch (frame.type) {
@@ -906,7 +901,7 @@ export class Viewer {
           // The host's own request: answer on the control channel.
           this.sendFrame(
             'farwing.control.v2',
-            fpp.encode(fpp.Type.HELLO, this.helloBody(), fpp.Flag.RESPONSE, frame.requestId),
+            fpp.encode(fpp.Type.HELLO, fpp.helloBody(), fpp.Flag.RESPONSE, frame.requestId),
           );
         }
         return;
@@ -976,6 +971,9 @@ export class Viewer {
         return;
       }
     }
+    // A request this viewer does not take.
+    if (!response && frame.requestId !== 0)
+      this.sendSession(frame.type, fpp.errorBody('unsupported'), fpp.Flag.RESPONSE | fpp.Flag.ERROR, frame.requestId);
   }
 
   /// Show another screen of the host (single track: the host reuses
@@ -1234,10 +1232,6 @@ export class Viewer {
     }
   }
 
-  private helloBody(): Uint8Array {
-    return fpp.helloBody(this.decoders.map((d) => HELLO_VIDEO[d.codec]));
-  }
-
   /// The host's capability (`session.setting` kind capability).
   private onSetting(setting: { kind?: string; capability?: HostCapability }) {
     if (setting.kind !== 'capability' || !setting.capability) return;
@@ -1315,7 +1309,7 @@ export class Viewer {
     this.mic = undefined;
     for (const pending of this.requests.values()) {
       window.clearTimeout(pending.timer);
-      pending.reject(new PeerRequestError('unavailable', t().viewer.peer.closed));
+      pending.reject(new PeerRequestError('unavailable', '', t().viewer.peer.closed));
     }
     this.requests.clear();
     window.clearInterval(this.helloTimer);

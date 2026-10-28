@@ -570,10 +570,10 @@ POST /sessions        session.start            首个 rtc.answer
 ```
 
 - `flags`：bit0 `RESPONSE`（0x01），bit1 `ERROR`（0x02），bit2 `MORE`（0x04，分片未完）；其余为 0。
-- **请求**：`request id` 非 0，由发送方在本连接内分配（递增）。**响应**：同一 `request id` 并置 `RESPONSE`；失败时置 `RESPONSE|ERROR`，帧体为 `PeerError`。**推送**：`request id` 为 0，不回复。
+- 所有特性用同一约定。**请求**：`request id` 非 0，由发送方在本连接内分配（递增）。**响应**：同一 `request id` 并置 `RESPONSE`；失败时置 `RESPONSE|ERROR`，帧体为 `PeerError`。**推送**：`request id` 为 0，不回复。
 - 帧体编码由类型决定：大多为 protobuf（[peer-messages.md](peer-messages.md)），`AUDIO` 为 JSON。
-- `PeerError{code, message, detail}`，`code ∈ unsupported | bad_request | forbidden | not_found | busy | unavailable | internal | timeout`。收到 `ERROR` 回复的一方按“请求失败”处理。
-- 接收方按帧头类型分发，不嗅探帧体；通道只决定服务质量。魔数或版本不符、超过 512 KiB 的数据被丢弃。未知帧类型被忽略；SESSION 中不认识的请求回 `RESPONSE|ERROR{unsupported}`。
+- `PeerError{code, reason}`，`code ∈ unsupported | bad_request | forbidden | not_found | busy | unavailable | internal`；`reason` 为该特性定义的原因键（可为空），由接收方翻译成自己的界面语言，不携带发送方语言的文字。收到 `ERROR` 回复的一方按“请求失败”处理；请求方在超时后自行判定失败。
+- 接收方按帧头类型分发，不嗅探帧体；通道只决定服务质量。魔数或版本不符、超过 512 KiB 的数据被丢弃。不认识的请求（含未知帧类型）回 `RESPONSE|ERROR{unsupported}`，不认识的推送忽略。
 
 ### 5.2 分片
 
@@ -599,7 +599,6 @@ POST /sessions        session.start            首个 rtc.answer
 | 类型 | 值 | 通道 | 方向 | 帧体 | 用途 |
 |------|----|------|------|------|------|
 | `HELLO` | 0x0001 | control | 双向，请求/响应 | `Hello` | 版本与特性协商（§5.5） |
-| `ERROR` | 0x0002 | 任意 | — | `PeerError` | 保留；错误通常以 `RESPONSE\|ERROR` 回复，收到此类型只记录 |
 | `INPUT` | 0x0101 | control（FCT） | C→H 推送 | `InputMessage` | 键盘、锁定键、鼠标、系统命令、保活 |
 | `CURSOR` | 0x0103 | control | H→C 推送 | `CursorMessage` | 被控光标形状与隐藏；其他参与者的指针 |
 | `TOUCH` | 0x0104 | control（FCT） | C→H 推送 | `Touch` | 触摸：本参与者此刻的全部触点，每个带自己的阶段；空表取消全部 |
@@ -620,7 +619,7 @@ POST /sessions        session.start            首个 rtc.answer
 | `PARTICIPANTS` | 0x0902 | session | H→C 推送 | `Participants` | 参与者列表与当前操作者 |
 | `FLOW` | 0x0A01 | bulk / tunnel | 流的接收方 → 发送方 | `Flow` | 累计信用（§5.7） |
 
-v1 的 `MOUSE_POLICY`、`AUDIO_QUALITY`、`FILE_BLOCK`、`DRAG_DATA`（0x0502）与 `farwing.diag` 诊断通道已删除。
+v1 的 `MOUSE_POLICY`、`AUDIO_QUALITY`、`FILE_BLOCK`、`DRAG_DATA`（0x0502）、`ERROR`（0x0002）与 `farwing.diag` 诊断通道已删除。
 
 ### 5.5 HELLO 与特性
 
@@ -628,21 +627,19 @@ v1 的 `MOUSE_POLICY`、`AUDIO_QUALITY`、`FILE_BLOCK`、`DRAG_DATA`（0x0502）
   - 主控在 control 通道打开且 PeerConnection 已连接后立即发送，之后每 500 ms 重发，最多 30 次，直到收到响应；超时后串流设置不可用，画面继续播放。
   - 被控在 control 通道打开时发送一次。
 - 被控只有在收到自己请求的响应、并且已回答主控的请求之后，才开始发布屏幕列表、画质、光标、权限、参与者等状态。
-- `Hello{protocol_version: 2, min_protocol_version: 2, role, client_version, features, max_message_bytes: 524288, platform, profile?}`。`protocol_version ≥ 2` 且 `min_protocol_version ≤ 2` 才兼容，否则握手失败。主控可在 `profile.color` 中指定自己的指针颜色（0xRRGGBB，0 由被控分配）。
-- `features` 为特性名 → 版本（当前均为 1），只声明运行时具备的；对端未声明视为不支持。门控只看特性名。两端同为 v2 构建、声明相同集合；被控在 HELLO 到达之前按完整的 v2 主控特性集合准备会话。
-- v2 声明的特性：
+- `Hello{protocol_version: 3, min_protocol_version: 3, client_version, features, profile?}`。`protocol_version ≥ 3` 且 `min_protocol_version ≤ 3` 才兼容，否则握手失败。HELLO 是普通请求（`request id` 非 0）。主控可在 `profile.color` 中指定自己的指针颜色（0xRRGGBB，0 由被控分配）。
+- `features` 为特性名 → 版本（当前均为 1），只声明运行时具备、且对端会据此改变行为的特性；对端未声明视为不支持。门控只看特性名。被控在 HELLO 到达之前按原生主控的特性集合准备会话。
+- 声明的特性：
 
-| 类别 | 特性名 |
-|------|--------|
-| 画面与显示 | `video.h264`、`video.hevc`、`video.av1`、`video.444`、`video.hdr`、`display.config`、`display.virtual`、`display.exclusive` |
-| 音频 | `audio.quality`、`audio.microphone` |
-| 光标 | `cursor.shape`、`cursor.participants` |
-| 数据 | `clipboard`、`clipboard.files`、`files`、`drag`、`annotation`、`ports.tcp`、`ports.udp`、`diagnostics` |
-| 会话 | `permissions`、`participants`、`host_event` |
-| 传输 | `fct` |
-| 丢包恢复 | `video.recovery`（§6.6） |
+| 类别 | 特性名 | 说明 |
+|------|--------|------|
+| 画面与显示 | `video.444`、`video.hdr`、`display.config`、`display.virtual` | 浏览器不声明 |
+| 光标 | `cursor.participants` | |
+| 数据 | `clipboard`、`clipboard.files`、`files` | |
+| 丢包恢复 | `video.recovery`（§6.6） | 浏览器不声明 |
+| 输入 | `touch`、`pen` | 被控只在运行时具备合成指针（Windows 10 1809 起）时声明，主控只向声明了的被控发送 TOUCH / PEN，否则用鼠标模拟 |
 
-`input.keyboard_usage`、`input.pointer` 已定义名称但当前不声明。`touch`、`pen`：被控只在运行时具备合成指针（Windows 10 1809 起）时声明，主控只向声明了的被控发送 TOUCH / PEN，否则用鼠标模拟。
+其余功能（音频、拖放、批注、端口、诊断、权限、参与者、被控事件、FCT）两端总是具备，或由各自的推送、SDP 属性表明可用，不再作为特性声明。
 
 ### 5.6 FCT（Farwing Control Transport）
 

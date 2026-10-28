@@ -9,15 +9,18 @@ export interface PeerIo {
   push(type: number, body: Uint8Array): void;
   /// Answer a request of the host.
   reply(type: number, requestId: number, body: Uint8Array): void;
-  replyError(type: number, requestId: number, code: string, message?: string): void;
+  replyError(type: number, requestId: number, code: string, reason?: string): void;
   /// Send on the bulk channel once it has room.
   bulk(type: number, body: Uint8Array): Promise<void>;
 }
 
 export class PeerRequestError extends Error {
   code: string;
-  constructor(code: string, message: string) {
-    super(message || code);
+  /// The feature's reason key (or empty).
+  reason: string;
+  constructor(code: string, reason: string, message = '') {
+    super(message || reason || code);
     this.code = code;
+    this.reason = reason;
   }
 }

@@ -840,7 +840,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
       const reasons: Record<string, string> = t.viewer.screen.clipboardReasons;
       toast(
         error instanceof PeerRequestError
-          ? (reasons[error.message] ?? t.viewer.screen.clipboardFailed)
+          ? (reasons[error.reason] ?? t.viewer.screen.clipboardFailed)
           : errorText(error),
         'red',
       );

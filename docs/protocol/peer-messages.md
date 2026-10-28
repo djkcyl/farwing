@@ -12,8 +12,8 @@
 
 ```
 Hello {
-  protocol_version: uint32 = 1         // 2
-  min_protocol_version: uint32 = 2     // 2
+  protocol_version: uint32 = 1         // 3
+  min_protocol_version: uint32 = 2     // 3
   client_version: string = 4           // 发送方程序版本
   features: map<string, uint32> = 5    // 特性名 → 版本（当前均为 1）
   profile: Profile = 8                 // optional，仅主控
@@ -27,12 +27,12 @@ Profile {
 
 特性名列表见 farwing-protocol.md §5.5。
 
-## ERROR（0x0002）与错误回复 —— `crates/protocol/src/peer/mod.rs`
+## 错误回复 —— `crates/protocol/src/peer/mod.rs`
 
 ```
 PeerError {
   code: string = 1      // unsupported | bad_request | forbidden | not_found | busy | unavailable | internal
-  message: string = 2   // 供显示的说明
+  reason: string = 2    // 特性定义的原因键（可为空），接收方翻译；不含发送方语言的文字
 }
 ```
 

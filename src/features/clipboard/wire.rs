@@ -232,7 +232,7 @@ pub(crate) fn decode(header: &Header, body: &[u8]) -> Result<Received> {
     if header.is_response() && header.is_error() {
         let error = farwing_protocol::peer::PeerError::decode(body)
             .context(t().features.clipboard_invalid_error_reply)?;
-        return Ok(Received::Failure(header.request_id, error.code, error.message));
+        return Ok(Received::Failure(header.request_id, error.code, error.reason));
     }
     let message = ClipboardMessage::decode(body)
         .context(t().features.clipboard_invalid_message)?

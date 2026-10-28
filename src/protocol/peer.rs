@@ -95,17 +95,52 @@ impl Reassembly {
     }
 }
 
-/// A `RESPONSE|ERROR` frame with a [`farwing_protocol::peer::PeerError`] body.
-pub(crate) fn error_response(kind: FrameType, request_id: u32, code: &str, message: &str) -> Vec<u8> {
+/// A `RESPONSE|ERROR` frame with a [`farwing_protocol::peer::PeerError`]
+/// body: `reason` is the feature's key, worded by the receiver.
+pub(crate) fn error_response(kind: FrameType, request_id: u32, code: &str, reason: &str) -> Vec<u8> {
     framed(
         kind,
         flags::RESPONSE | flags::ERROR,
         request_id,
         &farwing_protocol::peer::PeerError {
             code: code.to_owned(),
-            message: message.to_owned(),
+            reason: reason.to_owned(),
         },
     )
+}
+
+/// The answer to a request of a type this side does not take; nothing for
+/// pushes, responses and non-frames.
+pub(crate) fn unsupported(bytes: &[u8]) -> Option<Vec<u8>> {
+    let (header, _) = farwing_protocol::peer::decode(bytes).ok()?;
+    (header.request_id != 0 && !header.is_response()).then(|| {
+        let mut frame = Vec::with_capacity(farwing_protocol::peer::HEADER_LEN + 16);
+        farwing_protocol::peer::write_header(
+            &mut frame,
+            header.kind,
+            flags::RESPONSE | flags::ERROR,
+            header.request_id,
+        );
+        prost::Message::encode(
+            &farwing_protocol::peer::PeerError {
+                code: farwing_protocol::peer::error_code::UNSUPPORTED.to_owned(),
+                reason: String::new(),
+            },
+            &mut frame,
+        )
+        .expect("Vec<u8> has unlimited capacity");
+        frame
+    })
+}
+
+/// A request ID for this side's next request: non-zero, wrapping.
+pub(crate) fn next_request_id(counter: &std::sync::atomic::AtomicU32) -> u32 {
+    loop {
+        let id = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if id != 0 {
+            return id;
+        }
+    }
 }
 
 /// Decode any frame.
@@ -157,30 +192,14 @@ pub(crate) fn controller_features() -> BTreeMap<String, u32> {
     let mut features = set(&[
         feature::TOUCH,
         feature::PEN,
-        feature::VIDEO_H264,
-        feature::VIDEO_HEVC,
-        feature::VIDEO_AV1,
         feature::VIDEO_444,
         feature::VIDEO_HDR,
         feature::DISPLAY_CONFIG,
         feature::DISPLAY_VIRTUAL,
-        feature::DISPLAY_EXCLUSIVE,
-        feature::AUDIO_QUALITY,
-        feature::AUDIO_MICROPHONE,
-        feature::CURSOR_SHAPE,
         feature::CLIPBOARD,
         feature::CLIPBOARD_FILES,
         feature::FILES,
-        feature::DRAG,
-        feature::ANNOTATION,
-        feature::PORTS_TCP,
-        feature::PORTS_UDP,
-        feature::DIAGNOSTICS,
-        feature::PERMISSIONS,
-        feature::PARTICIPANTS,
         feature::CURSOR_PARTICIPANTS,
-        feature::HOST_EVENT,
-        feature::FCT,
     ]);
     if !RECOVERY_DISABLED.load(std::sync::atomic::Ordering::Relaxed) {
         features.insert(feature::VIDEO_RECOVERY.to_owned(), 1);
@@ -213,30 +232,14 @@ pub(crate) fn host_features() -> BTreeMap<String, u32> {
 
 fn host_static_features() -> BTreeMap<String, u32> {
     set(&[
-        feature::VIDEO_H264,
-        feature::VIDEO_HEVC,
-        feature::VIDEO_AV1,
         feature::VIDEO_444,
         feature::VIDEO_HDR,
         feature::DISPLAY_CONFIG,
         feature::DISPLAY_VIRTUAL,
-        feature::DISPLAY_EXCLUSIVE,
-        feature::AUDIO_QUALITY,
-        feature::AUDIO_MICROPHONE,
-        feature::CURSOR_SHAPE,
         feature::CLIPBOARD,
         feature::CLIPBOARD_FILES,
         feature::FILES,
-        feature::DRAG,
-        feature::ANNOTATION,
-        feature::PORTS_TCP,
-        feature::PORTS_UDP,
-        feature::DIAGNOSTICS,
-        feature::PERMISSIONS,
-        feature::PARTICIPANTS,
         feature::CURSOR_PARTICIPANTS,
-        feature::HOST_EVENT,
-        feature::FCT,
         feature::VIDEO_RECOVERY,
     ])
 }
@@ -253,14 +256,21 @@ fn hello(role: Role, profile: Option<farwing_protocol::peer::Profile>) -> Hello 
     hello
 }
 
+static HELLO_REQUESTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
 /// `HELLO` request.
 pub(crate) fn hello_request(role: Role) -> Vec<u8> {
-    message(FrameType::Hello, &hello(role, None))
+    framed(FrameType::Hello, 0, next_request_id(&HELLO_REQUESTS), &hello(role, None))
 }
 
 /// `HELLO` request of a controller with its participant profile.
 pub(crate) fn hello_request_with(profile: farwing_protocol::peer::Profile) -> Vec<u8> {
-    message(FrameType::Hello, &hello(Role::Controller, Some(profile)))
+    framed(
+        FrameType::Hello,
+        0,
+        next_request_id(&HELLO_REQUESTS),
+        &hello(Role::Controller, Some(profile)),
+    )
 }
 
 /// `HELLO|RESPONSE`.

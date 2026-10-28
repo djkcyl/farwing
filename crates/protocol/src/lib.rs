@@ -32,9 +32,9 @@ use serde::{Deserialize, Serialize};
 /// Protocol name advertised by `GET /api/v2/server`.
 pub const PROTOCOL_NAME: &str = "farwing";
 /// Current protocol major version.
-pub const PROTOCOL_VERSION: u32 = 2;
-/// Oldest major version this build can speak. v2 does not interoperate with v1.
-pub const MIN_PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
+/// Oldest major version this build can speak; no other version interoperates.
+pub const MIN_PROTOCOL_VERSION: u32 = 3;
 /// URL prefix of every HTTPS endpoint.
 pub const API_PREFIX: &str = "/api/v2";
 /// Path of the realtime WebSocket endpoint.

@@ -9,7 +9,7 @@ import { deviceKey, browserName } from './device';
 import { sitePath } from './base';
 import { hex, sha256, utf8 } from './encoding';
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /// A failed request: the server's error code and details (the server's
 /// `message` is for logs; the console shows `errorText`). `http`: an answer

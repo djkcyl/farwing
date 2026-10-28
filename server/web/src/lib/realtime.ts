@@ -5,13 +5,13 @@
 
 import { currentLang, t } from '../i18n';
 import { errorMessage } from '../i18n/errors';
-import { errorReason } from './api';
+import { errorReason, PROTOCOL_VERSION } from './api';
 import { sitePath } from './base';
 
 export const SUBPROTOCOL = 'farwing.v2';
 
 export interface Envelope<T = unknown> {
-  v: 2;
+  v: number;
   type: string;
   id?: string;
   re?: string;
@@ -208,7 +208,7 @@ export class Realtime {
   }
 
   send(type: string, data: unknown, extra: Partial<Envelope> = {}) {
-    this.raw({ v: 2, type, ...extra, data });
+    this.raw({ v: PROTOCOL_VERSION, type, ...extra, data });
   }
 
   request<T>(type: string, data: unknown, extra: Partial<Envelope> = {}, timeoutMs = 10000): Promise<T> {
@@ -219,14 +219,14 @@ export class Realtime {
         reject(new RealtimeError('timeout'));
       }, timeoutMs);
       this.pending.set(id, { resolve: resolve as (d: unknown) => void, reject, timer });
-      this.raw({ v: 2, type, id, ...extra, data });
+      this.raw({ v: PROTOCOL_VERSION, type, id, ...extra, data });
     });
   }
 
   /// Leave the session for good.
   bye() {
     this.closedByUs = true;
-    this.raw({ v: 2, type: 'bye', data: {} });
+    this.raw({ v: PROTOCOL_VERSION, type: 'bye', data: {} });
     window.setTimeout(() => this.ws.close(1000), 200);
   }
 
