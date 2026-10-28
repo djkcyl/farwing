@@ -3,7 +3,6 @@ use super::{ReportRoutes, ReportTarget};
 use anyhow::Result;
 use bytes::Bytes;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use webrtc::data_channel::RTCDataChannel;
 
@@ -511,44 +510,23 @@ pub(super) async fn publish_state(
     let mut last_audio_quality = None;
     let mut last_grants = None;
     let mut revision = None;
-    // The session's preparation has just read the display inventory: the
-    // first periodic read (tens of milliseconds) would only hold back the
-    // first screen list, and with it the first video frame.
-    let mut timer = tokio::time::interval_at(
-        tokio::time::Instant::now() + Duration::from_secs(1),
-        Duration::from_secs(1),
-    );
-    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The process reads the displays once a second for every participant;
+    // each one maintains its screens and tracks on every read.
+    let mut inventory = super::screens::shared::subscribe();
     loop {
         let refresh = tokio::select! {
             _=cancel.cancelled()=>break,
             result=changed.changed()=>{if result.is_err(){break;} false},
             result=target.changed()=>{if result.is_err(){break;} false},
             result=microphone.changed()=>{if result.is_err(){break;} false},
-            _=timer.tick()=>true,
+            result=inventory.changed()=>{if result.is_err(){break;} true},
         };
-        let inventory_revision = if refresh {
-            screens
-                .try_lock()
-                .ok()
-                .map(|state| state.inventory_revision())
-        } else {
-            None
-        };
-        if let Some(revision) = inventory_revision {
-            // Driver enumeration must not hold the screen lock or occupy a
-            // network runtime worker. At most one periodic read is in flight.
-            let result = super::screens::Inventory::collect(&cancel).await;
-            match result {
-                Ok(None) => break,
-                Ok(Some(inventory)) => {
-                    if let Ok(mut state) = screens.try_lock() {
-                        if let Err(error) = state.maintain(revision, inventory).await {
-                            tracing::debug!(%error,"host screen inventory refresh failed");
-                        }
-                    }
-                }
-                Err(error) => tracing::debug!(%error,"host screen inventory read failed"),
+        if refresh {
+            let latest = inventory.borrow_and_update().clone();
+            if let Ok(mut state) = screens.try_lock()
+                && let Err(error) = state.maintain(latest.as_deref()).await
+            {
+                tracing::debug!(%error, "host screen inventory refresh failed");
             }
         }
         let routes = target.borrow_and_update().clone();

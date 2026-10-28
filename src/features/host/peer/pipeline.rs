@@ -354,6 +354,10 @@ fn run(group: &Group, start: Start) -> Result<Option<End>> {
             }
         }
         if current.is_none_or(|(old_size, old_color)| old_size != size || old_color != color) {
+            // Its members may have left while the source opened.
+            if group.stopped() {
+                break;
+            }
             let rebuilding = Instant::now();
             // Release before replacement to avoid consuming a second driver
             // session solely for a size transition.

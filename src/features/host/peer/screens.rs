@@ -24,7 +24,10 @@ use webrtc::{
 
 pub(crate) const TRACK_COUNT: usize = 5;
 
+#[derive(Clone)]
 pub(super) struct Inventory {
+    /// When the read began: an older read does not undo a newer one.
+    read_at: std::time::Instant,
     targets: Vec<Target>,
     screens: Vec<capture::Screen>,
     /// `None` when the layout could not be read (a topology in change):
@@ -42,8 +45,10 @@ impl Inventory {
         Self::read_within(crate::platform::display::topology::INVENTORY_KEEP)
     }
     fn read_within(max_age: std::time::Duration) -> Result<Self> {
+        let read_at = std::time::Instant::now();
         let topology = Topology::query(false)?;
         Ok(Self {
+            read_at,
             targets: topology.targets_within(max_age)?,
             screens: capture::screens()?,
             layout: Topology::query(true)
@@ -52,15 +57,57 @@ impl Inventory {
                 .ok(),
         })
     }
-    pub async fn collect(cancel: &CancellationToken) -> Result<Option<Self>> {
-        if cancel.is_cancelled() {
-            return Ok(None);
+}
+
+/// One display inventory for the whole process, read about once a second
+/// while any participant watches: the participants maintain their screens
+/// from it instead of each enumerating the drivers.
+pub(super) mod shared {
+    use super::Inventory;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, LazyLock};
+    use std::time::Duration;
+    use tokio::sync::watch;
+
+    static LATEST: LazyLock<watch::Sender<Option<Arc<Inventory>>>> =
+        LazyLock::new(|| watch::channel(None).0);
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+
+    /// The latest inventory; a change every read (also when the read
+    /// failed, so the participants still check their tracks).
+    pub(in crate::features::host::peer) fn subscribe() -> watch::Receiver<Option<Arc<Inventory>>> {
+        let mut receiver = LATEST.subscribe();
+        receiver.mark_unchanged();
+        if !RUNNING.swap(true, Ordering::AcqRel) {
+            let started = std::thread::Builder::new()
+                .name("display-inventory".into())
+                .spawn(run);
+            if started.is_err() {
+                RUNNING.store(false, Ordering::Release);
+            }
         }
-        let mut task = tokio::task::spawn_blocking(Self::read);
-        tokio::select! {
-            biased;
-            _=cancel.cancelled()=>{let _=task.await;Ok(None)},
-            result=&mut task=>result.context(t().features.screen_read_interrupted).and_then(|r|r).map(Some),
+        receiver
+    }
+
+    fn run() {
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            if LATEST.receiver_count() == 0 {
+                RUNNING.store(false, Ordering::Release);
+                // A participant that subscribed meanwhile found it running.
+                if LATEST.receiver_count() == 0 || RUNNING.swap(true, Ordering::AcqRel) {
+                    return;
+                }
+            }
+            match Inventory::read() {
+                Ok(inventory) => {
+                    LATEST.send_replace(Some(Arc::new(inventory)));
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "host screen inventory read failed");
+                    LATEST.send_modify(|_| {});
+                }
+            }
         }
     }
 }
@@ -149,7 +196,8 @@ pub(crate) struct Slot {
     awaiting_source: bool,
 }
 pub(crate) struct Screens {
-    inventory_revision: u64,
+    /// When the inventory applied last was read.
+    inventory_read: std::time::Instant,
     pub displays: Arc<crate::features::host::displays::Session>,
     pub slots: Vec<Slot>,
     pub(super) reports: Arc<Reports>,
@@ -448,7 +496,7 @@ impl Screens {
             });
         }
         let mut state = Self {
-            inventory_revision: 0,
+            inventory_read: std::time::Instant::now(),
             displays,
             slots,
             reports,
@@ -465,29 +513,27 @@ impl Screens {
             receiver: Default::default(),
             stats_logged: None,
         };
-        state.apply_inventory(Inventory::read_initial()?)?;
+        state.apply_inventory(&Inventory::read_initial()?)?;
         if let Some(selected) = selected {
             state.start_at(0, selected, initial).await?;
         }
         Ok(state)
     }
     pub(crate) fn refresh(&mut self) -> Result<()> {
-        self.apply_inventory(Inventory::read()?)
+        self.apply_inventory(&Inventory::read()?)
     }
-    pub(super) fn inventory_revision(&self) -> u64 {
-        self.inventory_revision
-    }
-    fn apply_inventory(&mut self, inventory: Inventory) -> Result<()> {
+    fn apply_inventory(&mut self, inventory: &Inventory) -> Result<()> {
         let Inventory {
+            read_at,
             targets,
             screens,
             layout,
         } = inventory;
-        if let Some(layout) = &layout {
+        if let Some(layout) = layout {
             self.displays.observe_layout(layout)?;
         }
         let mut catalog = Vec::new();
-        for mut screen in screens {
+        for mut screen in screens.iter().cloned() {
             let mut target = targets
                 .iter()
                 .find(|target| {
@@ -507,7 +553,7 @@ impl Screens {
                 kind,
             });
         }
-        self.inventory_revision = self.inventory_revision.wrapping_add(1);
+        self.inventory_read = self.inventory_read.max(*read_at);
         let mut old = lock(&self.reports.catalog);
         if *old != catalog {
             *old = catalog;
@@ -770,13 +816,14 @@ impl Screens {
         }
         Ok(())
     }
-    pub(super) async fn maintain(&mut self, revision: u64, inventory: Inventory) -> Result<()> {
-        // A user-requested layout operation may have completed during the read.
-        // Its newer catalog wins over the late periodic result.
-        if revision != self.inventory_revision {
-            return Ok(());
+    pub(super) async fn maintain(&mut self, inventory: Option<&Inventory>) -> Result<()> {
+        // A user-requested layout operation may have read the displays
+        // after this inventory: its newer catalog wins.
+        if let Some(inventory) = inventory
+            && inventory.read_at >= self.inventory_read
+        {
+            self.apply_inventory(inventory)?;
         }
-        self.apply_inventory(inventory)?;
         let selected = self.reports.current.load(Ordering::Acquire);
         let mut fatal = false;
         for index in 0..self.slots.len() {
