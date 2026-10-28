@@ -10,6 +10,7 @@ use super::super::lock;
 use super::super::output_size;
 use super::Published;
 use super::encode_group::{self, End};
+use super::send_control::{Link, SendControl};
 use crate::features::host::parameters::{Quality, Target, Tier};
 use crate::i18n::t;
 use anyhow::Context as _;
@@ -51,18 +52,13 @@ pub(super) fn capture_loop(
     let mut isolated = 0u64;
     // Encoder candidates whose pipeline failed.
     let mut failed = std::collections::HashSet::new();
-    let mut requested = None;
-    let mut automatic = None::<crate::features::host::parameters::AutoQuality>;
-    let mut initial_auto = true;
-    let mut auto_logged = false;
-    let mut degrade = crate::features::host::parameters::Degrade::default();
+    let mut control = SendControl::default();
     // Start near what this controller reached last time over this kind of
     // route, once the route is chosen (when the connection is up, before the
     // encoder starts).
     let mut remembered = None::<(&'static str, Option<u32>)>;
-    let mut degraded_fps = None::<u32>;
     // What this track got over the last second: is it using its budget?
-    let mut output_bps = 0u64;
+    let mut sent = 0u64;
     let mut membership = None::<encode_group::Membership>;
     // Forwarding just ended: back to this participant's own encoder key.
     let mut forwarded_before = false;
@@ -126,33 +122,7 @@ pub(super) fn capture_loop(
         // Gate HDR on the screen's reported state, so the keys of members
         // agree; the pipeline checks its source again.
         negotiated.apply_source(&mut wanted, (screen.width, screen.height), screen.hdr)?;
-        let settings = (
-            wanted.revision,
-            wanted.quality,
-            wanted.auto_tier,
-            wanted.bitrate,
-            wanted.fps,
-        );
-        if requested != Some(settings) {
-            // An unrelated setting change keeps the settled automatic tier;
-            // only switching to Auto or changing the frame rate starts over.
-            let keep = wanted.quality == Quality::Auto
-                && automatic.is_some()
-                && requested.is_some_and(|(_, quality, _, _, fps)| {
-                    quality == Quality::Auto && fps == wanted.fps
-                });
-            if !keep {
-                automatic = (wanted.quality == Quality::Auto).then(|| {
-                    crate::features::host::parameters::AutoQuality::new(
-                        wanted.auto_tier,
-                        wanted.maximum_tier,
-                    )
-                });
-                initial_auto = true;
-                auto_logged = false;
-            }
-            requested = Some(settings);
-        }
+        control.settings(&wanted);
         let source_gpu = screen.render_adapter.unwrap_or(screen.adapter);
         let candidate = shared
             .then(|| {
@@ -180,31 +150,21 @@ pub(super) fn capture_loop(
         let maximum_tier = negotiated.maximum_tier((screen.width, screen.height), wanted.maximum);
         let budget_size =
             crate::media::geometry::fit_size(screen.width, screen.height, wanted.maximum);
-        let mut target = if let Some(auto) = automatic.as_mut() {
-            auto.limit(maximum_tier);
-            let sample = transport.automatic_rates();
-            let has_frames = membership
+        // Automatic quality judges the link only while frames flow.
+        let flowing = wanted.sending
+            && wanted.capturing
+            && connected.load(Ordering::Acquire)
+            && membership
                 .as_ref()
                 .and_then(encode_group::Membership::last_frame)
                 .is_some_and(|at| at.elapsed() < Duration::from_secs(1));
-            if wanted.sending
-                && wanted.capturing
-                && connected.load(Ordering::Acquire)
-                && auto
-                    .observe(Instant::now(), wanted.format, budget_size, wanted.fps, has_frames, sample)
-                    .is_some()
-            {
-                initial_auto = false;
-            }
-            Target::Tier(auto.tier())
-        } else {
-            // The fallback encoder's real size limit also limits the fixed
-            // quality budget and QoS label, not only the GPU texture size.
-            match wanted.quality {
-                Quality::Custom => Target::Custom { bps: wanted.bitrate },
-                quality => Target::Tier(quality.tier(wanted.auto_tier).min(maximum_tier)),
-            }
-        };
+        let mut target = control.target(
+            Instant::now(),
+            &wanted,
+            maximum_tier,
+            budget_size,
+            flowing.then(|| transport.automatic_rates()),
+        );
 
         // In a forwarding room: the uplink takes this stream's frames too;
         // once the participant shows them, instead.
@@ -286,24 +246,6 @@ pub(super) fn capture_loop(
         }
         let membership = membership.as_mut().context(t().features.peer_shared_group_missing)?;
 
-        // A settled automatic tier is kept for the stream: nothing to probe
-        // toward any more.
-        let settled = automatic.as_ref().is_some_and(|auto| auto.settled());
-        if settled {
-            initial_auto = false;
-        }
-        let mut bounds = if automatic.is_some() && !settled {
-            crate::features::host::parameters::automatic(
-                wanted.format,
-                target.tier(),
-                budget_size,
-                wanted.fps,
-                initial_auto,
-                automatic.as_ref().map_or(Tier::P2160, |auto| auto.maximum()),
-            )
-        } else {
-            crate::features::host::parameters::fixed(wanted.format, target, budget_size, wanted.fps)
-        };
         let start = transport.route_class().and_then(|route| match remembered {
             Some((known, bps)) if known == route => bps,
             _ => {
@@ -318,37 +260,25 @@ pub(super) fn capture_loop(
                 bps
             }
         });
-        bounds.initial = crate::features::host::bandwidth::start_rate(
+        // The stream this track gets: its own, or the closest one at the
+        // encoder limit (or the forwarded one); the transport is sized for it.
+        let stream = membership.group_key();
+        let bounds = control.bounds(
+            wanted.format,
+            stream.target,
+            budget_size,
+            wanted.fps.min(stream.fps),
             start,
-            crate::features::host::parameters::NETWORK_FLOOR,
-            bounds.initial,
-            bounds.maximum,
         );
-        // Weak-network strategy: the tier (size, bitrate ceiling) stays; a
-        // shortfall lowers the bitrate or the frame rate as the viewer chose.
         if let Some(rate) = membership.delivered_rate() {
-            output_bps = rate;
+            sent = rate;
         }
-        let available = transport.media_rate();
-        let rate_limited = output_bps as f64 >= f64::from(available) * 0.7;
-        let effective_fps = degrade.fps(
-            Instant::now(),
-            wanted.weak_network,
-            available,
-            bounds.maximum,
-            wanted.fps,
-            rate_limited,
-        );
-        if effective_fps != wanted.fps && degraded_fps != Some(effective_fps) {
-            tracing::info!(
-                requested = wanted.fps,
-                fps = effective_fps,
-                strategy = ?wanted.weak_network,
-                "weak-network strategy lowered the frame rate"
-            );
-        }
-        degraded_fps = (effective_fps != wanted.fps).then_some(effective_fps);
-        wanted.fps = effective_fps;
+        let link = Link {
+            media_rate: transport.media_rate(),
+            ratio: transport.cwnd_ratio(),
+            sent,
+        };
+        wanted.fps = control.fps(Instant::now(), wanted.weak_network, wanted.fps, bounds, link);
         // This participant's allowance; the pipeline encodes for the
         // weakest active member.
         membership.set_forwarded(forwarding.then(|| (handle.participant().unwrap_or_default(), slot)));
@@ -357,24 +287,13 @@ pub(super) fn capture_loop(
             && transport.media_ready()
             && wanted.sending
             && !replaced;
-        let own_peak = transport.media_rate().min(bounds.maximum);
-        membership.vote(own_active.then(|| encode_group::Vote {
-            peak: own_peak,
-            ratio: transport.cwnd_ratio(),
-            fps: wanted.fps,
-        }));
+        let own_peak = link.media_rate.min(bounds.maximum);
+        membership.vote(SendControl::vote(own_active, bounds, link, wanted.fps));
         if let Some(group) = membership.aggregate().filter(|group| group.fps > 0) {
             wanted.fps = group.fps;
         }
         transport.fps(wanted.fps);
         transport.smooth(wanted.cinema);
-        if let Some(auto) = automatic.as_ref()
-            && auto.settled()
-            && !auto_logged
-        {
-            auto_logged = true;
-            tracing::info!(tier = ?auto.tier(), "automatic quality tier settled");
-        }
         if wanted.sending {
             transport.configure(bounds);
         } else {
