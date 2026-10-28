@@ -483,7 +483,8 @@ impl Actor {
             if let Err(error) = result {
                 tracing::warn!(%error, ?drag, "drag session command failed");
                 if let Some(id) = drag {
-                    let _ = self.finish(id, 4, error.to_string()).await;
+                    let (reason, detail) = wire::failure(&error);
+                    let _ = self.finish(id, 4, reason, detail).await;
                 }
             }
         }
@@ -660,7 +661,15 @@ impl Actor {
             y: i32::try_from(y)?,
         })
     }
-    async fn finish(&mut self, id: u64, stage: u32, message: String) -> Result<()> {
+    /// Ends drag `id` at `stage` (see [`wire::Finished`]); a failure carries
+    /// its `reason` and, for [`wire::reason::FAILED`], this side's `detail`.
+    async fn finish(
+        &mut self,
+        id: u64,
+        stage: u32,
+        reason: &'static str,
+        detail: String,
+    ) -> Result<()> {
         // After the portal is gone, cancel the identified original OLE loop
         // before acknowledging failure (the peer then releases its held press).
         if let Some(original) = self
@@ -689,9 +698,9 @@ impl Actor {
             .get(&id)
             .and_then(|e| e.offer.as_ref())
             .map_or(0, |o| o.status().bytes_read);
-        let message: String = message.chars().take(240).collect();
-        if !message.is_empty() {
-            tracing::info!(drag = id, error = %message, "native file drag failed");
+        let detail: String = detail.chars().take(240).collect();
+        if !reason.is_empty() {
+            tracing::info!(drag = id, reason, error = %detail, "native file drag failed");
         }
         if let Some(entry) = self.entries.remove(&id) {
             let mut state = lock(&entry.ticket.snapshot);
@@ -701,13 +710,17 @@ impl Actor {
                 _ => Stage::Failed,
             };
             state.effect = 0;
-            state.error = (!message.is_empty()).then(|| message.clone());
+            state.error = if detail.is_empty() {
+                wire::reason_text(reason)
+            } else {
+                Some(detail)
+            };
         }
         self.emit(
             id,
             Payload::Finished(wire::Finished {
                 stage,
-                reason: wire::reason_of(&message).into(),
+                reason: reason.into(),
                 bytes_read,
             }),
             false,
@@ -817,8 +830,12 @@ impl Actor {
                         );
                         self.emit(id, Payload::SourceReleased(true), false).await?;
                     }
-                    native::portal::Event::Failed(error) => self.finish(id, 4, error).await?,
-                    native::portal::Event::Unavailable => self.finish(id, 3, String::new()).await?,
+                    native::portal::Event::Failed(error) => {
+                        self.finish(id, 4, wire::reason::FAILED, error).await?
+                    }
+                    native::portal::Event::Unavailable => {
+                        self.finish(id, 3, "", String::new()).await?
+                    }
                 }
             }
             Command::Start(paths, ticket) => {
@@ -850,7 +867,7 @@ impl Actor {
                     .collect();
                 for previous in old {
                     self.emit(previous, Payload::Cancel(true), false).await?;
-                    self.finish(previous, 3, String::new()).await?;
+                    self.finish(previous, 3, "", String::new()).await?;
                 }
                 let mut entry = match self.entry(id, point, true, Some(ticket.clone())) {
                     Ok(entry) => entry,
@@ -916,7 +933,7 @@ impl Actor {
                 if let Some(entry) = self.entries.get(&id) {
                     match result {
                         Ok(summary) => lock(&entry.ticket.snapshot).summary = Some(summary),
-                        Err(error) => self.finish(id, 4, error).await?,
+                        Err(error) => self.finish(id, 4, wire::reason::FAILED, error).await?,
                     }
                 }
             }
@@ -926,7 +943,7 @@ impl Actor {
                     return Ok(());
                 }
                 match result {
-                    Err(error) => self.finish(id, 4, error).await?,
+                    Err(error) => self.finish(id, 4, wire::reason::FAILED, error).await?,
                     Ok(summary) => {
                         self.entries.get_mut(&id).unwrap().pending_offer = Some((offer, summary));
                         self.try_start_native(id)?;
@@ -1014,12 +1031,12 @@ impl Actor {
                             }
                             lock(&entry.ticket.snapshot).stage = Stage::Reading;
                         } else {
-                            self.finish(
-                                id,
-                                if error.is_some() { 4 } else { 3 },
-                                error.unwrap_or_default(),
-                            )
-                            .await?;
+                            let (stage, reason) = match error {
+                                Some(_) => (4, wire::reason::FAILED),
+                                None => (3, ""),
+                            };
+                            self.finish(id, stage, reason, error.unwrap_or_default())
+                                .await?;
                         }
                     }
                 }
@@ -1132,7 +1149,7 @@ impl Actor {
         if !enabled || !self.shared.peer_enabled.load(Ordering::Acquire) {
             let ids: Vec<_> = self.entries.keys().copied().collect();
             for id in ids {
-                self.finish(id, 3, String::new()).await?;
+                self.finish(id, 3, "", String::new()).await?;
             }
         }
         Ok(())
@@ -1221,11 +1238,11 @@ impl Actor {
                     self.role == Role::Host
                         && !begin.reverse
                         && self.shared.ready.load(Ordering::Acquire),
-                    "{}",
-                    t().features.drag_direction_denied
+                    wire::Refused(wire::reason::DIRECTION_DENIED)
                 );
                 if !self.shared.enabled.load(Ordering::Acquire) {
-                    self.finish(id, 4, t().features.drag_remote_disabled.into()).await?;
+                    self.finish(id, 4, wire::reason::REMOTE_DISABLED, String::new())
+                        .await?;
                     return Ok(());
                 }
                 let point = begin.point.unwrap();
@@ -1326,15 +1343,14 @@ impl Actor {
                 }
             }
             Payload::Cancel(_) => {
-                self.finish(id, 3, String::new()).await?;
+                self.finish(id, 3, "", String::new()).await?;
             }
             Payload::Probe(point) => {
                 ensure!(
                     self.role == Role::Host
                         && self.shared.enabled.load(Ordering::Acquire)
                         && self.shared.ready.load(Ordering::Acquire),
-                    "{}",
-                    t().features.drag_out_not_allowed
+                    wire::Refused(wire::reason::OUT_NOT_ALLOWED)
                 );
                 ensure!(
                     self.shared
@@ -1415,7 +1431,7 @@ impl Actor {
                 && entry.created_at.elapsed() > Duration::from_secs(3)
             {
                 self.emit(id, Payload::Cancel(true), false).await?;
-                self.finish(id, 3, String::new()).await?;
+                self.finish(id, 3, "", String::new()).await?;
                 continue;
             }
             if !entry.committed
@@ -1425,7 +1441,7 @@ impl Actor {
                     .as_ref()
                     .is_some_and(|target| !target_current(&self.shared, target))
             {
-                self.finish(id, 4, t().features.drag_layout_changed.into())
+                self.finish(id, 4, wire::reason::LAYOUT_CHANGED, String::new())
                     .await?;
                 continue;
             }
@@ -1434,13 +1450,13 @@ impl Actor {
                     || (lock(&entry.ticket.snapshot).stage == Stage::Preparing
                         && entry.created_at.elapsed() > Duration::from_secs(30)))
             {
-                self.finish(id, 4, t().features.drag_prepare_timeout.into())
+                self.finish(id, 4, wire::reason::PREPARE_TIMEOUT, String::new())
                     .await?;
                 continue;
             }
             if !entry.ticket.alive.load(Ordering::Acquire) {
                 self.emit(id, Payload::Cancel(true), false).await?;
-                self.finish(id, 3, String::new()).await?;
+                self.finish(id, 3, "", String::new()).await?;
                 continue;
             }
             if entry.sending && !entry.reverse && !entry.committed {
@@ -1455,12 +1471,12 @@ impl Actor {
                     if entry.accepted
                         && let Some(result) = status.completed
                     {
-                        self.finish(
-                            id,
-                            if result.is_ok() { 2 } else { 4 },
-                            result.err().unwrap_or_default(),
-                        )
-                        .await?;
+                        let (stage, reason) = match result {
+                            Ok(()) => (2, ""),
+                            Err(_) => (4, wire::reason::FAILED),
+                        };
+                        self.finish(id, stage, reason, result.err().unwrap_or_default())
+                            .await?;
                     } else if entry.progress_at.elapsed() >= Duration::from_millis(250) {
                         self.entries.get_mut(&id).unwrap().progress_at = Instant::now();
                         self.emit(id, Payload::Progress(status.bytes_read), false)

@@ -135,12 +135,11 @@ pub(crate) mod reason {
     pub const LAYOUT_CHANGED: &str = "layout_changed";
     pub const PREPARE_TIMEOUT: &str = "prepare_timeout";
     pub const RETURN_TIMEOUT: &str = "return_timeout";
-    pub const NOT_ACCEPTED: &str = "not_accepted";
     /// Anything else; the sender logs why.
     pub const FAILED: &str = "failed";
 }
 
-fn reason_texts() -> [(&'static str, &'static str); 7] {
+fn reason_texts() -> [(&'static str, &'static str); 6] {
     let text = &crate::i18n::t().features;
     [
         (reason::REMOTE_DISABLED, text.drag_remote_disabled),
@@ -149,20 +148,33 @@ fn reason_texts() -> [(&'static str, &'static str); 7] {
         (reason::LAYOUT_CHANGED, text.drag_layout_changed),
         (reason::PREPARE_TIMEOUT, text.drag_prepare_timeout),
         (reason::RETURN_TIMEOUT, text.drag_return_timeout),
-        (reason::NOT_ACCEPTED, text.drag_not_accepted),
     ]
 }
-
-/// The reason to send for a failure this side describes as `message` (in
-/// its own language); empty for none.
-pub(crate) fn reason_of(message: &str) -> &'static str {
-    if message.is_empty() {
-        return "";
-    }
+fn text(reason: &str) -> &'static str {
     reason_texts()
         .into_iter()
-        .find(|(_, text)| *text == message)
-        .map_or(reason::FAILED, |(reason, _)| reason)
+        .find(|(key, _)| *key == reason)
+        .map_or(crate::i18n::t().viewer.drag_failed, |(_, text)| text)
+}
+
+/// A drag refused for one of the [`reason`]s; both sides word it from the
+/// reason.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Refused(pub &'static str);
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(text(self.0))
+    }
+}
+impl std::error::Error for Refused {}
+
+/// The reason to send for a drag that ended with `error`, and this side's
+/// detail when the reason does not cover it.
+pub(crate) fn failure(error: &anyhow::Error) -> (&'static str, String) {
+    match error.downcast_ref::<Refused>() {
+        Some(refused) => (refused.0, String::new()),
+        None => (reason::FAILED, error.to_string()),
+    }
 }
 
 /// A received reason in the interface language; `None` for none.
@@ -170,13 +182,7 @@ pub(crate) fn reason_text(reason: &str) -> Option<String> {
     if reason.is_empty() {
         return None;
     }
-    Some(
-        reason_texts()
-            .into_iter()
-            .find(|(key, _)| *key == reason)
-            .map_or(crate::i18n::t().viewer.drag_failed, |(_, text)| text)
-            .to_owned(),
-    )
+    Some(text(reason).to_owned())
 }
 
 pub(crate) fn is_packet(bytes: &[u8]) -> bool {
@@ -237,6 +243,18 @@ fn validate(packet: &Packet) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refusals_send_their_reason_and_other_errors_their_detail() {
+        let refused = anyhow::anyhow!(Refused(reason::LAYOUT_CHANGED)).context("while moving");
+        assert_eq!(failure(&refused), (reason::LAYOUT_CHANGED, String::new()));
+        let other = anyhow::anyhow!("disk full");
+        assert_eq!(failure(&other), (reason::FAILED, "disk full".to_owned()));
+        assert_eq!(
+            reason_text(reason::LAYOUT_CHANGED).as_deref(),
+            Some(crate::i18n::t().features.drag_layout_changed)
+        );
+    }
 
     #[test]
     fn drag_frames_stay_small_and_carry_clipboard_messages() {

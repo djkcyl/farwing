@@ -157,7 +157,7 @@ impl Actor {
         let entry = &self.entries[&id];
         let age = entry.resume_at.map_or(Duration::ZERO, |at| at.elapsed());
         if age > Duration::from_secs(5) {
-            self.finish(id, 4, t().features.drag_return_timeout.into())
+            self.finish(id, 4, wire::reason::RETURN_TIMEOUT, String::new())
                 .await?;
             return Ok(());
         }
