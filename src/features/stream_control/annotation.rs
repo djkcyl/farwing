@@ -1,16 +1,14 @@
-//! Shared annotation editor. Protocol adapters submit commands and complete effects.
+//! Shared annotation editor: strokes, shapes, whiteboards and history,
+//! applied once the host confirms them (`ANNOTATION` requests).
 use super::*;
+use crate::protocol::annotation::{self as ann, Op};
 use board::{Board, BoardEdit};
 use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
-pub(crate) mod wire;
-pub(crate) use wire::*;
-
 mod board;
-mod native;
 mod transport;
-use transport::{InFlight, Outcome, Reply};
+use transport::InFlight;
 
 const MAX_POINTS: usize = 32_768;
 const MAX_STROKES: usize = 256;
@@ -104,8 +102,7 @@ pub(super) struct Annotation {
     generation: u64,
     next_id: u32,
     pub(super) enabled: bool,
-    pending: HashMap<i64, InFlight>,
-    native_token: Option<u64>,
+    pending: HashMap<u32, InFlight>,
     drawing: Option<Drawing>,
     live_shape: Option<LiveShape>,
     finishing: VecDeque<Stroke>,
@@ -126,7 +123,6 @@ impl Default for Annotation {
             next_id: BOARD_IDS + 1,
             enabled: false,
             pending: HashMap::new(),
-            native_token: None,
             drawing: None,
             live_shape: None,
             finishing: VecDeque::new(),
@@ -144,7 +140,6 @@ impl Default for Annotation {
 impl Annotation {
     pub(super) fn disconnect(&mut self) {
         self.next_id = BOARD_IDS + 1;
-        self.native_token = None;
         self.generation = self.generation.wrapping_add(1);
         self.enabled = false;
         self.pending.clear();
@@ -256,27 +251,25 @@ impl Annotation {
         }
         self.strokes.sort_by_key(|s| s.id);
     }
-    fn complete(&mut self, seq: i64, outcome: Outcome) {
-        let Some(request) = self.pending.remove(&seq) else {
+    /// The host's answer to request `id`: done, or its refusal reason.
+    fn complete(&mut self, id: u32, result: std::result::Result<(), String>) {
+        let Some(request) = self.pending.remove(&id) else {
             return;
         };
         let p = request.effect;
-        if let Pending::Toggle(enable) = p {
-            if outcome == Outcome::Applied {
-                self.enabled = enable;
-                self.error = None;
-                self.uncertain = false;
-            } else {
-                self.enabled = !enable && outcome != Outcome::NotLoggedIn;
-                self.uncertain(outcome.message());
-            }
+        if let Err(reason) = result {
+            let signed_out = reason == ann::reason::SIGNED_OUT.1;
+            self.enabled = match p {
+                Pending::Toggle(enable) => !enable && !signed_out,
+                _ => self.enabled && !signed_out,
+            };
+            self.uncertain(transport::refusal_text(&reason));
             return;
         }
-        if outcome != Outcome::Applied {
-            if outcome == Outcome::NotLoggedIn {
-                self.enabled = false;
-            }
-            self.uncertain(outcome.message());
+        if let Pending::Toggle(enable) = p {
+            self.enabled = enable;
+            self.error = None;
+            self.uncertain = false;
             return;
         }
         match p {
@@ -399,38 +392,12 @@ impl StreamControlHandle {
     }
     fn annotation_toggle_locked(&self, s: &mut StreamControlState, enable: bool) -> Result<()> {
         ensure_ready(s)?;
-        if enable && !annotation_supported(s) {
+        if !annotation_supported(s) {
             bail!("{}", t().features.annotation_unsupported);
         }
-        let native_token = if enable {
-            s.annotation_extension
-        } else {
-            s.annotation.native_token
-        };
         s.annotation.disconnect();
-        s.annotation.native_token = native_token;
         s.annotation.enabled = enable;
-        self.send_draw(
-            s,
-            PbDrawRequest {
-                payload: Some(PbDrawRequestKind::Toggle(PbDrawToggle { enable })),
-            },
-            Pending::Toggle(enable),
-        )?;
-        Ok(())
-    }
-    pub(crate) fn annotation_message_current(&self, seq: i64, generation: u64) -> bool {
-        let s = lock(&self.shared);
-        s.annotation.generation == generation && s.annotation.pending.contains_key(&seq)
-    }
-    pub(crate) fn annotation_send_failed(&self, seq: i64, error: &str) {
-        let mut s = lock(&self.shared);
-        if let Some(p) = s.annotation.pending.remove(&seq) {
-            if let Pending::Toggle(enable) = p.effect {
-                s.annotation.enabled = !enable;
-            }
-            s.annotation.uncertain((t().features.annotation_send_failed)(error));
-        }
+        self.send_op(s, Op::Show(enable), Pending::Toggle(enable))
     }
     pub(crate) fn annotation_begin(
         &self,
@@ -576,69 +543,31 @@ impl StreamControlHandle {
                 .uncertain(t().features.annotation_screen_removed.into());
             return;
         }
-        let native = s.annotation.native_token.is_some();
+        // Up to four replacements in flight; later pointer updates replace
+        // the desired geometry.
         if s.annotation
             .pending
             .values()
             .filter(|p| matches!(p.effect, Pending::Shape))
             .count()
-            >= if native { 4 } else { 1 }
+            >= 4
         {
             return;
         }
         let cancel = shape.finish == Some(false);
-        if native {
-            let pending = s.annotation.pending.len();
-            if (cancel || shape.sent_revision != shape.revision) && pending < MAX_PENDING {
-                let stroke = shape.stroke.clone();
-                let shown = shape.shown;
-                let result = if cancel {
-                    if shown {
-                        self.send_draw(
-                            s,
-                            clear_request(2, stroke.id, Some(stroke.screen)),
-                            Pending::Shape,
-                        )
-                        .map(|_| ())
-                    } else {
-                        Ok(())
-                    }
-                } else {
-                    self.native_replace(s, &stroke, Pending::Shape).map(|_| ())
-                };
-                if let Err(error) = result {
-                    s.annotation.uncertain(error.to_string());
-                    return;
-                }
-                if let Some(shape) = &mut s.annotation.live_shape {
-                    shape.shown = !cancel;
-                    shape.sent_revision = shape.revision;
-                    if shape.finish.is_none() {
-                        shape.preview_submissions = shape.preview_submissions.saturating_add(1);
-                    }
-                }
-            }
-            s.annotation.finish_live_shape();
-            return;
-        }
-        if cancel || shape.sent_revision != shape.revision {
-            let count = usize::from(shape.shown) + usize::from(!cancel);
-            if count > MAX_PENDING.saturating_sub(s.annotation.pending.len()) {
+        if (cancel || shape.sent_revision != shape.revision)
+            && s.annotation.pending.len() < MAX_PENDING
+        {
+            let op = if cancel {
+                shape.shown.then(|| Op::Erase(stroke_id(&shape.stroke)))
+            } else {
+                Some(Op::Put(encoded_stroke(&shape.stroke, &shape.stroke.points)))
+            };
+            if let Some(op) = op
+                && let Err(error) = self.send_op(s, op, Pending::Shape)
+            {
+                s.annotation.uncertain(error.to_string());
                 return;
-            }
-            let mut requests = Vec::new();
-            if shape.shown {
-                requests.push(clear_request(2, shape.stroke.id, Some(shape.stroke.screen)));
-            }
-            if !cancel {
-                requests.push(stroke_request(&shape.stroke, &shape.stroke.points));
-            }
-            // Keep one replacement in flight; later pointer updates replace the desired geometry.
-            for request in requests {
-                if let Err(error) = self.send_draw(s, request, Pending::Shape) {
-                    s.annotation.uncertain(error.to_string());
-                    return;
-                }
             }
             if let Some(shape) = &mut s.annotation.live_shape {
                 shape.shown = !cancel;
@@ -695,11 +624,11 @@ impl StreamControlHandle {
         }
         if let Some(d) = &s.annotation.drawing {
             if d.sent < d.stroke.points.len() {
-                let end = (d.sent + 4096).min(d.stroke.points.len());
-                let req = stroke_request(&d.stroke, &d.stroke.points[d.sent..end]);
+                let end = (d.sent + ann::MAX_DRAW_POINTS).min(d.stroke.points.len());
+                let op = Op::Draw(encoded_stroke(&d.stroke, &d.stroke.points[d.sent..end]));
                 let id = d.stroke.id;
-                match self.send_draw(s, req, Pending::Stroke(id)) {
-                    Ok(_) => {
+                match self.send_op(s, op, Pending::Stroke(id)) {
+                    Ok(()) => {
                         if let Some(d) = &mut s.annotation.drawing {
                             d.sent = end;
                         }
@@ -713,10 +642,11 @@ impl StreamControlHandle {
     pub(crate) fn annotation_tick(&self) {
         let mut s = lock(&self.shared);
         self.expire_requests(&mut s);
-        let timed_out = s.annotation.pending.values().find(|p| {
-            (p.reply == Reply::Native || matches!(p.effect, Pending::Toggle(_)))
-                && p.sent.elapsed() >= Duration::from_secs(3)
-        });
+        let timed_out = s
+            .annotation
+            .pending
+            .values()
+            .find(|p| p.sent.elapsed() >= Duration::from_secs(3));
         if let Some(request) = timed_out {
             if let Pending::Toggle(enable) = request.effect {
                 s.annotation.enabled = !enable;
@@ -787,93 +717,55 @@ impl StreamControlHandle {
         if !s.annotation.enabled || s.annotation.busy() {
             bail!("{}", t().features.annotation_not_ready);
         }
-        if s.annotation.native_token.is_some() {
-            return self.edit_native(s, edit, direction);
-        }
         let reverse = matches!(direction, Direction::Undo);
-        let mut requests = Vec::new();
-        match (&edit, reverse) {
+        let clears_boards = matches!(&edit, Edit::Clear(_)) && s.annotation.uncertain;
+        let put = |stroke: &Stroke| encoded_stroke(stroke, &stroke.points);
+        let op = match (&edit, reverse) {
+            (Edit::Clear(_), false) => Op::Clear(clears_boards),
             (Edit::Add(stroke), true) | (Edit::Remove(stroke), false) => {
-                requests.push(clear_request(2, stroke.id, Some(stroke.screen)))
+                Op::Erase(stroke_id(stroke))
             }
-            (Edit::Clear(strokes), false) => {
-                if s.annotation.boards.is_empty() || s.annotation.uncertain {
-                    requests.push(clear_request(1, 0, None));
-                } else {
-                    requests.extend(
-                        strokes
-                            .iter()
-                            .map(|stroke| clear_request(2, stroke.id, Some(stroke.screen))),
-                    );
-                }
-            }
-            (Edit::Add(stroke), false) | (Edit::Remove(stroke), true) => {
-                for points in stroke.points.chunks(4096) {
-                    requests.push(stroke_request(stroke, points));
-                }
-            }
+            (Edit::Add(stroke), false) | (Edit::Remove(stroke), true) => Op::Put(put(stroke)),
             (Edit::Clear(strokes), true) => {
-                for stroke in strokes {
-                    for points in stroke.points.chunks(4096) {
-                        requests.push(stroke_request(stroke, points));
-                    }
+                if strokes.is_empty() {
+                    return Ok(());
                 }
+                Op::Restore(ann::Strokes {
+                    strokes: strokes.iter().map(put).collect(),
+                })
             }
-        }
-
-        if requests.is_empty() {
-            return Ok(());
-        }
-        if requests.len() > MAX_PENDING {
-            bail!("{}", t().features.annotation_too_many_strokes);
-        }
+        };
         s.annotation.editing = Some(Editing {
-            clears_boards: matches!(&edit, Edit::Clear(_)) && s.annotation.uncertain,
+            clears_boards,
             edit,
             direction,
-            remaining: requests.len(),
+            remaining: 1,
         });
         s.annotation.error = None;
-        for request in requests {
-            if let Err(e) = self.send_draw(s, request, Pending::Edit) {
-                s.annotation.uncertain(e.to_string());
-                return Err(e);
-            }
+        if let Err(error) = self.send_op(s, op, Pending::Edit) {
+            s.annotation.uncertain(error.to_string());
+            return Err(error);
         }
         Ok(())
     }
 }
 fn annotation_supported(s: &StreamControlState) -> bool {
-    (s.annotation_extension.is_some()
-        || s.features.as_ref().is_some_and(|f| {
-            f.supports(crate::account::feature_ability::Feature::Host)
-        }))
+    s.peer.has(crate::protocol::peer::feature::ANNOTATION)
         && protocol(s) == StreamControlProtocol::CaptureSetting
         && s.text_channel_open
 }
-fn encoded_stroke(stroke: &Stroke, points: &[Point]) -> PbDrawStroke {
-    PbDrawStroke {
-        stroke_id: stroke.id,
-        points: points
-            .iter()
-            .map(|p| PbDrawPoint { x: p.x, y: p.y })
-            .collect(),
-        screen_id: Some(stroke.screen),
-        line_width: Some(stroke.style.width),
-        color: Some(stroke.style.argb),
+fn encoded_stroke(stroke: &Stroke, points: &[Point]) -> ann::Stroke {
+    ann::Stroke {
+        id: stroke.id,
+        screen: stroke.screen,
+        points: points.iter().map(|p| ann::Point { x: p.x, y: p.y }).collect(),
+        width: stroke.style.width,
+        color: stroke.style.argb,
     }
 }
-fn stroke_request(stroke: &Stroke, points: &[Point]) -> PbDrawRequest {
-    PbDrawRequest {
-        payload: Some(PbDrawRequestKind::Stroke(encoded_stroke(stroke, points))),
-    }
-}
-fn clear_request(clear_type: i32, stroke_id: u32, screen_id: Option<i32>) -> PbDrawRequest {
-    PbDrawRequest {
-        payload: Some(PbDrawRequestKind::Clear(PbDrawClear {
-            clear_type,
-            stroke_id,
-            screen_id,
-        })),
+fn stroke_id(stroke: &Stroke) -> ann::StrokeId {
+    ann::StrokeId {
+        id: stroke.id,
+        screen: stroke.screen,
     }
 }

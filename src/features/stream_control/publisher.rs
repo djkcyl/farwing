@@ -21,16 +21,20 @@ pub(crate) fn microphone_policy(bytes: &[u8]) -> Result<Option<MicrophonePolicy>
     };
     anyhow::ensure!(received.request_id != 0, "麦克风请求缺少标识");
     Ok(Some(MicrophonePolicy {
-        enabled: policy.policy & 1 != 0,
+        enabled: policy.enabled,
         request_id: received.request_id,
     }))
 }
 impl MicrophonePolicy {
-    pub fn response(&self, error_code: i32) -> Vec<u8> {
-        super::wire::response(
-            self.request_id,
-            SessionBody::MicrophoneResult(super::microphone::PolicyResponse { error_code }),
-        )
+    /// The answer: carried out, or the refusal's code and reason.
+    pub fn response(&self, result: std::result::Result<(), (&str, &str)>) -> Vec<u8> {
+        match result {
+            Ok(()) => super::wire::response(
+                self.request_id,
+                SessionBody::MicrophoneResult(super::wire::Done {}),
+            ),
+            Err((code, reason)) => super::wire::error_response(self.request_id, code, reason),
+        }
     }
 }
 
@@ -57,15 +61,16 @@ pub(crate) fn control_turn(bytes: &[u8]) -> Result<Option<ControlTurn>> {
     }))
 }
 impl ControlTurn {
-    pub fn response(&self, held: bool, refusal: i32, holder: String) -> Vec<u8> {
-        super::wire::response(
-            self.request_id,
-            SessionBody::ControlTurnResult(super::control_turn::TurnResponse {
-                held,
-                refusal,
-                holder,
-            }),
-        )
+    /// The answer: carried out (taken or given back), or the refusal's code
+    /// and reason.
+    pub fn response(&self, result: std::result::Result<(), (&str, &str)>) -> Vec<u8> {
+        match result {
+            Ok(()) => super::wire::response(
+                self.request_id,
+                SessionBody::ControlTurnResult(super::wire::Done {}),
+            ),
+            Err((code, reason)) => super::wire::error_response(self.request_id, code, reason),
+        }
     }
 }
 

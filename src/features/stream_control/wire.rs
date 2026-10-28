@@ -124,9 +124,9 @@ pub(crate) enum SessionBody {
     #[prost(message, tag = "21")]
     DisplayDone(DisplayDone),
     #[prost(message, tag = "22")]
-    MicrophoneResult(microphone::PolicyResponse),
+    MicrophoneResult(Done),
     #[prost(message, tag = "23")]
-    ControlTurnResult(control_turn::TurnResponse),
+    ControlTurnResult(Done),
 }
 
 impl SessionBody {
@@ -319,6 +319,10 @@ pub(crate) struct CaptureControl {
     #[prost(int32, optional, tag = "3")]
     pub(crate) track: Option<i32>,
 }
+
+/// An answer with nothing more to say: the request was carried out.
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct Done {}
 
 /// Host virtual microphone state.
 #[derive(Clone, PartialEq, prost::Message)]

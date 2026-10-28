@@ -1,10 +1,10 @@
 // Annotation on the host's screen (ANNOTATION 0x0601,
-// `docs/protocol/peer-messages.md`): the host offers it with a token on the
-// session channel; commands carry that token and a strictly increasing
-// request number, and each gets a result. Pen strokes (sent in pieces while
-// drawing), undo, clear and a whiteboard.
+// `docs/protocol/peer-messages.md`): the host offers it with the
+// `annotation` HELLO feature; each operation is a request it answers or
+// refuses with a reason, and it pushes `reset` when it dropped the overlay.
+// Pen strokes (sent in pieces while drawing), undo, clear and a whiteboard.
 import { t } from '../i18n';
-import * as fpp from './fpp';
+import { PeerRequestError } from './peerio';
 import { Fields, Writer } from './pb';
 
 /// 0xAARRGGBB as a CSS colour.
@@ -18,62 +18,51 @@ export interface Point {
   y: number;
 }
 
-/// Results: 0 done, 2 the host has no user signed in, 3 locked, 4 refused.
-export function resultText(code: number): string {
+/// Why the host refused (`src/protocol/annotation.rs` `reason`).
+export function refusalText(reason: string): string {
   const m = t().viewer.annotation;
-  switch (code) {
-    case 2:
+  switch (reason) {
+    case 'signed_out':
       return m.noUser;
-    case 3:
+    case 'locked':
       return m.locked;
-    case 4:
-      return m.refused;
     default:
-      return m.failed(code);
+      return m.refused;
   }
 }
 
+/// Most points one `draw` carries.
+const DRAW_POINTS = 4096;
+
 const point = (p: Point) => new Writer().float(1, p.x).float(2, p.y);
 
-export function packet(token: bigint, request: number, command: Writer): Uint8Array {
-  return new Writer().fixed64(1, token).int(2, request).message(4, command).finish();
+function stroke(id: number, screen: number, points: Point[], width: number, color: number): Writer {
+  const w = new Writer().int(1, id).intAlways(2, screen);
+  for (const p of points) w.message(3, point(p));
+  return w.floatAlways(4, width).fixed32Always(5, color);
 }
 
-const draw = (request: Writer) => new Writer().message(1, request);
-
-export function toggleCommand(enable: boolean): Writer {
-  return draw(new Writer().message(3, new Writer().int(1, enable)));
-}
-
-export function strokeCommand(id: number, screen: number, points: Point[], width: number, color: number): Writer {
-  const stroke = new Writer().int(1, id);
-  for (const p of points) stroke.message(2, point(p));
-  stroke
-    .intAlways(3, screen)
-    .floatAlways(4, width)
-    .intAlways(5, color >>> 0);
-  return draw(new Writer().message(1, stroke));
-}
-
-/// Remove one stroke (undo).
-export function eraseCommand(id: number, screen: number): Writer {
-  return draw(new Writer().message(2, new Writer().int(1, 2).int(2, id).intAlways(3, screen)));
-}
-
-/// Clear the ink; `all` also removes whiteboards.
-export function clearCommand(all: boolean): Writer {
-  return new Writer().intAlways(5, all ? 1 : 0);
-}
-
-/// A whiteboard behind the ink on `screen`, or none.
-export function boardCommand(screen: number, color?: number): Writer {
-  const board = new Writer().int(1, screen);
-  if (color !== undefined) board.fixed32Always(2, color);
-  return new Writer().message(4, board);
-}
+/// The body of each request.
+export const op = {
+  /// The overlay on or off; off removes everything.
+  show: (on: boolean) => new Writer().intAlways(1, on ? 1 : 0).finish(),
+  /// Points added to a stroke; the first creates it.
+  draw: (id: number, screen: number, points: Point[], width: number, color: number) =>
+    new Writer().message(2, stroke(id, screen, points, width, color)).finish(),
+  /// Remove one stroke (undo).
+  erase: (id: number, screen: number) => new Writer().message(4, new Writer().int(1, id).intAlways(2, screen)).finish(),
+  /// Remove every stroke; `boards` also the whiteboards.
+  clear: (boards: boolean) => new Writer().intAlways(5, boards ? 1 : 0).finish(),
+  /// A whiteboard behind the ink on `screen`, or none.
+  board: (screen: number, color?: number) => {
+    const board = new Writer().intAlways(1, screen);
+    if (color !== undefined) board.fixed32Always(2, color);
+    return new Writer().message(6, board).finish();
+  },
+};
 
 export interface AnnotationState {
-  /// The host offered annotation.
+  /// The host offers annotation.
   available: boolean;
   enabled: boolean;
   /// The last failure, in words.
@@ -81,11 +70,9 @@ export interface AnnotationState {
 }
 
 export class Annotation {
-  private send: (frame: Uint8Array) => void;
+  private request: (body: Uint8Array) => Promise<unknown>;
   private onState: (state: AnnotationState) => void;
-  private token = 0n;
-  private request = 0;
-  private pending = new Map<number, (code: number) => void>();
+  private available = false;
   private enabled = false;
   private error?: string;
   private nextId = 1;
@@ -93,57 +80,50 @@ export class Annotation {
   private strokes: { id: number; screen: number }[] = [];
   private boards = new Set<number>();
 
-  constructor(send: (frame: Uint8Array) => void, onState: (state: AnnotationState) => void) {
-    this.send = send;
+  constructor(request: (body: Uint8Array) => Promise<unknown>, onState: (state: AnnotationState) => void) {
+    this.request = request;
     this.onState = onState;
   }
 
   private emit() {
-    this.onState({ available: this.token !== 0n, enabled: this.enabled, error: this.error });
+    this.onState({ available: this.available, enabled: this.enabled, error: this.error });
   }
 
-  /// An ANNOTATION frame from the host.
+  private off() {
+    this.enabled = false;
+    this.strokes = [];
+    this.boards.clear();
+  }
+
+  /// Whether the host offers annotation (its HELLO).
+  setAvailable(available: boolean) {
+    if (available === this.available) return;
+    this.available = available;
+    this.off();
+    this.emit();
+  }
+
+  /// A push from the host: `reset` (it dropped the overlay).
   handle(body: Uint8Array) {
-    const f = new Fields(body);
-    const token = f.fixed64(1);
-    if (token === 0n) return;
-    if (f.has(3)) {
-      if (token !== this.token) {
-        this.token = token;
-        this.enabled = false;
-        this.strokes = [];
-        this.boards.clear();
-        this.emit();
-      }
-      return;
-    }
-    if (f.has(5) && token === this.token) {
-      const request = f.int64(2);
-      this.pending.get(request)?.(f.int32(5));
-      this.pending.delete(request);
+    if (new Fields(body).has(8) && this.enabled) {
+      this.off();
+      this.emit();
     }
   }
 
-  /// Send a command; resolves with its result code.
-  private command(command: Writer): Promise<number> {
-    if (this.token === 0n) return Promise.resolve(4);
-    this.request += 1;
-    const request = this.request;
-    const result = new Promise<number>((resolve) => {
-      this.pending.set(request, resolve);
-      window.setTimeout(() => {
-        if (this.pending.delete(request)) resolve(-1);
-      }, 10_000);
-    });
-    this.send(fpp.encode(fpp.Type.ANNOTATION, packet(this.token, request, command)));
-    void result.then((code) => {
-      if (code !== 0 && code !== -1) {
-        this.error = resultText(code);
-        if (code === 2) this.enabled = false;
-        this.emit();
-      }
-    });
-    return result;
+  /// Send a request; resolves with whether the host applied it.
+  private async command(body: Uint8Array): Promise<boolean> {
+    if (!this.available) return false;
+    try {
+      await this.request(body);
+      return true;
+    } catch (error) {
+      const refused = error instanceof PeerRequestError && error.reason;
+      this.error = refused ? refusalText(error.reason) : (error as Error).message;
+      if (refused && error.reason === 'signed_out') this.off();
+      this.emit();
+      return false;
+    }
   }
 
   get active(): boolean {
@@ -151,21 +131,16 @@ export class Annotation {
   }
 
   async setEnabled(enable: boolean): Promise<boolean> {
-    if (this.token === 0n) return false;
+    if (!this.available) return false;
     this.error = undefined;
-    const code = await this.command(toggleCommand(enable));
-    if (code === 0) {
-      this.enabled = enable;
-      if (!enable) {
-        // The host clears everything when annotation ends.
-        this.strokes = [];
-        this.boards.clear();
-      }
-    } else if (code === -1) {
-      this.error = t().viewer.peer.noResponse;
+    const done = await this.command(op.show(enable));
+    if (done) {
+      // The host clears everything when annotation ends.
+      if (enable) this.enabled = true;
+      else this.off();
     }
     this.emit();
-    return code === 0;
+    return done;
   }
 
   /// A new pen stroke; returns its ID for `extend`.
@@ -179,14 +154,14 @@ export class Annotation {
   extend(id: number, screen: number, points: Point[], width: number, color: number) {
     if (!this.enabled || !points.length) return;
     if (!this.strokes.some((s) => s.id === id)) this.strokes.push({ id, screen });
-    for (let i = 0; i < points.length; i += 4096) {
-      void this.command(strokeCommand(id, screen, points.slice(i, i + 4096), width, color));
+    for (let i = 0; i < points.length; i += DRAW_POINTS) {
+      void this.command(op.draw(id, screen, points.slice(i, i + DRAW_POINTS), width, color));
     }
   }
 
   undo() {
     const last = this.strokes.pop();
-    if (last && this.enabled) void this.command(eraseCommand(last.id, last.screen));
+    if (last && this.enabled) void this.command(op.erase(last.id, last.screen));
   }
 
   get canUndo(): boolean {
@@ -196,7 +171,7 @@ export class Annotation {
   clear() {
     if (!this.enabled) return;
     this.strokes = [];
-    void this.command(clearCommand(false));
+    void this.command(op.clear(false));
   }
 
   hasBoard(screen: number): boolean {
@@ -207,17 +182,13 @@ export class Annotation {
     if (!this.enabled) return;
     if (on) this.boards.add(screen);
     else this.boards.delete(screen);
-    void this.command(boardCommand(screen, on ? color : undefined));
+    void this.command(op.board(screen, on ? color : undefined));
   }
 
   /// The connection is gone.
   reset() {
-    for (const resolve of this.pending.values()) resolve(-1);
-    this.pending.clear();
-    this.token = 0n;
-    this.enabled = false;
-    this.strokes = [];
-    this.boards.clear();
+    this.available = false;
+    this.off();
     this.emit();
   }
 }

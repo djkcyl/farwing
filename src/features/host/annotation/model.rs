@@ -1,41 +1,41 @@
 //! Bounded normalized strokes, independent of HWNDs and connection transport.
-use super::Context;
-use crate::features::stream_control::annotation::wire::*;
+use super::{Context, Outcome, Refusal};
+use crate::protocol::annotation::{MAX_DRAW_POINTS, MAX_STROKE_POINTS, Op, Stroke};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-mod native;
-pub(super) use native::valid_native;
-
 pub(crate) const MAX_POINTS: usize = 1_048_576;
 pub(crate) const MAX_STROKES: usize = 1024;
+/// Most strokes one `Restore` puts.
+const MAX_RESTORE: usize = 512;
+
 #[derive(Clone, Default)]
 pub(crate) struct Model {
     pub enabled: bool,
-    pub strokes: BTreeMap<(i32, u32), Arc<PbDrawStroke>>,
+    pub strokes: BTreeMap<(i32, u32), Arc<Stroke>>,
     pub revision: u64,
     pub dirty: BTreeSet<i32>,
     pub boards: BTreeMap<i32, u32>,
 }
-pub(super) fn valid(command: &PbDrawRequestKind) -> bool {
-    match command {
-        PbDrawRequestKind::Stroke(s) => {
-            s.stroke_id != 0
-                && !s.points.is_empty()
-                && s.points.len() <= 4096
-                && s.line_width
-                    .is_none_or(|w| w.is_finite() && w > 0.0 && w <= 64.0)
-                && s.points.iter().all(|p| {
-                    p.x.is_finite()
-                        && p.y.is_finite()
-                        && (0.0..=1.0).contains(&p.x)
-                        && (0.0..=1.0).contains(&p.y)
-                })
+
+/// Whether `op` is a well-formed request (screens and limits are checked
+/// when it is applied).
+pub(super) fn valid(op: &Op) -> bool {
+    match op {
+        Op::Show(_) | Op::Clear(_) => true,
+        Op::Draw(stroke) => stroke.valid(MAX_DRAW_POINTS),
+        Op::Put(stroke) => stroke.valid(MAX_STROKE_POINTS),
+        Op::Erase(stroke) => stroke.id != 0,
+        Op::Board(board) => board.color.is_none_or(|c| c >> 24 == 255),
+        Op::Restore(restore) => {
+            !restore.strokes.is_empty()
+                && restore.strokes.len() <= MAX_RESTORE
+                && restore.strokes.iter().all(|s| s.valid(MAX_STROKE_POINTS))
         }
-        PbDrawRequestKind::Clear(c) => c.clear_type == 1 || (c.clear_type == 2 && c.stroke_id != 0),
-        PbDrawRequestKind::Toggle(_) => true,
+        Op::Reset(_) => false,
     }
 }
+
 impl Model {
     pub fn clear(&mut self) {
         self.dirty.extend(self.strokes.keys().map(|(id, _)| *id));
@@ -48,24 +48,28 @@ impl Model {
     fn changed(&mut self) {
         self.revision = self.revision.wrapping_add(1);
     }
+    fn points(&self) -> usize {
+        self.strokes.values().map(|s| s.points.len()).sum()
+    }
     pub fn reconcile(&mut self, old: &Context, new: &Context) {
         if old.screens == new.screens {
             return;
         }
-        let before = self.strokes.len();
-        self.strokes.retain(|(id, _), _| {
-            let a = old.screens.iter().find(|s| s.id == *id);
-            let b = new.screens.iter().find(|s| s.id == *id);
-            matches!((a,b), (Some(a),Some(b)) if a.device_name==b.device_name && a.identity==b.identity && a.adapter==b.adapter)
-        });
-        self.boards.retain(|id,_| {
-            matches!((old.screens.iter().find(|s|s.id==*id),new.screens.iter().find(|s|s.id==*id)),(Some(a),Some(b)) if a.device_name==b.device_name && a.identity==b.identity && a.adapter==b.adapter)
-        });
-        if before != self.strokes.len() || old.screens != new.screens {
-            self.dirty
-                .extend(old.screens.iter().chain(&new.screens).map(|s| s.id));
-            self.changed();
-        }
+        let same = |id: i32| {
+            matches!(
+                (
+                    old.screens.iter().find(|s| s.id == id),
+                    new.screens.iter().find(|s| s.id == id),
+                ),
+                (Some(a), Some(b))
+                    if a.device_name == b.device_name && a.identity == b.identity && a.adapter == b.adapter
+            )
+        };
+        self.strokes.retain(|(id, _), _| same(*id));
+        self.boards.retain(|id, _| same(*id));
+        self.dirty
+            .extend(old.screens.iter().chain(&new.screens).map(|s| s.id));
+        self.changed();
     }
     pub fn screen(context: &Context, explicit: Option<i32>) -> Option<i32> {
         if let Some(id) = explicit {
@@ -78,81 +82,97 @@ impl Model {
             .or_else(|| context.screens.iter().find(|s| s.primary))
             .map(|s| s.id)
     }
-    pub fn apply(&mut self, context: &Context, command: &PbDrawRequestKind, desktop: i32) -> i32 {
-        if matches!(
-            command,
-            PbDrawRequestKind::Toggle(PbDrawToggle { enable: false })
-        ) {
+    /// Apply `op`; `desktop`: whether the user's desktop can show the overlay.
+    pub fn apply(&mut self, context: &Context, op: &Op, desktop: Outcome) -> Outcome {
+        if matches!(op, Op::Show(false)) {
             self.clear();
-            return 0;
+            return Ok(());
         }
         if !context.allowed {
             self.clear();
-            return 4;
+            return Err(Refusal::NotAllowed);
         }
-        if !valid(command) {
-            return 4;
+        if !valid(op) {
+            return Err(Refusal::Invalid);
         }
-        if desktop != 0 {
-            return desktop;
+        desktop?;
+        if matches!(op, Op::Show(true)) {
+            let screen = Self::screen(context, None).ok_or(Refusal::Invalid)?;
+            self.enabled = true;
+            self.dirty.insert(screen);
+            self.changed();
+            return Ok(());
         }
-        match command {
-            PbDrawRequestKind::Toggle(_) => {
-                if Self::screen(context, None).is_none() {
-                    return 4;
-                }
-                self.enabled = true;
-                self.dirty.extend(Self::screen(context, None));
-            }
-            PbDrawRequestKind::Stroke(stroke) => {
-                let Some(screen) = Self::screen(context, stroke.screen_id) else {
-                    return 4;
-                };
-                if !self.enabled {
-                    return 4;
-                }
-                let key = (screen, stroke.stroke_id);
+        if !self.enabled {
+            return Err(Refusal::Off);
+        }
+        match op {
+            Op::Draw(stroke) => {
+                let screen = Self::screen(context, Some(stroke.screen)).ok_or(Refusal::Invalid)?;
+                let key = (screen, stroke.id);
                 let old = self.strokes.get(&key).map_or(0, |s| s.points.len());
-                let total: usize = self.strokes.values().map(|s| s.points.len()).sum();
-                if old + stroke.points.len() > 32768
-                    || total + stroke.points.len() > MAX_POINTS
+                if old + stroke.points.len() > MAX_STROKE_POINTS
+                    || self.points() + stroke.points.len() > MAX_POINTS
                     || (!self.strokes.contains_key(&key) && self.strokes.len() >= MAX_STROKES)
                 {
-                    return 4;
+                    return Err(Refusal::Invalid);
                 }
                 let entry = Arc::make_mut(self.strokes.entry(key).or_default());
-                entry.stroke_id = stroke.stroke_id;
-                entry.screen_id = Some(screen);
-                entry.line_width = Some(stroke.line_width.unwrap_or(3.0));
-                entry.color = Some(stroke.color.unwrap_or(0xffff4444));
+                entry.id = stroke.id;
+                entry.screen = screen;
+                entry.width = stroke.width;
+                entry.color = stroke.color;
                 entry.points.extend_from_slice(&stroke.points);
                 self.dirty.insert(screen);
             }
-            PbDrawRequestKind::Clear(clear) => match clear.clear_type {
-                1 => {
-                    self.dirty.extend(self.strokes.keys().map(|(id, _)| *id));
-                    self.strokes.clear();
+            Op::Put(stroke) => self.put(context, stroke)?,
+            Op::Restore(restore) => {
+                // Stroke buffers are shared; a failed restore never touches
+                // the live scene.
+                let mut next = self.clone();
+                for stroke in &restore.strokes {
+                    next.put(context, stroke)?;
+                }
+                *self = next;
+            }
+            Op::Erase(stroke) => {
+                if self.strokes.remove(&(stroke.screen, stroke.id)).is_some() {
+                    self.dirty.insert(stroke.screen);
+                }
+            }
+            Op::Clear(boards) => {
+                self.dirty.extend(self.strokes.keys().map(|(id, _)| *id));
+                self.strokes.clear();
+                if *boards {
                     self.dirty.extend(self.boards.keys().copied());
                     self.boards.clear();
-                } // ALL is session-wide, even with an optional screen.
-                2 if clear.stroke_id != 0 => {
-                    self.dirty.extend(
-                        self.strokes
-                            .keys()
-                            .filter(|(screen, id)| {
-                                *id == clear.stroke_id
-                                    && clear.screen_id.is_none_or(|s| s == *screen)
-                            })
-                            .map(|(screen, _)| *screen),
-                    );
-                    self.strokes.retain(|(screen, id), _| {
-                        *id != clear.stroke_id || clear.screen_id.is_some_and(|s| s != *screen)
-                    });
                 }
-                _ => return 4,
-            },
+            }
+            Op::Board(board) => {
+                Self::screen(context, Some(board.screen)).ok_or(Refusal::Invalid)?;
+                if let Some(color) = board.color {
+                    self.boards.insert(board.screen, color);
+                } else {
+                    self.boards.remove(&board.screen);
+                }
+                self.dirty.insert(board.screen);
+            }
+            Op::Show(_) | Op::Reset(_) => unreachable!("handled above"),
         }
         self.changed();
-        0
+        Ok(())
+    }
+    fn put(&mut self, context: &Context, stroke: &Stroke) -> Outcome {
+        let key = (stroke.screen, stroke.id);
+        Self::screen(context, Some(key.0)).ok_or(Refusal::Invalid)?;
+        let old = self.strokes.get(&key).map_or(0, |s| s.points.len());
+        if self.points() - old + stroke.points.len() > MAX_POINTS
+            || (!self.strokes.contains_key(&key) && self.strokes.len() >= MAX_STROKES)
+        {
+            return Err(Refusal::Invalid);
+        }
+        self.strokes.insert(key, Arc::new(stroke.clone()));
+        self.dirty.insert(key.0);
+        Ok(())
     }
 }

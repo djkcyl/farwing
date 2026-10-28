@@ -228,7 +228,9 @@ impl Microphone {
         s.error = None;
         self.0.refresh(&s);
     }
-    pub(crate) fn response(&self, seq: i64, code: i32) {
+    /// The host answered request `seq`: carried out, or why not (in this
+    /// device's language).
+    pub(crate) fn answered(&self, seq: i64, result: Result<(), String>) {
         let mut s = lock(&self.0.state);
         let Some((pending, enabled)) = s.pending else {
             return;
@@ -237,25 +239,13 @@ impl Microphone {
             return;
         }
         s.pending = None;
-        s.confirmed = code == 0 && enabled;
-        if code != 0 {
+        s.confirmed = result.is_ok() && enabled;
+        if let Err(error) = &result {
             s.enabled = false;
-            s.error = Some(crate::protocol::microphone::failure_message(code));
+            s.error = Some(error.clone());
         }
         self.0.refresh(&s);
-        tracing::info!(seq, code, enabled, "microphone policy reply");
-    }
-    pub(crate) fn send_failed(&self, seq: i64, error: &str) -> bool {
-        let mut s = lock(&self.0.state);
-        if !s.pending.is_some_and(|(id, _)| id == seq) {
-            return false;
-        }
-        s.pending = None;
-        s.enabled = false;
-        s.confirmed = false;
-        s.error = Some((crate::i18n::t().session.mic_request_send_failed)(&error.to_string()));
-        self.0.refresh(&s);
-        true
+        tracing::info!(seq, ?result, enabled, "microphone policy reply");
     }
     /// Host virtual microphone state (`SESSION` `Microphone` push).
     pub(crate) fn event(&self, state: i32) {

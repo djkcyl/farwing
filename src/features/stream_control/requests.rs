@@ -23,14 +23,42 @@ pub(super) enum Waiting {
         persist: bool,
         before: super::wire::StreamSettings,
     },
+    /// The remote microphone on or off.
+    Microphone,
+    /// A take (`true`) or release of the control token.
+    Turn { take: bool },
 }
 
-impl Waiting {
-    /// A refusal of this request in the interface language.
-    pub(super) fn refusal(&self, reason: &str) -> String {
-        match self {
-            Self::Stream { .. } => super::settings::refusal_text(reason),
+/// Why a request failed: the host's reason (empty when it did not answer)
+/// and the text this device shows.
+#[derive(Clone, Debug)]
+pub(super) struct Refused {
+    pub reason: String,
+    pub text: String,
+}
+
+impl Refused {
+    /// A failure without the host's reason (not sent, no answer).
+    pub(super) fn local(text: impl Into<String>) -> Self {
+        Self {
+            reason: String::new(),
+            text: text.into(),
+        }
+    }
+}
+
+impl StreamControlHandle {
+    /// The host's refusal `reason` of `waiting`, worded here.
+    pub(super) fn refusal(&self, waiting: &Waiting, reason: &str) -> Refused {
+        let text = match waiting {
+            Waiting::Stream { .. } => super::settings::refusal_text(reason),
+            Waiting::Microphone => crate::protocol::microphone::failure_message(reason),
+            Waiting::Turn { .. } => self.turn_refusal_text(reason),
             _ => super::display_settings::refusal_text(reason),
+        };
+        Refused {
+            reason: reason.to_owned(),
+            text,
         }
     }
 }
@@ -102,26 +130,34 @@ impl StreamControlHandle {
         state: &mut StreamControlState,
         id: u32,
         waiting: Waiting,
-        result: std::result::Result<(), String>,
+        result: std::result::Result<(), Refused>,
     ) {
+        let sequence = i64::from(id);
+        let text = || result.clone().map_err(|refused| refused.text);
         match waiting {
             Waiting::Capture(caller) => {
-                let _ = caller.send(result);
+                let _ = caller.send(text());
             }
-            Waiting::Display(screen) => state.display_changes.settle(screen, result.err()),
-            Waiting::Topology => self.topology_settled(state, result),
+            Waiting::Display(screen) => state.display_changes.settle(screen, text().err()),
+            Waiting::Topology => self.topology_settled(state, text()),
             Waiting::Stream {
                 settings,
                 persist,
                 before,
-            } => self.stream_settled(state, i64::from(id), settings, persist, before, result),
+            } => self.stream_settled(state, sequence, settings, persist, before, text()),
+            Waiting::Microphone => self.microphone.answered(sequence, text()),
+            Waiting::Turn { take, .. } => {
+                if take {
+                    self.turn_settled(state, sequence, result);
+                }
+            }
         }
     }
 
     /// Settle the requests whose deadline passed.
     pub(super) fn expire_requests(&self, state: &mut StreamControlState) {
         for (id, waiting) in state.requests.expired() {
-            self.settle(state, id, waiting, Err(t().features.stream_request_timeout.into()));
+            self.settle(state, id, waiting, Err(Refused::local(t().features.stream_request_timeout)));
         }
     }
 }

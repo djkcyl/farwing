@@ -232,9 +232,6 @@ export interface StreamState {
 export type SessionMessage =
   | { kind: 'screens'; value: Screens }
   | { kind: 'stream'; value: StreamState }
-  /** `refusal`: `src/features/stream_control/control_turn.rs` `refusal`; `holder`: who holds control. */
-  | { kind: 'turn_result'; held: boolean; refusal: number; holder: string }
-  | { kind: 'microphone_result'; code: number }
   | { kind: 'microphone_state'; state: number }
   | { kind: 'forward'; value: Forward }
   | { kind: 'other'; tag: number };
@@ -297,10 +294,6 @@ export function parseSession(body: Uint8Array): SessionMessage {
       },
     };
   }
-  const turn = f.message(23);
-  if (turn) return { kind: 'turn_result', held: turn.bool(1), refusal: turn.int32(3), holder: turn.string(4) };
-  const microphone = f.message(22);
-  if (microphone) return { kind: 'microphone_result', code: microphone.int32(1) };
   const state = f.message(3);
   if (state) return { kind: 'microphone_state', state: state.int32(1) };
   const forward = f.message(24);
@@ -343,12 +336,12 @@ export function microphonePolicy(on: boolean): Uint8Array {
 
 export const MicrophoneState = { ACTIVE: 1, INACTIVE: 2, RESTART: 3 } as const;
 
-/// Host microphone error codes (`src/protocol/microphone.rs`).
-export function microphoneError(code: number): string {
-  switch (code >>> 0) {
-    case 0x0e003001:
+/// Why the host refused the microphone (`src/protocol/microphone.rs`).
+export function microphoneError(reason: string): string {
+  switch (reason) {
+    case 'component_unavailable':
       return t().viewer.microphone.noDriver;
-    case 0x0e003006:
+    case 'not_allowed':
       return t().viewer.microphone.noPermission;
     default:
       return t().viewer.microphone.startFailed;
@@ -582,24 +575,21 @@ export function parseHostEvent(body: Uint8Array): HostEvent {
   return { kind: f.int32(1), actor: f.string(3) };
 }
 
+/// The host's desktop-audio rate (AUDIO `AudioState`).
 export interface AudioState {
-  kind: string;
-  request?: number;
-  revision?: number;
-  kbps?: number;
-  effective_bps?: number;
-  /** `rejected`: `src/protocol/audio_control.rs` `reason`. */
-  reason?: string;
+  revision: number;
+  kbps: number;
+  effectiveBps: number;
 }
 
-export function parseJson<T>(body: Uint8Array): T | undefined {
-  try {
-    return JSON.parse(new TextDecoder().decode(body)) as T;
-  } catch {
-    return undefined;
-  }
+/// An AUDIO push or answer; `undefined` for anything else.
+export function parseAudio(body: Uint8Array): AudioState | undefined {
+  const state = new Fields(body).message(1);
+  if (!state) return undefined;
+  return { revision: Number(state.big(1)), kbps: state.uint32(2), effectiveBps: state.uint32(3) };
 }
 
-export function json(value: unknown): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify(value));
+/// A rate for this viewer (AUDIO `AudioRequest`).
+export function audioRequest(kbps: number): Uint8Array {
+  return new Writer().message(2, new Writer().int(1, kbps)).finish();
 }

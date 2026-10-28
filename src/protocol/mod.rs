@@ -66,9 +66,11 @@ mod dispatch_tests {
                 kind == FrameType::Drag,
                 "drag-drop claimed {kind:?}"
             );
-            if kind != FrameType::Audio {
-                assert!(super::audio_control::decode(&bytes).unwrap().is_none(), "audio claimed {kind:?}");
-            }
+            assert_eq!(
+                super::audio_control::decode(&bytes).unwrap().is_some(),
+                kind == FrameType::Audio,
+                "audio claimed {kind:?}"
+            );
             if kind != FrameType::Hello {
                 assert!(peer::decode_hello(&bytes).unwrap().is_none(), "hello claimed {kind:?}");
             }
@@ -84,14 +86,32 @@ mod dispatch_tests {
 
     #[test]
     fn typed_messages_round_trip() {
-        let audio = super::audio_control::encode(super::audio_control::Message::Set {
-            request: 7,
-            kbps: 192,
-        });
+        let audio = super::audio_control::request(7, 192);
+        let received = super::audio_control::decode(&audio).unwrap().expect("an AUDIO frame");
+        assert_eq!(received.request_id, 7);
         assert!(matches!(
-            super::audio_control::decode(&audio).unwrap(),
-            Some(super::audio_control::Message::Set { request: 7, kbps: 192 })
+            received.body,
+            Ok(super::audio_control::AudioMessage {
+                body: Some(super::audio_control::Body::Request(super::audio_control::AudioRequest { kbps: 192 }))
+            })
         ));
+        let refused = super::audio_control::response(7, Err(super::audio_control::reason::NOT_ALLOWED));
+        let received = super::audio_control::decode(&refused).unwrap().unwrap();
+        assert_eq!(received.body.unwrap_err().reason, "not_allowed");
+        use super::annotation::{self as ann, Op};
+        let erase = ann::request(9, Op::Erase(ann::StrokeId { id: 3, screen: 0 })).unwrap();
+        let received = ann::decode(&erase).unwrap().unwrap();
+        assert_eq!((received.request_id, received.response), (9, false));
+        assert_eq!(
+            received.body.unwrap().op,
+            Some(Op::Erase(ann::StrokeId { id: 3, screen: 0 }))
+        );
+        let answer = ann::decode(&ann::response(9, Ok(()))).unwrap().unwrap();
+        assert!(answer.response && answer.body.unwrap().op.is_none());
+        let refused = ann::decode(&ann::response(9, Err(ann::reason::LOCKED))).unwrap().unwrap();
+        assert_eq!(refused.body.unwrap_err().reason, "locked");
+        let reset = ann::decode(&ann::reset()).unwrap().unwrap();
+        assert!(matches!(reset.body.unwrap().op, Some(Op::Reset(_))));
         let hello = peer::hello_request(peer::Role::Controller);
         let received = peer::decode_hello(&hello).unwrap().expect("hello frame");
         assert!(!received.response);

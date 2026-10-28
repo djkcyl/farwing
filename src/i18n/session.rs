@@ -559,8 +559,6 @@ pub(crate) struct Session {
     pub audio_processing_failed: &'static str,
     pub audio_output_selected_unavailable: &'static str,
     pub audio_output_none: &'static str,
-    /// Error
-    pub mic_request_send_failed: fn(&str) -> String,
     pub test_tone_failed: &'static str,
     /// Error
     pub mic_devices_unreadable: fn(&str) -> String,
@@ -1172,7 +1170,6 @@ pub(crate) const ZH_CN: Session = Session {
     audio_processing_failed: "音频处理失败",
     audio_output_selected_unavailable: "所选音频输出设备不可用",
     audio_output_none: "未找到音频输出设备",
-    mic_request_send_failed: |error| format!("麦克风请求发送失败：{error}"),
     test_tone_failed: "无法启动测试音",
     mic_devices_unreadable: |error| format!("读取麦克风设备失败：{error}"),
     mic_disconnected: "所选麦克风已断开",
@@ -1805,7 +1802,6 @@ pub(crate) const EN: Session = Session {
     audio_processing_failed: "Audio processing failed",
     audio_output_selected_unavailable: "The selected audio output device is unavailable",
     audio_output_none: "No audio output device found",
-    mic_request_send_failed: |error| format!("Couldn't send the microphone request: {error}"),
     test_tone_failed: "Can't start the test tone",
     mic_devices_unreadable: |error| format!("Couldn't read the microphones: {error}"),
     mic_disconnected: "The selected microphone was disconnected",

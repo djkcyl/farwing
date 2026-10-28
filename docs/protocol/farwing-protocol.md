@@ -570,7 +570,7 @@ POST /sessions        session.start            首个 rtc.answer
 
 - `flags`：bit0 `RESPONSE`（0x01），bit1 `ERROR`（0x02），bit2 `MORE`（0x04，分片未完）；其余为 0。
 - 所有特性用同一约定。**请求**：`request id` 非 0，由发送方在本连接内分配（递增）。**响应**：同一 `request id` 并置 `RESPONSE`；失败时置 `RESPONSE|ERROR`，帧体为 `PeerError`。**推送**：`request id` 为 0，不回复。
-- 帧体编码由类型决定：大多为 protobuf（[peer-messages.md](peer-messages.md)），`AUDIO` 为 JSON。
+- 帧体为 protobuf（[peer-messages.md](peer-messages.md)）。
 - `PeerError{code, reason}`，`code ∈ unsupported | bad_request | forbidden | not_found | busy | unavailable | internal`；`reason` 为该特性定义的原因键（可为空），由接收方翻译成自己的界面语言，不携带发送方语言的文字。收到 `ERROR` 回复的一方按“请求失败”处理；请求方在超时后自行判定失败。
 - 接收方按帧头类型分发，不嗅探帧体；通道只决定服务质量。魔数或版本不符、超过 512 KiB 的数据被丢弃。不认识的请求（含未知帧类型）回 `RESPONSE|ERROR{unsupported}`，不认识的推送忽略。
 
@@ -604,13 +604,13 @@ POST /sessions        session.start            首个 rtc.answer
 | `PEN` | 0x0105 | control（FCT） | C→H 推送 | `Pen` | 笔：1–16 个样本（压力、倾斜、旋转、笔杆键、橡皮擦、悬停） |
 | `POINTER` | 0x0106 | control | C→H 推送 | `Pointer` | 参与者指针（观看者也发送，不注入输入） |
 | `SESSION` | 0x0201 | session | 双向 | `SessionMessage` | 显示器、画质、采集、显示设置、麦克风、接收统计 |
-| `AUDIO` | 0x0202 | session | 双向 | JSON | 桌面声音码率 |
+| `AUDIO` | 0x0202 | session | 双向 | `AudioMessage` | 桌面声音码率 |
 | `HOST_EVENT` | 0x0203 | session | H→C 推送 | `HostEvent` | 被控更新、重启、睡眠、关机、会话切换、显示设置变化 |
 | `CLIPBOARD` | 0x0301 | session | 双向 | `ClipboardMessage` | 剪贴板控制面，内容走 TRANSFER |
 | `FILE` | 0x0401 | session | C→H 请求，H→C 响应/推送 | `FileMessage` | 远程文件管理与传输控制面 |
 | `TRANSFER` | 0x0402 | bulk | 流的发送方 → 接收方 | `Chunk` | 统一数据块（§5.7） |
 | `DRAG` | 0x0501 | session | 双向 | `Packet` | 原生拖放控制面，文件数据走 TRANSFER |
-| `ANNOTATION` | 0x0601 | session | 双向 | `Packet` | 批注 |
+| `ANNOTATION` | 0x0601 | session | 双向 | `Annotation` | 批注 |
 | `PORT` | 0x0701 | tunnel | 双向 | `PortMessage` | 端口转发控制与 TCP 数据 |
 | `PORT_DGRAM` | 0x0702 | dgram | 双向 | `Datagram` | UDP 数据报 |
 | `DIAGNOSTICS` | 0x0801 | session | 双向 | `DiagnosticsMessage` | 诊断包控制面，内容走 TRANSFER |
@@ -637,8 +637,9 @@ v1 的 `MOUSE_POLICY`、`AUDIO_QUALITY`、`FILE_BLOCK`、`DRAG_DATA`（0x0502）
 | 数据 | `clipboard`、`clipboard.files`、`files` | |
 | 丢包恢复 | `video.recovery`（§6.6） | 浏览器不声明 |
 | 输入 | `touch`、`pen` | 被控只在运行时具备合成指针（Windows 10 1809 起）时声明，主控只向声明了的被控发送 TOUCH / PEN，否则用鼠标模拟 |
+| 批注 | `annotation` | 被控声明；主控只向声明了的被控发 ANNOTATION 请求 |
 
-其余功能（音频、拖放、批注、端口、诊断、权限、参与者、被控事件、FCT）两端总是具备，或由各自的推送、SDP 属性表明可用，不再作为特性声明。
+其余功能（音频、拖放、端口、诊断、权限、参与者、被控事件、FCT）两端总是具备，或由各自的推送、SDP 属性表明可用，不再作为特性声明。
 
 ### 5.6 FCT（Farwing Control Transport）
 
@@ -661,16 +662,16 @@ v1 的 `MOUSE_POLICY`、`AUDIO_QUALITY`、`FILE_BLOCK`、`DRAG_DATA`（0x0502）
 
 消息字段见 [peer-messages.md](peer-messages.md)。
 
-- **SESSION**：请求带非 0 的 `request id`，被控以同一 id 并置 `RESPONSE` 回复；推送不回复。推送 `Displays`、`Stream`、`Microphone`、`ClipboardFiles`（H→C）与 `ReceiverStats`（C→H，每秒一次）。请求 `Capture`、`Display`（回复为请求完成后的 `Displays`，拒绝时 `PeerError` 带原因键）、`StreamRequest`（只带变化的字段，回复为之后的 `Stream`）、`MicrophonePolicy`、`ControlTurn`（C→H）。显示变更需要 `display` 能力，麦克风需要 `microphone` 能力，获得控制权需要 `control` 能力。被控在显示器列表、任一显示器或视频轨对应关系变化时发送 `Displays`（内容相同不重发）。
+- **SESSION**：请求带非 0 的 `request id`，被控以同一 id 并置 `RESPONSE` 回复；推送不回复。推送 `Displays`、`Stream`、`Microphone`、`ClipboardFiles`（H→C）与 `ReceiverStats`（C→H，每秒一次）。请求 `Capture`、`Display`（回复为请求完成后的 `Displays`）、`StreamRequest`（只带变化的字段，回复为之后的 `Stream`）、`MicrophonePolicy`、`ControlTurn`（C→H，回复为空）；拒绝时 `PeerError` 带原因键，由接收方翻译。显示变更需要 `display` 能力，麦克风需要 `microphone` 能力，获得控制权需要 `control` 能力。被控在显示器列表、任一显示器或视频轨对应关系变化时发送 `Displays`（内容相同不重发）。
 - **INPUT**：键按物理位置传 HID usage；锁定键状态以 `LockState` 纠正；系统命令只由主控菜单显式发送，被控先释放该参与者按住的键和按钮再执行。有键按下时主控在 50 ms 内没有发出任何 INPUT 帧就发一次 `Heartbeat`；被控在 `max(150 ms, 3×RTT + 50 ms)`（RTT 上限按 3 秒计，无 RTT 时取 150 ms）内收不到该参与者的 INPUT 即释放其按住的键。
 - **多人**：每位参与者各自一个 PeerConnection。同一时刻只有一位参与者持有控制权：开启键鼠控制时以 SESSION `ControlTurn` 获取，先到先得（重连后的自动恢复只在独自一人时生效）；只在持有者关闭键鼠控制、离开或失去 `control` 能力时释放。被控只注入持有者的键鼠，其他人的键鼠被丢弃。其他参与者共用一路多人观看流（1080p、60 fps、观影模式，见 v2-design §4.4）。被控以 `PARTICIPANTS` 广播列表与控制权持有者（列表或持有者变化时），以 `CURSOR`（`pointers = true`）把其他参与者的指针转发给每位参与者（接收方空闲 3 秒后淡出）。
 - **PERMISSIONS**：握手完成后与生效能力变化时由被控发送（服务端 `session.permissions`、被控本机开关或“禁止控制”）；生效能力 = 授予能力（本账号设备与好友由服务端给出，直连时由被控按缓存；受信任设备为被控为它记录的能力；访客为访客默认权限）∩ 被控本机上限。主控据此启停文件、剪贴板等功能。
 - **HOST_EVENT**：被控在本机更新（`UPDATING`）、远程重启/关机前（`RESTARTING` / `SHUTTING_DOWN`，约 400 ms 后以 `host_closed` 结束会话）、即将睡眠（`SLEEPING`）、活动 Windows 会话变化（`SESSION_SWITCH`）时发送；参与者修改显示设置后被控向其他参与者发送 `DISPLAY_CHANGING`（`actor` 为修改者的昵称）。
-- **AUDIO**：被控发送当前音质 `hello`；主控以 `set{request, kbps}` 请求修改，被控回 `applied` 或 `rejected`（`request` 关联请求，不使用 FPP 的 `request id`）。
+- **AUDIO**：被控推送当前的 `AudioState`；主控以 `AudioRequest{kbps}` 请求修改，被控以修改后的 `AudioState` 回复，或回 `PeerError`。
 - **CLIPBOARD**：两端都可发请求。内容按需渲染：先推送 `Offer`（格式清单），应用粘贴时才 `Fetch`；内容 ≤ 32 KiB 在 `Data.inline` 中，更大时以 `TRANSFER{kind: CLIPBOARD, stream: 请求中的 stream, entry: 0}` 发送，按请求方的 `FLOW` 信用（单个格式最多 128 MiB；30 秒无进展即放弃并推送 `Abort`）。文件以 `ListFiles` 固定清单、`ReadFile` 按下标读取（每次 ≤ 1 MiB），结束后 `Release`。自动同步：被控只对单人会话中拥有 `clipboard` 的参与者、或多人会话中同时拥有 `clipboard` 与 `control` 的参与者这样做；主控只在控制模式且开启“剪贴板同步”时自动同步。`Pull`（C→H）让拥有 `clipboard` 的参与者手动获取被控当前剪贴板。失败码：`not_found`、`forbidden`、`unavailable`、`bad_request`、`internal`。
 - **FILE**：主控发请求，被控以 `RESPONSE` 回复，失败回复 `Failed`（`RESPONSE|ERROR` + `PeerError` 按 `Failed` 处理）；请求 60 秒未获响应视为失败。数据走 `TRANSFER{kind: FILE, stream: transfer}` 与 `FLOW{channel: BULK, kind: FILE}`。上传：`Upload` → `Plan` → `UploadStart` → 主控发送；下载：`Download` → `Manifest` → `DownloadStart` → `Accepted` → 被控发送。续传以接收方已有的字节数与末尾（≤ 1 MiB）的 SHA-256 核对。被控的磁盘操作在被控用户的普通权限进程中执行，拒绝 `..`、设备名、链接与重解析点。
 - **DRAG**：每次拖放有独立的文件交换，不读写系统剪贴板：`Packet.Files` 中携带一个完整的 CLIPBOARD 帧（`Offer`/`ListFiles`/`Files`/`ReadFile`/`Data`/`Release`/`Abort`），文件内容为 `TRANSFER{kind: DRAG}` / `FLOW{kind: DRAG}`。只接受文件格式（`Fetch`、`Pull` 回复 `forbidden`）。单个 DRAG 帧不超过 64 KiB。握手：被控发 `Hello(1)`，主控回 `HelloAck(1)`；之后双方都支持拖回主控。
-- **ANNOTATION**：被控在 session 通道打开时发送 `Hello(1)`（带本连接的 `token`）；主控以 `Command` 请求绘制，被控以 `Result` 回复（`request` 关联，不使用 FPP 的 `request id`）。单帧不超过 512 KiB。
+- **ANNOTATION**：被控声明 `annotation` 特性；主控的每个操作（开关、追加、替换、删除、清除、白板、放回）都是请求，被控执行后回空响应或 `PeerError`。被控撤下批注层（传输中断、本参与者停止观看）时推送 `reset`。单帧不超过 512 KiB。
 - **PORT**：主控分配 `stream` 并发 `Open`；目标可以是任意地址，主机名在被控侧解析（超时 5 秒），TCP 连接超时 10 秒；被控只连接单播地址。TCP 两个方向各自 `ShutdownWrite`，`Reset` 中止（`CLOSED` 表示正常结束）。UDP 数据报走 dgram 通道，超出预算只丢弃单个数据报；UDP 关联空闲 60 秒结束。转发规则只存在于主控，不上线。需要 `ports` 能力与被控本机端口转发开关。
 - **DIAGNOSTICS**：被控在 session 通道打开时与变化时推送 `Status{allowed}`（主控声明 `diagnostics` 且本参与者拥有 `diagnostics` 能力时为真）。主控登记流后发 `Request{stream}`，被控生成期间推送 `Progress`（约 200 ms 一次），以 `Ready{size, sha256, …}` 响应后以 `TRANSFER{kind: DIAGNOSTICS}` 发送；主控收到最后一块后核对大小与 SHA-256。被控只发送自己的脱敏诊断包，不接受路径。
 

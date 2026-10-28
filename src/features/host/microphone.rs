@@ -51,7 +51,7 @@ struct Packet {
 }
 #[derive(Debug)]
 struct PolicyFailure {
-    code: i32,
+    code: (&'static str, &'static str),
     detail: String,
 }
 impl std::fmt::Display for PolicyFailure {
@@ -95,7 +95,8 @@ impl PolicyFailure {
         }
     }
 }
-pub(crate) fn error_code(error: &anyhow::Error) -> i32 {
+/// The `PeerError` code and reason of a refused microphone request.
+pub(crate) fn refusal(error: &anyhow::Error) -> (&'static str, &'static str) {
     error
         .downcast_ref::<PolicyFailure>()
         .map_or(errors::INITIALIZATION_FAILED, |error| error.code)

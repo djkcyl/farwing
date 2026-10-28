@@ -546,7 +546,7 @@ impl Peer {
             let transport = state_transport.clone();
             Box::pin(async move {
                 if state == RTCPeerConnectionState::Connected {
-                    annotation.notify_hello().await;
+                    annotation.notify_reset().await;
                     if let Some(dtls) = dtls.upgrade() {
                         transport.srtp_overhead(dtls.rtp_authentication_overhead().await);
                     }

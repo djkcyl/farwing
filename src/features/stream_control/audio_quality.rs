@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     media::audio::encoder::Quality,
-    protocol::audio_control::{self, Message},
+    protocol::audio_control::{self, Body},
 };
 use std::time::{Duration, Instant};
 
@@ -12,12 +12,12 @@ pub(super) struct State {
     confirmed: Option<Quality>,
     effective_bps: u32,
     revision: u64,
-    next: u64,
+    next: std::sync::atomic::AtomicU32,
     pending: Option<Pending>,
     error: Option<String>,
 }
 struct Pending {
-    id: u64,
+    id: u32,
     quality: Quality,
     at: Instant,
     sent: Option<tokio::sync::oneshot::Receiver<std::result::Result<(), String>>>,
@@ -37,7 +37,7 @@ impl State {
             confirmed: None,
             effective_bps: 0,
             revision: 0,
-            next: 1,
+            next: std::sync::atomic::AtomicU32::new(1),
             pending: None,
             error: None,
         }
@@ -125,17 +125,13 @@ impl StreamControlHandle {
         if state.confirmed == Some(quality) {
             return Ok(());
         }
-        let id = state.next;
-        state.next = state.next.wrapping_add(1);
+        let id = crate::protocol::peer::next_request_id(&state.next);
         let (done, sent) = tokio::sync::oneshot::channel();
         self.outgoing
             .send(OutgoingControlMessage {
                 annotation_generation: None,
                 sequence: 0,
-                payload: audio_control::encode(Message::Set {
-                    request: id,
-                    kbps: quality.kbps,
-                }),
+                payload: audio_control::request(id, quality.kbps),
                 protocol: StreamControlProtocol::CaptureSetting,
                 completion: Some(done),
             })
@@ -159,71 +155,59 @@ impl StreamControlHandle {
         state.error = None;
     }
     pub(super) fn handle_audio_quality(&self, bytes: &[u8]) -> Result<bool> {
-        let Some(message) = audio_control::decode(bytes)? else {
+        let Some(received) = audio_control::decode(bytes)? else {
             return Ok(false);
         };
         let mut state = lock(&self.audio_quality);
-        match message {
-            Message::Hello {
-                revision,
-                kbps,
-                effective_bps,
-            } => {
-                let quality = Quality { kbps };
-                quality.validate()?;
-                anyhow::ensure!(
-                    effective_bps > 0 && effective_bps <= kbps * 1000,
-                    "invalid audio rate"
-                );
-                if revision < state.revision {
-                    return Ok(true);
-                }
-                let first = !state.available;
-                state.available = true;
-                state.revision = revision;
-                state.confirmed = Some(quality);
-                state.effective_bps = effective_bps;
-                if state.pending.is_none() {
-                    if first {
-                        self.send_audio_quality(&mut state)?;
-                    } else if state.desired.is_some() {
-                        state.desired = Some(quality);
-                    }
-                }
-            }
-            Message::Applied {
-                request,
-                revision,
-                kbps,
-                effective_bps,
-            } => {
+        let message = match received.body {
+            Ok(message) => message,
+            Err(error) => {
                 if state
                     .pending
                     .as_ref()
-                    .is_some_and(|p| p.id == request && p.quality.kbps == kbps)
+                    .is_some_and(|p| p.id == received.request_id)
                 {
-                    anyhow::ensure!(
-                        effective_bps > 0 && effective_bps <= kbps * 1000,
-                        "invalid audio rate"
-                    );
-                    if revision >= state.revision {
-                        state.revision = revision;
-                        state.confirmed = Some(Quality { kbps });
-                        state.effective_bps = effective_bps;
-                    }
                     state.pending = None;
-                    state.error = None;
-                }
-            }
-            Message::Rejected { request, reason } => {
-                if state.pending.as_ref().is_some_and(|p| p.id == request) {
-                    state.pending = None;
-                    state.error =
-                        Some(crate::protocol::audio_control::reason_text(&reason).to_owned());
+                    state.error = Some(audio_control::reason_text(&error.reason).to_owned());
                     state.desired = state.confirmed;
                 }
+                return Ok(true);
             }
-            Message::Set { .. } => anyhow::bail!("unexpected audio request on viewer"),
+        };
+        let Some(Body::State(audio)) = message.body else {
+            anyhow::bail!("unexpected audio request on viewer");
+        };
+        let quality = Quality { kbps: audio.kbps };
+        quality.validate()?;
+        anyhow::ensure!(
+            audio.effective_bps > 0 && audio.effective_bps <= audio.kbps * 1000,
+            "invalid audio rate"
+        );
+        if received.response {
+            if !state
+                .pending
+                .as_ref()
+                .is_some_and(|p| p.id == received.request_id)
+            {
+                return Ok(true);
+            }
+            state.pending = None;
+            state.error = None;
+        }
+        if audio.revision < state.revision {
+            return Ok(true);
+        }
+        let first = !state.available;
+        state.available = true;
+        state.revision = audio.revision;
+        state.confirmed = Some(quality);
+        state.effective_bps = audio.effective_bps;
+        if state.pending.is_none() && !received.response {
+            if first {
+                self.send_audio_quality(&mut state)?;
+            } else if state.desired.is_some() {
+                state.desired = Some(quality);
+            }
         }
         Ok(true)
     }

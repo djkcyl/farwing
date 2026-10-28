@@ -93,31 +93,26 @@ impl StreamControlHandle {
         let metrics = Metrics::from_display(display);
         let wanted = color.map(|rgb| u32::from_be_bytes([255, rgb[0], rgb[1], rgb[2]]));
         let old = s.annotation.boards.get(&screen);
-        if s.annotation.native_token.is_some() {
-            if old.map(|b| b.color) == wanted {
-                if let Some(board) = s.annotation.boards.get_mut(&screen) {
-                    board.metrics = metrics;
-                }
-                return Ok(());
-            }
-            s.annotation.board_edit = Some(BoardEdit {
-                screen,
-                value: wanted.map(|color| Board { color, metrics }),
-                remaining: 1,
-            });
-            let command = crate::protocol::annotation::Command::new(
-                crate::protocol::annotation::Operation::Board(crate::protocol::annotation::Board {
-                    screen,
-                    color: wanted,
-                }),
-            );
-            if let Err(error) = self.send_native_draw(s, command, Pending::Board) {
-                s.annotation.uncertain(error.to_string());
-                return Err(error);
+        if old.map(|b| b.color) == wanted {
+            if let Some(board) = s.annotation.boards.get_mut(&screen) {
+                board.metrics = metrics;
             }
             return Ok(());
         }
-        bail!("{}", t().features.annotation_remote_not_ready)
+        s.annotation.board_edit = Some(BoardEdit {
+            screen,
+            value: wanted.map(|color| Board { color, metrics }),
+            remaining: 1,
+        });
+        let op = Op::Board(ann::Board {
+            screen,
+            color: wanted,
+        });
+        if let Err(error) = self.send_op(s, op, Pending::Board) {
+            s.annotation.uncertain(error.to_string());
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub(super) fn refresh_board(&self, s: &mut StreamControlState) {

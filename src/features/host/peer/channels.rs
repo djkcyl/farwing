@@ -167,7 +167,6 @@ pub(super) async fn bind_channel(
         Box::pin(async {})
     }));
     let opening_target = report_target.clone();
-    let opening_annotation = annotation.clone();
     let opening_input = input.clone();
     channel.on_open(Box::new(move || {
         Box::pin(async move {
@@ -197,11 +196,6 @@ pub(super) async fn bind_channel(
                 opening_kcp.set_control_stream(channel.id(), true);
             }
             if text {
-                if let Some(hello) = opening_annotation.hello(&channel) {
-                    if let Err(error) = channel.send(&Bytes::from(hello)).await {
-                        tracing::debug!(%error,"annotation capability send failed");
-                    }
-                }
                 return;
             }
             if file {
@@ -274,7 +268,7 @@ pub(super) async fn bind_channel(
             if text && crate::protocol::annotation::is_packet(&message.data) {
                 if let Some(channel) = weak.upgrade() {
                     if let Err(error) = annotation.receive(&channel, &message.data).await {
-                        tracing::warn!(%error,"native annotation packet rejected");
+                        tracing::warn!(%error, "annotation request rejected");
                     }
                 }
                 return;
@@ -311,14 +305,6 @@ pub(super) async fn bind_channel(
                 return;
             }
             if text {
-                match annotation.receive(&channel, &message.data).await {
-                    Ok(true) => return,
-                    Ok(false) => {}
-                    Err(error) => {
-                        tracing::warn!(%error, "host annotation request rejected");
-                        return;
-                    }
-                }
                 match clipboard.receive(clipboard_generation.unwrap(), &message.data) {
                     Ok(true) => return,
                     Ok(false) => {}
@@ -351,19 +337,15 @@ pub(super) async fn bind_channel(
                             let weak = weak.clone();
                             let cancel = cancel.clone();
                             tokio::spawn(async move {
-                                let (held, refusal, holder) = if lease.ask_control().await {
+                                let result = if lease.ask_control().await {
                                     control_turn(&lease, true, false)
                                 } else {
-                                    (
-                                        false,
-                                        crate::features::stream_control::control_turn::refusal::DECLINED,
-                                        String::new(),
-                                    )
+                                    Err(crate::features::stream_control::control_turn::refusal::DECLINED)
                                 };
                                 if let Some(channel) = weak.upgrade()
                                     && !cancel.is_cancelled()
                                     && let Err(error) = channel
-                                        .send(&Bytes::from(turn.response(held, refusal, holder)))
+                                        .send(&Bytes::from(turn.response(result)))
                                         .await
                                 {
                                     tracing::debug!(%error, "control request response failed");
@@ -371,12 +353,11 @@ pub(super) async fn bind_channel(
                             });
                             return;
                         }
-                        let (held, refusal, holder) =
-                            control_turn(&lease, turn.take, turn.automatic);
+                        let result = control_turn(&lease, turn.take, turn.automatic);
                         if let Some(channel) = weak.upgrade()
                             && !cancel.is_cancelled()
                             && let Err(error) = channel
-                                .send(&Bytes::from(turn.response(held, refusal, holder)))
+                                .send(&Bytes::from(turn.response(result)))
                                 .await
                         {
                             tracing::debug!(%error, "control token response failed");
@@ -400,8 +381,8 @@ pub(super) async fn bind_channel(
                                 let response = policy.response(
                                     result
                                         .as_ref()
-                                        .err()
-                                        .map_or(0, crate::features::host::microphone::error_code),
+                                        .map(drop)
+                                        .map_err(crate::features::host::microphone::refusal),
                                 );
                                 if let Err(error) =
                                     channel.send(&Bytes::from(response)).await
@@ -456,7 +437,9 @@ pub(super) async fn bind_channel(
                     }
                     if let Some(active) = responses.media_active {
                         audio.set_media_allowed(active);
-                        annotation.viewing(active);
+                        if annotation.viewing(active) {
+                            annotation.notify_reset().await;
+                        }
                     }
                     report_target.send_if_modified(|routes| routes.received(&responses));
                     if let Some(channel) = weak.upgrade() {
@@ -584,7 +567,7 @@ pub(super) async fn publish_state(
             last_audio_quality = None;
             last_grants = None;
         }
-        if let Some(hello) = audio.quality_hello()
+        if let Some(hello) = audio.quality_state()
             && last_audio_quality.as_ref() != Some(&hello)
             && let Some(channel) = routes.text.as_ref().and_then(std::sync::Weak::upgrade)
         {
@@ -693,31 +676,30 @@ pub(super) async fn publish_state(
     }
 }
 
-/// Take or release the control token for this participant: whether it
-/// holds the token now, and why not (a refusal code and the holder; the
-/// requester words it in its own language).
+/// Take or release the control token for this participant; a refused
+/// take answers with its code and reason (the requester words it).
 fn control_turn(
     lease: &crate::features::host::Lease,
     take: bool,
     automatic: bool,
-) -> (bool, i32, String) {
+) -> std::result::Result<(), (&'static str, &'static str)> {
     use crate::features::host::participants::{self, Refusal};
     use crate::features::stream_control::control_turn::refusal;
     let Some(key) = lease.participant() else {
-        return (false, refusal::UNAVAILABLE, String::new());
+        return Err(refusal::UNAVAILABLE);
     };
     if !take {
         participants::release_control(key);
-        return (false, refusal::NONE, String::new());
+        return Ok(());
     }
     if !lease.requested() || !lease.granted(farwing_protocol::caps::CONTROL) {
-        return (false, refusal::NOT_ALLOWED, String::new());
+        return Err(refusal::NOT_ALLOWED);
     }
     match participants::take_control(key, automatic) {
-        Ok(()) => (true, refusal::NONE, String::new()),
-        Err(Refusal::NotAllowed) => (false, refusal::NOT_ALLOWED, String::new()),
-        Err(Refusal::HeldBy(holder)) => (false, refusal::HELD, holder),
-        Err(Refusal::Shared) => (false, refusal::SHARED, String::new()),
+        Ok(()) => Ok(()),
+        Err(Refusal::NotAllowed) => Err(refusal::NOT_ALLOWED),
+        Err(Refusal::HeldBy(_)) => Err(refusal::HELD),
+        Err(Refusal::Shared) => Err(refusal::SHARED),
     }
 }
 

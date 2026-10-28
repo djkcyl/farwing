@@ -208,32 +208,38 @@ impl Audio {
         }
         Some((report.0, quality, config))
     }
-    pub fn quality_hello(&self) -> Option<Vec<u8>> {
+    /// The rate push for the controller (while quality control is on).
+    pub fn quality_state(&self) -> Option<Vec<u8>> {
         if !self.0.quality_control.load(Ordering::Acquire) {
             return None;
         }
         let (revision, quality, config) = self.quality_status()?;
-        Some(crate::protocol::audio_control::encode(
-            crate::protocol::audio_control::Message::Hello {
+        Some(crate::protocol::audio_control::push(
+            crate::protocol::audio_control::AudioState {
                 revision,
                 kbps: quality.kbps,
                 effective_bps: config.bitrate,
             },
         ))
     }
+    /// The answer to a controller's rate request; `None` for other frames.
     pub fn quality_request(&self, bytes: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
-        use crate::protocol::audio_control::{self, Message};
-        if !self.0.quality_control.load(Ordering::Acquire) {
-            return Ok(None);
-        }
-        let Some(message) = audio_control::decode(bytes)? else {
+        use crate::protocol::audio_control::{self, AudioState, Body, reason};
+        let Some(received) = audio_control::decode(bytes)? else {
             return Ok(None);
         };
-        let Message::Set { request, kbps } = message else {
+        let (id, Ok(audio_control::AudioMessage {
+            body: Some(Body::Request(request)),
+        })) = (received.request_id, received.body)
+        else {
             anyhow::bail!("unexpected audio control message");
         };
-        use audio_control::reason;
-        let result = (|| -> Result<_, &'static str> {
+        anyhow::ensure!(id != 0 && !received.response, "audio request without an ID");
+        let kbps = request.kbps;
+        let result = (|| {
+            if !self.0.quality_control.load(Ordering::Acquire) {
+                return Err(reason::NOT_NEGOTIATED);
+            }
             if (crate::media::audio::encoder::Quality { kbps }).validate().is_err() {
                 return Err(reason::INVALID_QUALITY);
             }
@@ -242,20 +248,14 @@ impl Audio {
             }
             self.0.remote_quality.store(kbps, Ordering::Relaxed);
             self.0.wake.notify_one();
-            self.quality_status().ok_or(reason::NOT_NEGOTIATED)
-        })();
-        Ok(Some(audio_control::encode(match result {
-            Ok((revision, quality, config)) => Message::Applied {
-                request,
+            let (revision, quality, config) = self.quality_status().ok_or(reason::NOT_NEGOTIATED)?;
+            Ok(AudioState {
                 revision,
                 kbps: quality.kbps,
                 effective_bps: config.bitrate,
-            },
-            Err(reason) => Message::Rejected {
-                request,
-                reason: reason.into(),
-            },
-        })))
+            })
+        })();
+        Ok(Some(audio_control::response(id, result)))
     }
     pub fn configure(&self, encoding: Option<Config>) {
         let mut current = lock(&self.0.encoding);

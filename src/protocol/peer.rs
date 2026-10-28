@@ -13,6 +13,7 @@ pub(crate) use farwing_protocol::peer::{FrameType, Header, Hello, Role, channel,
 use prost::Message as _;
 
 /// Encode a frame without a request ID.
+#[cfg(test)]
 pub(crate) fn frame(kind: FrameType, body: &[u8]) -> Vec<u8> {
     farwing_protocol::peer::encode(kind, 0, 0, body)
 }
@@ -107,6 +108,52 @@ pub(crate) fn error_response(kind: FrameType, request_id: u32, code: &str, reaso
             reason: reason.to_owned(),
         },
     )
+}
+
+/// The answer to request `request_id`: `body`, or a refusal (code, reason).
+pub(crate) fn answer(
+    kind: FrameType,
+    request_id: u32,
+    result: std::result::Result<&impl prost::Message, (&str, &str)>,
+) -> Vec<u8> {
+    match result {
+        Ok(body) => framed(kind, flags::RESPONSE, request_id, body),
+        Err((code, reason)) => error_response(kind, request_id, code, reason),
+    }
+}
+
+/// One frame of a feature's type: a push or request (`response` false), a
+/// response, or a refusal (`body` is the `PeerError`).
+pub(crate) struct Received<M> {
+    pub request_id: u32,
+    pub response: bool,
+    pub body: std::result::Result<M, farwing_protocol::peer::PeerError>,
+}
+
+/// Decode a frame of type `kind` carrying `M` (at most `limit` bytes of
+/// body); `None` for any other frame.
+pub(crate) fn receive<M: prost::Message + Default>(
+    kind: FrameType,
+    bytes: &[u8],
+    limit: usize,
+) -> Result<Option<Received<M>>> {
+    let Ok((header, body)) = farwing_protocol::peer::decode(bytes) else {
+        return Ok(None);
+    };
+    if header.kind != kind as u16 {
+        return Ok(None);
+    }
+    anyhow::ensure!(body.len() <= limit, "{kind:?} message too large");
+    let body = if header.is_error() {
+        Err(farwing_protocol::peer::PeerError::decode(body)?)
+    } else {
+        Ok(M::decode(body)?)
+    };
+    Ok(Some(Received {
+        request_id: header.request_id,
+        response: header.is_response(),
+        body,
+    }))
 }
 
 /// The answer to a request of a type this side does not take; nothing for
@@ -237,6 +284,7 @@ fn host_static_features() -> BTreeMap<String, u32> {
         feature::FILES,
         feature::CURSOR_PARTICIPANTS,
         feature::VIDEO_RECOVERY,
+        feature::ANNOTATION,
     ])
 }
 

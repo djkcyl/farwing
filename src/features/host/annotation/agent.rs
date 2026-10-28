@@ -1,5 +1,6 @@
 //! Session-owned drawing on the interactive default desktop.
-use super::{Action, Context, model::Model};
+use super::{Context, Outcome, Refusal, model::Model};
+use crate::protocol::annotation::Op;
 use crate::platform::windows::{annotation::Overlay, host_service::process};
 use anyhow::Result;
 use std::time::{Duration, Instant};
@@ -10,15 +11,16 @@ pub(super) struct Backend {
     local: Option<Local>,
 }
 impl Backend {
+    /// Apply `op` (or only keep the overlay current) and show the result.
     pub fn exchange(
         &mut self,
         context: Context,
-        command: Option<Action>,
+        op: Option<&Op>,
         cancel: &CancellationToken,
-    ) -> Result<i32> {
+    ) -> Result<Outcome> {
         if !context.allowed || cancel.is_cancelled() {
             self.local = None;
-            return Ok(4);
+            return Ok(Err(Refusal::NotAllowed));
         }
         // The installed resident already owns this interactive session. Drawing
         // here retains its UIAccess token without elevating the user backend
@@ -26,28 +28,28 @@ impl Backend {
         let session = process::session(std::process::id())?;
         if session == 0 || session != process::active_session() {
             self.local = None;
-            return Ok(2);
+            return Ok(Err(Refusal::SignedOut));
         }
-        let opening = command.as_ref().and_then(Action::toggle) == Some(true);
-        let closing = command.as_ref().and_then(Action::toggle) == Some(false);
+        let opening = matches!(op, Some(Op::Show(true)));
+        let closing = matches!(op, Some(Op::Show(false)));
         if self.local.is_none() && !opening {
-            return Ok(if closing || command.is_none() { 0 } else { 4 });
+            return Ok(if closing || op.is_none() {
+                Ok(())
+            } else {
+                Err(Refusal::Off)
+            });
         }
         if self.local.is_none() {
             if !process::logged_on(session) {
-                return Ok(2);
+                return Ok(Err(Refusal::SignedOut));
             }
             self.local = Some(Local::new()?);
         }
-        let code = self
-            .local
-            .as_mut()
-            .unwrap()
-            .exchange(context, command.as_ref())?;
+        let outcome = self.local.as_mut().unwrap().exchange(context, op)?;
         if closing {
             self.local = None;
         }
-        Ok(code)
+        Ok(outcome)
     }
 }
 
@@ -57,7 +59,7 @@ struct Local {
     overlay: Overlay,
     shown: bool,
     revision: u64,
-    desktop: Option<(Instant, i32)>,
+    desktop: Option<(Instant, Outcome)>,
 }
 impl Local {
     fn new() -> Result<Self> {
@@ -70,32 +72,32 @@ impl Local {
             desktop: None,
         })
     }
-    fn exchange(&mut self, context: Context, command: Option<&Action>) -> Result<i32> {
+    fn exchange(&mut self, context: Context, op: Option<&Op>) -> Result<Outcome> {
         self.overlay.pump();
         self.model.reconcile(&self.context, &context);
         self.context = context;
         let desktop = match self
             .desktop
-            .filter(|(at, _)| command.is_none() && at.elapsed() < Duration::from_millis(50))
+            .filter(|(at, _)| op.is_none() && at.elapsed() < Duration::from_millis(50))
         {
-            Some((_, code)) => code,
+            Some((_, desktop)) => desktop,
             None => {
-                let code = if !process::logged_on(process::active_session()) {
-                    2
+                let desktop = if !process::logged_on(process::active_session()) {
+                    Err(Refusal::SignedOut)
                 } else if !crate::features::host::clipboard::agent::desktop_available() {
-                    3
+                    Err(Refusal::Locked)
                 } else {
-                    0
+                    Ok(())
                 };
-                self.desktop = Some((Instant::now(), code));
-                code
+                self.desktop = Some((Instant::now(), desktop));
+                desktop
             }
         };
         if !self.context.allowed {
             self.model.clear();
         }
-        let code = command.map_or(0, |c| self.model.apply_action(&self.context, c, desktop));
-        let visible = self.model.enabled && self.context.allowed && desktop == 0;
+        let outcome = op.map_or(Ok(()), |op| self.model.apply(&self.context, op, desktop));
+        let visible = self.model.enabled && self.context.allowed && desktop.is_ok();
         if !visible {
             self.overlay.hide();
         } else if !self.shown
@@ -121,6 +123,6 @@ impl Local {
         }
         self.shown = visible;
         self.revision = self.model.revision;
-        Ok(code)
+        Ok(outcome)
     }
 }

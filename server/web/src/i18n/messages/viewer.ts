@@ -114,7 +114,6 @@ export const zh = {
     noUser: '对方未登录用户，批注已关闭',
     locked: '对方已锁定，批注未完成',
     refused: '对方已拒绝批注操作',
-    failed: (code: number) => `批注操作未完成（${code}）`,
   },
   /** Toolbar, menus and notices of the viewer. */
   screen: {
@@ -435,7 +434,6 @@ export const en: typeof zh = {
     noUser: 'No user is signed in on the host; annotation is off',
     locked: 'The host is locked; annotation not applied',
     refused: 'The host refused the annotation',
-    failed: (code) => `Annotation not applied (${code})`,
   },
   screen: {
     display: 'Display',

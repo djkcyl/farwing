@@ -1,82 +1,79 @@
-//! Wire-specific reply validation. Editor state only observes completed effects.
+//! `ANNOTATION` requests and the host's answers. Editor state only observes
+//! completed effects.
 use super::*;
+use crate::features::stream_control::wire::request_id;
+use crate::protocol::annotation::{self as ann, Op};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Outcome {
-    Applied,
-    NotLoggedIn,
-    Locked,
-    Rejected,
-    Unknown(i32),
-}
-impl From<i32> for Outcome {
-    fn from(code: i32) -> Self {
-        match code {
-            0 => Self::Applied,
-            2 => Self::NotLoggedIn,
-            3 => Self::Locked,
-            4 => Self::Rejected,
-            other => Self::Unknown(other),
-        }
-    }
-}
-impl Outcome {
-    pub(super) fn message(self) -> String {
-        match self {
-            Self::NotLoggedIn => t().features.annotation_host_signed_out.into(),
-            Self::Locked => t().features.annotation_host_locked.into(),
-            Self::Rejected => t().features.annotation_rejected.into(),
-            Self::Unknown(code) => (t().features.annotation_failed_code)(code),
-            Self::Applied => unreachable!("successful operation has no error message"),
-        }
-    }
-}
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Reply {
-    Native,
-}
 pub(super) struct InFlight {
     pub effect: Pending,
-    pub reply: Reply,
     pub sent: Instant,
 }
-impl StreamControlHandle {
-    pub(super) fn send_draw(
-        &self,
-        s: &mut StreamControlState,
-        request: PbDrawRequest,
-        pending: Pending,
-    ) -> Result<i64> {
-        // Annotation always travels as native ANNOTATION frames.
-        if s.annotation.native_token.is_none() {
-            bail!("{}", t().features.annotation_remote_not_ready);
-        }
-        self.send_native_draw(
-            s,
-            crate::protocol::annotation::Command::new(
-                crate::protocol::annotation::Operation::Draw(request),
-            ),
-            pending,
-        )
+
+/// The host's refusal `reason`, worded here.
+pub(super) fn refusal_text(reason: &str) -> String {
+    let t = t();
+    if reason == ann::reason::SIGNED_OUT.1 {
+        t.features.annotation_host_signed_out
+    } else if reason == ann::reason::LOCKED.1 {
+        t.features.annotation_host_locked
+    } else {
+        t.features.annotation_rejected
     }
-    pub(super) fn enqueue_annotation(
-        &self,
-        s: &mut StreamControlState,
-        seq: i64,
-        payload: Vec<u8>,
-        effect: Pending,
-        reply: Reply,
-    ) -> Result<i64> {
+    .into()
+}
+
+impl StreamControlHandle {
+    /// An `ANNOTATION` frame: the answer to one of our requests, or the
+    /// host's `Reset`.
+    pub(crate) fn handle_annotation(&self, bytes: &[u8]) -> Result<bool> {
+        let Some(received) = ann::decode(bytes)? else {
+            return Ok(false);
+        };
+        let mut s = lock(&self.shared);
+        if !s.text_channel_open {
+            return Ok(true);
+        }
+        if received.response {
+            let result = received.body.map(drop).map_err(|error| error.reason);
+            s.annotation.complete(received.request_id, result);
+        } else if matches!(
+            received.body,
+            Ok(ann::Annotation {
+                op: Some(Op::Reset(_))
+            })
+        ) && (s.annotation.enabled || s.annotation.toggling() || s.annotation.uncertain)
+        {
+            tracing::info!("the host dropped its annotation overlay");
+            s.annotation.disconnect();
+        }
+        drop(s);
+        self.mouse.repaint();
+        Ok(true)
+    }
+    /// Send `op`; `effect` completes with the host's answer.
+    pub(super) fn send_op(&self, s: &mut StreamControlState, op: Op, effect: Pending) -> Result<()> {
+        ensure_ready(s)?;
+        if !annotation_supported(s) {
+            bail!("{}", t().features.annotation_unsupported);
+        }
+        anyhow::ensure!(
+            s.annotation.pending.len() < MAX_PENDING,
+            "{}",
+            t().features.annotation_requests_pending
+        );
+        let sequence = s.next_sequence;
+        let id = request_id(sequence);
+        let payload = ann::request(id, op)?;
+        s.next_sequence = sequence.wrapping_add(1);
         s.annotation.pending.insert(
-            seq,
+            id,
             InFlight {
                 effect,
-                reply,
                 sent: Instant::now(),
             },
         );
         let outgoing = OutgoingControlMessage {
-            sequence: seq,
+            sequence,
             payload,
             protocol: protocol(s),
             completion: None,
@@ -87,6 +84,21 @@ impl StreamControlHandle {
                 .uncertain(t().features.annotation_sender_stopped.into());
             bail!("{}", t().features.annotation_sender_stopped);
         }
-        Ok(seq)
+        Ok(())
+    }
+    pub(crate) fn annotation_message_current(&self, sequence: i64, generation: u64) -> bool {
+        let s = lock(&self.shared);
+        s.annotation.generation == generation
+            && s.annotation.pending.contains_key(&request_id(sequence))
+    }
+    pub(crate) fn annotation_send_failed(&self, sequence: i64, error: &str) {
+        let mut s = lock(&self.shared);
+        if let Some(p) = s.annotation.pending.remove(&request_id(sequence)) {
+            if let Pending::Toggle(enable) = p.effect {
+                s.annotation.enabled = !enable;
+            }
+            s.annotation
+                .uncertain((t().features.annotation_send_failed)(error));
+        }
     }
 }

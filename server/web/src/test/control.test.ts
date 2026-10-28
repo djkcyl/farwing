@@ -71,13 +71,10 @@ describe('session', () => {
     );
     expect(spaced(fpp.turnRequest(true, true))).toBe('8a 01 04 08 01 10 01');
     expect(spaced(fpp.turnRequest(false))).toBe('8a 01 00');
-    const held = fpp.parseSession(Uint8Array.from([0xba, 0x01, 0x02, 0x08, 0x01]));
-    expect(held).toEqual({ kind: 'turn_result', held: true, refusal: 0, holder: '' });
     expect(spaced(fpp.microphonePolicy(true))).toBe('82 01 02 08 01');
     expect(spaced(fpp.microphonePolicy(false))).toBe('82 01 00');
-    expect(fpp.parseSession(Uint8Array.from([0xb2, 0x01, 0x00]))).toEqual({ kind: 'microphone_result', code: 0 });
-    const denied = fpp.parseSession(Uint8Array.from([0xb2, 0x01, 0x05, 0x08, 0x86, 0xe0, 0x80, 0x70]));
-    expect(denied).toEqual({ kind: 'microphone_result', code: 0x0e003006 });
+    // Refusals come as PeerError reasons.
+    expect(fpp.microphoneError('component_unavailable')).not.toBe(fpp.microphoneError('failed'));
     expect(fpp.parseSession(Uint8Array.from([0x1a, 0x02, 0x08, 0x01]))).toEqual({
       kind: 'microphone_state',
       state: 1,

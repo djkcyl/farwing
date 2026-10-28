@@ -19,48 +19,19 @@ pub(crate) struct TurnRequest {
     #[prost(bool, tag = "3")]
     pub ask: bool,
 }
-/// `ControlTurnResult` (H→C).
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct TurnResponse {
-    /// Whether the requester holds the token now.
-    #[prost(bool, tag = "1")]
-    pub held: bool,
-    /// Why a take was refused (one of [`refusal`]); the requester words it.
-    #[prost(int32, tag = "3")]
-    pub refusal: i32,
-    /// Who controls now, for [`refusal::HELD`].
-    #[prost(string, tag = "4")]
-    pub holder: String,
-}
-
-/// Why the host refused a take.
+/// Why the host refused a take (`PeerError` code and reason).
 pub(crate) mod refusal {
-    pub const NONE: i32 = 0;
+    use farwing_protocol::peer::error_code;
     /// This participant cannot control in this session.
-    pub const UNAVAILABLE: i32 = 1;
+    pub const UNAVAILABLE: (&str, &str) = (error_code::UNAVAILABLE, "unavailable");
     /// It was not granted control.
-    pub const NOT_ALLOWED: i32 = 2;
+    pub const NOT_ALLOWED: (&str, &str) = (error_code::FORBIDDEN, "not_allowed");
     /// Another participant controls.
-    pub const HELD: i32 = 3;
+    pub const HELD: (&str, &str) = (error_code::BUSY, "held");
     /// Shared view: control is not taken automatically.
-    pub const SHARED: i32 = 4;
+    pub const SHARED: (&str, &str) = (error_code::BUSY, "shared");
     /// The host's user declined a request for control (or nobody answered).
-    pub const DECLINED: i32 = 5;
-}
-
-impl TurnResponse {
-    /// The refusal in this device's language; `None` without one.
-    pub(crate) fn refusal_text(&self) -> Option<String> {
-        let text = &t().features;
-        Some(match self.refusal {
-            refusal::UNAVAILABLE => text.peer_control_not_available.to_owned(),
-            refusal::NOT_ALLOWED => text.peer_no_control_permission.to_owned(),
-            refusal::HELD => held_by(&self.holder),
-            refusal::SHARED => text.peer_control_not_automatic_shared.to_owned(),
-            refusal::DECLINED => text.peer_control_declined.to_owned(),
-            _ => return None,
-        })
-    }
+    pub const DECLINED: (&str, &str) = (error_code::FORBIDDEN, "declined");
 }
 
 /// Why a take is refused while `holder` (a nickname) controls.
@@ -87,31 +58,32 @@ impl StreamControlHandle {
         if !state.pb_connected || !state.text_channel_open {
             return;
         }
-        let sequence = state.next_sequence;
-        state.next_sequence = state.next_sequence.wrapping_add(1);
-        state.turn_request = take.then_some((sequence, automatic, ask));
-        let payload = super::wire::request(
-            sequence,
+        // Asking the host's user waits for an answer from a person.
+        let timeout = std::time::Duration::from_secs(if ask { 75 } else { 15 });
+        match self.send_request(
+            state,
             super::wire::SessionBody::ControlTurn(TurnRequest { take, automatic, ask }),
-        );
-        tracing::info!(take, automatic, ask, sequence, "control token requested");
-        let _ = self.outgoing.send(OutgoingControlMessage {
-            annotation_generation: None,
-            sequence,
-            payload,
-            protocol: StreamControlProtocol::CaptureSetting,
-            completion: None,
-        });
+            super::requests::Waiting::Turn { take },
+            timeout,
+        ) {
+            Ok(sequence) => {
+                if take {
+                    state.turn_request = Some((sequence, automatic, ask));
+                }
+                tracing::info!(take, automatic, ask, sequence, "control token requested");
+            }
+            Err(error) => tracing::debug!(%error, "control token request not sent"),
+        }
     }
 
     /// The host answered a take: a refusal turns control off again. An
     /// automatic take (restoring control) is refused without a notice: the
     /// user did not ask for control and turns it on by hand.
-    pub(super) fn turn_response_locked(
+    pub(super) fn turn_settled(
         &self,
         state: &mut StreamControlState,
         sequence: i64,
-        response: TurnResponse,
+        result: std::result::Result<(), super::requests::Refused>,
     ) {
         let Some((pending, automatic, ask)) = state.turn_request else {
             return;
@@ -120,34 +92,33 @@ impl StreamControlHandle {
             return;
         }
         state.turn_request = None;
-        if response.held {
+        let Err(refused) = result else {
             return;
-        }
-        tracing::info!(automatic, ask, refusal = response.refusal, "control token refused");
-        let notice = (!automatic).then(|| {
-            response
-                .refusal_text()
-                .unwrap_or_else(|| t().features.stream_control_refused.to_owned())
-        });
+        };
+        tracing::info!(automatic, ask, reason = %refused.reason, "control token refused");
+        let notice = (!automatic).then(|| refused.text.clone());
         // Without the grant, the notice offers to ask the host's user.
-        let offer = !automatic && !ask && response.refusal == refusal::NOT_ALLOWED;
+        let offer = !automatic && !ask && refused.reason == refusal::NOT_ALLOWED.1;
         self.leave_control_locked(state, notice, offer);
     }
 
-    /// A take that could not be sent: this participant does not control
-    /// (no notice for an automatic take, as for a refusal).
-    pub(super) fn turn_send_failed(&self, state: &mut StreamControlState, sequence: i64) -> bool {
-        let Some((pending, automatic, _)) = state.turn_request else {
-            return false;
-        };
-        if pending != sequence {
-            return false;
+    /// A refused take in this device's language.
+    pub(super) fn turn_refusal_text(&self, reason: &str) -> String {
+        let text = &t().features;
+        match reason {
+            r if r == refusal::UNAVAILABLE.1 => text.peer_control_not_available.to_owned(),
+            r if r == refusal::NOT_ALLOWED.1 => text.peer_no_control_permission.to_owned(),
+            r if r == refusal::HELD.1 => held_by(
+                &self
+                    .participants
+                    .controlled_by_other()
+                    .map(|m| m.nickname)
+                    .unwrap_or_default(),
+            ),
+            r if r == refusal::SHARED.1 => text.peer_control_not_automatic_shared.to_owned(),
+            r if r == refusal::DECLINED.1 => text.peer_control_declined.to_owned(),
+            _ => text.stream_control_refused.to_owned(),
         }
-        state.turn_request = None;
-        let notice =
-            (!automatic).then(|| t().features.stream_control_request_failed.to_owned());
-        self.leave_control_locked(state, notice, false);
-        true
     }
 
     /// `PARTICIPANTS` moved the token away from this participant while it

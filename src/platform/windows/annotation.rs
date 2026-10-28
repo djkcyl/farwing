@@ -1,5 +1,5 @@
 //! Click-through layered desktop surfaces. All handles belong to the drawing thread.
-use crate::{features::stream_control::annotation::wire::PbDrawStroke, media::capture::Screen};
+use crate::{media::capture::Screen, protocol::annotation::Stroke};
 use anyhow::{Result, ensure};
 use std::{collections::BTreeMap, ptr::null_mut};
 use windows::{
@@ -143,7 +143,7 @@ impl Overlay {
     pub fn render(
         &mut self,
         screens: &[Screen],
-        strokes: &BTreeMap<(i32, u32), std::sync::Arc<PbDrawStroke>>,
+        strokes: &BTreeMap<(i32, u32), std::sync::Arc<Stroke>>,
         boards: &BTreeMap<i32, u32>,
         dirty: &std::collections::BTreeSet<i32>,
         selected: Option<i32>,
@@ -350,7 +350,7 @@ impl Layer {
     fn draw<'a>(
         &mut self,
         board: Option<u32>,
-        strokes: impl Iterator<Item = &'a PbDrawStroke>,
+        strokes: impl Iterator<Item = &'a Stroke>,
     ) -> Result<()> {
         unsafe {
             check(GdipSetCompositingMode(
@@ -515,7 +515,7 @@ impl Drop for StrokeObjects {
 }
 fn draw_stroke(
     g: *mut GpGraphics,
-    stroke: &PbDrawStroke,
+    stroke: &Stroke,
     width: f32,
     height: f32,
     scale: f32,
@@ -528,8 +528,8 @@ fn draw_stroke(
     let Some(&first) = points.first() else {
         return Result::Ok(());
     };
-    let line = (stroke.line_width.unwrap_or(3.0) * scale).max(1.0);
-    let color = stroke.color.unwrap_or(0xffff4444);
+    let line = (stroke.width * scale).max(1.0);
+    let color = stroke.color;
     let mut objects = StrokeObjects {
         pen: null_mut(),
         brush: null_mut(),

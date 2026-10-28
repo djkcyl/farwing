@@ -1,14 +1,11 @@
 use super::*;
 
+/// Turn the remote microphone on or off → `Done`, or a `PeerError` with
+/// a reason of [`crate::protocol::microphone`].
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct PolicyRequest {
-    #[prost(int32, tag = "1")]
-    pub(super) policy: i32,
-}
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PolicyResponse {
-    #[prost(int32, tag = "1")]
-    pub error_code: i32,
+    #[prost(bool, tag = "1")]
+    pub(crate) enabled: bool,
 }
 
 impl StreamControlHandle {
@@ -48,9 +45,6 @@ impl StreamControlHandle {
         state: &mut StreamControlState,
         enabled: bool,
     ) -> Result<()> {
-        let sequence = state.next_sequence;
-        state.next_sequence = state.next_sequence.wrapping_add(1);
-        self.microphone.request(sequence, enabled);
         if !state.pb_connected || !state.text_channel_open {
             self.microphone.disconnect();
             if enabled {
@@ -58,26 +52,17 @@ impl StreamControlHandle {
             }
             return Ok(());
         }
-        let payload = super::wire::request(
-            sequence,
-            super::wire::SessionBody::MicrophonePolicy(PolicyRequest {
-                policy: i32::from(enabled),
-            }),
-        );
-        if self
-            .outgoing
-            .send(OutgoingControlMessage {
-                annotation_generation: None,
-                sequence,
-                payload,
-                protocol: StreamControlProtocol::CaptureSetting,
-                completion: None,
-            })
-            .is_err()
-        {
+        // The microphone waits for this request's answer.
+        self.microphone.request(state.next_sequence, enabled);
+        if let Err(error) = self.send_request(
+            state,
+            super::wire::SessionBody::MicrophonePolicy(PolicyRequest { enabled }),
+            super::requests::Waiting::Microphone,
+            std::time::Duration::from_secs(10),
+        ) {
             self.microphone
-                .send_failed(sequence, t().features.stream_session_ended);
-            bail!("{}", t().features.stream_session_ended);
+                .answered(state.next_sequence - 1, Err(error.to_string()));
+            return Err(error);
         }
         Ok(())
     }

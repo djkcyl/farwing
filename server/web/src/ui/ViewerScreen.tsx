@@ -445,14 +445,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
           },
           pointers: setPointers,
           hostEvent: (e) => setBanner(hostEventText(e)),
-          audio: (a) => {
-            if (a.kind === 'rejected') {
-              const m = messagesNow().viewer.screen;
-              const reasons: Record<string, string> = m.audioReasons;
-              toast(reasons[a.reason ?? ''] ?? m.audioRejected, 'red');
-            }
-            if (a.kbps) setAudioKbps(a.kbps);
-          },
+          audio: (a) => setAudioKbps(a.kbps),
           codecs: setCodecs,
           control: (c) => {
             setControl(c);
@@ -687,6 +680,13 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
         toast(messagesNow().viewer.screen.captureRejected, 'red'),
       );
   };
+
+  const setAudio = (kbps: number) =>
+    viewer.current?.setAudioKbps(kbps).catch((error: unknown) => {
+      const m = messagesNow().viewer.screen;
+      const reasons: Record<string, string> = m.audioReasons;
+      toast((error instanceof PeerRequestError && reasons[error.reason]) || m.audioRejected, 'red');
+    });
 
   // Control ------------------------------------------------------------------
 
@@ -1259,7 +1259,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
               <>
                 <div className="menu-label">{t.viewer.screen.audioQuality}</div>
                 {[64, 128, 192, 256].map((k) => (
-                  <MenuItem key={k} selected={audioKbps === k} onClick={() => viewer.current?.setAudioKbps(k)}>
+                  <MenuItem key={k} selected={audioKbps === k} onClick={() => setAudio(k)}>
                     {k} kbps
                   </MenuItem>
                 ))}

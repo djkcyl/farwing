@@ -147,15 +147,12 @@ SessionMessage { oneof body {
   CaptureControl capture = 5                        // → 1
   StreamRequest stream_request = 10                 // → 2
   DisplayRequest display = 11                       // → 1
-  PolicyRequest microphone_policy = 16              // → 22
-  TurnRequest control_turn = 17                     // → 23
-  // 响应（H→C）
-  PolicyResponse microphone_result = 22
-  TurnResponse control_turn_result = 23
+  PolicyRequest microphone_policy = 16              // → 空响应
+  TurnRequest control_turn = 17                     // → 空响应
 }}
 ```
 
-被控收到不认识的请求回 `RESPONSE|ERROR` + `PeerError{unsupported}`。
+“空响应”是不带 `body` 的 `SessionMessage`。被控收到不认识的请求回 `RESPONSE|ERROR` + `PeerError{unsupported}`。
 
 ### 推送
 
@@ -268,23 +265,26 @@ DisplayRequest { oneof op {
   ExitExclusive exit_exclusive = 6     // {}：恢复超级屏之前的布局
 }}
 
-PolicyRequest { policy: int32 = 1 }        // bit0：开启麦克风
-PolicyResponse { error_code: int32 = 1 }
+PolicyRequest { enabled: bool = 1 }        // 开启 / 关闭被控端的虚拟麦克风
 
 TurnRequest {
   take: bool = 1                           // true 获取控制权，false 释放
   automatic: bool = 2                      // 自动恢复上次的控制状态，不是用户操作
   ask: bool = 3                            // 没有 control 授权时，请被控端用户允许本次连接控制
 }
-TurnResponse {
-  held: bool = 1                           // 回复时本参与者是否持有控制权
-  refusal: int32 = 3                       // 拒绝原因：1 本次连接无法控制，2 未授权 control，
-                                           // 3 他人持有，4 多人时不自动获取，5 被控端用户未同意
-  holder: string = 4                       // refusal = 3 时的持有者
-}
 ```
 
-**ControlTurn**：主控开启键鼠控制时发送 `take = true`，关闭时发送 `take = false`。无人持有且本参与者拥有 `control` 能力时获得；他人持有或没有 `control` 能力时 `held = false`，主控关闭键鼠控制并按 `refusal` 提示。因未授权（`refusal = 2`）被拒时，提示里可以“请求本次控制”：主控再发 `take = true, ask = true`，被控端弹出“请求键鼠控制 · 仅本次连接”，用户允许后本参与者在本次连接内拥有 `control`（`PERMISSIONS` 随之包含 `control`，主人收回控制权时失效，不写入受信任设备），回复 `held = true`；拒绝或 60 秒无人回应时 `refusal = 5`。等待期间控制通道照常工作。`automatic = true` 时，只有本参与者已经持有、或会话中只有它一人才会获得；否则 `held = false`，主控静默回到仅观看。获取请求发不出去或被控回 `ERROR` 时，主控同样关闭键鼠控制（提示“未能向被控端请求键鼠控制权”，`automatic` 时不提示）。释放总是成功。控制权的其他变化（持有者离开、失去 `control` 能力）只经 `PARTICIPANTS.controlling` 通知。
+**ControlTurn**：主控开启键鼠控制时发送 `take = true`，关闭时发送 `take = false`。获得或释放时回空响应；拒绝时回 `PeerError`，主控关闭键鼠控制并按 `reason` 提示：
+
+| reason | code | 含义 |
+|--------|------|------|
+| `unavailable` | unavailable | 本次连接无法控制 |
+| `not_allowed` | forbidden | 没有 `control` 能力 |
+| `held` | busy | 他人持有（持有者见 `PARTICIPANTS.controlling`） |
+| `shared` | busy | 多人会话中不自动获取 |
+| `declined` | forbidden | 被控端用户未同意本次控制 |
+
+因 `not_allowed` 被拒时，提示里可以“请求本次控制”：主控再发 `take = true, ask = true`，被控端弹出“请求键鼠控制 · 仅本次连接”，用户允许后本参与者在本次连接内拥有 `control`（`PERMISSIONS` 随之包含 `control`，主人收回控制权时失效，不写入受信任设备）；拒绝或 60 秒无人回应时为 `declined`。等待期间控制通道照常工作。`automatic = true` 时，只有本参与者已经持有、或会话中只有它一人才会获得；否则回 `shared`，主控静默回到仅观看。请求发不出去或超时，主控同样关闭键鼠控制（`automatic` 时不提示）。释放总是成功。控制权的其他变化（持有者离开、失去 `control` 能力）只经 `PARTICIPANTS.controlling` 通知。
 
 **StreamRequest**：被控把变化合并进本参与者的设置，应用到它所有的视频轨（正在采集的与暂停的），以之后的 `StreamState` 回复。做不到的部分（解码器或编码器不支持 4:4:4、显示器不是 HDR、帧率高于屏幕刷新率、所要编码不可用）照常回复，`StreamState.tracks` 写明实际发送的，主控据此提示。拒绝时回 `PeerError`：`updating`（busy，被控正在更新）、`invalid`（bad_request，数值越界）。光标、观影等不影响码率的字段变化不会让自动画质重新选档。
 
@@ -305,18 +305,24 @@ TurnResponse {
 
 物理屏不支持的尺寸不会自动转成超级屏：主控先请用户确认，再发 `enter_exclusive`。进入超级屏时，发起者正在采集的屏幕暂停并等待原显示器回来；无论谁退出超级屏，这些屏幕都会在原显示器恢复后继续。
 
-**MicrophoneResult 错误码**（`src/protocol/microphone.rs`）：0 成功；`0x0e003001` 虚拟音频组件不可用；`0x0e003006` 不允许（需要 `microphone` 能力与被控本机许可）；`0x0e003012` 初始化失败。
+**麦克风请求**（`src/protocol/microphone.rs`）：成功回空响应，状态随后以 `MicrophoneState` 推送；拒绝的 `reason`：`component_unavailable`（unavailable，虚拟音频组件不可用）、`not_allowed`（forbidden，需要 `microphone` 能力与被控本机许可）、`initialization_failed`（internal）。
 
-## AUDIO（0x0202，JSON）—— `src/protocol/audio_control.rs`
+## AUDIO（0x0202）—— `src/protocol/audio_control.rs`
 
-```json
-{"kind": "hello",    "revision": 3, "kbps": 128, "effective_bps": 128000}          // H→C：当前桌面声音码率
-{"kind": "set",      "request": 7, "kbps": 192}                                     // C→H：请求修改
-{"kind": "applied",  "request": 7, "revision": 4, "kbps": 192, "effective_bps": 192000}  // H→C
-{"kind": "rejected", "request": 7, "message": "…"}                                 // H→C
+```
+AudioMessage { oneof body {
+  AudioState state = 1          // H→C 推送；也是 request 的响应
+  AudioRequest request = 2      // C→H 请求
+}}
+AudioState {
+  revision: uint64 = 1          // 每次变化递增，主控丢弃更旧的
+  kbps: uint32 = 2              // 本参与者的桌面声音码率档位
+  effective_bps: uint32 = 3     // 编码器实际码率（bit/s）
+}
+AudioRequest { kbps: uint32 = 1 }   // 64 | 128 | 192 | 256
 ```
 
-帧体不超过 2048 字节；`request` 关联请求，帧头 `request id` 为 0。
+被控在声音轨协商后推送 `AudioState`，变化时再推。请求以修改后的 `AudioState` 回复；拒绝的 `reason`：`invalid_quality`（bad_request，不是可选档位）、`not_allowed`（forbidden，本次会话不允许桌面声音）、`not_negotiated`（unavailable，没有声音轨）。帧体不超过 2048 字节。
 
 ## HOST_EVENT（0x0203，被控→主控）—— `src/protocol/host_event.rs`
 
@@ -558,51 +564,34 @@ DragImage {
 
 单个 DRAG 帧不超过 64 KiB。`files` 中的 CLIPBOARD 帧只用于本次拖放的文件交换，数据为 `TRANSFER{kind: DRAG}`（farwing-protocol.md §5.8）。v1 的 `data`（tag 10）已删除。
 
-## ANNOTATION（0x0601）—— `src/protocol/annotation.rs`、`src/features/stream_control/annotation/wire.rs`
+## ANNOTATION（0x0601）—— `src/protocol/annotation.rs`
+
+被控以 HELLO 特性 `annotation` 提供批注。除 `reset` 外都是主控的请求，被控执行后回空响应，或回 `PeerError`。
 
 ```
-Packet {
-  token: fixed64 = 1        // 被控为本连接生成，非 0
-  request: int64 = 2        // 主控递增的请求号；Result 回写同一值
-  oneof payload {
-    uint32 hello = 3        // 被控 → 主控：批注版本（1）
-    Command command = 4     // 主控 → 被控
-    int32 result = 5        // 被控 → 主控：0 已执行，2 被控未登录，3 被控已锁定，4 拒绝
-  }
-}
-Command { oneof operation {
-  PbDrawRequest draw = 1
-  Object replace = 2        // 替换一笔
-  Batch batch = 3
-  Board board = 4           // 白板
-  bool clear = 5            // false 清除笔迹；true 同时清除白板
+Annotation { oneof op {
+  bool show = 1                 // 开启 / 关闭批注层；关闭时清空一切
+  Stroke draw = 2               // 给一笔追加点（第一次即新建），1–4096 个点
+  Stroke put = 3                // 整笔替换同 id 的一笔，至多 32768 个点
+  StrokeId erase = 4            // 删除一笔
+  bool clear = 5                // 清除全部笔迹；true 同时清除白板
+  Board board = 6               // 某屏的白板
+  Strokes restore = 7           // 一次放回多笔（至多 512），全部成功或都不生效
+  Reset reset = 8               // H→C 推送 {}：被控已撤下批注层，批注已关闭
 }}
-Batch { commands: repeated Command = 1 }
-Object { stroke: PbDrawStroke = 1 }
-Board { screen: int32 = 1, color: optional fixed32 = 2 }
-
-PbDrawRequest { oneof payload {
-  PbDrawStroke stroke = 1
-  PbDrawClear clear = 2
-  PbDrawToggle toggle = 3
-}}
-PbDrawPoint { x: float = 1, y: float = 2 }   // 屏内归一化
-PbDrawStroke {
-  stroke_id: uint32 = 1                 // 非 0；同一笔可分多次追加点
-  points: repeated PbDrawPoint = 2      // 1–4096 个
-  screen_id: optional int32 = 3         // 缺省为当前屏幕
-  line_width: optional float = 4        // (0, 64]，缺省 3
-  color: optional uint32 = 5            // 0xAARRGGBB，缺省 0xFFFF4444
+Stroke {
+  id: uint32 = 1                // 非 0，同屏唯一
+  screen: int32 = 2
+  points: repeated Point = 3    // Point { x: float = 1, y: float = 2 }，屏内归一化
+  width: float = 4              // (0, 64]，100% 缩放下的像素
+  color: fixed32 = 5            // 0xAARRGGBB
 }
-PbDrawClear {
-  clear_type: int32 = 1                 // 1 全部，2 指定笔
-  stroke_id: uint32 = 2                 // clear_type = 2 时非 0
-  screen_id: optional int32 = 3
-}
-PbDrawToggle { enable: bool = 1 }       // 开启 / 关闭批注（关闭时清空）
+StrokeId { id: uint32 = 1, screen: int32 = 2 }
+Board { screen: int32 = 1, color: optional fixed32 = 2 }   // 0xFFRRGGBB；缺省时撤下白板
+Strokes { strokes: repeated Stroke = 1 }
 ```
 
-单帧不超过 512 KiB。需要 `annotation` 能力。
+拒绝的 `reason`：`signed_out`（unavailable，被控端没有用户登录，批注随之关闭）、`locked`（unavailable，被控端已锁定）、`not_allowed`（forbidden，没有 `annotation` 能力或本参与者不在观看）、`off`（unavailable，批注层未开启）、`invalid`（bad_request，格式错误、屏幕不存在或超出上限）、`failed`（internal）。传输中断或本参与者停止观看时，被控撤下批注层并推送 `reset`。单帧不超过 512 KiB。
 
 ## PORT（0x0701）与 PORT_DGRAM（0x0702）—— `src/features/port_mapping/wire.rs`
 

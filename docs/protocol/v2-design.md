@@ -242,7 +242,7 @@ code: unsupported | bad_request | forbidden | not_found | busy | unavailable | i
 | PEN | 0x0105 | control | 笔样本（2026-10-17 实现） |
 | POINTER | 0x0106 | control | 参与者指针（§4.3） |
 | SESSION | 0x0201 | session | 媒体与显示控制（§6） |
-| AUDIO | 0x0202 | session | 音质与麦克风控制（原 AUDIO_QUALITY） |
+| AUDIO | 0x0202 | session | 桌面声音码率 |
 | HOST_EVENT | 0x0203 | session | 被控生命周期事件 |
 | CLIPBOARD | 0x0301 | session | 剪贴板控制面（§8.2，数据走 TRANSFER） |
 | FILE | 0x0401 | session | 文件管理与传输控制面 |
@@ -309,7 +309,8 @@ Hello {
 | 10 | `StreamRequest` | 2 `Stream` | 见 6.3 |
 | 5 | `Capture{screen_id, start, track?}` | 1 `Displays` | 开始/停止采集；`-1` 表示本会话全部屏幕（停止保留槽位，`start(-1)` 恢复）；`track` 让单画面的主控在同一条轨道上换屏 |
 | 11 | `Display{set_mode \| set_scale \| add_virtual \| remove \| enter_exclusive \| exit_exclusive}` | 1 `Displays` | 需要 `display` 能力；拒绝时 `PeerError` 带原因键（peer-messages.md）。物理屏不支持的尺寸不自动转超级屏 |
-| 16 | `MicrophonePolicy{policy: bit0 开启}` | 22 `MicrophoneResult{error_code}` | 0；`0x0e003001` 组件不可用；`0x0e003006` 不允许；`0x0e003012` 初始化失败。需要 `microphone` 能力 |
+| 16 | `MicrophonePolicy{enabled}` | 空 | 拒绝原因：`component_unavailable`、`not_allowed`、`initialization_failed`。需要 `microphone` 能力 |
+| 17 | `ControlTurn{take, automatic, ask}` | 空 | 拒绝原因：`unavailable`、`not_allowed`、`held`、`shared`、`declined`。获取需要 `control` 能力 |
 
 ### 6.3 StreamRequest
 

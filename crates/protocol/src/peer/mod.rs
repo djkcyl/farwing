@@ -58,6 +58,8 @@ pub mod feature {
     /// them.
     pub const TOUCH: &str = "touch";
     pub const PEN: &str = "pen";
+    /// Drawing on the host's screens (`ANNOTATION` frames).
+    pub const ANNOTATION: &str = "annotation";
 }
 
 /// Frame types.

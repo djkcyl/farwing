@@ -152,19 +152,20 @@ export const WIRE_CODEC: Record<VideoCodecId, number> = {
   [VideoCodec.AV1]: 3,
 };
 
-/// Why the host kept control, from its code (`control_turn.rs` `refusal`).
-function refusalText(code: number, holder: string): string {
+/// Why the host kept control, from its reason (`control_turn.rs`
+/// `refusal`); `holder` is who controls.
+function refusalText(reason: string, holder: string): string {
   const m = t().viewer.control;
-  switch (code) {
-    case 1:
+  switch (reason) {
+    case 'unavailable':
       return m.notAvailable;
-    case 2:
+    case 'not_allowed':
       return m.noPermission;
-    case 3:
+    case 'held':
       return m.otherControlling(holder || m.otherParticipant);
-    case 4:
+    case 'shared':
       return m.notAutomaticShared;
-    case 5:
+    case 'declined':
       return m.declined;
     default:
       return m.refused;
@@ -282,6 +283,7 @@ export class Viewer {
   /// The forwarder's stream this viewer chose (its quality setting).
   private layerChoice = 'auto';
   private acked = new Map<number, number>();
+  private audioState?: fpp.AudioState;
   private requests = new Map<string, { resolve(body: Uint8Array): void; reject(error: Error): void; timer: number }>();
   private clipboardParts = new fpp.Reassembly(48 * 1024 * 1024);
   private fileParts = new fpp.Reassembly(32 * 1024 * 1024);
@@ -293,6 +295,7 @@ export class Viewer {
   private wantControl = false;
   private mic?: { stream: MediaStream; ok: boolean; active: boolean };
   private streamState?: fpp.StreamState;
+  private people?: { participants: fpp.Participant[]; controlling: string };
   state: ViewerState = 'connecting';
   grants: string[] = [];
   readonly input: InputController;
@@ -325,7 +328,7 @@ export class Viewer {
       log: (line) => this.log(line),
     });
     this.annotation = new Annotation(
-      (frame) => this.sendFrame('farwing.session.v2', frame),
+      (body) => this.request(fpp.Type.ANNOTATION, body, 10_000),
       (state) => this.events.annotation?.(state),
     );
   }
@@ -887,6 +890,7 @@ export class Viewer {
         if (response) {
           this.helloAnswered = true;
           this.events.hostFeatures?.(hello.features);
+          this.annotation.setAvailable((hello.features.annotation ?? 0) > 0);
           window.clearInterval(this.helloTimer);
           this.helloTimer = 0;
           this.log(`hello answered by ${hello.clientVersion} (${label})`);
@@ -912,6 +916,7 @@ export class Viewer {
         return;
       case fpp.Type.PARTICIPANTS: {
         const people = fpp.parseParticipants(frame.body);
+        this.people = people;
         this.myId = people.participants.find((p) => p.you)?.id ?? this.myId;
         // The host took the token back (another participant, or the owner).
         if (this.controlHeld && !this.turnPending && people.controlling !== this.myId) {
@@ -924,7 +929,7 @@ export class Viewer {
         if (!response) void this.clipboard.handle(frame);
         return;
       case fpp.Type.ANNOTATION:
-        this.annotation.handle(frame.body);
+        if (!response) this.annotation.handle(frame.body);
         return;
       case fpp.Type.FILE:
         if (!response) this.files.handle(frame);
@@ -951,8 +956,8 @@ export class Viewer {
         this.events.hostEvent?.(fpp.parseHostEvent(frame.body));
         return;
       case fpp.Type.AUDIO: {
-        const state = fpp.parseJson<fpp.AudioState>(frame.body);
-        if (state) this.events.audio?.(state);
+        const state = fpp.parseAudio(frame.body);
+        if (state) this.onAudio(state);
         return;
       }
     }
@@ -999,11 +1004,16 @@ export class Viewer {
     this.events.streamState?.(state);
   }
 
-  setAudioKbps(kbps: number) {
-    this.sendFrame(
-      'farwing.session.v2',
-      fpp.encode(fpp.Type.AUDIO, fpp.json({ kind: 'set', request: this.nextRequest(), kbps })),
-    );
+  /// Ask for a desktop-audio rate; rejects with the host's reason.
+  async setAudioKbps(kbps: number) {
+    const state = fpp.parseAudio(await this.request(fpp.Type.AUDIO, fpp.audioRequest(kbps), 10_000));
+    if (state) this.onAudio(state);
+  }
+
+  private onAudio(state: fpp.AudioState) {
+    if (this.audioState && state.revision < this.audioState.revision) return;
+    this.audioState = state;
+    this.events.audio?.(state);
   }
 
   // Control token ---------------------------------------------------------------
@@ -1044,10 +1054,15 @@ export class Viewer {
     try {
       // The host's user has a minute to answer.
       const timeout = ask ? 75_000 : undefined;
-      const m = fpp.parseSession(await this.request(fpp.Type.SESSION, fpp.turnRequest(true, automatic, ask), timeout));
-      const held = m.kind === 'turn_result' && m.held;
-      message = m.kind === 'turn_result' && !held ? refusalText(m.refusal, m.holder) : undefined;
-      canAsk = m.kind === 'turn_result' && !held && m.refusal === 2 && !automatic && !ask;
+      let held = true;
+      try {
+        await this.request(fpp.Type.SESSION, fpp.turnRequest(true, automatic, ask), timeout);
+      } catch (error) {
+        if (!(error instanceof PeerRequestError) || !error.reason) throw error;
+        held = false;
+        message = refusalText(error.reason, this.holderName());
+        canAsk = error.reason === 'not_allowed' && !automatic && !ask;
+      }
       this.setControlHeld(held);
       this.wantControl = held;
       if (held) this.input.start();
@@ -1062,6 +1077,12 @@ export class Viewer {
     // may be asked about is the caller's to show.
     this.emitControl(automatic || canAsk ? undefined : message);
     return { held: this.controlHeld, pending: false, message, canAsk };
+  }
+
+  /// Who controls the host now, for a refusal.
+  private holderName(): string {
+    const holder = this.people?.participants.find((p) => p.id === this.people?.controlling);
+    return holder?.nickname ?? '';
   }
 
   async releaseControl() {
@@ -1087,8 +1108,12 @@ export class Viewer {
   // Microphone -------------------------------------------------------------------
 
   private async microphonePolicy(on: boolean) {
-    const m = fpp.parseSession(await this.request(fpp.Type.SESSION, fpp.microphonePolicy(on), 10_000));
-    if (m.kind === 'microphone_result' && m.code !== 0) throw new Error(fpp.microphoneError(m.code));
+    try {
+      await this.request(fpp.Type.SESSION, fpp.microphonePolicy(on), 10_000);
+    } catch (error) {
+      if (error instanceof PeerRequestError && error.reason) throw new Error(fpp.microphoneError(error.reason));
+      throw error;
+    }
     if (on && this.mic) {
       this.mic.ok = true;
       this.applyMicrophone();

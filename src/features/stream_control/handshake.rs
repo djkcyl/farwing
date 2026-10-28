@@ -44,13 +44,14 @@ impl StreamControlHandle {
             state.peer = Default::default();
             state.grants = None;
             state.annotation.disconnect();
-            state.annotation_extension = None;
             for (id, waiting) in state.requests.drain() {
                 self.settle(
                     &mut state,
                     id,
                     waiting,
-                    Err(t().features.stream_display_disconnected_unconfirmed.into()),
+                    Err(super::requests::Refused::local(
+                        t().features.stream_display_disconnected_unconfirmed,
+                    )),
                 );
             }
             state.topology.disconnect();
@@ -102,16 +103,11 @@ impl StreamControlHandle {
     }
 
     pub(crate) fn mark_send_failed(&self, sequence: i64, error: &str) {
-        if self.microphone.send_failed(sequence, error) {
-            return;
-        }
         let mut state = lock(&self.shared);
         let id = super::wire::request_id(sequence);
         if let Some(waiting) = state.requests.take(id) {
-            self.settle(&mut state, id, waiting, Err((t().features.stream_send_failed)(error)));
-            return;
-        }
-        if self.turn_send_failed(&mut state, sequence) {
+            let failure = super::requests::Refused::local((t().features.stream_send_failed)(error));
+            self.settle(&mut state, id, waiting, Err(failure));
             return;
         }
         fail_cursor_request(&mut state, sequence, error.to_owned());
@@ -159,7 +155,7 @@ impl StreamControlHandle {
     pub(crate) fn handle_protocol_message(&self, payload: &[u8]) -> Result<()> {
         let (header, body) = peer::decode(payload)?;
         match header.frame_type() {
-            Some(FrameType::Annotation) => return self.handle_native_annotation(payload).map(drop),
+            Some(FrameType::Annotation) => return self.handle_annotation(payload).map(drop),
             Some(FrameType::Audio) => return self.handle_audio_quality(payload).map(drop),
             Some(FrameType::Hello) => return self.handle_hello(payload),
             Some(FrameType::Cursor) => return self.handle_cursor(body),
@@ -195,7 +191,7 @@ impl StreamControlHandle {
             tracing::warn!(code = %error.code, reason = %error.reason, "host refused a session request");
             let mut state = lock(&self.shared);
             if let Some(waiting) = state.requests.take(received.request_id) {
-                let refusal = waiting.refusal(&error.reason);
+                let refusal = self.refusal(&waiting, &error.reason);
                 self.settle(&mut state, received.request_id, waiting, Err(refusal));
                 return Ok(());
             }
@@ -204,7 +200,6 @@ impl StreamControlHandle {
             self.mark_send_failed(received.sequence(), t().features.stream_host_refused_request);
             return Ok(());
         }
-        let sequence = received.sequence();
         let response = received.response;
         let Some(body) = received.body else {
             return Ok(());
@@ -238,17 +233,9 @@ impl StreamControlHandle {
             }
             SessionBody::Stream(stream) => apply_stream_state(&mut state, stream),
             SessionBody::Displays(list) => super::display_settings::apply_displays(&mut state, list),
-            body if response => match body {
-                SessionBody::MicrophoneResult(response) => {
-                    self.microphone.response(sequence, response.error_code);
-                }
-                SessionBody::ControlTurnResult(response) => {
-                    self.turn_response_locked(&mut state, sequence, response);
-                }
-                other => {
-                    tracing::debug!(message = other.name(), "unmatched session response")
-                }
-            },
+            other if response => {
+                tracing::debug!(message = other.name(), "unmatched session response")
+            }
             other => tracing::debug!(message = other.name(), "ignored session message"),
         }
         self.sync_stream_locked(&mut state);

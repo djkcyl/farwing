@@ -322,7 +322,6 @@ struct StreamControlState {
     clipboard_files_allowed: bool,
     remote_upgrade: Option<crate::features::remote_upgrade::RemoteUpgrade>,
     annotation: annotation::Annotation,
-    annotation_extension: Option<u64>,
     custom_bitrate_limit: u32,
     features: Option<crate::account::feature_ability::FeaturePolicy>,
     remote_notice: Option<(Instant, u64, String, bool)>,
@@ -429,7 +428,6 @@ impl StreamControlHandle {
             clipboard_files_allowed: true,
             remote_upgrade: None,
             annotation: Default::default(),
-            annotation_extension: None,
             custom_bitrate_limit: MAX_CUSTOM_BITRATE_MBPS,
             features: None,
             device_preferences: crate::features::viewing_settings::DevicePreferences {
