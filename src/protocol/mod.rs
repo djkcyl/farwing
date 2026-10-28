@@ -57,11 +57,6 @@ mod dispatch_tests {
                 "pointer input claimed {kind:?}"
             );
             assert_eq!(
-                super::annotation::is_packet(&bytes),
-                kind == FrameType::Annotation,
-                "annotation claimed {kind:?}"
-            );
-            assert_eq!(
                 super::drag_drop::is_packet(&bytes),
                 kind == FrameType::Drag,
                 "drag-drop claimed {kind:?}"

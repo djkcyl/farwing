@@ -210,20 +210,47 @@ pub(super) async fn bind_channel(
             }
         })
     }));
+    // Requests that wait (screens, capture restarts, the microphone, the
+    // annotation overlay) are served off the channel's read loop, in order.
+    let business = text.then(|| {
+        let (sender, requests) = tokio::sync::mpsc::channel::<Bytes>(64);
+        tokio::spawn(serve_business(
+            requests,
+            Business {
+                channel: Arc::downgrade(&channel),
+                screens: screens.clone(),
+                cancel: cancel.clone(),
+                report_target: report_target.clone(),
+                microphone: microphone.clone(),
+                audio: audio.clone(),
+                files: files.clone(),
+                annotation: annotation.clone(),
+            },
+        ));
+        sender
+    });
+    let annotations = text.then(|| {
+        let (sender, requests) = tokio::sync::mpsc::channel::<Bytes>(64);
+        tokio::spawn(serve_annotation(
+            requests,
+            annotation.clone(),
+            Arc::downgrade(&channel),
+            cancel.clone(),
+        ));
+        sender
+    });
     let weak = Arc::downgrade(&channel);
     channel.on_message(Box::new(move |message| {
         let weak = weak.clone();
         let control_ingress = control_ingress.clone();
-        let screens = screens.clone();
         let cancel = cancel.clone();
         let report_target = report_target.clone();
         let input = input.clone();
-        let microphone = microphone.clone();
-        let audio = audio.clone();
         let files = files.clone();
-        let annotation = annotation.clone();
         let clipboard = clipboard.clone();
         let diagnostics = diagnostics.clone();
+        let business = business.clone();
+        let annotations = annotations.clone();
         Box::pin(async move {
             if cancel.is_cancelled() {
                 return;
@@ -239,243 +266,304 @@ pub(super) async fn bind_channel(
                 }
                 return;
             }
-            if file {
-                // Bulk streams by kind: clipboard and drag data go to the
-                // clipboard backend, diagnostics credit to its sender, file
-                // streams below.
-                match clipboard.receive_bulk(&channel, &message.data) {
-                    Ok(true) => return,
-                    Ok(false) => {}
-                    Err(error) => {
-                        tracing::warn!(%error, "clipboard stream data rejected");
-                        return;
-                    }
-                }
-            }
-            if (text || file) && crate::diagnostics::remote::claims(&message.data) {
-                if let Err(error) = diagnostics.receive(&message.data) {
-                    tracing::warn!(%error, "diagnostics message rejected");
-                }
-                return;
-            }
-            if text && crate::protocol::drag_drop::is_packet(&message.data) {
-                if let Err(error) = clipboard.receive(clipboard_generation.unwrap(), &message.data) {
-                    tracing::warn!(%error,"native drag packet rejected");
-                }
-                return;
-            }
-            if text && crate::protocol::annotation::is_packet(&message.data) {
-                if let Some(channel) = weak.upgrade() {
-                    if let Err(error) = annotation.receive(&channel, &message.data).await {
-                        tracing::warn!(%error, "annotation request rejected");
-                    }
-                }
-                return;
-            }
-            if text || file {
-                if let Some(channel) = weak.upgrade() {
-                    match files.receive(&channel, &message.data).await {
-                        Ok(true) => return,
-                        Ok(false) => {}
-                        Err(error) => {
-                            tracing::warn!(%error, "host file message rejected");
-                            return;
-                        }
-                    }
-                }
-                if file {
-                    return;
-                }
-            }
-
-            if cancel.is_cancelled() {
-                return;
-            }
-            let Some(channel) = weak.upgrade() else {
+            // One decode, one owner per frame type.
+            use crate::protocol::peer::FrameType;
+            let Ok((header, _)) = farwing_protocol::peer::decode(&message.data) else {
                 return;
             };
-            if text
-                && !report_target
+            let kind = header.frame_type();
+            match kind {
+                Some(FrameType::Transfer | FrameType::Flow) => {
+                    // Streams by kind: clipboard and drag data go to the
+                    // clipboard backend, diagnostics to its sender, files below.
+                    if file {
+                        match clipboard.receive_bulk(&channel, &message.data) {
+                            Ok(true) => return,
+                            Ok(false) => {}
+                            Err(error) => {
+                                tracing::warn!(%error, "clipboard stream data rejected");
+                                return;
+                            }
+                        }
+                    }
+                    if crate::diagnostics::remote::claims(&message.data) {
+                        if let Err(error) = diagnostics.receive(&message.data) {
+                            tracing::warn!(%error, "diagnostics message rejected");
+                        }
+                        return;
+                    }
+                    if let Err(error) = files.receive(&channel, &message.data).await {
+                        tracing::warn!(%error, "host file message rejected");
+                    }
+                }
+                Some(FrameType::Diagnostics) => {
+                    if let Err(error) = diagnostics.receive(&message.data) {
+                        tracing::warn!(%error, "diagnostics message rejected");
+                    }
+                }
+                Some(FrameType::File) => {
+                    if let Err(error) = files.receive(&channel, &message.data).await {
+                        tracing::warn!(%error, "host file message rejected");
+                    }
+                }
+                _ if !text => {}
+                Some(FrameType::Drag) => {
+                    if let Err(error) = clipboard.receive(clipboard_generation.unwrap(), &message.data) {
+                        tracing::warn!(%error, "native drag packet rejected");
+                    }
+                }
+                Some(FrameType::Annotation) => {
+                    if let Some(annotations) = &annotations
+                        && annotations.try_send(message.data).is_err()
+                    {
+                        tracing::warn!("annotation requests piled up; one dropped");
+                    }
+                }
+                // Only the participant's current session channel.
+                _ if !report_target
                     .borrow()
                     .text
                     .as_ref()
-                    .is_some_and(|current| current.ptr_eq(&weak))
-            {
-                return;
-            }
-            if text {
-                match clipboard.receive(clipboard_generation.unwrap(), &message.data) {
-                    Ok(true) => return,
-                    Ok(false) => {}
-                    Err(error) => {
+                    .is_some_and(|current| current.ptr_eq(&weak)) => {}
+                Some(FrameType::Clipboard) => {
+                    if let Err(error) = clipboard.receive(clipboard_generation.unwrap(), &message.data) {
                         tracing::warn!(%error, "rejected host clipboard message");
-                        return;
                     }
-                }
-                match audio.quality_request(&message.data) {
-                    Ok(Some(response)) => {
-                        let _ = channel.send(&Bytes::from(response)).await;
-                        return;
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error,"invalid audio quality request");
-                        return;
-                    }
-                    Ok(None) => {}
-                }
-                match crate::features::stream_control::publisher::control_turn(&message.data) {
-                    Ok(Some(turn)) => {
-                        let lease = screens.lock().await.authorization();
-                        if turn.take
-                            && turn.ask
-                            && lease.requested()
-                            && !lease.granted(farwing_protocol::caps::CONTROL)
-                        {
-                            // The host's user answers within a minute; the
-                            // channel keeps serving meanwhile.
-                            let weak = weak.clone();
-                            let cancel = cancel.clone();
-                            tokio::spawn(async move {
-                                let result = if lease.ask_control().await {
-                                    control_turn(&lease, true, false)
-                                } else {
-                                    Err(crate::features::stream_control::control_turn::refusal::DECLINED)
-                                };
-                                if let Some(channel) = weak.upgrade()
-                                    && !cancel.is_cancelled()
-                                    && let Err(error) = channel
-                                        .send(&Bytes::from(turn.response(result)))
-                                        .await
-                                {
-                                    tracing::debug!(%error, "control request response failed");
-                                }
-                            });
-                            return;
-                        }
-                        let result = control_turn(&lease, turn.take, turn.automatic);
-                        if let Some(channel) = weak.upgrade()
-                            && !cancel.is_cancelled()
-                            && let Err(error) = channel
-                                .send(&Bytes::from(turn.response(result)))
-                                .await
-                        {
-                            tracing::debug!(%error, "control token response failed");
-                        }
-                        return;
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        tracing::warn!(%error, "invalid control token request");
-                        return;
-                    }
-                }
-                match crate::features::stream_control::publisher::microphone_policy(&message.data) {
-                    Ok(Some(policy)) => {
-                        let result = microphone.policy(policy.enabled).await;
-                        if let Err(error) = &result {
-                            tracing::warn!(%error,"host microphone request failed");
-                        }
-                        if let Some(channel) = weak.upgrade() {
-                            if !cancel.is_cancelled() {
-                                let response = policy.response(
-                                    result
-                                        .as_ref()
-                                        .map(drop)
-                                        .map_err(crate::features::host::microphone::refusal),
-                                );
-                                if let Err(error) =
-                                    channel.send(&Bytes::from(response)).await
-                                {
-                                    microphone.transport_lost();
-                                    tracing::debug!(%error,"host microphone response failed");
-                                }
-                            }
-                        }
-                        return;
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        tracing::warn!(%error,"invalid microphone envelope");
-                        return;
-                    }
-                }
-            }
-            tracing::debug!(
-                control,
-                bytes = message.data.len(),
-                tag = message.data.first().copied(),
-                "host business message received"
-            );
-            let responses = match farwing_protocol::peer::decode(&message.data)
-                .ok()
-                .and_then(|(header, _)| header.frame_type())
-            {
-                Some(crate::protocol::peer::FrameType::Hello) => {
-                    crate::features::stream_control::publisher::receive(&message.data)
-                }
-                Some(crate::protocol::peer::FrameType::Session) => {
-                    crate::features::stream_control::publisher::receive_session(
-                        &mut *screens.lock().await,
-                        &message.data,
-                    )
-                    .await
                 }
                 _ => {
-                    if let Some(reply) = crate::protocol::peer::unsupported(&message.data)
-                        && let Err(error) = channel.send(&Bytes::from(reply)).await
+                    if let Some(business) = &business
+                        && business.send(message.data).await.is_err()
                     {
-                        tracing::debug!(%error, "host unsupported-request reply failed");
-                    }
-                    return;
-                }
-            };
-            match responses {
-                Ok(responses) => {
-                    if let Some(caps) = responses.files {
-                        files.capabilities(caps);
-                    }
-                    if let Some(active) = responses.media_active {
-                        audio.set_media_allowed(active);
-                        if annotation.viewing(active) {
-                            annotation.notify_reset().await;
-                        }
-                    }
-                    report_target.send_if_modified(|routes| routes.received(&responses));
-                    if let Some(channel) = weak.upgrade() {
-                        for response in responses.messages {
-                            if cancel.is_cancelled() {
-                                break;
-                            }
-                            let result = channel.send(&Bytes::from(response)).await;
-                            if let Err(error) = result {
-                                tracing::warn!(%error,control,"host business response failed");
-                            }
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "host business request failed");
-                    // A request is always answered: the controller settles it
-                    // (and words the failure in its own language).
-                    if let Ok((header, _)) = farwing_protocol::peer::decode(&message.data)
-                        && header.request_id != 0
-                        && !header.is_response()
-                        && header.frame_type() == Some(crate::protocol::peer::FrameType::Session)
-                        && let Some(channel) = weak.upgrade()
-                    {
-                        let reply = crate::features::stream_control::wire::error_response(
-                            header.request_id,
-                            farwing_protocol::peer::error_code::INTERNAL,
-                            "",
-                        );
-                        if let Err(error) = channel.send(&Bytes::from(reply)).await {
-                            tracing::debug!(%error, "host business error reply failed");
-                        }
+                        tracing::debug!("host business requests closed");
                     }
                 }
             }
         })
     }));
+}
+
+/// What the session channel's business requests need.
+struct Business {
+    channel: std::sync::Weak<RTCDataChannel>,
+    screens: Arc<tokio::sync::Mutex<super::screens::Screens>>,
+    cancel: CancellationToken,
+    report_target: ReportTarget,
+    microphone: crate::features::host::microphone::Receiver,
+    audio: crate::features::host::audio::Audio,
+    files: crate::features::host::files::Receiver,
+    annotation: crate::features::host::annotation::Receiver,
+}
+
+/// Serve AUDIO, SESSION and HELLO requests of one session channel in
+/// order, off its read loop; anything else is answered `unsupported`.
+async fn serve_business(mut requests: tokio::sync::mpsc::Receiver<Bytes>, business: Business) {
+    while let Some(data) = requests.recv().await {
+        if business.cancel.is_cancelled() {
+            break;
+        }
+        let Some(channel) = business.channel.upgrade() else {
+            break;
+        };
+        business.serve(&channel, &data).await;
+    }
+}
+
+/// Annotation requests of one session channel, in order: each waits for
+/// the overlay to draw it.
+async fn serve_annotation(
+    mut requests: tokio::sync::mpsc::Receiver<Bytes>,
+    annotation: crate::features::host::annotation::Receiver,
+    channel: std::sync::Weak<RTCDataChannel>,
+    cancel: CancellationToken,
+) {
+    while let Some(data) = requests.recv().await {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let Some(channel) = channel.upgrade() else {
+            break;
+        };
+        if let Err(error) = annotation.receive(&channel, &data).await {
+            tracing::warn!(%error, "annotation request rejected");
+        }
+    }
+}
+
+impl Business {
+    async fn serve(&self, channel: &Arc<RTCDataChannel>, data: &[u8]) {
+        let Business {
+            channel: weak,
+            screens,
+            cancel,
+            report_target,
+            microphone,
+            audio,
+            files,
+            annotation,
+        } = self;
+        {
+            match audio.quality_request(data) {
+                Ok(Some(response)) => {
+                    let _ = channel.send(&Bytes::from(response)).await;
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!(%error,"invalid audio quality request");
+                    return;
+                }
+                Ok(None) => {}
+            }
+            match crate::features::stream_control::publisher::control_turn(data) {
+                Ok(Some(turn)) => {
+                    let lease = screens.lock().await.authorization();
+                    if turn.take
+                        && turn.ask
+                        && lease.requested()
+                        && !lease.granted(farwing_protocol::caps::CONTROL)
+                    {
+                        // The host's user answers within a minute; the
+                        // channel keeps serving meanwhile.
+                        let weak = weak.clone();
+                        let cancel = cancel.clone();
+                        tokio::spawn(async move {
+                            let result = if lease.ask_control().await {
+                                control_turn(&lease, true, false)
+                            } else {
+                                Err(crate::features::stream_control::control_turn::refusal::DECLINED)
+                            };
+                            if let Some(channel) = weak.upgrade()
+                                && !cancel.is_cancelled()
+                                && let Err(error) = channel
+                                    .send(&Bytes::from(turn.response(result)))
+                                    .await
+                            {
+                                tracing::debug!(%error, "control request response failed");
+                            }
+                        });
+                        return;
+                    }
+                    let result = control_turn(&lease, turn.take, turn.automatic);
+                    if let Some(channel) = weak.upgrade()
+                        && !cancel.is_cancelled()
+                        && let Err(error) = channel
+                            .send(&Bytes::from(turn.response(result)))
+                            .await
+                    {
+                        tracing::debug!(%error, "control token response failed");
+                    }
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "invalid control token request");
+                    return;
+                }
+            }
+            match crate::features::stream_control::publisher::microphone_policy(data) {
+                Ok(Some(policy)) => {
+                    let result = microphone.policy(policy.enabled).await;
+                    if let Err(error) = &result {
+                        tracing::warn!(%error,"host microphone request failed");
+                    }
+                    if let Some(channel) = weak.upgrade() {
+                        if !cancel.is_cancelled() {
+                            let response = policy.response(
+                                result
+                                    .as_ref()
+                                    .map(drop)
+                                    .map_err(crate::features::host::microphone::refusal),
+                            );
+                            if let Err(error) =
+                                channel.send(&Bytes::from(response)).await
+                            {
+                                microphone.transport_lost();
+                                tracing::debug!(%error,"host microphone response failed");
+                            }
+                        }
+                    }
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%error,"invalid microphone envelope");
+                    return;
+                }
+            }
+        }
+        tracing::debug!(
+            bytes = data.len(),
+            tag = data.first().copied(),
+            "host business message received"
+        );
+        let responses = match farwing_protocol::peer::decode(data)
+            .ok()
+            .and_then(|(header, _)| header.frame_type())
+        {
+            Some(crate::protocol::peer::FrameType::Hello) => {
+                crate::features::stream_control::publisher::receive(data)
+            }
+            Some(crate::protocol::peer::FrameType::Session) => {
+                crate::features::stream_control::publisher::receive_session(
+                    &mut *screens.lock().await,
+                    data,
+                )
+                .await
+            }
+            _ => {
+                if let Some(reply) = crate::protocol::peer::unsupported(data)
+                    && let Err(error) = channel.send(&Bytes::from(reply)).await
+                {
+                    tracing::debug!(%error, "host unsupported-request reply failed");
+                }
+                return;
+            }
+        };
+        match responses {
+            Ok(responses) => {
+                if let Some(caps) = responses.files {
+                    files.capabilities(caps);
+                }
+                if let Some(active) = responses.media_active {
+                    audio.set_media_allowed(active);
+                    if annotation.viewing(active) {
+                        annotation.notify_reset().await;
+                    }
+                }
+                report_target.send_if_modified(|routes| routes.received(&responses));
+                if let Some(channel) = weak.upgrade() {
+                    for response in responses.messages {
+                        if cancel.is_cancelled() {
+                            break;
+                        }
+                        let result = channel.send(&Bytes::from(response)).await;
+                        if let Err(error) = result {
+                            tracing::warn!(%error, "host business response failed");
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "host business request failed");
+                // A request is always answered: the controller settles it
+                // (and words the failure in its own language).
+                if let Ok((header, _)) = farwing_protocol::peer::decode(data)
+                    && header.request_id != 0
+                    && !header.is_response()
+                    && header.frame_type() == Some(crate::protocol::peer::FrameType::Session)
+                    && let Some(channel) = weak.upgrade()
+                {
+                    let reply = crate::features::stream_control::wire::error_response(
+                        header.request_id,
+                        farwing_protocol::peer::error_code::INTERNAL,
+                        "",
+                    );
+                    if let Err(error) = channel.send(&Bytes::from(reply)).await {
+                        tracing::debug!(%error, "host business error reply failed");
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub(super) async fn send_business(

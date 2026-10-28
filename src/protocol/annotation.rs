@@ -145,10 +145,6 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Option<Received>> {
     peer::receive(FrameType::Annotation, bytes, MAX_FRAME)
 }
 
-pub(crate) fn is_packet(bytes: &[u8]) -> bool {
-    peer::is_type(bytes, &[FrameType::Annotation])
-}
-
 /// Request `request_id` carrying `op`.
 pub(crate) fn request(request_id: u32, op: Op) -> Result<Vec<u8>> {
     let message = Annotation { op: Some(op) };
