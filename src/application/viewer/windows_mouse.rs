@@ -20,7 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Cursor, CursorGrabMode, CursorIcon, CustomCursor, Window};
 
-use super::windows_presenter::fit_rect;
+use super::windows_presenter::video_rect;
 use super::windows_presenter::title_bar_height_pixels;
 type VideoSize = Arc<Mutex<Option<(u32, u32)>>>;
 use crate::features::remote_input::{BUTTONS, MouseMode, RemoteInput};
@@ -139,15 +139,13 @@ impl Target {
         {
             return None;
         }
-        let (width, height) = self.control.presentation_size(self.track, (width, height));
-        let rect = fit_rect(
-            width,
-            height,
-            self.output[0],
-            self.output[1].saturating_sub(self.top).max(1),
+        let rect = video_rect(
+            self.control.presentation_size(self.track, (width, height)),
+            (self.output[0], self.output[1]),
+            self.top,
         );
         let x = point.x - rect.left;
-        let y = point.y - rect.top - self.top as i32;
+        let y = point.y - rect.top;
         let w = rect.right - rect.left;
         let h = rect.bottom - rect.top;
         if w <= 0 || h <= 0 || (!dragging && (x < 0 || y < 0 || x >= w || y >= h)) {
@@ -235,16 +233,11 @@ impl RawRouter {
         else {
             return false;
         };
-        let (width, height) = target
-            .control
-            .presentation_size(target.track, (width, height));
-        let rect = fit_rect(
-            width,
-            height,
-            target.output[0],
-            target.output[1].saturating_sub(target.top).max(1),
+        let rect = video_rect(
+            target.control.presentation_size(target.track, (width, height)),
+            (target.output[0], target.output[1]),
+            target.top,
         );
-        point.y -= target.top as i32;
         point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom
     }
     fn wheel(&self, owner: u64, delta: winit::event::MouseScrollDelta) {
@@ -900,20 +893,16 @@ impl WindowMouse {
                 && let Some((width, height)) = frame_size
             {
                 let size = window.inner_size();
-                let top = title_bar_height_pixels(window);
-                let (width, height) = control.presentation_size(track, (width, height));
-                let rect = fit_rect(
-                    width,
-                    height,
-                    size.width,
-                    size.height.saturating_sub(top).max(1),
+                let rect = video_rect(
+                    control.presentation_size(track, (width, height)),
+                    (size.width, size.height),
+                    title_bar_height_pixels(window),
                 );
                 remote_position = Some(winit::dpi::PhysicalPosition::new(
                     f64::from(rect.left)
                         + (point[0] * f64::from(rect.right - rect.left))
                             .min(f64::from((rect.right - rect.left - 1).max(0))),
                     f64::from(rect.top)
-                        + f64::from(top)
                         + (point[1] * f64::from(rect.bottom - rect.top))
                             .min(f64::from((rect.bottom - rect.top - 1).max(0))),
                 ));
@@ -951,16 +940,14 @@ impl WindowMouse {
             raw_since: 0,
         };
         if relative && let Some((width, height)) = frame_size {
-            let (width, height) = control.presentation_size(track, (width, height));
-            let rect = fit_rect(
-                width,
-                height,
-                size.width,
-                size.height.saturating_sub(target.top).max(1),
+            let rect = video_rect(
+                control.presentation_size(track, (width, height)),
+                (size.width, size.height),
+                target.top,
             );
             let local_center = winit::dpi::PhysicalPosition::new(
                 (rect.left + rect.right) / 2,
-                target.top as i32 + (rect.top + rect.bottom) / 2,
+                (rect.top + rect.bottom) / 2,
             );
             let mut center = POINT {
                 x: local_center.x,
@@ -1015,12 +1002,10 @@ impl WindowMouse {
                     (Some((width, height)), Some((_, remote_w, remote_h)))
                         if remote_w > 0 && remote_h > 0 =>
                     {
-                        let (width, height) = control.presentation_size(track, (width, height));
-                        let rect = fit_rect(
-                            width,
-                            height,
-                            size.width,
-                            size.height.saturating_sub(target.top).max(1),
+                        let rect = video_rect(
+                            control.presentation_size(track, (width, height)),
+                            (size.width, size.height),
+                            target.top,
                         );
                         // Scale by physical display area / peer
                         // screen area, not encoded resolution, with a 50% floor.

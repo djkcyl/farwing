@@ -5,7 +5,7 @@ use super::chrome::{
 };
 use super::connection::WindowsConnectionApp;
 use super::screen_windows::ScreenTabBar;
-use super::swapchain::fit_rect;
+use super::swapchain::video_rect;
 use super::worker::{RenderCommand, RenderWorker};
 use crate::application::viewer::windows_ui::{UiPresenter, UiTimingAudit, VideoWindow};
 use crate::application::viewer::{
@@ -415,14 +415,20 @@ impl ThreadedWindowsApp {
                 .stream_control
                 .pending_display_resolution(self._session.screen_id())
                 .is_some();
+        // Nothing covers the picture: no menu, pending tab or display change.
+        let unobstructed = !display_transition
+            && !self.stream_control_ui.open
+            && !self.plugin_menu_open
+            && !self.screen_tabs.is_pending()
+            && !window.is_minimized().unwrap_or(false);
+        // ...and the keyboard and pointer are the picture's.
+        let attentive = unobstructed
+            && window.has_focus()
+            && !self.egui_context.any_popup_open()
+            && !self.egui_context.text_edit_focused();
         if let Some(drag) = &self.drag {
-            let available = !display_transition
-                && !self.stream_control_ui.open
-                && !self.plugin_menu_open
-                && !self.screen_tabs.is_pending()
-                && !window.is_minimized().unwrap_or(false);
             drag.geometry(
-                available
+                unobstructed
                     .then(|| {
                         crate::application::viewer::windows_mouse::Target::for_window(
                             window,
@@ -435,15 +441,8 @@ impl ThreadedWindowsApp {
                     .flatten(),
             );
         }
-        if window.has_focus()
-            && !window.is_minimized().unwrap_or(false)
-            && !display_transition
+        if attentive
             && !self.stream_control.drag_drop().interactive()
-            && !self.stream_control_ui.open
-            && !self.plugin_menu_open
-            && !self.screen_tabs.is_pending()
-            && !self.egui_context.any_popup_open()
-            && !self.egui_context.text_edit_focused()
             && let Err(error) = self.stream_control.restore_input_control()
         {
             self.stream_control.mouse().fail(error.to_string());
@@ -451,14 +450,7 @@ impl ThreadedWindowsApp {
         self.renderer.plugins.input_context(
             self.stream_control.mouse().clone(),
             window_hwnd(window).map_or(0, |h| h.0 as u64),
-            window.has_focus()
-                && !window.is_minimized().unwrap_or(false)
-                && !self.plugin_menu_open
-                && !self.stream_control_ui.open
-                && !display_transition
-                && !self.screen_tabs.is_pending()
-                && !self.egui_context.any_popup_open()
-                && !self.egui_context.text_edit_focused(),
+            attentive,
         );
         self.mouse.refresh(
             window,
@@ -572,31 +564,27 @@ impl ThreadedWindowsApp {
             );
             let size = window.inner_size();
             let top = title_bar_height_pixels(window);
-            if let Some((w, h)) = plugin_video_size {
-                let r = fit_rect(w, h, size.width, size.height.saturating_sub(top));
-                let scale = ctx.pixels_per_point();
+            // The picture's rectangle in points, for overlays.
+            let scale = ctx.pixels_per_point();
+            let picture = plugin_video_size.map(|presentation| {
+                let r = video_rect(presentation, (size.width, size.height), top);
+                [
+                    r.left as f32 / scale,
+                    r.top as f32 / scale,
+                    r.right as f32 / scale,
+                    r.bottom as f32 / scale,
+                ]
+            });
+            if let Some(rect) = picture {
                 self.renderer.plugins.paint(
                     &ctx,
                     size.width as f32 / scale,
                     size.height as f32 / scale,
-                    [
-                        r.left as f32 / scale,
-                        (r.top as f32 + top as f32) / scale,
-                        r.right as f32 / scale,
-                        (r.bottom as f32 + top as f32) / scale,
-                    ],
+                    rect,
                 );
             }
-            let annotation_rect = plugin_video_size.map(|(w, h)| {
-                let r = fit_rect(w, h, size.width, size.height.saturating_sub(top));
-                let scale = ctx.pixels_per_point();
-                egui::Rect::from_min_max(
-                    egui::pos2(r.left as f32 / scale, (r.top as f32 + top as f32) / scale),
-                    egui::pos2(
-                        r.right as f32 / scale,
-                        (r.bottom as f32 + top as f32) / scale,
-                    ),
-                )
+            let annotation_rect = picture.map(|[left, top, right, bottom]| {
+                egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom))
             });
             self.annotation.draw(
                 ui,

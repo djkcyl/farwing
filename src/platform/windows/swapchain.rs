@@ -151,6 +151,21 @@ pub(crate) fn validate_visible_geometry(
     Ok(())
 }
 
+/// Where a `presentation`-sized picture sits in a window's client area of
+/// `client` pixels below its title bar (`top`): letterboxed, in client
+/// pixels. Input mapping, pointer capture and overlays all use this.
+pub(crate) fn video_rect(presentation: (u32, u32), client: (u32, u32), top: u32) -> RECT {
+    let mut rect = fit_rect(
+        presentation.0,
+        presentation.1,
+        client.0,
+        client.1.saturating_sub(top).max(1),
+    );
+    rect.top += top as i32;
+    rect.bottom += top as i32;
+    rect
+}
+
 pub(crate) fn fit_rect(
     video_width: u32,
     video_height: u32,
@@ -177,5 +192,21 @@ pub(crate) fn fit_rect(
         top: top as i32,
         right: left.saturating_add(width) as i32,
         bottom: top.saturating_add(height) as i32,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::video_rect;
+
+    #[test]
+    fn the_picture_sits_below_the_title_bar_letterboxed() {
+        // 16:9 in a 16:10 client with a 40-pixel title bar: bars above and
+        // below the picture, measured from the client's top.
+        let rect = video_rect((1920, 1080), (1920, 1240), 40);
+        assert_eq!((rect.left, rect.top, rect.right, rect.bottom), (0, 100, 1920, 1180));
+        // A wider client: bars left and right.
+        let rect = video_rect((1600, 1200), (2000, 1240), 40);
+        assert_eq!((rect.left, rect.top, rect.right, rect.bottom), (200, 40, 1800, 1240));
     }
 }

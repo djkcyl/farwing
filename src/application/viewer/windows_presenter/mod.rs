@@ -20,7 +20,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc as std_mpsc};
 use std::time::{Duration, Instant};
-pub(in crate::application::viewer) use swapchain::fit_rect;
+pub(in crate::application::viewer) use swapchain::video_rect;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
