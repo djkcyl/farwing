@@ -742,16 +742,9 @@ async fn run_authorized_account(
     let store = KeyringSessionStore::new()?;
     let mut client: Option<HostClient> = None;
     let mut presence: Option<ActivePresence> = None;
-    let mut preparation: Option<(
-        tokio_util::sync::CancellationToken,
-        tokio::task::JoinHandle<Result<()>>,
-    )> = None;
+    let mut probe: Option<crate::session::startup::Probe> = None;
     let mut initializers = tokio::task::JoinSet::new();
     let mut online = PresenceState::Offline;
-    // Going online is deferred until media capabilities are prepared, so the
-    // first incoming session does not race the encoder probe (about 10 s cold)
-    // against the controller's connection deadline. Bounded by a cap.
-    let mut presence_due: Option<std::time::Instant> = None;
     let mut device_changes = crate::account::device_change::relay::Relay::new();
     // Snapshot requests, answered once the state differs from what their
     // sender has (or at once without a revision).
@@ -766,8 +759,8 @@ async fn run_authorized_account(
     let result: Result<()> = async {
         while running() {
             if !vault::applies()? {break;}
-            if preparation.as_ref().is_some_and(|(_,task)|task.is_finished()) {
-                cancel_preparation(&mut preparation).await;
+            if let Some(Err(error)) = match &mut probe { Some(p) => p.ended().await, None => None } {
+                tracing::debug!(%error, "resident media preparation ended");
             }
             let command =
                 tokio::select! { value = incoming.recv() => value, _ = tick.tick() => None, _ = initializers.join_next(), if !initializers.is_empty() => None };
@@ -786,7 +779,7 @@ async fn run_authorized_account(
                         tracing::info!("background host pausing");
                         initializers.abort_all();
                         while initializers.join_next().await.is_some() {}
-                        cancel_preparation(&mut preparation).await;
+                        if let Some(p) = probe.take() { p.cancel().await; }
                         if let Some(current)=client.take(){
                             // Maintenance suspends hosting, not the account.
                             // Retiring the identity tells ActivePresence that
@@ -806,7 +799,7 @@ async fn run_authorized_account(
                     },
                     Request::Quiescent => {
                         if client.as_ref().is_none_or(|c|c.host.status().connection.is_none())
-                            && preparation.is_none() && initializers.is_empty() && super::activity::idle() && super::user_backend::idle()? {Ok(Reply::Done)}
+                            && probe.as_ref().is_none_or(|p| !p.running()) && initializers.is_empty() && super::activity::idle() && super::user_backend::idle()? {Ok(Reply::Done)}
                         else{Err(anyhow::anyhow!("{}", t().system.service_resident_sessions_active))}
                     },
                     Request::Reconnect => {
@@ -930,7 +923,6 @@ async fn run_authorized_account(
                     tracing::info!("direct-only setting changed; rebuilding the host presence");
                     p.close().await;
                     online = PresenceState::Offline;
-                    presence_due = Some(std::time::Instant::now());
                 }
             }
             if paused()? || !vault::applies()? { continue; }
@@ -961,8 +953,7 @@ async fn run_authorized_account(
                 .as_ref()
                 .is_some_and(|c| !c.is_active() || !c.matches_saved(&saved) || c.is_local() != serverless)
             {
-                cancel_preparation(&mut preparation).await;
-                presence_due = None;
+                if let Some(p) = probe.take() { p.cancel().await; }
                 if let Some(current) = client.take() {
                     current.retire();
                     if let Some(p) = presence.take() {
@@ -979,15 +970,8 @@ async fn run_authorized_account(
                 match if serverless { HostClient::local() } else if saved.is_empty() { HostClient::guest(device.handle()) } else { AuthenticatedClient::from_saved_session_with_device(device.handle()).map(|c| HostClient::from(Arc::new(c))) } {
                     Ok(c) => {
 
-                        let cancel = tokio_util::sync::CancellationToken::new();
-                        let owner = c.host.clone();
-                        let cancelled = cancel.clone();
-                        preparation = Some((
-                            cancel,
-                            tokio::spawn(async move { owner.prepare_startup(cancelled).await }),
-                        ));
+                        probe = Some(crate::session::startup::Probe::start(&c.host));
                         device_changes.reset();
-                        presence_due = Some(std::time::Instant::now() + Duration::from_secs(30));
                         client = Some(c);
                     }
                     Err(error) => {
@@ -997,11 +981,9 @@ async fn run_authorized_account(
                 }
             }
             if presence.is_none()
-                && let (Some(c), Some(due)) = (&client, presence_due)
-                && (preparation.as_ref().is_none_or(|(_, task)| task.is_finished())
-                    || std::time::Instant::now() >= due)
+                && let Some(c) = &client
+                && probe.as_ref().is_none_or(crate::session::startup::Probe::online)
             {
-                presence_due = None;
                 presence = Some(ActivePresence::start(c.clone()));
             }
             if let Some(p) = &presence {
@@ -1030,7 +1012,7 @@ async fn run_authorized_account(
                     .await
                     .unwrap_or_else(|e| Err(e.into()));
                 online = PresenceState::Offline;
-                cancel_preparation(&mut preparation).await;
+                if let Some(p) = probe.take() { p.cancel().await; }
                 if let Some(c) = client.take() {
                     if result
                         .as_ref()
@@ -1055,7 +1037,9 @@ async fn run_authorized_account(
     .await;
     initializers.abort_all();
     while initializers.join_next().await.is_some() {}
-    cancel_preparation(&mut preparation).await;
+    if let Some(p) = probe.take() {
+        p.cancel().await;
+    }
     if let Some(c) = client {
         c.host.retire();
         if let Some(p) = presence {
@@ -1149,16 +1133,3 @@ fn serve_watchers(
     }
 }
 
-async fn cancel_preparation(
-    preparation: &mut Option<(
-        tokio_util::sync::CancellationToken,
-        tokio::task::JoinHandle<Result<()>>,
-    )>,
-) {
-    if let Some((cancel, task)) = preparation.take() {
-        cancel.cancel();
-        if let Ok(Err(error)) = task.await {
-            tracing::debug!(%error, "resident media preparation ended");
-        }
-    }
-}

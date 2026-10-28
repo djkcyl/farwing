@@ -6,7 +6,7 @@ pub(super) struct Guest {
     pub client: Option<HostClient>,
     presence: Option<ActivePresence>,
     /// Encoder probing, started with the guest host (see `poll`).
-    media: Option<(tokio_util::sync::CancellationToken, tokio::task::JoinHandle<()>)>,
+    probe: Option<crate::session::startup::Probe>,
     shown: Option<u64>,
     retry_at: Instant,
     blocked: bool,
@@ -16,7 +16,7 @@ impl Default for Guest {
         Self {
             client: None,
             presence: None,
-            media: None,
+            probe: None,
             shown: None,
             retry_at: Instant::now(),
             blocked: false,
@@ -25,9 +25,8 @@ impl Default for Guest {
 }
 impl Guest {
     pub async fn close(&mut self) {
-        if let Some((cancel, task)) = self.media.take() {
-            cancel.cancel();
-            let _ = task.await;
+        if let Some(probe) = self.probe.take() {
+            probe.cancel().await;
         }
         if let Some(client) = self.client.take() {
             client.retire();
@@ -65,20 +64,10 @@ impl Guest {
             match HostClient::signed_out(device) {
                 Ok(client) => {
                     tracing::info!(serverless = client.is_local(), "guest host starting");
-                    // Probing the encoders takes seconds; do it now, as the
-                    // signed-in device centre does at startup, so the first
-                    // assistance does not run into the connection deadline.
-                    let cancel = tokio_util::sync::CancellationToken::new();
-                    let host = client.host.clone();
-                    let task_cancel = cancel.clone();
-                    self.media = Some((
-                        cancel,
-                        tokio::spawn(async move {
-                            if let Err(error) = host.prepare_startup(task_cancel).await {
-                                tracing::warn!(error = %format!("{error:#}"), "guest host media preparation failed");
-                            }
-                        }),
-                    ));
+                    // Unlike a signed-in host, this one goes online at once:
+                    // its short number is on the login page, and a visitor
+                    // reads the access code from the screen before connecting.
+                    self.probe = Some(crate::session::startup::Probe::start(&client.host));
                     self.presence = Some(ActivePresence::start(client.clone()));
                     self.client = Some(client);
                 }
@@ -90,6 +79,11 @@ impl Guest {
                     self.retry_at = Instant::now() + std::time::Duration::from_secs(3);
                 }
             }
+        }
+        if let Some(probe) = &mut self.probe
+            && let Some(Err(error)) = probe.ended().await
+        {
+            tracing::warn!(error = %format!("{error:#}"), "guest host media preparation failed");
         }
         if let Some(client) = &self.client {
             client.host.assistance.touch_ui();

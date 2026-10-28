@@ -87,8 +87,10 @@ pub async fn host(
     assist_code: Option<String>,
     code_rotation: Option<&str>,
     encoder: Option<&str>,
+    serverless: bool,
 ) -> Result<()> {
     use crate::features::host::EncoderMode;
+    use crate::session::host_client::HostClient;
     let encoder = encoder
         .map(|value| match value.to_ascii_lowercase().as_str() {
             "auto" => Ok(EncoderMode::Automatic),
@@ -97,27 +99,44 @@ pub async fn host(
             other => Err(anyhow::anyhow!("未知的编码方式：{other}（auto、hardware 或 software）")),
         })
         .transpose()?;
-    let runtime = DeviceRuntime::start()?;
-    let client = Arc::new(AuthenticatedClient::from_saved_session_with_device(
-        runtime.handle(),
-    )?);
+    // `--serverless`: no login and no server; only LAN and address direct
+    // connections (trusted devices, access code).
+    let runtime = if serverless { None } else { Some(DeviceRuntime::start()?) };
+    let account = runtime
+        .as_ref()
+        .map(|runtime| AuthenticatedClient::from_saved_session_with_device(runtime.handle()).map(Arc::new))
+        .transpose()?;
+    let client = match &account {
+        Some(account) => HostClient::from(Arc::clone(account)),
+        None => HostClient::local()?,
+    };
     let result = async {
-        // While the server is unreachable the host still serves direct
-        // connections; own devices are authorized from the cached list.
-        match tokio::time::timeout(Duration::from_secs(15), client.list_devices()).await {
-            Ok(Ok(devices)) => println!(
-                "已登录：{}；本机设备 {}（{}）",
-                client.account_name(),
-                devices.current_device.alias,
-                devices.current_device.device_id
-            ),
-            Ok(Err(error))
-                if !crate::account::api::failure_code(&error).is_some_and(|code| code.retryable()) =>
-            {
-                return Err(error).context("恢复账号会话失败");
+        match &account {
+            // While the server is unreachable the host still serves direct
+            // connections; own devices are authorized from the cached list.
+            Some(account) => match tokio::time::timeout(Duration::from_secs(15), account.list_devices()).await {
+                Ok(Ok(devices)) => println!(
+                    "已登录：{}；本机设备 {}（{}）",
+                    account.account_name(),
+                    devices.current_device.alias,
+                    devices.current_device.device_id
+                ),
+                Ok(Err(error))
+                    if !crate::account::api::failure_code(&error).is_some_and(|code| code.retryable()) =>
+                {
+                    return Err(error).context("恢复账号会话失败");
+                }
+                Ok(Err(error)) => println!("服务器暂不可用（{error:#}），先只接受直连"),
+                Err(_) => println!("服务器暂不可用，先只接受直连"),
+            },
+            None => {
+                let device = client.direct_device()?;
+                println!(
+                    "仅直连模式：本机 {}（设备 ID {}）",
+                    device.name,
+                    crate::account::api::device_id_text(&device.identity.device_id)
+                );
             }
-            Ok(Err(error)) => println!("服务器暂不可用（{error:#}），先只接受直连"),
-            Err(_) => println!("服务器暂不可用，先只接受直连"),
         }
         if let Some(allow) = allow {
             client.host.set_allowed(allow);
@@ -165,25 +184,18 @@ pub async fn host(
             "允许远程关机/重启：{}",
             if client.host.power_allowed() { "是" } else { "否（在设备中心连接设置中开启）" }
         );
-        // Like the device center, probe encoders before going online so the
-        // first incoming session is not delayed past the controller's
-        // connection deadline.
         println!("正在准备本机采集与编码能力……");
-        let warmup = tokio_util::sync::CancellationToken::new();
-        tokio::select! {
-            result = client.host.prepare_startup(warmup.clone()) => {
-                if let Err(error) = result {
-                    println!("警告：采集与编码能力预检失败：{error:#}");
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                warmup.cancel();
-                return Ok(());
-            }
-        }
-        let presence = ActivePresence::start(Arc::clone(&client));
+        let mut probe = crate::session::startup::Probe::start(&client.host);
+        let mut presence = None::<ActivePresence>;
         let mut assist_id = String::new();
+        let mut announced = false;
         let outcome = loop {
+            if let Some(Err(error)) = probe.ended().await {
+                println!("警告：采集与编码能力预检失败：{error:#}");
+            }
+            if presence.is_none() && probe.online() {
+                presence = Some(ActivePresence::start(client.clone()));
+            }
             let assistance = client.host.assistance.snapshot();
             if assistance.connect_id != assist_id {
                 assist_id = assistance.connect_id.clone();
@@ -191,38 +203,55 @@ pub async fn host(
                     println!("短号：{assist_id}");
                 }
             }
-            while let Ok(event) = presence.events.try_recv() {
-                match event {
-                    PresenceEvent::State(state) => println!(
-                        "在线状态：{}",
-                        match state {
-                            PresenceState::Connecting => "正在连接",
-                            PresenceState::Online => "在线",
-                            PresenceState::Reconnecting => "正在重连",
-                            PresenceState::Offline => "离线",
+            if !announced && let Some(port) = crate::transport::direct::host::listening_port() {
+                announced = true;
+                let settings = crate::transport::nat::settings::current();
+                println!(
+                    "直连已开启：TCP {port}，直连会话共用 UDP {port}；局域网发现{}",
+                    if settings.lan_discovery { "已开启" } else { "已关闭" }
+                );
+            }
+            if let Some(presence) = &presence {
+                while let Ok(event) = presence.events.try_recv() {
+                    match event {
+                        // Without a server there is no online state to tell.
+                        PresenceEvent::State(_) if account.is_none() => {}
+                        PresenceEvent::State(state) => println!(
+                            "在线状态：{}",
+                            match state {
+                                PresenceState::Connecting => "正在连接",
+                                PresenceState::Online => "在线",
+                                PresenceState::Reconnecting => "正在重连",
+                                PresenceState::Offline => "离线",
+                            }
+                        ),
+                        PresenceEvent::Warning(message) => println!("警告：{message}"),
+                        PresenceEvent::DeviceChanged(_) | PresenceEvent::DevicesResync => {}
+                        PresenceEvent::AccountEnded => {
+                            println!("账号会话已结束");
                         }
-                    ),
-                    PresenceEvent::Warning(message) => println!("警告：{message}"),
-                    PresenceEvent::DeviceChanged(_) | PresenceEvent::DevicesResync => {}
-                    PresenceEvent::AccountEnded => {
-                        println!("账号会话已结束");
                     }
                 }
-            }
-            if presence.task.is_finished() {
-                break Ok(());
+                if presence.task.is_finished() {
+                    break Ok(());
+                }
             }
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => break Ok(()),
                 _ = tokio::time::sleep(Duration::from_millis(200)) => {}
             }
         };
-        presence.close().await;
+        probe.cancel().await;
+        if let Some(presence) = presence {
+            presence.close().await;
+        }
         outcome
     }
     .await;
     client.close().await;
-    runtime.close().await;
+    if let Some(runtime) = runtime {
+        runtime.close().await;
+    }
     result
 }
 
@@ -1188,94 +1217,6 @@ fn clipboard_checks(
 }
 
 // ------------------------------------------------- direct connections (§12)
-
-/// `host --serverless`: host without logging in or using the server; only
-/// LAN and address direct connections (trusted devices, access code).
-pub async fn host_serverless(
-    allow: Option<bool>,
-    allow_ports: bool,
-    assist_code: Option<String>,
-    code_rotation: Option<&str>,
-) -> Result<()> {
-    let client = crate::session::host_client::HostClient::local()?;
-    let result = async {
-        let device = client.direct_device()?;
-        println!(
-            "仅直连模式：本机 {}（设备 ID {}）",
-            device.name,
-            crate::account::api::device_id_text(&device.identity.device_id)
-        );
-        if let Some(allow) = allow {
-            client.host.set_allowed(allow);
-        }
-        if allow_ports {
-            client.host.set_port_mapping_allowed(true)?;
-        }
-        if let Some(code) = &assist_code {
-            use crate::features::host::assist::{Mode, Passwords, Rotation, Settings};
-            // A code given here stays unless a rotation is given too.
-            client.host.set_assistance(Settings {
-                enabled: true,
-                mode: Mode::Password,
-                code: code.clone(),
-                code_made_at: chrono::Utc::now().timestamp(),
-                rotation: code_rotation.map(Rotation::parse).transpose()?.unwrap_or(Rotation::Never),
-                passwords: Passwords::Random,
-                custom_code: String::new(),
-                grants: None,
-            })?;
-        }
-        if allow.is_some() || allow_ports || assist_code.is_some() {
-            client.host.persist_settings().await;
-        }
-        println!(
-            "允许被控：{}",
-            if client.host.requested() { "是" } else { "否（使用 --allow 开启）" }
-        );
-        println!("正在准备本机采集与编码能力……");
-        let warmup = tokio_util::sync::CancellationToken::new();
-        tokio::select! {
-            result = client.host.prepare_startup(warmup.clone()) => {
-                if let Err(error) = result {
-                    println!("警告：采集与编码能力预检失败：{error:#}");
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                warmup.cancel();
-                return Ok(());
-            }
-        }
-        let presence = ActivePresence::start(client.clone());
-        let mut announced = false;
-        let outcome = loop {
-            while let Ok(event) = presence.events.try_recv() {
-                if let PresenceEvent::Warning(message) = event {
-                    println!("警告：{message}");
-                }
-            }
-            if !announced && let Some(port) = crate::transport::direct::host::listening_port() {
-                announced = true;
-                let settings = crate::transport::nat::settings::current();
-                println!(
-                    "直连已开启：TCP {port}，直连会话共用 UDP {port}；局域网发现{}",
-                    if settings.lan_discovery { "已开启" } else { "已关闭" }
-                );
-            }
-            if presence.task.is_finished() {
-                break Ok(());
-            }
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => break Ok(()),
-                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
-            }
-        };
-        presence.close().await;
-        outcome
-    }
-    .await;
-    client.close().await;
-    result
-}
 
 /// `id`: this device's ID and key.
 pub fn id() -> Result<()> {

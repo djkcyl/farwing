@@ -39,18 +39,6 @@ fn detail(ui: &mut egui::Ui, text: &str) {
     ui.add(egui::Label::new(RichText::new(text).size(theme::SMALL).color(MUTED)).wrap());
 }
 
-/// One device in the "最近与收藏" tab.
-struct RecentRow {
-    title: String,
-    device_id: Option<String>,
-    short_number: Option<String>,
-    address: Option<String>,
-    /// It admitted this device without a code last time.
-    trusted: bool,
-    last: i64,
-    /// The server record (an account's recent assistance).
-    saved: Option<SavedDevice>,
-}
 
 impl DeviceCenterApp {
     pub(super) fn devices_page(&mut self, ui: &mut egui::Ui) {
@@ -842,50 +830,10 @@ impl DeviceCenterApp {
         }
         let query = self.center_ui.device_list.recent.trim().to_lowercase();
         // This device's record and the account's history, once per device.
-        let mut rows: Vec<RecentRow> = Vec::new();
-        for host in store::known_hosts() {
-            rows.push(RecentRow {
-                title: host.name.clone(),
-                device_id: Some(host.device_id.clone()),
-                short_number: (!host.connect_id.is_empty()).then(|| host.connect_id.clone()),
-                address: (!host.address.is_empty()).then(|| host.address.clone()),
-                trusted: host.trusted,
-                last: host.last_seen,
-                saved: None,
-            });
-        }
-        if account {
-            for item in &lists.recent {
-                let id = store::device_id_of(&item.public_key);
-                if let Some(row) = rows
-                    .iter_mut()
-                    .find(|row| id.is_some() && row.device_id == id)
-                {
-                    row.short_number = Some(item.connect_id.clone());
-                    row.saved = Some(item.clone());
-                    row.last = row.last.max(item.last_connected_at.unwrap_or(0));
-                    continue;
-                }
-                rows.push(RecentRow {
-                    title: item.title().to_owned(),
-                    device_id: id,
-                    short_number: Some(item.connect_id.clone()),
-                    address: None,
-                    trusted: false,
-                    last: item.last_connected_at.unwrap_or(0),
-                    saved: Some(item.clone()),
-                });
-            }
-        }
-        rows.sort_by(|a, b| {
-            crate::account::api::list_order(
-                &a.title,
-                a.device_id.as_deref().unwrap_or_default(),
-                &b.title,
-                b.device_id.as_deref().unwrap_or_default(),
-            )
-            .then_with(|| a.address.cmp(&b.address))
-        });
+        let mut rows = super::super::recents::merge(
+            store::known_hosts(),
+            if account { &lists.recent } else { &[] },
+        );
         let recent_total = rows.len();
         rows.retain(|row| {
             device_list::matches(
@@ -925,7 +873,7 @@ impl DeviceCenterApp {
             })
             .collect();
         enum Pick {
-            Connect(RecentRow),
+            Connect(super::super::recents::Recent),
             ConnectFavorite(String),
             EditFavorite(SavedDevice),
             RemoveFavorite(SavedDevice),

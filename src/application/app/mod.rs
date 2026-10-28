@@ -25,6 +25,7 @@ mod assist;
 mod direct;
 pub(crate) mod friends;
 mod notices;
+mod recents;
 mod records;
 mod catalog;
 mod controlled_caption;

@@ -720,23 +720,14 @@ fn main() -> Result<()> {
             } else {
                 None
             };
-            let runtime = tokio::runtime::Runtime::new()?;
-            if serverless {
-                runtime.block_on(farwing::application::cli::host_serverless(
-                    allow,
-                    allow_ports,
-                    access_code,
-                    code_rotation.as_deref(),
-                ))
-            } else {
-                runtime.block_on(farwing::application::cli::host(
-                    allow,
-                    allow_ports,
-                    access_code,
-                    code_rotation.as_deref(),
-                    encoder.as_deref(),
-                ))
-            }
+            tokio::runtime::Runtime::new()?.block_on(farwing::application::cli::host(
+                allow,
+                allow_ports,
+                access_code,
+                code_rotation.as_deref(),
+                encoder.as_deref(),
+                serverless,
+            ))
         }
         Commands::Id => farwing::application::cli::id(),
         Commands::Lan { seconds } => tokio::runtime::Runtime::new()?

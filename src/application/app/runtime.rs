@@ -84,17 +84,10 @@ pub(super) async fn cancel_operation<T>(task: &mut Option<JoinHandle<T>>) {
     }
 }
 
-struct StartupMedia {
-    generation: u64,
-    cancel: tokio_util::sync::CancellationToken,
-    task: JoinHandle<Result<()>>,
-}
-async fn cancel_startup_media(task: &mut Option<StartupMedia>) {
-    if let Some(active) = task.take() {
-        active.cancel.cancel();
-        // The native probe observes cancellation and drops GPU/COM owners on
-        // its own thread. Await it rather than abandoning a blocking task.
-        let _ = active.task.await;
+/// The account host's probe, for one catalog generation.
+async fn cancel_probe(probe: &mut Option<(u64, crate::session::startup::Probe)>) {
+    if let Some((_, probe)) = probe.take() {
+        probe.cancel().await;
     }
 }
 
@@ -131,11 +124,9 @@ pub(super) async fn gui_worker_loop(
     // This device goes online once the encoders are known (a session must
     // not wait out the probe against its connection deadline), or after
     // this long whatever the probe does.
-    let mut online_after: Option<Instant> = None;
     let mut host_shown: Option<u64> = None;
     let mut reachability: Option<(u64, bool)> = None;
-    let mut startup_media: Option<StartupMedia> = None;
-    let mut media_ready = None;
+    let mut probe: Option<(u64, crate::session::startup::Probe)> = None;
     let mut client: Option<Arc<AuthenticatedClient>> = None;
     let mut allow_load = true;
     let mut device_sync = device_sync::DeviceSync::default();
@@ -876,12 +867,11 @@ pub(super) async fn gui_worker_loop(
 
         if client.is_none()
             || logout_task.is_some()
-            || startup_media
+            || probe
                 .as_ref()
-                .is_some_and(|task| task.generation != catalog_generation)
+                .is_some_and(|(generation, _)| *generation != catalog_generation)
         {
-            cancel_startup_media(&mut startup_media).await;
-            media_ready = None;
+            cancel_probe(&mut probe).await;
         }
         if client.is_none()
             && allow_load
@@ -895,7 +885,6 @@ pub(super) async fn gui_worker_loop(
             match AuthenticatedClient::from_saved_session_with_device(device_runtime.handle()) {
                 Ok(loaded) => {
                     restoring = Some((catalog_generation, Instant::now()));
-                    online_after = Some(Instant::now() + std::time::Duration::from_secs(30));
                     host_shown = None;
                     client = Some(Arc::new(loaded));
                     presence_stopped = false;
@@ -931,37 +920,20 @@ pub(super) async fn gui_worker_loop(
             if logout_task.is_some() {
                 continue;
             }
-            // Probing the encoders takes seconds when nothing is cached (a
-            // new installation, graphics changes). It runs alongside the
-            // account and device list; a session arriving meanwhile waits
-            // for its result.
-            if media_ready != Some(catalog_generation) {
-                if startup_media.is_none() {
-                    let host = active_client.host.clone();
-                    let cancel = tokio_util::sync::CancellationToken::new();
-                    let task_cancel = cancel.clone();
-                    startup_media = Some(StartupMedia {
-                        generation: catalog_generation,
-                        cancel,
-                        task: tokio::spawn(async move { host.prepare_startup(task_cancel).await }),
-                    });
-                }
-                if startup_media
-                    .as_ref()
-                    .is_some_and(|task| task.task.is_finished())
-                {
-                    let prepared = startup_media.take().expect("completed media preparation");
-                    if let Err(error) = prepared
-                        .task
-                        .await
-                        .unwrap_or_else(|error| Err(error.into()))
-                    {
-                        let _ = events.send(GuiEvent::Warning((t().app.media_check_failed)(
-                            &format!("{error:#}"),
-                        )));
-                    }
-                    media_ready = Some(catalog_generation);
-                }
+            // The probe runs alongside the account and device list
+            // (`session::startup`).
+            if probe.is_none() {
+                probe = Some((
+                    catalog_generation,
+                    crate::session::startup::Probe::start(&active_client.host),
+                ));
+            }
+            if let Some((_, running)) = &mut probe
+                && let Some(Err(error)) = running.ended().await
+            {
+                let _ = events.send(GuiEvent::Warning((t().app.media_check_failed)(&format!(
+                    "{error:#}"
+                ))));
             }
             let stage = match active_client.restoration_stage() {
                 crate::account::client::RestorationStage::Device => StartupStage::Device,
@@ -1041,8 +1013,7 @@ pub(super) async fn gui_worker_loop(
             }
             if host_signal.is_none()
                 && !presence_stopped
-                && (media_ready == Some(catalog_generation)
-                    || online_after.is_some_and(|at| Instant::now() >= at))
+                && probe.as_ref().is_some_and(|(_, probe)| probe.online())
             {
                 host_signal = Some(ActivePresence::start(Arc::clone(active_client)));
             }
@@ -1051,7 +1022,7 @@ pub(super) async fn gui_worker_loop(
     // Each step is logged: a step that never finishes keeps the process
     // alive after its window is gone.
     tracing::info!("device center shutting down");
-    cancel_startup_media(&mut startup_media).await;
+    cancel_probe(&mut probe).await;
     cancel_login_task(&mut login_task).await;
     tracing::info!("device center shutdown: viewers");
     crate::session::controller::windows::shutdown().await;
