@@ -150,6 +150,8 @@ pub(crate) struct Handle {
     scope: String,
     account: String,
     guest: bool,
+    /// Signalled when an action for the background host is queued.
+    remote_actions: Arc<tokio::sync::Notify>,
 }
 
 impl Default for Handle {
@@ -201,6 +203,7 @@ impl Default for Handle {
             scope: String::new(),
             account: String::new(),
             guest: false,
+            remote_actions: Default::default(),
         }
     }
 }
@@ -277,6 +280,7 @@ impl Handle {
     pub(crate) fn retry(&self) {
         if crate::platform::windows::host_service::resident::managed() {
             lock(&self.ownership).remote_action = Some(RemoteAction::Retry);
+            self.remote_actions.notify_one();
             return;
         }
         let mut state = lock(&self.ownership);
@@ -297,17 +301,12 @@ impl Handle {
         self.power.invalidate();
         self.assistance.unavailable();
         let mut state = lock(&self.ownership);
-        let clear_update =
-            !state.updating && !crate::platform::windows::host_service::resident::managed();
         state.active = false;
         state.permission = state.permission.wrapping_add(1);
         finish_session(&mut state);
         state.status.ready = false;
         state.status.message = t().features.host_offline.into();
         self.desired.send_replace(None);
-        drop(state);
-        if clear_update {
-        }
     }
     pub(crate) fn room_closed(&self) {
         self.assistance.unavailable();
@@ -333,12 +332,25 @@ impl Handle {
     }
     pub(crate) fn disconnect_session(&self, session: &str) -> bool {
         let managed = crate::platform::windows::host_service::resident::managed();
-        disconnect_session(&mut lock(&self.ownership), session, managed)
+        let done = disconnect_session(&mut lock(&self.ownership), session, managed);
+        if managed {
+            self.remote_actions.notify_one();
+        }
+        done
     }
     /// Withdraw (`blocked`) or restore `control` for one participant.
     pub(crate) fn block_control(&self, session: &str, blocked: bool) -> bool {
         let managed = crate::platform::windows::host_service::resident::managed();
-        block_control(&mut lock(&self.ownership), session, blocked, managed)
+        let done = block_control(&mut lock(&self.ownership), session, blocked, managed);
+        if managed {
+            self.remote_actions.notify_one();
+        }
+        done
+    }
+    /// Signalled when an action for the background host is queued
+    /// ([`Self::take_remote_action`]).
+    pub(crate) fn remote_actions(&self) -> Arc<tokio::sync::Notify> {
+        self.remote_actions.clone()
     }
     pub(crate) fn requested(&self) -> bool {
         let state = lock(&self.ownership);

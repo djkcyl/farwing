@@ -472,17 +472,42 @@ async fn run_remote(
 ) -> Result<()> {
     use crate::account::auth::{KeyringSessionStore, SessionStore};
     use crate::platform::windows::host_service::resident::{self, Reply, Request};
-    // Reuse the credential handle, not its contents: each poll must still see
+    // Reuse the credential handle, not its contents: each check must still see
     // logout/account changes and portable/resident storage transitions.
     let sessions = KeyringSessionStore::new()?;
     let mut device_cursor = None;
     // The service's notification pushes, as last seen.
     let mut notices = None::<u64>;
-    let mut tick = tokio::time::interval(Duration::from_millis(500));
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The background host answers a watch when its state changes from the
+    // revision we have (at the latest after `resident::WATCH`); actions go
+    // to it as they are queued.
+    let mut revision = None::<u64>;
+    let actions = client.host.remote_actions();
+    let mut check = tokio::time::interval(Duration::from_secs(1));
+    check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut watch: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Result<Reply>> + Send>>> = None;
+    // After a failed watch, the next one waits a moment.
+    let mut next_watch = Instant::now();
     while !cancel.is_cancelled() {
-        tokio::select! { _ = cancel.cancelled() => break, _ = tick.tick() => () }
-        if crate::platform::windows::components::maintaining() {
+        let maintaining = crate::platform::windows::components::maintaining();
+        if watch.is_none() && !maintaining && Instant::now() >= next_watch {
+            watch = Some(Box::pin(resident::request(Request::Snapshot {
+                ui: client.host.assistance.ui_present(),
+                device_cursor: device_cursor.clone(),
+                language: Some(crate::i18n::language().tag().to_owned()),
+                seen: revision,
+            })));
+        }
+        let reply = tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = actions.notified() => None,
+            _ = check.tick() => None,
+            reply = async { watch.as_mut().expect("guarded").await }, if watch.is_some() => {
+                watch = None;
+                Some(reply)
+            }
+        };
+        if maintaining {
             continue;
         }
         let saved = sessions.load()?.map(|s| s.generation());
@@ -490,7 +515,7 @@ async fn run_remote(
             client.retire();
             break;
         }
-        // Several participants may be disconnected between two polls.
+        // Several participants may be disconnected at once.
         while let Some(action) = client.host.take_remote_action() {
             let action = match action {
                 crate::features::host::RemoteAction::Retry => Request::Retry {
@@ -512,19 +537,16 @@ async fn run_remote(
                 let _ = events.send(PresenceEvent::Warning((crate::i18n::t().session.warning_background_failed)(&format!("{e:#}"))));
             }
         }
-        match resident::request(Request::Snapshot {
-            ui: client.host.assistance.ui_present(),
-            device_cursor: device_cursor.clone(),
-            language: Some(crate::i18n::language().tag().to_owned()),
-        })
-        .await
-        {
+        let Some(reply) = reply else {
+            continue;
+        };
+        match reply {
             Ok(Reply::Snapshot(mut snapshot)) if snapshot.account == client.generation() => {
-                super::reconnect::set_remote(
-                    snapshot
-                        .retry_in_ms
-                        .map(|ms| Instant::now() + Duration::from_millis(ms)),
-                );
+                revision = Some(snapshot.revision);
+                super::reconnect::set_remote(snapshot.retry_at_ms.map(|at| {
+                    let left = (at - chrono::Utc::now().timestamp_millis()).max(0) as u64;
+                    Instant::now() + Duration::from_millis(left)
+                }));
                 crate::account::reporting::replace(snapshot.publication.clone());
                 if notices.is_some_and(|seen| seen != snapshot.notices) {
                     crate::account::notices::pushed();
@@ -548,12 +570,16 @@ async fn run_remote(
                 client.host.apply_remote(*snapshot).await;
             }
             Ok(Reply::Snapshot(_)) => {
+                revision = None;
+                next_watch = Instant::now() + Duration::from_millis(500);
                 super::reconnect::set_remote(None);
                 device_cursor = None;
                 let _ = events.send(PresenceEvent::State(PresenceState::Connecting));
             }
             Ok(_) => (),
             Err(e) => {
+                revision = None;
+                next_watch = Instant::now() + Duration::from_millis(500);
                 // Installation intentionally replaces the endpoint; uninstall
                 // hands ownership back to portable presence. Do not publish a
                 // stale RPC failure after that handoff.

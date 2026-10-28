@@ -52,6 +52,11 @@ pub(crate) enum Request {
         /// composes for it (status, errors) use it too.
         #[serde(default)]
         language: Option<String>,
+        /// The revision the device centre has: answered once the state
+        /// differs from it, or after [`WATCH`] (the centre's presence and
+        /// language are looked at again then).
+        #[serde(default)]
+        seen: Option<u64>,
     },
     Assist {
         account: String,
@@ -116,9 +121,13 @@ pub(crate) struct Snapshot {
     /// What the hosting process uses for direct connections.
     #[serde(default)]
     pub direct: crate::transport::direct::managed::HostDirect,
-    /// When this process next tries the server again, if it is waiting.
+    /// When this process next tries the server again (Unix milliseconds),
+    /// if it is waiting.
     #[serde(default)]
-    pub retry_in_ms: Option<u64>,
+    pub retry_at_ms: Option<i64>,
+    /// Identifies this state: equal revisions, equal snapshots.
+    #[serde(default)]
+    pub revision: u64,
     /// Notification pushes this process received (`account::notices`).
     #[serde(default)]
     pub notices: u64,
@@ -175,19 +184,20 @@ impl Reply {
 /// How long a request-serving connection waits for its next message before
 /// it looks at shutdown again: such connections stay open while idle.
 pub(super) const IDLE_WAIT: u32 = 100;
+/// The longest a snapshot watch waits for a change.
+pub(crate) const WATCH: Duration = Duration::from_secs(5);
 
 pub(crate) fn call(request: Request) -> Result<Reply> {
     static CONTROL_CONNECTION: std::sync::Mutex<Option<Pipe>> = std::sync::Mutex::new(None);
     static INITIALIZER_CONNECTION: std::sync::Mutex<Option<Pipe>> = std::sync::Mutex::new(None);
-    // Registration can wait on the network. It must not block permission
-    // revocation, disconnect or explicit exit on the management connection.
-    let slot = if matches!(
-        &request,
-        Request::Initialize { .. } | Request::Policy(_) | Request::Name { .. }
-    ) {
-        &INITIALIZER_CONNECTION
-    } else {
-        &CONTROL_CONNECTION
+    static WATCH_CONNECTION: std::sync::Mutex<Option<Pipe>> = std::sync::Mutex::new(None);
+    // Registration can wait on the network, and a watch on a change. Neither
+    // may block permission revocation, disconnect or explicit exit on the
+    // management connection.
+    let slot = match &request {
+        Request::Initialize { .. } | Request::Policy(_) | Request::Name { .. } => &INITIALIZER_CONNECTION,
+        Request::Snapshot { seen: Some(_), .. } => &WATCH_CONNECTION,
+        _ => &CONTROL_CONNECTION,
     };
     let mut connection = slot.lock().unwrap_or_else(|e| e.into_inner());
     if connection
@@ -743,6 +753,9 @@ async fn run_authorized_account(
     // against the controller's connection deadline. Bounded by a cap.
     let mut presence_due: Option<std::time::Instant> = None;
     let mut device_changes = crate::account::device_change::relay::Relay::new();
+    // Snapshot requests, answered once the state differs from what their
+    // sender has (or at once without a revision).
+    let mut watchers: Vec<Watcher> = Vec::new();
     let mut blocked = String::new();
     let mut next_start = std::time::Instant::now();
     // Whether a signed-out host goes without a server: read every few
@@ -807,6 +820,20 @@ async fn run_authorized_account(
                         if let Some(current)=&client {current.host.cancel_update();}
                         Ok(Reply::Done)
                     },
+                    Request::Snapshot { ui, device_cursor, language, seen } => {
+                        if let Some(language) = language.as_deref().and_then(crate::i18n::Language::from_tag) {
+                            crate::i18n::set(language);
+                        }
+                        watchers.push(Watcher {
+                            ui,
+                            device_cursor,
+                            seen,
+                            until: std::time::Instant::now() + WATCH,
+                            reply,
+                        });
+                        serve_watchers(&mut watchers, client.as_ref(), &device_changes, &online);
+                        continue;
+                    }
                     Request::Initialize { force } => {
                         let handle = device.handle();
                         initializers.spawn(async move {
@@ -833,26 +860,6 @@ async fn run_authorized_account(
                             let current = client.as_ref().context(t().system.service_account_not_restored)?;
                             let account = current.generation();
                             match request {
-                                Request::Snapshot { ui, device_cursor, language } => {
-                                    if let Some(language) = language.as_deref().and_then(crate::i18n::Language::from_tag) {
-                                        crate::i18n::set(language);
-                                    }
-                                    if ui { current.host.assistance.touch_ui(); }
-                                    Ok(Reply::Snapshot(Box::new(Snapshot {
-                                    device_changes: Some(device_changes.read(device_cursor.as_ref())),
-                                    assistance: current.host.assistance.snapshot(),
-                                    publication: crate::account::reporting::snapshot(),
-                                    account,
-                                    online: online.clone(),
-                                    settings: current.host.host_settings(),
-                                    status: current.host.status(),
-                                    capabilities: current.host.capabilities().map(|v| (*v).clone()),
-                                    direct: crate::transport::direct::managed::HostDirect::current(),
-                                    retry_in_ms: crate::session::reconnect::next().map(|at| {
-                                        at.saturating_duration_since(std::time::Instant::now()).as_millis() as u64
-                                    }),
-                                    notices: crate::account::notices::pushes(),
-                                })))},
                                 Request::DirectState => Ok(Reply::DirectState {
                                     account,
                                     state: Box::new(crate::transport::direct::managed::HostDirect::current()),
@@ -1041,6 +1048,7 @@ async fn run_authorized_account(
                 next_start =
                     std::time::Instant::now() + device.handle().startup_retry_delay().await?;
             }
+            serve_watchers(&mut watchers, client.as_ref(), &device_changes, &online);
         }
         Ok(())
     }
@@ -1057,6 +1065,88 @@ async fn run_authorized_account(
     }
     device.close().await;
     result
+}
+
+/// A snapshot request waiting for a change.
+struct Watcher {
+    ui: bool,
+    device_cursor: Option<crate::account::device_change::relay::Cursor>,
+    seen: Option<u64>,
+    until: std::time::Instant,
+    reply: tokio::sync::oneshot::Sender<Reply>,
+}
+
+/// The device centre's view of this host now; `revision` hashes the rest.
+fn snapshot(
+    current: &HostClient,
+    device_changes: &crate::account::device_change::relay::Relay,
+    online: &PresenceState,
+    device_cursor: Option<&crate::account::device_change::relay::Cursor>,
+) -> Snapshot {
+    let mut snapshot = Snapshot {
+        device_changes: Some(device_changes.read(device_cursor)),
+        assistance: current.host.assistance.snapshot(),
+        publication: crate::account::reporting::snapshot(),
+        account: current.generation(),
+        online: online.clone(),
+        settings: current.host.host_settings(),
+        status: current.host.status(),
+        capabilities: current.host.capabilities().map(|v| (*v).clone()),
+        direct: crate::transport::direct::managed::HostDirect::current(),
+        retry_at_ms: crate::session::reconnect::next().map(|at| {
+            chrono::Utc::now().timestamp_millis()
+                + at.saturating_duration_since(std::time::Instant::now()).as_millis() as i64
+        }),
+        notices: crate::account::notices::pushes(),
+        revision: 0,
+    };
+    // The retry time moves by a millisecond or two between two looks.
+    let retry = snapshot.retry_at_ms.take();
+    snapshot.revision = serde_json::to_vec(&snapshot).map_or(0, |bytes| {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        retry.map(|at| at / 1000).hash(&mut hasher);
+        hasher.finish()
+    });
+    snapshot.retry_at_ms = retry;
+    snapshot
+}
+
+/// Answer the snapshot requests whose sender's revision is out of date or
+/// whose wait is over.
+fn serve_watchers(
+    watchers: &mut Vec<Watcher>,
+    client: Option<&HostClient>,
+    device_changes: &crate::account::device_change::relay::Relay,
+    online: &PresenceState,
+) {
+    if watchers.is_empty() {
+        return;
+    }
+    let Some(current) = client else {
+        for watcher in watchers.drain(..) {
+            let _ = watcher
+                .reply
+                .send(Reply::Error(t().system.service_account_not_restored.into()));
+        }
+        return;
+    };
+    let now = std::time::Instant::now();
+    for watcher in std::mem::take(watchers) {
+        if watcher.reply.is_closed() {
+            continue;
+        }
+        if watcher.ui {
+            current.host.assistance.touch_ui();
+        }
+        let state = snapshot(current, device_changes, online, watcher.device_cursor.as_ref());
+        if watcher.seen != Some(state.revision) || now >= watcher.until {
+            let _ = watcher.reply.send(Reply::Snapshot(Box::new(state)));
+        } else {
+            watchers.push(watcher);
+        }
+    }
 }
 
 async fn cancel_preparation(
