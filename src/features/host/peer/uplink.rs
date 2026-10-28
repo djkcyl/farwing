@@ -44,8 +44,6 @@ const START: Bounds = Bounds {
     initial: 8_000_000,
     probe: 20_000_000,
 };
-/// Missing keyframes are asked for again after this.
-const KEYFRAME_RETRY: Duration = Duration::from_millis(300);
 /// The forwarder's limit lapses when it is not repeated within this.
 const LIMIT_LAPSE: Duration = Duration::from_secs(1);
 
@@ -619,18 +617,15 @@ fn start(
         frames,
     );
     let low = group.group.key().low;
-    let mut membership = REGISTRY.observe(&group.group);
+    let mut membership = REGISTRY.observe(&group.group, frames_tx, timeline.started);
     let transport = slot.transport.clone();
     let observer_cancel = cancel.clone();
-    let started = timeline.started;
     let observer = std::thread::Builder::new()
         .name("host-uplink".into())
         .spawn(move || {
             transport.configure(START);
-            let mut awaiting = true;
-            let mut asked: Option<Instant> = None;
             while !observer_cancel.is_cancelled() {
-                if membership.ended() {
+                if membership.ended().is_some() {
                     tracing::info!(track = index, "forwarded encoder group ended");
                     observer_cancel.cancel();
                     crate::features::host::forwarding::wake();
@@ -657,41 +652,11 @@ fn start(
                     ratio: transport.cwnd_ratio(),
                     fps: 0,
                 }));
-                if keyframe.swap(false, Ordering::AcqRel) {
-                    awaiting = true;
-                    asked = None;
+                // The pipeline sends the frames; a forwarder PLI starts over.
+                if ready && keyframe.swap(false, Ordering::AcqRel) {
+                    membership.request_keyframe();
                 }
-                let due = asked.is_none_or(|at| at.elapsed() >= KEYFRAME_RETRY);
-                let Some(received) = membership.receive(Duration::from_millis(20)) else {
-                    if awaiting && ready && due {
-                        membership.request_keyframe();
-                        asked = Some(Instant::now());
-                    }
-                    continue;
-                };
-                if received.gap || !ready {
-                    awaiting = true;
-                }
-                if !ready {
-                    continue;
-                }
-                if awaiting && !received.frame.keyframe {
-                    if due {
-                        membership.request_keyframe();
-                        asked = Some(Instant::now());
-                    }
-                    continue;
-                }
-                let Some(encoded) = received.frame.encoded(started) else {
-                    continue;
-                };
-                if encoded.keyframe {
-                    awaiting = false;
-                    asked = None;
-                }
-                if frames_tx.blocking_send(encoded).is_err() {
-                    break;
-                }
+                std::thread::sleep(Duration::from_millis(20));
             }
         })
         .ok();

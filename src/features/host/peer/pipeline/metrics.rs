@@ -85,15 +85,6 @@ impl Metrics {
                 work_max_ms = self.work.maximum_ms(),
                 "host capture and encoding throughput"
             );
-        } else if self.encoded_frames != 0 {
-            // A shared-encoder follower: frames forwarded from the leader.
-            tracing::info!(
-                target_fps,
-                sample_ms = elapsed.as_millis(),
-                forwarded_frames = self.encoded_frames,
-                forwarded_fps = self.encoded_frames as f64 / elapsed.as_secs_f64(),
-                "host shared-encoder forwarding throughput"
-            );
         }
         *self = Self::default();
     }

@@ -563,7 +563,6 @@ pub(super) fn spawn_sending<O: Owner>(
 
 pub(super) struct Worker {
     cancel: CancellationToken,
-    encode_cancel: Arc<AtomicBool>,
     source_missing: Arc<AtomicBool>,
     first_frame: Arc<AtomicBool>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -624,8 +623,6 @@ impl Worker {
         let sending_keyframe = keyframe.clone();
         let source_missing = Arc::new(AtomicBool::new(false));
         let missing = source_missing.clone();
-        let encode_cancel = Arc::new(AtomicBool::new(cancel.is_cancelled()));
-        let owner_encode_cancel = encode_cancel.clone();
         let capture = std::thread::Builder::new()
             .name("host-screen".into())
             .spawn(move || {
@@ -633,7 +630,6 @@ impl Worker {
                     screen,
                     owner_handle.clone(),
                     owner_cancel.clone(),
-                    owner_encode_cancel,
                     connected,
                     business_ready,
                     config,
@@ -669,12 +665,6 @@ impl Worker {
                 cancel.cancel();
                 e
             })?;
-        let encoding_cancel_token = cancel.clone();
-        let encoding_cancel_flag = encode_cancel.clone();
-        let encoding_cancellation = tokio::spawn(async move {
-            encoding_cancel_token.cancelled().await;
-            encoding_cancel_flag.store(true, Ordering::Release);
-        });
         let send_cancel = cancel.clone();
         let send_handle = handle.clone();
         let first_frame = Arc::new(AtomicBool::new(false));
@@ -701,15 +691,13 @@ impl Worker {
 
         Ok(Self {
             cancel,
-            encode_cancel,
             source_missing,
             first_frame,
-            tasks: vec![reports, feedback, sending, encoding_cancellation],
+            tasks: vec![reports, feedback, sending],
             capture: Some(capture),
         })
     }
     pub(super) async fn close(mut self) {
-        self.encode_cancel.store(true, Ordering::Release);
         self.cancel.cancel();
         for task in self.tasks.drain(..) {
             let _ = task.await;
@@ -730,7 +718,6 @@ impl Worker {
 }
 impl Drop for Worker {
     fn drop(&mut self) {
-        self.encode_cancel.store(true, Ordering::Release);
         self.cancel.cancel();
         for task in &self.tasks {
             task.abort();

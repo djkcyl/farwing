@@ -1,32 +1,32 @@
-//! Shared encoders (`docs/protocol/v2-design.md` §4.2): participants that
-//! watch the same screen with the same parameters share one encoder.
+//! Shared encoders (`docs/protocol/v2-design.md` §4.2): every stream is one
+//! encoder pipeline ([`super::pipeline`]), and participants that watch the
+//! same screen with the same parameters are members of one.
 //!
-//! Every participant keeps its own capture thread, transport, packetizer and
-//! RTP clock. Within a group one thread (the leader) captures and encodes;
-//! the others (followers) receive the encoded frames, rebase them onto their
-//! own RTP clock and send them. Each member votes its allowance every
-//! iteration; the leader encodes at the minimum of the active votes. When the
-//! leader leaves, the earliest remaining member takes over.
+//! The pipeline thread captures, encodes and hands every frame to each
+//! member on that member's own RTP clock. Members keep their transports,
+//! packetizers and clocks; they vote their allowance, ask for keyframes and
+//! report their viewers' references. The pipeline encodes at the minimum of
+//! the active votes and lives while it has members.
 //!
 //! Multi-viewer forwarding (`docs/protocol/deployment-design.md` §5.4): a
 //! participant whose picture goes through the server's forwarder is marked
-//! forwarded and takes no frames itself; the uplink to the forwarder watches
-//! the group as an observer, which takes frames but never leads. A group of
-//! observers only has ended.
-use crate::features::host::encoder::{Encoded, FrameTiming};
+//! forwarded and takes no frames itself; the uplink to the forwarder joins
+//! the group as an observer. Observers alone do not keep a pipeline.
+use crate::features::host::encoder::Encoded;
 use crate::features::host::format::{Backend, Format};
+use crate::features::host::parameters::MIN_ENCODER_RATE;
 use crate::platform::windows::cursor_shape::Snapshot;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
 
 /// Distinct encoders per process.
 pub(super) const MAX_ENCODERS: usize = 4;
-/// Encoded frames buffered per follower; a follower that falls further
-/// behind loses frames and waits for a keyframe.
-const FOLLOWER_QUEUE: usize = 3;
+
+/// A member waiting for a keyframe asks again after this long.
+const KEYFRAME_RETRY: Duration = Duration::from_secs(1);
 
 /// What makes two participants' video identical.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,55 +126,25 @@ pub(super) fn choose(groups: &[(Key, (u32, u32))], wanted: &Key, size: (u32, u32
         .map_or(Choice::OverLimit, |(index, _)| Choice::Closest(index))
 }
 
-/// One encoded frame for the followers. The capture instant, not the
-/// leader's RTP timestamp, travels: each follower has its own RTP clock.
-pub(super) struct Shared {
-    sequence: u64,
-    pub data: Arc<[u8]>,
-    pub keyframe: bool,
-    pub captured: Instant,
-    pub is_new: bool,
-    pub timing: Option<FrameTiming>,
-    pub format: Format,
-    pub color: crate::media::video_color::VideoColorSpace,
-    /// The leader's frame identity; followers forward it unchanged.
-    pub meta: Option<crate::media::frame_meta::FrameMeta>,
-}
-impl Shared {
-    /// `frame` as encoded on a clock that started at `started`.
-    pub(super) fn new(frame: &Encoded, started: Instant) -> Self {
-        let captured = started + Duration::from_nanos(frame.timestamp_100ns.max(0) as u64 * 100);
-        Self {
-            sequence: 0,
-            data: Arc::from(frame.data.as_slice()),
-            keyframe: frame.keyframe,
-            captured,
-            is_new: frame.is_new,
-            timing: frame.timing,
-            format: frame.format,
-            color: frame.color,
-            meta: frame.meta,
-        }
-    }
-    /// The frame on a member clock that started at `started`; `None` for a
-    /// frame captured before that clock existed.
-    pub(super) fn encoded(&self, started: Instant) -> Option<Encoded> {
-        let since = self.captured.checked_duration_since(started)?;
-        Some(Encoded {
-            data: self.data.to_vec(),
-            keyframe: self.keyframe,
-            timestamp_100ns: (since.as_nanos() / 100) as i64,
-            is_new: self.is_new,
-            timing: self.timing,
-            format: self.format,
-            color: self.color,
-            meta: self.meta,
-            ltr: Default::default(),
-        })
-    }
+/// `frame`, encoded on a clock that started at `from`, on a clock that
+/// started at `to`; `None` for a frame captured before `to`.
+pub(super) fn rebase(frame: &Encoded, from: Instant, to: Instant) -> Option<Encoded> {
+    let captured = from + Duration::from_nanos(frame.timestamp_100ns.max(0) as u64 * 100);
+    let since = captured.checked_duration_since(to)?;
+    Some(Encoded {
+        data: frame.data.clone(),
+        keyframe: frame.keyframe,
+        timestamp_100ns: (since.as_nanos() / 100) as i64,
+        is_new: frame.is_new,
+        timing: frame.timing,
+        format: frame.format,
+        color: frame.color,
+        meta: frame.meta,
+        ltr: Default::default(),
+    })
 }
 
-/// What the leader reports about the group's stream, for the followers'
+/// What the pipeline reports about its stream, for the members'
 /// diagnostics and status pushes.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Output {
@@ -187,53 +157,268 @@ pub(super) struct Output {
     pub format: Format,
     pub budget_size: (u32, u32),
     pub backend: Backend,
+    /// The source shows a picture (not a locked or lost desktop).
+    pub visible: bool,
+    /// Without the member's own preference and selection reason.
     pub video: crate::features::host::ActiveEncoding,
 }
 
+/// Why a pipeline ended while it still had members.
+#[derive(Clone, Debug)]
+pub(super) enum End {
+    /// Its encoder failed: the members try another candidate.
+    Candidate,
+    /// The screen is gone.
+    SourceGone,
+    /// Capture failed for good.
+    Failed(String),
+    /// Nobody but the forwarder uplink watched any more.
+    Stopped,
+}
+
 struct Member {
-    /// Takes frames for the forwarder uplink; never leads.
+    /// The forwarder uplink: takes frames, does not keep the pipeline.
     observer: bool,
     /// While this member's picture goes through the forwarder: its
     /// participant and track.
     forwarded: Option<(u64, usize)>,
     vote: Option<Vote>,
     keyframe: bool,
-    outbox: SyncSender<Arc<Shared>>,
+    /// Where this member's frames go, on its own clock.
+    frames: mpsc::Sender<Encoded>,
+    clock: Instant,
+    /// Decoding must (re)start at a keyframe: it joined, fell behind or did
+    /// not take frames.
+    awaiting: bool,
+    /// When the pipeline last made a keyframe for this member's wait.
+    asked: Option<Instant>,
+    /// Since when its queue has been full while others took frames.
+    blocked: Option<Instant>,
+    /// Bytes and frames delivered, and when the last one was.
+    bytes: u64,
+    last: Option<Instant>,
     /// Long-term references this member's viewer holds, and when it said so.
     held: Option<(crate::features::host::recovery::Held, Instant)>,
     /// An unanswered recovery request of this member's viewer.
     recovery: Option<crate::features::host::recovery::Request>,
+    rtt: Option<Duration>,
+}
+
+impl Member {
+    fn new(frames: mpsc::Sender<Encoded>, clock: Instant, observer: bool) -> Self {
+        Self {
+            observer,
+            forwarded: None,
+            vote: None,
+            keyframe: false,
+            frames,
+            clock,
+            awaiting: true,
+            asked: None,
+            blocked: None,
+            bytes: 0,
+            last: None,
+            held: None,
+            recovery: None,
+            rtt: None,
+        }
+    }
+    /// Takes frames now.
+    fn active(&self) -> bool {
+        self.vote.is_some_and(|vote| vote.peak >= MIN_ENCODER_RATE)
+    }
 }
 
 struct Inner {
     /// Approximate output size, for the closest-group choice.
     size: (u32, u32),
-    leader: Option<u64>,
     /// By member number, i.e. by joining order.
     members: BTreeMap<u64, Member>,
-    sequence: u64,
-    /// Never reset, so followers notice a new leader's first description.
     output_revision: u64,
     output: Option<(u64, Output)>,
     cursor: Option<Snapshot>,
+    end: Option<End>,
 }
 
 pub(super) struct Group {
     key: Key,
     /// Unique per process, for the uplink's track assignment.
     serial: u64,
+    /// The pipeline stops: no member is left.
+    stopped: Arc<AtomicBool>,
     inner: Mutex<Inner>,
 }
+
 impl Group {
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
+    pub(super) fn serial(&self) -> u64 {
+        self.serial
+    }
+    pub(super) fn key(&self) -> &Key {
+        &self.key
+    }
+    // ------------------------------------------------- the pipeline's side
+
+    /// Set once the last member left; also aborts a blocked encode.
+    pub(super) fn stop_flag(&self) -> Arc<AtomicBool> {
+        self.stopped.clone()
+    }
+    pub(super) fn stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
+    }
+    /// The pipeline ended; its members leave and try again.
+    pub(super) fn end(&self, end: End) {
+        self.lock().end = Some(end);
+    }
+    /// The allowance over the active members; `None` while nobody takes
+    /// frames.
+    pub(super) fn aggregate(&self) -> Option<Vote> {
+        aggregate(
+            self.lock().members.values().filter_map(|m| m.vote),
+            MIN_ENCODER_RATE,
+        )
+    }
+    /// Whether a keyframe is due: a member asked, or one waits to start.
+    pub(super) fn take_keyframe(&self, now: Instant) -> bool {
+        let mut inner = self.lock();
+        let mut wanted = false;
+        for member in inner.members.values_mut() {
+            wanted |= std::mem::take(&mut member.keyframe);
+            if member.active()
+                && member.awaiting
+                && member.asked.is_none_or(|at| now.saturating_duration_since(at) >= KEYFRAME_RETRY)
+            {
+                member.asked = Some(now);
+                wanted = true;
+            }
+        }
+        wanted
+    }
+    /// Every member's recent acknowledgement (at most 2 s old: a member
+    /// that stops acknowledging does not hold the others back), the
+    /// unanswered recovery requests and the longest round trip.
+    pub(super) fn take_feedback(
+        &self,
+    ) -> (
+        Vec<crate::features::host::recovery::Held>,
+        Vec<crate::features::host::recovery::Request>,
+        Option<Duration>,
+    ) {
+        let mut inner = self.lock();
+        let mut held = Vec::new();
+        let mut requests = Vec::new();
+        let mut rtt = None::<Duration>;
+        for member in inner.members.values_mut() {
+            if let Some((h, at)) = &member.held
+                && at.elapsed() <= Duration::from_secs(2)
+            {
+                held.push(h.clone());
+            }
+            requests.extend(member.recovery.take());
+            rtt = rtt.max(member.rtt);
+        }
+        (held, requests, rtt)
+    }
+    /// Whether more than one member watches (references must suit all).
+    pub(super) fn shared(&self) -> bool {
+        self.lock().members.len() > 1
+    }
+    /// Whether to wait before the next frame: an active member's queue is
+    /// full. A member alone holds the pipeline back as long as it needs;
+    /// among several, one that stays full for `patience` is left behind
+    /// (it restarts at a keyframe).
+    pub(super) fn backpressure(&self, now: Instant, patience: Duration) -> bool {
+        let mut inner = self.lock();
+        let active = inner.members.values().filter(|m| m.active()).count();
+        let mut wait = false;
+        for member in inner.members.values_mut() {
+            let full = member.active() && !member.awaiting && member.frames.capacity() == 0;
+            if !full {
+                member.blocked = None;
+                continue;
+            }
+            let since = *member.blocked.get_or_insert(now);
+            wait |= active == 1 || now.saturating_duration_since(since) < patience;
+        }
+        wait
+    }
+    /// Hand one encoded frame (on the pipeline clock `clock`) to every
+    /// member that takes frames and is not waiting for a keyframe.
+    pub(super) fn publish(&self, frame: &Encoded, clock: Instant) {
+        let mut inner = self.lock();
+        let now = Instant::now();
+        for member in inner.members.values_mut() {
+            if !member.active() {
+                member.awaiting = true;
+                continue;
+            }
+            if member.awaiting && !frame.keyframe {
+                continue;
+            }
+            let Some(encoded) = rebase(frame, clock, member.clock) else {
+                continue;
+            };
+            let bytes = encoded.data.len() as u64;
+            match member.frames.try_send(encoded) {
+                Ok(()) => {
+                    if frame.keyframe {
+                        member.awaiting = false;
+                        member.asked = None;
+                    }
+                    member.bytes += bytes;
+                    member.last = Some(now);
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => member.awaiting = true,
+                Err(mpsc::error::TrySendError::Closed(_)) => {}
+            }
+        }
+    }
+    /// The stream's current description.
+    pub(super) fn set_output(&self, output: Output) {
+        let mut inner = self.lock();
+        if inner.output.as_ref().is_some_and(|(_, current)| *current == output) {
+            return;
+        }
+        inner.output_revision += 1;
+        inner.output = Some((inner.output_revision, output));
+    }
+    /// Whether the picture is shown; `false` for a lost or locked desktop.
+    pub(super) fn set_visible(&self, visible: bool) {
+        let mut inner = self.lock();
+        let Some((_, output)) = inner.output.as_ref() else {
+            return;
+        };
+        if output.visible != visible {
+            let mut output = output.clone();
+            output.visible = visible;
+            inner.output_revision += 1;
+            inner.output = Some((inner.output_revision, output));
+        }
+    }
+    pub(super) fn set_size(&self, size: (u32, u32)) {
+        self.lock().size = size;
+    }
+    pub(super) fn set_cursor(&self, cursor: Option<Snapshot>) {
+        self.lock().cursor = cursor;
+    }
 }
 
-#[derive(Default)]
+/// How a new group's pipeline starts.
+type Spawn = dyn Fn(Arc<Group>, super::pipeline::Start) + Send + Sync;
+
 pub(super) struct Registry {
     groups: Mutex<Vec<Arc<Group>>>,
     next: AtomicU64,
+    spawn: Box<Spawn>,
+}
+
+impl Default for Registry {
+    /// A registry whose groups run no pipeline (tests).
+    fn default() -> Self {
+        Self::new(Box::new(|_, _| {}))
+    }
 }
 
 /// A group with forwarded members, for the forwarder uplink.
@@ -244,49 +429,57 @@ pub(super) struct Forwarded {
     pub members: Vec<(u64, usize)>,
 }
 
-impl Group {
-    pub(super) fn serial(&self) -> u64 {
-        self.serial
-    }
-    pub(super) fn key(&self) -> &Key {
-        &self.key
-    }
+pub(super) static REGISTRY: LazyLock<Arc<Registry>> =
+    LazyLock::new(|| Arc::new(Registry::new(Box::new(super::pipeline::spawn))));
+
+/// A new member: where its frames go and on which clock.
+pub(super) struct Joining {
+    pub frames: mpsc::Sender<Encoded>,
+    pub clock: Instant,
+    /// How a new pipeline starts, if this member opens one.
+    pub start: super::pipeline::Start,
 }
 
-pub(super) static REGISTRY: LazyLock<Arc<Registry>> = LazyLock::new(Arc::default);
-
 impl Registry {
+    fn new(spawn: Box<Spawn>) -> Self {
+        Self {
+            groups: Mutex::default(),
+            next: AtomicU64::new(1),
+            spawn,
+        }
+    }
+
     fn groups(&self) -> MutexGuard<'_, Vec<Arc<Group>>> {
         self.groups.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Join the group for `key` (or the closest one at the encoder limit),
-    /// or start one and lead it.
-    pub(super) fn join(self: &Arc<Self>, key: Key, size: (u32, u32), limit: usize) -> Membership {
-        self.join_with(key, size, limit, false)
+    /// or open one.
+    pub(super) fn join(self: &Arc<Self>, key: Key, size: (u32, u32), limit: usize, joining: Joining) -> Membership {
+        self.join_with(key, size, limit, false, joining)
     }
 
     /// A forwarded participant: share the closest group of the same screen
-    /// and format (all forwarded viewers get one stream), else lead one.
-    pub(super) fn join_forwarded(self: &Arc<Self>, key: Key, size: (u32, u32)) -> Membership {
-        self.join_with(key, size, 0, true)
+    /// and format (all forwarded viewers get one stream), else open one.
+    pub(super) fn join_forwarded(self: &Arc<Self>, key: Key, size: (u32, u32), joining: Joining) -> Membership {
+        self.join_with(key, size, 0, true, joining)
     }
 
     /// `any`: share the closest group whatever the limit, else open one.
-    fn join_with(self: &Arc<Self>, key: Key, size: (u32, u32), limit: usize, any: bool) -> Membership {
+    fn join_with(
+        self: &Arc<Self>,
+        key: Key,
+        size: (u32, u32),
+        limit: usize,
+        any: bool,
+        joining: Joining,
+    ) -> Membership {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
-        let (outbox, inbox) = sync_channel(FOLLOWER_QUEUE);
-        let member = Member {
-            observer: false,
-            forwarded: None,
-            vote: None,
-            keyframe: false,
-            outbox,
-            held: None,
-            recovery: None,
-        };
+        let member = Member::new(joining.frames, joining.clock, false);
         let mut groups = self.groups();
-        let existing: Vec<(Key, (u32, u32))> = groups
+        // An ended pipeline takes nobody new.
+        let open: Vec<&Arc<Group>> = groups.iter().filter(|g| g.lock().end.is_none()).collect();
+        let existing: Vec<(Key, (u32, u32))> = open
             .iter()
             .map(|group| (group.key.clone(), group.lock().size))
             .collect();
@@ -294,23 +487,18 @@ impl Registry {
             Choice::OverLimit if any => Choice::Create,
             choice => choice,
         };
-        let shares = matches!(choice, Choice::Closest(_)) && any;
         let group = match choice {
             Choice::Exact(index) | Choice::Closest(index) => {
-                let group = groups[index].clone();
-                let mut inner = group.lock();
-                // The newcomer asks for its keyframe once it takes frames:
-                // one made now would reach nobody.
-                inner.members.insert(id, member);
-                drop(inner);
+                let group = open[index].clone();
+                group.lock().members.insert(id, member);
                 if matches!(choice, Choice::Exact(_)) {
                     tracing::info!(
                         screen = %key.screen,
                         target = ?key.target,
                         fps = key.fps,
-                        "participant joined a shared encoder as a follower"
+                        "participant joined a shared encoder"
                     );
-                } else if shares {
+                } else if any {
                     tracing::info!(
                         screen = %key.screen,
                         sharing = ?group.key,
@@ -334,26 +522,23 @@ impl Registry {
                         "encoder limit reached but no encoder can be shared; opening another"
                     );
                 } else {
-                    tracing::info!(
-                        ?key,
-                        encoders = groups.len() + 1,
-                        "participant leads a new shared encoder group"
-                    );
+                    tracing::info!(?key, encoders = groups.len() + 1, "new encoder pipeline");
                 }
                 let group = Arc::new(Group {
                     key: key.clone(),
                     serial: id,
+                    stopped: Arc::default(),
                     inner: Mutex::new(Inner {
                         size,
-                        leader: Some(id),
                         members: BTreeMap::from([(id, member)]),
-                        sequence: 0,
                         output_revision: 0,
                         output: None,
                         cursor: None,
+                        end: None,
                     }),
                 });
                 groups.push(group.clone());
+                (self.spawn)(group.clone(), joining.start);
                 group
             }
         };
@@ -363,9 +548,8 @@ impl Registry {
             group,
             id,
             wanted: key,
-            inbox,
-            last_sequence: None,
             output_seen: 0,
+            bytes_seen: (Instant::now(), 0),
         }
     }
 
@@ -384,35 +568,22 @@ impl Registry {
             .collect()
     }
 
-    /// Watch `group` for the forwarder: take frames, never lead.
-    pub(super) fn observe(self: &Arc<Self>, group: &Arc<Group>) -> Membership {
+    /// Watch `group` for the forwarder: take its frames on `clock`.
+    pub(super) fn observe(
+        self: &Arc<Self>,
+        group: &Arc<Group>,
+        frames: mpsc::Sender<Encoded>,
+        clock: Instant,
+    ) -> Membership {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
-        let (outbox, inbox) = sync_channel(FOLLOWER_QUEUE);
-        let mut inner = group.lock();
-        if let Some(leader) = inner.leader.and_then(|leader| inner.members.get_mut(&leader)) {
-            leader.keyframe = true;
-        }
-        inner.members.insert(
-            id,
-            Member {
-                observer: true,
-                forwarded: None,
-                vote: None,
-                keyframe: false,
-                outbox,
-                held: None,
-                recovery: None,
-            },
-        );
-        drop(inner);
+        group.lock().members.insert(id, Member::new(frames, clock, true));
         Membership {
             registry: self.clone(),
             group: group.clone(),
             id,
             wanted: group.key.clone(),
-            inbox,
-            last_sequence: None,
             output_seen: 0,
+            bytes_seen: (Instant::now(), 0),
         }
     }
 
@@ -420,27 +591,14 @@ impl Registry {
         let mut groups = self.groups();
         let mut inner = group.lock();
         inner.members.remove(&id);
-        if inner.leader == Some(id) {
-            inner.leader = inner
-                .members
-                .iter()
-                .find(|(_, member)| !member.observer)
-                .map(|(id, _)| *id);
-            inner.output = None;
-            inner.cursor = None;
-            if let Some(leader) = inner.leader {
-                tracing::info!(
-                    screen = %group.key.screen,
-                    members = inner.members.len(),
-                    leader,
-                    "shared encoder group has a new leader"
-                );
-            }
-        }
-        // Observers alone do not keep a group: nobody would encode for it.
+        // Observers alone do not keep a pipeline: nobody watches directly.
         let empty = inner.members.values().all(|member| member.observer);
+        if empty {
+            inner.end.get_or_insert(End::Stopped);
+        }
         drop(inner);
         if empty {
+            group.stopped.store(true, Ordering::Release);
             groups.retain(|other| !Arc::ptr_eq(other, group));
         }
     }
@@ -459,23 +617,12 @@ pub(super) struct Membership {
     /// The key this participant asked for (the group's may differ at the
     /// encoder limit).
     pub wanted: Key,
-    inbox: Receiver<Arc<Shared>>,
-    last_sequence: Option<u64>,
     output_seen: u64,
-}
-
-/// A frame received by a follower.
-pub(super) struct Received {
-    pub frame: Arc<Shared>,
-    /// Frames were lost before this one (the follower fell behind or the
-    /// leader changed mid-stream): decoding must restart at a keyframe.
-    pub gap: bool,
+    /// The delivered byte count at the last [`Self::delivered_rate`].
+    bytes_seen: (Instant, u64),
 }
 
 impl Membership {
-    pub(super) fn is_leader(&self) -> bool {
-        self.group.lock().leader == Some(self.id)
-    }
     /// The key of the group this member is in.
     pub(super) fn group_key(&self) -> &Key {
         &self.group.key
@@ -496,9 +643,9 @@ impl Membership {
             crate::features::host::forwarding::wake();
         }
     }
-    /// Observer: the group ended (nobody left to encode).
-    pub(super) fn ended(&self) -> bool {
-        self.group.lock().leader.is_none()
+    /// Why the pipeline ended, if it did.
+    pub(super) fn ended(&self) -> Option<End> {
+        self.group.lock().end.clone()
     }
     #[cfg(test)]
     pub(super) fn group_serial(&self) -> u64 {
@@ -510,30 +657,21 @@ impl Membership {
             member.vote = vote;
         }
     }
-    /// Ask the leader for a keyframe.
+    /// Ask for a keyframe (the next frame this member takes starts one).
     pub(super) fn request_keyframe(&self) {
-        let mut inner = self.group.lock();
-        if let Some(leader) = inner.leader
-            && let Some(member) = inner.members.get_mut(&leader)
-        {
+        if let Some(member) = self.group.lock().members.get_mut(&self.id) {
             member.keyframe = true;
+            member.awaiting = true;
+            member.asked = Some(Instant::now());
         }
     }
-    /// Leader: whether any member asked for a keyframe since the last call.
-    pub(super) fn take_keyframe(&self) -> bool {
-        let mut inner = self.group.lock();
-        let mut wanted = false;
-        for member in inner.members.values_mut() {
-            wanted |= std::mem::take(&mut member.keyframe);
-        }
-        wanted
-    }
-    /// This member's viewer feedback, for the leader's reference decisions
-    /// (`docs/protocol/rfi-ltr-brief.md` §4.2).
+    /// This member's viewer feedback, for the pipeline's reference
+    /// decisions (`docs/protocol/rfi-ltr-brief.md` §4.2).
     pub(super) fn report(
         &self,
         held: Option<crate::features::host::recovery::Held>,
         request: Option<crate::features::host::recovery::Request>,
+        rtt: Option<Duration>,
     ) {
         let mut inner = self.group.lock();
         if let Some(member) = inner.members.get_mut(&self.id) {
@@ -543,72 +681,34 @@ impl Membership {
             if request.is_some() {
                 member.recovery = request;
             }
+            member.rtt = rtt;
         }
-    }
-    /// Leader: every member's recent acknowledgement (at most 2 s old: a
-    /// member that stops acknowledging does not hold the others back) and
-    /// the unanswered recovery requests.
-    pub(super) fn take_feedback(
-        &self,
-    ) -> (
-        Vec<crate::features::host::recovery::Held>,
-        Vec<crate::features::host::recovery::Request>,
-    ) {
-        let mut inner = self.group.lock();
-        let mut held = Vec::new();
-        let mut requests = Vec::new();
-        for member in inner.members.values_mut() {
-            if let Some((h, at)) = &member.held
-                && at.elapsed() <= Duration::from_secs(2)
-            {
-                held.push(h.clone());
-            }
-            requests.extend(member.recovery.take());
-        }
-        (held, requests)
     }
     /// The group's allowance over its active members.
-    pub(super) fn aggregate(&self, minimum: u32) -> Option<Vote> {
-        aggregate(self.group.lock().members.values().filter_map(|m| m.vote), minimum)
-    }
-    /// Whether a member other than this one takes frames.
-    pub(super) fn others_active(&self) -> bool {
-        self.group
-            .lock()
-            .members
-            .iter()
-            .any(|(id, member)| *id != self.id && member.vote.is_some())
+    pub(super) fn aggregate(&self) -> Option<Vote> {
+        self.group.aggregate()
     }
     /// Whether other members are in the group at all.
     pub(super) fn has_others(&self) -> bool {
         self.group.lock().members.len() > 1
     }
-    /// Leader: hand one encoded frame to every follower. A follower whose
-    /// queue is full misses it and notices the gap.
-    pub(super) fn publish(&self, mut frame: Shared) {
-        let mut inner = self.group.lock();
-        inner.sequence += 1;
-        frame.sequence = inner.sequence;
-        let frame = Arc::new(frame);
-        for (id, member) in &inner.members {
-            if *id == self.id {
-                continue;
-            }
-            match member.outbox.try_send(frame.clone()) {
-                Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
-            }
-        }
+    /// When this member last got a frame.
+    pub(super) fn last_frame(&self) -> Option<Instant> {
+        self.group.lock().members.get(&self.id).and_then(|m| m.last)
     }
-    /// Leader: the stream's current description.
-    pub(super) fn set_output(&self, output: Output) {
-        let mut inner = self.group.lock();
-        if inner.output.as_ref().is_some_and(|(_, current)| *current == output) {
-            return;
+    /// What this member got since the last call (bit/s).
+    pub(super) fn delivered_rate(&mut self) -> Option<u64> {
+        let bytes = self.group.lock().members.get(&self.id).map_or(0, |m| m.bytes);
+        let now = Instant::now();
+        let (at, seen) = self.bytes_seen;
+        let elapsed = now.saturating_duration_since(at);
+        if elapsed < Duration::from_secs(1) {
+            return None;
         }
-        inner.output_revision += 1;
-        inner.output = Some((inner.output_revision, output));
+        self.bytes_seen = (now, bytes);
+        Some(((bytes - seen) as f64 * 8.0 / elapsed.as_secs_f64()) as u64)
     }
-    /// Follower: the stream description, when it changed since last asked.
+    /// The stream description, when it changed since last asked.
     pub(super) fn output_changed(&mut self) -> Option<Output> {
         let inner = self.group.lock();
         let (revision, output) = inner.output.as_ref()?;
@@ -618,32 +718,8 @@ impl Membership {
         self.output_seen = *revision;
         Some(output.clone())
     }
-    pub(super) fn set_size(&self, size: (u32, u32)) {
-        self.group.lock().size = size;
-    }
-    pub(super) fn set_cursor(&self, cursor: Option<Snapshot>) {
-        self.group.lock().cursor = cursor;
-    }
     pub(super) fn cursor(&self) -> Option<Snapshot> {
         self.group.lock().cursor.clone()
-    }
-    /// Follower: the next frame, waiting at most `timeout`.
-    pub(super) fn receive(&mut self, timeout: Duration) -> Option<Received> {
-        let frame = match self.inbox.recv_timeout(timeout) {
-            Ok(frame) => frame,
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return None,
-        };
-        let gap = self
-            .last_sequence
-            .is_some_and(|last| frame.sequence != last.wrapping_add(1));
-        self.last_sequence = Some(frame.sequence);
-        Some(Received { frame, gap })
-    }
-    /// Follower becoming leader: frames queued from the old leader are stale.
-    pub(super) fn discard_queued(&mut self) {
-        while self.inbox.try_recv().is_ok() {}
-        self.last_sequence = None;
-        self.output_seen = 0;
     }
 }
 
@@ -694,22 +770,54 @@ mod tests {
         hdr_metadata: None,
     };
 
+    fn frame(keyframe: bool, timestamp_100ns: i64) -> Encoded {
+        Encoded {
+            data: vec![1, 2, 3],
+            keyframe,
+            timestamp_100ns,
+            is_new: true,
+            timing: None,
+            meta: None,
+            ltr: Default::default(),
+            format: Format::AVC,
+            color: SDR,
+        }
+    }
+
+    /// A member whose frames arrive on the returned receiver.
+    fn joining(clock: Instant) -> (Joining, mpsc::Receiver<Encoded>) {
+        let (frames, received) = mpsc::channel(1);
+        (
+            Joining {
+                frames,
+                clock,
+                start: super::super::pipeline::Start::test(),
+            },
+            received,
+        )
+    }
+
+    fn join(registry: &Arc<Registry>, key: Key, size: (u32, u32)) -> (Membership, mpsc::Receiver<Encoded>) {
+        let (joining, frames) = joining(Instant::now());
+        (registry.join(key, size, MAX_ENCODERS, joining), frames)
+    }
+
     #[test]
     fn same_key_shares_and_different_key_opens_another() {
         let registry = Arc::new(Registry::default());
-        let a = registry.join(key("D1", 2), (1920, 1080), MAX_ENCODERS);
-        let b = registry.join(key("D1", 2), (1920, 1080), MAX_ENCODERS);
-        assert!(a.is_leader());
-        assert!(!b.is_leader());
+        let (a, _) = join(&registry, key("D1", 2), (1920, 1080));
+        let (b, _) = join(&registry, key("D1", 2), (1920, 1080));
+        assert_eq!(a.group_serial(), b.group_serial());
         assert_eq!(registry.len(), 1);
-        let c = registry.join(key("D1", 3), (2560, 1440), MAX_ENCODERS);
-        assert!(c.is_leader());
+        let (c, _) = join(&registry, key("D1", 3), (2560, 1440));
+        assert_ne!(c.group_serial(), a.group_serial());
         assert_eq!(registry.len(), 2);
-        // The newcomer asks for its keyframe once it takes frames.
-        assert!(!a.take_keyframe());
+        // A member's request is the pipeline's next keyframe.
+        let group = a.group.clone();
+        assert!(!group.take_keyframe(Instant::now()));
         b.request_keyframe();
-        assert!(a.take_keyframe());
-        assert!(!a.take_keyframe());
+        assert!(group.take_keyframe(Instant::now()));
+        assert!(!group.take_keyframe(Instant::now()));
     }
 
     #[test]
@@ -718,18 +826,16 @@ mod tests {
         let held: Vec<_> = (1..=4)
             .map(|quality| {
                 let size = [(1280, 720), (1920, 1080), (2560, 1440), (3840, 2160)][quality as usize - 1];
-                registry.join(key("D1", quality), size, MAX_ENCODERS)
+                join(&registry, key("D1", quality), size)
             })
             .collect();
         assert_eq!(registry.len(), 4);
-        let fifth = key("D1", 6);
-        let extra = registry.join(fifth, (2560, 1440), MAX_ENCODERS);
-        assert!(!extra.is_leader());
+        let (extra, _) = join(&registry, key("D1", 6), (2560, 1440));
         assert_eq!(registry.len(), 4);
         assert_eq!(extra.group_key().target, target(3));
         // Another screen cannot share: over the limit.
-        let other = registry.join(key("D2", 2), (1920, 1080), MAX_ENCODERS);
-        assert!(other.is_leader());
+        let (other, _) = join(&registry, key("D2", 2), (1920, 1080));
+        assert_eq!(other.group_key().screen, "D2");
         assert_eq!(registry.len(), 5);
         drop(held);
     }
@@ -774,19 +880,15 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_takes_the_minimum_of_active_members() {
-        assert_eq!(aggregate([], 300_000), None);
-        let all = aggregate(
-            [vote(8_000_000, 0.0, 60), vote(3_000_000, 0.2, 144), vote(5_000_000, 0.1, 30)],
-            300_000,
-        )
-        .unwrap();
-        assert_eq!(all, vote(3_000_000, 0.2, 30));
-        // A paused member does not stall the others.
-        let paused = aggregate([vote(8_000_000, 0.0, 60), vote(0, 0.0, 60)], 300_000).unwrap();
-        assert_eq!(paused.peak, 8_000_000);
-        // Unless everyone is paused.
+    fn the_group_encodes_for_the_weakest_active_member() {
+        let a = aggregate([vote(5_000_000, 0.1, 60), vote(2_000_000, 0.3, 30)], 300_000).unwrap();
+        assert_eq!((a.peak, a.ratio, a.fps), (2_000_000, 0.3, 30));
+        // A paused transport does not hold the others back...
+        let a = aggregate([vote(5_000_000, 0.0, 60), vote(0, 0.0, 60)], 300_000).unwrap();
+        assert_eq!(a.peak, 5_000_000);
+        // ...unless everyone is paused.
         assert_eq!(aggregate([vote(0, 0.0, 60)], 300_000).unwrap().peak, 0);
+        assert!(aggregate([], 300_000).is_none());
         // The forwarder uplink limits the rate, not the frame rate.
         let uplink = aggregate([vote(5_000_000, 0.0, 60), vote(3_000_000, 0.0, 0)], 300_000).unwrap();
         assert_eq!((uplink.peak, uplink.fps), (3_000_000, 60));
@@ -794,110 +896,76 @@ mod tests {
     }
 
     #[test]
-    fn leader_hands_over_and_empty_groups_close() {
+    fn frames_reach_active_members_from_a_keyframe_on_their_clocks() {
         let registry = Arc::new(Registry::default());
-        let a = registry.join(key("D1", 2), (1920, 1080), MAX_ENCODERS);
-        let mut b = registry.join(key("D1", 2), (1920, 1080), MAX_ENCODERS);
-        let c = registry.join(key("D1", 2), (1920, 1080), MAX_ENCODERS);
+        let clock = Instant::now();
+        let (a, mut a_frames) = join(&registry, key("D1", 2), (1920, 1080));
+        let (b_joining, mut b_frames) = joining(clock + Duration::from_micros(500));
+        let b = registry.join(key("D1", 2), (1920, 1080), MAX_ENCODERS, b_joining);
+        let group = a.group.clone();
         a.vote(Some(vote(5_000_000, 0.0, 60)));
         b.vote(Some(vote(2_000_000, 0.0, 60)));
-        assert_eq!(a.aggregate(300_000).unwrap().peak, 2_000_000);
-        assert!(a.others_active());
-        let started = Instant::now();
-        let frame = Encoded {
-            data: vec![1, 2, 3],
-            keyframe: true,
-            timestamp_100ns: 10_000,
-            is_new: true,
-            timing: None,
-            meta: None,
-            ltr: Default::default(),
-            format: Format::AVC,
-            color: SDR,
-        };
-        a.publish(Shared::new(&frame, started));
-        let received = b.receive(Duration::from_millis(10)).unwrap();
-        assert!(!received.gap);
-        assert_eq!(received.frame.encoded(started).unwrap().timestamp_100ns, 10_000);
-        // A clock that started later sees the frame earlier on its timeline,
-        // and a frame from before it started not at all.
-        let later = started + Duration::from_micros(500);
-        assert_eq!(received.frame.encoded(later).unwrap().timestamp_100ns, 5_000);
-        assert!(received.frame.encoded(started + Duration::from_secs(1)).is_none());
+        assert_eq!(group.aggregate().unwrap().peak, 2_000_000);
+        // Waiting members want a keyframe; a delta frame reaches nobody.
+        assert!(group.take_keyframe(Instant::now()));
+        group.publish(&frame(false, 10_000), clock);
+        assert!(a_frames.try_recv().is_err());
+        group.publish(&frame(true, 10_000), clock);
+        assert_eq!(b_frames.try_recv().unwrap().timestamp_100ns, 5_000);
+        let at_a = a_frames.try_recv().unwrap();
+        assert!(at_a.keyframe);
+        // Both queues hold one frame: a single member would be waited for,
+        // two are left behind only after the patience runs out.
+        group.publish(&frame(false, 20_000), clock);
+        let now = Instant::now();
+        assert!(group.backpressure(now, Duration::from_millis(100)));
+        assert!(!group.backpressure(now + Duration::from_millis(200), Duration::from_millis(100)));
+        // A full queue loses the frame: that member starts over.
+        a_frames.try_recv().unwrap();
+        group.publish(&frame(false, 30_000), clock);
+        assert!(b_frames.try_recv().is_ok());
+        assert!(b_frames.try_recv().is_err(), "b missed the frame while full");
+        group.publish(&frame(false, 40_000), clock);
+        assert!(b_frames.try_recv().is_err(), "b waits for a keyframe");
         drop(a);
-        assert!(b.is_leader());
-        assert!(!c.is_leader());
         drop(b);
-        assert!(c.is_leader());
-        drop(c);
         assert_eq!(registry.len(), 0);
     }
 
     #[test]
-    fn a_full_follower_queue_shows_up_as_a_gap() {
-        let registry = Arc::new(Registry::default());
-        let leader = registry.join(key("D1", 2), (1920, 1080), MAX_ENCODERS);
-        let mut follower = registry.join(key("D1", 2), (1920, 1080), MAX_ENCODERS);
-        let started = Instant::now();
-        let frame = |keyframe| Encoded {
-            data: vec![0; 4],
-            keyframe,
-            timestamp_100ns: 1,
-            is_new: true,
-            timing: None,
-            meta: None,
-            ltr: Default::default(),
-            format: Format::AVC,
-            color: SDR,
-        };
-        for _ in 0..FOLLOWER_QUEUE + 2 {
-            leader.publish(Shared::new(&frame(false), started));
-        }
-        for _ in 0..FOLLOWER_QUEUE {
-            assert!(!follower.receive(Duration::from_millis(1)).unwrap().gap);
-        }
-        leader.publish(Shared::new(&frame(true), started));
-        let next = follower.receive(Duration::from_millis(1)).unwrap();
-        assert!(next.gap && next.frame.keyframe);
+    fn rebase_moves_frames_between_clocks() {
+        let clock = Instant::now();
+        let encoded = rebase(&frame(true, 10_000), clock, clock).unwrap();
+        assert_eq!(encoded.timestamp_100ns, 10_000);
+        let later = clock + Duration::from_micros(500);
+        assert_eq!(rebase(&frame(true, 10_000), clock, later).unwrap().timestamp_100ns, 5_000);
+        assert!(rebase(&frame(true, 10_000), clock, clock + Duration::from_secs(1)).is_none());
     }
 
     #[test]
-    fn observers_take_frames_but_never_lead() {
+    fn observers_take_frames_but_do_not_keep_the_pipeline() {
         let registry = Arc::new(Registry::default());
-        let leader = registry.join(key("D1", 2), (1920, 1080), MAX_ENCODERS);
-        let follower = registry.join(key("D1", 2), (1920, 1080), MAX_ENCODERS);
+        let (a, _) = join(&registry, key("D1", 2), (1920, 1080));
+        let (b, _) = join(&registry, key("D1", 2), (1920, 1080));
         assert!(registry.forwarded().is_empty());
-        follower.set_forwarded(Some((7, 0)));
+        b.set_forwarded(Some((7, 0)));
         let forwarded = registry.forwarded();
         assert_eq!(forwarded.len(), 1);
         assert_eq!(forwarded[0].members, [(7, 0)]);
-        let mut observer = registry.observe(&forwarded[0].group);
-        assert_eq!(observer.group_serial(), leader.group_serial());
-        // The observer asked for a keyframe and counts as an active member.
-        assert!(leader.take_keyframe());
-        observer.vote(Some(vote(4_000_000, 0.0, 60)));
-        assert!(leader.others_active());
-        let started = Instant::now();
-        let frame = Encoded {
-            data: vec![9],
-            keyframe: true,
-            timestamp_100ns: 1,
-            is_new: true,
-            timing: None,
-            meta: None,
-            ltr: Default::default(),
-            format: Format::AVC,
-            color: SDR,
-        };
-        leader.publish(Shared::new(&frame, started));
-        assert!(observer.receive(Duration::from_millis(10)).is_some());
-        // The leader leaves: the follower leads, not the observer.
-        drop(leader);
-        assert!(follower.is_leader());
-        assert!(!observer.is_leader() && !observer.ended());
-        // Only the observer is left: the group has ended.
-        drop(follower);
-        assert!(observer.ended());
+        let (frames, mut received) = mpsc::channel(1);
+        let observer = registry.observe(&forwarded[0].group, frames, Instant::now());
+        assert_eq!(observer.group_serial(), a.group_serial());
+        observer.vote(Some(vote(4_000_000, 0.0, 0)));
+        let group = a.group.clone();
+        assert!(group.take_keyframe(Instant::now()), "the observer waits for a keyframe");
+        group.publish(&frame(true, 1), Instant::now());
+        assert!(received.try_recv().is_ok());
+        drop(a);
+        assert!(observer.ended().is_none());
+        // Only the observer is left: the pipeline stops.
+        drop(b);
+        assert!(observer.ended().is_some());
+        assert!(group.stopped());
         assert_eq!(registry.len(), 0);
         assert!(registry.forwarded().is_empty());
         drop(observer);

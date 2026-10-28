@@ -263,7 +263,6 @@ pub(crate) struct Features {
     // host peer session (src/features/host/peer)
     pub peer_no_negotiated_encoder: &'static str,
     pub peer_shared_group_missing: &'static str,
-    pub peer_send_queue_closed: &'static str,
     pub peer_capture_source_missing: &'static str,
     pub peer_encoder_missing: &'static str,
     pub peer_encoder_output_mismatch: &'static str,
@@ -1640,7 +1639,6 @@ pub(crate) const ZH_CN: Features = Features {
     // host peer session (src/features/host/peer)
     peer_no_negotiated_encoder: "协商的编码器均不可用",
     peer_shared_group_missing: "共享编码组不存在",
-    peer_send_queue_closed: "画面发送队列已关闭",
     peer_capture_source_missing: "采集源不存在",
     peer_encoder_missing: "编码器不存在",
     peer_encoder_output_mismatch: "编码器输出与协商的格式不一致",
@@ -2945,7 +2943,6 @@ pub(crate) const EN: Features = Features {
     // host peer session (src/features/host/peer)
     peer_no_negotiated_encoder: "None of the negotiated encoders is available",
     peer_shared_group_missing: "Shared encoder group not found",
-    peer_send_queue_closed: "The video send queue is closed",
     peer_capture_source_missing: "No capture source",
     peer_encoder_missing: "No encoder",
     peer_encoder_output_mismatch: "The encoder output doesn't match the negotiated format",

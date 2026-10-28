@@ -1225,6 +1225,7 @@ fn video_timestamp(origin: u32, elapsed_100ns: u64) -> u32 {
 
 mod capture_worker;
 mod encode_group;
+mod pipeline;
 mod channels;
 mod cursor;
 mod participants;
