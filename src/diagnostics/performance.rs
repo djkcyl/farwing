@@ -25,8 +25,9 @@ pub struct PerformanceSnapshot {
     /// Remote new-picture markers counted at successful presentation.
     pub actual_fps: f64,
     pub current_delay_ms: Option<f64>,
-    /// HUD frm: interval processing + interval sending + measured RTT.
-    /// This is not clock-correlated E2E or the current local frame sample.
+    /// HUD frame delay: host capture to presentation here, averaged over
+    /// the last second; where the capture time is not known yet, interval
+    /// processing + interval sending + measured RTT.
     pub frame_delay_ms: Option<u64>,
     /// The part of `frame_delay_ms` spent in the cinema playout buffer (same
     /// interval average); 0 at low latency.
@@ -352,9 +353,10 @@ impl PerformanceSampleState {
                 rendered_at,
                 rendered_before,
             } => {
+                // Capture on the host to presentation here.
                 let e2e = timing
                     .sender_capture_at
-                    .and_then(|capture_at| timing.decoded_at.checked_duration_since(capture_at));
+                    .and_then(|capture_at| rendered_at.checked_duration_since(capture_at));
                 self.pipeline_latency
                     .samples
                     .push_back(PipelineLatencySample {
@@ -507,6 +509,18 @@ pub struct PhaseStatistics {
 }
 
 impl PipelineLatencyState {
+    /// The average capture-to-presentation delay of the last second, if
+    /// the capture times are known.
+    fn recent_e2e_ms(&self, now: Instant) -> Option<u64> {
+        let recent: Vec<u64> = self
+            .samples
+            .iter()
+            .rev()
+            .take_while(|s| now.saturating_duration_since(s.recorded_at) <= Duration::from_secs(1))
+            .filter_map(|s| s.e2e_micros)
+            .collect();
+        (!recent.is_empty()).then(|| recent.iter().sum::<u64>() / recent.len() as u64 / 1000)
+    }
     fn statistics(&self, source_fps: Option<f64>, received_fps: f64) -> Option<PipelineStatistics> {
         if self.samples.is_empty() {
             return None;
@@ -1375,11 +1389,14 @@ impl PerformanceMonitor {
             state.clone()
         };
         let measured_rtt = self.inner.measured_media_rtt_micros.load(Ordering::Relaxed);
-        let frame_delay_ms = sample_state
-            .frame_period
-            .published
-            .filter(|_| measured_rtt != u64::MAX)
-            .map(|(processing, sending, _)| processing + sending + measured_rtt / 1000);
+        let presented = sample_state.pipeline_latency.recent_e2e_ms(Instant::now());
+        let frame_delay_ms = presented.or_else(|| {
+            sample_state
+                .frame_period
+                .published
+                .filter(|_| measured_rtt != u64::MAX)
+                .map(|(processing, sending, _)| processing + sending + measured_rtt / 1000)
+        });
         let frame_delay_buffer_ms = sample_state
             .frame_period
             .published

@@ -601,7 +601,7 @@ pub(crate) const ZH_CN: Viewer = Viewer {
     send_receive_fps: "发送 / 接收帧率",
     sending_total: "发送总计",
     average_max_ms: |average, max| format!("均值 {average:.2} / 最大 {max:.2} ms"),
-    capture_to_decoded: "采集→解码完成",
+    capture_to_decoded: "采集→显示",
     end_to_end_value: |average, p50, p90, p99, max| {
         format!("均值 {average:.2} / P50 {p50:.2} / P90 {p90:.2} / P99 {p99:.2} / 最大 {max:.2} ms")
     },
@@ -985,7 +985,7 @@ pub(crate) const EN: Viewer = Viewer {
     send_receive_fps: "Send / receive FPS",
     sending_total: "Sending total",
     average_max_ms: |average, max| format!("Avg {average:.2} / max {max:.2} ms"),
-    capture_to_decoded: "Capture → decoded",
+    capture_to_decoded: "Capture → shown",
     end_to_end_value: |average, p50, p90, p99, max| {
         format!("Avg {average:.2} / P50 {p50:.2} / P90 {p90:.2} / P99 {p99:.2} / max {max:.2} ms")
     },

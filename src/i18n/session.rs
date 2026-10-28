@@ -1100,7 +1100,7 @@ pub(crate) const ZH_CN: Session = Session {
     health_loss: "网络丢包",
     health_round_trip: "网络往返",
     health_jitter: "RTP 抖动",
-    health_frame_delay: "估算帧延迟",
+    health_frame_delay: "帧延迟",
     health_local_frame: "本地单帧",
     health_presentation_stall: "呈现停滞",
 
@@ -1730,7 +1730,7 @@ pub(crate) const EN: Session = Session {
     health_loss: "Packet loss",
     health_round_trip: "Round trip",
     health_jitter: "RTP jitter",
-    health_frame_delay: "Estimated frame delay",
+    health_frame_delay: "Frame delay",
     health_local_frame: "Local frame time",
     health_presentation_stall: "Presentation stall",
 
