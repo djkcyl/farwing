@@ -1,6 +1,6 @@
 //! Remote input and cursor policy transitions.
 use super::{
-    StreamControlHandle, StreamControlProtocol, StreamControlState, ensure_ready, lock, protocol,
+    StreamControlHandle, StreamControlState, ensure_ready, lock, negotiated,
 };
 use crate::features::remote_cursor::RemoteCursor;
 use crate::features::remote_input::MouseMode;
@@ -35,7 +35,7 @@ impl StreamControlHandle {
             state.mouse.set_ready(false);
         } else {
             state.mouse.set_ready(
-                protocol(&state) == StreamControlProtocol::CaptureSetting
+                negotiated(&state)
                     && state.control_channel_open
                     && state.text_channel_open,
             );
@@ -240,7 +240,7 @@ impl StreamControlHandle {
         // The exchange runs whenever the session is up (manual "获取被控剪贴板"
         // works in view mode too); automatic sync needs control.
         let clipboard_ready = state.viewing_enabled
-            && state.pb_connected
+            && state.hello_answered
             && state.text_channel_open
             && state.peer.has(crate::protocol::peer::feature::CLIPBOARD);
         self.clipboard.policy(
@@ -254,7 +254,7 @@ impl StreamControlHandle {
         );
         self.drag_drop.enable(
             state.viewing_enabled
-                && state.pb_connected
+                && state.hello_answered
                 && state.text_channel_open
                 && state.mouse_transport_connected
                 && self.files.allowed(),

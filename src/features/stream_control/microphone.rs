@@ -45,7 +45,7 @@ impl StreamControlHandle {
         state: &mut StreamControlState,
         enabled: bool,
     ) -> Result<()> {
-        if !state.pb_connected || !state.text_channel_open {
+        if !state.hello_answered || !state.text_channel_open {
             self.microphone.disconnect();
             if enabled {
                 bail!("{}", t().features.stream_microphone_channel_not_ready);
@@ -71,7 +71,7 @@ impl StreamControlHandle {
         if self.microphone.snapshot().enabled
             || (self.microphone.needs_cleanup()
                 && state.mouse_transport_connected
-                && state.pb_connected
+                && state.hello_answered
                 && state.text_channel_open)
         {
             if let Err(e) = self.request_microphone_locked(state, false) {

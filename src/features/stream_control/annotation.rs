@@ -751,7 +751,7 @@ impl StreamControlHandle {
 }
 fn annotation_supported(s: &StreamControlState) -> bool {
     s.peer.has(crate::protocol::peer::feature::ANNOTATION)
-        && protocol(s) == StreamControlProtocol::CaptureSetting
+        && negotiated(s)
         && s.text_channel_open
 }
 fn encoded_stroke(stroke: &Stroke, points: &[Point]) -> ann::Stroke {

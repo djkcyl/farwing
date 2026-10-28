@@ -419,7 +419,7 @@ pub(super) async fn send_control_messages(
                 }
                 if attempts >= PB_CONNECT_MAX_ATTEMPTS {
                     timer = None;
-                    stream_control.mark_pb_handshake_timeout();
+                    stream_control.mark_hello_timeout();
                     tracing::warn!(attempts, "peer HELLO timed out; no feature level was negotiated");
                     continue;
                 }
@@ -441,7 +441,7 @@ pub(super) async fn send_control_messages(
                     Ok(bytes) => {
                         if let Some(done) = message.completion { let _ = done.send(Ok(())); }
                         if is_annotation { tracing::debug!(sequence = message.sequence, bytes, "annotation request sent"); }
-                        else { tracing::info!(sequence = message.sequence, bytes, is_screen_request, protocol = message.protocol.label(), "viewing control request sent"); }
+                        else { tracing::info!(sequence = message.sequence, bytes, is_screen_request, "viewing control request sent"); }
                     }
                     Err(error) => {
                         let description = error.to_string();

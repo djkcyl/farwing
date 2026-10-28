@@ -21,7 +21,7 @@ impl StreamControlHandle {
         {
             let state = lock(&self.shared);
             anyhow::ensure!(
-                state.pb_connected && state.text_channel_open,
+                state.hello_answered && state.text_channel_open,
                 "{}",
                 t().features.stream_media_control_not_ready
             );
@@ -37,7 +37,7 @@ impl StreamControlHandle {
             loop {
                 {
                     let state = lock(&self.shared);
-                    if state.pb_connected && state.text_channel_open {
+                    if state.hello_answered && state.text_channel_open {
                         break;
                     }
                 }

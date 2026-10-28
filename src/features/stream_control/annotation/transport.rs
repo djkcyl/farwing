@@ -75,7 +75,6 @@ impl StreamControlHandle {
         let outgoing = OutgoingControlMessage {
             sequence,
             payload,
-            protocol: protocol(s),
             completion: None,
             annotation_generation: Some(s.annotation.generation),
         };

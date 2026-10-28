@@ -2,7 +2,7 @@
 //! its own deadline. An answer, a failed send, a timeout or a closed channel
 //! settles an entry exactly once.
 use super::wire::SessionBody;
-use super::{OutgoingControlMessage, StreamControlHandle, StreamControlState, protocol};
+use super::{OutgoingControlMessage, StreamControlHandle, StreamControlState};
 use crate::i18n::t;
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
@@ -114,7 +114,6 @@ impl StreamControlHandle {
                 annotation_generation: None,
                 sequence,
                 payload: super::wire::request(sequence, body),
-                protocol: protocol(state),
                 completion: None,
             })
             .map_err(|_| anyhow!("{}", t().features.stream_settings_sender_stopped))?;

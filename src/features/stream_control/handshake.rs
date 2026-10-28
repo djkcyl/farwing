@@ -2,7 +2,7 @@
 use super::input::{fail_cursor_request, smart_mouse_requested};
 use super::settings::{apply_stream_state, refresh_active_screen};
 use super::wire::{SessionBody, encode_pb_echo_response};
-use super::{PbHandshakeStatus, StreamControlHandle, StreamControlProtocol, lock, protocol};
+use super::{HelloStatus, StreamControlHandle, lock, negotiated};
 use crate::i18n::t;
 use crate::protocol::peer::{self, FrameType};
 use crate::protocol::peer::feature;
@@ -27,7 +27,7 @@ impl StreamControlHandle {
             peer::channel::CONTROL => {
                 if state.control_channel_open != open {
                     state.protocol_generation = state.protocol_generation.wrapping_add(1);
-                    state.pb_connected = false;
+                    state.hello_answered = false;
                 }
                 state.control_channel_open = open;
             }
@@ -74,7 +74,7 @@ impl StreamControlHandle {
         }
         self.sync_stream_locked(&mut state);
         if open
-            && protocol(&state) == StreamControlProtocol::CaptureSetting
+            && negotiated(&state)
             && state.control_channel_open
             && state.text_channel_open
         {
@@ -133,18 +133,18 @@ impl StreamControlHandle {
         }
     }
 
-    pub(crate) fn handshake_status(&self) -> PbHandshakeStatus {
+    pub(crate) fn handshake_status(&self) -> HelloStatus {
         let state = lock(&self.shared);
-        PbHandshakeStatus {
+        HelloStatus {
             generation: state.protocol_generation,
             open: state.control_channel_open,
-            connected: state.pb_connected,
+            connected: state.hello_answered,
         }
     }
 
-    pub(crate) fn mark_pb_handshake_timeout(&self) {
+    pub(crate) fn mark_hello_timeout(&self) {
         let mut state = lock(&self.shared);
-        if !state.pb_connected {
+        if !state.hello_answered {
             // Stop retrying only. Without a HELLO response no feature level is
             // negotiated, so no stream-control protocol is selected.
             state.last_error = Some(t().features.stream_handshake_timeout.to_owned());
@@ -355,18 +355,17 @@ impl StreamControlHandle {
                 "peer HELLO received"
             );
         } else {
-            state.pb_connected = true;
+            state.hello_answered = true;
             state.mouse.set_ready(
                 state.mouse_transport_connected
                     && state.control_channel_open
                     && state.text_channel_open
-                    && protocol(&state) == StreamControlProtocol::CaptureSetting,
+                    && negotiated(&state),
             );
             handshake_changed = true;
             state.last_error = None;
             tracing::info!(
                 features = hello.features.len(),
-                protocol = protocol(&state).label(),
                 peer_version = %hello.client_version,
                 "peer feature negotiation completed"
             );

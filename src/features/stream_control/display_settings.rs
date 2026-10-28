@@ -234,7 +234,7 @@ pub(super) fn apply_displays(state: &mut StreamControlState, list: wire::Display
 /// device, and the `display` capability in effect.
 pub(super) fn supported(state: &StreamControlState) -> bool {
     state.features.as_ref().is_some_and(|p| p.supports(crate::account::feature_ability::Feature::Host))
-        && protocol(state) == StreamControlProtocol::CaptureSetting
+        && negotiated(state)
         && state
             .grants
             .as_ref()

@@ -97,21 +97,6 @@ impl StreamQuality {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StreamControlProtocol {
-    Negotiating,
-    CaptureSetting,
-}
-
-impl StreamControlProtocol {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Negotiating => "negotiating",
-            Self::CaptureSetting => "CaptureSetting",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 // Values are validated on load.
 pub struct StreamControlSettings {
@@ -241,12 +226,11 @@ pub struct StreamControlSnapshot {
     pub dpi_settings_supported: bool,
     pub display_changes: std::collections::BTreeMap<i32, DisplayChangeStatus>,
 
-    pub protocol: StreamControlProtocol,
     pub custom_bitrate_supported: bool,
     pub mouse_modes_supported: bool,
     pub control_channel_open: bool,
     pub text_channel_open: bool,
-    pub pb_connected: bool,
+    pub hello_answered: bool,
     pub ready: bool,
     pub waiting_for: Option<&'static str>,
     pub pending_sequence: Option<i64>,
@@ -284,7 +268,7 @@ pub struct StreamControlHandle {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct PbHandshakeStatus {
+pub(crate) struct HelloStatus {
     pub generation: u64,
     pub open: bool,
     pub connected: bool,
@@ -294,7 +278,6 @@ pub(crate) struct OutgoingControlMessage {
     pub annotation_generation: Option<u64>,
     pub sequence: i64,
     pub payload: Vec<u8>,
-    pub protocol: StreamControlProtocol,
     pub completion: Option<tokio::sync::oneshot::Sender<std::result::Result<(), String>>>,
 }
 
@@ -380,7 +363,7 @@ struct StreamControlState {
     control_channel_open: bool,
     text_channel_open: bool,
     protocol_generation: u64,
-    pb_connected: bool,
+    hello_answered: bool,
     /// Features the host declared in its `HELLO`.
     peer: crate::protocol::peer::PeerFeatures,
     viewing_enabled: bool,
@@ -480,7 +463,7 @@ impl StreamControlHandle {
             control_channel_open: false,
             text_channel_open: false,
             protocol_generation: 0,
-            pb_connected: false,
+            hello_answered: false,
             peer: Default::default(),
             viewing_enabled: true,
             next_sequence: 1,
@@ -629,7 +612,6 @@ impl StreamControlHandle {
     pub fn snapshot(&self) -> StreamControlSnapshot {
         let mut state = lock(&self.shared);
         self.expire_requests(&mut state);
-        let active_protocol = protocol(&state);
         let mut network = self.network.snapshot();
         if !feature_supported(
             &state,
@@ -642,7 +624,7 @@ impl StreamControlHandle {
             Some(t().features.stream_waiting_control_channel)
         } else if !state.text_channel_open {
             Some(t().features.stream_waiting_text_channel)
-        } else if !state.pb_connected {
+        } else if !state.hello_answered {
             Some(t().features.stream_waiting_feature_negotiation)
         } else if state.remote_display.is_none() {
             Some(t().features.stream_waiting_screen_baseline)
@@ -696,7 +678,6 @@ impl StreamControlHandle {
                     display: screen.display.clone(),
                 })
                 .collect(),
-            protocol: active_protocol,
             custom_bitrate_supported: custom_bitrate_supported(&state)
                 && feature_supported(
                     &state,
@@ -708,9 +689,8 @@ impl StreamControlHandle {
             ),
             control_channel_open: state.control_channel_open,
             text_channel_open: state.text_channel_open,
-            pb_connected: state.pb_connected,
-            ready: waiting_for.is_none()
-                && active_protocol == StreamControlProtocol::CaptureSetting,
+            hello_answered: state.hello_answered,
+            ready: waiting_for.is_none() && negotiated(&state),
             waiting_for,
             pending_sequence: state.pending_stream,
             last_applied_sequence: state.last_applied_sequence,
@@ -824,14 +804,14 @@ fn ensure_business_ready(state: &StreamControlState) -> Result<()> {
     if !state.text_channel_open {
         bail!("{}", t().features.stream_session_channel_closed);
     }
-    if protocol(state) == StreamControlProtocol::Negotiating {
+    if !negotiated(state) {
         bail!("{}", t().features.stream_peer_negotiation_pending);
     }
     Ok(())
 }
 
 fn custom_bitrate_supported(state: &StreamControlState) -> bool {
-    state.pb_connected && state.peer.known()
+    state.hello_answered && state.peer.known()
 }
 
 fn feature_supported(
@@ -844,14 +824,10 @@ fn feature_supported(
         .is_some_and(|policy| policy.supports(feature))
 }
 
-/// Every host speaks CaptureSetting once its HELLO is in (a closed session
-/// channel forgets it until the next one).
-fn protocol(state: &StreamControlState) -> StreamControlProtocol {
-    if state.pb_connected && state.peer.known() {
-        StreamControlProtocol::CaptureSetting
-    } else {
-        StreamControlProtocol::Negotiating
-    }
+/// The host answered our HELLO: its features are known (a closed channel
+/// forgets them until the next HELLO).
+fn negotiated(state: &StreamControlState) -> bool {
+    state.hello_answered && state.peer.known()
 }
 
 fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {

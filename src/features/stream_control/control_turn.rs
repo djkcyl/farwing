@@ -55,7 +55,7 @@ impl StreamControlHandle {
         automatic: bool,
         ask: bool,
     ) {
-        if !state.pb_connected || !state.text_channel_open {
+        if !state.hello_answered || !state.text_channel_open {
             return;
         }
         // Asking the host's user waits for an answer from a person.

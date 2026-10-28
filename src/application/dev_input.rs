@@ -404,7 +404,7 @@ impl Runner {
         let mut last = None;
         loop {
             let snapshot = handle.snapshot();
-            if snapshot.pb_connected && !snapshot.screens.is_empty() {
+            if snapshot.hello_answered && !snapshot.screens.is_empty() {
                 // Absolute mouse, host cursor left alone (§7).
                 match handle.set_mouse_mode(MouseMode::Local) {
                     Ok(()) => break,

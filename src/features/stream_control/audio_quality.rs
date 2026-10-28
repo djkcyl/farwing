@@ -132,7 +132,6 @@ impl StreamControlHandle {
                 annotation_generation: None,
                 sequence: 0,
                 payload: audio_control::request(id, quality.kbps),
-                protocol: StreamControlProtocol::CaptureSetting,
                 completion: Some(done),
             })
             .map_err(|_| anyhow!("{}", t().features.stream_session_ended))?;

@@ -379,7 +379,8 @@ pub(super) async fn run_viewer_connection_owner(
                     if update_attempt && !cancel.is_cancelled() && retry_session_failure(&error) && retries<5 {
                         retries+=1;
                         resolved.refresh_after_upgrade=true;
-                        display=update_reconnect_display(&resolved,reporter,cancel,&viewer_sender,update_started.context(t().session.error_update_state_lost)?).await?;
+                        let started = update_started.context(t().session.error_update_state_lost)?;
+                        display = replace_room(&viewer_sender, &resolved.summary.alias, None, ConnectionProgress::updating(started), resolved.background.clone(), reporter, cancel).await?;
                         cancellable(cancel,async {tokio::time::sleep(crate::features::remote_upgrade::UPDATE_PROBE_INTERVAL).await;Ok(())}).await?;
                         continue;
                     }
@@ -427,14 +428,12 @@ pub(super) async fn run_viewer_connection_owner(
                         let wanted = *modes.borrow_and_update();
                         if wanted == audio_only { continue; }
                         session_control.mouse().disable();
-                        let (progress_tx, progress_rx) = std::sync::mpsc::channel();
-                        let (display_tx, display_rx) = oneshot::channel();
-                        *reporter = Arc::new(move |progress| { let _ = progress_tx.send(progress); });
-                        reporter(ConnectionProgress::working(1, if wanted { t().session.progress_switching_to_audio } else { t().session.progress_restoring_picture }, t().session.progress_switching_media));
-                        viewer_sender.send(ViewerWindowEvent::Reconnect {
-                            alias:resolved.summary.alias.clone(), window:None, progress:progress_rx, display:display_tx,
-                        }).map_err(|_| anyhow!("{}", t().session.error_media_window_closed))?;
-                        let mode_display = cancellable(cancel, async { display_rx.await.context(t().session.error_media_window_not_switched) }).await?;
+                        let progress = ConnectionProgress::working(
+                            1,
+                            if wanted { t().session.progress_switching_to_audio } else { t().session.progress_restoring_picture },
+                            t().session.progress_switching_media,
+                        );
+                        let mode_display = replace_room(&viewer_sender, &resolved.summary.alias, None, progress, None, reporter, cancel).await?;
                         close = None;
                         let switched = if wanted {
                             cancellable(cancel, await_media_startup(controller.forwarder.session.end_waiter(), controller.start_listening())).await
@@ -476,22 +475,17 @@ pub(super) async fn run_viewer_connection_owner(
                                 continue;
                             }
                         };
-                        let (progress_tx, progress_rx) = std::sync::mpsc::channel();
-                        let (display_tx, display_rx) = oneshot::channel();
-                        *reporter = Arc::new(move |progress| { let _ = progress_tx.send(progress); });
-                        reporter(ConnectionProgress::working(1, t().session.progress_switching_device, (t().session.progress_connecting_to)(&next.summary.alias)));
-                        if let Some(background)=next.background.clone(){reporter(ConnectionProgress::background(background));}
                         // The UI releases input and joins every old screen/decoder,
                         // retaining the window in which the user selected the device.
-                        let replacement = async {
-                            viewer_sender.send(ViewerWindowEvent::Reconnect {
-                                alias: next.summary.alias.clone(), window: Some(request.window),
-                                progress: progress_rx, display: display_tx,
-                            }).map_err(|_| anyhow!("player window closed during device switch"))?;
-                            display_rx.await.context("player did not acknowledge device switch")
-                        };
-                        let new_display = cancellable(cancel, replacement).await;
-                        let new_display = new_display?;
+                        let progress = ConnectionProgress::working(
+                            1,
+                            t().session.progress_switching_device,
+                            (t().session.progress_connecting_to)(&next.summary.alias),
+                        );
+                        let new_display = replace_room(
+                            &viewer_sender, &next.summary.alias, Some(request.window), progress,
+                            next.background.clone(), reporter, cancel,
+                        ).await?;
                         next_connection = Some((next, new_display));
                         break Ok(());
                     }
@@ -529,7 +523,7 @@ pub(super) async fn run_viewer_connection_owner(
                 resolved.audio_preferences = Some(session_control.audio().settings());
                 resolved.refresh_after_upgrade = true;
                 retries = 0;
-                display = update_reconnect_display(&resolved,reporter,cancel,&viewer_sender,started).await?;
+                display = replace_room(&viewer_sender, &resolved.summary.alias, None, ConnectionProgress::updating(started), resolved.background.clone(), reporter, cancel).await?;
                 continue;
             }
             if let Some(upgrade) = &upgrade { upgrade.retire(); }
@@ -542,14 +536,8 @@ pub(super) async fn run_viewer_connection_owner(
                         record.reconnecting();
                     }
                     recovering.get_or_insert_with(std::time::Instant::now);
-                    let (progress_tx, progress_rx) = std::sync::mpsc::channel();
-                    let (display_tx, display_rx) = oneshot::channel();
-                    *reporter = Arc::new(move |progress| { let _ = progress_tx.send(progress); });
-                    reporter(ConnectionProgress::working(4, t().session.progress_reconnecting, format!("{error:#}")));
-                    if let Some(background)=resolved.background.clone(){reporter(ConnectionProgress::background(background));}
-                    viewer_sender.send(ViewerWindowEvent::Reconnect { alias: resolved.summary.alias.clone(), window: None, progress: progress_rx, display: display_tx })
-                        .map_err(|_| anyhow!("player window closed during reconnect"))?;
-                    display = cancellable(cancel, async { display_rx.await.context("player did not acknowledge room replacement") }).await?;
+                    let progress = ConnectionProgress::working(4, t().session.progress_reconnecting, format!("{error:#}"));
+                    display = replace_room(&viewer_sender, &resolved.summary.alias, None, progress, resolved.background.clone(), reporter, cancel).await?;
                 }
                 result => { if let Some(close) = close.as_ref() { close.close(); } return result; }
             }
@@ -656,32 +644,37 @@ async fn wait_before_rebuild(
     .await
 }
 
-async fn update_reconnect_display(
-    resolved: &ResolvedConnection,
+/// Ask the player for a new room's display: the window (`window`, a
+/// device switch keeps the one it was asked in) shows `progress` and then
+/// the new room's picture.
+pub(super) async fn replace_room(
+    sender: &std::sync::mpsc::Sender<ViewerWindowEvent>,
+    alias: &str,
+    window: Option<winit::window::WindowId>,
+    progress: ConnectionProgress,
+    background: Option<crate::application::wallpaper::Source>,
     reporter: &mut ConnectionProgressReporter,
     cancel: &CancellationToken,
-    sender: &std::sync::mpsc::Sender<ViewerWindowEvent>,
-    update_started: std::time::Instant,
 ) -> Result<ViewerDisplayHandle> {
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let (display_tx, display_rx) = oneshot::channel();
     *reporter = Arc::new(move |progress| {
         let _ = progress_tx.send(progress);
     });
-    reporter(ConnectionProgress::updating(update_started));
-    if let Some(background) = resolved.background.clone() {
+    reporter(progress);
+    if let Some(background) = background {
         reporter(ConnectionProgress::background(background));
     }
     sender
         .send(ViewerWindowEvent::Reconnect {
-            alias: resolved.summary.alias.clone(),
-            window: None,
+            alias: alias.to_owned(),
+            window,
             progress: progress_rx,
             display: display_tx,
         })
-        .map_err(|_| anyhow!("{}", t().session.error_update_window_closed))?;
+        .map_err(|_| anyhow!("{}", t().session.error_media_window_closed))?;
     cancellable(cancel, async {
-        display_rx.await.context(t().session.error_update_window_closed)
+        display_rx.await.context(t().session.error_media_window_closed)
     })
     .await
 }

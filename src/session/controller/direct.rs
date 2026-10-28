@@ -9,7 +9,7 @@ use crate::application::viewer::{ConnectionProgress, ViewerDisplayHandle, Viewer
 use crate::i18n::t;
 use crate::media::{ConnectionMediaOptions, ConnectionMediaProfile, LocalDisplayInfo, detect_local_display};
 use crate::transport::direct::{self, Target, client::Auth};
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Result};
 use farwing_protocol::api::Relation;
 use farwing_protocol::direct::DirectHello;
 use std::sync::Arc;
@@ -184,7 +184,16 @@ pub(super) async fn run_owner(
                     record.reconnecting();
                 }
                 recovering.get_or_insert_with(std::time::Instant::now);
-                display = reconnect_display(&alias, &error, reporter, cancel, &sender).await?;
+                display = viewing::replace_room(
+                    &sender,
+                    &alias,
+                    None,
+                    ConnectionProgress::working(4, t().session.progress_reconnecting, format!("{error:#}")),
+                    None,
+                    reporter,
+                    cancel,
+                )
+                .await?;
                 continue;
             }
         };
@@ -211,7 +220,16 @@ pub(super) async fn run_owner(
                     record.reconnecting();
                 }
                 recovering.get_or_insert_with(std::time::Instant::now);
-                display = reconnect_display(&alias, &error, reporter, cancel, &sender).await?;
+                display = viewing::replace_room(
+                    &sender,
+                    &alias,
+                    None,
+                    ConnectionProgress::working(4, t().session.progress_reconnecting, format!("{error:#}")),
+                    None,
+                    reporter,
+                    cancel,
+                )
+                .await?;
             }
             result => {
                 close.close();
@@ -391,30 +409,3 @@ async fn wait(
     .await
 }
 
-/// Show the progress view again while a lost session is rebuilt.
-async fn reconnect_display(
-    alias: &str,
-    error: &anyhow::Error,
-    reporter: &mut ConnectionProgressReporter,
-    cancel: &CancellationToken,
-    sender: &std::sync::mpsc::Sender<ViewerWindowEvent>,
-) -> Result<ViewerDisplayHandle> {
-    let (progress_tx, progress_rx) = std::sync::mpsc::channel();
-    let (display_tx, display_rx) = oneshot::channel();
-    *reporter = Arc::new(move |progress| {
-        let _ = progress_tx.send(progress);
-    });
-    reporter(ConnectionProgress::working(4, t().session.progress_reconnecting, format!("{error:#}")));
-    sender
-        .send(ViewerWindowEvent::Reconnect {
-            alias: alias.to_owned(),
-            window: None,
-            progress: progress_rx,
-            display: display_tx,
-        })
-        .map_err(|_| anyhow!("player window closed during reconnect"))?;
-    cancellable(cancel, async {
-        display_rx.await.context("player did not acknowledge room replacement")
-    })
-    .await
-}

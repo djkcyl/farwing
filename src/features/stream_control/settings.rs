@@ -86,9 +86,9 @@ impl StreamControlHandle {
     /// it caps the frame rate while this decoder falls behind.
     pub(crate) fn receiver_stats_frame(&self) -> Option<Vec<u8>> {
         let mut state = lock(&self.shared);
-        if !state.pb_connected || !state.viewing_enabled {
+        if !state.hello_answered || !state.viewing_enabled {
             tracing::debug!(
-                connected = state.pb_connected,
+                connected = state.hello_answered,
                 viewing = state.viewing_enabled,
                 "receiver statistics not sent"
             );
