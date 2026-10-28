@@ -28,13 +28,7 @@ pub(crate) fn microphone_policy(bytes: &[u8]) -> Result<Option<MicrophonePolicy>
 impl MicrophonePolicy {
     /// The answer: carried out, or the refusal's code and reason.
     pub fn response(&self, result: std::result::Result<(), (&str, &str)>) -> Vec<u8> {
-        match result {
-            Ok(()) => super::wire::response(
-                self.request_id,
-                SessionBody::MicrophoneResult(super::wire::Done {}),
-            ),
-            Err((code, reason)) => super::wire::error_response(self.request_id, code, reason),
-        }
+        super::wire::answer(self.request_id, result)
     }
 }
 
@@ -64,13 +58,7 @@ impl ControlTurn {
     /// The answer: carried out (taken or given back), or the refusal's code
     /// and reason.
     pub fn response(&self, result: std::result::Result<(), (&str, &str)>) -> Vec<u8> {
-        match result {
-            Ok(()) => super::wire::response(
-                self.request_id,
-                SessionBody::ControlTurnResult(super::wire::Done {}),
-            ),
-            Err((code, reason)) => super::wire::error_response(self.request_id, code, reason),
-        }
+        super::wire::answer(self.request_id, result)
     }
 }
 

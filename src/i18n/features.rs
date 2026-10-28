@@ -1160,8 +1160,6 @@ pub(crate) struct Features {
     pub transfer_state_failed: &'static str,
     pub transfer_state_done: &'static str,
     pub transfer_cancelled: &'static str,
-    /// reason (ours), detail (the other side's words)
-    pub transfer_failure_detail: fn(&str, &str) -> String,
     pub transfer_state_skipped: &'static str,
     // controller service (file_transfer/service.rs)
     pub transfer_command_queue_full: &'static str,
@@ -2480,7 +2478,6 @@ pub(crate) const ZH_CN: Features = Features {
     transfer_state_failed: "失败",
     transfer_state_done: "已完成",
     transfer_cancelled: "已取消",
-    transfer_failure_detail: |reason, detail| format!("{reason}：{detail}"),
     transfer_state_skipped: "已跳过",
     // controller service (file_transfer/service.rs)
     transfer_command_queue_full: "操作队列已满",
@@ -3792,7 +3789,6 @@ pub(crate) const EN: Features = Features {
     transfer_state_failed: "Failed",
     transfer_state_done: "Completed",
     transfer_cancelled: "Cancelled",
-    transfer_failure_detail: |reason, detail| format!("{reason}: {detail}"),
     transfer_state_skipped: "Skipped",
     // controller service (file_transfer/service.rs)
     transfer_command_queue_full: "Operation queue is full",

@@ -122,12 +122,11 @@ async fn conclude(
         Ending::Failed(failure) => {
             tracing::warn!(transfer = id, entry, error = %failure, "host file transfer failed");
             output
-                .send(Packet::session(wire::item_done(wire::ItemDone {
-                    transfer: id,
+                .send(Packet::session(wire::item_done(wire::ItemDone::new(
+                    id,
                     entry,
-                    error_code: failure.code,
-                    message: failure.detail(),
-                })))
+                    failure.code,
+                ))))
                 .await
         }
         Ending::Cancelled(request, _) => output.respond(request, Body::Done(wire::Done::default())).await,
@@ -445,12 +444,11 @@ async fn receive_items(
         }
         progress.saved();
         output
-            .send(Packet::session(wire::item_done(wire::ItemDone {
-                transfer: run.id,
-                entry: index as u32,
-                error_code: code::OK,
-                message: String::new(),
-            })))
+            .send(Packet::session(wire::item_done(wire::ItemDone::new(
+                run.id,
+                index as u32,
+                code::OK,
+            ))))
             .await?;
         next += 1;
     }

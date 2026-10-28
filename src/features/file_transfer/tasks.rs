@@ -284,7 +284,7 @@ async fn next(transfer: &mut Registration) -> Result<Inbound> {
 
 /// A failed `ItemDone` as an error naming the item.
 fn item_failure(done: &wire::ItemDone, items: &[FileInfo]) -> anyhow::Error {
-    let failure = wire::Failure::received(done.error_code, &done.message);
+    let failure = done.failure().unwrap_or_else(|| wire::Failure::new(code::PROTOCOL, ""));
     match items.get(done.entry as usize) {
         Some(item) => anyhow::Error::new(failure).context((t().features.transfer_item_failed)(&item.rel_path)),
         None => failure.into(),
@@ -420,7 +420,7 @@ async fn send_items(
         let Inbound::ItemDone(done) = message else {
             anyhow::bail!("{}", t().features.transfer_upload_unexpected_data);
         };
-        if done.error_code != code::OK {
+        if !done.error.is_empty() {
             return Err(item_failure(&done, pending));
         }
         let item = pending
@@ -656,7 +656,7 @@ async fn receive_items(
         let chunk = match next(transfer).await? {
             Inbound::Chunk(chunk) => chunk,
             Inbound::ItemDone(done) => {
-                ensure!(done.error_code != code::OK, "{}", t().features.transfer_download_unexpected_confirmation);
+                ensure!(!done.error.is_empty(), "{}", t().features.transfer_download_unexpected_confirmation);
                 return Err(item_failure(&done, &r.files));
             }
         };

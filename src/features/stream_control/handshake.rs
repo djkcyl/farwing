@@ -201,26 +201,26 @@ impl StreamControlHandle {
             return Ok(());
         }
         let response = received.response;
-        let Some(body) = received.body else {
-            return Ok(());
-        };
         let mut state = lock(&self.shared);
         if response
             && let Some(waiting) = state.requests.take(received.request_id)
         {
             // The answer carries the display list or the stream state the
-            // request left.
-            match body {
-                SessionBody::Displays(list) => {
+            // request left, or nothing.
+            match received.body {
+                Some(SessionBody::Displays(list)) => {
                     super::display_settings::apply_displays(&mut state, list)
                 }
-                SessionBody::Stream(stream) => apply_stream_state(&mut state, stream),
+                Some(SessionBody::Stream(stream)) => apply_stream_state(&mut state, stream),
                 _ => {}
             }
             self.settle(&mut state, received.request_id, waiting, Ok(()));
             self.refresh_mouse_policy(&mut state);
             return Ok(());
         }
+        let Some(body) = received.body else {
+            return Ok(());
+        };
         match body {
             SessionBody::Microphone(event) => self.microphone.event(event.state),
             SessionBody::Forward(forward) => {

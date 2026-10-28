@@ -64,14 +64,18 @@ pub(crate) fn claims(bytes: &[u8]) -> bool {
 /// controller whose permission was just revoked.
 pub(crate) fn is_failure(packet: &Packet) -> bool {
     use crate::protocol::peer::FrameType;
-    let Some(body) = crate::protocol::peer::body_of(FrameType::File, &packet.data) else {
+    let Ok((header, body)) = crate::protocol::peer::decode(&packet.data) else {
         return false;
     };
+    if header.kind != FrameType::File as u16 {
+        return false;
+    }
     use prost::Message as _;
-    matches!(
-        wire::FileMessage::decode(body).map(|m| m.body),
-        Ok(Some(Body::Failed(_))) | Ok(Some(Body::ItemDone(wire::ItemDone { error_code: 1.., .. })))
-    )
+    header.is_error()
+        || matches!(
+            wire::FileMessage::decode(body).map(|m| m.body),
+            Ok(Some(Body::ItemDone(done))) if !done.error.is_empty()
+        )
 }
 
 /// The failure code of `error` for the controller.
@@ -101,7 +105,7 @@ pub(super) fn failure(error: &anyhow::Error) -> Failure {
     Failure::new(code, message)
 }
 
-/// A `Failed` answer for a request frame the executor cannot take (permission
+/// A refusal for a request frame the executor cannot take (permission
 /// gone, no user session, malformed); nothing for other frames.
 pub(crate) fn reject(bytes: &[u8], failure: &Failure) -> Vec<Packet> {
     let Ok(Some(Frame::File(header, _))) = wire::classify(bytes) else {
@@ -273,7 +277,10 @@ impl Engine {
                     return Ok(());
                 };
                 ensure!(received.request_id != 0, "{}", t().features.transfer_controller_sent_push);
-                self.request(received.request_id, received.body)?;
+                let Ok(body) = received.body else {
+                    return Ok(());
+                };
+                self.request(received.request_id, body)?;
             }
         }
         Ok(())
@@ -457,12 +464,11 @@ impl Engine {
         self.transfers
             .iter()
             .map(|(&transfer, active)| {
-                Packet::session(wire::item_done(wire::ItemDone {
+                Packet::session(wire::item_done(wire::ItemDone::new(
                     transfer,
-                    entry: active.entry.load(std::sync::atomic::Ordering::Acquire),
-                    error_code: code::DENIED,
-                    message: String::new(),
-                }))
+                    active.entry.load(std::sync::atomic::Ordering::Acquire),
+                    code::DENIED,
+                )))
             })
             .collect()
     }
@@ -483,7 +489,7 @@ mod tests {
 
     /// The controller's view of the engine's output.
     enum Out {
-        Response(u32, Body),
+        Response(u32, std::result::Result<Body, Failure>),
         Push(Body),
         Chunk(Chunk),
         Flow(u64),
@@ -528,7 +534,7 @@ mod tests {
                             return if m.response {
                                 Out::Response(m.request_id, m.body)
                             } else {
-                                Out::Push(m.body)
+                                Out::Push(m.body.expect("a push"))
                             };
                         }
                     }
@@ -536,6 +542,9 @@ mod tests {
             }
         }
         async fn answer(&mut self, id: u32) -> Body {
+            self.result(id).await.expect("an answer, not a refusal")
+        }
+        async fn result(&mut self, id: u32) -> std::result::Result<Body, Failure> {
             match self.next().await {
                 Out::Response(rid, body) if rid == id => body,
                 _ => panic!("expected the response to {id}"),
@@ -619,7 +628,7 @@ mod tests {
                             credit.grant(granted);
                         }
                         Out::Push(Body::ItemDone(done)) => {
-                            assert_eq!(done.error_code, wire::code::OK);
+                            assert_eq!(done.error, "");
                             saved += 1;
                         }
                         _ => panic!("unexpected output while waiting for credit"),
@@ -649,7 +658,7 @@ mod tests {
         while saved < items.len() {
             match c.next().await {
                 Out::Push(Body::ItemDone(done)) => {
-                    assert_eq!(done.error_code, wire::code::OK, "{}", done.message);
+                    assert_eq!(done.error, "");
                     saved += 1;
                 }
                 Out::Flow(_) => {}
@@ -742,7 +751,7 @@ mod tests {
                 name: "sub".into(),
             }))
             .await;
-        assert!(matches!(c.answer(id).await, Body::Failed(f) if f.code == wire::code::EXISTS));
+        assert!(matches!(c.result(id).await, Err(f) if f.code == wire::code::EXISTS));
         let id = c
             .request(Body::List(wire::List {
                 path: received.to_string_lossy().into_owned(),

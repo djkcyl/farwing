@@ -169,7 +169,7 @@ grants(owner_user, grantee_user, device_id NULL, caps TEXT, updated_at)
   - 实现状态：已实现。本机验证：两位主控同屏同参数时只有一路编码，组员按 144 fps 转发；一方改画质即另开编码器；组长断开后约 0.12 s 内组员接替并继续出帧；任一方的 PLI 都让整组下一帧为关键帧并被双方收到。编码路数上限与最接近组的选择只有单元测试。不同网络条件下的多人共享、3 人以上、编码路数上限需双机测试。
 - **音频：** 同一播放设备的系统声音只采集一路（`platform/windows/loopback/shared.rs`，2026-10-18），分发给每位参与者；各参与者仍按自己的音质设置编码。
 - **控制权（`src/features/host/participants.rs`）：** 同一时刻只有一位参与者持有控制权，被控只注入持有者的键鼠，其他人的 INPUT 被丢弃。
-  - **先到先得：** 主控开启键鼠控制时发送 SESSION `ControlTurn{take: true}`。无人持有且该参与者拥有 `control` 能力时获得控制权；否则被控回 `ControlTurnResult{held: false, message}`（“<持有者> 正在控制，对方释放控制权后才能开启键鼠控制”或“你没有这台设备的键鼠控制权限”），主控随即关闭键鼠控制并提示。他人持有时，主控工具栏的键鼠按钮不可用，悬停显示持有者。
+  - **先到先得：** 主控开启键鼠控制时发送 SESSION `ControlTurn{take: true}`。无人持有且该参与者拥有 `control` 能力时获得控制权；否则被控回 `PeerError`（原因 `held` 或 `not_allowed`），主控随即关闭键鼠控制，按原因提示（“<持有者> 正在控制，对方释放控制权后才能开启键鼠控制”或“你没有这台设备的键鼠控制权限”）。他人持有时，主控工具栏的键鼠按钮不可用，悬停显示持有者。
   - **只由持有者释放：** 持有者关闭键鼠控制（`ControlTurn{take: false}`）、离开会话或失去 `control` 能力（服务端收回授权、主人“禁止控制”）时释放；没有抢占，持有者长时间不操作也不释放。被控在输入循环中每 200 ms、以及参与者列表变化时核对持有者的能力。持有者变化时被控释放原持有者按住的键与按钮。
   - **广播：** 持有者由 `PARTICIPANTS.controlling` 广播。主控发现自己不再是持有者（且没有尚未回复的 `ControlTurn`）时关闭键鼠控制并提示“被控端收回了本机的键鼠控制权”。获取控制权的 `ControlTurn` 发不出去或被控回错误时，主控关闭键鼠控制并提示“未能向被控端请求键鼠控制权”（自动恢复时不提示）。
   - **自动恢复：** 主控重连后按上次的状态自动开启键鼠控制时，发送 `ControlTurn{take: true, automatic: true}`。被控只在该参与者已经持有控制权、或会话中只有它一人时批准；多人时必须由用户手动开启。自动恢复被拒绝时主控静默回到仅观看，不弹提示。主控已经知道有其他参与者时，不发起自动恢复。
@@ -387,7 +387,7 @@ FLOW { channel: BULK=1|TUNNEL=2, stream: uint32, credit: uint64, kind }   // 累
 
 ### 8.1 FILE v2
 
-帧类型 `FILE`（session 通道），帧体 `FileMessage { oneof }`（`src/features/file_transfer/wire.rs`），用 FPP request_id 关联请求与响应（主控发请求，被控以 RESPONSE 回复；失败回复 `Failed`，带 ERROR 标志的 `PeerError` 回复按 `Failed` 处理）。帧体超过 64 KiB 时按 §5.1 拆成同一 request_id 的多帧，除最后一帧外置 MORE；推送不分片。请求 60 s 未获响应视为失败。数据走 `TRANSFER{kind: FILE}` 与 `FLOW{channel: BULK, kind: FILE}`（bulk 通道）。
+帧类型 `FILE`（session 通道），帧体 `FileMessage { oneof }`（`src/features/file_transfer/wire.rs`），用 FPP request_id 关联请求与响应（主控发请求，被控以 RESPONSE 回复；失败回复 `PeerError`，原因见 peer-messages.md）。帧体超过 64 KiB 时按 §5.1 拆成同一 request_id 的多帧，除最后一帧外置 MORE；推送不分片。请求 60 s 未获响应视为失败。数据走 `TRANSFER{kind: FILE}` 与 `FLOW{channel: BULK, kind: FILE}`（bulk 通道）。
 
 ```
 // 请求（主控 → 被控）与其响应
@@ -407,10 +407,9 @@ DownloadStart { transfer, items: [ItemPlan{ offset, tail_sha256, skip }] }
 Cancel { transfer, key, discard }     → Done                   // 停止传输后回复；默认双方保留部分文件以便续传，
                                                                // discard 时被控删除 key 的部分文件与记录（取消上传任务；无传输时 transfer 为 0）
 // 推送（被控 → 主控，request_id 0）
-ItemDone { transfer, entry, error_code, message }              // 上传：条目已落盘（error_code 0）或失败；下载：被控读取失败时报告；
+ItemDone { transfer, entry, error }                            // 上传：条目已落盘（error 为空）或失败；下载：被控读取失败时报告；
                                                                // entry 为 0xFFFFFFFF 表示整个传输失败（如权限被撤销）
-// 失败响应
-Failed { code: PROTOCOL=1|DENIED=2|NOT_FOUND=3|EXISTS=4|NO_SPACE=5|IO=6|BUSY=7|CHANGED=8|CANCELLED=9, message }
+// 失败：PeerError，reason ∈ protocol | denied | not_found | exists | no_space | io | busy | changed | cancelled
 ```
 
 - 路径用 `/` 分隔的相对路径（`Item.path`），绝对路径只出现在 List/MakeDir/Rename/Remove/Exists/Upload/Download 的远端路径中。被控拒绝 `..`、设备名、链接与重解析点。

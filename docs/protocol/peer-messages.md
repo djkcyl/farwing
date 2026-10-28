@@ -410,7 +410,6 @@ FileMessage { oneof body {
   Plan plan = 23
   Manifest manifest = 24
   Accepted accepted = 25
-  Failed failed = 26
   // 推送（H→C）
   ItemDone item_done = 30
 }}
@@ -478,13 +477,11 @@ Cancel {
 ItemDone {
   transfer: uint32 = 1
   entry: uint32 = 2                       // 清单下标；0xFFFFFFFF 表示整个传输失败
-  error_code: int32 = 3                   // 0 已落盘，其他同 Failed.code
-  message: string = 4
+  error: string = 3                       // 空：已落盘；否则为失败原因
 }
-Failed { code: int32 = 1, message: string = 2 }
 ```
 
-- `Failed.code` / `ItemDone.error_code`：0 OK，1 PROTOCOL，2 DENIED，3 NOT_FOUND，4 EXISTS，5 NO_SPACE，6 IO，7 BUSY，8 CHANGED，9 CANCELLED。主控按代码措辞；`message` 只在 PROTOCOL 与 IO 时带被控的原因，其余为空。带 ERROR 标志的 `PeerError` 回复按 `Failed{PROTOCOL}` 处理。
+- 请求失败时回 `PeerError`；它与 `ItemDone.error` 的原因：`protocol`（bad_request）、`denied`（forbidden）、`not_found`（not_found）、`exists`（bad_request）、`no_space`（unavailable）、`io`（internal）、`busy`（busy）、`changed`（bad_request）、`cancelled`（unavailable）。主控按原因措辞，被控自己的说明只留在它的日志里。没有这些原因的 `PeerError`（如 `unsupported`）按 `code` 归类。
 - 帧体超过 64 KiB − 10 时分片（farwing-protocol.md §5.2），重组后最多 32 MiB；推送不分片。
 - 清单包含文件与空目录；未 `skip` 的条目按清单顺序以 `TRANSFER{kind: FILE, stream: transfer, entry: 下标}` 发送。部分文件写在目标目录的隐藏临时文件 `.{名称}.{key}.downloading`，完成后按冲突策略改名并设置 mtime。
 

@@ -90,19 +90,20 @@ pub(crate) enum SessionBody {
     /// Whether the host accepts files on the clipboard (H→C).
     #[prost(message, tag = "4")]
     ClipboardFiles(ClipboardPermission),
-    /// Request (C→H): start or stop capturing a display → [`DisplayDone`].
+    /// Request (C→H): start or stop capturing a display → [`Displays`].
     #[prost(message, tag = "5")]
     Capture(CaptureControl),
     // ---------------------------------------------- requests (C→H)
     /// A change of this participant's stream → [`StreamState`].
     #[prost(message, tag = "10")]
     StreamRequest(StreamRequest),
-    /// A change of the host's displays → [`DisplayDone`].
+    /// A change of the host's displays → [`Displays`].
     #[prost(message, tag = "11")]
     Display(DisplayRequest),
+    /// The remote microphone on or off → an empty answer.
     #[prost(message, tag = "16")]
     MicrophonePolicy(microphone::PolicyRequest),
-    /// Take or release the control token.
+    /// Take or release the control token → an empty answer.
     #[prost(message, tag = "17")]
     ControlTurn(control_turn::TurnRequest),
     /// Controller → host, once a second: how the controller keeps up.
@@ -119,14 +120,6 @@ pub(crate) enum SessionBody {
     /// Controller → host: whether it receives through the forwarder.
     #[prost(message, tag = "25")]
     ForwardStatus(ForwardStatus),
-    // --------------------------------------------- responses (H→C)
-    /// Answer to `Capture` and `Display`.
-    #[prost(message, tag = "21")]
-    DisplayDone(DisplayDone),
-    #[prost(message, tag = "22")]
-    MicrophoneResult(Done),
-    #[prost(message, tag = "23")]
-    ControlTurnResult(Done),
 }
 
 impl SessionBody {
@@ -145,9 +138,6 @@ impl SessionBody {
             Self::Display(_) => "Display",
             Self::MicrophonePolicy(_) => "MicrophonePolicy",
             Self::ControlTurn(_) => "ControlTurn",
-            Self::ControlTurnResult(_) => "ControlTurnResult",
-            Self::DisplayDone(_) => "DisplayDone",
-            Self::MicrophoneResult(_) => "MicrophoneResult",
         }
     }
 }
@@ -256,6 +246,13 @@ pub(crate) fn response(request_id: u32, body: SessionBody) -> Vec<u8> {
     )
 }
 
+/// The answer to request `request_id` with nothing more to say, or its
+/// refusal (code, reason).
+pub(crate) fn answer(request_id: u32, result: std::result::Result<(), (&str, &str)>) -> Vec<u8> {
+    let empty = SessionMessage { body: None };
+    peer::answer(FrameType::Session, request_id, result.map(|()| &empty))
+}
+
 /// A failed reply to request `request_id`; `reason` is worded by the
 /// controller.
 pub(crate) fn error_response(request_id: u32, code: &str, reason: &str) -> Vec<u8> {
@@ -319,10 +316,6 @@ pub(crate) struct CaptureControl {
     #[prost(int32, optional, tag = "3")]
     pub(crate) track: Option<i32>,
 }
-
-/// An answer with nothing more to say: the request was carried out.
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct Done {}
 
 /// Host virtual microphone state.
 #[derive(Clone, PartialEq, prost::Message)]
@@ -649,8 +642,7 @@ pub enum DisplayKind {
 /// The host's displays (push).
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct Displays {
-    /// Grows with every change; [`DisplayDone::revision`] names the list
-    /// that shows a request's effect.
+    /// Grows with every change.
     #[prost(uint64, tag = "1")]
     pub(crate) revision: u64,
     #[prost(message, repeated, tag = "2")]
@@ -774,14 +766,6 @@ pub(crate) struct RemoveDisplay {
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct ExitExclusive {}
-
-/// A display request was carried out: the [`Displays::revision`] that
-/// shows it.
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct DisplayDone {
-    #[prost(uint64, tag = "1")]
-    pub(crate) revision: u64,
-}
 
 /// Why a `Capture` or `Display` request was refused (`PeerError::reason`).
 pub(crate) mod display_reason {

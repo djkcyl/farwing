@@ -96,7 +96,7 @@ impl Registration {
 pub(crate) struct Transport {
     session: Mutex<Weak<RTCDataChannel>>,
     bulk: Mutex<Weak<RTCDataChannel>>,
-    pending: Mutex<HashMap<u32, oneshot::Sender<Body>>>,
+    pending: Mutex<HashMap<u32, oneshot::Sender<std::result::Result<Body, wire::Failure>>>>,
     streams: Mutex<HashMap<u32, Arc<Stream>>>,
     fragments: Mutex<wire::Reassembly>,
     /// The host declared the `files` feature.
@@ -171,7 +171,7 @@ impl Transport {
         Ok(())
     }
 
-    /// Send `body` and wait for its response; a `Failed` answer is an error
+    /// Send `body` and wait for its response; a refusal is an error
     /// ([`wire::Failure`]).
     pub(crate) async fn request(&self, body: Body, stop: &CancellationToken) -> Result<Body> {
         self.ready()?;
@@ -197,10 +197,7 @@ impl Transport {
                 .with_context(|| (t().features.transfer_request_timed_out)(name))?
                 .context(t().features.transfer_connection_ended)?,
         };
-        match reply {
-            Body::Failed(failed) => Err(wire::Failure::from(failed).into()),
-            body => Ok(body),
-        }
+        Ok(reply?)
     }
 
     async fn send_session(&self, frames: Vec<Vec<u8>>) -> Result<()> {
@@ -357,16 +354,19 @@ impl Transport {
                         }
                         None => tracing::debug!(
                             request_id = received.request_id,
-                            body = received.body.name(),
+                            body = received.body.as_ref().map_or("refusal", Body::name),
                             "file response has no waiting request"
                         ),
                     }
-                } else if let Body::ItemDone(done) = received.body {
+                } else if let Ok(Body::ItemDone(done)) = received.body {
                     if let Some(stream) = lock(&self.streams).get(&done.transfer) {
                         let _ = stream.inbound.send(Inbound::ItemDone(done));
                     }
                 } else {
-                    tracing::debug!(body = received.body.name(), "unexpected file request ignored");
+                    tracing::debug!(
+                        body = received.body.as_ref().map_or("refusal", Body::name),
+                        "unexpected file request ignored"
+                    );
                 }
             }
         }

@@ -34,17 +34,14 @@ const DOWNLOAD_WINDOW = 16 * 1024 * 1024;
 const READ_BLOCK = 2 * 1024 * 1024;
 const WHOLE_TRANSFER = 0xffffffff;
 
-/// A host file error (`FileErrorCode`) in our words for the code. The
-/// host's own text (in its language) is kept only where the code says
-/// little (I/O and protocol errors), after ours. `local`: our own words.
+/// A file error by its reason key (`src/features/file_transfer/wire.rs`
+/// `code::reason`), in our words; `local`: other words of ours.
 export class FileError extends Error {
-  code: number;
-  constructor(code: number, detail?: string, local?: string) {
+  reason: string;
+  constructor(reason: string, local?: string) {
     const m = t().viewer.files;
-    const reason = (m.errors as Record<number, string>)[code] || m.failed(code);
-    const extra = (detail ?? '').trim().slice(0, 300);
-    super(local || ((code === 1 || code === 6) && extra ? m.withDetail(reason, extra) : reason));
-    this.code = code;
+    super(local || (m.errors as Record<string, string>)[reason] || m.failed);
+    this.reason = reason;
   }
 }
 
@@ -148,13 +145,10 @@ export function cancelMessage(transfer: number, key: string, discard: boolean): 
   return new Writer().message(10, new Writer().int(1, transfer).string(2, key).int(3, discard)).finish();
 }
 
-/// The reply body, or the `Failed` it carries as an error.
+/// The reply's message `tag`.
 function reply(body: Uint8Array, tag: number): Fields {
-  const f = new Fields(body);
-  const failed = f.message(26);
-  if (failed) throw new FileError(failed.int32(1), failed.string(2));
-  const m = f.message(tag);
-  if (!m) throw new FileError(1, undefined, t().viewer.files.badReply);
+  const m = new Fields(body).message(tag);
+  if (!m) throw new FileError('protocol', t().viewer.files.badReply);
   return m;
 }
 
@@ -262,8 +256,7 @@ export class FileTransfer {
     } catch (error) {
       if (error instanceof PeerRequestError) {
         throw new FileError(
-          error.code === 'forbidden' ? 2 : 1,
-          undefined,
+          error.reason || (error.code === 'forbidden' ? 'denied' : 'protocol'),
           error.code === 'timeout' ? t().viewer.peer.noResponse : undefined,
         );
       }
@@ -389,7 +382,7 @@ export class FileTransfer {
         } while (offset < size);
       }
       if (state.failed) throw state.failed;
-      if (state.cancelled) throw new FileError(9);
+      if (state.cancelled) throw new FileError('cancelled');
       if (state.pending.size) await done;
       state.info.state = 'done';
       this.report(state.info);
@@ -459,14 +452,14 @@ export class FileTransfer {
     if (up) {
       up.cancelled = true;
       up.wake?.();
-      up.settle?.(new FileError(9));
+      up.settle?.(new FileError('cancelled'));
       await this.io.request(fpp.Type.FILE, cancelMessage(id, up.key, true)).catch(() => undefined);
       return;
     }
     const down = this.downloads.get(id);
     if (down) {
       down.cancelled = true;
-      down.settle?.(new FileError(9));
+      down.settle?.(new FileError('cancelled'));
       await this.io.request(fpp.Type.FILE, cancelMessage(id, '', true)).catch(() => undefined);
     }
   }
@@ -480,8 +473,8 @@ export class FileTransfer {
     }
     const id = done.uint32(1);
     const entry = done.uint32(2);
-    const code = done.int32(3);
-    const error = code ? new FileError(code, done.string(4) || undefined) : undefined;
+    const reason = done.string(3);
+    const error = reason ? new FileError(reason) : undefined;
     const up = this.uploads.get(id);
     if (up) {
       if (error) {
@@ -496,7 +489,7 @@ export class FileTransfer {
     }
     const down = this.downloads.get(id);
     if (down && (error || entry === WHOLE_TRANSFER)) {
-      down.failed = error ?? new FileError(1);
+      down.failed = error ?? new FileError('protocol');
       down.settle?.(down.failed);
     }
   }
@@ -509,7 +502,7 @@ export class FileTransfer {
       if (down.failed || down.cancelled) return;
       const item = down.items[c.entry];
       try {
-        if (!item || c.entry < down.current) throw new FileError(1, undefined, t().viewer.files.outOfOrder);
+        if (!item || c.entry < down.current) throw new FileError('protocol', t().viewer.files.outOfOrder);
         if (c.entry !== down.current) {
           down.current = c.entry;
           await down.target.entry(item);
@@ -520,7 +513,7 @@ export class FileTransfer {
         down.failed =
           error instanceof FileError
             ? error
-            : new FileError(6, undefined, t().viewer.files.saveFailed((error as Error).message));
+            : new FileError('io', t().viewer.files.saveFailed((error as Error).message));
         down.settle?.(down.failed);
         void this.cancel(c.stream);
         return;
@@ -551,7 +544,7 @@ export class FileTransfer {
 
   /// The connection is gone: fail everything in flight.
   reset() {
-    const error = new FileError(1, t().viewer.peer.closed);
+    const error = new FileError('protocol', t().viewer.peer.closed);
     for (const up of this.uploads.values()) {
       up.failed = error;
       up.wake?.();
@@ -631,7 +624,7 @@ export async function saveTarget(name: string, size: number): Promise<DownloadSi
       // Not allowed here: fall back to memory.
     }
   }
-  if (size > MEMORY_LIMIT) throw new FileError(6, t().viewer.files.fileTooLarge);
+  if (size > MEMORY_LIMIT) throw new FileError('io', t().viewer.files.fileTooLarge);
   const parts: Uint8Array[] = [];
   return {
     write: async (data) => {
@@ -727,7 +720,7 @@ export async function saveFolderTarget(folder: string, size: number): Promise<Do
       // Not allowed here: fall back to a ZIP.
     }
   }
-  if (size > MEMORY_LIMIT) throw new FileError(6, t().viewer.files.folderTooLarge);
+  if (size > MEMORY_LIMIT) throw new FileError('io', t().viewer.files.folderTooLarge);
   return zipTarget(safeName(folder));
 }
 

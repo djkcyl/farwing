@@ -66,8 +66,6 @@ pub(crate) enum Body {
     Manifest(Manifest),
     #[prost(message, tag = "25")]
     Accepted(Accepted),
-    #[prost(message, tag = "26")]
-    Failed(Failed),
     // ------------------------------------------------- pushes (H→C)
     #[prost(message, tag = "30")]
     ItemDone(ItemDone),
@@ -92,7 +90,6 @@ impl Body {
             Self::Plan(_) => "Plan",
             Self::Manifest(_) => "Manifest",
             Self::Accepted(_) => "Accepted",
-            Self::Failed(_) => "Failed",
             Self::ItemDone(_) => "ItemDone",
         }
     }
@@ -113,8 +110,12 @@ pub(crate) mod conflict {
     pub const SKIP: i32 = 3;
 }
 
-/// [`Failed::code`] and [`ItemDone::error_code`] values.
+/// [`Failure::code`] values. On the wire a failed request is a `PeerError`
+/// and a failed item an [`ItemDone::error`], both with the code's reason
+/// key ([`reason`]).
 pub(crate) mod code {
+    use farwing_protocol::peer::error_code as peer;
+
     pub const OK: i32 = 0;
     pub const PROTOCOL: i32 = 1;
     pub const DENIED: i32 = 2;
@@ -125,6 +126,44 @@ pub(crate) mod code {
     pub const BUSY: i32 = 7;
     pub const CHANGED: i32 = 8;
     pub const CANCELLED: i32 = 9;
+
+    /// The `PeerError` code and the reason key of `code`.
+    pub fn reason(code: i32) -> (&'static str, &'static str) {
+        match code {
+            PROTOCOL => (peer::BAD_REQUEST, "protocol"),
+            DENIED => (peer::FORBIDDEN, "denied"),
+            NOT_FOUND => (peer::NOT_FOUND, "not_found"),
+            EXISTS => (peer::BAD_REQUEST, "exists"),
+            NO_SPACE => (peer::UNAVAILABLE, "no_space"),
+            BUSY => (peer::BUSY, "busy"),
+            CHANGED => (peer::BAD_REQUEST, "changed"),
+            CANCELLED => (peer::UNAVAILABLE, "cancelled"),
+            _ => (peer::INTERNAL, "io"),
+        }
+    }
+
+    /// The code of a reason key; a `PeerError` without one of ours (an
+    /// unsupported request, say) by its `code`.
+    pub fn of(reason: &str, code: &str) -> i32 {
+        match reason {
+            "protocol" => PROTOCOL,
+            "denied" => DENIED,
+            "not_found" => NOT_FOUND,
+            "exists" => EXISTS,
+            "no_space" => NO_SPACE,
+            "io" => IO,
+            "busy" => BUSY,
+            "changed" => CHANGED,
+            "cancelled" => CANCELLED,
+            _ => match code {
+                peer::FORBIDDEN => DENIED,
+                peer::NOT_FOUND => NOT_FOUND,
+                peer::BUSY | peer::UNAVAILABLE => BUSY,
+                peer::INTERNAL => IO,
+                _ => PROTOCOL,
+            },
+        }
+    }
 }
 
 /// [`ItemDone::entry`] of a failure that ends the whole transfer.
@@ -353,22 +392,28 @@ pub(crate) struct ItemDone {
     /// Manifest index, or [`WHOLE_TRANSFER`].
     #[prost(uint32, tag = "2")]
     pub entry: u32,
-    /// One of [`code`]; [`code::OK`] once an uploaded item is saved.
-    #[prost(int32, tag = "3")]
-    pub error_code: i32,
-    /// See [`Failure::detail`].
-    #[prost(string, tag = "4")]
-    pub message: String,
+    /// Empty once an uploaded item is saved; otherwise the failure's
+    /// reason key ([`code::reason`]).
+    #[prost(string, tag = "3")]
+    pub error: String,
 }
 
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct Failed {
-    /// One of [`code`].
-    #[prost(int32, tag = "1")]
-    pub code: i32,
-    /// See [`Failure::detail`].
-    #[prost(string, tag = "2")]
-    pub message: String,
+impl ItemDone {
+    pub(crate) fn new(transfer: u32, entry: u32, code: i32) -> Self {
+        Self {
+            transfer,
+            entry,
+            error: if code == code::OK {
+                String::new()
+            } else {
+                code::reason(code).1.to_owned()
+            },
+        }
+    }
+    /// The failure it reports, if any.
+    pub(crate) fn failure(&self) -> Option<Failure> {
+        (!self.error.is_empty()).then(|| Failure::new(code::of(&self.error, ""), ""))
+    }
 }
 
 /// A failed request or item, as an error value.
@@ -385,28 +430,6 @@ impl Failure {
             message: message.into(),
         }
     }
-    /// What the host sends with the code: its own detail for [`code::IO`]
-    /// and [`code::PROTOCOL`] only; the controller words every other code.
-    pub(crate) fn detail(&self) -> String {
-        if matches!(self.code, code::IO | code::PROTOCOL) {
-            self.message.clone()
-        } else {
-            String::new()
-        }
-    }
-
-    /// A failure the other side reported, worded here from its code. Its
-    /// own text (in its language) is kept only where the code says little
-    /// (I/O and protocol errors), after ours.
-    pub(crate) fn received(code: i32, detail: &str) -> Self {
-        let detail: String = detail.trim().chars().take(300).collect();
-        let message = if matches!(code, code::IO | code::PROTOCOL) && !detail.is_empty() {
-            (t().features.transfer_failure_detail)(&describe(code), &detail)
-        } else {
-            String::new()
-        };
-        Self { code, message }
-    }
 }
 
 impl std::fmt::Display for Failure {
@@ -420,12 +443,6 @@ impl std::fmt::Display for Failure {
 }
 
 impl std::error::Error for Failure {}
-
-impl From<Failed> for Failure {
-    fn from(value: Failed) -> Self {
-        Self::received(value.code, &value.message)
-    }
-}
 
 // ------------------------------------------------------------- model glue
 
@@ -510,15 +527,16 @@ pub(crate) fn response(request_id: u32, body: Body) -> Vec<Vec<u8>> {
     frames(flags::RESPONSE, request_id, body)
 }
 
-/// A failed answer to request `request_id`.
+/// A failed answer to request `request_id`: a `PeerError` with the
+/// code's reason (the host's own text stays in its log).
 pub(crate) fn failed(request_id: u32, failure: &Failure) -> Vec<Vec<u8>> {
-    response(
+    let (peer_code, reason) = code::reason(failure.code);
+    vec![crate::protocol::peer::error_response(
+        FrameType::File,
         request_id,
-        Body::Failed(Failed {
-            code: failure.code,
-            message: failure.detail(),
-        }),
-    )
+        peer_code,
+        reason,
+    )]
 }
 
 /// An `ItemDone` push.
@@ -596,7 +614,8 @@ pub(crate) fn claims(bytes: &[u8]) -> bool {
 pub(crate) struct Received {
     pub request_id: u32,
     pub response: bool,
-    pub body: Body,
+    /// A refusal (`PeerError`) as its [`Failure`].
+    pub body: std::result::Result<Body, Failure>,
 }
 
 /// Joins `MORE` fragments of `FILE` messages, keyed by request ID and
@@ -637,24 +656,13 @@ impl Reassembly {
 fn decode_message(header: &Header, body: &[u8]) -> Result<Received> {
     let response = header.is_response();
     let body = if header.is_error() {
-        // A generic FPP failure (e.g. an unsupported request) reads as `Failed`.
         let error = farwing_protocol::peer::PeerError::decode(body).context(t().features.transfer_invalid_error_reply)?;
-        use farwing_protocol::peer::error_code as peer;
-        Body::Failed(Failed {
-            code: match error.code.as_str() {
-                peer::FORBIDDEN => code::DENIED,
-                peer::NOT_FOUND => code::NOT_FOUND,
-                peer::BUSY | peer::UNAVAILABLE => code::BUSY,
-                peer::INTERNAL => code::IO,
-                _ => code::PROTOCOL,
-            },
-            message: error.reason,
-        })
+        Err(Failure::new(code::of(&error.reason, &error.code), ""))
     } else {
-        FileMessage::decode(body)
+        Ok(FileMessage::decode(body)
             .context(t().features.transfer_invalid_message)?
             .body
-            .context(t().features.transfer_message_unsupported)?
+            .context(t().features.transfer_message_unsupported)?)
     };
     Ok(Received {
         request_id: header.request_id,
@@ -715,7 +723,7 @@ mod tests {
         let received = decode(&frames[0]).unwrap().unwrap();
         assert_eq!(received.request_id, 7);
         assert!(!received.response);
-        let Body::Upload(upload) = received.body else {
+        let Ok(Body::Upload(upload)) = received.body else {
             panic!("wrong body")
         };
         assert_eq!(upload.items.len(), 2);
@@ -737,25 +745,21 @@ mod tests {
         );
         let received = decode(&frames[0]).unwrap().unwrap();
         assert!(received.response && received.request_id == 7);
-        assert!(matches!(received.body, Body::Plan(p) if p.items[0].offset == 4));
+        assert!(matches!(received.body, Ok(Body::Plan(p)) if p.items[0].offset == 4));
 
-        let push = item_done(ItemDone {
-            transfer: 3,
-            entry: 1,
-            error_code: code::OK,
-            message: String::new(),
-        });
+        let push = item_done(ItemDone::new(3, 1, code::NO_SPACE));
         let received = decode(&push).unwrap().unwrap();
         assert_eq!(received.request_id, 0);
         assert!(!received.response);
-        assert!(matches!(received.body, Body::ItemDone(d) if d.entry == 1));
+        assert!(matches!(&received.body, Ok(Body::ItemDone(d))
+            if d.entry == 1 && d.failure().unwrap().code == code::NO_SPACE));
     }
 
     #[test]
-    fn failures_and_peer_errors_decode_as_failed() {
-        let frames = failed(9, &Failure::new(code::EXISTS, "已存在"));
+    fn failures_and_peer_errors_decode_as_failures() {
+        let frames = failed(9, &Failure::new(code::EXISTS, "exists"));
         let received = decode(&frames[0]).unwrap().unwrap();
-        assert!(matches!(&received.body, Body::Failed(f) if f.code == code::EXISTS));
+        assert!(matches!(&received.body, Err(f) if f.code == code::EXISTS));
         let error = crate::protocol::peer::framed(
             FrameType::File,
             flags::RESPONSE | flags::ERROR,
@@ -766,7 +770,7 @@ mod tests {
             },
         );
         let received = decode(&error).unwrap().unwrap();
-        assert!(matches!(&received.body, Body::Failed(f) if f.code == code::PROTOCOL));
+        assert!(matches!(&received.body, Err(f) if f.code == code::PROTOCOL));
         assert_eq!(
             Failure::new(code::NO_SPACE, "").to_string(),
             describe(code::NO_SPACE)
@@ -800,7 +804,7 @@ mod tests {
         let received = feed(&mut reassembly, &interleaved);
         assert_eq!(received.len(), 2);
         assert_eq!(received[0].request_id, 12);
-        assert!(matches!(&received[1].body, Body::Listing(l) if l.entries == entries));
+        assert!(matches!(&received[1].body, Ok(Body::Listing(l)) if l.entries == entries));
         assert!(reassembly.0.is_empty());
     }
 
