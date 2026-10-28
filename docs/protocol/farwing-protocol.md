@@ -846,7 +846,7 @@ ICE 代理在默认路由上发布私网 UDP/IPv4 主机候选后，为该端口
 
 ## 8. 直连与局域网
 
-不经服务端也能建立会话：被控内置直连端点，主控经局域网发现或输入地址连接；授权与经服务端时是同一张访问名单，由被控判定：本账号设备（缓存）、好友（缓存的好友授权）、受信任设备、访客（访问码或本机确认）。会话建立后的媒体与数据通道与经服务端的会话相同。线上格式在 `crates/protocol/src/direct.rs`，实现在 `src/transport/direct/`；本地记录（`trusted_devices.json`、`known_hosts.json`、`own_devices.json`、`friend_devices.json`）见 v2-design §12.6。
+不经服务端也能建立会话：被控内置直连端点，主控经局域网发现或输入地址连接；授权与经服务端时是同一张访问名单，由被控判定：本账号设备（缓存）、好友（缓存的好友授权）、受信任设备、访客（访问码或本机确认）。会话建立后的媒体与数据通道与经服务端的会话相同。线上格式在 `crates/protocol/src/direct.rs`，实现在 `src/transport/direct/`；本地记录（`trusted_devices.json`、`known_hosts.json`、`device_list.json`、`friend_devices.json`）见 v2-design §12.6。
 
 ### 8.1 直连端点
 
@@ -872,7 +872,7 @@ ICE 代理在默认路由上发布私网 UDP/IPv4 主机候选后，为该端口
 1. 被控未开启“允许连接本机”时，收到主控的 `direct.hello` 后直接回 `error{host_disabled}`，不发自己的 `direct.hello`。否则双方交换 `direct.hello`，校验对方 `device_id` 由其 `public_key` 推导（§1.3，否则断开）以及 `proof`。对尚未放行的对端，被控只回不带原因的拒绝（`assist_rejected`），不说明是锁屏、忙还是无人应答；配对请求被拒后 30 秒内不再弹出任何配对请求。访问码在 1 分钟内错 10 次暂停 5 分钟，1 小时内错 30 次暂停 1 小时。
 2. 主控选择一种方式：
    - **设备密钥**（`direct.auth`；被控声明 `own` 时主控发 `own`，否则 `trusted`）。被控依次检查：
-     - `own` —— 被控缓存的本账号设备列表（`GET /devices` 中的 `public_key`，保存在 `own_devices.json`）包含主控公钥：关系 `own`，全部能力。
+     - `own` —— 被控缓存的本账号设备列表（`GET /devices` 中的 `public_key`，保存在 `device_list.json`）包含主控公钥：关系 `own`，全部能力。
      - `friend` —— 被控缓存的好友授权（`GET /devices/self/friend-access`，§3.12，保存在 `friend_devices.json`，7 天内有效）包含主控公钥：关系 `friend`，能力为该好友在被控上的授权（总含 `view`）。
      - 主控不在本账号设备缓存中时，已登录且连着服务端的被控先刷新这两份缓存（最多每 10 秒一次）再判定，因此服务端可达时好友授权的撤销立即生效；不可达时按缓存。
      - `trusted` —— 被控受信任设备（`trusted_devices.json`）中有该公钥：关系 `trusted`，能力为为该设备记录的能力（总含 `view`）。

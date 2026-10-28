@@ -3,7 +3,7 @@ use crate::i18n::t;
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use std::{
-    io::{Read, Write},
+    io::Read,
     path::PathBuf,
 };
 
@@ -34,25 +34,7 @@ impl Store {
     }
     pub(crate) fn save(&self, rules: &[Rule]) -> Result<()> {
         validate(rules)?;
-        std::fs::create_dir_all(self.0.parent().context(t().features.mapping_rules_path_invalid)?)?;
-        let tmp = self
-            .0
-            .with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-        let result = (|| {
-            let mut f = std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&tmp)?;
-            f.write_all(&serde_json::to_vec_pretty(rules)?)?;
-            f.sync_all()?;
-            drop(f);
-            std::fs::rename(&tmp, &self.0)?;
-            Ok::<_, anyhow::Error>(())
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(tmp);
-        }
-        result
+        crate::storage::write(&self.0, rules)
     }
 }
 fn validate(rules: &[Rule]) -> Result<()> {

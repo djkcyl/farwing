@@ -32,6 +32,7 @@ pub mod i18n;
 pub mod media;
 pub mod protocol;
 pub mod session;
+pub(crate) mod storage;
 pub mod transport;
 
 pub mod plugins;

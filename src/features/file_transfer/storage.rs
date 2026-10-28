@@ -8,7 +8,7 @@ use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Read, Seek, SeekFrom},
     os::windows::{
         fs::{MetadataExt, OpenOptionsExt},
         io::AsRawHandle,
@@ -694,25 +694,7 @@ impl Store {
         ensure!(r.len() <= 256, "{}", t().features.transfer_records_full);
         let b = serde_json::to_vec(r)?;
         ensure!(b.len() <= 64 * 1024 * 1024, "{}", t().features.transfer_records_too_large);
-        std::fs::create_dir_all(self.0.parent().context(t().features.transfer_history_path_invalid)?)?;
-        let temp = self
-            .0
-            .with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-        let result = (|| {
-            let mut f = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)?;
-            f.write_all(&b)?;
-            f.sync_all()?;
-            drop(f);
-            std::fs::rename(&temp, &self.0)?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(temp);
-        }
-        result
+        crate::storage::write_bytes(&self.0, &b)
     }
 }
 

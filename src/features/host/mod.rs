@@ -27,6 +27,7 @@ pub(crate) mod power;
 mod protection;
 pub(crate) mod recovery;
 mod settings;
+pub(crate) use settings::HostSettings;
 mod track;
 mod link;
 mod transport;

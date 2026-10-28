@@ -6,7 +6,8 @@
 //!   process);
 //! - `known_hosts.json`: devices this one connected to: last address, short
 //!   number, and whether they trust this device (controller side);
-//! - `own_devices.json`: the cached device list of the logged-in account;
+//! - `device_list.json`: the logged-in account's last device list (its own
+//!   devices, and the list shown while the server is unreachable);
 //! - `friend_devices.json`: the cached friend devices that may control this
 //!   one, and their grants (host side).
 //!
@@ -67,18 +68,8 @@ fn forget_reads() {
 
 fn write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     forget_reads();
-    let parent = path.parent().context(t().session.record_folder_invalid)?;
-    std::fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(
-        ".{}.{}.tmp",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("record"),
-        uuid::Uuid::new_v4().simple()
-    ));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
-    std::fs::rename(&temporary, path).with_context(|| {
-        let _ = std::fs::remove_file(&temporary);
-        (t().session.file_save_failed)(&path.display().to_string())
-    })
+    crate::storage::write(path, value)
+        .with_context(|| (t().session.file_save_failed)(&path.display().to_string()))
 }
 
 fn guard() -> std::sync::MutexGuard<'static, ()> {
@@ -402,72 +393,27 @@ pub(crate) struct OwnDevice {
     pub public_key: String,
 }
 
-#[derive(Default, Serialize, Deserialize)]
-struct OwnDevices {
-    #[serde(default)]
-    user_id: String,
-    #[serde(default)]
-    updated_at: i64,
-    #[serde(default)]
-    devices: Vec<OwnDevice>,
-}
-
-/// Cache the account's devices (including this one) after a device list.
-/// Each process that lists devices keeps its own copy: the hosting process
-/// for `own` authorisation, the user's GUI for recognising LAN hosts.
-pub(crate) fn save_own_devices(user_id: &str, list: &crate::account::api::DeviceList) {
-    let devices = std::iter::once(&list.current_device)
-        .chain(&list.devices)
-        .filter_map(|d| {
-            Some(OwnDevice {
-                device_id: device_id_of(&d.public_key)?,
-                alias: d.alias.clone(),
-                public_key: d.public_key.clone(),
-            })
-        })
-        .collect::<Vec<_>>();
-    let _guard = guard();
-    let result = file("own_devices.json").and_then(|path| {
-        let previous: OwnDevices = read(&path).unwrap_or_default();
-        if previous.user_id == user_id
-            && previous.devices.len() == devices.len()
-            && previous
-                .devices
-                .iter()
-                .zip(&devices)
-                .all(|(a, b)| a.device_id == b.device_id && a.public_key == b.public_key && a.alias == b.alias)
-            && now() - previous.updated_at < 3600
-        {
-            return Ok(());
-        }
-        write(
-            &path,
-            &OwnDevices {
-                user_id: user_id.to_owned(),
-                updated_at: now(),
-                devices,
-            },
-        )
-    });
-    if let Err(error) = result {
-        tracing::warn!(error = %format!("{error:#}"), "own device cache not saved");
-    }
-}
-
 const DEVICE_LIST: &str = "device_list.json";
 
+/// The account's last device list: shown at startup while the server cannot
+/// be reached, and the account's own devices for direct connections.
 #[derive(Serialize, Deserialize)]
 struct CachedList {
     user_id: String,
+    /// When the server last confirmed the list.
+    #[serde(default)]
+    confirmed_at: i64,
     list: crate::account::api::DeviceList,
 }
 
-/// What was last written to [`DEVICE_LIST`] (dropped with the file).
-static DEVICE_LIST_WRITTEN: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+/// What was last written to [`DEVICE_LIST`], and when.
+static DEVICE_LIST_WRITTEN: Mutex<Option<(Vec<u8>, i64)>> = Mutex::new(None);
 
-/// Keep the account's device list, shown at startup while the server cannot
-/// be reached. Without what will have changed by then (who is online and
-/// connected), so it is written only when the devices themselves change.
+/// Keep the account's device list after a listing. Without what will have
+/// changed by then (who is online and connected); written when the devices
+/// change, else hourly to renew the confirmation. Each process that lists
+/// devices keeps its own copy: the hosting process for `own` authorisation,
+/// the user's GUI for recognising LAN hosts.
 pub(crate) fn save_device_list(user_id: &str, list: &crate::account::api::DeviceList) {
     let mut list = list.clone();
     for device in std::iter::once(&mut list.current_device)
@@ -477,31 +423,40 @@ pub(crate) fn save_device_list(user_id: &str, list: &crate::account::api::Device
         device.status = "offline".into();
         device.participants_info.clear();
     }
-    let cached = CachedList {
-        user_id: user_id.to_owned(),
-        list,
-    };
-    let Ok(bytes) = serde_json::to_vec(&cached) else {
+    let Ok(bytes) = serde_json::to_vec(&(user_id, &list)) else {
         return;
     };
+    let now = now();
     let mut written = DEVICE_LIST_WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
-    if written.as_deref() == Some(bytes.as_slice()) {
+    if written
+        .as_ref()
+        .is_some_and(|(previous, at)| previous == &bytes && now - at < 3600)
+    {
         return;
     }
+    let cached = CachedList {
+        user_id: user_id.to_owned(),
+        confirmed_at: now,
+        list,
+    };
     let _guard = guard();
     match file(DEVICE_LIST).and_then(|path| write(&path, &cached)) {
-        Ok(()) => *written = Some(bytes),
+        Ok(()) => *written = Some((bytes, now)),
         Err(error) => tracing::warn!(error = %format!("{error:#}"), "device list cache not saved"),
     }
 }
 
-/// The last device list of `user_id`, if this profile kept one.
-pub(crate) fn device_list(user_id: &str) -> Option<crate::account::api::DeviceList> {
+fn cached_list() -> Option<CachedList> {
     let _guard = guard();
     file(DEVICE_LIST)
         .and_then(|path| read::<Option<CachedList>>(&path))
         .ok()
         .flatten()
+}
+
+/// The last device list of `user_id`, if this profile kept one.
+pub(crate) fn device_list(user_id: &str) -> Option<crate::account::api::DeviceList> {
+    cached_list()
         .filter(|cache| !user_id.is_empty() && cache.user_id == user_id)
         .map(|cache| cache.list)
 }
@@ -509,21 +464,24 @@ pub(crate) fn device_list(user_id: &str) -> Option<crate::account::api::DeviceLi
 /// How long the account's device list stays usable without the server.
 const OWN_CACHE_TTL_S: i64 = 7 * 24 * 3600;
 
-/// The cached devices of `user_id`; empty for another or no account, or
-/// when the server has not confirmed them for a week.
+/// The cached devices of `user_id` (this one included); empty for another
+/// or no account, or when the server has not confirmed them for a week.
 pub(crate) fn own_devices(user_id: &str) -> Vec<OwnDevice> {
     if user_id.is_empty() {
         return Vec::new();
     }
-    let _guard = guard();
-    file("own_devices.json")
-        .and_then(|path| read::<OwnDevices>(&path))
-        .ok()
-        .filter(|cache| cache.user_id == user_id && now() - cache.updated_at < OWN_CACHE_TTL_S)
+    cached_list()
+        .filter(|cache| cache.user_id == user_id && now() - cache.confirmed_at < OWN_CACHE_TTL_S)
         .map(|cache| {
-            cache
-                .devices
-                .into_iter()
+            std::iter::once(&cache.list.current_device)
+                .chain(&cache.list.devices)
+                .filter_map(|d| {
+                    Some(OwnDevice {
+                        device_id: device_id_of(&d.public_key)?,
+                        alias: d.alias.clone(),
+                        public_key: d.public_key.clone(),
+                    })
+                })
                 .filter(|d| keyed(&d.device_id, &d.public_key))
                 .collect()
         })
@@ -540,19 +498,14 @@ pub(crate) fn own_device(user_id: &str, public_key: &str) -> Option<OwnDevice> {
 /// The account of the cache, if any (a controller without a live login
 /// still recognises its account's hosts).
 pub(crate) fn own_devices_account() -> Option<String> {
-    let _guard = guard();
-    file("own_devices.json")
-        .and_then(|path| read::<OwnDevices>(&path))
-        .ok()
-        .map(|cache| cache.user_id)
-        .filter(|id| !id.is_empty())
+    cached_list().map(|cache| cache.user_id).filter(|id| !id.is_empty())
 }
 
 /// Forget the account caches (logout).
 pub(crate) fn clear_own_devices() {
     *DEVICE_LIST_WRITTEN.lock().unwrap_or_else(|e| e.into_inner()) = None;
     let _guard = guard();
-    for name in ["own_devices.json", FRIEND_DEVICES, DEVICE_LIST] {
+    for name in [FRIEND_DEVICES, DEVICE_LIST] {
         if let Ok(path) = file(name) {
             let _ = std::fs::remove_file(path);
         }

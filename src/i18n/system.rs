@@ -697,6 +697,8 @@ pub(crate) struct System {
     pub local_app_data_unknown: &'static str,
     pub program_data_unknown: &'static str,
     pub system_folder_invalid: fn(&str) -> String,
+    pub settings_file_invalid: fn(&str) -> String,
+    pub settings_folder_invalid: &'static str,
 }
 
 pub(crate) const ZH_CN: System = System {
@@ -1336,6 +1338,8 @@ pub(crate) const ZH_CN: System = System {
     local_app_data_unknown: "无法确定 LOCALAPPDATA 目录",
     program_data_unknown: "无法确定 ProgramData 目录",
     system_folder_invalid: |path| format!("系统目录无效：{path}"),
+    settings_file_invalid: |path| format!("设置文件已损坏：{path}"),
+    settings_folder_invalid: "设置目录无效",
 };
 
 pub(crate) const EN: System = System {
@@ -1975,4 +1979,6 @@ pub(crate) const EN: System = System {
     local_app_data_unknown: "Can't find the LOCALAPPDATA folder",
     program_data_unknown: "Can't find the ProgramData folder",
     system_folder_invalid: |path| format!("Invalid system folder: {path}"),
+    settings_file_invalid: |path| format!("Settings file is damaged: {path}"),
+    settings_folder_invalid: "Invalid settings folder",
 };

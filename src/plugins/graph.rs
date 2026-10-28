@@ -965,23 +965,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         "{}",
         t().features.plugin_graph_file_too_large
     );
-    std::fs::create_dir_all(path.parent().context("graph directory")?)?;
-    let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| -> Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&temp, path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(temp);
-    }
-    result
+    crate::storage::write_bytes(path, bytes)
 }
 pub fn save(document: &Document) -> Result<()> {
     atomic_write(

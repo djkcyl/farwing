@@ -227,16 +227,7 @@ mod disk {
             },
         );
         store.entries.truncate(ENTRIES);
-        let result = (|| -> anyhow::Result<()> {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let temporary = path.with_extension("json.tmp");
-            std::fs::write(&temporary, serde_json::to_vec(&store)?)?;
-            std::fs::rename(&temporary, &path)?;
-            Ok(())
-        })();
-        if let Err(error) = result {
+        if let Err(error) = crate::storage::write(&path, &store) {
             tracing::debug!(%error, "encoder probe cache not saved");
         }
     }

@@ -1,10 +1,7 @@
 use crate::i18n::t;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::{
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -22,32 +19,11 @@ impl Settings {
         self.save_to(&Self::path()?)
     }
     pub(super) fn load_from(path: &Path) -> Result<Self> {
-        match std::fs::read(path) {
-            Ok(bytes) => {
-                serde_json::from_slice(&bytes).context(t().app.read_update_settings_failed)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(error).context(t().app.read_update_settings_failed),
-        }
+        Ok(crate::storage::read(path)
+            .context(t().app.read_update_settings_failed)?
+            .unwrap_or_default())
     }
     pub(super) fn save_to(self, path: &Path) -> Result<()> {
-        let parent = path.parent().context(t().app.invalid_update_settings_folder)?;
-        std::fs::create_dir_all(parent)?;
-        let temporary = parent.join(format!(".updates-{}.tmp", uuid::Uuid::new_v4()));
-        let result = (|| -> Result<()> {
-            let mut file = std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&temporary)?;
-            file.write_all(&serde_json::to_vec_pretty(&self)?)?;
-            file.sync_all()?;
-            drop(file);
-            std::fs::rename(&temporary, path)?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temporary);
-        }
-        result.context(t().app.save_update_settings_failed)
+        crate::storage::write(path, &self).context(t().app.save_update_settings_failed)
     }
 }

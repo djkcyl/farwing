@@ -1,6 +1,5 @@
 //! Per-account, per-publisher viewing choices; never remote physical modes.
 use anyhow::{Context, Result, bail};
-use keyring::{Entry, Error};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -109,59 +108,33 @@ impl DevicePreferences {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct DeviceRecord {
-    schema: u8,
-    preferences: DevicePreferences,
-}
-
+/// One file per account and publisher (`viewing/<account>/<publisher>.json`):
+/// stream choices, volume, microphone quality and device preferences.
 #[derive(Clone)]
 pub(crate) struct ViewingSettingsStore {
-    viewing: Arc<Entry>,
-    audio: Arc<Entry>,
-    microphone: Arc<Entry>,
-    device: Arc<Entry>,
+    path: Arc<std::path::PathBuf>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct Record {
-    schema: u8,
-    settings: Option<StreamControlSettings>,
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+struct Saved {
+    stream: Option<StreamControlSettings>,
+    audio: Option<crate::media::audio::AudioSettings>,
+    microphone: Option<crate::media::audio::encoder::Quality>,
+    device: Option<DevicePreferences>,
 }
 
-impl Record {
-    fn decode(bytes: &[u8]) -> Result<Self> {
-        let record: Self = serde_json::from_slice(bytes)
-            .map_err(|error| {
-                anyhow::anyhow!((t().features.viewing_saved_settings_malformed)(
-                    &error.to_string()
-                ))
-            })?;
-        record.validate()?;
-        Ok(record)
-    }
+/// The parts are saved separately: each save reads, changes and writes the
+/// one file.
+static WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    fn validate(&self) -> Result<()> {
-        anyhow::ensure!(
-            self.schema == 1,
-            "{}",
-            t().features.viewing_settings_version_unsupported
-        );
-        anyhow::ensure!(
-            self.settings.is_none_or(|settings| {
-                (1..=MAX_CUSTOM_BITRATE_MBPS).contains(&settings.custom_bitrate_mbps)
-            }),
-            "{}",
-            t().features.viewing_saved_settings_invalid
-        );
-        Ok(())
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct AudioRecord {
-    schema: u8,
-    settings: crate::media::audio::AudioSettings,
+fn valid_stream(settings: StreamControlSettings) -> Result<StreamControlSettings> {
+    anyhow::ensure!(
+        (1..=MAX_CUSTOM_BITRATE_MBPS).contains(&settings.custom_bitrate_mbps),
+        "{}",
+        t().features.viewing_saved_settings_invalid
+    );
+    Ok(settings)
 }
 
 impl ViewingSettingsStore {
@@ -170,169 +143,93 @@ impl ViewingSettingsStore {
         if user_id.is_empty() {
             bail!("{}", t().features.viewing_settings_account_unknown);
         }
-        let service = crate::product::keyring_service(&format!(
-            "viewing.{:x}",
+        let path = crate::storage::path(format!(
+            "viewing/{:x}/{publisher_id}.json",
             Sha256::digest(user_id.as_bytes())
-        ));
-        let audio_service = crate::product::keyring_service(&format!(
-            "audio.{:x}",
-            Sha256::digest(user_id.as_bytes())
-        ));
-        Ok(Self {
-            device: Arc::new(
-                Entry::new(
-                    &crate::product::keyring_service(&format!(
-                        "device-preferences.{:x}",
-                        Sha256::digest(user_id.as_bytes())
-                    )),
-                    publisher_id,
-                )
-                .map_err(|_| {
-                    anyhow::anyhow!("{}", t().features.viewing_device_storage_unavailable)
-                })?,
-            ),
-            viewing: Arc::new(
-                Entry::new(&service, publisher_id)
-                    .map_err(|_| {
-                        anyhow::anyhow!("{}", t().features.viewing_settings_storage_unavailable)
-                    })?,
-            ),
-            audio: Arc::new(
-                Entry::new(&audio_service, publisher_id)
-                    .map_err(|_| {
-                        anyhow::anyhow!("{}", t().features.viewing_volume_storage_unavailable)
-                    })?,
-            ),
-            microphone: Arc::new(
-                Entry::new(
-                    &crate::product::keyring_service(&format!(
-                        "microphone.{:x}",
-                        Sha256::digest(user_id.as_bytes())
-                    )),
-                    publisher_id,
-                )
-                .map_err(|_| {
-                    anyhow::anyhow!("{}", t().features.viewing_microphone_storage_unavailable)
-                })?,
-            ),
-        })
+        ))?;
+        Ok(Self { path: Arc::new(path) })
     }
 
-    pub(crate) async fn load(&self) -> Result<Option<StreamControlSettings>> {
-        let entry = Arc::clone(&self.viewing);
+    /// What is saved; `failed` words a damaged or unreadable file.
+    async fn read(&self, failed: &'static str) -> Result<Saved> {
+        let path = Arc::clone(&self.path);
         tokio::task::spawn_blocking(move || {
-            let bytes = match entry.get_secret() {
-                Ok(bytes) => bytes,
-                Err(Error::NoEntry) => return Ok(None),
-                Err(_) => bail!("{}", t().features.viewing_settings_read_failed),
-            };
-            Ok(Record::decode(&bytes)?.settings)
+            crate::storage::read::<Saved>(&path)
+                .map(Option::unwrap_or_default)
+                .map_err(|error| anyhow::anyhow!("{failed}: {error:#}"))
         })
         .await
         .context(t().features.viewing_settings_read_interrupted)?
     }
 
-    async fn save(&self, settings: StreamControlSettings) -> Result<()> {
-        let entry = Arc::clone(&self.viewing);
+    async fn update(&self, change: impl FnOnce(&mut Saved) + Send + 'static) -> Result<()> {
+        let path = Arc::clone(&self.path);
         tokio::task::spawn_blocking(move || {
-            let record = Record {
-                schema: 1,
-                settings: Some(settings),
-            };
-            record.validate()?;
-            let bytes = serde_json::to_vec(&record)?;
-            entry
-                .set_secret(&bytes)
-                .map_err(|_| anyhow::anyhow!("{}", t().features.viewing_settings_save_failed))
+            let _writing = WRITES.lock().unwrap_or_else(|e| e.into_inner());
+            let mut saved = crate::storage::read::<Saved>(&path)
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            change(&mut saved);
+            crate::storage::write(&path, &saved)
         })
         .await
         .context(t().features.viewing_settings_save_interrupted)?
     }
 
+    pub(crate) async fn load(&self) -> Result<Option<StreamControlSettings>> {
+        self.read(t().features.viewing_settings_read_failed)
+            .await?
+            .stream
+            .map(valid_stream)
+            .transpose()
+    }
+
+    async fn save(&self, settings: StreamControlSettings) -> Result<()> {
+        let settings = valid_stream(settings)?;
+        self.update(move |saved| saved.stream = Some(settings))
+            .await
+            .context(t().features.viewing_settings_save_failed)
+    }
+
     pub(crate) async fn load_audio(&self) -> Result<Option<crate::media::audio::AudioSettings>> {
-        let entry = Arc::clone(&self.audio);
-        tokio::task::spawn_blocking(move || {
-            let bytes = match entry.get_secret() {
-                Ok(bytes) => bytes,
-                Err(Error::NoEntry) => return Ok(None),
-                Err(_) => bail!("{}", t().features.viewing_volume_read_failed),
-            };
-            let record: AudioRecord = serde_json::from_slice(&bytes)
-                .map_err(|_| anyhow::anyhow!("{}", t().features.viewing_volume_malformed))?;
-            if record.schema != 1 || record.settings.volume > crate::media::audio::MAX_VOLUME {
-                bail!("{}", t().features.viewing_volume_invalid);
-            }
-            Ok(Some(record.settings))
-        })
-        .await
-        .context(t().features.viewing_volume_read_interrupted)?
+        let audio = self.read(t().features.viewing_volume_read_failed).await?.audio;
+        if audio.is_some_and(|settings| settings.volume > crate::media::audio::MAX_VOLUME) {
+            bail!("{}", t().features.viewing_volume_invalid);
+        }
+        Ok(audio)
     }
 
     async fn save_audio(&self, settings: crate::media::audio::AudioSettings) -> Result<()> {
-        let entry = Arc::clone(&self.audio);
-        tokio::task::spawn_blocking(move || {
-            let bytes = serde_json::to_vec(&AudioRecord {
-                schema: 1,
-                settings,
-            })?;
-            entry
-                .set_secret(&bytes)
-                .map_err(|_| anyhow::anyhow!("{}", t().features.viewing_volume_save_failed))
-        })
-        .await
-        .context(t().features.viewing_volume_save_interrupted)?
+        self.update(move |saved| saved.audio = Some(settings))
+            .await
+            .context(t().features.viewing_volume_save_failed)
     }
 
     pub(crate) async fn load_microphone(&self) -> Result<crate::media::audio::encoder::Quality> {
-        let entry = self.microphone.clone();
-        tokio::task::spawn_blocking(move || {
-            let bytes = match entry.get_secret() {
-                Ok(bytes) => bytes,
-                Err(Error::NoEntry) => return Ok(Default::default()),
-                Err(_) => bail!("{}", t().features.viewing_microphone_read_failed),
-            };
-            let quality: crate::media::audio::encoder::Quality = serde_json::from_slice(&bytes)?;
-            quality.restore()
-        })
-        .await
-        .context(t().features.viewing_microphone_read_interrupted)?
+        self.read(t().features.viewing_microphone_read_failed)
+            .await?
+            .microphone
+            .unwrap_or_default()
+            .restore()
     }
     async fn save_microphone(&self, quality: crate::media::audio::encoder::Quality) -> Result<()> {
         quality.validate()?;
-        let entry = self.microphone.clone();
-        tokio::task::spawn_blocking(move || {
-            entry
-                .set_secret(&serde_json::to_vec(&quality)?)
-                .map_err(|_| anyhow::anyhow!("{}", t().features.viewing_microphone_save_failed))
-        })
-        .await
-        .context(t().features.viewing_microphone_save_interrupted)?
+        self.update(move |saved| saved.microphone = Some(quality))
+            .await
+            .context(t().features.viewing_microphone_save_failed)
     }
     pub(crate) async fn load_device(&self) -> Result<DevicePreferences> {
-        let entry = self.device.clone();
-        tokio::task::spawn_blocking(move || -> Result<DevicePreferences> {
-            let bytes = match entry.get_secret() {
-                Ok(bytes) => bytes,
-                Err(Error::NoEntry) => return Ok(DevicePreferences::default()),
-                Err(_) => bail!("{}", t().features.viewing_device_read_failed),
-            };
-            let record: DeviceRecord =
-                serde_json::from_slice(&bytes).context(t().features.viewing_device_malformed)?;
-            anyhow::ensure!(
-                record.schema == 1,
-                "{}",
-                t().features.viewing_device_version_invalid
-            );
-            record.preferences.validate()
-        })
-        .await
-        .context(t().features.viewing_device_read_interrupted)
-        .and_then(|r| r)
+        self.read(t().features.viewing_device_read_failed)
+            .await?
+            .device
+            .unwrap_or_default()
+            .validate()
     }
 
     pub(crate) async fn restore_device(&self, handle: &StreamControlHandle) {
         // A shared session or an in-memory room replacement already owns newer
-        // intent; a stale credential read must not overwrite it.
+        // intent; a stale read must not overwrite it.
         if handle.device_preferences_loaded() {
             return;
         }
@@ -344,19 +241,10 @@ impl ViewingSettingsStore {
     }
 
     async fn save_device(&self, preferences: DevicePreferences) -> Result<()> {
-        let entry = self.device.clone();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let preferences = preferences.validate()?;
-            let bytes = serde_json::to_vec(&DeviceRecord {
-                schema: 1,
-                preferences,
-            })?;
-            entry
-                .set_secret(&bytes)
-                .map_err(|_| anyhow::anyhow!("{}", t().features.viewing_device_save_failed))
-        })
-        .await
-        .context(t().features.viewing_device_save_interrupted)?
+        let preferences = preferences.validate()?;
+        self.update(move |saved| saved.device = Some(preferences))
+            .await
+            .context(t().features.viewing_device_save_failed)
     }
 
     pub(crate) fn bind_local_preferences(self, handle: StreamControlHandle) -> PreferenceWriter {

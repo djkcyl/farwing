@@ -576,7 +576,7 @@ HostEvent { kind: UPDATING|RESTARTING|SLEEPING|SHUTTING_DOWN|SESSION_SWITCH|DISP
 2. 被控 → `direct.hello {…, proof(role = host), udp_port, methods}`。双方都校验对方的 `device_id` 由其 `public_key` 推导（§1.1，不符即断开：“对端出示的密钥与设备 ID 不符”）以及 `proof`。`methods` 为被控此刻接受的方式：`own`（被控登录了账号）、`friend`（登录了账号且好友授权缓存非空）、`trusted`（总是声明）、`assist`（访问码已开启）。被控未开启“允许连接本机”时回 `error{host_disabled}`。
 3. 授权（主控选择一种）：
    - 按设备密钥：主控发 `direct.auth {method}`（被控声明 `own` 时为 `own`，否则 `trusted`）。被控不论 `method`，依次检查：
-     - `own`：被控缓存的本账号设备列表（`GET /api/v2/devices` 中的 `public_key`；客户端每次取设备列表时写入 profile 的 `own_devices.json`，按账号区分，退出登录时删除）包含主控公钥。关系 `own`，全部能力。
+     - `own`：被控缓存的本账号设备列表（`GET /api/v2/devices` 中的 `public_key`；客户端取设备列表时写入 profile 的 `device_list.json`（设备变化时写，否则每小时续一次确认时间；一周未确认即不用），按账号区分，退出登录时删除）包含主控公钥。关系 `own`，全部能力。
      - `friend`：被控缓存的好友授权（§12.6 的 `friend_devices.json`）包含主控公钥。关系 `friend`，能力为该好友在本机上的授权（总含 `view`）。
      - 主控不在本账号设备缓存中时，已登录且连着服务端的被控先刷新本账号设备与好友授权两份缓存（最多每 10 s 一次，5 s 超时）再判定：服务端可达时好友授权的撤销立即生效，不可达时按缓存。
      - `trusted`：被控 `trusted_devices.json` 中有该公钥（§12.6）。关系 `trusted`，能力为该设备记录的能力（总含 `view`），并更新其最近连接时间。
@@ -672,7 +672,7 @@ Farwing host [--serverless] [--allow] [--access-code <访问码>]
 | --- | --- | --- |
 | `trusted_devices.json`（受信任设备） | 本 profile 数据目录 | 服务的数据目录（SYSTEM 的 `%LOCALAPPDATA%\Farwing`，只有 SYSTEM 与管理员可写） |
 | `network.json`（直连与 NAT 开关） | 同上 | 服务的数据目录为被控所用；用户数据目录保留一份相同内容，供本机作为主控的会话使用 |
-| `own_devices.json`（本账号设备缓存） | 本进程取设备列表时写入 | 两份：服务进程每次连上服务端时刷新自己的一份（被控按它授权 `own`，离线时也可用），界面进程的一份用于识别局域网中的本账号设备 |
+| `device_list.json`（本账号设备列表缓存） | 本进程取设备列表时写入 | 两份：服务进程每次连上服务端时刷新自己的一份（被控按它授权 `own`，离线时也可用），界面进程的一份用于识别局域网中的本账号设备 |
 | `friend_devices.json`（好友授权缓存） | 被控进程写入 | 服务的数据目录（服务进程按它授权 `friend`） |
 | `known_hosts.json`（连接过的设备） | 本 profile 数据目录 | 用户数据目录（主控会话在用户进程中运行） |
 

@@ -27,22 +27,10 @@ fn path() -> Result<std::path::PathBuf> {
     Ok(base.join("notifications.json"))
 }
 fn load() -> Result<Mode> {
-    match std::fs::read(path()?) {
-        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Mode::Gui),
-        Err(e) => Err(e.into()),
-    }
+    Ok(crate::storage::read(&path()?)?.unwrap_or(Mode::Gui))
 }
 fn save(mode: Mode) -> Result<()> {
-    let p = path()?;
-    std::fs::create_dir_all(p.parent().unwrap())?;
-    let tmp = p.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
-    std::fs::write(&tmp, serde_json::to_vec(&mode)?)?;
-    if let Err(e) = std::fs::rename(&tmp, &p) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e.into());
-    }
-    Ok(())
+    crate::storage::write(&path()?, &mode)
 }
 impl Worker {
     pub fn new(ctx: egui::Context) -> Self {

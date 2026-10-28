@@ -4,7 +4,7 @@ mod watcher;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    io::{Read, Write},
+    io::Read,
     path::PathBuf,
     sync::{
         Mutex, OnceLock,
@@ -327,24 +327,8 @@ fn save(expected: &Option<Vec<u8>>, settings: &Settings) -> Result<()> {
         &read(&path)? == expected,
         t().viewer.shortcut_changed_elsewhere
     );
-    std::fs::create_dir_all(path.parent().context(t().viewer.settings_dir_invalid)?)?;
     let bytes = serde_json::to_vec_pretty(settings)?;
-    let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| -> Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&tmp, &path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result?;
+    crate::storage::write_bytes(&path, &bytes)?;
     let mut cache = runtime().cache.lock().unwrap_or_else(|e| e.into_inner());
     cache.revision = cache.revision.wrapping_add(1);
     runtime().active.store(settings.packed(), Ordering::Release);

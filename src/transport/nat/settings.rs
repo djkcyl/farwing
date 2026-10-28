@@ -6,7 +6,6 @@
 //! pipe (`crate::transport::direct::managed`).
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::sync::Mutex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,11 +79,9 @@ fn path() -> Result<std::path::PathBuf> {
 }
 
 fn read(path: &std::path::Path) -> Result<Settings> {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).context(crate::i18n::t().session.network_settings_read_failed),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
-        Err(error) => Err(error).context(crate::i18n::t().session.network_settings_read_failed),
-    }
+    Ok(crate::storage::read(path)
+        .context(crate::i18n::t().session.network_settings_read_failed)?
+        .unwrap_or_default())
 }
 
 /// The stored settings; defaults when missing or unreadable.
@@ -105,24 +102,7 @@ pub(crate) fn current() -> Settings {
 
 pub(crate) fn save(settings: Settings) -> Result<()> {
     settings.validate()?;
-    let path = path()?;
-    let parent = path.parent().context(crate::i18n::t().session.network_settings_folder_invalid)?;
-    std::fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(".network-{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| -> Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)?;
-        file.write_all(&serde_json::to_vec_pretty(&settings)?)?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&temporary, &path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
+    let result = crate::storage::write(&path()?, &settings);
     result.context(crate::i18n::t().session.network_settings_save_failed)?;
     publish(settings);
     Ok(())

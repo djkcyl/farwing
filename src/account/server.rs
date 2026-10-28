@@ -86,11 +86,7 @@ fn copy_setting(from: &std::path::Path, to: &std::path::Path) -> Result<bool> {
     };
     let stored: Stored = serde_json::from_slice(&bytes).context(t().session.server_settings_invalid)?;
     anyhow::ensure!(stored.schema == SCHEMA, "{}", t().session.server_settings_unsupported);
-    std::fs::create_dir_all(to).context(t().session.settings_folder_failed)?;
-    let target = to.join(FILE_NAME);
-    let temporary = target.with_extension("json.tmp");
-    std::fs::write(&temporary, &bytes).context(t().session.server_settings_save_failed)?;
-    std::fs::rename(&temporary, &target).context(t().session.server_settings_save_failed)?;
+    crate::storage::write_bytes(&to.join(FILE_NAME), &bytes).context(t().session.server_settings_save_failed)?;
     Ok(true)
 }
 
@@ -161,8 +157,6 @@ impl ServerConfig {
     }
 
     pub fn save(&self) -> Result<()> {
-        let directory = directory()?;
-        std::fs::create_dir_all(&directory).context(t().session.settings_folder_failed)?;
         let stored = Stored {
             schema: SCHEMA,
             url: self.origin().to_owned(),
@@ -170,12 +164,8 @@ impl ServerConfig {
             ca_pem: self.ca_pem.clone(),
             key: self.key.clone(),
         };
-        let path = directory.join(FILE_NAME);
-        let temporary = path.with_extension("json.tmp");
-        std::fs::write(&temporary, serde_json::to_vec_pretty(&stored)?)
-            .context(t().session.server_settings_save_failed)?;
-        std::fs::rename(&temporary, &path).context(t().session.server_settings_save_failed)?;
-        Ok(())
+        crate::storage::write(&directory()?.join(FILE_NAME), &stored)
+            .context(t().session.server_settings_save_failed)
     }
 
     pub fn clear() -> Result<()> {

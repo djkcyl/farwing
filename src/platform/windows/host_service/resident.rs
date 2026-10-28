@@ -73,21 +73,8 @@ pub(crate) enum Request {
     },
     Settings {
         account: String,
-        allowed: bool,
-        encoding: host::EncodingSettings,
-        audio_device: Option<host::audio::Device>,
-        audio_defaults: host::audio::DefaultDevices,
-        audio_quality: crate::media::audio::encoder::Quality,
+        settings: host::HostSettings,
         assistance: host::assist::Settings,
-        clipboard: host::clipboard::Settings,
-        file_transfer: bool,
-        port_mapping: bool,
-        remote_power: bool,
-        wol: bool,
-        #[serde(default = "default_max_participants")]
-        max_participants: u32,
-        #[serde(default)]
-        forwarding: crate::features::host::forwarding::Mode,
     },
     Disconnect {
         account: String,
@@ -115,9 +102,6 @@ pub(crate) enum Request {
         account: String,
     },
 }
-fn default_max_participants() -> u32 {
-    farwing_protocol::limits::DEFAULT_MAX_PARTICIPANTS
-}
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Snapshot {
     #[serde(default)]
@@ -126,28 +110,7 @@ pub(crate) struct Snapshot {
     pub publication: crate::account::reporting::Snapshot,
     pub account: String,
     pub online: PresenceState,
-    pub allowed: bool,
-    pub encoding: host::EncodingSettings,
-    #[serde(default)]
-    pub audio_device: Option<host::audio::Device>,
-    #[serde(default)]
-    pub audio_defaults: host::audio::DefaultDevices,
-    #[serde(default)]
-    pub audio_quality: crate::media::audio::encoder::Quality,
-    #[serde(default)]
-    pub clipboard: host::clipboard::Settings,
-    #[serde(default)]
-    pub file_transfer: bool,
-    #[serde(default)]
-    pub port_mapping: bool,
-    #[serde(default)]
-    pub remote_power: bool,
-    #[serde(default)]
-    pub wol: bool,
-    #[serde(default = "default_max_participants")]
-    pub max_participants: u32,
-    #[serde(default)]
-    pub forwarding: crate::features::host::forwarding::Mode,
+    pub settings: host::HostSettings,
     pub status: host::Status,
     pub capabilities: Option<host::desktop::Capabilities>,
     /// What the hosting process uses for direct connections.
@@ -881,18 +844,7 @@ async fn run_authorized_account(
                                     publication: crate::account::reporting::snapshot(),
                                     account,
                                     online: online.clone(),
-                                    allowed: current.host.allowed(),
-                                    encoding: current.host.encoding_settings(),
-                                    audio_device: current.host.audio_device(),
-                                    audio_defaults: current.host.audio_defaults(),
-                                    audio_quality: current.host.audio_quality(),
-                                    clipboard: current.host.clipboard_settings(),
-                                    file_transfer: current.host.file_transfer_allowed(),
-                                    port_mapping: current.host.port_mapping_allowed(),
-                                    remote_power: current.host.power_allowed(),
-                                    wol: current.host.wol_allowed(),
-                                    max_participants: current.host.max_participants(),
-                                    forwarding: current.host.forwarding_mode(),
+                                    settings: current.host.host_settings(),
                                     status: current.host.status(),
                                     capabilities: current.host.capabilities().map(|v| (*v).clone()),
                                     direct: crate::transport::direct::managed::HostDirect::current(),
@@ -927,38 +879,10 @@ async fn run_authorized_account(
                                     Ok(Reply::Done)
                                 },
                                 Request::RefreshPublication => {ensure!(!current.is_guest(), "{}", t().common.signed_out);crate::account::reporting::REFRESH.notify_one();Ok(Reply::Done)},
-                                Request::Settings {
-                                    account: expected,
-                                    allowed,
-                                    encoding,
-                                    audio_device,
-                                    audio_defaults,
-                                    audio_quality,
-                                    assistance,
-                                    clipboard,
-                                    file_transfer,
-                                    port_mapping,
-                                    remote_power,
-                                    wol,
-                                    max_participants,
-                                    forwarding,
-                                } => {
+                                Request::Settings { account: expected, settings, assistance } => {
                                     ensure!(expected == account, "{}", t().system.service_account_changed);
-                                    encoding.validate()?;
-                                    if let Some(device)=&audio_device {device.validate()?;}
-                                    current.host.set_encoding_settings(encoding)?;
-                                    current.host.set_audio_device(audio_device)?;
-                                    current.host.set_audio_defaults(audio_defaults)?;
-                                    current.host.set_audio_quality(audio_quality)?;
                                     current.host.set_assistance(assistance)?;
-                                    current.host.set_clipboard_settings(clipboard)?;
-                                    current.host.set_file_transfer_allowed(file_transfer)?;
-                                    current.host.set_port_mapping_allowed(port_mapping)?;
-                                    current.host.set_power_allowed(remote_power)?;
-                                    current.host.set_wol_allowed(wol)?;
-                                    current.host.set_max_participants(max_participants)?;
-                                    current.host.set_forwarding_mode(forwarding)?;
-                                    current.host.set_allowed(allowed);
+                                    current.host.set_host_settings(settings)?;
                                     current.host.persist_settings().await;
                                     if let Some(error) = current.host.status().settings_error {
                                         anyhow::bail!(error);

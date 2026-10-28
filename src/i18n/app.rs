@@ -279,7 +279,6 @@ pub(crate) struct App {
     pub invalid_server_version: &'static str,
     pub invalid_current_version: &'static str,
     pub read_update_settings_failed: &'static str,
-    pub invalid_update_settings_folder: &'static str,
     pub save_update_settings_failed: &'static str,
 
     // Single instance
@@ -580,7 +579,6 @@ pub(crate) const ZH_CN: App = App {
     invalid_server_version: "服务器返回的版本号无效",
     invalid_current_version: "当前程序版本号无效",
     read_update_settings_failed: "无法读取更新设置",
-    invalid_update_settings_folder: "更新设置目录无效",
     save_update_settings_failed: "无法保存更新设置",
 
     instance_lock_failed: "无法创建程序实例锁",
@@ -886,7 +884,6 @@ pub(crate) const EN: App = App {
     invalid_server_version: "Invalid version number from the server",
     invalid_current_version: "Invalid version number of this program",
     read_update_settings_failed: "Couldn't read update settings",
-    invalid_update_settings_folder: "Invalid update settings folder",
     save_update_settings_failed: "Couldn't save update settings",
 
     instance_lock_failed: "Couldn't create the instance lock",

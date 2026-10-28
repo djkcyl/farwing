@@ -1,12 +1,11 @@
 //! Registered-device publication owned by the active account, never a viewer.
 use super::*;
 use crate::{
-    account::{auth::SecretEntry, reporting},
+    account::reporting,
     platform::windows::{device_profile, host_service::resident},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
 use tokio::task::JoinHandle;
 
 #[derive(Default)]
@@ -238,20 +237,12 @@ async fn synchronize(
 ) -> Result<bool> {
     verify_owner(&device, &identity, &session).await?;
     let image_sha256 = digest(&image);
-    let entry = Arc::new(
-        SecretEntry::new(&crate::product::keyring_service("wallpaper"), &key)
-            .map_err(|_| anyhow::anyhow!("wallpaper receipt store unavailable"))?,
-    );
-    let reader = Arc::clone(&entry);
-    let receipt = tokio::task::spawn_blocking(move || -> Result<Option<Receipt>> {
-        match reader.get_secret() {
-            Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(_) => bail!("wallpaper receipt could not be read"),
-        }
-    })
-    .await
-    .context("wallpaper receipt read interrupted")??;
+    // What this device last uploaded, by identity (no secret).
+    let path = crate::storage::path(format!("cache/wallpaper/{key}.json"))?;
+    let reader = path.clone();
+    let receipt = tokio::task::spawn_blocking(move || crate::storage::read::<Receipt>(&reader).ok().flatten())
+        .await
+        .context("wallpaper receipt read interrupted")?;
     if !current_url.is_empty()
         && receipt.as_ref().is_some_and(|r| {
             r.image_sha256 == image_sha256 && r.url_sha256 == digest(current_url.as_bytes())
@@ -280,17 +271,13 @@ async fn synchronize(
         // Records the desired uploaded image, not a claim that the server kept
         // it. On restart it counts as success only if the server returns the
         // same URL.
-        let record = serde_json::to_vec(&Receipt {
+        let record = Receipt {
             image_sha256,
             url_sha256: digest(uploaded_url.as_bytes()),
-        })?;
-        tokio::task::spawn_blocking(move || {
-            entry
-                .set_secret(&record)
-                .map_err(|_| anyhow::anyhow!("wallpaper upload receipt could not be saved"))
-        })
-        .await
-        .context("wallpaper receipt write interrupted")??;
+        };
+        tokio::task::spawn_blocking(move || crate::storage::write(&path, &record))
+            .await
+            .context("wallpaper receipt write interrupted")??;
     }
     let list = api
         .list_devices()
