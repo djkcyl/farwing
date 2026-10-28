@@ -241,7 +241,8 @@ struct Inner {
 }
 
 pub(super) struct Group {
-    key: Key,
+    /// What it encodes; a member alone retunes it ([`Registry::retune`]).
+    key: Mutex<Key>,
     /// Unique per process, for the uplink's track assignment.
     serial: u64,
     /// The pipeline stops: no member is left.
@@ -256,8 +257,8 @@ impl Group {
     pub(super) fn serial(&self) -> u64 {
         self.serial
     }
-    pub(super) fn key(&self) -> &Key {
-        &self.key
+    pub(super) fn key(&self) -> Key {
+        self.key.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
     // ------------------------------------------------- the pipeline's side
 
@@ -481,7 +482,7 @@ impl Registry {
         let open: Vec<&Arc<Group>> = groups.iter().filter(|g| g.lock().end.is_none()).collect();
         let existing: Vec<(Key, (u32, u32))> = open
             .iter()
-            .map(|group| (group.key.clone(), group.lock().size))
+            .map(|group| (group.key(), group.lock().size))
             .collect();
         let choice = match choose(&existing, &key, size, limit) {
             Choice::OverLimit if any => Choice::Create,
@@ -501,14 +502,14 @@ impl Registry {
                 } else if any {
                     tracing::info!(
                         screen = %key.screen,
-                        sharing = ?group.key,
+                        sharing = ?group.key(),
                         "forwarded participant shares the stream of its screen"
                     );
                 } else {
                     tracing::info!(
                         screen = %key.screen,
                         wanted = ?key,
-                        sharing = ?group.key,
+                        sharing = ?group.key(),
                         "encoder limit reached; participant shares the closest encoder"
                     );
                 }
@@ -525,7 +526,7 @@ impl Registry {
                     tracing::info!(?key, encoders = groups.len() + 1, "new encoder pipeline");
                 }
                 let group = Arc::new(Group {
-                    key: key.clone(),
+                    key: Mutex::new(key.clone()),
                     serial: id,
                     stopped: Arc::default(),
                     inner: Mutex::new(Inner {
@@ -581,10 +582,45 @@ impl Registry {
             registry: self.clone(),
             group: group.clone(),
             id,
-            wanted: group.key.clone(),
+            wanted: group.key(),
             output_seen: 0,
             bytes_seen: (Instant::now(), 0),
         }
+    }
+
+    /// Change what a member alone in its group watches, in place: the
+    /// pipeline keeps its capture and encoder, so a cursor, frame-rate or
+    /// quality change is not a new stream. `false`: it joins elsewhere
+    /// (others share the stream, the encoder or format differs, or another
+    /// group has `key`).
+    pub(super) fn retune(&self, membership: &mut Membership, key: &Key) -> bool {
+        let groups = self.groups();
+        let group = &membership.group;
+        let current = group.key();
+        let same_encoder = current.screen == key.screen
+            && current.adapter == key.adapter
+            && current.backend == key.backend
+            && current.format == key.format
+            && current.isolated == key.isolated
+            && current.low == key.low;
+        let alone = {
+            let inner = group.lock();
+            inner.end.is_none()
+                && inner
+                    .members
+                    .iter()
+                    .all(|(id, member)| *id == membership.id || member.observer)
+        };
+        let elsewhere = groups
+            .iter()
+            .any(|other| !Arc::ptr_eq(other, group) && other.lock().end.is_none() && other.key() == *key);
+        if !same_encoder || !alone || elsewhere {
+            return false;
+        }
+        *group.key.lock().unwrap_or_else(|e| e.into_inner()) = key.clone();
+        membership.wanted = key.clone();
+        tracing::info!(?key, "encoder pipeline retuned");
+        true
     }
 
     fn leave(&self, group: &Arc<Group>, id: u64) {
@@ -624,8 +660,8 @@ pub(super) struct Membership {
 
 impl Membership {
     /// The key of the group this member is in.
-    pub(super) fn group_key(&self) -> &Key {
-        &self.group.key
+    pub(super) fn group_key(&self) -> Key {
+        self.group.key()
     }
     /// Whether this member's picture goes through the forwarder (its
     /// participant and track), for the uplink.
@@ -635,7 +671,7 @@ impl Membership {
         let newly = forwarded.is_some() && member.forwarded != forwarded;
         member.forwarded = forwarded;
         drop(inner);
-        if newly && self.group.key.low {
+        if newly && self.group.key().low {
             // The low layer's uplink track takes this group's frames now
             // rather than on the next tick. (Other groups wait for it: the
             // members of a group that changes format move over within it,
@@ -818,6 +854,30 @@ mod tests {
         b.request_keyframe();
         assert!(group.take_keyframe(Instant::now()));
         assert!(!group.take_keyframe(Instant::now()));
+    }
+
+    #[test]
+    fn a_member_alone_retunes_its_pipeline_in_place() {
+        let registry = Arc::new(Registry::default());
+        let (mut a, _) = join(&registry, key("D1", 2), (1920, 1080));
+        let serial = a.group_serial();
+        // Taking control: the cursor leaves the picture, the stream stays.
+        let uncursored = Key { cursor: false, ..key("D1", 3) };
+        assert!(registry.retune(&mut a, &uncursored));
+        assert_eq!((a.group_serial(), a.group_key()), (serial, uncursored.clone()));
+        assert_eq!(a.wanted, uncursored);
+        // Another encoder or format is another pipeline.
+        let other = Key { format: Format { chroma: 3, ..Format::AVC }, ..uncursored.clone() };
+        assert!(!registry.retune(&mut a, &other));
+        // Shared: the others keep their stream.
+        let (b, _) = join(&registry, uncursored.clone(), (1920, 1080));
+        assert_eq!(b.group_serial(), serial);
+        assert!(!registry.retune(&mut a, &key("D1", 2)));
+        drop(b);
+        // A group that already has the key takes the member instead.
+        let (_c, _) = join(&registry, key("D1", 4), (1920, 1080));
+        assert!(!registry.retune(&mut a, &key("D1", 4)));
+        assert!(registry.retune(&mut a, &key("D1", 1)));
     }
 
     #[test]

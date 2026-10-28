@@ -38,35 +38,32 @@ pub(super) async fn run(
         }
         let media = reports.media();
         let current = reports.current.load(Ordering::Acquire);
-        let pointer = media
+        // No sample yet (capture starting or restarting): nothing to say. A
+        // hidden report would turn a smart-mode viewer relative.
+        let Some(pointer) = media
             .iter()
             .filter(|(_, m)| m.capturing && m.visible)
             .max_by_key(|(_, m)| m.screen.id == current)
-            .and_then(|(index, _)| lock(&reports.pointers[*index]).clone());
-        let screen = pointer.as_ref().and_then(|p| {
-            lock(&reports.catalog)
-                .iter()
-                .find(|info| {
-                    let s = &info.screen;
-                    media
-                        .iter()
-                        .any(|(_, m)| m.capturing && m.visible && m.screen.id == s.id)
-                        && i64::from(p.x) >= i64::from(s.left)
-                        && i64::from(p.x) < i64::from(s.left) + i64::from(s.width)
-                        && i64::from(p.y) >= i64::from(s.top)
-                        && i64::from(p.y) < i64::from(s.top) + i64::from(s.height)
-                })
-                .map(|info| info.screen.clone())
-        });
-        let visible = pointer
-            .as_ref()
-            .is_some_and(|p| p.showing && p.image.is_some())
-            && screen.is_some();
-        let image = if visible {
-            pointer.as_ref().and_then(|p| p.image.clone())
-        } else {
-            None
+            .and_then(|(index, _)| lock(&reports.pointers[*index]).clone())
+        else {
+            continue;
         };
+        let p = &pointer;
+        let screen = lock(&reports.catalog)
+            .iter()
+            .find(|info| {
+                let s = &info.screen;
+                media
+                    .iter()
+                    .any(|(_, m)| m.capturing && m.visible && m.screen.id == s.id)
+                    && i64::from(p.x) >= i64::from(s.left)
+                    && i64::from(p.x) < i64::from(s.left) + i64::from(s.width)
+                    && i64::from(p.y) >= i64::from(s.top)
+                    && i64::from(p.y) < i64::from(s.top) + i64::from(s.height)
+            })
+            .map(|info| info.screen.clone());
+        let visible = pointer.showing && pointer.image.is_some() && screen.is_some();
+        let image = if visible { pointer.image.clone() } else { None };
         let key = (
             image.clone(),
             screen.as_ref().map_or(-1, |s| s.id),
@@ -93,12 +90,12 @@ pub(super) async fn run(
             },
             None => None,
         };
-        let position = match (pointer.as_ref(), screen.as_ref()) {
-            (Some(p), Some(s)) => [
-                (f64::from(p.x) - f64::from(s.left)) / f64::from(s.width),
-                (f64::from(p.y) - f64::from(s.top)) / f64::from(s.height),
+        let position = match screen.as_ref() {
+            Some(s) => [
+                (f64::from(pointer.x) - f64::from(s.left)) / f64::from(s.width),
+                (f64::from(pointer.y) - f64::from(s.top)) / f64::from(s.height),
             ],
-            _ => [0.0, 0.0],
+            None => [0.0, 0.0],
         };
         let bytes = remote_cursor::encode_shape(image.as_ref(), key.1, position);
         if bytes.len() > 512 * 1024 {

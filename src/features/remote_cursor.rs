@@ -93,7 +93,9 @@ impl RemoteCursorState {
             y = shape.coordinate_y_scale,
             "remote cursor state"
         );
-        let hidden = shape.cursor_type == -1;
+        // Hidden by a program on a captured screen; on another screen (-1)
+        // the pointer is merely outside the picture.
+        let hidden = shape.cursor_type == -1 && shape.screen_id >= 0;
         let parsed = parse_shape(shape);
         match parsed {
             Ok(cursor) => self.publish(cursor, hidden),
@@ -231,4 +233,22 @@ pub(crate) fn encode_pointers(participants: Vec<ParticipantPointer>) -> Vec<u8> 
             pointers: true,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_cursor_hidden_on_a_captured_screen_is_hidden() {
+        let state = RemoteCursorState::default();
+        let elsewhere = encode_shape(None, -1, [0.0, 0.0]);
+        let (_, body) = crate::protocol::peer::decode(&elsewhere).unwrap();
+        state.receive(body).unwrap();
+        assert!(!state.hidden(), "outside the picture is not hidden");
+        let hidden = encode_shape(None, 0, [0.5, 0.5]);
+        let (_, body) = crate::protocol::peer::decode(&hidden).unwrap();
+        state.receive(body).unwrap();
+        assert!(state.hidden());
+    }
 }

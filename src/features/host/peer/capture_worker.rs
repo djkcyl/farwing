@@ -79,7 +79,7 @@ pub(super) fn capture_loop(
         let ready_seen = business_ready.changes();
         // A pipeline that ended sends its members elsewhere.
         if let Some(end) = membership.as_ref().and_then(encode_group::Membership::ended) {
-            let ended = membership.take().map(|m| m.group_key().clone());
+            let ended = membership.take().map(|m| m.group_key());
             match end {
                 End::Candidate => {
                     if let Some(key) = ended {
@@ -213,16 +213,17 @@ pub(super) fn capture_loop(
             isolated,
             low,
         };
-        let regroup = membership.as_ref().is_none_or(|m| {
+        let regroup = membership.as_mut().is_none_or(|m| {
             if forwarding {
                 // Forwarded viewers share whichever stream of this screen
                 // and format there is (one per layer): one stream goes to
                 // the forwarder.
-                m.group_key().screen != key.screen
-                    || m.group_key().format != key.format
-                    || m.group_key().low != key.low
+                let stream = m.group_key();
+                stream.screen != key.screen || stream.format != key.format || stream.low != key.low
             } else {
-                m.wanted != key || forwarded_before
+                // Alone in its pipeline, a member changes it in place.
+                forwarded_before
+                    || (m.wanted != key && !encode_group::REGISTRY.retune(m, &key))
             }
         });
         forwarded_before = forwarding;

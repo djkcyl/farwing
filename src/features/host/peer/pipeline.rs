@@ -92,11 +92,11 @@ fn run(group: &Group, start: Start) -> Result<Option<End>> {
     // the device.
     let mut reconnect = Reconnect(None);
     let _activity = crate::platform::windows::host_service::activity::Work::new();
-    let key = group.key().clone();
+    // Screen, encoder and format stay; the rest may be retuned.
+    let initial = group.key();
     let stop = group.stop_flag();
-    let format = key.format;
-    let tier = key.target.tier();
-    let hardware = key.backend != Backend::Software;
+    let format = initial.format;
+    let hardware = initial.backend != Backend::Software;
     let mut runtime = encoder::Runtime::new()?;
     let mut screen = start.screen;
     let mut desktop = None::<capture::Desktop>;
@@ -130,6 +130,8 @@ fn run(group: &Group, start: Start) -> Result<Option<End>> {
 
     while !group.stopped() {
         let iteration_started = Instant::now();
+        let key = group.key();
+        let tier = key.target.tier();
         // What the members can take: the weakest active one decides.
         let vote = group.aggregate();
         let wanted = vote.is_some();
