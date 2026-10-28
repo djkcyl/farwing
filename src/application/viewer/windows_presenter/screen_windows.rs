@@ -66,7 +66,7 @@ impl ScreenTabBar {
                             && snapshot
                                 .screens
                                 .iter()
-                                .any(|s| s.id == *id && s.display.screen_type == 1);
+                                .any(|s| s.id == *id && s.display.kind == crate::features::stream_control::wire::DisplayKind::Virtual);
                         let (response, close_clicked) = ui
                             .push_id(("screen-tab", *id), |ui| {
                                 crate::ui::controls::screen_tab(
@@ -247,7 +247,7 @@ struct ScreenWindow {
     pending: Option<PendingScreen>,
     tabs: Vec<i32>,
     selected: Option<i32>,
-    failed_screen: Option<(i32, i32, i32)>,
+    failed_screen: Option<(i32, i32, Option<crate::features::stream_control::wire::DisplayKind>)>,
     close: bool,
     last_frame: Option<Instant>,
     repaint: Option<Instant>,
@@ -825,8 +825,7 @@ impl ScreenWindows {
                         if slot.app.as_ref().is_some_and(|app| {
                             app._session.track_index == screen.video_track_index
                                 && app.bound_screen
-                                    == (screen.id as u32 as u64
-                                        | ((screen.display.screen_type as u32 as u64) << 32))
+                                    == screen.binding()
                         }) =>
                     {
                         return None;
@@ -842,7 +841,7 @@ impl ScreenWindows {
                     actual.iter().any(|s| {
                         s.id == target
                             && slot.failed_screen
-                                == Some((s.id, s.video_track_index, s.display.screen_type))
+                                == Some((s.id, s.video_track_index, Some(s.display.kind)))
                     })
                 }) {
                     return None;
@@ -862,7 +861,7 @@ impl ScreenWindows {
                     .catalog
                     .iter()
                     .find(|s| s.id == screen)
-                    .map(|s| (s.id, s.video_track_index, s.display.screen_type));
+                    .map(|s| (s.id, s.video_track_index, Some(s.display.kind)));
                 if let Some(app) = slot.app.as_mut() {
                     app.screen_tabs.error = Some(error.to_string());
                 }
@@ -899,8 +898,7 @@ impl ScreenWindows {
                             s.id == pending.id
                                 && s.video_track_index == session.track_index
                                 && session.screen_binding()
-                                    == (s.id as u32 as u64
-                                        | ((s.display.screen_type as u32 as u64) << 32))
+                                    == s.binding()
                         }) {
                             self.next_refresh = Instant::now();
                             continue;
@@ -936,8 +934,8 @@ impl ScreenWindows {
                             self.catalog
                                 .iter()
                                 .find(|s| s.id == pending.id)
-                                .map_or((pending.id, -1, -1), |s| {
-                                    (s.id, s.video_track_index, s.display.screen_type)
+                                .map_or((pending.id, -1, None), |s| {
+                                    (s.id, s.video_track_index, Some(s.display.kind))
                                 }),
                         );
                         if let Some(app) = slot.app.as_mut() {

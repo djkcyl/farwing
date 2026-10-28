@@ -1,5 +1,4 @@
 //! Publisher business-channel routing and observed source reporting.
-use super::super::lock;
 use super::{ReportRoutes, ReportTarget};
 use anyhow::Result;
 use bytes::Bytes;
@@ -521,7 +520,6 @@ pub(super) async fn publish_state(
     lease: crate::features::host::Lease,
 ) {
     use crate::features::stream_control::publisher;
-    use std::sync::atomic::Ordering;
     let mut changed = reports.changed.subscribe();
     let mut last_screen = None;
     let mut last_capture = None;
@@ -643,33 +641,28 @@ pub(super) async fn publish_state(
         }
         // Native layout changes and capture restart form one screen transition.
         // Do not publish a half-restored catalog while that owner is awaiting I/O.
-        let (media, catalog, requested) = {
-            let _state = tokio::select! {
+        let (list, media) = {
+            let state = tokio::select! {
                 _ = cancel.cancelled() => break,
                 state = screens.lock() => state,
             };
-            (
-                reports.media(),
-                lock(&reports.catalog).clone(),
-                reports.current.load(Ordering::Acquire),
+            (state.display_list(), reports.media())
+        };
+        let current = list.active;
+        // The revision alone changes with every publication; the list is sent
+        // when what it shows changes.
+        let shown = (list.displays.clone(), list.active);
+        if last_screen.as_ref() != Some(&shown)
+            && send(
+                false,
+                crate::features::stream_control::wire::push(
+                    crate::features::stream_control::wire::SessionBody::Displays(list),
+                ),
             )
-        };
-        let current = if catalog.iter().any(|s| s.screen.id == requested) {
-            requested
-        } else {
-            catalog.first().map_or(-1, |s| s.screen.id)
-        };
-        let mapping = media
-            .iter()
-            .filter(|(_, state)| state.capturing)
-            .map(|(index, state)| (state.screen.id, *index))
-            .collect();
-        let screen = publisher::screen_states(&catalog, &mapping, current);
-        if last_screen.as_ref() != Some(&screen)
-            && send(routes.control_screens, screen.clone()).await
+            .await
         {
-            tracing::debug!(current, ?mapping, "host screen catalog published");
-            last_screen = Some(screen);
+            tracing::debug!(current, "host display list published");
+            last_screen = Some(shown);
         }
         let selected = media
             .iter()

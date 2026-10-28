@@ -1,5 +1,8 @@
-//! Per-screen display mutations. RPC acceptance and observed mode are independent.
+//! The host's displays as the controller sees them (SESSION `Displays`) and
+//! per-display mode and scale changes. A request is settled by its answer,
+//! which carries the display list it left.
 use super::*;
+use super::wire::{DisplayKind, DisplayOp, DisplayRequest, SessionBody};
 use anyhow::Context;
 use std::collections::BTreeMap;
 
@@ -10,10 +13,10 @@ pub struct RemoteDisplayMode {
 }
 
 impl RemoteDisplayMode {
-    fn parse(rect: &PbWinRect) -> Option<Self> {
-        Some(Self {
-            width: u32::try_from(rect.width).ok().filter(|v| *v > 0)?,
-            height: u32::try_from(rect.height).ok().filter(|v| *v > 0)?,
+    fn of(size: &wire::Size) -> Option<Self> {
+        (size.width > 0 && size.height > 0).then_some(Self {
+            width: size.width,
+            height: size.height,
         })
     }
     pub fn label(self) -> String {
@@ -23,61 +26,66 @@ impl RemoteDisplayMode {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RemoteDisplayInfo {
+    pub kind: DisplayKind,
     pub preferred: Option<(u32, u32)>,
     pub current: RemoteDisplayMode,
+    /// The mode before the session changed it; `None` while it has not.
     pub initial: Option<RemoteDisplayMode>,
     pub modes: Vec<RemoteDisplayMode>,
     pub current_dpi: u32,
     pub recommended_dpi: u32,
     pub dpis: Vec<u32>,
-    pub screen_type: i32,
-    pub resolution_type: i32,
-    pub left: i32,
-    pub top: i32,
+    pub hdr: bool,
 }
 
 impl RemoteDisplayInfo {
-    pub(super) fn from_screen(screen: &PbScreen) -> Option<Self> {
-        let rect = screen.current_resolution.as_ref()?;
-        let mut modes: Vec<_> = screen
-            .resolutions
-            .iter()
-            .filter_map(RemoteDisplayMode::parse)
-            .collect();
+    fn of(display: &wire::Display) -> Option<Self> {
+        let current = RemoteDisplayMode::of(&wire::Size {
+            width: display.width,
+            height: display.height,
+        })?;
+        let mut modes: Vec<_> = display.modes.iter().filter_map(RemoteDisplayMode::of).collect();
         modes.sort_by_key(|m| (m.width, m.height));
         modes.dedup();
-        let dpi = screen.dpi_scale.as_ref();
-        let mut dpis: Vec<_> = dpi
-            .into_iter()
-            .flat_map(|d| &d.dpis)
-            .filter_map(|v| u32::try_from(*v).ok().filter(|v| *v > 0))
-            .collect();
+        let mut dpis: Vec<_> = display.scales.iter().copied().filter(|v| *v > 0).collect();
         dpis.sort_unstable();
         dpis.dedup();
         Some(Self {
-            preferred: screen
-                .display_geometry
+            kind: display.kind(),
+            preferred: display
+                .preferred
                 .as_ref()
                 .filter(|g| (1..=16384).contains(&g.width) && (1..=16384).contains(&g.height))
                 .map(|g| (g.width, g.height)),
-            current: RemoteDisplayMode::parse(rect)?,
-            initial: screen
-                .init_resolution
-                .as_ref()
-                .and_then(RemoteDisplayMode::parse),
+            current,
+            initial: display.initial.as_ref().and_then(RemoteDisplayMode::of),
             modes,
-            current_dpi: dpi
-                .and_then(|d| u32::try_from(d.current_dpi).ok())
-                .unwrap_or(0),
-            recommended_dpi: dpi
-                .and_then(|d| u32::try_from(d.recommended_dpi).ok())
-                .unwrap_or(0),
+            current_dpi: display.scale,
+            recommended_dpi: display.recommended_scale,
             dpis,
-            screen_type: screen.screen_type,
-            resolution_type: screen.resolution_type,
-            left: rect.left,
-            top: rect.top,
+            hdr: display.hdr,
         })
+    }
+    /// Any size can be asked of it (a virtual display); others take their
+    /// listed modes.
+    pub fn resizable(&self) -> bool {
+        matches!(self.kind, DisplayKind::Virtual | DisplayKind::Exclusive)
+    }
+    /// The mode `choice` asks for.
+    pub(crate) fn mode_of(&self, choice: DisplayResolution) -> Option<RemoteDisplayMode> {
+        match choice {
+            DisplayResolution::Mode(mode) => Some(mode),
+            DisplayResolution::Initial => self.initial,
+            DisplayResolution::FollowLocal { width, height } => {
+                Some(RemoteDisplayMode { width, height })
+            }
+        }
+    }
+    /// Whether the display can show `choice` itself (without a super
+    /// screen).
+    pub fn shows(&self, choice: DisplayResolution) -> bool {
+        self.mode_of(choice)
+            .is_some_and(|mode| self.resizable() || self.modes.contains(&mode))
     }
 }
 
@@ -105,127 +113,37 @@ pub struct DisplayChangeStatus {
     pub requested_dpi: Option<u32>,
 }
 
-#[derive(Clone, Copy)]
-enum Step {
-    Resolution(RemoteDisplayMode, i32),
-    Dpi(u32),
-}
-
-/// A display request that neither failed nor produced a matching screen
-/// report within this time is ended, so the transition overlay never sticks.
-const DISPLAY_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-struct Pending {
-    sent: std::time::Instant,
-    generation: u64,
-    sequence: i64,
-    screens_generation: u64,
-    step: Step,
-    target_mode: Option<RemoteDisplayMode>,
-    target_choice: Option<DisplayResolution>,
-    target_dpi: Option<u32>,
-}
-
-struct Observation {
-    generation: u64,
-    last_report: u64,
-    sequence: i64,
-    resolution: Option<RemoteDisplayMode>,
-    dpi: Option<u32>,
-    reason: String,
-}
-
 #[derive(Default)]
 pub(super) struct DisplayChanges {
-    pending: BTreeMap<i32, Pending>,
-    observations: BTreeMap<i32, Observation>,
-    report_generation: u64,
     pub(super) status: BTreeMap<i32, DisplayChangeStatus>,
 }
 
 impl DisplayChanges {
-    fn finish(&mut self, id: i32, pending: &Pending, error: Option<String>) {
-        let message = match &error {
-            Some(error) => {
-                let reason = error.clone();
-                self.observations.insert(
-                    id,
-                    Observation {
-                        generation: pending.generation,
-                        last_report: self.report_generation,
-                        sequence: pending.sequence,
-                        resolution: pending.target_mode,
-                        dpi: pending.target_dpi,
-                        reason: reason.clone(),
-                    },
-                );
-                tracing::warn!(screen_id = id, sequence = pending.sequence, %reason,
-                    "display request ended without full confirmation; observing later reports");
-                reason
-            }
-            None => {
-                self.observations.remove(&id);
-                t().features.stream_display_applied.into()
-            }
+    /// The host answered the change of display `id`.
+    pub(super) fn settle(&mut self, id: i32, error: Option<String>) {
+        let Some(status) = self.status.get_mut(&id) else {
+            return;
         };
-        self.status.insert(
-            id,
-            DisplayChangeStatus {
-                pending: false,
-                message,
-                error: error.is_some(),
-                requested_resolution: pending.target_mode,
-                requested_resolution_choice: pending.target_choice,
-                requested_dpi: pending.target_dpi,
-            },
-        );
+        if let Some(error) = &error {
+            tracing::warn!(screen_id = id, %error, "display change refused");
+        }
+        status.pending = false;
+        status.error = error.is_some();
+        status.message = error.unwrap_or_else(|| t().features.stream_display_applied.into());
     }
-
-    // Failed/cancelled operations may have changed the desktop before failing.
-    // Observe subsequent facts without reviving an RPC or sending its next stage.
-    fn observe_reports(&mut self, generation: u64, report: u64, screens: &[ScreenBaseline]) {
-        self.observations
-            .retain(|id, o| o.generation == generation && screens.iter().any(|s| s.id == *id));
-        for (id, observation) in &mut self.observations {
-            if report <= observation.last_report {
-                continue;
-            }
-            let Some(screen) = screens.iter().find(|s| s.id == *id) else {
-                continue;
-            };
-            observation.last_report = report;
-            let mode_matches = observation
-                .resolution
-                .is_none_or(|mode| mode == screen.display.current);
-            let dpi_matches = observation
-                .dpi
-                .is_none_or(|dpi| dpi == screen.display.current_dpi);
-            let actual = match (mode_matches, dpi_matches) {
-                (true, true) => t().features.stream_display_reached,
-                (true, false) if observation.resolution.is_some() => {
-                    t().features.stream_display_dpi_not_reached
-                }
-                _ => t().features.stream_display_not_fully_reached,
-            };
-            if let Some(status) = self.status.get_mut(id) {
-                let message = (t().features.stream_display_result)(&observation.reason, actual);
-                if status.message != message {
-                    tracing::info!(
-                        screen_id = *id,
-                        sequence = observation.sequence,
-                        width = screen.width,
-                        height = screen.height,
-                        dpi = screen.dpi_scale,
-                        "late screen state reconciled after display request failure"
-                    );
-                }
-                status.message = message;
-            }
+    pub(super) fn cancel_all(&mut self, reason: &str) {
+        for status in self.status.values_mut().filter(|s| s.pending) {
+            status.pending = false;
+            status.error = true;
+            status.message = reason.into();
         }
     }
-    fn refresh_completed(&mut self, screens: &[ScreenBaseline]) {
+    /// A later list that no longer shows a settled change says so.
+    fn observe(&mut self, screens: &[ScreenBaseline]) {
+        self.status
+            .retain(|id, _| screens.iter().any(|s| s.id == *id));
         for (id, status) in &mut self.status {
-            if status.pending || status.error || self.observations.contains_key(id) {
+            if status.pending || status.error {
                 continue;
             }
             let Some(screen) = screens.iter().find(|s| s.id == *id) else {
@@ -237,177 +155,127 @@ impl DisplayChanges {
                 && status
                     .requested_dpi
                     .is_none_or(|dpi| dpi == screen.display.current_dpi);
-            let message = if matches {
+            status.message = if matches {
                 t().features.stream_display_applied
             } else {
                 t().features.stream_display_changed_remotely
-            };
-            if status.message != message {
-                status.message = message.into();
             }
+            .into();
         }
-    }
-
-    pub(super) fn cancel_all(&mut self, reason: &str) {
-        for (id, pending) in std::mem::take(&mut self.pending) {
-            self.finish(id, &pending, Some(reason.into()));
-        }
-    }
-    pub(super) fn send_failed(&mut self, sequence: i64, reason: &str) -> bool {
-        let Some(id) = self
-            .pending
-            .iter()
-            .find(|(_, p)| p.sequence == sequence)
-            .map(|(id, _)| *id)
-        else {
-            return false;
-        };
-        let pending = self.pending.remove(&id).expect("matched display operation");
-        self.finish(id, &pending, Some((t().features.stream_send_failed)(reason)));
-        true
-    }
-    pub(super) fn ack(&mut self, sequence: i64, response: &PbCaptureSettingResponse) -> bool {
-        let Some(id) = self
-            .pending
-            .iter()
-            .find(|(_, p)| p.sequence == sequence)
-            .map(|(id, _)| *id)
-        else {
-            return false;
-        };
-        // Success only says the host accepted the request; the screen report
-        // still decides the observed state. A rejection ends the request now
-        // with the host's reason instead of waiting for a report that the
-        // host will never send.
-        let failures = response
-            .errors
-            .iter()
-            .filter(|error| !display_reply_succeeded(error))
-            .map(|error| format_pb_error(error.clone()))
-            .collect::<Vec<_>>();
-        for error in &response.errors {
-            tracing::debug!(sequence, code = error.error_code, detail = %format_pb_error(error.clone()),
-                "display reply");
-        }
-        if !failures.is_empty() {
-            let pending = self.pending.remove(&id).expect("matched display operation");
-            self.finish(
-                id,
-                &pending,
-                Some((t().features.stream_display_apply_failed)(
-                    &failures.join(t().features.stream_separator),
-                )),
-            );
-        }
-        true
-    }
-
-    /// End requests whose host neither failed nor reported the new state. A
-    /// target that already equals the last report needs no new report.
-    pub(super) fn expire(&mut self, screens: &[ScreenBaseline]) -> bool {
-        let expired = self
-            .pending
-            .iter()
-            .filter(|(_, p)| p.sent.elapsed() >= DISPLAY_REQUEST_TIMEOUT)
-            .map(|(id, _)| *id)
-            .collect::<Vec<_>>();
-        for id in &expired {
-            let pending = self.pending.remove(id).expect("expired display operation");
-            let reached = screens.iter().find(|s| s.id == *id).is_some_and(|screen| {
-                match pending.step {
-                    Step::Resolution(mode, _) => screen.display.current == mode,
-                    Step::Dpi(dpi) => screen.display.current_dpi == dpi,
-                }
-            });
-            let error =
-                (!reached).then(|| t().features.stream_display_report_timeout.to_owned());
-            self.finish(*id, &pending, error);
-        }
-        !expired.is_empty()
     }
 }
 
+/// A refused display request in the interface language, from its reason.
+pub(super) fn refusal_text(reason: &str) -> String {
+    use super::wire::display_reason as r;
+    let text = &t().features;
+    match reason {
+        r::NOT_ALLOWED => text.stream_display_change_not_allowed,
+        r::UPDATING => text.stream_host_updating_settings_locked,
+        r::UNSUPPORTED_MODE => text.stream_resolution_needs_super_screen,
+        r::NO_FREE_TRACK => text.stream_no_video_track,
+        r::LIMIT => text.stream_display_limit,
+        r::NOT_REMOVABLE => text.stream_only_farwing_virtual_screens,
+        r::EXCLUSIVE => text.stream_unavailable_in_super_screen,
+        r::NOT_FOUND => text.stream_display_unavailable,
+        r::INVALID => text.stream_invalid_display_size,
+        _ => text.stream_display_operation_failed,
+    }
+    .into()
+}
+
+/// Take in the host's display list (a push, or the answer to a request);
+/// an older list than the one in effect is dropped.
+pub(super) fn apply_displays(state: &mut StreamControlState, list: wire::Displays) {
+    if list.revision < state.displays_revision {
+        return;
+    }
+    state.displays_revision = list.revision;
+    let previous_screens = std::mem::take(&mut state.screens);
+    state.screens_generation = state.screens_generation.wrapping_add(1);
+    state.current_screen_id = list.active;
+    state.screens = list
+        .displays
+        .into_iter()
+        .filter_map(|display| {
+            Some(ScreenBaseline {
+                display: RemoteDisplayInfo::of(&display)?,
+                id: display.id,
+                name: display.name,
+                primary: display.primary,
+                video_track_index: display.track,
+                fps: display.refresh_hz,
+                width: display.width,
+                height: display.height,
+            })
+        })
+        .collect();
+    if previous_screens.iter().any(|old| {
+        !state.screens.iter().any(|new| {
+            old.id == new.id
+                && old.video_track_index == new.video_track_index
+                && old.display.kind == new.display.kind
+        })
+    }) {
+        state.mouse.pause_layout();
+    }
+    for screen in &state.screens {
+        tracing::debug!(screen_id = screen.id, name = %screen.name,
+            kind = ?screen.display.kind, primary = screen.primary,
+            track = screen.video_track_index, width = screen.width, height = screen.height,
+            preferred = ?screen.display.preferred, "remote screen mapping");
+    }
+    state.topology.observe(&state.screens);
+    state.display_changes.observe(&state.screens);
+    super::settings::refresh_active_screen(state);
+}
+
+/// The host's displays can be changed in this session: its own kind of
+/// device, and the `display` capability in effect.
 pub(super) fn supported(state: &StreamControlState) -> bool {
     state.features.as_ref().is_some_and(|p| p.supports(crate::account::feature_ability::Feature::Host))
         && protocol(state) == StreamControlProtocol::CaptureSetting
+        && state
+            .grants
+            .as_ref()
+            .is_some_and(|grants| grants.iter().any(|cap| cap == farwing_protocol::caps::DISPLAY))
 }
 
-fn resolve(
-    info: &RemoteDisplayInfo,
-    choice: DisplayResolution,
-) -> Result<(RemoteDisplayMode, i32)> {
-    let (mode, kind) = expand_resolution(info, choice)?;
-    anyhow::ensure!(
-        info.modes.contains(&mode),
-        "{}",
-        t().features.stream_resolution_needs_super_screen
-    );
-    Ok((mode, kind))
-}
-
-pub(super) fn expand_resolution(
-    info: &RemoteDisplayInfo,
-    choice: DisplayResolution,
-) -> Result<(RemoteDisplayMode, i32)> {
-    let (mode, kind) = match choice {
-        DisplayResolution::Mode(mode) => (mode, 4),
-        DisplayResolution::Initial => (
-            info.initial
-                .ok_or_else(|| anyhow!("{}", t().features.stream_no_initial_resolution))?,
-            3,
-        ),
-        DisplayResolution::FollowLocal { width, height } => {
-            let mode = info
-                .modes
-                .iter()
-                .find(|m| m.width == width && m.height == height)
-                .copied()
-                .unwrap_or(RemoteDisplayMode { width, height });
-            (mode, 2)
-        }
-    };
-    Ok((mode, kind))
-}
-
-fn validate_dpi(state: &StreamControlState, info: &RemoteDisplayInfo, dpi: u32) -> Result<()> {
-    anyhow::ensure!(
-        state.peer.has(crate::protocol::peer::feature::DISPLAY_CONFIG),
-        "{}",
-        t().features.stream_dpi_settings_unavailable
-    );
-    anyhow::ensure!(
-        info.dpis.contains(&dpi),
-        "{}",
-        t().features.stream_dpi_unsupported
-    );
-    Ok(())
-}
+/// How long a display request may take on the host (adding a display
+/// waits for Windows to bring it up).
+pub(super) const DISPLAY_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl StreamControlHandle {
     pub(crate) fn display_change_pending(&self, screen_id: i32) -> bool {
         lock(&self.shared)
             .display_changes
-            .pending
-            .contains_key(&screen_id)
+            .status
+            .get(&screen_id)
+            .is_some_and(|s| s.pending)
     }
 
     pub(crate) fn pending_display_resolution(&self, screen_id: i32) -> Option<RemoteDisplayMode> {
         let state = lock(&self.shared);
-        state.display_changes.pending.get(&screen_id)?.target_mode
+        state
+            .display_changes
+            .status
+            .get(&screen_id)
+            .filter(|s| s.pending)?
+            .requested_resolution
     }
 
-    /// Stop waiting locally. Already transmitted physical changes are not rolled back.
+    /// Stop waiting locally. An already sent change is not rolled back.
     pub(crate) fn cancel_display_change(&self, screen_id: i32) {
         let mut state = lock(&self.shared);
-        if let Some(pending) = state.display_changes.pending.remove(&screen_id) {
-            state.display_changes.finish(
-                screen_id,
-                &pending,
-                Some(t().features.stream_display_wait_stopped.into()),
-            );
-            if let Some(status) = state.display_changes.status.get_mut(&screen_id) {
-                status.error = false;
-            }
+        if let Some(status) = state
+            .display_changes
+            .status
+            .get_mut(&screen_id)
+            .filter(|s| s.pending)
+        {
+            status.pending = false;
+            status.error = false;
+            status.message = t().features.stream_display_wait_stopped.into();
         }
     }
 
@@ -423,20 +291,10 @@ impl StreamControlHandle {
             "{}",
             t().features.stream_display_windows_only
         );
-        anyhow::ensure!(
-            request.resolution.is_some() || request.dpi.is_some(),
-            "{}",
-            t().features.stream_display_nothing_selected
-        );
-        anyhow::ensure!(
-            request.resolution.is_none() || request.dpi.is_none(),
-            "{}",
-            t().features.stream_resolution_and_dpi_together
-        );
         let screen = state
             .screens
             .iter()
-            .find(|s| s.id == screen_id && s.id >= 0)
+            .find(|s| s.id == screen_id)
             .context(t().features.stream_display_disconnected)?;
         // Tab menus address the clicked screen directly, without
         // selecting it or starting a capture track first.
@@ -449,158 +307,105 @@ impl StreamControlHandle {
             "{}",
             t().features.stream_multi_display_settings_unavailable
         );
-        let resolution = request
-            .resolution
-            .map(|r| resolve(&screen.display, r))
-            .transpose()?;
-        if let Some(dpi) = request.dpi {
-            validate_dpi(&state, &screen.display, dpi)?;
-        }
-        // An explicit choice always sends.
-        // Comparing only a cached value could otherwise suppress a recovery.
-        let step = match resolution {
-            Some((mode, kind)) => Step::Resolution(mode, kind),
-            None => Step::Dpi(request.dpi.expect("one display action required")),
+        let op = match (request.resolution, request.dpi) {
+            (Some(choice), None) => {
+                let mode = screen
+                    .display
+                    .mode_of(choice)
+                    .context(t().features.stream_no_initial_resolution)?;
+                anyhow::ensure!(
+                    screen.display.shows(choice),
+                    "{}",
+                    t().features.stream_resolution_needs_super_screen
+                );
+                DisplayOp::SetMode(wire::SetMode {
+                    id: screen_id,
+                    width: mode.width,
+                    height: mode.height,
+                })
+            }
+            (None, Some(dpi)) => {
+                anyhow::ensure!(
+                    state.peer.has(crate::protocol::peer::feature::DISPLAY_CONFIG),
+                    "{}",
+                    t().features.stream_dpi_settings_unavailable
+                );
+                anyhow::ensure!(
+                    screen.display.dpis.contains(&dpi),
+                    "{}",
+                    t().features.stream_dpi_unsupported
+                );
+                DisplayOp::SetScale(wire::SetScale {
+                    id: screen_id,
+                    scale: dpi,
+                })
+            }
+            (None, None) => bail!("{}", t().features.stream_display_nothing_selected),
+            (Some(_), Some(_)) => bail!("{}", t().features.stream_resolution_and_dpi_together),
         };
-        let sequence = self.send_display_step(&mut state, screen_id, step)?;
-        state.display_changes.observations.remove(&screen_id);
-        let pending = Pending {
-            sent: std::time::Instant::now(),
-            generation: state.protocol_generation,
-            sequence,
-            screens_generation: state.screens_generation,
-            step,
-            target_mode: resolution.map(|(mode, _)| mode),
-            target_choice: request.resolution,
-            target_dpi: request.dpi,
+        let requested_resolution = match &op {
+            DisplayOp::SetMode(mode) => Some(RemoteDisplayMode {
+                width: mode.width,
+                height: mode.height,
+            }),
+            _ => None,
         };
-        if let Some(previous) = state.display_changes.pending.insert(screen_id, pending) {
-            tracing::debug!(
-                screen_id,
-                previous_sequence = previous.sequence,
-                sequence,
-                "explicit display choice replaces the previous observed target"
-            );
-        }
+        tracing::info!(screen_id, ?op, "display setting requested");
+        self.send_request(
+            &mut state,
+            SessionBody::Display(DisplayRequest { op: Some(op) }),
+            super::requests::Waiting::Display(screen_id),
+            DISPLAY_REQUEST_TIMEOUT,
+        )?;
         state.display_changes.status.insert(
             screen_id,
             DisplayChangeStatus {
                 pending: true,
-                message: match step {
-                    Step::Resolution(..) => t().features.stream_changing_resolution,
-                    Step::Dpi(_) => t().features.stream_changing_dpi,
+                message: if requested_resolution.is_some() {
+                    t().features.stream_changing_resolution
+                } else {
+                    t().features.stream_changing_dpi
                 }
                 .into(),
                 error: false,
-                requested_resolution: resolution.map(|(mode, _)| mode),
+                requested_resolution,
                 requested_resolution_choice: request.resolution,
                 requested_dpi: request.dpi,
             },
         );
         Ok(())
     }
-
-    fn send_display_step(
-        &self,
-        state: &mut StreamControlState,
-        id: i32,
-        step: Step,
-    ) -> Result<i64> {
-        let mut request = capture_setting_request(state.baseline)?;
-        request.screen_id = id;
-        // Both ordinary actions start
-        // with the current screen rectangle, including pixel dimensions.
-        let screen = state
-            .screens
-            .iter()
-            .find(|screen| screen.id == id)
-            .context(t().features.stream_display_disconnected)?;
-        request.resolution_width = i32::try_from(screen.display.current.width)?;
-        request.resolution_height = i32::try_from(screen.display.current.height)?;
-        match step {
-            Step::Resolution(mode, kind) => {
-                request.resolution_width = i32::try_from(mode.width)?;
-                request.resolution_height = i32::try_from(mode.height)?;
-                request.resolution_type = kind;
-            }
-            Step::Dpi(dpi) => request.dpi_scale = i32::try_from(dpi)?,
-        }
-        let sequence = state.next_sequence;
-        state.next_sequence = state.next_sequence.wrapping_add(1);
-        tracing::info!(
-            screen_id = id,
-            sequence,
-            width = request.resolution_width,
-            height = request.resolution_height,
-            dpi = request.dpi_scale,
-            resolution_type = request.resolution_type,
-            "display setting requested"
-        );
-        self.outgoing
-            .send(OutgoingControlMessage {
-                annotation_generation: None,
-                sequence,
-                payload: encode_capture_request(sequence, request),
-                protocol: protocol(state),
-                completion: None,
-            })
-            .map_err(|_| anyhow!("{}", t().features.stream_display_sender_stopped))?;
-        Ok(sequence)
-    }
-
-    pub(super) fn drive_display_changes(&self, state: &mut StreamControlState) {
-        state.display_changes.report_generation = state.screens_generation;
-        let operations = std::mem::take(&mut state.display_changes.pending);
-        for (id, pending) in operations {
-            let screen = state.screens.iter().find(|s| s.id == id);
-            let failure = if pending.generation != state.protocol_generation
-                || ensure_ready(state).is_err()
-            {
-                Some(t().features.stream_display_connection_changed.into())
-            } else if screen.is_none() {
-                Some(t().features.stream_display_disconnected.into())
-            } else {
-                None
-            };
-            if let Some(failure) = failure {
-                state.display_changes.finish(id, &pending, Some(failure));
-                continue;
-            }
-            let info = &screen.expect("screen checked").display;
-            let matches = match pending.step {
-                Step::Resolution(mode, _) => info.current == mode,
-                Step::Dpi(dpi) => info.current_dpi == dpi,
-            };
-            if state.screens_generation > pending.screens_generation && matches {
-                tracing::info!(
-                    screen_id = id,
-                    sequence = pending.sequence,
-                    "display setting confirmed by remote screen state"
-                );
-                state.display_changes.finish(id, &pending, None);
-            } else {
-                state.display_changes.pending.insert(id, pending);
-            }
-        }
-        state.display_changes.observe_reports(
-            state.protocol_generation,
-            state.screens_generation,
-            &state.screens,
-        );
-        state.display_changes.refresh_completed(&state.screens);
-        state
-            .display_changes
-            .status
-            .retain(|id, _| state.screens.iter().any(|s| s.id == *id));
-    }
 }
 
-/// Host display replies: 0 ok, -3/-6 adjusted notices, -5 carries a nested
-/// result whose `error_code` 0 means success. Anything else is a rejection.
-fn display_reply_succeeded(error: &PbError) -> bool {
-    matches!(error.error_code, 0 | -3 | -6)
-        || (error.error_code == -5
-            && serde_json::from_str::<serde_json::Value>(&error.error_detail)
-                .ok()
-                .is_some_and(|v| v.get("error_code").and_then(|c| c.as_i64()) == Some(0)))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(kind: DisplayKind) -> RemoteDisplayInfo {
+        let mode = |width, height| RemoteDisplayMode { width, height };
+        RemoteDisplayInfo {
+            kind,
+            preferred: None,
+            current: mode(1920, 1080),
+            initial: Some(mode(3840, 2160)),
+            modes: vec![mode(1920, 1080), mode(3840, 2160)],
+            current_dpi: 100,
+            recommended_dpi: 150,
+            dpis: vec![100, 150],
+            hdr: false,
+        }
+    }
+
+    #[test]
+    fn only_virtual_displays_take_unlisted_sizes() {
+        let local = DisplayResolution::FollowLocal {
+            width: 2560,
+            height: 1600,
+        };
+        assert!(!info(DisplayKind::Physical).shows(local));
+        assert!(info(DisplayKind::Physical).shows(DisplayResolution::Initial));
+        assert!(info(DisplayKind::Virtual).shows(local));
+        assert!(info(DisplayKind::Exclusive).shows(local));
+        assert!(!info(DisplayKind::Fallback).shows(local));
+    }
 }

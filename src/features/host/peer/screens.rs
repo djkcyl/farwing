@@ -68,10 +68,10 @@ impl Inventory {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ScreenInfo {
     pub screen: capture::Screen,
-    pub initial: capture::Screen,
+    /// The mode before this session changed the layout.
+    pub initial: Option<(u32, u32)>,
     pub target: Option<Target>,
-    pub kind: i32,
-    pub resolution_type: i32,
+    pub kind: crate::features::stream_control::wire::DisplayKind,
 }
 /// Whether the controller's session takes media: its HELLO was answered and
 /// the screens were published. The capture thread waits on it while the
@@ -153,18 +153,15 @@ pub(crate) struct Screens {
     inventory_revision: u64,
     pub displays: Arc<crate::features::host::displays::Session>,
     pub slots: Vec<Slot>,
-    pub registered: Vec<usize>,
     pub(super) reports: Arc<Reports>,
     connection: std::sync::Weak<RTCPeerConnection>,
     lease: Lease,
     cancel: CancellationToken,
     connected: Arc<AtomicBool>,
     base: VideoConfig,
-    originals: BTreeMap<i32, capture::Screen>,
     source_generation: u16,
     initial: Option<capture::Screen>,
     deferred: Option<Deferred>,
-    before_super: Option<actions::Running>,
     headless: headless::State,
     receiver: crate::features::host::parameters::ReceiverCap,
     /// When the controller's receive statistics were last logged.
@@ -255,10 +252,7 @@ impl Screens {
         if let Some(id) = current {
             return self.start(id).await;
         }
-        let index = *self
-            .registered
-            .first()
-            .context(t().features.peer_no_video_track)?;
+        let index = 0;
         self.slots[index].suspended = self.initial.clone();
         self.slots[index].awaiting_source = true;
         self.maintain_headless().await?;
@@ -315,21 +309,6 @@ impl Screens {
         self.refresh()?;
         self.reports.notify();
         Ok(Some(prepared.screen.id))
-    }
-    pub(crate) fn set_fps_limit(&mut self, limit: u32) {
-        self.base.fps_limit = limit;
-        self.base.fps = self
-            .base
-            .requested_fps
-            .min(limit)
-            .min(self.base.maximum_fps);
-        for slot in &self.slots {
-            let mut config = lock(&slot.config);
-            config.fps_limit = limit;
-            config.fps = config.requested_fps.min(limit).min(config.maximum_fps);
-            config.revision = config.revision.wrapping_add(1);
-        }
-        self.reports.notify();
     }
     pub(crate) fn set_media_default(&mut self, config: VideoConfig) {
         self.base = config;
@@ -399,18 +378,15 @@ impl Screens {
             inventory_revision: 0,
             displays,
             slots,
-            registered: vec![0],
             reports,
             connection: Arc::downgrade(&connection),
             lease,
             cancel,
             connected,
             base: initial,
-            originals: BTreeMap::new(),
             source_generation: 0,
             initial: selected.clone(),
             deferred,
-            before_super: None,
             headless: Default::default(),
             receiver: Default::default(),
             stats_logged: None,
@@ -449,18 +425,12 @@ impl Screens {
                         })
                 })
                 .cloned();
-            let (kind, resolution_type) = self.displays.annotate(&mut screen, &mut target)?;
-            let initial = self
-                .originals
-                .entry(screen.id)
-                .or_insert_with(|| self.displays.initial_screen(&screen))
-                .clone();
+            let kind = self.displays.annotate(&mut screen, &mut target)?;
             catalog.push(ScreenInfo {
+                initial: self.displays.initial_size(&screen),
                 screen,
-                initial,
                 target,
                 kind,
-                resolution_type,
             });
         }
         self.inventory_revision = self.inventory_revision.wrapping_add(1);
@@ -477,40 +447,52 @@ impl Screens {
             .iter()
             .find(|s| s.screen.id == id)
             .cloned()
-            .context(t().features.screen_unavailable)
+            .ok_or_else(|| {
+                crate::features::stream_control::publisher::refuse(
+                    farwing_protocol::peer::error_code::NOT_FOUND,
+                    crate::features::stream_control::wire::display_reason::NOT_FOUND,
+                )
+            })
+    }
+    /// This participant's view of the displays.
+    pub(crate) fn display_list(&self) -> crate::features::stream_control::wire::Displays {
+        let revision = *self.reports.changed.borrow();
+        let catalog = lock(&self.reports.catalog).clone();
+        let requested = self.reports.current.load(Ordering::Acquire);
+        let active = if catalog.iter().any(|s| s.screen.id == requested) {
+            requested
+        } else {
+            catalog.first().map_or(-1, |s| s.screen.id)
+        };
+        let tracks: BTreeMap<_, _> = self
+            .reports
+            .media()
+            .into_iter()
+            .filter(|(_, state)| state.capturing)
+            .map(|(index, state)| (state.screen.id, index))
+            .collect();
+        crate::features::stream_control::publisher::display_list(&catalog, &tracks, active, revision)
     }
     pub(crate) fn active_slot(&self, id: i32) -> Option<usize> {
         self.slots
             .iter()
             .position(|slot| slot.screen.as_ref().is_some_and(|s| s.id == id))
     }
+    /// A track that shows nothing: preferably one not keeping a stopped
+    /// display either.
     pub(crate) fn available_slot(&self) -> Option<usize> {
-        self.registered
-            .iter()
-            .copied()
-            .find(|&index| self.slots[index].screen.is_none())
-    }
-    pub(crate) async fn register(&mut self, indices: &[i32]) -> Result<()> {
-        ensure!(
-            indices.len() <= TRACK_COUNT
-                && indices.iter().all(|i| (0..TRACK_COUNT as i32).contains(i)),
-            "{}",
-            t().features.peer_track_pool_invalid
-        );
-        let mut registered: Vec<_> = indices.iter().map(|i| *i as usize).collect();
-        registered.sort_unstable();
-        registered.dedup();
-        self.registered = registered;
-        for (index, slot) in self.slots.iter().enumerate() {
-            lock(&slot.config).sending = self.registered.contains(&index);
-            if !self.registered.contains(&index) {
-                slot.transport.pause();
-            }
-        }
-        self.reports.notify();
-        Ok(())
+        let free = |index: &usize| self.slots[*index].screen.is_none();
+        (0..self.slots.len())
+            .filter(free)
+            .find(|&index| self.slots[index].suspended.is_none())
+            .or_else(|| (0..self.slots.len()).find(free))
     }
     pub(crate) async fn start(&mut self, id: i32) -> Result<()> {
+        self.start_on(id, None).await
+    }
+    /// Capture display `id` on `track`, in place of what it shows; `None`:
+    /// its own track, or a free one.
+    pub(crate) async fn start_on(&mut self, id: i32, track: Option<usize>) -> Result<()> {
         ensure!(
             self.lease.requested() && !self.cancel.is_cancelled(),
             "{}",
@@ -528,7 +510,7 @@ impl Screens {
             {
                 let mut config = lock(&self.slots[index].config);
                 config.capturing = true;
-                config.sending = self.registered.contains(&index);
+                config.sending = true;
                 drop(config);
                 self.reports.current.store(id, Ordering::Release);
                 self.reports.notify();
@@ -537,17 +519,19 @@ impl Screens {
             let config = *lock(&self.slots[index].config);
             return self.start_at(index, screen, config).await;
         }
-        let index = self
-            .slots
-            .iter()
-            .enumerate()
-            .find(|(index, s)| {
-                self.registered.contains(index) && s.suspended.as_ref().is_some_and(|s| s.id == id)
+        let index = track
+            .or_else(|| {
+                self.slots
+                    .iter()
+                    .position(|s| s.suspended.as_ref().is_some_and(|s| s.id == id))
             })
-            .map(|(index, _)| index)
             .or_else(|| self.available_slot())
-            .or_else(|| (self.registered.len() == 1).then(|| self.registered[0]))
-            .context(t().features.peer_no_free_track)?;
+            .ok_or_else(|| {
+                crate::features::stream_control::publisher::refuse(
+                    farwing_protocol::peer::error_code::BUSY,
+                    crate::features::stream_control::wire::display_reason::NO_FREE_TRACK,
+                )
+            })?;
         let config = if self.slots[index]
             .suspended
             .as_ref()
@@ -591,7 +575,7 @@ impl Screens {
         slot.suspended = None;
         slot.awaiting_source = false;
         config.capturing = true;
-        config.sending = self.registered.contains(&index);
+        config.sending = true;
         *lock(&slot.config) = config;
         self.source_generation = self.source_generation.wrapping_add(1);
         let (tx, mut rx) = watch::channel(Published {
@@ -665,18 +649,26 @@ impl Screens {
         *lock(&self.reports.pointers[index]) = None;
         self.reports.notify();
     }
+    /// The controller stops capturing `screen` (-1: everything; it then
+    /// only listens).
     pub(crate) async fn stop(&mut self, screen: i32) -> Result<()> {
         ensure!(
             self.lease.requested(),
             "{}",
             t().features.peer_lease_expired
         );
+        if screen == -1 {
+            self.watching(false);
+        }
+        self.halt(screen).await
+    }
+    /// Stop capturing `screen` (-1: every screen); the slots keep it.
+    async fn halt(&mut self, screen: i32) -> Result<()> {
         self.headless.stop(screen);
         self.stop_media(screen).await
     }
     async fn stop_media(&mut self, screen: i32) -> Result<()> {
         if screen == -1 {
-            self.watching(false);
             for slot in &mut self.slots {
                 slot.awaiting_source = false;
             }
@@ -742,18 +734,7 @@ impl Screens {
                 }
                 self.stop_at(index).await;
             }
-            if self.slots[index].awaiting_source && !self.headless.owns_slot(index) {
-                if let Some(old) = self.slots[index].suspended.clone() {
-                    if let Ok(info) = self.info(old.id) {
-                        // A returning target must have the same monitor identity; never
-                        // attach an unrelated monitor which inherited DISPLAYn.
-                        if info.screen.identity == old.identity && old.identity.is_some() {
-                            let config = *lock(&self.slots[index].config);
-                            self.start_at(index, info.screen, config).await?;
-                        }
-                    }
-                }
-            }
+            self.reattach(index).await?;
         }
         if self.active_slot(selected).is_some() {
             self.reports.current.store(selected, Ordering::Release);
@@ -771,6 +752,23 @@ impl Screens {
                 .all(|s| s.worker.is_none() && !s.awaiting_source)
         {
             self.cancel.cancel();
+        }
+        Ok(())
+    }
+    /// A track waiting for its display resumes once that display is back.
+    async fn reattach(&mut self, index: usize) -> Result<()> {
+        if !self.slots[index].awaiting_source || self.headless.owns_slot(index) {
+            return Ok(());
+        }
+        if let Some(old) = self.slots[index].suspended.clone()
+            && let Ok(info) = self.info(old.id)
+            // A returning target must have the same monitor identity; never
+            // attach an unrelated monitor which inherited DISPLAYn.
+            && info.screen.identity == old.identity
+            && old.identity.is_some()
+        {
+            let config = *lock(&self.slots[index].config);
+            self.start_at(index, info.screen, config).await?;
         }
         Ok(())
     }

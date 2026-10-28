@@ -184,26 +184,27 @@ export function errorBody(code: string, reason = ''): Uint8Array {
 
 // SESSION ------------------------------------------------------------------
 
-export interface Rect {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}
+/// What a display is (`wire.rs` `DisplayKind`).
+export const DisplayKind = { PHYSICAL: 0, VIRTUAL: 1, FALLBACK: 2, FOREIGN: 3, EXCLUSIVE: 4 } as const;
 
+/// One of the host's displays (SESSION `Displays`).
 export interface Screen {
   id: number;
-  fps: number;
-  current: Rect;
-  primary: boolean;
+  kind: number;
   name: string;
-  dpi: number;
+  primary: boolean;
+  width: number;
+  height: number;
+  /// Refresh rate; 0 when unknown.
+  fps: number;
   /// The `video_N` track carrying this screen; -1 when not captured.
   track: number;
 }
 
 export interface Screens {
+  revision: number;
   screens: Screen[];
+  /// This viewer's display; -1 none.
   current: number;
 }
 
@@ -217,7 +218,6 @@ export type SessionMessage =
   | { kind: 'screens'; value: Screens }
   | { kind: 'quality'; value: Quality }
   | { kind: 'capture_setting_result'; errors: number[] }
-  | { kind: 'display_result'; code: number }
   /** `refusal`: `src/features/stream_control/control_turn.rs` `refusal`; `holder`: who holds control. */
   | { kind: 'turn_result'; held: boolean; refusal: number; holder: string }
   | { kind: 'microphone_result'; code: number }
@@ -242,15 +242,6 @@ export interface Forward {
   audio: string;
 }
 
-function rect(f: Fields | undefined): Rect {
-  return {
-    left: f?.int32(1) ?? 0,
-    top: f?.int32(2) ?? 0,
-    width: f?.int32(3) ?? 0,
-    height: f?.int32(4) ?? 0,
-  };
-}
-
 export function parseSession(body: Uint8Array): SessionMessage {
   const f = new Fields(body);
   const screens = f.message(1);
@@ -258,15 +249,17 @@ export function parseSession(body: Uint8Array): SessionMessage {
     return {
       kind: 'screens',
       value: {
-        current: screens.int32(2),
-        screens: screens.messages(1).map((s) => ({
+        revision: screens.uint32(1),
+        current: screens.int32(3),
+        screens: screens.messages(2).map((s) => ({
           id: s.int32(1),
-          fps: s.int32(2),
-          current: rect(s.message(4)),
-          primary: s.bool(7),
-          name: s.string(10),
-          dpi: s.message(9)?.int32(1) ?? 0,
-          track: s.has(12) ? s.int32(12) : 0,
+          kind: s.int32(2),
+          name: s.string(3),
+          primary: s.bool(4),
+          width: s.uint32(5),
+          height: s.uint32(6),
+          fps: s.uint32(7),
+          track: s.int32(15),
         })),
       },
     };
@@ -286,8 +279,6 @@ export function parseSession(body: Uint8Array): SessionMessage {
   if (result) {
     return { kind: 'capture_setting_result', errors: result.messages(1).map((e) => e.int32(1)) };
   }
-  const display = f.message(21);
-  if (display) return { kind: 'display_result', code: display.int32(1) };
   const turn = f.message(23);
   if (turn) return { kind: 'turn_result', held: turn.bool(1), refusal: turn.int32(3), holder: turn.string(4) };
   const microphone = f.message(22);
@@ -354,8 +345,12 @@ export function videoAcknowledgement(ssrc: number, rtpTimestamp: number): Uint8A
 }
 
 /// Start (or stop) capturing a screen; pushed, never answered (§4.6).
-export function captureControl(screenId: number, start: boolean): Uint8Array {
-  return new Writer().message(5, new Writer().int(1, screenId).int(2, start)).finish();
+/// SESSION `Capture` (a request): start or stop capturing a screen, on
+/// `track` in place of what it shows.
+export function captureControl(screenId: number, start: boolean, track?: number): Uint8Array {
+  const capture = new Writer().int(1, screenId).int(2, start);
+  if (track !== undefined) capture.intAlways(3, track);
+  return new Writer().message(5, capture).finish();
 }
 
 export interface CaptureSetting {

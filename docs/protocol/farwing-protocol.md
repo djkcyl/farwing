@@ -585,7 +585,7 @@ POST /sessions        session.start            首个 rtc.answer
 
 | 标签 | 可靠性 | SCTP 优先级 | 帧类型 |
 |------|--------|------------|--------|
-| `farwing.control.v2` | 有序可靠；协商 FCT 后经 FCT（§5.6） | 高 | HELLO、INPUT、POINTER、CURSOR；以及主控声明 `display.config` 时被控的 SESSION `Screens` 推送、主控的 SESSION `VideoFeedback`（§6.6） |
+| `farwing.control.v2` | 有序可靠；协商 FCT 后经 FCT（§5.6） | 高 | HELLO、INPUT、POINTER、CURSOR；以及主控的 SESSION `VideoFeedback`、`ForwardStatus`（§6.6、§6.7） |
 | `farwing.session.v2` | 有序可靠 | 中 | SESSION、AUDIO、HOST_EVENT、CLIPBOARD、FILE、DRAG、ANNOTATION、DIAGNOSTICS、PERMISSIONS、PARTICIPANTS |
 | `farwing.bulk.v2` | 有序可靠 | 高 | TRANSFER、FLOW（文件、剪贴板、拖放、诊断包共用） |
 | `farwing.tunnel.v2` | 有序可靠 | 低 | PORT、FLOW（`channel = TUNNEL`） |
@@ -604,7 +604,7 @@ POST /sessions        session.start            首个 rtc.answer
 | `TOUCH` | 0x0104 | control（FCT） | C→H 推送 | `Touch` | 触摸：本参与者此刻的全部触点，每个带自己的阶段；空表取消全部 |
 | `PEN` | 0x0105 | control（FCT） | C→H 推送 | `Pen` | 笔：1–16 个样本（压力、倾斜、旋转、笔杆键、橡皮擦、悬停） |
 | `POINTER` | 0x0106 | control | C→H 推送 | `Pointer` | 参与者指针（观看者也发送，不注入输入） |
-| `SESSION` | 0x0201 | session（`Screens` 见 §5.3） | 双向 | `SessionMessage` | 屏幕、画质、采集、显示设置、麦克风、接收统计 |
+| `SESSION` | 0x0201 | session | 双向 | `SessionMessage` | 显示器、画质、采集、显示设置、麦克风、接收统计 |
 | `AUDIO` | 0x0202 | session | 双向 | JSON | 桌面声音码率 |
 | `HOST_EVENT` | 0x0203 | session | H→C 推送 | `HostEvent` | 被控更新、重启、睡眠、关机、会话切换、显示设置变化 |
 | `CLIPBOARD` | 0x0301 | session | 双向 | `ClipboardMessage` | 剪贴板控制面，内容走 TRANSFER |
@@ -662,7 +662,7 @@ v1 的 `MOUSE_POLICY`、`AUDIO_QUALITY`、`FILE_BLOCK`、`DRAG_DATA`（0x0502）
 
 消息字段见 [peer-messages.md](peer-messages.md)。
 
-- **SESSION**：请求带非 0 的 `request id`，被控以同一 id 并置 `RESPONSE` 回复；推送不回复。推送 `Screens`、`Quality`、`Microphone`、`ClipboardFiles`（H→C）与 `Capture`、`ReceiverStats`（C→H，`ReceiverStats` 每秒一次）。请求 `CaptureSetting`、`CreateVirtualDisplay`、`RemoveVirtualDisplay`、`EnterExclusive`、`QuitExclusive`、`VideoTracks`、`MicrophonePolicy`、`ControlTurn`（C→H）。显示变更需要 `display` 能力，麦克风需要 `microphone` 能力，获得控制权需要 `control` 能力。被控在屏幕列表或任一屏幕变化时发送 `Screens`（内容相同不重发）。
+- **SESSION**：请求带非 0 的 `request id`，被控以同一 id 并置 `RESPONSE` 回复；推送不回复。推送 `Displays`、`Quality`、`Microphone`、`ClipboardFiles`（H→C）与 `ReceiverStats`（C→H，每秒一次）。请求 `Capture`、`Display`（回复为请求完成后的 `Displays`，拒绝时 `PeerError` 带原因键）、`CaptureSetting`、`MicrophonePolicy`、`ControlTurn`（C→H）。显示变更需要 `display` 能力，麦克风需要 `microphone` 能力，获得控制权需要 `control` 能力。被控在显示器列表、任一显示器或视频轨对应关系变化时发送 `Displays`（内容相同不重发）。
 - **INPUT**：键按物理位置传 HID usage；锁定键状态以 `LockState` 纠正；系统命令只由主控菜单显式发送，被控先释放该参与者按住的键和按钮再执行。有键按下时主控在 50 ms 内没有发出任何 INPUT 帧就发一次 `Heartbeat`；被控在 `max(150 ms, 3×RTT + 50 ms)`（RTT 上限按 3 秒计，无 RTT 时取 150 ms）内收不到该参与者的 INPUT 即释放其按住的键。
 - **多人**：每位参与者各自一个 PeerConnection。同一时刻只有一位参与者持有控制权：开启键鼠控制时以 SESSION `ControlTurn` 获取，先到先得（重连后的自动恢复只在独自一人时生效）；只在持有者关闭键鼠控制、离开或失去 `control` 能力时释放。被控只注入持有者的键鼠，其他人的键鼠被丢弃。其他参与者共用一路多人观看流（1080p、60 fps、观影模式，见 v2-design §4.4）。被控以 `PARTICIPANTS` 广播列表与控制权持有者（列表或持有者变化时），以 `CURSOR`（`pointers = true`）把其他参与者的指针转发给每位参与者（接收方空闲 3 秒后淡出）。
 - **PERMISSIONS**：握手完成后与生效能力变化时由被控发送（服务端 `session.permissions`、被控本机开关或“禁止控制”）；生效能力 = 授予能力（本账号设备与好友由服务端给出，直连时由被控按缓存；受信任设备为被控为它记录的能力；访客为访客默认权限）∩ 被控本机上限。主控据此启停文件、剪贴板等功能。
@@ -681,7 +681,7 @@ v1 的 `MOUSE_POLICY`、`AUDIO_QUALITY`、`FILE_BLOCK`、`DRAG_DATA`（0x0502）
 
 ### 6.1 SDP 结构
 
-- 主控 offer：`audio_0`（Opus，sendrecv，用于麦克风上行与桌面声音下行，即使不发声也带 msid/SSRC）+ 5 个 recvonly 视频 m-line + `m=application`（数据通道）。被控在 answer 中以 msid `video_N` 标明轨道序号，SESSION `Screens` 中的 `video_track_index` 与之对应；主控用 `VideoTracks` 声明已协商的轨道（0..4）。
+- 主控 offer：`audio_0`（Opus，sendrecv，用于麦克风上行与桌面声音下行，即使不发声也带 msid/SSRC）+ 5 个 recvonly 视频 m-line + `m=application`（数据通道）。被控在 answer 中以 msid `video_N` 标明轨道序号，SESSION `Displays` 中的 `track` 与之对应；五条轨道都可使用。
 - 会话级属性：`a=extmap-allow-mixed`、`a=x-farwing-identity`、`a=x-farwing-pake`（§2.4）、`a=x-farwing-nat`（§7.2）。`m=application` 段：`a=max-message-size:524288`、`a=x-farwing-fct:1`。
 
 ### 6.2 负载类型

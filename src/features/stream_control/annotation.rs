@@ -712,10 +712,7 @@ impl StreamControlHandle {
     }
     pub(crate) fn annotation_tick(&self) {
         let mut s = lock(&self.shared);
-        {
-            let state = &mut *s;
-            state.display_changes.expire(&state.screens);
-        }
+        self.expire_requests(&mut s);
         let timed_out = s.annotation.pending.values().find(|p| {
             (p.reply == Reply::Native || matches!(p.effect, Pending::Toggle(_)))
                 && p.sent.elapsed() >= Duration::from_secs(3)

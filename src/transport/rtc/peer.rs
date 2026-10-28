@@ -548,35 +548,6 @@ impl NativePeer {
         let remote_sdp = sdp.clone();
         let answer = RTCSessionDescription::answer(sdp).context("parse remote SDP answer")?;
         let microphone_encoding = crate::media::audio::encoder::remote_config(&answer)?;
-        // Receiver::tracks is populated only after async transport startup.
-        // Register the negotiated MSIDs, not just tracks that already sent RTP.
-        let mut indexes = Vec::new();
-        for media in answer.unmarshal()?.media_descriptions {
-            if media.media_name.media != "video" || media.media_name.port.value == 0 {
-                continue;
-            }
-            for attribute in media.attributes {
-                let Some(value) = attribute.value else {
-                    continue;
-                };
-                let words: Vec<_> = value.split_whitespace().collect();
-                let id = if attribute.key == "msid" {
-                    words.get(1)
-                } else if attribute.key == "ssrc"
-                    && words.get(1).is_some_and(|word| word.starts_with("msid:"))
-                {
-                    words.get(2)
-                } else {
-                    None
-                };
-                if let Some(index) = id
-                    .and_then(|id| id.strip_prefix("video_"))
-                    .and_then(|id| id.parse::<i32>().ok())
-                {
-                    indexes.push(index);
-                }
-            }
-        }
         self.core
             .connection
             .set_remote_description(answer)
@@ -587,9 +558,6 @@ impl NativePeer {
             .stream_control
             .microphone()
             .configure(microphone_encoding);
-        self.data_channels
-            .stream_control
-            .set_available_video_tracks(indexes);
         let control = self.data_channels.stream_control.clone();
         self.core.activate_control(
             mixed_kcp_version,

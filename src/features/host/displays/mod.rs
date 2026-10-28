@@ -25,6 +25,7 @@ use std::{
     time::Duration,
 };
 use store::{Journal, Preference, Virtual};
+use crate::features::stream_control::wire::DisplayKind;
 
 struct Heartbeat {
     driver: Arc<Mutex<Driver>>,
@@ -80,9 +81,6 @@ struct State {
     path: PathBuf,
     preferences: Preference,
     preference_path: Option<PathBuf>,
-    /// The resolution choice per physical monitor (identity) while this
-    /// host runs.
-    physical: std::collections::HashMap<String, i32>,
     driver: Option<Heartbeat>,
     fallback_pin: Option<Driver>,
     render_adapter: Option<u64>,
@@ -152,7 +150,6 @@ impl Session {
                 },
                 preferences,
                 preference_path,
-                physical: Default::default(),
                 driver: None,
                 fallback_pin: None,
                 render_adapter: None,
@@ -194,11 +191,13 @@ impl Session {
         .await
         .context(t().features.screen_worker_interrupted)?
     }
+    /// What `screen` is; a display this session added gets its stable ID
+    /// and the modes it was made with.
     pub(crate) fn annotate(
         &self,
         screen: &mut capture::Screen,
         target: &mut Option<Target>,
-    ) -> Result<(i32, i32)> {
+    ) -> Result<DisplayKind> {
         let state = lock(&self.state);
         let Some(owned) = state
             .journal
@@ -206,19 +205,11 @@ impl Session {
             .iter()
             .find(|o| o.identity.as_ref() == screen.identity.as_ref() && o.identity.is_some())
         else {
-            return Ok((
-                i32::from(
-                    target
-                        .as_ref()
-                        .is_some_and(|t| t.virtual_provider.is_some()),
-                ),
-                screen
-                    .identity
-                    .as_ref()
-                    .and_then(|identity| state.physical.get(identity))
-                    .copied()
-                    .unwrap_or(1),
-            ));
+            return Ok(match target.as_ref().and_then(|t| t.virtual_provider.as_ref()) {
+                None => DisplayKind::Physical,
+                Some(display::topology::VirtualProvider::Foreign) => DisplayKind::Foreign,
+                Some(display::topology::VirtualProvider::Farwing) => DisplayKind::Fallback,
+            });
         };
         screen.id = display::source_id(&format!("farwing-virtual/{}", owned.guid))?;
         screen.render_adapter = state.render_adapter;
@@ -237,7 +228,11 @@ impl Session {
                 }
             }
         }
-        Ok((if owned.kind == 2 { 2 } else { 1 }, owned.resolution_type))
+        Ok(if owned.kind == 2 {
+            DisplayKind::Exclusive
+        } else {
+            DisplayKind::Virtual
+        })
     }
     pub(crate) fn owns(&self, identity: &str) -> bool {
         lock(&self.state)
@@ -263,46 +258,36 @@ impl Session {
         }
         Ok(())
     }
-    /// A virtual screen for participant `caller`. The layout is shared, but
-    /// adding to it is the caller's own `display` grant: this session's
-    /// lease carries the first participant's grants.
+    /// A virtual screen of `size` and `scale` (0: the primary's) for
+    /// participant `caller`. The layout is shared, but adding to it is the
+    /// caller's own `display` grant: this session's lease carries the first
+    /// participant's grants.
     pub(crate) async fn create(
         &self,
         caller: &Lease,
-        resolutions: Vec<(u32, u32)>,
+        size: (u32, u32),
+        scale: u32,
     ) -> Result<capture::Screen> {
-        ensure!(
-            caller.display_expansion_allowed(),
-            "{}",
-            t().features.screen_add_virtual_not_allowed
-        );
+        use crate::features::stream_control::{publisher::refuse, wire::display_reason};
+        use farwing_protocol::peer::error_code;
+        if !caller.display_expansion_allowed() {
+            return Err(refuse(error_code::FORBIDDEN, display_reason::NOT_ALLOWED));
+        }
+        validate_modes(&[size])?;
         self.run(move |state, lease| {
-            ensure!(
-                state.journal.super_baseline.is_none(),
-                "{}",
-                t().features.screen_extend_in_super
-            );
+            if state.journal.super_baseline.is_some() {
+                return Err(refuse(error_code::BUSY, display_reason::EXCLUSIVE));
+            }
             let screens = capture::screens()?;
-            ensure!(
-                screens.len() < 5
-                    && state
-                        .journal
-                        .owned
-                        .iter()
-                        .filter(|o| o.kind == 1)
-                        .count()
-                        < 3,
-                "{}",
-                t().features.screen_limit_reached
-            );
+            if screens.len() >= 5 || state.journal.owned.iter().filter(|o| o.kind == 1).count() >= 3 {
+                return Err(refuse(error_code::BUSY, display_reason::LIMIT));
+            }
             let primary = screens.iter().find(|s| s.primary).or(screens.first());
-            let size = primary.map_or((1920, 1080), |s| (s.width, s.height));
-            let dpi = primary.and_then(|s| s.dpi_scale).unwrap_or(100);
-            let mut modes = resolutions;
-            modes.push(size);
-            modes.sort_unstable();
-            modes.dedup();
-            validate_modes(&modes)?;
+            let dpi = if scale > 0 {
+                scale
+            } else {
+                primary.and_then(|s| s.dpi_scale).unwrap_or(100)
+            };
             let spec = Virtual {
                 guid: uuid::Uuid::new_v4().to_string(),
                 identity: None,
@@ -311,8 +296,7 @@ impl Session {
                 hz: 144,
                 dpi,
                 kind: 1,
-                resolution_type: 1,
-                modes,
+                modes: vec![size],
                 layout: None,
             };
             state.create(spec, lease, false)
@@ -432,35 +416,12 @@ impl Session {
         width: u32,
         height: u32,
         dpi: u32,
-        use_saved: bool,
     ) -> Result<capture::Screen> {
-        self.run(move |state, lease| state.enter_super(width, height, dpi, use_saved, lease))
+        self.run(move |state, lease| state.enter_super(width, height, dpi, lease))
             .await
     }
     pub(crate) async fn quit_super(&self) -> Result<()> {
         self.run(|state, _| state.quit_super(true)).await
-    }
-    pub(crate) async fn resolution_choice(&self, identity: String, kind: i32) -> Result<()> {
-        ensure!(
-            (2..=4).contains(&kind),
-            "{}",
-            t().features.screen_resolution_choice_invalid
-        );
-        self.run(move |state, _| {
-            if let Some(owned) = state
-                .journal
-                .owned
-                .iter_mut()
-                .find(|o| o.identity.as_deref() == Some(identity.as_str()))
-            {
-                owned.resolution_type = kind;
-                state.save()?;
-                state.update_preferences()
-            } else {
-                state.remember_physical(&identity, Some(kind))
-            }
-        })
-        .await
     }
     pub(crate) async fn set_resolution(
         &self,
@@ -497,7 +458,6 @@ impl Session {
                 return Err(error);
             }
             state.applied()?;
-            state.remember_physical(&target.identity, None)?;
             find_screen(&target.identity)
         })
         .await
@@ -516,7 +476,6 @@ impl Session {
                 owned.dpi = dpi;
             }
             state.applied()?;
-            state.remember_physical(&target.identity, None)?;
             state.update_preferences()
         })
         .await
@@ -658,20 +617,10 @@ impl State {
         width: u32,
         height: u32,
         dpi: u32,
-        use_saved: bool,
         lease: &Lease,
     ) -> Result<capture::Screen> {
-        let size = if use_saved {
-            self.preferences.super_size.unwrap_or((width, height))
-        } else {
-            (width, height)
-        };
+        let size = (width, height);
         validate_modes(&[size])?;
-        let dpi = if use_saved && self.preferences.super_dpi > 0 {
-            self.preferences.super_dpi
-        } else {
-            dpi
-        };
         if let Some(owned) = self.journal.owned.iter().find(|o| o.kind == 2).cloned() {
             return self.resize_virtual(
                 owned
@@ -695,13 +644,6 @@ impl State {
             hz: 144,
             dpi,
             kind: 2,
-            resolution_type: if use_saved
-                && (2..=4).contains(&self.preferences.super_resolution_type)
-            {
-                self.preferences.super_resolution_type
-            } else {
-                4
-            },
             modes: vec![size],
             layout: None,
         };
@@ -719,7 +661,6 @@ impl State {
             }
         };
         self.preferences.super_enabled = true;
-        self.preferences.super_size = Some(size);
         self.preferences.super_dpi = screen.dpi_scale.unwrap_or(dpi);
         self.save_preferences()?;
         Ok(screen)
@@ -766,26 +707,9 @@ impl State {
             .cloned()
             .collect();
         if let Some(super_screen) = self.journal.owned.iter().find(|o| o.kind == 2) {
-            self.preferences.super_size = Some((super_screen.width, super_screen.height));
             self.preferences.super_dpi = super_screen.dpi;
-            self.preferences.super_resolution_type = super_screen.resolution_type;
         }
         self.save_preferences()
-    }
-    fn remember_physical(&mut self, identity: &str, choice: Option<i32>) -> Result<()> {
-        if self.restoring
-            || self
-                .journal
-                .owned
-                .iter()
-                .any(|o| o.identity.as_deref() == Some(identity))
-        {
-            return Ok(());
-        }
-        let resolution_type = choice
-            .unwrap_or_else(|| self.physical.get(identity).copied().unwrap_or(1));
-        self.physical.insert(identity.into(), resolution_type);
-        Ok(())
     }
     fn applied(&mut self) -> Result<()> {
         // Only poll idempotent observations. A successful IOCTL/display request

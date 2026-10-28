@@ -1,13 +1,12 @@
 //! Capture proposals, validation, acknowledgement and saved preference policy.
-use super::display_settings::RemoteDisplayInfo;
 use super::input::{expire_cursor_request, fail_cursor_request};
-use super::wire::{PbCaptureSettingRequest, PbCaptureSettingResponse, PbError, PbScreenSources};
+use super::wire::{PbCaptureSettingRequest, PbCaptureSettingResponse, PbError};
 use super::{
     CAPTURE_RESULT_FPS_ADJUSTED, CHROMA_420, CHROMA_444, CaptureSettingBaseline,
     EXISTING_SESSION_TRACKS, FPS_30, FPS_60, FPS_90, FPS_144, MAX_CUSTOM_BITRATE_MBPS,
-    OutgoingControlMessage, RESOLUTION_DEFAULT, RemoteDisplayState, ScreenBaseline,
+    OutgoingControlMessage, RemoteDisplayState,
     StreamControlHandle, StreamControlPreferences, StreamControlProtocol, StreamControlSettings,
-    StreamControlState, StreamQuality, UNCHANGED_PHYSICAL_DIMENSION, VIDEO_QUALITY_AUTO,
+    StreamControlState, StreamQuality, VIDEO_QUALITY_AUTO,
     VIDEO_QUALITY_BLURAY, VIDEO_QUALITY_CUSTOM, VIDEO_QUALITY_FAST, VIDEO_QUALITY_GENERAL,
     VIDEO_QUALITY_HD, ViewingPreferenceUpdate, custom_bitrate_supported, ensure_ready,
     feature_supported, lock, protocol,
@@ -417,8 +416,6 @@ pub(super) fn prepare_initial_capture_sync(
         auto_frame_quality = baseline.auto_frame_quality,
         max_custom_bitrate = baseline.max_custom_bitrate,
         screen_id = EXISTING_SESSION_TRACKS,
-        physical_width = UNCHANGED_PHYSICAL_DIMENSION,
-        physical_height = UNCHANGED_PHYSICAL_DIMENSION,
         max_scale_width = baseline.max_scale_width,
         max_scale_height = baseline.max_scale_height,
         codec_type = baseline.codec_type,
@@ -593,60 +590,6 @@ pub(super) fn constrain_auto_quality(state: &mut StreamControlState) {
     }
 }
 
-pub(super) fn update_screen_baseline(state: &mut StreamControlState, screens: PbScreenSources) {
-    let previous_screens = state.screens.clone();
-    state.screens_generation = state.screens_generation.wrapping_add(1);
-    state.current_screen_id = screens.current_screen_id;
-    state.screens = screens
-        .screens
-        .into_iter()
-        .filter_map(|screen| {
-            let display = RemoteDisplayInfo::from_screen(&screen)?;
-            let resolution = screen.current_resolution?;
-            let width = u32::try_from(resolution.width).ok()?;
-            let height = u32::try_from(resolution.height).ok()?;
-            if width == 0 || height == 0 {
-                return None;
-            }
-            Some(ScreenBaseline {
-                id: screen.id,
-                name: screen.display_name,
-                primary: screen.is_primary_screen,
-                video_track_index: screen.video_track_index,
-                fps: u32::try_from(screen.fps).unwrap_or_default(),
-                width,
-                height,
-                dpi_scale: screen
-                    .dpi_scale
-                    .map(|dpi| u32::try_from(dpi.current_dpi).unwrap_or_default())
-                    .unwrap_or_default(),
-                resolution_type: screen.resolution_type,
-                display,
-            })
-        })
-        .collect();
-    if previous_screens.iter().any(|old| {
-        !state.screens.iter().any(|new| {
-            old.id == new.id
-                && old.video_track_index == new.video_track_index
-                && old.display.screen_type == new.display.screen_type
-        })
-    }) {
-        state.mouse.pause_layout();
-    }
-    state
-        .topology
-        .observe(state.screens_generation, &state.screens);
-    for screen in &state.screens {
-        tracing::debug!(screen_id = screen.id, name = %screen.name,
-            screen_type = screen.display.screen_type,
-            primary = screen.primary, track = screen.video_track_index,
-            width = screen.width, height = screen.height,
-            preferred = ?screen.display.preferred, "remote screen mapping");
-    }
-    refresh_active_screen(state);
-}
-
 pub(super) fn refresh_active_screen(state: &mut StreamControlState) {
     let selected = state
         .screens
@@ -675,8 +618,6 @@ pub(super) fn refresh_active_screen(state: &mut StreamControlState) {
         video_track_index = screen.video_track_index,
         width = screen.width,
         height = screen.height,
-        dpi_scale = screen.dpi_scale,
-        resolution_type = screen.resolution_type,
         "active-screen baseline synchronized"
     );
 }
@@ -686,9 +627,6 @@ pub(super) fn apply_capture_setting_response(
     request_id: i64,
     response: PbCaptureSettingResponse,
 ) {
-    if state.display_changes.ack(request_id, &response) {
-        return;
-    }
     let current = state.latest_requested_sequence == Some(request_id)
         && state.pending_sequences.contains(&request_id);
     let mut reported_color = None;
@@ -756,11 +694,9 @@ pub(super) fn format_pb_error(error: PbError) -> String {
     use super::wire::setting_reason as reason;
     let text = &t().features;
     match error.error_message.as_str() {
-        reason::DISPLAY_NOT_ALLOWED => text.stream_display_change_not_allowed.into(),
         reason::UPDATING => text.stream_host_updating_settings_locked.into(),
         reason::INVALID_SCALE_LIMIT => text.stream_invalid_scale_limit.into(),
         reason::UNSUPPORTED_CODEC => text.stream_unsupported_codec.into(),
-        reason::CONVERSION_FAILED => (text.stream_super_screen_failed_code)(501),
         _ => text.stream_setting_not_applied.into(),
     }
 }
@@ -920,12 +856,8 @@ pub(super) fn capture_setting_request(
         frame_quality: baseline.frame_quality,
         cursor_capture: baseline.cursor_capture,
         screen_id: EXISTING_SESSION_TRACKS,
-        resolution_width: UNCHANGED_PHYSICAL_DIMENSION,
-        resolution_height: UNCHANGED_PHYSICAL_DIMENSION,
         chroma_format: baseline.chroma_format,
         max_custom_bitrate: i32::try_from(baseline.max_custom_bitrate)?,
-        dpi_scale: 0,
-        resolution_type: RESOLUTION_DEFAULT,
         enable_hdr: baseline.enable_hdr,
         auto_frame_quality: baseline.auto_frame_quality,
         codec_type: baseline.codec_type,

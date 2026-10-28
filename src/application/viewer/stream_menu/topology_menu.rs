@@ -64,6 +64,7 @@ pub(in crate::application::viewer) fn local_parameters(
     (w, h, (dpi * 100.0).round() as u32)
 }
 
+/// A mode the display cannot show itself takes a super screen.
 pub(super) fn resolution_needs_confirmation(
     handle: &StreamControlHandle,
     id: i32,
@@ -74,18 +75,7 @@ pub(super) fn resolution_needs_confirmation(
         .screens
         .iter()
         .find(|s| s.id == id)
-        .is_some_and(|s| match choice {
-            DisplayResolution::FollowLocal { width, height } => !s
-                .display
-                .modes
-                .iter()
-                .any(|m| m.width == width && m.height == height),
-            DisplayResolution::Initial => s
-                .display
-                .initial
-                .is_some_and(|m| !s.display.modes.contains(&m)),
-            DisplayResolution::Mode(mode) => !s.display.modes.contains(&mode),
-        })
+        .is_some_and(|s| !s.display.shows(choice))
 }
 
 /// The topology action for screen `id`; whether one was requested. The
@@ -102,13 +92,14 @@ pub(super) fn entries(
         return false;
     };
     let ready = snapshot.ready && (!snapshot.topology.pending || snapshot.topology.dismissed);
-    let action = if screen.display.screen_type == 2 {
+    use crate::features::stream_control::wire::DisplayKind;
+    let action = if screen.display.kind == DisplayKind::Exclusive {
         Some((
             t().viewer.exit_super_screen,
             Action::Exit,
             snapshot.topology_support.exit,
         ))
-    } else if screen.display.screen_type == 1 {
+    } else if screen.display.kind == DisplayKind::Virtual {
         Some((
             t().viewer.remove_virtual_screen,
             Action::Remove { screen_id: id },
@@ -148,7 +139,7 @@ pub(super) fn show(
         && snapshot.screens.iter().any(|s| {
             s.id == pending.target.id
                 && s.name == pending.target.name
-                && s.display.screen_type == pending.target.display.screen_type
+                && s.display.kind == pending.target.display.kind
         });
     let mut close = false;
     egui::Modal::new(egui::Id::new("display-topology-modal")).frame(crate::ui::controls::dialog_frame()).show(ctx, |ui| {

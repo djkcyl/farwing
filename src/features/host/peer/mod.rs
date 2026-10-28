@@ -78,7 +78,6 @@ pub(super) struct ReportRoutes {
     pub(super) text: Option<std::sync::Weak<RTCDataChannel>>,
     pub(super) clipboard: i32,
     control: Option<std::sync::Weak<RTCDataChannel>>,
-    control_screens: bool,
     handshake_complete: bool,
     handshake_answered: bool,
     revision: u64,
@@ -93,16 +92,11 @@ impl ReportRoutes {
         if let Some(level) = received.clipboard {
             self.clipboard = level;
         }
-        let reroute = received
-            .control_screen_reports
-            .is_some_and(|v| v != self.control_screens);
-        if let Some(value) = received.control_screen_reports {
-            self.control_screens = value;
-        }
-        if opened || reroute || received.refresh_state || received.clipboard.is_some() {
+        let changed = opened || received.refresh_state || received.clipboard.is_some();
+        if changed {
             self.revision = self.revision.wrapping_add(1);
         }
-        opened || reroute || received.refresh_state || received.clipboard.is_some()
+        changed
     }
 }
 type ReportTarget = tokio::sync::watch::Sender<ReportRoutes>;
@@ -118,7 +112,6 @@ impl Peer {
         ice_servers: Vec<RTCIceServer>,
         relay: bool,
         initial: VideoConfig,
-        control_screens: bool,
         negotiated: Arc<super::format::Negotiated>,
         deferred: Option<screens::Deferred>,
         clipboard_level: i32,
@@ -605,7 +598,6 @@ impl Peer {
             }));
         let kcp = core.control.clone();
         let (report_target, report_receiver) = tokio::sync::watch::channel(ReportRoutes {
-            control_screens,
             clipboard: clipboard_level,
             ..Default::default()
         });
@@ -1109,7 +1101,7 @@ impl Peer {
             .map(|info| crate::protocol::capability::DisplayCapability {
                 id: info.screen.id,
                 fps: info.screen.fps,
-                kind: info.kind,
+                kind: info.kind as i32,
                 hdr: info.screen.hdr,
             })
             .collect()

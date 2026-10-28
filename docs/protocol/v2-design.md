@@ -297,31 +297,26 @@ Hello {
 
 | tag | 消息 | 方向 | 内容 | 说明 |
 | --- | --- | --- | --- | --- |
-| 1 | `Screens` | H→C | `PbScreenSources{screens[], current_screen_id}` | 屏幕列表或任一屏幕变化时发送（字节相同不重发）。`PbScreen` 去掉恒定的 `dpr` 与 `builtin_screen_type`；`display_geometry`（tag 100）为驱动首选模式 |
+| 1 | `Displays` | H→C | `{revision, displays[], active}` | 显示器列表、任一显示器或视频轨对应关系变化时发送（内容相同不重发）；也是 `Capture`、`Display` 请求的回复。字段见 peer-messages.md |
 | 2 | `Quality` | H→C | `{encoder_type, capture_type, video_quality}` | `video_quality` 为生效档位 1..4（自动已解析）或 6=自定义；主控仅在自动画质下用它更新自动档位。去掉只用于日志的四档参考码率 |
 | 3 | `Microphone` | H→C | `{state: 1 ACTIVE / 2 INACTIVE / 3 RESTART}` | 被控虚拟麦克风状态；RESTART 表示被控音频链路出错，主控重启本地采集 |
 | 4 | `ClipboardFiles` | H→C | `{enabled}` | 被控是否接收剪贴板文件 |
-| 5 | `Capture` | C→H | `{screen_id, start}` | 开始/停止采集某块屏幕；`-1` 表示本会话全部屏幕（停止保留槽位，`start(-1)` 恢复）。无回复，状态变化以随后的 `Screens` 为准 |
 
 ### 6.2 请求与响应
 
 | 请求 tag | 请求 | 响应 | 说明 |
 | --- | --- | --- | --- |
 | 10 | `CaptureSetting` | 20 `CaptureSettingResult{errors[]}` | 见 6.3 |
-| 11 | `CreateVirtualDisplay{local_resolution[1], virtual_display_count=1}` | 21 `DisplayResult` | 0 成功；-2 没有空闲且已注册的视频轨道；-1 其他失败。需要 `display` 能力 |
-| 12 | `RemoveVirtualDisplay{screen_id[1]}` | 21 | 只能删除 Farwing 创建的虚拟屏；0 / -1 |
-| 13 | `EnterExclusive{reason 1 手动 / 2 提高帧率, resolution, dpi_scale, enter_fps}` | 21 | 0；502 参数无效；501 策略不允许或系统失败 |
-| 14 | `QuitExclusive{}` | 21 | 0 / -1 |
-| 15 | `VideoTracks{video_track_index[]}` | 21 | 主控已协商可接收的视频轨道（0..4）；采集新屏幕之前必须先确认 |
+| 5 | `Capture{screen_id, start, track?}` | 1 `Displays` | 开始/停止采集；`-1` 表示本会话全部屏幕（停止保留槽位，`start(-1)` 恢复）；`track` 让单画面的主控在同一条轨道上换屏 |
+| 11 | `Display{set_mode \| set_scale \| add_virtual \| remove \| enter_exclusive \| exit_exclusive}` | 1 `Displays` | 需要 `display` 能力；拒绝时 `PeerError` 带原因键（peer-messages.md）。物理屏不支持的尺寸不自动转超级屏 |
 | 16 | `MicrophonePolicy{policy: bit0 开启}` | 22 `MicrophoneResult{error_code}` | 0；`0x0e003001` 组件不可用；`0x0e003006` 不允许；`0x0e003012` 初始化失败。需要 `microphone` 能力 |
 
 ### 6.3 CaptureSetting
 
-字段沿用 v1 编号（`fps` 档位 1..4、`frame_quality` 2..6、`cursor_capture`、`screen_id`、`resolution_*`、`chroma_format`、`max_custom_bitrate`（bit/s）、`dpi_scale`、`resolution_type`、`enable_hdr`、`auto_frame_quality`、`codec_type`、`max_scale_*`、`fps_count`）。
+字段沿用 v1 编号（`fps` 档位 1..4、`frame_quality` 1..6、`cursor_capture`、`screen_id`、`chroma_format`、`max_custom_bitrate`（bit/s）、`enable_hdr`、`auto_frame_quality`、`codec_type`、`max_scale_*`、`fps_count`）。只管媒体设置，显示变更走 `Display` 请求。
 
-- `screen_id = -2`：本会话所有正在采集或暂停的轨道，不能带分辨率或 DPI；`-1`：单轨道会话的唯一来源；其他值为具体屏幕。
-- 带分辨率、DPI 或 `resolution_type` 2..4 的请求是显示变更，需要 `display` 能力，否则返回 -1。
-- 结果码：`0` 成功；`-1` 无效或不支持；`-2` 正在更新或系统执行失败；`-3` 请求帧率超过屏幕刷新率（提示，不算失败）；`-5 + {"error_code":0|501}` 分辨率转为独占屏的结果；`-6 + {"error_code":0|1|2|5}` 全彩（4:4:4）开关结果（0 已开启，1 编码器不支持，2 支持但未生效，5 已关闭）。
+- `screen_id = -2`：本会话所有正在采集或暂停的轨道；其他值为具体屏幕。
+- 结果码：`0` 成功；`-1` 无效或不支持；`-2` 正在更新或未能应用；`-3` 请求帧率超过屏幕刷新率（提示，不算失败）；`-6 + {"error_code":0|1|2|5}` 全彩（4:4:4）开关结果（0 已开启，1 编码器不支持，2 支持但未生效，5 已关闭）。
 - 每个屏幕一条结果；`-2` 时按屏幕拼接，全部为空时补一条 `0`。
 - v2 新增：`19 weak_network`（0 优先降码率，1 优先降帧率）、`20 cinema`（观影模式）。会话起始参数 `CaptureParams` 带同名字段，主控按设备记住并在首个 CaptureSetting 中发送。
 

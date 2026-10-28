@@ -1,6 +1,9 @@
 //! Screen mutations keep media owners separate from the native topology owner.
 use super::*;
+use crate::features::stream_control::publisher::refuse;
+use crate::features::stream_control::wire::{DisplayKind, display_reason};
 use crate::i18n::t;
+use farwing_protocol::peer::error_code;
 
 pub(super) struct Running {
     streams: Vec<(usize, i32, VideoConfig)>,
@@ -69,14 +72,17 @@ impl Screens {
         };
         self.start(id).await
     }
-    pub(crate) async fn create_virtual(&mut self, resolutions: Vec<(u32, u32)>) -> Result<()> {
-        ensure!(
-            self.available_slot().is_some() || self.registered.len() == 1,
-            "{}",
-            t().features.peer_no_free_track
-        );
+    /// A virtual display of this size and scale (0: the primary's), shown
+    /// on a free track.
+    pub(crate) async fn add_virtual(&mut self, width: u32, height: u32, scale: u32) -> Result<()> {
+        if self.available_slot().is_none() {
+            return Err(refuse(error_code::BUSY, display_reason::NO_FREE_TRACK));
+        }
         let before = self.running();
-        let screen = self.displays.create(&self.lease, resolutions).await?;
+        let screen = self
+            .displays
+            .create(&self.lease, (width, height), scale)
+            .await?;
         if let Err(error) = self.start(screen.id).await {
             if let Some(identity) = screen.identity {
                 if let Err(cleanup) = self.displays.remove(identity).await {
@@ -90,24 +96,15 @@ impl Screens {
     }
     pub(crate) async fn remove_virtual(&mut self, id: i32) -> Result<()> {
         let info = self.info(id)?;
-        ensure!(
-            info.kind == 1,
-            "{}",
-            t().features.screen_not_extended_virtual
-        );
+        // A virtual display of another product, or the machine's fallback,
+        // is not this session's to remove.
         let identity = info
             .screen
             .identity
-            .context(t().features.screen_target_identity_missing)?;
-        // A virtual-screen wire type is not a lease on another driver's screen.
-        // Reject unsupported removal before interrupting its active capture.
-        ensure!(
-            self.displays.owns(&identity),
-            "{}",
-            t().features.screen_managed_elsewhere
-        );
+            .filter(|identity| info.kind == DisplayKind::Virtual && self.displays.owns(identity))
+            .ok_or_else(|| refuse(error_code::BAD_REQUEST, display_reason::NOT_REMOVABLE))?;
         let before = self.running();
-        self.stop(id).await?;
+        self.halt(id).await?;
         if let Err(error) = self.displays.remove(identity).await {
             self.resume(before).await?;
             return Err(error);
@@ -119,70 +116,91 @@ impl Screens {
         }
         self.fallback().await
     }
-    pub(crate) async fn enter_super(
-        &mut self,
-        width: u32,
-        height: u32,
-        dpi: u32,
-        saved: bool,
-    ) -> Result<i32> {
-        ensure!(
-            !self.registered.is_empty(),
-            "{}",
-            t().features.peer_no_registered_track
-        );
+    /// One super screen replaces the layout. The tracks of this participant
+    /// wait for their displays: they resume when the layout comes back,
+    /// whoever ends the super screen.
+    pub(crate) async fn enter_super(&mut self, width: u32, height: u32, scale: u32) -> Result<i32> {
         let before = self.running();
-        self.stop(-1).await?;
-        let result = self.displays.enter_super(width, height, dpi, saved).await;
-        let screen = match result {
+        self.halt(-1).await?;
+        for slot in &mut self.slots {
+            slot.awaiting_source = slot.suspended.is_some();
+        }
+        let screen = match self.displays.enter_super(width, height, scale).await {
             Ok(screen) => screen,
             Err(error) => {
+                for slot in &mut self.slots {
+                    slot.awaiting_source = false;
+                }
                 self.resume(before).await?;
                 return Err(error);
             }
         };
-        if self.before_super.is_none() {
-            self.before_super = Some(before);
-        }
         self.refresh()?;
         self.start(screen.id).await?;
         Ok(screen.id)
     }
     pub(crate) async fn quit_super(&mut self) -> Result<()> {
+        let exclusive: Vec<_> = lock(&self.reports.catalog)
+            .iter()
+            .filter(|info| info.kind == DisplayKind::Exclusive)
+            .map(|info| info.screen.id)
+            .collect();
         let before = self.running();
-        self.stop(-1).await?;
+        for id in &exclusive {
+            self.halt(*id).await?;
+        }
         if let Err(error) = self.displays.quit_super().await {
             self.resume(before).await?;
             return Err(error);
         }
         for slot in &mut self.slots {
-            slot.suspended = None;
+            if slot.suspended.as_ref().is_some_and(|s| exclusive.contains(&s.id)) {
+                slot.suspended = None;
+                slot.awaiting_source = false;
+            }
         }
-        if let Some(before) = self.before_super.take() {
-            self.resume(before).await?;
+        self.refresh()?;
+        for index in 0..self.slots.len() {
+            self.reattach(index).await?;
         }
         self.fallback().await
     }
-    pub(crate) async fn set_resolution(
-        &mut self,
-        info: ScreenInfo,
-        width: u32,
-        height: u32,
-    ) -> Result<i32> {
+    /// One of the display's modes; a virtual display takes any size.
+    pub(crate) async fn set_mode(&mut self, info: ScreenInfo, width: u32, height: u32) -> Result<()> {
+        if (info.screen.width, info.screen.height) == (width, height) {
+            return Ok(());
+        }
+        let resizable = matches!(info.kind, DisplayKind::Virtual | DisplayKind::Exclusive);
+        let listed = info.target.as_ref().is_some_and(|t| {
+            t.modes
+                .iter()
+                .any(|m| m.width == width && m.height == height)
+        });
+        if !resizable && !listed {
+            return Err(refuse(error_code::BAD_REQUEST, display_reason::UNSUPPORTED_MODE));
+        }
         let target = info
             .target
+            .clone()
             .context(t().features.screen_physical_target_missing)?;
         if !self.displays.owns(&target.identity) {
             self.displays.set_resolution(target, width, height).await?;
-            self.refresh()?;
-            return Ok(info.screen.id);
+            return self.refresh();
         }
         let mut running = self.running();
         running.streams.retain(|(_, id, _)| *id == info.screen.id);
-        // Resizing the current temporary screen is not a new screen selection.
+        // Resizing a virtual display recreates it; its capture follows.
         self.stop_media(info.screen.id).await?;
         let result = self.displays.set_resolution(target, width, height).await;
         self.resume(running).await?;
-        Ok(result?.id)
+        result.map(drop)
+    }
+    pub(crate) async fn set_scale(&mut self, info: ScreenInfo, scale: u32) -> Result<()> {
+        let target = info
+            .target
+            .filter(|t| t.dpi.as_ref().is_some_and(|d| d.supported.contains(&scale)))
+            .ok_or_else(|| refuse(error_code::BAD_REQUEST, display_reason::INVALID))?;
+        self.displays.set_dpi(target, scale).await?;
+        self.refresh()
     }
 }

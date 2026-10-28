@@ -18,16 +18,16 @@ pub(super) struct Virtual {
     pub hz: u32,
     pub dpi: u32,
     pub kind: i32,
-    pub resolution_type: i32,
     pub modes: Vec<(u32, u32)>,
     pub layout: Option<crate::platform::display::topology::SavedTarget>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(super) struct Preference {
+    /// The controller used the super screen last time: it gets one again,
+    /// at its display's size and this scale.
     pub super_enabled: bool,
-    pub super_size: Option<(u32, u32)>,
     pub super_dpi: u32,
-    pub super_resolution_type: i32,
+    /// The virtual displays it had added.
     pub manual: Vec<Virtual>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]

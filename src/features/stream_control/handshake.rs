@@ -2,8 +2,7 @@
 use super::input::{expire_cursor_request, fail_cursor_request, smart_mouse_requested};
 use super::settings::{
     apply_capture_setting_response, prepare_initial_capture_sync, refresh_active_screen,
-    reported_auto_quality, restore_confirmed_capture, update_screen_baseline,
-    viewing_quality_label,
+    reported_auto_quality, restore_confirmed_capture, viewing_quality_label,
 };
 use super::wire::{SessionBody, encode_pb_echo_response};
 use super::{
@@ -22,7 +21,7 @@ use tokio::sync::Notify;
 impl StreamControlHandle {
     pub(crate) fn poll_timeouts(&self) {
         let mut state = lock(&self.shared);
-        self.drive_display_changes(&mut state);
+        self.expire_requests(&mut state);
         expire_cursor_request(&mut state);
         self.refresh_mouse_policy(&mut state);
     }
@@ -60,10 +59,18 @@ impl StreamControlHandle {
             state.grants = None;
             state.annotation.disconnect();
             state.annotation_extension = None;
+            for waiting in state.requests.drain() {
+                self.settle(
+                    &mut state,
+                    waiting,
+                    Err(t().features.stream_display_disconnected_unconfirmed.into()),
+                );
+            }
             state.topology.disconnect();
             state
                 .display_changes
                 .cancel_all(t().features.stream_display_disconnected_unconfirmed);
+            state.displays_revision = 0;
             state.cursor_sync_needed = false;
             state.cursor_desired_capture = true;
             state.mouse_restore_point = None;
@@ -76,9 +83,6 @@ impl StreamControlHandle {
                     t().features.stream_cursor_disconnected_unconfirmed.into(),
                 );
             }
-            state.registered_video_tracks.clear();
-            state.track_registration = None;
-            state.track_registration_error = None;
             if let Some(sequence) = state.pending_sequences.back().copied() {
                 state
                     .performance
@@ -142,29 +146,20 @@ impl StreamControlHandle {
             return;
         }
         let mut state = lock(&self.shared);
+        if let Some(waiting) = state
+            .requests
+            .take(super::wire::request_id(sequence))
+        {
+            self.settle(&mut state, waiting, Err((t().features.stream_send_failed)(error)));
+            return;
+        }
         if self.turn_send_failed(&mut state, sequence) {
-            return;
-        }
-        if self.topology_send_failed(&mut state, sequence, error) {
-            return;
-        }
-        if state.display_changes.send_failed(sequence, error) {
             return;
         }
         state
             .pending_capture_preferences
             .retain(|pending| pending.sequence != sequence);
         fail_cursor_request(&mut state, sequence, error.to_owned());
-        if state
-            .track_registration
-            .as_ref()
-            .is_some_and(|(seq, _)| *seq == sequence)
-        {
-            state.track_registration = None;
-            state.track_registration_error =
-                Some((t().features.stream_track_registration_send_failed)(error));
-            return;
-        }
         state
             .pending_sequences
             .retain(|pending| *pending != sequence);
@@ -252,9 +247,15 @@ impl StreamControlHandle {
             return Ok(());
         };
         if let Some(error) = &received.error {
+            tracing::warn!(code = %error.code, reason = %error.reason, "host refused a session request");
+            let mut state = lock(&self.shared);
+            if let Some(waiting) = state.requests.take(received.request_id) {
+                let refusal = super::display_settings::refusal_text(&error.reason);
+                self.settle(&mut state, waiting, Err(refusal));
+                return Ok(());
+            }
+            drop(state);
             // A failed reply settles the request exactly like a lost send.
-            tracing::warn!(code = %error.code, reason = %error.reason, "host rejected a session request");
-            // Its message is in the host's language: the log keeps it.
             self.mark_send_failed(received.sequence(), t().features.stream_host_refused_request);
             return Ok(());
         }
@@ -264,6 +265,18 @@ impl StreamControlHandle {
             return Ok(());
         };
         let mut state = lock(&self.shared);
+        if response
+            && let Some(waiting) = state.requests.take(received.request_id)
+        {
+            // The answer to a display or capture request: the display list
+            // it left.
+            if let SessionBody::Displays(list) = body {
+                super::display_settings::apply_displays(&mut state, list);
+            }
+            self.settle(&mut state, waiting, Ok(()));
+            self.refresh_mouse_policy(&mut state);
+            return Ok(());
+        }
         match body {
             SessionBody::Microphone(event) => self.microphone.event(event.state),
             SessionBody::Forward(forward) => {
@@ -297,53 +310,24 @@ impl StreamControlHandle {
                 tracing::debug!(encoder_type = %qos.encoder_type, capture_type = %qos.capture_type, video_quality = qos.video_quality,
                     "QoS quality status received");
             }
-            SessionBody::Screens(screens) => update_screen_baseline(&mut state, screens),
-            body if response => {
-                if !self.handle_topology_response(&mut state, sequence, &body) {
-                    match body {
-                        SessionBody::MicrophoneResult(response) => {
-                            self.microphone.response(sequence, response.error_code);
-                        }
-                        SessionBody::ControlTurnResult(response) => {
-                            self.turn_response_locked(&mut state, sequence, response);
-                        }
-                        SessionBody::CaptureSettingResult(capture) => {
-                            apply_capture_setting_response(&mut state, sequence, capture)
-                        }
-                        SessionBody::DisplayResult(result)
-                            if state
-                                .track_registration
-                                .as_ref()
-                                .is_some_and(|(seq, _)| *seq == sequence) =>
-                        {
-                            let (_, tracks) = state
-                                .track_registration
-                                .take()
-                                .expect("matching registration");
-                            if result.error_code == 0 {
-                                tracing::info!(
-                                    ?tracks,
-                                    "remote video track pool registration confirmed"
-                                );
-                                state.registered_video_tracks = tracks;
-                            } else {
-                                state.track_registration_error = Some((t()
-                                    .features
-                                    .stream_track_registration_refused)(
-                                    result.error_code,
-                                ));
-                            }
-                        }
-                        other => {
-                            tracing::debug!(message = other.name(), "unmatched session response")
-                        }
-                    }
+            SessionBody::Displays(list) => super::display_settings::apply_displays(&mut state, list),
+            body if response => match body {
+                SessionBody::MicrophoneResult(response) => {
+                    self.microphone.response(sequence, response.error_code);
                 }
-            }
+                SessionBody::ControlTurnResult(response) => {
+                    self.turn_response_locked(&mut state, sequence, response);
+                }
+                SessionBody::CaptureSettingResult(capture) => {
+                    apply_capture_setting_response(&mut state, sequence, capture)
+                }
+                other => {
+                    tracing::debug!(message = other.name(), "unmatched session response")
+                }
+            },
             other => tracing::debug!(message = other.name(), "ignored session message"),
         }
         self.maybe_send_initial_capture_sync(&mut state);
-        self.drive_display_changes(&mut state);
         self.refresh_mouse_policy(&mut state);
         Ok(())
     }
@@ -477,7 +461,6 @@ impl StreamControlHandle {
             );
         }
         self.maybe_send_initial_capture_sync(&mut state);
-        self.drive_display_changes(&mut state);
         self.refresh_mouse_policy(&mut state);
         drop(state);
         if handshake_changed {
@@ -495,7 +478,6 @@ impl StreamControlHandle {
         if !state.viewing_enabled {
             return;
         }
-        self.maybe_register_video_tracks(state);
         let outgoing = match prepare_initial_capture_sync(state) {
             Ok(Some(outgoing)) => outgoing,
             Ok(None) => return,

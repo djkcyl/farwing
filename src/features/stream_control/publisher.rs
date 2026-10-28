@@ -6,7 +6,7 @@ use crate::features::host::capture::Screen;
 use anyhow::Context as _;
 
 mod displays;
-pub(crate) use displays::{receive_session, screen_states};
+pub(crate) use displays::{display_list, receive_session, refuse};
 
 /// A `MicrophonePolicy` request of the controller.
 pub(crate) struct MicrophonePolicy {
@@ -160,9 +160,6 @@ impl ConnectOptions {
     pub fn clipboard_level(&self) -> i32 {
         clipboard_level(&self.features())
     }
-    pub fn control_screen_reports(&self) -> bool {
-        self.features().has(crate::protocol::peer::feature::DISPLAY_CONFIG)
-    }
 }
 
 /// Clipboard support of a peer: 0 none, 1 text and images, 2 also files.
@@ -249,7 +246,6 @@ pub(crate) struct Received {
     pub messages: Vec<Vec<u8>>,
     pub handshake_complete: bool,
     pub handshake_request: bool,
-    pub control_screen_reports: Option<bool>,
     pub refresh_state: bool,
     pub clipboard: Option<i32>,
     pub files: Option<crate::features::file_transfer::host::Capabilities>,
@@ -374,7 +370,6 @@ pub(crate) fn receive(bytes: &[u8]) -> Result<Received> {
                 features.has(crate::protocol::peer::feature::FILES),
             ),
         ),
-        control_screen_reports: Some(features.has(crate::protocol::peer::feature::DISPLAY_CONFIG)),
         ..Default::default()
     })
 }

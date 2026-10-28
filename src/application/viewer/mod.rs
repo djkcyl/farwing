@@ -636,8 +636,7 @@ impl NativeViewerSession {
         &self,
         screen: &crate::features::stream_control::RemoteScreen,
     ) -> bool {
-        let binding =
-            (screen.id as u32 as u64) | ((screen.display.screen_type as u32 as u64) << 32);
+        let binding = screen.binding();
         let changed = self.screen_binding.swap(binding, Ordering::AcqRel) != binding;
         if changed {
             mutex_lock(&self.frame_queue).clear();

@@ -132,30 +132,25 @@ Click {
 
 ## SESSION（0x0201）—— `src/features/stream_control/wire.rs`
 
-另见 `src/features/stream_control/display_topology.rs`（显示请求）、`src/features/stream_control/microphone.rs`（麦克风请求）、`src/features/stream_control/control_turn.rs`（控制权）。
+另见 `src/features/stream_control/publisher/displays.rs`（被控处理显示请求）、`src/features/stream_control/microphone.rs`（麦克风请求）、`src/features/stream_control/control_turn.rs`（控制权）。
 
 ```
 SessionMessage { oneof body {
   // 推送（request id = 0）
-  PbScreenSources screens = 1                       // H→C
+  Displays displays = 1                             // H→C；也是 capture 与 display 请求的响应
   PbReportQosStats quality = 2                      // H→C
   MicrophoneState microphone = 3                    // H→C
   ClipboardPermission clipboard_files = 4           // H→C
-  CaptureControl capture = 5                        // C→H
   ReceiverStats receiver_stats = 7                  // C→H，每秒一次
   VideoFeedback video_feedback = 8                  // C→H，control 通道（FCT），`video.recovery`
   // 请求（C→H）
+  CaptureControl capture = 5                        // → 1
   PbCaptureSettingRequest capture_setting = 10      // → 20
-  PbCreateVirtualDisplay create_virtual_display = 11 // → 21
-  PbRemoveVirtualDisplay remove_virtual_display = 12 // → 21
-  PbEnterSuperScreen enter_exclusive = 13           // → 21
-  PbQuitSuperScreen quit_exclusive = 14             // → 21
-  PbSendVideoTrackRequest video_tracks = 15         // → 21
+  DisplayRequest display = 11                       // → 1
   PolicyRequest microphone_policy = 16              // → 22
   TurnRequest control_turn = 17                     // → 23
   // 响应（H→C）
   PbCaptureSettingResponse capture_setting_result = 20
-  PbDisplayResult display_result = 21
   PolicyResponse microphone_result = 22
   TurnResponse control_turn_result = 23
 }}
@@ -166,30 +161,29 @@ SessionMessage { oneof body {
 ### 推送
 
 ```
-PbScreenSources {
-  screens: repeated PbScreen = 1
-  current_screen_id: int32 = 2
+Displays {                    // 本参与者看到的被控显示器
+  revision: uint64 = 1        // 每次变化增大；主控丢弃比已生效版本旧的列表
+  displays: repeated Display = 2
+  active: int32 = 3           // 本参与者当前的显示器，-1 无
 }
-PbScreen {
-  id: int32 = 1
-  fps: int32 = 2                          // 刷新率
-  resolutions: repeated PbWinRect = 3     // 可选模式
-  current_resolution: PbWinRect = 4
-  screen_type: int32 = 5                  // 0 物理屏，其他为虚拟屏 / 独占屏等
-  init_resolution: PbWinRect = 6          // 连接时的快照，不代表面板模式
-  is_primary_screen: bool = 7
-  dpi_scale: PbDpiScale = 9
-  display_name: string = 10
-  resolution_type: int32 = 11
-  video_track_index: int32 = 12           // 对应 answer 中的 msid video_N
-  display_geometry: PbDisplayGeometry = 100  // optional；驱动首选（面板原生）模式
-}                                         // 8（dpr）与 13（builtin_screen_type）已删除
-PbWinRect { left: int32 = 1, top: int32 = 2, width: int32 = 3, height: int32 = 4 }
-PbDpiScale { current_dpi: int32 = 1, recommended_dpi: int32 = 2, dpis: repeated int32 = 3 }
-PbDisplayGeometry {
-  width: uint32 = 2       // 已按当前旋转方向调整，1–16384
-  height: uint32 = 3
+Display {
+  id: int32 = 1               // 被控进程内稳定；本会话添加的虚拟屏在重建后保持不变
+  kind: DisplayKind = 2       // 0 物理，1 本会话添加的虚拟屏（可删除），2 被控的兜底屏，3 其他软件的虚拟屏，4 超级屏
+  name: string = 3            // 显示器名称；Windows 没有名称时为空
+  primary: bool = 4
+  width: uint32 = 5           // 当前模式
+  height: uint32 = 6
+  refresh_hz: uint32 = 7      // 0 未知
+  hdr: bool = 8               // 正在输出 HDR10
+  modes: repeated Size = 9    // 可选模式（含当前模式）
+  preferred: Size = 10        // optional；驱动首选（面板原生）模式，已按旋转方向调整
+  initial: Size = 11          // optional；本会话首次改动布局之前的模式，未改动时不发
+  scale: uint32 = 12          // 缩放百分比，0 未知
+  recommended_scale: uint32 = 13
+  scales: repeated uint32 = 14
+  track: int32 = 15           // 本参与者显示该屏的视频轨（answer 中的 msid video_N），-1 无
 }
+Size { width: uint32 = 1, height: uint32 = 2 }
 
 PbReportQosStats {
   encoder_type: string = 1   // software | hardware
@@ -198,9 +192,10 @@ PbReportQosStats {
 }
 MicrophoneState { state: int32 = 1 }       // 1 ACTIVE（正在播放主控麦克风），2 INACTIVE，3 RESTART（被控音频链路出错，主控重启本地采集）
 ClipboardPermission { enabled: bool = 1 }  // 被控是否接收剪贴板文件
-CaptureControl {
+CaptureControl {            // 请求：开始 / 停止采集，响应为之后的 Displays
   screen_id: int32 = 1       // -1 表示本会话全部屏幕（停止保留槽位，start(-1) 恢复）
-  start: bool = 2            // 开始 / 停止采集；无回复，状态以随后的 Screens 为准
+  start: bool = 2
+  track: optional int32 = 3  // 在这条视频轨上显示（替换它正在显示的屏幕）；不填时用该屏原来的或空闲的轨道
 }
 VideoFeedback {                // 设计见 rfi-ltr-brief.md §6.3，协议规则见 farwing-protocol.md §6.6
   ssrc: fixed32 = 1            // 视频轨的媒体 SSRC；被控按它找到轨道
@@ -225,8 +220,8 @@ ReceiverStats {
 }
 ```
 
-- `display_geometry` 只在主控声明 `display.geometry` 时发送；主控只用它做本地显示比例，不据此修改远端分辨率。
-- 被控在屏幕列表或任一屏幕变化时发送 `Screens`，内容相同不重发。
+- 被控在 session 通道上推送 `Displays`：列表、任一显示器或视频轨对应关系变化时发送，内容相同不重发（`revision` 不算内容）。`preferred` 只用于主控本地显示比例，不据此修改远端分辨率。
+- 五条视频轨在连接时全部协商好，主控不再登记可用轨道。
 
 ### 请求与响应
 
@@ -235,13 +230,9 @@ PbCaptureSettingRequest {
   fps: int32 = 1                    // 1:30 2:60 3:90 4:144
   frame_quality: int32 = 2          // 1 低码率 2 高清 3 超清 4 原画 5 自动 6 自定义
   cursor_capture: bool = 3          // 画面合成光标
-  screen_id: int32 = 4              // -2 本会话所有正在采集或暂停的轨道；-1 单轨道会话的唯一来源；其他为具体屏幕
-  resolution_width: int32 = 5
-  resolution_height: int32 = 6
+  screen_id: int32 = 4              // -2 本会话所有正在采集或暂停的轨道；其他为具体屏幕
   chroma_format: int32 = 7          // 1 4:2:0，3 4:4:4
   max_custom_bitrate: int32 = 8     // bit/s
-  dpi_scale: int32 = 9
-  resolution_type: int32 = 10       // 0–4
   enable_hdr: bool = 11
   auto_frame_quality: int32 = 12    // 自动画质的当前档位
   codec_type: int32 = 13            // 1 H.264，2 H.265，5 AV1
@@ -254,21 +245,14 @@ PbCaptureSettingRequest {
 PbCaptureSettingResponse { errors: repeated PbError = 1 }   // 每个屏幕一条；全部为空时补一条 0
 PbError { error_code: int32 = 1, error_message: string = 2, error_detail: string = 3 }
 
-PbCreateVirtualDisplay {
-  local_resolution: repeated PbScreenResolution = 1
-}
-PbScreenResolution { width: int32 = 1, height: int32 = 2 }
-PbRemoveVirtualDisplay { screen_id: repeated int32 = 1 }   // 取第一个；只能删除 Farwing 创建的虚拟屏
-PbEnterSuperScreen {
-  reason: int32 = 1                  // 1 手动，2 提高帧率
-  resolution: PbScreenResolution = 2
-  dpi_scale: int32 = 3
-  enter_fps: PbSuperScreenFps = 4    // reason = 2 时必需
-}
-PbSuperScreenFps { fps_count: int32 = 1 }   // 1–144
-PbQuitSuperScreen {}
-PbSendVideoTrackRequest { video_track_index: repeated int32 = 1 }   // 主控已协商可接收的视频轨道（0..4）；采集新屏幕前必须先确认
-PbDisplayResult { error_code: int32 = 1 }
+DisplayRequest { oneof op {
+  SetMode set_mode = 1                 // { id, width, height }：显示器列出的模式；虚拟屏与超级屏可以是任意尺寸
+  SetScale set_scale = 2               // { id, scale }：scales 中的一个
+  AddVirtual add_virtual = 3           // { width, height, scale }：按此尺寸添加虚拟屏并开始采集；scale 0 取主屏的
+  RemoveDisplay remove = 4             // { id }：只能删除本会话添加的虚拟屏
+  AddVirtual enter_exclusive = 5       // 以此尺寸与缩放的超级屏取代整个布局
+  ExitExclusive exit_exclusive = 6     // {}：恢复超级屏之前的布局
+}}
 
 PolicyRequest { policy: int32 = 1 }        // bit0：开启麦克风
 PolicyResponse { error_code: int32 = 1 }
@@ -293,22 +277,27 @@ TurnResponse {
 | 码 | 含义 |
 |----|------|
 | 0 | 成功 |
-| -1 | 无效或不支持；需要 `display` 能力的显示变更被拒绝 |
-| -2 | 正在更新，或系统执行失败 |
+| -1 | 无效或不支持 |
+| -2 | 正在更新，或未能应用 |
 | -3 | 请求帧率超过屏幕刷新率（提示，不算失败） |
-| -5 | 分辨率转为独占屏的结果，`error_detail = {"error_code": 0 \| 501}` |
 | -6 | 全彩（4:4:4）开关结果，`error_detail = {"error_code": 0 已开启 \| 1 编码器不支持 \| 2 支持但未生效 \| 5 已关闭}` |
 
-带分辨率、DPI 或 `resolution_type` 2..4 的请求是显示变更，需要 `display` 能力；`screen_id = -2` 时不能带分辨率或 DPI。`resolution_type = 3` 恢复被控连接时的分辨率；物理屏不支持所请求的尺寸且 `resolution_type = 2` 时转为独占屏（结果 -5）。
+**Capture 与 Display 请求**：成功时以 `Displays`（本参与者看到的、请求完成后的列表）回复；失败时回 `RESPONSE|ERROR` + `PeerError{code, reason}`：
 
-**DisplayResult 结果码**
+| reason | code | 含义 |
+|--------|------|------|
+| `not_allowed` | forbidden | 没有 `display`（或观看时的 `view`）能力；添加虚拟屏、进入超级屏还需要本次会话允许扩展显示 |
+| `updating` | busy | 被控正在安装更新 |
+| `unsupported_mode` | bad_request | 物理屏没有这个模式（主控可改用超级屏） |
+| `no_free_track` | busy | 五条视频轨都在显示屏幕 |
+| `limit` | busy | 已有 5 个显示器或 3 个虚拟屏 |
+| `not_removable` | bad_request | 不是本会话添加的虚拟屏 |
+| `exclusive` | busy | 超级屏期间不能添加虚拟屏 |
+| `not_found` | not_found | 显示器已不存在 |
+| `invalid` | bad_request | 尺寸或缩放无效 |
+| `failed` | internal | 其他失败，原因留在被控日志 |
 
-| 请求 | 码 |
-|------|----|
-| `CreateVirtualDisplay` | 0 成功；-2 没有空闲且已注册的视频轨道；-1 其他失败（需要 `display` 能力） |
-| `RemoveVirtualDisplay`、`QuitExclusive` | 0 / -1（需要 `display` 能力） |
-| `EnterExclusive` | 0；502 参数无效；501 能力或策略不允许、系统失败 |
-| `VideoTracks` | 0 / -1 |
+物理屏不支持的尺寸不会自动转成超级屏：主控先请用户确认，再发 `enter_exclusive`。进入超级屏时，发起者正在采集的屏幕暂停并等待原显示器回来；无论谁退出超级屏，这些屏幕都会在原显示器恢复后继续。
 
 **MicrophoneResult 错误码**（`src/protocol/microphone.rs`）：0 成功；`0x0e003001` 虚拟音频组件不可用；`0x0e003006` 不允许（需要 `microphone` 能力与被控本机许可）；`0x0e003012` 初始化失败。
 

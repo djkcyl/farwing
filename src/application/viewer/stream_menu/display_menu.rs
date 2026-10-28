@@ -75,15 +75,13 @@ impl DisplayMenu {
                 return DisplayResolution::Mode(mode);
             }
         }
-        match info.resolution_type {
-            3 if info.initial == Some(info.current) => DisplayResolution::Initial,
-            2 if local == Some((info.current.width, info.current.height)) => {
-                DisplayResolution::FollowLocal {
-                    width: info.current.width,
-                    height: info.current.height,
-                }
+        if local == Some((info.current.width, info.current.height)) {
+            DisplayResolution::FollowLocal {
+                width: info.current.width,
+                height: info.current.height,
             }
-            _ => DisplayResolution::Mode(info.current),
+        } else {
+            DisplayResolution::Mode(info.current)
         }
     }
     fn dpi_baseline(info: &RemoteDisplayInfo, status: Option<&DisplayChangeStatus>) -> Option<u32> {

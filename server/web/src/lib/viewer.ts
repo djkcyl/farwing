@@ -976,16 +976,23 @@ export class Viewer {
       this.sendSession(frame.type, fpp.errorBody('unsupported'), fpp.Flag.RESPONSE | fpp.Flag.ERROR, frame.requestId);
   }
 
-  /// Show another screen of the host (single track: the host reuses
-  /// video_0 for it).
-  switchScreen(screenId: number) {
-    this.sendFrame('farwing.session.v2', fpp.encode(fpp.Type.SESSION, fpp.captureControl(screenId, true)));
+  /// Show another screen of the host on this viewer's one picture
+  /// (`video_0`). The answer carries the screen list it left.
+  switchScreen(screenId: number): Promise<void> {
+    return this.capture(screenId, true, 0);
   }
 
   /// Restart the capture of a screen: a fresh key frame.
-  refresh(screenId: number) {
-    this.sendFrame('farwing.session.v2', fpp.encode(fpp.Type.SESSION, fpp.captureControl(screenId, false)));
-    window.setTimeout(() => this.switchScreen(screenId), 100);
+  async refresh(screenId: number) {
+    await this.capture(screenId, false);
+    await this.switchScreen(screenId);
+  }
+
+  private capture(screenId: number, start: boolean, track?: number): Promise<void> {
+    return this.request(fpp.Type.SESSION, fpp.captureControl(screenId, start, track)).then(
+      () => undefined,
+      (error: Error) => this.log(`capture ${screenId} ${start ? 'start' : 'stop'} failed: ${error.message}`),
+    );
   }
 
   /// The automatic tier is this viewer's (the host's last report).

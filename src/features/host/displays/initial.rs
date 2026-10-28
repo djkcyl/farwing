@@ -47,28 +47,17 @@ impl Session {
             .cloned()
             .context(t().features.screen_none_available)
     }
-    pub(crate) fn initial_screen(&self, screen: &capture::Screen) -> capture::Screen {
+    /// The mode of `screen` before this session first changed the layout;
+    /// `None` while it has not.
+    pub(crate) fn initial_size(&self, screen: &capture::Screen) -> Option<(u32, u32)> {
         let state = lock(&self.state);
-        let mut initial = screen.clone();
-        if let Some(saved) = state
+        state
             .journal
             .baseline
             .targets
             .iter()
             .find(|t| screen.identity.as_deref() == Some(t.identity.as_str()))
-        {
-            initial.width = saved.width;
-            initial.height = saved.height;
-            initial.left = saved.left;
-            initial.top = saved.top;
-            initial.dpi_scale = state
-                .journal
-                .dpi
-                .iter()
-                .find(|(id, _)| id == &saved.identity)
-                .map(|(_, dpi)| *dpi);
-        }
-        initial
+            .map(|saved| (saved.width, saved.height))
     }
 }
 
@@ -106,7 +95,8 @@ impl State {
             screens = capture::screens()?;
         }
         if self.preferences.super_enabled {
-            return self.enter_super(virtual_size.0, virtual_size.1, 0, true, lease);
+            let dpi = self.preferences.super_dpi;
+            return self.enter_super(virtual_size.0, virtual_size.1, dpi, lease);
         }
         let saved = self.preferences.manual.clone();
         ensure!(

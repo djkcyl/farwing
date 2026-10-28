@@ -44,18 +44,32 @@ describe('peer protocol', () => {
   test('parses screens', () => {
     const screen = new Writer()
       .int(1, 1)
-      .int(2, 60)
-      .message(4, new Writer().int(3, 2560).int(4, 1440))
-      .int(7, true)
-      .string(10, 'DELL')
-      .int(12, -1);
-    const body = new Writer().message(1, new Writer().message(1, screen).int(2, 1)).finish();
+      .int(2, fpp.DisplayKind.VIRTUAL)
+      .string(3, 'DELL')
+      .int(4, true)
+      .int(5, 2560)
+      .int(6, 1440)
+      .int(7, 60)
+      .int(15, -1);
+    const body = new Writer().message(1, new Writer().int(1, 9).message(2, screen).int(3, 1)).finish();
     const m = fpp.parseSession(body);
     expect(m.kind).toBe('screens');
     if (m.kind !== 'screens') return;
-    expect(m.value.current).toBe(1);
-    expect(m.value.screens[0]).toMatchObject({ id: 1, fps: 60, primary: true, name: 'DELL', track: -1 });
-    expect(m.value.screens[0].current).toMatchObject({ width: 2560, height: 1440 });
+    expect(m.value).toMatchObject({ revision: 9, current: 1 });
+    expect(m.value.screens[0]).toMatchObject({
+      id: 1,
+      kind: fpp.DisplayKind.VIRTUAL,
+      width: 2560,
+      height: 1440,
+      fps: 60,
+      primary: true,
+      name: 'DELL',
+      track: -1,
+    });
+  });
+
+  test('a capture on video_0 names its track', () => {
+    expect(hex(fpp.captureControl(3, true, 0))).toBe('2a06' + '0803' + '1001' + '1800');
   });
 });
 

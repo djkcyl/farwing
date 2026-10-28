@@ -4,7 +4,7 @@
 //! Requests carry a non-zero FPP request ID and are answered with the same ID
 //! and the `RESPONSE` flag; pushes carry request ID 0 and are never answered.
 //! See `docs/protocol/v2-design.md` §6 for every message.
-use super::{control_turn, display_topology, microphone};
+use super::{control_turn, microphone};
 use crate::protocol::peer::{self, FrameType, flags};
 use anyhow::{Context as _, Result};
 use prost::Message as _;
@@ -69,16 +69,17 @@ pub(crate) fn request_id(sequence: i64) -> u32 {
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct SessionMessage {
-    #[prost(oneof = "SessionBody", tags = "1,2,3,4,5,7,8,10,11,12,13,14,15,16,17,20,21,22,23,24,25")]
+    #[prost(oneof = "SessionBody", tags = "1,2,3,4,5,7,8,10,11,16,17,20,21,22,23,24,25")]
     pub(crate) body: Option<SessionBody>,
 }
 
 #[derive(Clone, PartialEq, prost::Oneof)]
 pub(crate) enum SessionBody {
     // ------------------------------------------------------------ pushes
-    /// Host screens (H→C) whenever the list or a screen changes.
+    /// The host's displays as this participant sees them (H→C), whenever
+    /// the list, a display or a track mapping changes.
     #[prost(message, tag = "1")]
-    Screens(PbScreenSources),
+    Displays(Displays),
     /// Host encoder and quality status (H→C).
     #[prost(message, tag = "2")]
     Quality(PbReportQosStats),
@@ -88,23 +89,15 @@ pub(crate) enum SessionBody {
     /// Whether the host accepts files on the clipboard (H→C).
     #[prost(message, tag = "4")]
     ClipboardFiles(ClipboardPermission),
-    /// Start or stop capturing a screen (C→H); no reply.
+    /// Request (C→H): start or stop capturing a display → [`DisplayDone`].
     #[prost(message, tag = "5")]
     Capture(CaptureControl),
     // ---------------------------------------------- requests (C→H)
     #[prost(message, tag = "10")]
     CaptureSetting(PbCaptureSettingRequest),
+    /// A change of the host's displays → [`DisplayDone`].
     #[prost(message, tag = "11")]
-    CreateVirtualDisplay(display_topology::PbCreateVirtualDisplay),
-    #[prost(message, tag = "12")]
-    RemoveVirtualDisplay(display_topology::PbRemoveVirtualDisplay),
-    #[prost(message, tag = "13")]
-    EnterExclusive(display_topology::PbEnterSuperScreen),
-    #[prost(message, tag = "14")]
-    QuitExclusive(display_topology::PbQuitSuperScreen),
-    /// The video tracks the controller negotiated and can receive.
-    #[prost(message, tag = "15")]
-    VideoTracks(PbSendVideoTrackRequest),
+    Display(DisplayRequest),
     #[prost(message, tag = "16")]
     MicrophonePolicy(microphone::PolicyRequest),
     /// Take or release the control token.
@@ -127,9 +120,9 @@ pub(crate) enum SessionBody {
     // --------------------------------------------- responses (H→C)
     #[prost(message, tag = "20")]
     CaptureSettingResult(PbCaptureSettingResponse),
-    /// Result of requests 11–15.
+    /// Answer to `Capture` and `Display`.
     #[prost(message, tag = "21")]
-    DisplayResult(display_topology::PbDisplayResult),
+    DisplayDone(DisplayDone),
     #[prost(message, tag = "22")]
     MicrophoneResult(microphone::PolicyResponse),
     #[prost(message, tag = "23")]
@@ -139,7 +132,7 @@ pub(crate) enum SessionBody {
 impl SessionBody {
     pub(crate) fn name(&self) -> &'static str {
         match self {
-            Self::Screens(_) => "Screens",
+            Self::Displays(_) => "Displays",
             Self::Quality(_) => "Quality",
             Self::Microphone(_) => "Microphone",
             Self::ClipboardFiles(_) => "ClipboardFiles",
@@ -149,16 +142,12 @@ impl SessionBody {
             Self::VideoFeedback(_) => "VideoFeedback",
             Self::Forward(_) => "Forward",
             Self::ForwardStatus(_) => "ForwardStatus",
-            Self::CreateVirtualDisplay(_) => "CreateVirtualDisplay",
-            Self::RemoveVirtualDisplay(_) => "RemoveVirtualDisplay",
-            Self::EnterExclusive(_) => "EnterExclusive",
-            Self::QuitExclusive(_) => "QuitExclusive",
-            Self::VideoTracks(_) => "VideoTracks",
+            Self::Display(_) => "Display",
             Self::MicrophonePolicy(_) => "MicrophonePolicy",
             Self::ControlTurn(_) => "ControlTurn",
             Self::ControlTurnResult(_) => "ControlTurnResult",
             Self::CaptureSettingResult(_) => "CaptureSettingResult",
-            Self::DisplayResult(_) => "DisplayResult",
+            Self::DisplayDone(_) => "DisplayDone",
             Self::MicrophoneResult(_) => "MicrophoneResult",
         }
     }
@@ -318,13 +307,18 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Option<Received>> {
 }
 
 /// Start (`start`) or stop capturing `screen_id`; -1 = every screen of the
-/// session (stop keeps the slots so that start(-1) resumes them).
+/// session (stop keeps the slots so that start(-1) resumes them). Errors:
+/// [`display_reason`] `not_allowed`, `no_free_track`, `not_found`.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct CaptureControl {
     #[prost(int32, tag = "1")]
     pub(crate) screen_id: i32,
     #[prost(bool, tag = "2")]
     pub(crate) start: bool,
+    /// Show the display on this video track, in place of what it shows (a
+    /// viewer with one picture); absent: a free track.
+    #[prost(int32, optional, tag = "3")]
+    pub(crate) track: Option<i32>,
 }
 
 /// Host virtual microphone state.
@@ -365,12 +359,6 @@ pub(crate) struct PbReportQosStats {
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbSendVideoTrackRequest {
-    #[prost(int32, repeated, tag = "1")]
-    pub(crate) video_track_index: Vec<i32>,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct PbCaptureSettingRequest {
     #[prost(int32, tag = "1")]
     pub(crate) fps: i32,
@@ -380,18 +368,10 @@ pub(crate) struct PbCaptureSettingRequest {
     pub(crate) cursor_capture: bool,
     #[prost(int32, tag = "4")]
     pub(crate) screen_id: i32,
-    #[prost(int32, tag = "5")]
-    pub(crate) resolution_width: i32,
-    #[prost(int32, tag = "6")]
-    pub(crate) resolution_height: i32,
     #[prost(int32, tag = "7")]
     pub(crate) chroma_format: i32,
     #[prost(int32, tag = "8")]
     pub(crate) max_custom_bitrate: i32,
-    #[prost(int32, tag = "9")]
-    pub(crate) dpi_scale: i32,
-    #[prost(int32, tag = "10")]
-    pub(crate) resolution_type: i32,
     #[prost(bool, tag = "11")]
     pub(crate) enable_hdr: bool,
     #[prost(int32, tag = "12")]
@@ -446,72 +426,178 @@ pub(crate) struct PbError {
     pub(crate) error_detail: String,
 }
 
+/// What a display is ([`Display::kind`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]
+#[repr(i32)]
+pub enum DisplayKind {
+    Physical = 0,
+    /// Added in this session; it can be removed.
+    Virtual = 1,
+    /// The machine's display while no monitor is usable.
+    Fallback = 2,
+    /// Another product's virtual display.
+    Foreign = 3,
+    /// The super screen: the only active display while it lasts.
+    Exclusive = 4,
+}
+
+/// The host's displays (push).
 #[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbScreenSources {
-    #[prost(message, repeated, tag = "1")]
-    pub(crate) screens: Vec<PbScreen>,
-    #[prost(int32, tag = "2")]
-    pub(crate) current_screen_id: i32,
+pub(crate) struct Displays {
+    /// Grows with every change; [`DisplayDone::revision`] names the list
+    /// that shows a request's effect.
+    #[prost(uint64, tag = "1")]
+    pub(crate) revision: u64,
+    #[prost(message, repeated, tag = "2")]
+    pub(crate) displays: Vec<Display>,
+    /// The display this participant uses now; -1 none.
+    #[prost(int32, tag = "3")]
+    pub(crate) active: i32,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbScreen {
-    /// Preferred (native panel) mode. Never repurpose init_resolution: it is
-    /// a connection snapshot, not the panel mode.
-    #[prost(message, optional, tag = "100")]
-    pub(crate) display_geometry: Option<PbDisplayGeometry>,
+pub(crate) struct Display {
     #[prost(int32, tag = "1")]
     pub(crate) id: i32,
-    #[prost(int32, tag = "2")]
-    pub(crate) fps: i32,
-    #[prost(message, repeated, tag = "3")]
-    pub(crate) resolutions: Vec<PbWinRect>,
-    #[prost(message, optional, tag = "4")]
-    pub(crate) current_resolution: Option<PbWinRect>,
-    #[prost(int32, tag = "5")]
-    pub(crate) screen_type: i32,
-    #[prost(message, optional, tag = "6")]
-    pub(crate) init_resolution: Option<PbWinRect>,
-    #[prost(bool, tag = "7")]
-    pub(crate) is_primary_screen: bool,
-    #[prost(message, optional, tag = "9")]
-    pub(crate) dpi_scale: Option<PbDpiScale>,
-    #[prost(string, tag = "10")]
-    pub(crate) display_name: String,
-    #[prost(int32, tag = "11")]
-    pub(crate) resolution_type: i32,
-    #[prost(int32, tag = "12")]
-    pub(crate) video_track_index: i32,
+    #[prost(enumeration = "DisplayKind", tag = "2")]
+    pub(crate) kind: i32,
+    /// The monitor's name; empty when Windows has none.
+    #[prost(string, tag = "3")]
+    pub(crate) name: String,
+    #[prost(bool, tag = "4")]
+    pub(crate) primary: bool,
+    /// The current mode.
+    #[prost(uint32, tag = "5")]
+    pub(crate) width: u32,
+    #[prost(uint32, tag = "6")]
+    pub(crate) height: u32,
+    /// 0 when unknown.
+    #[prost(uint32, tag = "7")]
+    pub(crate) refresh_hz: u32,
+    /// The display outputs HDR10.
+    #[prost(bool, tag = "8")]
+    pub(crate) hdr: bool,
+    #[prost(message, repeated, tag = "9")]
+    pub(crate) modes: Vec<Size>,
+    /// The driver's preferred (native panel) mode.
+    #[prost(message, optional, tag = "10")]
+    pub(crate) preferred: Option<Size>,
+    /// The mode before this session changed it; absent when it did not.
+    #[prost(message, optional, tag = "11")]
+    pub(crate) initial: Option<Size>,
+    /// Scaling in percent; 0 when unknown.
+    #[prost(uint32, tag = "12")]
+    pub(crate) scale: u32,
+    #[prost(uint32, tag = "13")]
+    pub(crate) recommended_scale: u32,
+    #[prost(uint32, repeated, tag = "14")]
+    pub(crate) scales: Vec<u32>,
+    /// This participant's video track of the display; -1 none.
+    #[prost(int32, tag = "15")]
+    pub(crate) track: i32,
 }
 
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbDisplayGeometry {
+#[derive(Clone, Copy, PartialEq, Eq, prost::Message)]
+pub(crate) struct Size {
+    #[prost(uint32, tag = "1")]
+    pub(crate) width: u32,
     #[prost(uint32, tag = "2")]
-    pub width: u32,
+    pub(crate) height: u32,
+}
+
+/// A change of the host's displays. Refusals carry a [`display_reason`].
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct DisplayRequest {
+    #[prost(oneof = "DisplayOp", tags = "1,2,3,4,5,6")]
+    pub(crate) op: Option<DisplayOp>,
+}
+
+#[derive(Clone, PartialEq, prost::Oneof)]
+pub(crate) enum DisplayOp {
+    /// One of the display's modes; a virtual display takes any size.
+    #[prost(message, tag = "1")]
+    SetMode(SetMode),
+    #[prost(message, tag = "2")]
+    SetScale(SetScale),
+    /// A virtual display of this size and scale (0: the primary's).
+    #[prost(message, tag = "3")]
+    AddVirtual(AddVirtual),
+    /// Remove a virtual display.
+    #[prost(message, tag = "4")]
+    Remove(RemoveDisplay),
+    /// Replace the layout with one super screen of this size and scale.
+    #[prost(message, tag = "5")]
+    EnterExclusive(AddVirtual),
+    /// Restore the layout from before the super screen.
+    #[prost(message, tag = "6")]
+    ExitExclusive(ExitExclusive),
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct SetMode {
+    #[prost(int32, tag = "1")]
+    pub(crate) id: i32,
+    #[prost(uint32, tag = "2")]
+    pub(crate) width: u32,
     #[prost(uint32, tag = "3")]
-    pub height: u32,
+    pub(crate) height: u32,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbWinRect {
+pub(crate) struct SetScale {
     #[prost(int32, tag = "1")]
-    pub(crate) left: i32,
-    #[prost(int32, tag = "2")]
-    pub(crate) top: i32,
-    #[prost(int32, tag = "3")]
-    pub(crate) width: i32,
-    #[prost(int32, tag = "4")]
-    pub(crate) height: i32,
+    pub(crate) id: i32,
+    #[prost(uint32, tag = "2")]
+    pub(crate) scale: u32,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbDpiScale {
+pub(crate) struct AddVirtual {
+    #[prost(uint32, tag = "1")]
+    pub(crate) width: u32,
+    #[prost(uint32, tag = "2")]
+    pub(crate) height: u32,
+    #[prost(uint32, tag = "3")]
+    pub(crate) scale: u32,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct RemoveDisplay {
     #[prost(int32, tag = "1")]
-    pub(crate) current_dpi: i32,
-    #[prost(int32, tag = "2")]
-    pub(crate) recommended_dpi: i32,
-    #[prost(int32, repeated, tag = "3")]
-    pub(crate) dpis: Vec<i32>,
+    pub(crate) id: i32,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct ExitExclusive {}
+
+/// A display request was carried out: the [`Displays::revision`] that
+/// shows it.
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct DisplayDone {
+    #[prost(uint64, tag = "1")]
+    pub(crate) revision: u64,
+}
+
+/// Why a `Capture` or `Display` request was refused (`PeerError::reason`).
+pub(crate) mod display_reason {
+    /// The participant may not change the host's displays (or watch).
+    pub const NOT_ALLOWED: &str = "not_allowed";
+    /// The host is installing an update.
+    pub const UPDATING: &str = "updating";
+    /// The display has no such mode; a super screen can show it.
+    pub const UNSUPPORTED_MODE: &str = "unsupported_mode";
+    /// Every video track already shows a display.
+    pub const NO_FREE_TRACK: &str = "no_free_track";
+    /// No more displays can be added.
+    pub const LIMIT: &str = "limit";
+    /// Only virtual displays added in a session can be removed.
+    pub const NOT_REMOVABLE: &str = "not_removable";
+    /// Not while the super screen is in use.
+    pub const EXCLUSIVE: &str = "exclusive";
+    pub const NOT_FOUND: &str = "not_found";
+    pub const INVALID: &str = "invalid";
+    /// Anything else; the host logs why.
+    pub const FAILED: &str = "failed";
 }
 
 #[cfg(test)]
@@ -536,14 +622,10 @@ mod receiver_stats_tests {
 
 /// Why a capture setting was not applied ([`PbError::error_message`]).
 pub(crate) mod setting_reason {
-    /// The participant may not change the host's displays.
-    pub const DISPLAY_NOT_ALLOWED: &str = "display_not_allowed";
     /// The host is installing an update.
     pub const UPDATING: &str = "updating";
     pub const INVALID_SCALE_LIMIT: &str = "invalid_scale_limit";
     pub const UNSUPPORTED_CODEC: &str = "unsupported_codec";
-    /// The resolution needs a super display, which could not be made.
-    pub const CONVERSION_FAILED: &str = "conversion_failed";
     /// Anything else; the host logs why.
     pub const NOT_APPLIED: &str = "not_applied";
 }

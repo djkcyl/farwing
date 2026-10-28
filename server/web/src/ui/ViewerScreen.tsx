@@ -900,8 +900,8 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
   pictureMap.current = shown
     ? {
         screenId: shown.id,
-        width: shown.current.width,
-        height: shown.current.height,
+        width: shown.width,
+        height: shown.height,
         box: () => (video.current?.videoWidth ? contentBox(video.current, scale) : undefined),
       }
     : undefined;
@@ -978,13 +978,16 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
             <Menu
               label={t.viewer.screen.display}
               icon="monitor"
-              text={current?.name || t.viewer.screen.displayN(screens.current + 1)}
+              text={
+                current?.name ||
+                t.viewer.screen.displayN(screens.screens.findIndex((s) => s.id === screens.current) + 1)
+              }
             >
               {screens.screens.map((s, i) => (
                 <MenuItem
                   key={s.id}
                   selected={s.id === screens.current}
-                  hint={`${s.current.width}×${s.current.height}`}
+                  hint={`${s.width}×${s.height}`}
                   onClick={() => viewer.current?.switchScreen(s.id)}
                 >
                   {s.name || t.viewer.screen.displayN(i + 1)}
@@ -1223,14 +1226,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
                   // The tier's ceiling for this screen at the chosen frame
                   // rate (the host caps it at the screen's refresh rate).
                   q.id <= 4 && current
-                    ? mbps(
-                        tierRate(
-                          q.id,
-                          current.current.width,
-                          current.current.height,
-                          Math.min(fps, current.fps || fps),
-                        ),
-                      )
+                    ? mbps(tierRate(q.id, current.width, current.height, Math.min(fps, current.fps || fps)))
                     : undefined
                 }
                 onClick={() => applyCapture(q.id, fps)}
@@ -1379,7 +1375,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
               annotation={viewer.current.annotation}
               box={box}
               screenId={shown.id}
-              screenWidth={shown.current.width}
+              screenWidth={shown.width}
               color={inkColor}
               width={inkWidth}
             />

@@ -24,18 +24,14 @@ pub use display_settings::{
 pub use display_topology::{DisplayTopologyAction, DisplayTopologyStatus, DisplayTopologySupport};
 use input::expire_cursor_request;
 use settings::{
-    apply_reported_color, capture_setting_request, color_supported, encode_capture_request,
-    format_pb_error, format_proposal, frame_rate_choice,
-    quality_name, restore_confirmed_capture, viewing_quality_label,
+    color_supported, format_proposal, frame_rate_choice, quality_name,
+    restore_confirmed_capture, viewing_quality_label,
 };
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 use tokio::sync::{Notify, mpsc};
-use wire::{
-    PbCaptureSettingResponse, PbDpiScale, PbError, PbReportQosStats, PbScreen, PbScreenSources,
-    PbWinRect,
-};
+use wire::{PbCaptureSettingResponse, PbError, PbReportQosStats};
 pub(crate) use wire::{ProfileWatch, encode_pb_echo_request};
 
 pub(crate) mod annotation;
@@ -59,12 +55,8 @@ const FPS_144: i32 = 4;
 
 const CHROMA_420: i32 = 1;
 const CHROMA_444: i32 = 3;
-const RESOLUTION_DEFAULT: i32 = 1;
-// Screen id -2 updates existing tracks, not a physical monitor. Negative
-// dimensions bypass changeResolution, and zero DPI bypasses SetDisplayDpi on
-// the host. Never echo a stale monitor mode.
+/// Screen id -2: every track of the session.
 const EXISTING_SESSION_TRACKS: i32 = -2;
-const UNCHANGED_PHYSICAL_DIMENSION: i32 = -1;
 const DEFAULT_CUSTOM_BITRATE_MBPS: u32 = 30;
 pub const MAX_CUSTOM_BITRATE_MBPS: u32 = 500;
 const CAPTURE_RESULT_FPS_ADJUSTED: i32 = -3;
@@ -281,17 +273,21 @@ pub struct RemoteScreen {
 }
 
 impl RemoteScreen {
+    /// What input and tabs bind to: the display and its kind.
+    pub(crate) fn binding(&self) -> u64 {
+        binding(self.id, self.display.kind)
+    }
     pub(crate) fn label(&self, catalog: &[Self]) -> String {
-        let kind = self.display.screen_type;
+        let kind = self.display.kind;
         let number = catalog
             .iter()
-            .filter(|s| s.display.screen_type == kind)
+            .filter(|s| s.display.kind == kind)
             .position(|s| s.id == self.id)
             .unwrap_or(0)
             + 1;
         match kind {
-            2 => t().features.stream_super_screen.into(),
-            1 => (t().features.stream_virtual_screen_numbered)(number),
+            wire::DisplayKind::Exclusive => t().features.stream_super_screen.into(),
+            wire::DisplayKind::Virtual => (t().features.stream_virtual_screen_numbered)(number),
             _ => match crate::media::capture::monitor_name(&self.name) {
                 Some(name) => (t().features.stream_display_numbered_named)(number, name),
                 None => (t().features.stream_display_numbered)(number),
@@ -401,6 +397,10 @@ struct CaptureSettingBaseline {
     cinema: bool,
 }
 
+fn binding(id: i32, kind: wire::DisplayKind) -> u64 {
+    (id as u32 as u64) | ((kind as i32 as u32 as u64) << 32)
+}
+
 #[derive(Clone)]
 struct ScreenBaseline {
     id: i32,
@@ -410,9 +410,12 @@ struct ScreenBaseline {
     fps: u32,
     width: u32,
     height: u32,
-    dpi_scale: u32,
-    resolution_type: i32,
     display: RemoteDisplayInfo,
+}
+impl ScreenBaseline {
+    fn binding(&self) -> u64 {
+        binding(self.id, self.display.kind)
+    }
 }
 
 struct PendingCapturePreferences {
@@ -452,10 +455,10 @@ struct StreamControlState {
     mouse_transport_connected: bool,
     cursor_pending: Option<(i64, bool, Instant)>,
     cursor_error: Option<String>,
-    available_video_tracks: Vec<i32>,
-    registered_video_tracks: Vec<i32>,
-    track_registration: Option<(i64, Vec<i32>)>,
-    track_registration_error: Option<String>,
+    /// SESSION requests awaiting the host's answer.
+    requests: requests::Requests,
+    /// The revision of the display list in effect.
+    displays_revision: u64,
     local_display: LocalDisplayInfo,
     active_video_track_index: i32,
     current_screen_id: i32,
@@ -551,10 +554,8 @@ impl StreamControlHandle {
             mouse_transport_connected: false,
             cursor_pending: None,
             cursor_error: None,
-            available_video_tracks: Vec::new(),
-            registered_video_tracks: Vec::new(),
-            track_registration: None,
-            track_registration_error: None,
+            requests: Default::default(),
+            displays_revision: 0,
             local_display: profile.local_display,
             active_video_track_index: 0,
             current_screen_id: 0,
@@ -1025,6 +1026,7 @@ fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
 
 mod handshake;
 mod input;
+mod requests;
 mod settings;
 mod tracks;
 pub(crate) mod wire;

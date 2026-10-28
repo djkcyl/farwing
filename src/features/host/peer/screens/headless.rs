@@ -148,7 +148,7 @@ impl Screens {
             .iter()
             .all(|i| i.target.as_ref().is_some_and(|t| t.foreign()))
     }
-    /// A registered screen waiting for its lost monitor while only the
+    /// A screen waiting for its lost monitor while only the
     /// fallback `fallback` (or nothing anyone sees) is there.
     fn waiting_for(&self, fallback: i32) -> Option<usize> {
         let alone = lock(&self.reports.catalog).iter().all(|i| {
@@ -161,11 +161,8 @@ impl Screens {
         self.slots
             .iter()
             .enumerate()
-            .filter(|(index, slot)| {
-                self.registered.contains(index)
-                    && slot.awaiting_source
-                    && slot.worker.is_none()
-                    && slot.suspended.is_some()
+            .filter(|(_, slot)| {
+                slot.awaiting_source && slot.worker.is_none() && slot.suspended.is_some()
             })
             .min_by_key(|(_, slot)| slot.suspended.as_ref().is_none_or(|s| s.id != current))
             .map(|(index, _)| index)
@@ -273,7 +270,6 @@ impl Screens {
                 .slots
                 .iter()
                 .enumerate()
-                .filter(|(index, _)| self.registered.contains(index))
                 .filter_map(|(index, slot)| {
                     slot.suspended
                         .clone()
@@ -332,7 +328,7 @@ impl Screens {
         }
     }
     async fn advance_headless(&mut self, r: &mut Recovery, now: Instant) -> Result<bool> {
-        if !self.displays.allows_fallback_retirement() || self.before_super.is_some() {
+        if !self.displays.allows_fallback_retirement() {
             if let Some(probe) = &mut r.probe {
                 probe.close().await;
             }
@@ -384,10 +380,6 @@ impl Screens {
                 probe.close().await;
             }
             r.probe = None;
-            // QuitSuper must still be able to restore its saved running layout.
-            if self.before_super.is_some() {
-                return Ok(false);
-            }
             // Do not destroy a manually retained/paused fallback screen. A new
             // selection must actually deliver a frame before automatic cleanup.
             if self.active_slot(r.fallback).is_none()
@@ -412,7 +404,7 @@ impl Screens {
             return Ok(false);
         }
         if let Some(started) = r.returning {
-            if !self.connected.load(Ordering::Acquire) || !self.registered.contains(&r.slot) {
+            if !self.connected.load(Ordering::Acquire) {
                 r.returning = Some(now);
                 return Ok(false);
             }
@@ -466,7 +458,7 @@ impl Screens {
             }
             return Ok(false);
         }
-        if !self.registered.contains(&r.slot) || !self.connected.load(Ordering::Acquire) {
+        if !self.connected.load(Ordering::Acquire) {
             return Ok(false);
         }
         // Keep fallback playback healthy while a returning physical display is

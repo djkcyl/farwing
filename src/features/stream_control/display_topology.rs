@@ -1,5 +1,6 @@
 //! Explicit remote display topology actions; ordinary capture settings remain independent.
-use super::wire::SessionBody;
+use super::requests::Waiting;
+use super::wire::{DisplayKind, DisplayOp, DisplayRequest, SessionBody};
 use super::*;
 use crate::account::feature_ability::Feature;
 
@@ -18,10 +19,13 @@ pub enum DisplayTopologyAction {
         dpi: u32,
     },
     Exit,
+    /// A mode the display cannot show itself: a super screen of that size.
     Resolution {
         screen_id: i32,
         choice: DisplayResolution,
     },
+    /// A frame rate above the display's refresh rate: the rate, and a super
+    /// screen of this size.
     FrameRate {
         settings: StreamControlSettings,
         width: u32,
@@ -65,6 +69,7 @@ pub struct DisplayTopologySupport {
 
 #[derive(Clone, Debug, Default)]
 pub struct DisplayTopologyStatus {
+    /// Names the operation (a new one, a new number).
     pub sequence: Option<i64>,
     pub origin_screen: i32,
     pub action: Option<DisplayTopologyAction>,
@@ -89,12 +94,11 @@ impl DisplayTopologyStatus {
 }
 
 struct Pending {
-    sequence: i64,
-    generation: u64,
-    report: u64,
-    report_at: Option<Instant>,
     action: DisplayTopologyAction,
     before: Vec<ScreenBaseline>,
+    /// The host carried it out; the next lists show its effect.
+    answered: bool,
+    report_at: Option<Instant>,
     rollback: Option<(FrameRateChoice, FrameRateChoice, i64)>,
 }
 
@@ -115,11 +119,12 @@ impl DisplayTopology {
         }
     }
 
-    pub fn observe(&mut self, report: u64, screens: &[ScreenBaseline]) {
+    /// The display the carried-out action leads to, once a list shows it.
+    pub fn observe(&mut self, screens: &[ScreenBaseline]) {
         let Some(pending) = &mut self.current else {
             return;
         };
-        if report <= pending.report {
+        if !pending.answered {
             return;
         }
         self.status.transient_screens.clear();
@@ -136,74 +141,62 @@ impl DisplayTopology {
             self.status.selected_screen = None;
             pending.report_at = None;
         }
-        let super_screen = screens.iter().find(|s| s.display.screen_type == 2);
+        let primary = || screens.iter().find(|s| s.primary).or(screens.first()).map(|s| s.id);
+        let exclusive = screens
+            .iter()
+            .find(|s| s.display.kind == DisplayKind::Exclusive)
+            .map(|s| s.id);
         let selected = match pending.action {
             DisplayTopologyAction::Create { .. } => screens
                 .iter()
                 .find(|s| {
-                    s.display.screen_type == 1
-                        && !pending
-                            .before
-                            .iter()
-                            .any(|old| old.id == s.id && matches!(old.display.screen_type, 1 | 2))
+                    s.display.kind == DisplayKind::Virtual
+                        && !pending.before.iter().any(|old| old.id == s.id)
                 })
                 .map(|s| s.id),
-            DisplayTopologyAction::Remove { screen_id } => (!screens.is_empty()
-                && !screens.iter().any(|s| s.id == screen_id))
-            .then(|| screens.iter().find(|s| s.primary).unwrap_or(&screens[0]).id),
-            DisplayTopologyAction::Exit => (!screens.is_empty() && super_screen.is_none())
-                .then(|| screens.iter().find(|s| s.primary).unwrap_or(&screens[0]).id),
-            DisplayTopologyAction::Resolution { screen_id, choice } => {
-                super_screen.map(|s| s.id).or_else(|| {
-                    screens
-                        .iter()
-                        .find(|s| {
-                            s.id == screen_id
-                                && display_settings::expand_resolution(&s.display, choice)
-                                    .is_ok_and(|(mode, _)| mode == s.display.current)
-                        })
-                        .map(|s| s.id)
-                })
+            DisplayTopologyAction::Remove { screen_id } => {
+                (!screens.iter().any(|s| s.id == screen_id)).then(primary).flatten()
             }
-            _ => super_screen.map(|s| s.id),
+            DisplayTopologyAction::Exit => exclusive.is_none().then(primary).flatten(),
+            _ => exclusive,
         };
-        if let Some(id) = selected {
-            if matches!(pending.action, DisplayTopologyAction::Create { .. }) {
-                // Bridge one creation report, not normal hot-unplug events.
-                self.status.transient_screens = pending
-                    .before
-                    .iter()
-                    .filter(|old| {
-                        old.display.screen_type == 0 && !screens.iter().any(|s| s.id == old.id)
-                    })
-                    .map(|old| RemoteScreen {
-                        id: old.id,
-                        name: old.name.clone(),
-                        primary: old.primary,
-                        video_track_index: old.video_track_index,
-                        width: old.width,
-                        height: old.height,
-                        refresh_hz: old.fps,
-                        display: old.display.clone(),
-                    })
-                    .collect();
+        let Some(id) = selected else {
+            return;
+        };
+        if matches!(pending.action, DisplayTopologyAction::Create { .. }) {
+            // Bridge one creation report, not normal hot-unplug events.
+            self.status.transient_screens = pending
+                .before
+                .iter()
+                .filter(|old| {
+                    old.display.kind == DisplayKind::Physical
+                        && !screens.iter().any(|s| s.id == old.id)
+                })
+                .map(|old| RemoteScreen {
+                    id: old.id,
+                    name: old.name.clone(),
+                    primary: old.primary,
+                    video_track_index: old.video_track_index,
+                    width: old.width,
+                    height: old.height,
+                    refresh_hz: old.fps,
+                    display: old.display.clone(),
+                })
+                .collect();
+        }
+        self.status.reported = true;
+        self.status.selected_screen = Some(id);
+        pending.report_at = Some(Instant::now());
+        if matches!(pending.action, DisplayTopologyAction::Remove { .. }) {
+            self.status.pending = false;
+        }
+        if !self.status.error {
+            self.status.message = if matches!(pending.action, DisplayTopologyAction::Remove { .. }) {
+                t().features.stream_display_removed
+            } else {
+                t().features.stream_restoring_video
             }
-            self.status.reported = true;
-            self.status.selected_screen = Some(id);
-            pending.report_at = Some(Instant::now());
-            if matches!(pending.action, DisplayTopologyAction::Remove { .. }) {
-                self.status.pending = false;
-            }
-            if !self.status.error {
-                self.status.message =
-                    if matches!(pending.action, DisplayTopologyAction::Remove { .. }) {
-                        t().features.stream_display_removed
-                    } else {
-                        t().features.stream_restoring_video
-                    }
-                    .into();
-            }
-            // A late error remains meaningful, but must not prevent consuming actual state.
+            .into();
         }
     }
 }
@@ -211,7 +204,10 @@ impl DisplayTopology {
 pub(super) fn support(state: &StreamControlState) -> DisplayTopologySupport {
     let available = display_settings::supported(state)
         && state.peer.has(crate::protocol::peer::feature::DISPLAY_VIRTUAL);
-    let super_screen = state.screens.iter().any(|s| s.display.screen_type == 2);
+    let super_screen = state
+        .screens
+        .iter()
+        .any(|s| s.display.kind == DisplayKind::Exclusive);
     let create_unavailable = if !available {
         Some(t().features.stream_virtual_screens_unavailable)
     } else if super_screen {
@@ -223,17 +219,17 @@ pub(super) fn support(state: &StreamControlState) -> DisplayTopologySupport {
     } else if state
         .screens
         .iter()
-        .filter(|s| matches!(s.display.screen_type, 1 | 2))
+        .filter(|s| s.display.kind == DisplayKind::Virtual)
         .count()
         >= 3
     {
         Some(t().features.stream_virtual_screen_limit)
-    } else if state.registered_video_tracks.is_empty() {
-        Some(t().features.stream_registering_tracks)
     } else if state
-        .registered_video_tracks
+        .screens
         .iter()
-        .all(|t| state.screens.iter().any(|s| s.video_track_index == *t))
+        .filter(|s| s.video_track_index >= 0)
+        .count()
+        >= crate::features::host::peer::screens::TRACK_COUNT
     {
         Some(t().features.stream_no_video_track)
     } else {
@@ -262,10 +258,7 @@ impl StreamControlHandle {
         state.topology.status.blocks(binding as u32 as i32)
             || state.topology.status.error && !state.topology.status.dismissed
             || !state.screens.iter().any(|screen| {
-                screen.video_track_index == track
-                    && (screen.id as u32 as u64
-                        | ((screen.display.screen_type as u32 as u64) << 32))
-                        == binding
+                screen.video_track_index == track && screen.binding() == binding
             })
     }
 
@@ -283,7 +276,7 @@ impl StreamControlHandle {
         {
             state.topology.status.pending = false;
             state.topology.status.message = t().features.stream_video_restored.into();
-            tracing::info!(screen_id, sequence = ?state.topology.status.sequence, "display topology presentation resumed");
+            tracing::info!(screen_id, "display topology presentation resumed");
             drop(state);
             self.mouse.repaint();
         }
@@ -323,11 +316,7 @@ impl StreamControlHandle {
     }
 
     /// Caller has shown the specific topology effect and received explicit confirmation.
-    pub fn apply_display_topology(
-        &self,
-        origin: i32,
-        action: DisplayTopologyAction,
-    ) -> Result<i64> {
+    pub fn apply_display_topology(&self, origin: i32, action: DisplayTopologyAction) -> Result<()> {
         let mut state = lock(&self.shared);
         ensure_ready(&state)?;
         let capabilities = support(&state);
@@ -346,9 +335,20 @@ impl StreamControlHandle {
             "{}",
             t().features.stream_origin_display_disconnected
         );
-        let request;
+        let exclusive = |width: u32, height: u32, scale: u32| {
+            anyhow::ensure!(
+                width > 0 && height > 0,
+                "{}",
+                t().features.stream_invalid_display_size
+            );
+            Ok(DisplayOp::EnterExclusive(wire::AddVirtual {
+                width,
+                height,
+                scale,
+            }))
+        };
         let mut rollback = None;
-        match action {
+        let op = match action {
             DisplayTopologyAction::Create { width, height } => {
                 anyhow::ensure!(
                     capabilities.create,
@@ -357,16 +357,23 @@ impl StreamControlHandle {
                         .create_unavailable
                         .unwrap_or(t().features.stream_cannot_add_virtual_screen)
                 );
-                request = SessionBody::CreateVirtualDisplay(PbCreateVirtualDisplay {
-                    local_resolution: vec![resolution(width, height)?],
-                });
+                anyhow::ensure!(
+                    width > 0 && height > 0,
+                    "{}",
+                    t().features.stream_invalid_display_size
+                );
+                DisplayOp::AddVirtual(wire::AddVirtual {
+                    width,
+                    height,
+                    scale: 0,
+                })
             }
             DisplayTopologyAction::Remove { screen_id } => {
                 anyhow::ensure!(
                     state
                         .screens
                         .iter()
-                        .any(|s| s.id == screen_id && s.display.screen_type == 1),
+                        .any(|s| s.id == screen_id && s.display.kind == DisplayKind::Virtual),
                     "{}",
                     t().features.stream_only_farwing_virtual_screens
                 );
@@ -375,9 +382,7 @@ impl StreamControlHandle {
                     "{}",
                     t().features.stream_cannot_remove_last_display
                 );
-                request = SessionBody::RemoveVirtualDisplay(PbRemoveVirtualDisplay {
-                    screen_id: vec![screen_id],
-                });
+                DisplayOp::Remove(wire::RemoveDisplay { id: screen_id })
             }
             DisplayTopologyAction::Enter { width, height, dpi } => {
                 anyhow::ensure!(
@@ -385,12 +390,7 @@ impl StreamControlHandle {
                     "{}",
                     t().features.stream_cannot_enter_super_screen
                 );
-                request = SessionBody::EnterExclusive(PbEnterSuperScreen {
-                    reason: 1,
-                    resolution: Some(resolution(width, height)?),
-                    dpi_scale: i32::try_from(dpi)?,
-                    enter_fps: None,
-                });
+                exclusive(width, height, dpi)?
             }
             DisplayTopologyAction::Exit => {
                 anyhow::ensure!(
@@ -398,22 +398,18 @@ impl StreamControlHandle {
                     "{}",
                     t().features.stream_not_in_super_screen
                 );
-                request = SessionBody::QuitExclusive(PbQuitSuperScreen {});
+                DisplayOp::ExitExclusive(wire::ExitExclusive {})
             }
             DisplayTopologyAction::Resolution { screen_id, choice } => {
-                let screen = state
+                let mode = state
                     .screens
                     .iter()
                     .find(|s| s.id == screen_id)
-                    .ok_or_else(|| anyhow!("{}", t().features.stream_display_disconnected))?;
-                let (mode, kind) = display_settings::expand_resolution(&screen.display, choice)?;
-                resolution(mode.width, mode.height)?;
-                let mut capture = capture_setting_request(state.baseline)?;
-                capture.screen_id = screen_id;
-                capture.resolution_width = i32::try_from(mode.width)?;
-                capture.resolution_height = i32::try_from(mode.height)?;
-                capture.resolution_type = kind;
-                request = SessionBody::CaptureSetting(capture);
+                    .ok_or_else(|| anyhow!("{}", t().features.stream_display_disconnected))?
+                    .display
+                    .mode_of(choice)
+                    .ok_or_else(|| anyhow!("{}", t().features.stream_no_initial_resolution))?;
+                exclusive(mode.width, mode.height, 0)?
             }
             DisplayTopologyAction::FrameRate {
                 settings,
@@ -426,8 +422,7 @@ impl StreamControlHandle {
                     "{}",
                     t().features.stream_cannot_switch_super_screen_by_fps
                 );
-                let target = resolution(width, height)?;
-                let dpi = i32::try_from(dpi)?;
+                let op = exclusive(width, height, dpi)?;
                 // Confirmation may remain open while another window changes quality.
                 // This action owns FPS only, never a stale full settings snapshot.
                 let settings = StreamControlSettings {
@@ -437,27 +432,22 @@ impl StreamControlHandle {
                 let old = state.settings.frame_rate;
                 let fps_sequence = self.apply_settings_locked(&mut state, settings)?;
                 rollback = Some((old, settings.frame_rate, fps_sequence));
-                request = SessionBody::EnterExclusive(PbEnterSuperScreen {
-                    reason: 2,
-                    resolution: Some(target),
-                    dpi_scale: dpi,
-                    enter_fps: Some(PbSuperScreenFps {
-                        fps_count: i32::try_from(state.baseline.fps_count)?,
-                    }),
-                });
+                op
             }
-        }
+        };
         state.mouse.pause_layout();
-        let sequence = state.next_sequence;
-        state.next_sequence = state.next_sequence.wrapping_add(1);
+        let sequence = self.send_request(
+            &mut state,
+            SessionBody::Display(DisplayRequest { op: Some(op) }),
+            Waiting::Topology,
+            display_settings::DISPLAY_REQUEST_TIMEOUT,
+        )?;
         state.topology = DisplayTopology {
             current: Some(Pending {
-                sequence,
-                generation: state.protocol_generation,
-                report: state.screens_generation,
-                report_at: None,
                 action,
                 before: state.screens.clone(),
+                answered: false,
+                report_at: None,
                 rollback,
             }),
             status: DisplayTopologyStatus {
@@ -469,50 +459,38 @@ impl StreamControlHandle {
                 ..Default::default()
             },
         };
-        let sent = self.outgoing.send(OutgoingControlMessage {
-            annotation_generation: None,
-            sequence,
-            payload: super::wire::request(sequence, request),
-            protocol: protocol(&state),
-            completion: None,
-        });
-        if sent.is_err() {
-            self.topology_send_failed(
-                &mut state,
-                sequence,
-                t().features.stream_display_operation_sender_stopped,
-            );
-            bail!("{}", t().features.stream_display_operation_sender_stopped);
-        }
-        tracing::info!(
-            sequence,
-            ?action,
-            origin,
-            "explicit display topology operation sent"
-        );
+        tracing::info!(?action, origin, "explicit display topology operation sent");
         self.mouse.repaint();
-        Ok(sequence)
+        Ok(())
     }
 
-    pub(super) fn topology_send_failed(
+    /// The host answered the topology operation.
+    pub(super) fn topology_settled(
         &self,
         state: &mut StreamControlState,
-        sequence: i64,
-        error: &str,
-    ) -> bool {
-        if !state
-            .topology
-            .current
-            .as_ref()
-            .is_some_and(|p| p.sequence == sequence)
-        {
-            return false;
+        result: std::result::Result<(), String>,
+    ) {
+        let Some(pending) = state.topology.current.as_mut() else {
+            return;
+        };
+        match result {
+            Ok(()) => {
+                pending.answered = true;
+                pending.rollback = None;
+                if !state.topology.status.reported {
+                    state.topology.status.message =
+                        t().features.stream_waiting_display_state.into();
+                }
+                let screens = state.screens.clone();
+                state.topology.observe(&screens);
+            }
+            Err(error) => {
+                state.topology.status.pending = false;
+                state.topology.status.error = true;
+                state.topology.status.message = error;
+                self.rollback_topology_fps(state);
+            }
         }
-        state.topology.status.pending = false;
-        state.topology.status.error = true;
-        state.topology.status.message = error.into();
-        self.rollback_topology_fps(state);
-        true
     }
 
     fn rollback_topology_fps(&self, state: &mut StreamControlState) {
@@ -532,139 +510,4 @@ impl StreamControlHandle {
             }
         }
     }
-
-    pub(super) fn handle_topology_response(
-        &self,
-        state: &mut StreamControlState,
-        sequence: i64,
-        payload: &SessionBody,
-    ) -> bool {
-        let Some(pending) = &state.topology.current else {
-            return false;
-        };
-        if pending.sequence != sequence || pending.generation != state.protocol_generation {
-            return false;
-        }
-        let mut reported_color = None;
-        let code = match (pending.action, payload) {
-            (
-                DisplayTopologyAction::Create { .. }
-                | DisplayTopologyAction::Remove { .. }
-                | DisplayTopologyAction::Exit
-                | DisplayTopologyAction::Enter { .. }
-                | DisplayTopologyAction::FrameRate { .. },
-                SessionBody::DisplayResult(result),
-            ) => Ok(result.error_code),
-            (DisplayTopologyAction::Resolution { .. }, SessionBody::CaptureSettingResult(result)) => {
-                // Only this confirmed conversion registers the special -5/-6 result path.
-                let mut error = None;
-                for item in &result.errors {
-                    if item.error_code == -5 {
-                        match serde_json::from_str::<serde_json::Value>(&item.error_detail)
-                            .ok()
-                            .and_then(|v| v.get("error_code").and_then(|x| x.as_i64()))
-                        {
-                            Some(0) => {}
-                            Some(code) => {
-                                error = Some((t().features.stream_super_screen_failed_code)(code))
-                            }
-                            None => {
-                                error = Some(t().features.stream_super_screen_no_result.into())
-                            }
-                        }
-                    } else if item.error_code == -6 {
-                        tracing::info!(sequence, detail = %item.error_detail, "super-screen conversion chroma result");
-                        reported_color =
-                            serde_json::from_str::<serde_json::Value>(&item.error_detail)
-                                .ok()
-                                .and_then(|v| v.get("error_code").and_then(|c| c.as_i64()))
-                                .filter(|code| (0..=5).contains(code))
-                                .map(|code| matches!(code, 0 | 3 | 4));
-                    }
-                    // Ordinary -2/-3 do not become a new recovery/retry policy here.
-                }
-                error.map_or(Ok(0), Err)
-            }
-            _ => return false,
-        };
-        if let Some(enabled) = reported_color
-            && state
-                .latest_requested_sequence
-                .is_none_or(|latest| sequence >= latest)
-        {
-            apply_reported_color(state, enabled, true);
-        }
-        match code {
-            Ok(0) => {
-                if let Some(pending) = state.topology.current.as_mut() {
-                    pending.rollback = None;
-                }
-                if !state.topology.status.reported {
-                    state.topology.status.message =
-                        t().features.stream_waiting_display_state.into();
-                }
-            }
-            error => {
-                let message = match error {
-                    Ok(code) => (t().features.stream_display_operation_failed_code)(code),
-                    Err(message) => message,
-                };
-                self.topology_send_failed(state, sequence, &message);
-            }
-        }
-        true
-    }
-}
-
-fn resolution(width: u32, height: u32) -> Result<PbScreenResolution> {
-    anyhow::ensure!(
-        width > 0 && height > 0,
-        "{}",
-        t().features.stream_invalid_display_size
-    );
-    Ok(PbScreenResolution {
-        width: i32::try_from(width)?,
-        height: i32::try_from(height)?,
-    })
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbScreenResolution {
-    #[prost(int32, tag = "1")]
-    pub(super) width: i32,
-    #[prost(int32, tag = "2")]
-    pub(super) height: i32,
-}
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbCreateVirtualDisplay {
-    #[prost(message, repeated, tag = "1")]
-    pub(super) local_resolution: Vec<PbScreenResolution>,
-}
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbRemoveVirtualDisplay {
-    #[prost(int32, repeated, tag = "1")]
-    pub(super) screen_id: Vec<i32>,
-}
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbQuitSuperScreen {}
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbEnterSuperScreen {
-    #[prost(int32, tag = "1")]
-    pub(super) reason: i32,
-    #[prost(message, optional, tag = "2")]
-    pub(super) resolution: Option<PbScreenResolution>,
-    #[prost(int32, tag = "3")]
-    pub(super) dpi_scale: i32,
-    #[prost(message, optional, tag = "4")]
-    pub(super) enter_fps: Option<PbSuperScreenFps>,
-}
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbSuperScreenFps {
-    #[prost(int32, tag = "1")]
-    pub(super) fps_count: i32,
-}
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbDisplayResult {
-    #[prost(int32, tag = "1")]
-    pub(super) error_code: i32,
 }

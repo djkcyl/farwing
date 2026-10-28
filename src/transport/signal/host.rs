@@ -982,7 +982,6 @@ impl Session {
                     servers,
                     relay,
                     config,
-                    options.control_screen_reports(),
                     negotiated,
                     deferred,
                     options.clipboard_level(),
