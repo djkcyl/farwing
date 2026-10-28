@@ -25,7 +25,7 @@ use farwing_protocol::crypto::ASSIST_PAKE_SLOTS;
 use farwing_protocol::realtime::{
     AssistAcceptPush, AssistCancelled, AssistJoinPush, Envelope, types,
 };
-use farwing_protocol::session::ConnectType;
+use crate::hub::ConnectType;
 use farwing_protocol::error::reason;
 use farwing_protocol::{ErrorCode, ids};
 use serde_json::json;

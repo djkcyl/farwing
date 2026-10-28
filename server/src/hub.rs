@@ -17,7 +17,6 @@ use farwing_protocol::realtime::{
     RtcCandidate, RtcDescription, SessionEnd, SessionIncoming, SessionPermissions,
     SessionRelayLost, SessionStart, SessionStarted, close, reason, types,
 };
-use farwing_protocol::session::ConnectType;
 use farwing_protocol::{ErrorBody, ErrorCode};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -302,6 +301,15 @@ fn ended_env(sid: &str, r: &str) -> Envelope {
         },
     )
     .with_sid(sid)
+}
+
+/// Which endpoint opened a session: an account's (`/sessions`) or an access
+/// code's (`/assist`). Recorded for the console; hosts go by the relation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectType {
+    Account,
+    Assist,
 }
 
 fn connect_type_str(t: ConnectType) -> &'static str {
@@ -1449,14 +1457,13 @@ impl Hub {
         if first_start {
             s.state = SessState::Started;
         }
-        // Purpose, type, relation, grants and the controller identity come
-        // from the session (server state), never from the controller's frame.
+        // Purpose, relation, grants and the controller identity come from
+        // the session (server state), never from the controller's frame.
         let incoming = SessionIncoming {
             participant_id: s.participant_id.clone(),
             attempt_id: start.attempt_id,
             visit: s.visit.clone(),
             purpose: s.purpose,
-            connect_type: s.connect_type,
             relation: s.relation,
             grants: s.grants.clone(),
             controller: s.controller.clone(),

@@ -6,7 +6,7 @@ use crate::i18n::t;
 impl Session {
     pub(crate) async fn prepare(&self, options: ConnectOptions) -> Result<capture::Screen> {
         ensure!(
-            options.kind == 1 && matches!(options.connect_type, 1 | 2),
+            options.kind == 1,
             "{}",
             t().features.screen_connection_type_unsupported
         );

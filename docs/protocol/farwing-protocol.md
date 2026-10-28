@@ -365,7 +365,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 3. **服务端**返回主控 `AssistPending{request_id, mode, trusted, pake, key_confirm}`：被控放行之前不透露它的任何信息（设备 ID、名称、系统、版本、公钥都在第 6 步的 `AssistJoin.host` 中）。同样，第 1 步推给被控的 `assist.join.controller` 不含访客的账号（`user_id`、`username` 为空），只有设备与昵称。每个主控与每个地址每小时最多 60 / 300 次 `join`（无论结果），被控按解析出的设备计数。被控 `allowed: false` → `409 assist_unavailable`；非 `trusted` 且需要访问码而请求未带 `pake` → `409 assist_code_required`（`details.mode`）并推送 `assist.cancelled`；被控未应答 → `408 timeout`。
 4. **主控**：`trusted` 时直接 `accept`（`key_confirm` 为空串）。否则逐槽计算 K 并核对 `key_confirm`；都不匹配即访问码错误：本地报错并 `POST …/cancel`。匹配（或仅确认模式）则 `POST /assist/requests/{id}/accept {key_confirm: HMAC(K, "FWAK2\ncontroller\n"+request_id)}`（长轮询，最多 65 秒；确认模式为空串）。
 5. **服务端**推送 `assist.accept{request_id, key_confirm}`；被控对受信任的请求重新核对该设备仍受信任，对访客校验确认值并在需要时弹出本机确认，然后 `POST …/decision`，主体 `AssistDecision{allowed, refusal?, trusted}`，`refusal ∈ code_invalid | code_required | rejected | unavailable`。
-6. 允许：服务端建立会话（`purpose = desktop`，`connect_type = assist`，`decision.trusted` 时 `relation = trusted`、否则 `assist`，`grants` 为空：被控套用为该受信任设备记录的能力或访客默认权限），返回 `AssistJoin` = `SessionTicket` 字段（`target.relation` 同上）+ `host`。拒绝映射：`code_invalid → 403 assist_code_invalid`，`code_required → 409 assist_code_required`，`rejected → 403 assist_rejected`，`unavailable → 409 assist_unavailable`。被控未决定 → `408 timeout` 并推送 `assist.cancelled`；请求已被取消 → `409 conflict`。
+6. 允许：服务端建立会话（`purpose = desktop`，`decision.trusted` 时 `relation = trusted`、否则 `assist`，`grants` 为空：被控套用为该受信任设备记录的能力或访客默认权限），返回 `AssistJoin` = `SessionTicket` 字段（`target.relation` 同上）+ `host`。拒绝映射：`code_invalid → 403 assist_code_invalid`，`code_required → 409 assist_code_required`，`rejected → 403 assist_rejected`，`unavailable → 409 assist_unavailable`。被控未决定 → `408 timeout` 并推送 `assist.cancelled`；请求已被取消 → `409 conflict`。
 7. 使用访问码的会话双方 SDP 增加 `a=x-farwing-pake`（§2.4）；被控按会话保存 K，重连同一会话时继续使用。
 
 - 被控已应答但主控 120 秒内未 `accept` 的请求过期，服务端推送 `assist.cancelled`。`accept` 与 `cancel` 只对发起该请求的主控（同一账号或同一无账号设备）有效。
@@ -495,7 +495,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `server.changed` | S→所有在线连接 | | `{url, previous, sha256?}`：公开地址或服务器自己的证书变了。保存的地址是 `previous`（或 `url`）的客户端确认 `url` 可以连上后改用它；固定了证书指纹的改为 `sha256`（反向代理时没有）。账号与设备登记不变 |
 
 - `SessionStarted`（`session.start` 的 `ack`）：`{participant_id, session_id, ice_servers, force_relay, host: {device_id, public_key}, relation, grants}`。
-- `SessionIncoming`：`{participant_id, attempt_id, purpose, connect_type: "account"|"assist", relation: "own"|"friend"|"trusted"|"assist", grants, controller: ControllerInfo, options, ice_servers, force_relay}`。目的、类型、关系、授予的能力与主控身份以服务端为准；`options` 中的同类信息不作授权依据。经服务端时 `own`、`friend` 的 `connect_type` 为 `account`，`trusted`、`assist` 为 `assist`（§3.11）。`grants`：本账号设备为全部能力，好友为生效授权，受信任设备与访客为空：被控对 `trusted` 重新核对本机受信任设备记录（设备 ID 与公钥都须匹配，否则拒绝）并套用为它记录的能力，对 `assist` 套用访客默认权限。
+- `SessionIncoming`：`{participant_id, attempt_id, purpose, relation: "own"|"friend"|"trusted"|"assist", grants, controller: ControllerInfo, options, ice_servers, force_relay}`。目的、关系、授予的能力与主控身份以服务端为准；`options` 中的同类信息不作授权依据。被控只按关系与能力处理会话，不区分会话从哪个接口建立；访客（`assist`）不能建立只传文件或只做端口转发的会话。`grants`：本账号设备为全部能力，好友为生效授权，受信任设备与访客为空：被控对 `trusted` 重新核对本机受信任设备记录（设备 ID 与公钥都须匹配，否则拒绝）并套用为它记录的能力，对 `assist` 套用访客默认权限。
 - `ControllerInfo`：`{device_id, alias, user_id, username, nickname, platform, version, public_key, caps_limit?}`；无账号的主控 `user_id`、`username`、`nickname` 为空。`caps_limit` 是服务端规定的能力上限：网页主控（`platform: "web"`）总是带（服务器设置“网页端可以使用的功能”），被控对所有关系的授权都按它裁剪；原生主控不带，不受此限制。
 - `IceServer`：`{urls, username, credential}`。TURN 凭据为 TURN REST 临时凭据：`username = "<过期 Unix 秒>:<session_id>"`，`credential = base64(HMAC-SHA1(shared_secret, username))`，默认 12 小时。NAT 探测端点以无凭据的 `stun:` 地址附加在列表中。
 - `network`（`rtc.offer`/`rtc.answer`）：`3` 全部候选；`1` 仅中继（服务器提供的全部中转方式：UDP、TCP、TLS）。主控在观看窗口切换线路时以重启 offer 发送；被控按它重新配置 ICE，其他取值不改配置。中继与直连之间的自动切换由 ICE 按实测路径质量完成（§7.5），不经信令。
@@ -511,7 +511,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 ### 4.6 会话流程与服务端校验
 
 1. 主控通过 HTTPS 创建会话（§3.10），用会话入场券建立主控连接（或在在线连接上，§4.7），发送 `session.start`。
-2. 服务端检查被控在线且仍是会话创建时的 `epoch`（否则 `error{device_offline}`），游客被控只接受 `connect_type = assist` 的会话（否则 `forbidden`）；记录 `attempt_id`、清零候选计数，向被控推送 `session.incoming`，向主控回 `ack`。同一会话可多次 `session.start`（会话重建），每次更换 `attempt_id`。
+2. 服务端检查被控在线且仍是会话创建时的 `epoch`（否则 `error{device_offline}`），游客被控只接受经访问码接口（`/assist`）建立的会话（否则 `forbidden`）；记录 `attempt_id`、清零候选计数，向被控推送 `session.incoming`，向主控回 `ack`。同一会话可多次 `session.start`（会话重建），每次更换 `attempt_id`。
 3. `rtc.*` 只在会话双方之间转发：主控只能发 `rtc.offer`/`rtc.candidate`，被控只能发 `rtc.answer`/`rtc.candidate`（否则 `forbidden`）；`sid` 必须是该连接所属的会话；会话尚未开始时 `conflict`；`attempt_id` 不是当前尝试时 `conflict`；SDP、候选大小与候选数超限时 `payload_too_large`。带 `id` 的转发消息在转发后回 `ack {}`。服务端转发时去掉 `id`/`re`，保留 `sid` 与 `gen`。
 4. 被控在收到 `session.incoming` 后即可应答 offer（媒体轨道预先协商）；SDP 带 §2.4 与 §7.2 的会话级属性。
 5. 结束：被控 `session.end{reason}`（服务端只转告 `revoked`、`kicked`、`identity_mismatch`、`media_failed`，其他按 `host_closed`）；主控 `bye`（主控连接）或 `session.leave`（在线连接）。
@@ -883,7 +883,7 @@ ICE 代理在默认路由上发布私网 UDP/IPv4 主机候选后，为该端口
 
 ### 8.4 直连会话
 
-- 主控发送 `session.start{attempt_id, options, purpose}`（带 `id`）。被控生成 `session_id` 与 `participant_id`，以 `ack: SessionStarted`（`ice_servers` 为空、`host` 为被控身份、`relation`、`grants`）回复，并把它作为一条 `session.incoming`（`connect_type`：访客为 `assist`，`own`、`friend`、`trusted` 为 `account`）交给与服务端会话共用的被控会话管理；被控照常按目的检查所需能力。
+- 主控发送 `session.start{attempt_id, options, purpose}`（带 `id`）。被控生成 `session_id` 与 `participant_id`，以 `ack: SessionStarted`（`ice_servers` 为空、`host` 为被控身份、`relation`、`grants`）回复，并把它作为一条 `session.incoming` 交给与服务端会话共用的被控会话管理；被控照常按目的检查所需能力。
 - `rtc.offer`/`rtc.answer`/`rtc.candidate` 与经服务端时相同；SDP 照常带 `a=x-farwing-identity`，使用访问码的会话另带 `a=x-farwing-pake`（K 为本次 PAKE 的密钥）。
 - 被控结束参与者时向主控发 `session.ended{reason}`；主控断开或发 `session.end` 时被控以 `controller_left` 结束该参与者；被控停止直连时主控收到 `session.ended{host_closed}` 或连接断开。
 

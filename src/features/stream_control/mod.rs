@@ -345,7 +345,6 @@ struct StreamControlState {
     screens_generation: u64,
     display_changes: display_settings::DisplayChanges,
     topology: display_topology::DisplayTopology,
-    assistance: bool,
 
     settings: StreamControlSettings,
     /// What the host holds of this controller's stream (the start offer,
@@ -445,7 +444,6 @@ impl StreamControlHandle {
             screens_generation: 0,
             display_changes: Default::default(),
             topology: Default::default(),
-            assistance: false,
 
             settings: StreamControlSettings {
                 true_color: false,

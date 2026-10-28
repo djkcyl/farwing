@@ -76,12 +76,12 @@ X-Farwing-Signature: base64url(ed25519(sk, "FWREQ2\n" + METHOD + "\n" + path_and
      - 否则按访问码应答：未配置的槽用随机口令应答，不暴露配置；仅确认模式时 `pake` 为空。未开启访问码或暂时锁定时 `allowed: false`。
   4. 服务端把应答作为 `AssistPending{request_id, mode, trusted, pake, key_confirm}` 返回主控（不含被控信息，放行后随 `AssistJoin` 给出）。非 `trusted` 时，需要访问码而请求未带 `pake` 返回 `409 assist_code_required`；`allowed: false` 返回 `409 assist_unavailable`。
   5. 主控：`trusted` 时直接 `accept`（确认值为空）。否则逐个计算 `K_i` 并比对 `key_confirm`；都不匹配就是访问码错误：本地报错并撤回请求（`…/cancel`），访问码本身从未发出。匹配则 `POST /api/v2/assist/requests/{id}/accept {key_confirm: HMAC(K, "FWAK2\ncontroller\n"+request_id)}`（长轮询）。
-  6. 服务端推送被控 `assist.accept`。受信任的请求：被控再次核对仍允许连接、该设备仍受信任，然后 `POST …/decision {allowed: true, trusted: true}`。访客：校验确认值，需要时弹出本机确认，然后 `POST …/decision {allowed, refusal}`（`code_invalid | code_required | rejected | unavailable`）。允许后服务端建立会话（`purpose = desktop`、`connect_type = assist`、`relation = trusted | assist`、`grants` 为空），把 `AssistJoin{session ticket, host}` 返回主控。
+  6. 服务端推送被控 `assist.accept`。受信任的请求：被控再次核对仍允许连接、该设备仍受信任，然后 `POST …/decision {allowed: true, trusted: true}`。访客：校验确认值，需要时弹出本机确认，然后 `POST …/decision {allowed, refusal}`（`code_invalid | code_required | rejected | unavailable`）。允许后服务端建立会话（`purpose = desktop`、`relation = trusted | assist`、`grants` 为空），把 `AssistJoin{session ticket, host}` 返回主控。
   7. 使用访问码的会话，双方 SDP 增加 `a=x-farwing-pake:<base64url(HMAC(K, "FWDTLS2\n"+session_id+"\n\n"+role+"\n"+fingerprints))>`，互相校验；被控按会话保存 K，重连同一会话时继续使用。
 - **能力：** 由被控在 `session.incoming` 时决定：`trusted` 重新核对本机受信任设备记录（设备 ID 与公钥都须匹配，否则拒绝），套用为该设备记录的能力；`assist` 套用访客默认权限。
 - **允许并信任：** 被控用户回答本机确认时可选“允许并信任”（`assist::Action::Answer{trust: true}`）：本次仍是访客会话，同时把该设备加入受信任设备（能力取访客默认权限，§12.6），下次按第 3 步的受信任路径连接。
 - **预检：** 主控未输入且未保存访问码时，先用空 `pake` 发起请求：信任本机或仅确认模式的被控直接返回待处理的请求，主控继续第 5 步；需要访问码的被控返回 `assist_code_required`，界面再要求输入。
-- **被控策略：** `DevicePolicy.assist` 表示“接受访客或受信任设备经服务端连接”，即访问码已开启或本机有受信任设备；为假时服务端直接返回 `assist_unavailable`。游客被控只接受 `connect_type = assist` 的会话（访客与受信任设备）。
+- **被控策略：** `DevicePolicy.assist` 表示“接受访客或受信任设备经服务端连接”，即访问码已开启或本机有受信任设备；为假时服务端直接返回 `assist_unavailable`。游客被控只接受经访问码接口建立的会话（访客与受信任设备）。
 - **失败计数：**
   - 被控本地：每分钟最多 10 次失败，超过后 5 分钟内拒绝访问码（经服务端与直连共用），并在界面提示。失败包括确认值错误，以及带访问码却在 120 s 内未完成确认、或被撤回的请求（主控只凭 PAKE 应答就能判断猜测是否正确，必须在被控侧计数）。
   - 服务端：每个主控（账号；无账号时为设备 `device:<id>`）对每个目标每分钟 `assist_failures_per_minute` 次，每个目标跨主控每小时 50 次；最终建立会话才返还。
@@ -584,7 +584,7 @@ HostEvent { kind: UPDATING|RESTARTING|SLEEPING|SHUTTING_DOWN|SESSION_SWITCH|DISP
    - `assist`：主控 `direct.pake {kind: "assist", messages: [msg_0, msg_1]}`，SPAKE2（身份串 `"farwing-assist-v2"`），两个槽位与 §2 相同（临时 / 固定访问码）。被控回 `direct.pake {messages, confirm: [每槽 HMAC(K_i, "FWPAIR2\nhost\n" + hex(ekm))], confirmation}`；主控核对后发 `direct.confirm {confirm: HMAC(K, "FWPAIR2\ncontroller\n" + hex(ekm))}`。主控发现确认值都不符即为访问码错误，直接断开。仅确认模式时 `messages` 为空、应答中 `confirmation: true`；需要本机确认时由被控界面弹出确认（无界面、会话锁定或已有待确认请求时拒绝），被控用户可选“允许并信任”（§12.6）。关系 `assist`，能力为访客默认权限。错误码：`assist_unavailable`（未开启访问码）、`assist_code_required`、`assist_code_invalid`、`assist_rejected`、`rate_limited`。
    - 失败计数与 §2 共用同一计数（经服务端与直连；每分钟 10 次，超出后 5 分钟拒绝访问码）。发出 PAKE 消息后未在 10 s 内给出正确确认值的尝试计为失败。日志不记录任何访问码。
 4. 被控回 `direct.authorized {relation, grants}`。主控把被控记入 `known_hosts.json`（地址与公钥；关系不是 `assist` 时标记为“对方信任本机”，§12.6）。
-5. 主控照常发送 `session.start`，并带上新增的可选字段 `purpose`（服务端不读取，仍以会话票据为准）。被控以 `ack SessionStarted` 回复：`session_id`、`participant_id` 由被控生成，`relation: own|friend|trusted|assist`，`grants`，`ice_servers` 为空，`network` 为默认。端点把它作为一条 `session.incoming` 交给被控的信令循环（`router.rs` 按会话 ID 转发两个方向的消息），与经服务端的会话共用同一套会话、参与者与显示布局管理，两类参与者可以同时在一个会话里。`connect_type` 为 `assist`（访客）或 `account`（`own` / `friend` / `trusted`）；被控照常按目的检查所需能力。
+5. 主控照常发送 `session.start`，并带上新增的可选字段 `purpose`（服务端不读取，仍以会话票据为准）。被控以 `ack SessionStarted` 回复：`session_id`、`participant_id` 由被控生成，`relation: own|friend|trusted|assist`，`grants`，`ice_servers` 为空，`network` 为默认。端点把它作为一条 `session.incoming` 交给被控的信令循环（`router.rs` 按会话 ID 转发两个方向的消息），与经服务端的会话共用同一套会话、参与者与显示布局管理，两类参与者可以同时在一个会话里。被控照常按目的检查所需能力。
 6. `rtc.offer / rtc.answer / rtc.candidate` 与经服务端时相同；SDP 照常带 `a=x-farwing-identity`，使用访问码的会话另带 `a=x-farwing-pake`（K 为本次 PAKE 的密钥）。被控结束参与者时（`session.end{reason}`），端点向主控发 `session.ended{reason}`；主控断开 TCP 或发 `session.end` 时，被控收到 `session.ended{controller_left}`；被控停止直连（退出、关闭被控）时主控收到 `session.ended{host_closed}` 或 TCP 断开，按“等待设备”恢复（每 3 s 重连，最长 5 分钟）。
 
 ### 12.3 直连会话的 ICE

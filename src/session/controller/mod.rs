@@ -281,7 +281,6 @@ impl ControllerConnection {
             crate::transport::signal::identity::Local::new(client.client_identity()?),
             profile,
             policy,
-            crate::session::negotiation::ControlConnectType::Normal,
             options.transport,
             None,
             crate::media::audio::AudioSettings {
@@ -436,7 +435,6 @@ impl ControllerConnection {
         local: crate::transport::signal::identity::Local,
         profile: ConnectionMediaProfile,
         features: crate::account::feature_ability::FeaturePolicy,
-        connect_type: crate::session::negotiation::ControlConnectType,
         transport: crate::media::TransportChoice,
         preferences: Option<crate::features::stream_control::StreamControlPreferences>,
         audio_settings: crate::media::audio::AudioSettings,
@@ -463,7 +461,6 @@ impl ControllerConnection {
             local,
             profile,
             features,
-            connect_type,
             transport,
             preferences,
             audio_settings,
@@ -482,7 +479,6 @@ impl ControllerConnection {
         local: crate::transport::signal::identity::Local,
         profile: ConnectionMediaProfile,
         features: crate::account::feature_ability::FeaturePolicy,
-        connect_type: crate::session::negotiation::ControlConnectType,
         transport: crate::media::TransportChoice,
         preferences: Option<crate::features::stream_control::StreamControlPreferences>,
         audio_settings: crate::media::audio::AudioSettings,
@@ -545,8 +541,6 @@ impl ControllerConnection {
         peer.stream_control_handle().set_offer(&control.offer);
         peer.stream_control_handle()
             .set_viewing_enabled(purpose == crate::session::negotiation::ControlPurpose::Viewing);
-        peer.stream_control_handle()
-            .set_display_connection_type(connect_type);
         if let Some(preferences) = preferences
             && let Err(error) = peer
                 .stream_control_handle()

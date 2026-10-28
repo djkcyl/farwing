@@ -212,8 +212,6 @@ pub(super) fn support(state: &StreamControlState) -> DisplayTopologySupport {
         Some(t().features.stream_virtual_screens_unavailable)
     } else if super_screen {
         Some(t().features.stream_unavailable_in_super_screen)
-    } else if state.assistance {
-        Some(t().features.stream_guest_cannot_add_virtual_screen)
     } else if state.screens.len() >= 5 {
         Some(t().features.stream_display_limit)
     } else if state
@@ -237,18 +235,12 @@ pub(super) fn support(state: &StreamControlState) -> DisplayTopologySupport {
     };
     DisplayTopologySupport {
         create: create_unavailable.is_none(),
-        create_visible: display_settings::supported(state) && !super_screen && !state.assistance,
+        create_visible: display_settings::supported(state) && !super_screen,
         create_unavailable,
-        enter: available
-            && !super_screen
-            && !state.assistance
-            && feature_supported(state, Feature::Host),
+        enter: available && !super_screen && feature_supported(state, Feature::Host),
         exit: available && super_screen,
         resolution_conversion: available,
-        fps_conversion: available
-            && !super_screen
-            && !state.assistance
-            && feature_supported(state, Feature::Host),
+        fps_conversion: available && !super_screen && feature_supported(state, Feature::Host),
     }
 }
 
@@ -280,16 +272,6 @@ impl StreamControlHandle {
             drop(state);
             self.mouse.repaint();
         }
-    }
-
-    pub(crate) fn set_display_connection_type(
-        &self,
-        kind: crate::session::negotiation::ControlConnectType,
-    ) {
-        lock(&self.shared).assistance = matches!(
-            kind,
-            crate::session::negotiation::ControlConnectType::Assistance
-        );
     }
 
     pub fn dismiss_display_topology(&self) {

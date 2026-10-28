@@ -12,7 +12,7 @@ use farwing_protocol::api::{
     CreateSessionRequest, PresenceTicket, Purpose, Relation, SessionTarget, SessionTicket,
 };
 use farwing_protocol::realtime::ControllerInfo;
-use farwing_protocol::session::ConnectType;
+use crate::hub::ConnectType;
 use farwing_protocol::error::reason;
 use farwing_protocol::{ErrorCode, Platform, timing};
 

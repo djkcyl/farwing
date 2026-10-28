@@ -4,16 +4,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Connection type of a session.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConnectType {
-    /// Same-account device access.
-    Account,
-    /// Remote assistance by connect ID.
-    Assist,
-}
-
 /// Video codecs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -622,15 +622,10 @@ impl Session {
         );
         let mut options =
             crate::features::stream_control::publisher::ConnectOptions::from_wire(&incoming.options);
-        // The server authenticated the session type, purpose and controller.
-        // The copies inside the controller-supplied options are not trusted:
-        // an assistance controller must never present itself as an account
-        // session or as another participant.
-        options.connect_type = match incoming.connect_type {
-            farwing_protocol::session::ConnectType::Account => 1,
-            farwing_protocol::session::ConnectType::Assist => 2,
-        };
+        // The server authenticated the purpose, relation and controller;
+        // nothing in the controller-supplied options is trusted for them.
         use crate::features::stream_control::publisher::kind;
+        use farwing_protocol::api::Relation;
         options.kind = match incoming.purpose {
             farwing_protocol::api::Purpose::Desktop | farwing_protocol::api::Purpose::Audio => {
                 kind::DESKTOP
@@ -688,13 +683,12 @@ impl Session {
         let data_only = file_only || ports_only;
         // The peer HELLO negotiates the in-session feature set.
         let audio_only = incoming.purpose == farwing_protocol::api::Purpose::Audio;
-        tracing::info!(kind=options.kind,connect_type=options.connect_type,
+        tracing::info!(kind=options.kind, relation=?incoming.relation,
             decoders=?options.decoders, stream=?options.stream,
             "host incoming media capabilities");
+        // A visitor (access code) sees the screen: no files- or ports-only session.
         anyhow::ensure!(
-            matches!(options.kind, 1 | 5 | 9)
-                && matches!(options.connect_type, 1 | 2)
-                && (!data_only || options.connect_type == 1),
+            matches!(options.kind, 1 | 5 | 9) && (!data_only || incoming.relation != Relation::Assist),
             "不支持的被控连接类型"
         );
         anyhow::ensure!(
@@ -712,8 +706,6 @@ impl Session {
                 ..Default::default()
             })
             .collect();
-        use farwing_protocol::api::Relation;
-        use farwing_protocol::session::ConnectType;
         anyhow::ensure!(
             !self.client.is_guest() || matches!(incoming.relation, Relation::Assist | Relation::Trusted),
             "未登录时只接受访客与受信任设备"
@@ -741,14 +733,6 @@ impl Session {
         // No more than the server allows this controller (browsers), whatever
         // the relation grants.
         let grants = incoming.controller.limit_grants(grants);
-        anyhow::ensure!(
-            matches!(
-                (incoming.relation, incoming.connect_type),
-                (Relation::Assist | Relation::Trusted, ConnectType::Assist)
-                    | (Relation::Own | Relation::Friend | Relation::Trusted, ConnectType::Account)
-            ),
-            "会话关系与连接类型不一致"
-        );
         anyhow::ensure!(
             grants
                 .iter()

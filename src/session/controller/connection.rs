@@ -315,11 +315,6 @@ impl ResolvedConnection {
             self.client
                 .feature_catalog()
                 .policy(&self.target_device_id),
-            if self.assist.is_some() {
-                crate::session::negotiation::ControlConnectType::Assistance
-            } else {
-                crate::session::negotiation::ControlConnectType::Normal
-            },
             self.transport,
             self.preferences,
             self.audio_preferences.expect("resolved audio settings"),

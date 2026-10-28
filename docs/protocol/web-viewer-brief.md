@@ -225,7 +225,7 @@ ICE 服务器的构造见 `server/src/ice.rs:88-106`。
 - 被控仍接受连接；`sid` 是 UUID；本会话还没有参与者（**同一 `sid` 再次 `session.start` 会因“会话已存在”被以 `media_failed` 结束**，`host.rs:618-621`）；`participant_id` 非空且 ≤ 256 字符；`attempt_id` 是 UUID（`:609-628`）。
 - 主控设备 ID 合法，并且 `local_device_id(controller.public_key) == controller.device_id`（`:647-692`）。
 - `capability` 能解析为 `DeviceCapability`（`:696-702`，`"缺少主控解码能力"`）。
-- 会话类型、`connect_type` 合法，且解码能力非空（`:712-722`）。
+- 会话类型合法，且解码能力非空。
 - 授权经网页裁剪后仍包含本次 purpose 所需的能力（desktop/audio 需要 `view`，`:759-780`）；关系与连接类型一致（`:767-774`）。
 - 未超过参与者上限、被控不在更新或执行电源操作（`src/features/host/access.rs:1549-1557` `peer_lease`）。
 - 媒体准备（异步，`host.rs:846-969`）：显示准备（`initial.rs:15-53`）→ 编码能力 → `Negotiated::new` 必须有交集（`format.rs:161-165`，`"没有共同的画面编码/解码能力"`）→ `apply` 必须选出格式（`format.rs:378-379`，`"请求的画面格式没有共同能力"`）。失败时以 `media_failed` 结束（`host.rs:386-394`）。

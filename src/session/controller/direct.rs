@@ -347,11 +347,6 @@ async fn connect_once(
         },
         profile,
         crate::account::feature_ability::FeaturePolicy::direct(),
-        if connected.relation == Relation::Assist {
-            crate::session::negotiation::ControlConnectType::Assistance
-        } else {
-            crate::session::negotiation::ControlConnectType::Normal
-        },
         transport,
         preferences,
         audio,

@@ -818,11 +818,6 @@ impl Shared {
             attempt_id: start.attempt_id.clone(),
             visit: start.visit.clone(),
             purpose,
-            connect_type: if assist {
-                farwing_protocol::session::ConnectType::Assist
-            } else {
-                farwing_protocol::session::ConnectType::Account
-            },
             relation: authorized.relation,
             // Assistance capabilities come from the host's template.
             grants: if assist { Vec::new() } else { authorized.grants.clone() },

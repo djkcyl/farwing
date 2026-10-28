@@ -182,7 +182,6 @@ async fn full_session_flow_relay_and_endings() {
     let d = &incoming["data"];
     assert_eq!(d["attempt_id"], "att-1");
     assert_eq!(d["purpose"], "desktop");
-    assert_eq!(d["connect_type"], "account");
     assert_eq!(d["relation"], "own");
     assert_eq!(d["grants"], json!(farwing_protocol::caps::ALL));
     assert_eq!(d["controller"]["device_id"], ctrl.id.as_str());
@@ -288,13 +287,11 @@ async fn full_session_flow_relay_and_endings() {
     // purpose and relation still come from the session, not the frame.
     let mut restart = start_frame("s2", &sid, "att-2");
     restart["data"]["purpose"] = json!("files");
-    restart["data"]["connect_type"] = json!("assist");
     cw.send(restart).await;
     let again = p.host_ws.recv_type("session.incoming").await;
     assert_eq!(again["data"]["attempt_id"], "att-2");
     assert_eq!(again["data"]["participant_id"], participant.as_str());
     assert_eq!(again["data"]["purpose"], "desktop");
-    assert_eq!(again["data"]["connect_type"], "account");
     let ack = cw.recv_type("ack").await;
     assert_eq!(ack["data"]["participant_id"], participant.as_str());
     assert_eq!(ack["data"]["session_id"], sid.as_str());

@@ -10,13 +10,6 @@ use uuid::Uuid;
 
 use crate::media::ConnectionMediaProfile;
 
-#[derive(Clone, Copy, Debug)]
-#[repr(u64)]
-pub(crate) enum ControlConnectType {
-    Normal = 1,
-    Assistance = 2,
-}
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ControlPurpose {

@@ -242,7 +242,6 @@ async fn check_join_and_start(s: &mut Setup, join: &Value) {
     let (incoming, _) = s.host_ws.recv_until("session.incoming").await;
     assert_eq!(incoming["sid"], sid);
     let d = &incoming["data"];
-    assert_eq!(d["connect_type"], "assist");
     assert_eq!(d["relation"], "assist");
     assert_eq!(d["purpose"], "desktop");
     assert_eq!(d["grants"], json!([]));
@@ -867,7 +866,6 @@ async fn trusted_guest_by_device_id() {
     cw.send(start_frame("s", sid, "a1")).await;
     let (incoming, _) = s.host_ws.recv_until("session.incoming").await;
     assert_eq!(incoming["data"]["relation"], "trusted");
-    assert_eq!(incoming["data"]["connect_type"], "assist");
     assert_eq!(incoming["data"]["controller"]["device_id"], guest.id.as_str());
     // A guest has no recent list to record into.
     s.srv

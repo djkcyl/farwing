@@ -4,7 +4,7 @@ pub use crate::api::WolTarget;
 use crate::Platform;
 use crate::api::{Device, Purpose, Relation, UserSummary};
 use crate::error::ErrorBody;
-use crate::session::{ConnectOptions, ConnectType};
+use crate::session::ConnectOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -319,7 +319,7 @@ impl ControllerInfo {
 }
 
 /// `session.incoming` (server → host). `sid` carries the session ID. The
-/// purpose, connect type, relation, grants and controller identity are
+/// purpose, relation, grants and controller identity are
 /// authoritative; hosts never take them from `options`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionIncoming {
@@ -330,7 +330,6 @@ pub struct SessionIncoming {
     #[serde(default)]
     pub visit: String,
     pub purpose: Purpose,
-    pub connect_type: ConnectType,
     #[serde(default)]
     pub relation: Relation,
     /// Capabilities granted by the server (own devices: all; friends: the
