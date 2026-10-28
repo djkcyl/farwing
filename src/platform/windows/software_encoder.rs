@@ -70,7 +70,7 @@ impl Encoder {
             return Ok(false);
         };
         self.core.configure(update.rate.fps, update.rate.target)?;
-        let key = self.rate.quality != rate.quality;
+        let key = self.rate.tier != rate.tier;
         self.rate = rate;
         self.frame_rate.commit(update);
         tracing::debug!(

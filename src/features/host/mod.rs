@@ -66,9 +66,11 @@ pub(crate) struct VideoConfig {
     pub fps: u32,
     pub requested_fps: u32,
     pub fps_limit: u32,
+    /// The custom quality's bitrate (bps).
     pub bitrate: u32,
-    pub quality: i32,
-    pub auto_quality: i32,
+    pub quality: parameters::Quality,
+    /// Where automatic quality starts.
+    pub auto_tier: parameters::Tier,
     pub revision: u64,
     pub format: format::Format,
     pub color: format::Color,
@@ -76,7 +78,8 @@ pub(crate) struct VideoConfig {
     pub requested_maximum: Option<(u32, u32)>,
     pub maximum: (u32, u32),
     pub maximum_fps: u32,
-    pub maximum_quality: i32,
+    /// The largest tier both sides take for this screen.
+    pub maximum_tier: parameters::Tier,
     pub sending: bool,
     pub capturing: bool,
     pub cursor_capture: bool,
@@ -84,9 +87,6 @@ pub(crate) struct VideoConfig {
     pub cinema: bool,
     /// Frame-rate cap while the controller's decoder falls behind; 0 = none.
     pub receiver_fps: u32,
-    /// A `CaptureSetting` from this participant was applied (until then the
-    /// session's start parameters stand in).
-    pub configured: bool,
     /// The codec the controller asked for from the session's start (its
     /// later settings keep it current); None lets the host choose.
     pub requested_codec: Option<format::Codec>,
@@ -98,22 +98,21 @@ impl Default for VideoConfig {
             requested_fps: 30,
             fps_limit: 144,
             bitrate: 8_000_000,
-            quality: 2,
-            auto_quality: 2,
+            quality: parameters::Quality::Tier(parameters::Tier::P1080),
+            auto_tier: parameters::Tier::P1080,
             revision: 0,
             format: format::Format::AVC,
             color: format::Color::Sdr,
             requested_maximum: None,
             maximum: (3840, 2160),
             maximum_fps: 144,
-            maximum_quality: 4,
+            maximum_tier: parameters::Tier::P2160,
             sending: true,
             capturing: true,
             cursor_capture: false,
             weak_network: parameters::WeakNetwork::Bitrate,
             cinema: false,
             receiver_fps: 0,
-            configured: false,
             requested_codec: None,
         }
     }

@@ -163,17 +163,19 @@ impl From<Vec<Vec<u8>>> for Received {
         }
     }
 }
-/// The host's quality number of `quality` (1–4 a tier, 5 automatic, 6
-/// custom).
-pub(crate) fn quality_number(quality: farwing_protocol::session::Quality) -> i32 {
+/// The host's quality of `quality`.
+pub(crate) fn quality_of(
+    quality: farwing_protocol::session::Quality,
+) -> crate::features::host::parameters::Quality {
+    use crate::features::host::parameters::{Quality, Tier};
     use farwing_protocol::session::Quality as Q;
     match quality {
-        Q::Low => 1,
-        Q::Standard => 2,
-        Q::High => 3,
-        Q::Ultra => 4,
-        Q::Auto => 5,
-        Q::Custom => 6,
+        Q::Low => Quality::Tier(Tier::P720),
+        Q::Standard => Quality::Tier(Tier::P1080),
+        Q::High => Quality::Tier(Tier::P1440),
+        Q::Ultra => Quality::Tier(Tier::P2160),
+        Q::Auto => Quality::Auto,
+        Q::Custom => Quality::Custom,
     }
 }
 
@@ -193,7 +195,7 @@ pub(crate) fn valid(settings: &farwing_protocol::session::StreamSettings) -> boo
 /// quality starts from. The format is chosen separately ([`configure`]).
 pub(crate) fn config_of(
     settings: &farwing_protocol::session::StreamSettings,
-    auto_start: i32,
+    auto_start: crate::features::host::parameters::Tier,
     mut config: VideoConfig,
 ) -> VideoConfig {
     use farwing_protocol::session::WeakNetwork;
@@ -201,8 +203,8 @@ pub(crate) fn config_of(
     config.fps = fps.min(config.maximum_fps.max(1));
     config.requested_fps = fps;
     config.fps_limit = fps;
-    config.quality = quality_number(settings.quality);
-    config.auto_quality = auto_start.clamp(1, 4);
+    config.quality = quality_of(settings.quality);
+    config.auto_tier = auto_start;
     config.bitrate = if settings.quality == farwing_protocol::session::Quality::Custom {
         settings
             .bitrate_kbps
@@ -218,8 +220,6 @@ pub(crate) fn config_of(
     };
     config.cinema = settings.cinema;
     config.requested_codec = settings.codec.map(crate::features::host::format::Codec::of);
-    // The participant's own settings from the start (`session.start`).
-    config.configured = true;
     config
 }
 
@@ -231,7 +231,7 @@ pub(crate) fn configure(
     config: &mut VideoConfig,
     negotiated: &crate::features::host::format::Negotiated,
 ) -> Result<()> {
-    let mut next = config_of(settings, config.auto_quality, *config);
+    let mut next = config_of(settings, config.auto_tier, *config);
     next.revision = next.revision.wrapping_add(1);
     negotiated.apply_requested(
         &mut next,
@@ -242,7 +242,7 @@ pub(crate) fn configure(
     *config = next;
     tracing::info!(
         fps = config.fps,
-        quality = config.quality,
+        quality = ?config.quality,
         format = ?config.format,
         maximum = ?config.maximum,
         "host stream settings applied"

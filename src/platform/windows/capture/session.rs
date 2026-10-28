@@ -56,7 +56,7 @@ impl Session {
     pub fn next(
         &mut self,
         timeout: u32,
-        quality: i32,
+        tier: crate::media::geometry::Tier,
         cursor: bool,
         hdr: bool,
         maximum: (u32, u32),
@@ -66,7 +66,7 @@ impl Session {
             "{}",
             t().system.capture_session_ended
         );
-        match self.acquire(timeout, quality, cursor, hdr, maximum) {
+        match self.acquire(timeout, tier, cursor, hdr, maximum) {
             Ok(frame) => Ok(frame),
             Err(error) if error.is::<crate::media::capture::SourceGone>() => Err(error),
             Err(error) => {
@@ -84,7 +84,7 @@ impl Session {
     fn acquire(
         &mut self,
         timeout: u32,
-        quality: i32,
+        tier: crate::media::geometry::Tier,
         cursor: bool,
         hdr: bool,
         maximum: (u32, u32),
@@ -103,7 +103,7 @@ impl Session {
             self.capture = Some(Box::new(Desktop::open_local(&self.selected)?));
         }
         let capture = self.capture.as_mut().unwrap();
-        let frame = capture.next(timeout, quality, cursor, hdr, maximum)?;
+        let frame = capture.next(timeout, tier, cursor, hdr, maximum)?;
         if self.native_epoch != capture.generation {
             self.native_epoch = capture.generation;
             self.epoch = self.epoch.wrapping_add(1);

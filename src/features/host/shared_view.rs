@@ -7,15 +7,16 @@
 //! and low latency.
 use crate::features::host::VideoConfig;
 use crate::features::host::format::{Codec, Color, Format, Negotiated};
+use super::parameters::{Quality, Tier};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// The quality tier of the shared stream (1920×1080; the tier also sets
-/// the bitrate bounds)...
-pub(crate) const QUALITY: i32 = 2;
-/// ...or of 流畅 (1280×720) for those who chose it.
-const SMOOTH: i32 = 1;
+/// The quality tier of the shared stream (the tier also sets the bitrate
+/// bounds)...
+pub(crate) const TIER: Tier = Tier::P1080;
+/// ...or of 流畅 for those who chose it.
+const SMOOTH: Tier = Tier::P720;
 pub(crate) const FPS: u32 = 60;
 /// One size bound for everyone: the tier, not each decoder's limit, sizes
 /// the picture, and equal bounds let the viewers share an encoder.
@@ -92,13 +93,13 @@ pub(crate) fn apply(participant: Option<u64>, wanted: &mut VideoConfig, forwarde
     if !super::participants::shared_viewer(participant) {
         return false;
     }
-    let tier = if wanted.quality == SMOOTH && !forwarded {
+    let tier = if wanted.quality == Quality::Tier(SMOOTH) && !forwarded {
         SMOOTH
     } else {
-        QUALITY
+        TIER
     };
-    wanted.quality = tier;
-    wanted.auto_quality = tier;
+    wanted.quality = Quality::Tier(tier);
+    wanted.auto_tier = tier;
     wanted.fps = FPS;
     wanted.requested_fps = FPS;
     wanted.cinema = true;

@@ -44,9 +44,8 @@ pub(super) struct Key {
     pub fps: u32,
     pub cursor: bool,
     pub cinema: bool,
-    /// Quality tier (automatic resolved) and, for custom quality, its bitrate.
-    pub quality: i32,
-    pub bitrate: u32,
+    /// The tier (automatic resolved) or the custom bitrate.
+    pub target: crate::features::host::parameters::Target,
     /// Non-zero: this member encodes alone for now (a lossy keyframe-only
     /// viewer), each isolated member with its own number.
     pub isolated: u64,
@@ -183,7 +182,7 @@ pub(super) struct Output {
     pub maximum_size: (u32, u32),
     pub capture: String,
     pub screen: crate::features::host::capture::Screen,
-    pub quality: i32,
+    pub target: crate::features::host::parameters::Target,
     pub fps: u32,
     pub format: Format,
     pub budget_size: (u32, u32),
@@ -270,19 +269,11 @@ impl Registry {
     /// A forwarded participant: share the closest group of the same screen
     /// and format (all forwarded viewers get one stream), else lead one.
     pub(super) fn join_forwarded(self: &Arc<Self>, key: Key, size: (u32, u32)) -> Membership {
-        let mut membership = self.join_with(key, size, 0, true);
-        membership.provisional = false;
-        membership
-    }
-
-    /// A participant whose own settings have not arrived yet: share the
-    /// closest group of the same screen and format rather than open an
-    /// encoder for parameters about to change.
-    pub(super) fn join_provisional(self: &Arc<Self>, key: Key, size: (u32, u32)) -> Membership {
         self.join_with(key, size, 0, true)
     }
 
-    fn join_with(self: &Arc<Self>, key: Key, size: (u32, u32), limit: usize, provisional: bool) -> Membership {
+    /// `any`: share the closest group whatever the limit, else open one.
+    fn join_with(self: &Arc<Self>, key: Key, size: (u32, u32), limit: usize, any: bool) -> Membership {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (outbox, inbox) = sync_channel(FOLLOWER_QUEUE);
         let member = Member {
@@ -300,10 +291,10 @@ impl Registry {
             .map(|group| (group.key.clone(), group.lock().size))
             .collect();
         let choice = match choose(&existing, &key, size, limit) {
-            Choice::OverLimit if provisional => Choice::Create,
+            Choice::OverLimit if any => Choice::Create,
             choice => choice,
         };
-        let shares = matches!(choice, Choice::Closest(_)) && provisional;
+        let shares = matches!(choice, Choice::Closest(_)) && any;
         let group = match choice {
             Choice::Exact(index) | Choice::Closest(index) => {
                 let group = groups[index].clone();
@@ -315,7 +306,7 @@ impl Registry {
                 if matches!(choice, Choice::Exact(_)) {
                     tracing::info!(
                         screen = %key.screen,
-                        quality = key.quality,
+                        target = ?key.target,
                         fps = key.fps,
                         "participant joined a shared encoder as a follower"
                     );
@@ -323,7 +314,7 @@ impl Registry {
                     tracing::info!(
                         screen = %key.screen,
                         sharing = ?group.key,
-                        "participant shares an encoder until its own settings arrive"
+                        "forwarded participant shares the stream of its screen"
                     );
                 } else {
                     tracing::info!(
@@ -372,7 +363,6 @@ impl Registry {
             group,
             id,
             wanted: key,
-            provisional: shares,
             inbox,
             last_sequence: None,
             output_seen: 0,
@@ -420,7 +410,6 @@ impl Registry {
             group: group.clone(),
             id,
             wanted: group.key.clone(),
-            provisional: false,
             inbox,
             last_sequence: None,
             output_seen: 0,
@@ -470,9 +459,6 @@ pub(super) struct Membership {
     /// The key this participant asked for (the group's may differ at the
     /// encoder limit).
     pub wanted: Key,
-    /// Shares the closest group only until this participant's own settings
-    /// arrive.
-    pub provisional: bool,
     inbox: Receiver<Arc<Shared>>,
     last_sequence: Option<u64>,
     output_seen: u64,
@@ -671,6 +657,14 @@ impl Drop for Membership {
 mod tests {
     use super::*;
 
+    /// Tiers 1–4, else a custom bitrate of that many Mbit/s.
+    fn target(quality: i32) -> crate::features::host::parameters::Target {
+        use crate::features::host::parameters::{Target, Tier};
+        match quality {
+            1..=4 => Target::Tier(Tier::ALL[quality as usize - 1]),
+            _ => Target::Custom { bps: quality as u32 * 1_000_000 },
+        }
+    }
     fn key(screen: &str, quality: i32) -> Key {
         Key {
             screen: screen.into(),
@@ -682,8 +676,7 @@ mod tests {
             fps: 60,
             cursor: true,
             cinema: false,
-            quality,
-            bitrate: 0,
+            target: target(quality),
             isolated: 0,
             low: false,
         }
@@ -720,23 +713,6 @@ mod tests {
     }
 
     #[test]
-    fn newcomers_share_an_encoder_until_their_settings_arrive() {
-        let registry = Arc::new(Registry::default());
-        let a = registry.join(key("D1", 3), (2560, 1440), MAX_ENCODERS);
-        // Start parameters differ (no cursor yet): follow, do not open.
-        let mut start = key("D1", 2);
-        start.cursor = false;
-        let b = registry.join_provisional(start, (1920, 1080));
-        assert!(!b.is_leader() && b.provisional);
-        assert_eq!(registry.len(), 1);
-        // Nothing on that screen to follow: lead a new group as usual.
-        let c = registry.join_provisional(key("D2", 2), (1920, 1080));
-        assert!(c.is_leader() && !c.provisional);
-        assert_eq!(registry.len(), 2);
-        drop((a, b, c));
-    }
-
-    #[test]
     fn limit_of_four_encoders_shares_the_closest() {
         let registry = Arc::new(Registry::default());
         let held: Vec<_> = (1..=4)
@@ -746,12 +722,11 @@ mod tests {
             })
             .collect();
         assert_eq!(registry.len(), 4);
-        let mut fifth = key("D1", 6);
-        fifth.bitrate = 20_000_000;
+        let fifth = key("D1", 6);
         let extra = registry.join(fifth, (2560, 1440), MAX_ENCODERS);
         assert!(!extra.is_leader());
         assert_eq!(registry.len(), 4);
-        assert_eq!(extra.group_key().quality, 3);
+        assert_eq!(extra.group_key().target, target(3));
         // Another screen cannot share: over the limit.
         let other = registry.join(key("D2", 2), (1920, 1080), MAX_ENCODERS);
         assert!(other.is_leader());

@@ -51,17 +51,41 @@ impl DisplayAspect {
     }
 }
 
-pub(crate) fn dimensions(quality: i32) -> (u32, u32) {
-    match quality {
-        1 => (1280, 720),
-        3 => (2560, 1440),
-        4 | 6 => (3840, 2160),
-        _ => (1920, 1080),
+/// A picture size class: the box a source is fitted into.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub(crate) enum Tier {
+    P720,
+    #[default]
+    P1080,
+    P1440,
+    P2160,
+}
+
+impl Tier {
+    pub const ALL: [Self; 4] = [Self::P720, Self::P1080, Self::P1440, Self::P2160];
+
+    pub fn size(self) -> (u32, u32) {
+        match self {
+            Self::P720 => (1280, 720),
+            Self::P1080 => (1920, 1080),
+            Self::P1440 => (2560, 1440),
+            Self::P2160 => (3840, 2160),
+        }
+    }
+    /// The next larger tier.
+    pub fn up(self) -> Option<Self> {
+        Self::ALL.get(self as usize + 1).copied()
+    }
+    /// The next smaller tier.
+    pub fn down(self) -> Option<Self> {
+        (self as usize).checked_sub(1).map(|i| Self::ALL[i])
     }
 }
 
-pub(crate) fn output_size(width: u32, height: u32, quality: i32) -> (u32, u32) {
-    fit_size(width, height, dimensions(quality))
+pub(crate) fn output_size(width: u32, height: u32, tier: Tier) -> (u32, u32) {
+    fit_size(width, height, tier.size())
 }
 
 /// Whether `size` fits a size budget in either orientation.
@@ -99,12 +123,15 @@ mod tests {
     #[test]
     fn portrait_sources_use_the_rotated_tier_box() {
         // A rotated 1080p panel stays 1080x1920 at the 1080p tier.
-        assert_eq!(output_size(1080, 1920, 2), (1080, 1920));
-        assert_eq!(output_size(1920, 1080, 2), (1920, 1080));
+        assert_eq!(output_size(1080, 1920, Tier::P1080), (1080, 1920));
+        assert_eq!(output_size(1920, 1080, Tier::P1080), (1920, 1080));
         // A rotated 4K panel at the 1080p tier keeps its orientation.
-        assert_eq!(output_size(2160, 3840, 2), (1080, 1920));
+        assert_eq!(output_size(2160, 3840, Tier::P1080), (1080, 1920));
         // 16:10 at the 1440p tier is bounded by the short edge.
-        assert_eq!(output_size(2560, 1600, 3), (2304, 1440));
-        assert_eq!(output_size(1600, 2560, 3), (1440, 2304));
+        assert_eq!(output_size(2560, 1600, Tier::P1440), (2304, 1440));
+        assert_eq!(output_size(1600, 2560, Tier::P1440), (1440, 2304));
+        assert_eq!(Tier::P720.down(), None);
+        assert_eq!(Tier::P1440.up(), Some(Tier::P2160));
+        assert_eq!(Tier::P2160.up(), None);
     }
 }

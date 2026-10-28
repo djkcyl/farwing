@@ -373,7 +373,8 @@ impl Prepared {
             settings,
             screen.render_adapter.unwrap_or(screen.adapter),
         )?);
-        let auto_start = super::bandwidth::remembered_tier(&options.device_id).unwrap_or(2);
+        let auto_start = super::bandwidth::remembered_tier(&options.device_id)
+            .unwrap_or(super::parameters::Tier::P1080);
         let mut config = publisher::config_of(&options.stream, auto_start, VideoConfig::default());
         negotiated.apply_requested(
             &mut config,
@@ -383,7 +384,7 @@ impl Prepared {
         )?;
         tracing::info!(
             stream = ?options.stream,
-            auto_start,
+            ?auto_start,
             requested_fps = config.requested_fps,
             maximum_fps = config.maximum_fps,
             effective_fps = config.fps,

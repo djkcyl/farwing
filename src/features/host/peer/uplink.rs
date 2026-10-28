@@ -639,24 +639,12 @@ fn start(
                 if let Some(output) = membership.output_changed() {
                     // The group's tier is fixed while it runs: its ceiling,
                     // without probing toward a tier it will not use.
-                    transport.configure(if output.quality == 6 {
-                        parameters::automatic(
-                            output.format,
-                            output.quality,
-                            output.budget_size,
-                            output.fps,
-                            false,
-                            4,
-                        )
-                    } else {
-                        parameters::fixed(
-                            output.format,
-                            output.quality,
-                            0,
-                            output.budget_size,
-                            output.fps,
-                        )
-                    });
+                    transport.configure(parameters::fixed(
+                        output.format,
+                        output.target,
+                        output.budget_size,
+                        output.fps,
+                    ));
                     transport.fps(output.fps);
                 }
                 let ready = transport.media_ready();

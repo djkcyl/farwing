@@ -497,13 +497,13 @@ impl Desktop {
     pub fn next(
         &mut self,
         timeout: u32,
-        quality: i32,
+        tier: crate::media::geometry::Tier,
         cursor: bool,
         hdr: bool,
         maximum: (u32, u32),
     ) -> Result<Option<Frame>> {
         if let Backend::Session(local) = &mut self.backend {
-            let frame = local.next(timeout, quality, cursor, hdr, maximum)?;
+            let frame = local.next(timeout, tier, cursor, hdr, maximum)?;
             self.device = local.device.clone();
             self.screen = local.screen.clone();
             self.available = local.available;
@@ -512,7 +512,7 @@ impl Desktop {
             return Ok(frame);
         }
         if let Backend::Remote(remote) = &mut self.backend {
-            let result = remote.next(timeout, quality, cursor, hdr, maximum);
+            let result = remote.next(timeout, tier, cursor, hdr, maximum);
             self.device = remote.device.clone();
             self.screen = remote.screen.clone();
             self.available = remote.available;
@@ -528,7 +528,7 @@ impl Desktop {
             }
         };
         let request = super::preprocess::Request {
-            quality,
+            tier,
             maximum,
             hdr,
         };
@@ -578,7 +578,7 @@ impl Desktop {
             // Keep the same candidate until a real image arrives; recreating it
             // on every probe can repeatedly discard that initial pointer frame.
             // Zero timeout keeps the GDI stream moving while the candidate waits.
-            match probe.capture.next(0, quality, cursor, hdr, maximum) {
+            match probe.capture.next(0, tier, cursor, hdr, maximum) {
                 Ok(Some(frame)) => {
                     self.replace(Backend::Dxgi(probe.capture));
                     self.recovery.promoted(std::time::Instant::now());
@@ -598,7 +598,7 @@ impl Desktop {
             }
         }
         let frame = match &mut self.backend {
-            Backend::Dxgi(d) => d.next(timeout, quality, cursor, hdr, maximum),
+            Backend::Dxgi(d) => d.next(timeout, tier, cursor, hdr, maximum),
             Backend::Gdi(g) => g.next(request, cursor).map(Some),
             Backend::Remote(_) | Backend::Session(_) => unreachable!(),
         };

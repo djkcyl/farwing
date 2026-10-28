@@ -182,7 +182,9 @@ pub(super) fn ensure(
     let mut desktop = capture::Desktop::open_selected(&selected)?;
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
-        if desktop.next(20, 2, false, false, (1280, 720))?.is_some() && desktop.available {
+        if desktop.next(20, crate::media::geometry::Tier::P720, false, false, (1280, 720))?.is_some()
+            && desktop.available
+        {
             tracing::info!(screen=%identity,backend=desktop.backend_name(), "persistent headless display ready");
             return Ok(Some(selected));
         }

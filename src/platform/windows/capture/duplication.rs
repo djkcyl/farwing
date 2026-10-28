@@ -66,7 +66,7 @@ pub(super) struct Duplication {
     pub source_hdr: Option<crate::media::video_color::HdrMetadata>,
     source: Shared,
     converter: preprocess::Converter,
-    quality: Option<preprocess::Request>,
+    request: Option<preprocess::Request>,
     cursor_capture: bool,
     presented: u64,
     pointer: u64,
@@ -111,7 +111,7 @@ impl Duplication {
             screen,
             source_hdr,
             source,
-            quality: None,
+            request: None,
             cursor_capture: false,
             presented: 0,
             pointer: 0,
@@ -122,13 +122,13 @@ impl Duplication {
     pub(crate) fn next(
         &mut self,
         timeout_ms: u32,
-        quality: i32,
+        tier: crate::media::geometry::Tier,
         cursor_capture: bool,
         hdr: bool,
         maximum: (u32, u32),
     ) -> Result<Option<Frame>> {
         let request = preprocess::Request {
-            quality,
+            tier,
             maximum,
             hdr,
         };
@@ -146,7 +146,7 @@ impl Duplication {
         // Quality/cursor changes must also work on an otherwise static desktop.
         // Before the first real image, there is nothing safe to compose.
         if !presented
-            && self.quality == Some(request)
+            && self.request == Some(request)
             && self.cursor_capture == cursor_capture
             && !pointer_changed
         {
@@ -177,7 +177,7 @@ impl Duplication {
         unsafe {
             texture.GetDesc(&mut output);
         }
-        self.quality = Some(request);
+        self.request = Some(request);
         self.cursor_capture = cursor_capture;
         Ok(Some(Frame {
             width: output.Width,

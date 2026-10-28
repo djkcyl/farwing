@@ -63,13 +63,13 @@ struct RemoteIce {
 
 #[derive(Clone, PartialEq, Eq)]
 struct Published {
-    /// Automatic quality: `quality` is the tier it settled at.
+    /// Automatic quality: `target` is the tier it settled at.
     automatic: bool,
     hdr: bool,
     screen: capture::Screen,
     capturing: bool,
     visible: bool,
-    quality: i32,
+    target: super::parameters::Target,
     fps: u32,
     format: super::format::Format,
     budget_size: (u32, u32),
@@ -125,10 +125,12 @@ impl Peer {
     ) -> Result<Self> {
         let audio_only = deferred.is_some() && !data_only;
         let handle = owner.with_cancellation(cancel.clone());
-        let initial_quality = if initial.quality == 5 {
-            initial.auto_quality
-        } else {
-            initial.quality
+        let initial_target = match initial.quality {
+            super::parameters::Quality::Auto => super::parameters::Target::Tier(initial.auto_tier),
+            super::parameters::Quality::Tier(tier) => super::parameters::Target::Tier(tier),
+            super::parameters::Quality::Custom => {
+                super::parameters::Target::Custom { bps: initial.bitrate }
+            }
         };
         let initial_fps = initial
             .fps
@@ -142,20 +144,19 @@ impl Peer {
                 initial: 0,
                 probe: 0,
             }
-        } else if initial.quality == 5 {
+        } else if initial.quality == super::parameters::Quality::Auto {
             super::parameters::automatic(
                 initial.format,
-                initial_quality,
+                initial.auto_tier,
                 crate::media::geometry::fit_size(size.0, size.1, initial.maximum),
                 initial_fps,
                 true,
-                4,
+                super::parameters::Tier::P2160,
             )
         } else {
             super::parameters::fixed(
                 initial.format,
-                initial_quality,
-                initial.bitrate,
+                initial_target,
                 crate::media::geometry::fit_size(size.0, size.1, initial.maximum),
                 initial_fps,
             )

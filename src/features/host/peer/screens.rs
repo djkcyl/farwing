@@ -319,7 +319,7 @@ impl Screens {
         self.stream = settings;
         self.base = crate::features::stream_control::publisher::config_of(
             &settings,
-            self.base.auto_quality,
+            self.base.auto_tier,
             self.base,
         );
         for slot in &self.slots {
@@ -340,6 +340,7 @@ impl Screens {
     }
     /// The stream as this participant gets it.
     pub(crate) fn stream_state(&self) -> crate::features::stream_control::wire::StreamState {
+        use crate::features::host::parameters::{Target, Tier};
         use crate::features::stream_control::wire::{self, Quality};
         let revision = *self.reports.changed.borrow();
         let tracks = self
@@ -354,12 +355,12 @@ impl Screens {
                 chroma444: state.format.chroma == 3,
                 hdr: state.hdr,
                 bit10: state.format.depth == 10,
-                quality: match state.quality {
-                    1 => Quality::Low,
-                    3 => Quality::High,
-                    4 => Quality::Ultra,
-                    6 => Quality::Custom,
-                    _ => Quality::Standard,
+                quality: match state.target {
+                    Target::Tier(Tier::P720) => Quality::Low,
+                    Target::Tier(Tier::P1080) => Quality::Standard,
+                    Target::Tier(Tier::P1440) => Quality::High,
+                    Target::Tier(Tier::P2160) => Quality::Ultra,
+                    Target::Custom { .. } => Quality::Custom,
                 } as i32,
                 fps: state.fps,
                 hardware: state
@@ -378,13 +379,12 @@ impl Screens {
     }
     /// The tier automatic quality settled at for this participant, if it
     /// runs in automatic quality.
-    pub(super) fn settled_tier(reports: &Reports) -> Option<i32> {
+    pub(super) fn settled_tier(reports: &Reports) -> Option<crate::features::host::parameters::Tier> {
         reports
             .media()
             .into_iter()
             .find(|(_, state)| state.capturing && state.automatic)
-            .map(|(_, state)| state.quality)
-            .filter(|tier| (1..=4).contains(tier))
+            .map(|(_, state)| state.target.tier())
     }
     pub(crate) fn authorization(&self) -> Lease {
         self.lease.clone()
@@ -651,7 +651,7 @@ impl Screens {
         *lock(&slot.config) = config;
         self.source_generation = self.source_generation.wrapping_add(1);
         let (tx, mut rx) = watch::channel(Published {
-            automatic: config.quality == 5,
+            automatic: config.quality == crate::features::host::parameters::Quality::Auto,
             hdr: config.color.is_hdr(),
             screen: screen.clone(),
             // The slot already owns this source. Native preparation is not a
@@ -659,7 +659,7 @@ impl Screens {
             // the controller's initial setting restoration.
             capturing: true,
             visible: false,
-            quality: 0,
+            target: crate::features::host::parameters::Target::Tier(config.auto_tier),
             fps: config.fps,
             format: config.format,
             budget_size: (screen.width, screen.height),

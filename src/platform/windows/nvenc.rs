@@ -121,7 +121,7 @@ pub(crate) fn warm_up(device: &ID3D11Device) -> Result<()> {
         target: 1_000_000,
         peak: 1_000_000,
         fps: 60,
-        quality: 1,
+        tier: crate::media::geometry::Tier::P720,
         quality_target: super::format::QualityTarget {
             bitrate: 1_000_000,
             fps: 60,
@@ -151,7 +151,8 @@ pub(crate) struct Encoder {
     conversion: Conversion,
     cuda: Option<cuda_input::Input>,
     index: u32,
-    quality: i32,
+    /// The size class last configured.
+    tier: Option<crate::media::geometry::Tier>,
     maximum: (u32, u32),
     format: Format,
     /// Long-term reference slots in use (H.264/HEVC only), 0 without.
@@ -313,7 +314,7 @@ impl Encoder {
         };
         let mut encoder = Self {
             diagnostics: timing::Diagnostics::default(),
-            frame_rate: super::encoder_rate::Controller::new(Rate { quality: 0, ..rate }),
+            frame_rate: super::encoder_rate::Controller::unapplied(rate),
             api,
             session: ptr::null_mut(),
             bitstream: ptr::null_mut(),
@@ -323,7 +324,7 @@ impl Encoder {
             conversion,
             cuda,
             index: 0,
-            quality: 0,
+            tier: None,
             maximum: (0, 0),
             format,
             ltr_slots: 0,
@@ -603,8 +604,8 @@ impl Encoder {
             return Ok(false);
         };
         let fps = update.rate.fps;
-        let quality = update.rate.quality;
-        let changed_quality = self.quality != quality;
+        let tier = update.rate.tier;
+        let changed_quality = self.tier != Some(tier);
         let mut config = self.config;
         set_rate(
             &mut config,
@@ -637,7 +638,7 @@ impl Encoder {
         self.config = config;
         self.init = params.reInitEncodeParams;
         self.init.encodeConfig = ptr::null_mut();
-        self.quality = quality;
+        self.tier = Some(tier);
         self.frame_rate.commit(update);
         Ok(changed_quality)
     }

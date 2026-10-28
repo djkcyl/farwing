@@ -894,7 +894,7 @@ impl Active {
                 );
             }
         }
-        let changed_quality = self.rate.quality != rate.quality;
+        let changed_quality = self.rate.tier != rate.tier;
         self.params = params;
         let capacity = output_capacity(self.size, self.format, &self.params)?;
         if capacity > self.buffer.len() {
@@ -1363,7 +1363,7 @@ mod tests {
             target: 4_000_000,
             peak: 4_000_000,
             fps,
-            quality: 3,
+            tier: crate::media::geometry::Tier::P1440,
             quality_target: QualityTarget {
                 bitrate: 4_000_000,
                 fps,

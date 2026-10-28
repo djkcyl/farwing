@@ -789,7 +789,7 @@ impl Encoder {
         };
         let requested = rate;
         let rate = update.rate;
-        let changed_quality = self.rate.quality != rate.quality;
+        let changed_quality = self.rate.tier != rate.tier;
         // Runtime property failures are logged individually; other
         // accepted properties remain in force. No fictitious atomic rollback.
         for result in [

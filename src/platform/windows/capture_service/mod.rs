@@ -26,7 +26,7 @@ enum Request {
     },
     Next {
         timeout: u32,
-        quality: i32,
+        tier: crate::media::geometry::Tier,
         cursor: bool,
         hdr: bool,
         maximum: (u32, u32),

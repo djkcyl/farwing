@@ -23,6 +23,13 @@ pub(crate) struct Controller {
     feedback: Option<(u32, u32, u32)>,
 }
 impl Controller {
+    /// A controller whose first decision applies `rate` in full (the
+    /// encoder was set up without it).
+    pub fn unapplied(rate: Rate) -> Self {
+        let mut controller = Self::new(rate);
+        controller.applied.maximum = 0;
+        controller
+    }
     pub fn new(rate: Rate) -> Self {
         Self {
             frames: FrameRate::new(rate.fps),
@@ -43,7 +50,7 @@ impl Controller {
         self.frames.set_maximum(rate.fps);
         let old = self.applied;
         let control_changed = old.maximum != rate.fps
-            || old.rate.quality != rate.quality
+            || old.rate.tier != rate.tier
             || old.rate.quality_target != rate.quality_target
             || old.rate.smooth != rate.smooth;
         if control_changed {
@@ -52,7 +59,7 @@ impl Controller {
             return Some(Update {
                 rate: Rate {
                     fps: self.frames.configured,
-                    quality: rate.quality,
+                    tier: rate.tier,
                     quality_target: rate.quality_target,
                     smooth: rate.smooth,
                     ..rate

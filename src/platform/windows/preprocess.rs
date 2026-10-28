@@ -6,7 +6,7 @@ use windows::Win32::Graphics::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Request {
-    pub quality: i32,
+    pub tier: crate::media::geometry::Tier,
     pub maximum: (u32, u32),
     pub hdr: bool,
 }
@@ -100,7 +100,7 @@ impl Converter {
             } else {
                 (desc.Width, desc.Height)
             };
-            let size = super::output_size(rotated.0, rotated.1, request.quality);
+            let size = super::output_size(rotated.0, rotated.1, request.tier);
             let size = super::fit_size(size.0, size.1, request.maximum);
             let hdr = request.hdr;
             let input = self

@@ -2,6 +2,7 @@
 pub(crate) use crate::media::encoding::{
     Backend, Capability, Codec, Color, Format, QualityTarget, Rate,
 };
+use super::parameters::Tier;
 use crate::media::video_color::VideoColorSpace;
 use crate::i18n::t;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
@@ -171,14 +172,15 @@ impl Negotiated {
         }
     }
     /// The highest tier whose picture of `source` fits `maximum`.
-    pub fn maximum_quality(&self, source: (u32, u32), maximum: (u32, u32)) -> i32 {
-        (1..=4)
-            .filter(|&q| {
-                let output = crate::media::geometry::output_size(source.0, source.1, q);
+    pub fn maximum_tier(&self, source: (u32, u32), maximum: (u32, u32)) -> Tier {
+        Tier::ALL
+            .into_iter()
+            .filter(|&tier| {
+                let output = crate::media::geometry::output_size(source.0, source.1, tier);
                 crate::media::geometry::fits_within(output, maximum)
             })
             .max()
-            .unwrap_or(1)
+            .unwrap_or(Tier::P720)
     }
     /// What this participant can be sent: codecs, 4:4:4, HDR and the
     /// highest tier.
@@ -200,16 +202,17 @@ impl Negotiated {
             .map(|c| c.maximum)
             .max_by_key(|(w, h)| u64::from(*w) * u64::from(*h))
             .unwrap_or_default();
-        let tier = (1..=4)
-            .filter(|&q| crate::media::geometry::fits_within(crate::media::geometry::dimensions(q), largest))
+        let tier = Tier::ALL
+            .into_iter()
+            .filter(|tier| crate::media::geometry::fits_within(tier.size(), largest))
             .max()
-            .unwrap_or(1);
+            .unwrap_or(Tier::P720);
         StreamLimits {
             codecs,
             chroma444: usable.iter().any(|c| c.capability.format.chroma == 3),
             hdr: usable.iter().any(|c| c.capability.format.depth == 10),
             max_quality: [Quality::Low, Quality::Standard, Quality::High, Quality::Ultra]
-                [tier as usize - 1] as i32,
+                [tier as usize] as i32,
         }
     }
     /// Pick the format for `config`: `codec` if set, 4:4:4 (`chroma` 3) and
@@ -229,10 +232,11 @@ impl Negotiated {
             &[Color::Sdr]
         };
         let samplings: &[u8] = if chroma == 3 { &[3, 1] } else { &[1] };
-        let desired = if matches!(config.quality, 5 | 6) {
-            source
-        } else {
-            crate::media::geometry::output_size(source.0, source.1, config.quality)
+        let desired = match config.quality {
+            super::parameters::Quality::Tier(tier) => {
+                crate::media::geometry::output_size(source.0, source.1, tier)
+            }
+            super::parameters::Quality::Auto | super::parameters::Quality::Custom => source,
         };
         let mut selected = None;
         'color: for &color in colors {
@@ -280,10 +284,10 @@ impl Negotiated {
         config.maximum = choice.maximum;
         config.maximum_fps = fps;
         config.fps = fps.min(config.fps_limit);
-        config.maximum_quality = self.maximum_quality(source, config.maximum);
-        config.auto_quality = config.auto_quality.min(config.maximum_quality);
-        if !matches!(config.quality, 5 | 6) {
-            config.quality = config.quality.min(config.maximum_quality);
+        config.maximum_tier = self.maximum_tier(source, config.maximum);
+        config.auto_tier = config.auto_tier.min(config.maximum_tier);
+        if let super::parameters::Quality::Tier(tier) = config.quality {
+            config.quality = super::parameters::Quality::Tier(tier.min(config.maximum_tier));
         }
         Ok(())
     }
@@ -329,8 +333,11 @@ impl Negotiated {
                     ))
             })
             .max_by_key(|c| {
-                let desired =
-                    crate::media::geometry::output_size(source.0, source.1, wanted.quality);
+                let desired = crate::media::geometry::output_size(
+                    source.0,
+                    source.1,
+                    wanted.quality.tier(wanted.auto_tier),
+                );
                 let fitted = crate::media::geometry::fit_size(desired.0, desired.1, c.maximum);
                 crate::media::selection::candidate_rank(
                     fitted,

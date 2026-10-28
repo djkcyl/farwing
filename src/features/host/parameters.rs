@@ -1,10 +1,51 @@
 //! Shared streaming budgets for actual output geometry and negotiated format.
 //! Quality is a bandwidth ceiling, not a promise of constant traffic or fidelity.
 use super::format::Format;
+pub(crate) use crate::media::geometry::Tier;
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
 };
+
+/// What a participant asked its picture to be held to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum Quality {
+    /// The host picks the tier from the link ([`AutoQuality`]).
+    #[default]
+    Auto,
+    Tier(Tier),
+    /// The full-size picture at the participant's own bitrate.
+    Custom,
+}
+
+impl Quality {
+    /// The size box it asks for; `auto` where the host picks.
+    pub fn tier(self, auto: Tier) -> Tier {
+        match self {
+            Self::Auto => auto,
+            Self::Tier(tier) => tier,
+            Self::Custom => Tier::P2160,
+        }
+    }
+}
+
+/// What a track encodes at: a tier's size and budget, or the full size at
+/// a custom bitrate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Target {
+    Tier(Tier),
+    Custom { bps: u32 },
+}
+
+impl Target {
+    /// The size box of the picture.
+    pub fn tier(self) -> Tier {
+        match self {
+            Self::Tier(tier) => tier,
+            Self::Custom { .. } => Tier::P2160,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Bounds {
@@ -39,25 +80,25 @@ fn downgrade_threshold(maximum: u32) -> u32 {
     (maximum / 5 * 2).clamp(200_000, 15_000_000)
 }
 
-fn standard(format: Format, quality: i32, source: (u32, u32), fps: u32) -> Bounds {
-    Bounds::video(tier_rate(quality, source, fps, format.chroma == 3))
+fn standard(format: Format, tier: Tier, source: (u32, u32), fps: u32) -> Bounds {
+    Bounds::video(tier_rate(tier, source, fps, format.chroma == 3))
 }
 
 // 60 FPS ceilings in Mbps at 720p, 1080p, 1440p and 4K. Each codec has
 // independent quality anchors; compression savings are content-dependent.
 // 10-bit preserves gradients without a blanket raw-bit-depth surcharge.
-/// The bitrate ceiling (bps) of tier `quality` (1–4) for a `source` screen
-/// at `fps`, doubled for 4:4:4 (`true_color`). The quality menus show it.
-pub(crate) fn tier_rate(quality: i32, source: (u32, u32), fps: u32, true_color: bool) -> u32 {
+/// The bitrate ceiling (bps) of `tier` for a `source` screen at `fps`,
+/// doubled for 4:4:4 (`true_color`). The quality menus show it.
+pub(crate) fn tier_rate(tier: Tier, source: (u32, u32), fps: u32, true_color: bool) -> u32 {
     // One table for every codec: H.265 and AV1 spend their efficiency on
     // picture quality at the same rate, not on a lower rate.
-    let rates = match quality {
-        1 => [1.5, 1.5, 1.5, 1.5],
-        3 => [8.0, 14.0, 24.0, 24.0],
-        4 => [12.0, 20.0, 36.0, 60.0],
-        _ => [5.5, 8.0, 8.0, 8.0],
+    let rates = match tier {
+        Tier::P720 => [1.5, 1.5, 1.5, 1.5],
+        Tier::P1080 => [5.5, 8.0, 8.0, 8.0],
+        Tier::P1440 => [8.0, 14.0, 24.0, 24.0],
+        Tier::P2160 => [12.0, 20.0, 36.0, 60.0],
     };
-    let size = crate::media::geometry::output_size(source.0, source.1, quality);
+    let size = crate::media::geometry::output_size(source.0, source.1, tier);
     let pixels = u64::from(size.0) * u64::from(size.1);
     let anchors = [1280u64 * 720, 1920 * 1080, 2560 * 1440, 3840 * 2160];
     let base = if pixels <= anchors[0] {
@@ -80,17 +121,11 @@ pub(crate) fn tier_rate(quality: i32, source: (u32, u32), fps: u32, true_color: 
         .clamp(500_000.0, 500_000_000.0) as u32
 }
 
-pub(crate) fn fixed(
-    format: Format,
-    quality: i32,
-    custom: u32,
-    size: (u32, u32),
-    fps: u32,
-) -> Bounds {
-    if quality != 6 {
-        return standard(format, quality, size, fps);
+pub(crate) fn fixed(format: Format, target: Target, size: (u32, u32), fps: u32) -> Bounds {
+    match target {
+        Target::Tier(tier) => standard(format, tier, size, fps),
+        Target::Custom { bps } => Bounds::video(bps.clamp(1_000_000, 500_000_000)),
     }
-    Bounds::video(custom.clamp(1_000_000, 500_000_000))
 }
 
 /// `top`: the highest tier automatic quality may choose. Until its first
@@ -98,23 +133,24 @@ pub(crate) fn fixed(
 /// recognised at once instead of one tier at a time.
 pub(crate) fn automatic(
     format: Format,
-    quality: i32,
+    tier: Tier,
     source: (u32, u32),
     fps: u32,
     initial: bool,
-    top: i32,
+    top: Tier,
 ) -> Bounds {
-    let mut result = standard(format, quality, source, fps);
-    result.probe = if quality >= 4 {
-        result.maximum
-    } else {
-        let next = standard(format, quality + 1, source, fps);
-        if initial {
-            standard(format, top.clamp(quality + 1, 4), source, fps).maximum
-        } else {
-            (((f64::from(downgrade_threshold(next.maximum)) + f64::from(next.maximum)) * 0.8)
-                as u32)
-                .min(next.maximum)
+    let mut result = standard(format, tier, source, fps);
+    result.probe = match tier.up() {
+        None => result.maximum,
+        Some(up) => {
+            let next = standard(format, up, source, fps);
+            if initial {
+                standard(format, top.max(up), source, fps).maximum
+            } else {
+                (((f64::from(downgrade_threshold(next.maximum)) + f64::from(next.maximum)) * 0.8)
+                    as u32)
+                    .min(next.maximum)
+            }
         }
     };
     result
@@ -125,9 +161,9 @@ pub(crate) fn automatic(
 /// the encoder and stalls the picture. Later shortfalls are handled by the
 /// weak-network strategy (bitrate or frame rate), never by resizing.
 pub(crate) struct AutoQuality {
-    current: i32,
-    maximum: i32,
-    startup: i32,
+    current: Tier,
+    maximum: Tier,
+    startup: Tier,
     probes: VecDeque<u32>,
     lower: VecDeque<u32>,
     at: Option<Instant>,
@@ -155,9 +191,8 @@ pub(crate) struct NetworkSample {
     pub loss: f64,
 }
 impl AutoQuality {
-    pub fn new(startup: i32, maximum: i32) -> Self {
-        let maximum = maximum.clamp(1, 4);
-        let startup = startup.clamp(1, maximum);
+    pub fn new(startup: Tier, maximum: Tier) -> Self {
+        let startup = startup.min(maximum);
         Self {
             current: startup,
             maximum,
@@ -175,14 +210,14 @@ impl AutoQuality {
     pub fn settled(&self) -> bool {
         self.settled
     }
-    pub fn quality(&self) -> i32 {
+    pub fn tier(&self) -> Tier {
         self.current
     }
-    pub fn maximum(&self) -> i32 {
+    pub fn maximum(&self) -> Tier {
         self.maximum
     }
-    pub fn limit(&mut self, maximum: i32) {
-        self.maximum = maximum.clamp(1, 4);
+    pub fn limit(&mut self, maximum: Tier) {
+        self.maximum = maximum;
         self.current = self.current.min(self.maximum);
     }
     pub fn observe(
@@ -193,7 +228,7 @@ impl AutoQuality {
         fps: u32,
         has_frames: bool,
         sample: NetworkSample,
-    ) -> Option<i32> {
+    ) -> Option<Tier> {
         // A new source or format is a new decision; a network path change
         // is not (the weak-network strategy covers it).
         let policy = (format, source, fps);
@@ -238,7 +273,7 @@ impl AutoQuality {
             }
             window.push_back(value);
         }
-        if self.startup > 2 && self.probes.len() < 5 {
+        if self.startup > Tier::P1080 && self.probes.len() < 5 {
             return None;
         }
         let mean = |window: &VecDeque<u32>| -> u32 {
@@ -251,21 +286,22 @@ impl AutoQuality {
         if !self.loss_seen && self.probes.len() >= AUTO_UPGRADE_SAMPLES {
             // Up to the highest tier the estimate clears: each tier on the
             // way would rebuild the encoder and start over with a keyframe.
-            while selected < self.maximum
+            while let Some(up) = selected.up().filter(|up| *up <= self.maximum)
                 && probe > standard(format, selected, source, fps).maximum
             {
-                let next = standard(format, selected + 1, source, fps);
+                let next = standard(format, up, source, fps);
                 if f64::from(probe)
                     <= (f64::from(downgrade_threshold(next.maximum)) + f64::from(next.maximum)) * 0.5
                 {
                     break;
                 }
-                selected += 1;
+                selected = up;
             }
         }
-        // The lower-limit decision takes precedence over a simultaneous probe.
+        // The lower-limit decision takes precedence over a simultaneous
+        // probe; it never goes below 1080p.
         if lower != 0 && lower <= downgrade_threshold(bounds.maximum) {
-            selected = (self.current - 1).max(2);
+            selected = self.current.down().unwrap_or(Tier::P720).max(Tier::P1080);
         }
         selected = selected.min(self.maximum);
         if selected == self.current {
@@ -451,26 +487,26 @@ mod tests {
             chroma: 1,
             depth: 8,
         };
-        for quality in 1..=4 {
+        for tier in Tier::ALL {
             for (source, fps) in [((1920, 1080), 60), ((2560, 1440), 120), ((3840, 2160), 30)] {
-                let h264 = standard(format(Codec::H264), quality, source, fps).maximum;
-                assert_eq!(standard(format(Codec::H265), quality, source, fps).maximum, h264);
-                assert_eq!(standard(format(Codec::Av1), quality, source, fps).maximum, h264);
+                let h264 = standard(format(Codec::H264), tier, source, fps).maximum;
+                assert_eq!(standard(format(Codec::H265), tier, source, fps).maximum, h264);
+                assert_eq!(standard(format(Codec::Av1), tier, source, fps).maximum, h264);
             }
         }
         // The table's anchors at 1080p60: 高清 8M, 超清 14M.
-        assert_eq!(standard(format(Codec::Av1), 2, (1920, 1080), 60).maximum, 8_000_000);
-        assert_eq!(standard(format(Codec::H265), 3, (1920, 1080), 60).maximum, 14_000_000);
+        assert_eq!(standard(format(Codec::Av1), Tier::P1080, (1920, 1080), 60).maximum, 8_000_000);
+        assert_eq!(standard(format(Codec::H265), Tier::P1440, (1920, 1080), 60).maximum, 14_000_000);
     }
 
     #[test]
     fn tier_rates_follow_size_frame_rate_and_colour() {
         // 超清 on a 2560x1600 screen is output at 2304x1440.
-        assert_eq!(tier_rate(3, (2560, 1600), 60, false), 21_714_286);
-        assert_eq!(tier_rate(3, (2560, 1600), 30, false), 10_857_143);
-        assert_eq!(tier_rate(3, (2560, 1600), 60, true), 43_428_571);
+        assert_eq!(tier_rate(Tier::P1440, (2560, 1600), 60, false), 21_714_286);
+        assert_eq!(tier_rate(Tier::P1440, (2560, 1600), 30, false), 10_857_143);
+        assert_eq!(tier_rate(Tier::P1440, (2560, 1600), 60, true), 43_428_571);
         // Above 60 FPS the rate grows with the square root.
-        assert_eq!(tier_rate(2, (1920, 1080), 144, false), 12_393_547);
+        assert_eq!(tier_rate(Tier::P1080, (1920, 1080), 144, false), 12_393_547);
     }
 
     #[test]
@@ -614,32 +650,32 @@ mod tests {
                 sample,
             );
         };
-        let mut auto = AutoQuality::new(2, 4);
+        let mut auto = AutoQuality::new(Tier::P1080, Tier::P2160);
         observe(&mut auto, 0, fast);
         observe(&mut auto, 1, fast);
-        assert_eq!(auto.quality(), 2, "not on the first probes");
+        assert_eq!(auto.tier(), Tier::P1080, "not on the first probes");
         observe(&mut auto, 2, fast);
-        assert_eq!(auto.quality(), 4, "straight to the highest tier it clears");
+        assert_eq!(auto.tier(), Tier::P2160, "straight to the highest tier it clears");
         // An estimate between the tiers stops on the way.
-        let mut auto = AutoQuality::new(2, 4);
+        let mut auto = AutoQuality::new(Tier::P1080, Tier::P2160);
         let medium = NetworkSample { probe: 18_000_000, ..fast };
         for second in 0..3 {
             observe(&mut auto, second, medium);
         }
-        assert_eq!(auto.quality(), 3);
+        assert_eq!(auto.tier(), Tier::P1440);
         // Loss once seen keeps the tier where it is.
-        let mut auto = AutoQuality::new(2, 4);
+        let mut auto = AutoQuality::new(Tier::P1080, Tier::P2160);
         observe(&mut auto, 0, fast);
         observe(&mut auto, 1, NetworkSample { loss: 0.02, ..fast });
         for second in 2..8 {
             observe(&mut auto, second, fast);
         }
-        assert_eq!(auto.quality(), 2);
+        assert_eq!(auto.tier(), Tier::P1080);
     }
 
     #[test]
     fn automatic_tier_settles() {
-        let mut auto = AutoQuality::new(2, 4);
+        let mut auto = AutoQuality::new(Tier::P1080, Tier::P2160);
         let start = Instant::now();
         let sample = NetworkSample {
             probe: 500_000_000,
@@ -657,7 +693,7 @@ mod tests {
             );
         }
         assert!(auto.settled());
-        let settled = auto.quality();
+        let settled = auto.tier();
         let starved = NetworkSample {
             probe: 0,
             lower: 100_000,
@@ -674,7 +710,7 @@ mod tests {
             );
         }
         assert_eq!(
-            auto.quality(),
+            auto.tier(),
             settled,
             "no resize after the startup decision"
         );

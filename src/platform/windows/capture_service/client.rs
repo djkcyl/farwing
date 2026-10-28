@@ -94,7 +94,7 @@ impl Client {
     pub fn next(
         &mut self,
         timeout: u32,
-        quality: i32,
+        tier: crate::media::geometry::Tier,
         cursor: bool,
         hdr: bool,
         maximum: (u32, u32),
@@ -108,7 +108,7 @@ impl Client {
             self.pipe.send(
                 &Request::Next {
                     timeout,
-                    quality,
+                    tier,
                     cursor,
                     hdr,
                     maximum,

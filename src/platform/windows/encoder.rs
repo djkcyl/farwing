@@ -79,7 +79,7 @@ pub(crate) fn probe(
                 if !is_active() {
                     anyhow::bail!("{}", t().system.encode_preparation_cancelled);
                 }
-                if let Some(frame) = desktop.next(50, 1, false, format.depth == 10, (1280, 720))? {
+                if let Some(frame) = desktop.next(50, crate::media::geometry::Tier::P720, false, format.depth == 10, (1280, 720))? {
                     acquired_frame = true;
                     *cached = Some(frame);
                     break;
@@ -92,7 +92,7 @@ pub(crate) fn probe(
                 target: 2_000_000,
                 peak: 2_000_000,
                 fps: 30,
-                quality: 1,
+                tier: crate::media::geometry::Tier::P720,
                 quality_target: super::format::QualityTarget {
                     bitrate: 2_000_000,
                     fps: 30,

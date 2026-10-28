@@ -19,7 +19,13 @@ struct Store {
     devices: BTreeMap<String, Entry>,
     /// The tier automatic quality settled at with each device.
     #[serde(default)]
-    tiers: BTreeMap<String, Entry>,
+    settled: BTreeMap<String, Settled>,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+struct Settled {
+    tier: super::parameters::Tier,
+    saved_at: i64,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -111,22 +117,22 @@ pub(crate) fn remember(device: &str, route: &str, bps: u32) {
 
 /// The tier automatic quality settled at in the last session with
 /// `device`, if recent: the next one starts there.
-pub(crate) fn remembered_tier(device: &str) -> Option<i32> {
+pub(crate) fn remembered_tier(device: &str) -> Option<super::parameters::Tier> {
     if device.is_empty() {
         return None;
     }
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let now = chrono::Utc::now().timestamp();
     read()
-        .tiers
+        .settled
         .get(device)
-        .filter(|entry| now - entry.saved_at < MAX_AGE_SECONDS && (1..=4).contains(&entry.bps))
-        .map(|entry| entry.bps as i32)
+        .filter(|entry| now - entry.saved_at < MAX_AGE_SECONDS)
+        .map(|entry| entry.tier)
 }
 
 /// Record the tier automatic quality settled at with `device`.
-pub(crate) fn remember_tier(device: &str, tier: i32) {
-    if device.is_empty() || !(1..=4).contains(&tier) {
+pub(crate) fn remember_tier(device: &str, tier: super::parameters::Tier) {
+    if device.is_empty() {
         return;
     }
     let Some(path) = path() else {
@@ -136,23 +142,23 @@ pub(crate) fn remember_tier(device: &str, tier: i32) {
     let mut store = read();
     let now = chrono::Utc::now().timestamp();
     store
-        .tiers
+        .settled
         .retain(|_, entry| now - entry.saved_at < MAX_AGE_SECONDS);
-    store.tiers.insert(
+    store.settled.insert(
         device.to_owned(),
-        Entry {
-            bps: tier as u32,
+        Settled {
+            tier,
             saved_at: now,
         },
     );
-    while store.tiers.len() > ENTRIES {
+    while store.settled.len() > ENTRIES {
         let oldest = store
-            .tiers
+            .settled
             .iter()
             .min_by_key(|(_, entry)| entry.saved_at)
             .map(|(device, _)| device.clone());
         match oldest {
-            Some(device) => store.tiers.remove(&device),
+            Some(device) => store.settled.remove(&device),
             None => break,
         };
     }

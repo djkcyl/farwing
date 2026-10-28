@@ -12,6 +12,7 @@ use super::super::output_size;
 use super::Published;
 use super::encode_group;
 use crate::features::host::format::{Backend, Color, Format};
+use crate::features::host::parameters::{Quality, Target, Tier};
 use crate::i18n::t;
 use anyhow::Context as _;
 use anyhow::Result;
@@ -29,12 +30,8 @@ mod metrics;
 /// A follower that lost frames asks again if no keyframe came this long.
 const KEYFRAME_RETRY: Duration = Duration::from_secs(1);
 /// The forwarder's low layer: the 流畅 tier (720p, 1.5 Mbps at 60 fps).
-const LOW_QUALITY: i32 = 1;
+const LOW_TIER: Tier = Tier::P720;
 const LOW_FPS: u32 = 60;
-
-/// How long a new participant waits for its own `CaptureSetting` before its
-/// session start parameters count as its settings.
-const SETTINGS_WAIT: Duration = Duration::from_secs(2);
 
 /// The device the last encoder used: when the worker ends it keeps the
 /// driver loaded until a fresh device is ready for a reconnect
@@ -139,7 +136,6 @@ pub(super) fn capture_loop(
     // participant.
     let mut followed = None::<(i32, (u32, u32), String, capture::Screen)>;
 
-    let worker_started = Instant::now();
     while !cancel.is_cancelled() && handle.requested() {
         let iteration_started = Instant::now();
         let mut wanted = *lock(&config);
@@ -168,7 +164,7 @@ pub(super) fn capture_loop(
             tracing::info!(shared, format = ?wanted.format, "participant stream policy");
         }
         let requested_hdr = wanted.color.is_hdr();
-        let automatic_requested = wanted.quality == 5;
+        let automatic_requested = wanted.quality == Quality::Auto;
         // Gate HDR on the actual source, not only the requested setting.
         // Keep the request so same-source HDR recovery can re-enable the
         // negotiated format without rewriting user intent. Without a source
@@ -184,7 +180,7 @@ pub(super) fn capture_loop(
         let settings = (
             wanted.revision,
             wanted.quality,
-            wanted.auto_quality,
+            wanted.auto_tier,
             wanted.bitrate,
             wanted.fps,
         );
@@ -192,14 +188,16 @@ pub(super) fn capture_loop(
         if changed {
             // An unrelated setting change keeps the settled automatic tier;
             // only switching to Auto or changing the frame rate starts over.
-            let keep = wanted.quality == 5
+            let keep = wanted.quality == Quality::Auto
                 && automatic.is_some()
-                && requested.is_some_and(|(_, quality, _, _, fps)| quality == 5 && fps == wanted.fps);
+                && requested.is_some_and(|(_, quality, _, _, fps)| {
+                    quality == Quality::Auto && fps == wanted.fps
+                });
             if !keep {
-                automatic = (wanted.quality == 5).then(|| {
+                automatic = (wanted.quality == Quality::Auto).then(|| {
                     crate::features::host::parameters::AutoQuality::new(
-                        wanted.auto_quality,
-                        wanted.maximum_quality,
+                        wanted.auto_tier,
+                        wanted.maximum_tier,
                     )
                 });
                 initial_auto = true;
@@ -239,12 +237,11 @@ pub(super) fn capture_loop(
             wanted.fps = wanted.fps.min(wanted.receiver_fps);
         }
         metrics.report(wanted.fps, screen.adapter, candidate.capability.adapter);
-        let maximum_quality =
-            negotiated.maximum_quality((screen.width, screen.height), wanted.maximum);
+        let maximum_tier = negotiated.maximum_tier((screen.width, screen.height), wanted.maximum);
         let budget_size =
             crate::media::geometry::fit_size(screen.width, screen.height, wanted.maximum);
-        if let Some(auto) = automatic.as_mut() {
-            auto.limit(maximum_quality);
+        let mut target = if let Some(auto) = automatic.as_mut() {
+            auto.limit(maximum_tier);
             let sample = transport.automatic_rates();
             if wanted.sending
                 && wanted.capturing
@@ -262,12 +259,15 @@ pub(super) fn capture_loop(
             {
                 initial_auto = false;
             }
-            wanted.quality = auto.quality();
-        } else if wanted.quality != 6 {
+            Target::Tier(auto.tier())
+        } else {
             // The fallback encoder's real size limit also limits the fixed
             // quality budget and QoS label, not only the GPU texture size.
-            wanted.quality = wanted.quality.min(maximum_quality);
-        }
+            match wanted.quality {
+                Quality::Custom => Target::Custom { bps: wanted.bitrate },
+                quality => Target::Tier(quality.tier(wanted.auto_tier).min(maximum_tier)),
+            }
+        };
 
         // In a forwarding room: the uplink takes this stream's frames too;
         // once the participant shows them, instead.
@@ -277,7 +277,7 @@ pub(super) fn capture_loop(
         // carry the main stream (`deployment-design.md` §5.5).
         let low = forwarding && forwarded.low.load(Ordering::Acquire);
         if low {
-            wanted.quality = LOW_QUALITY;
+            target = Target::Tier(LOW_TIER);
             wanted.fps = wanted.fps.min(LOW_FPS);
         }
         let tier_fps = if low { tier_fps.min(LOW_FPS) } else { tier_fps };
@@ -293,26 +293,19 @@ pub(super) fn capture_loop(
                 fps: tier_fps,
                 cursor: wanted.cursor_capture,
                 cinema: wanted.cinema,
-                quality: wanted.quality,
-                bitrate: if wanted.quality == 6 { wanted.bitrate } else { 0 },
+                target,
                 isolated,
                 low,
             };
-            // Until this participant's own settings arrive (or a moment
-            // passes, for a controller that sends none), the start
-            // parameters only stand in: share an encoder rather than open one.
-            let configured = wanted.configured || worker_started.elapsed() >= SETTINGS_WAIT;
             // A follower whose group already has the key stays.
             if let Some(m) = membership.as_mut()
                 && !m.is_leader()
                 && *m.group_key() == key
             {
                 m.wanted = key.clone();
-                m.provisional = false;
             }
             // A leader that only stands in for another key at the encoder
-            // limit regroups, so the members of its group keep their stream;
-            // so does a provisional follower once its settings are known.
+            // limit regroups, so the members of its group keep their stream.
             let regroup = membership.as_ref().is_none_or(|m| {
                 if forwarding {
                     // Forwarded viewers share whichever stream of this screen
@@ -324,21 +317,18 @@ pub(super) fn capture_loop(
                 } else {
                     m.wanted != key
                         || forwarded_before
-                        || (*m.group_key() != key
-                            && (m.is_leader() || (m.provisional && configured)))
+                        || (*m.group_key() != key && m.is_leader())
                 }
             });
             forwarded_before = forwarding;
             if regroup {
                 // Leave first: the old group must not count against the limit.
                 drop(membership.take());
-                let size = output_size(budget_size.0, budget_size.1, wanted.quality);
+                let size = output_size(budget_size.0, budget_size.1, target.tier());
                 membership = Some(if forwarding {
                     encode_group::REGISTRY.join_forwarded(key, size)
-                } else if configured {
-                    encode_group::REGISTRY.join(key, size, encode_group::MAX_ENCODERS)
                 } else {
-                    encode_group::REGISTRY.join_provisional(key, size)
+                    encode_group::REGISTRY.join(key, size, encode_group::MAX_ENCODERS)
                 });
                 awaiting = true;
                 keyframe_asked = None;
@@ -407,20 +397,14 @@ pub(super) fn capture_loop(
         let mut bounds = if automatic.is_some() && !settled {
             crate::features::host::parameters::automatic(
                 wanted.format,
-                wanted.quality,
+                target.tier(),
                 budget_size,
                 wanted.fps,
                 initial_auto,
-                automatic.as_ref().map_or(4, |auto| auto.maximum()),
+                automatic.as_ref().map_or(Tier::P2160, |auto| auto.maximum()),
             )
         } else {
-            crate::features::host::parameters::fixed(
-                wanted.format,
-                wanted.quality,
-                wanted.bitrate,
-                budget_size,
-                wanted.fps,
-            )
+            crate::features::host::parameters::fixed(wanted.format, target, budget_size, wanted.fps)
         };
         let start = transport.route_class().and_then(|route| match remembered {
             Some((known, bps)) if known == route => bps,
@@ -517,7 +501,7 @@ pub(super) fn capture_loop(
             && !auto_logged
         {
             auto_logged = true;
-            tracing::info!(quality = auto.quality(), "automatic quality tier settled");
+            tracing::info!(tier = ?auto.tier(), "automatic quality tier settled");
         }
         if wanted.sending && wanted.capturing {
             transport.configure(bounds);
@@ -567,7 +551,7 @@ pub(super) fn capture_loop(
                     screen: output.screen,
                     capturing: true,
                     visible: true,
-                    quality: output.quality,
+                    target: output.target,
                     fps: output.fps,
                     format: output.format,
                     budget_size: output.budget_size,
@@ -750,7 +734,7 @@ pub(super) fn capture_loop(
             .context(t().features.peer_capture_source_missing)?
             .next(
                 wait_ms,
-                wanted.quality,
+                target.tier(),
                 wanted.cursor_capture,
                 wanted.color.is_hdr(),
                 wanted.maximum,
@@ -849,7 +833,7 @@ pub(super) fn capture_loop(
             metrics.admission_drops += 1;
             continue;
         }
-        let size = output_size(frame.width, frame.height, wanted.quality);
+        let size = output_size(frame.width, frame.height, target.tier());
         let source_device = &desktop
             .as_ref()
             .context(t().features.peer_capture_source_missing)?
@@ -896,7 +880,7 @@ pub(super) fn capture_loop(
                 target: bounds.initial.max(300_000),
                 peak: bounds.initial.max(300_000),
                 fps: wanted.fps,
-                quality: wanted.quality,
+                tier: target.tier(),
                 quality_target,
                 smooth: wanted.cinema,
             };
@@ -942,7 +926,7 @@ pub(super) fn capture_loop(
                         target: bounds.initial.max(300_000),
                         peak: bounds.initial.max(300_000),
                         fps: wanted.fps,
-                        quality: wanted.quality,
+                        tier: target.tier(),
                         quality_target,
                         smooth: wanted.cinema,
                     },
@@ -957,7 +941,7 @@ pub(super) fn capture_loop(
                         target: bounds.initial.max(300_000),
                         peak: bounds.initial.max(300_000),
                         fps: wanted.fps,
-                        quality: wanted.quality,
+                        tier: target.tier(),
                         quality_target,
                         smooth: wanted.cinema,
                     },
@@ -1052,7 +1036,7 @@ pub(super) fn capture_loop(
                 target: media_rate,
                 peak,
                 fps: wanted.fps,
-                quality: wanted.quality,
+                tier: target.tier(),
                 quality_target,
                 smooth: wanted.cinema,
             });
@@ -1243,7 +1227,7 @@ pub(super) fn capture_loop(
                 screen: screen.clone(),
                 capturing: true,
                 visible: true,
-                quality: wanted.quality,
+                target,
                 fps: wanted.fps,
                 format: wanted.format,
                 budget_size,
@@ -1266,7 +1250,7 @@ pub(super) fn capture_loop(
                     maximum_size,
                     capture: capture_name,
                     screen: screen.clone(),
-                    quality: wanted.quality,
+                    target,
                     fps: wanted.fps,
                     format: wanted.format,
                     budget_size,

@@ -46,7 +46,9 @@ impl Probe {
             let mut desktop = capture::Desktop::open_selected(&screen)?;
             let deadline = Instant::now() + Duration::from_secs(2);
             while lease.requested() && !task_cancel.is_cancelled() && Instant::now() < deadline {
-                if desktop.next(20, 2, false, false, (1280, 720))?.is_some() && desktop.available {
+                if desktop.next(20, crate::media::geometry::Tier::P720, false, false, (1280, 720))?.is_some()
+                    && desktop.available
+                {
                     ensure!(
                         same_source(&desktop.screen, &screen),
                         "恢复期间屏幕身份变化"

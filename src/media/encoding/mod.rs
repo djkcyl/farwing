@@ -166,7 +166,8 @@ pub(crate) struct Rate {
     pub target: u32,
     pub peak: u32,
     pub fps: u32,
-    pub quality: i32,
+    /// The picture's size class; a change restarts at a keyframe.
+    pub tier: crate::media::geometry::Tier,
     pub quality_target: QualityTarget,
     /// Cinema mode: a rate-control window of about a second lets busy
     /// scenes borrow bits from quiet ones, at the cost of latency.

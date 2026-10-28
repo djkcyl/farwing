@@ -65,11 +65,12 @@ impl StreamQuality {
     /// The tier's bitrate ceiling (bps) for `screen` at `fps` (the host
     /// caps it at the screen's refresh rate); `None` for 自动 and 自定义.
     pub(crate) fn ceiling(self, screen: &RemoteScreen, fps: u32, true_color: bool) -> Option<u32> {
-        let quality = match self {
-            Self::Fast => 1,
-            Self::Clear => 2,
-            Self::High => 3,
-            Self::Original => 4,
+        use crate::features::host::parameters::Tier;
+        let tier = match self {
+            Self::Fast => Tier::P720,
+            Self::Clear => Tier::P1080,
+            Self::High => Tier::P1440,
+            Self::Original => Tier::P2160,
             Self::Auto | Self::Custom => return None,
         };
         if screen.width == 0 || screen.height == 0 {
@@ -77,7 +78,7 @@ impl StreamQuality {
         }
         let fps = if screen.refresh_hz > 0 { fps.min(screen.refresh_hz) } else { fps };
         Some(crate::features::host::parameters::tier_rate(
-            quality,
+            tier,
             (screen.width, screen.height),
             fps.max(1),
             true_color,

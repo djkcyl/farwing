@@ -67,7 +67,7 @@ pub(crate) fn run(name: &str, parent: u32) -> Result<()> {
         }
         let Request::Next {
             timeout,
-            quality,
+            tier,
             cursor,
             hdr,
             maximum,
@@ -78,7 +78,6 @@ pub(crate) fn run(name: &str, parent: u32) -> Result<()> {
         };
         ensure!(
             timeout <= 100
-                && (1..=6).contains(&quality)
                 && maximum.0 <= 16384
                 && maximum.1 <= 16384,
             "采集参数无效"
@@ -119,7 +118,7 @@ pub(crate) fn run(name: &str, parent: u32) -> Result<()> {
             let frame = if pending.is_some() {
                 pending.take()
             } else {
-                capture.next(timeout, quality, cursor, hdr, maximum)?
+                capture.next(timeout, tier, cursor, hdr, maximum)?
             };
             if native_generation != capture.generation {
                 native_generation = capture.generation;
