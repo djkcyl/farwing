@@ -106,9 +106,31 @@ pub(crate) fn verify_path(path: std::path::PathBuf) -> Result<()> {
     );
     Ok(())
 }
+/// SHA-256 of an executable. Each file version is read once per process: the
+/// open handle's volume, file index, size and write time key the cache, so a
+/// replaced or rewritten file is hashed again.
 pub(crate) fn image_hash(path: &std::path::Path) -> Result<String> {
     use std::io::Read;
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+    static HASHES: std::sync::Mutex<Vec<([u32; 6], String)>> = std::sync::Mutex::new(Vec::new());
     let mut file = std::fs::File::open(path)?;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info)? };
+    let key = [
+        info.dwVolumeSerialNumber,
+        info.nFileIndexHigh,
+        info.nFileIndexLow,
+        info.nFileSizeLow,
+        info.ftLastWriteTime.dwHighDateTime,
+        info.ftLastWriteTime.dwLowDateTime,
+    ];
+    let hashes = || HASHES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, hash)) = hashes().iter().find(|(known, _)| *known == key) {
+        return Ok(hash.clone());
+    }
     let mut digest = Sha256::new();
     let mut bytes = [0; 65536];
     loop {
@@ -118,7 +140,9 @@ pub(crate) fn image_hash(path: &std::path::Path) -> Result<String> {
         }
         digest.update(&bytes[..n]);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    let hash = format!("{:x}", digest.finalize());
+    hashes().push((key, hash.clone()));
+    Ok(hash)
 }
 fn privilege(name: PCWSTR) -> Result<()> {
     let mut token = HANDLE::default();
@@ -357,5 +381,22 @@ impl Agent {
     }
     pub fn alive(&self) -> bool {
         unsafe { WaitForSingleObject(self.process.0, 0) == WAIT_TIMEOUT }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_rewritten_image_is_hashed_again() {
+        let dir = std::env::temp_dir().join(format!("farwing-image-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("image.bin");
+        std::fs::write(&path, b"first").unwrap();
+        let first = super::image_hash(&path).unwrap();
+        assert_eq!(super::image_hash(&path).unwrap(), first);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"other").unwrap();
+        assert_ne!(super::image_hash(&path).unwrap(), first);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
