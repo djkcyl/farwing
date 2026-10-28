@@ -32,8 +32,9 @@ pub(crate) fn framed(kind: FrameType, flags: u8, request_id: u32, body: &impl pr
     output
 }
 
-/// Largest body of one fragment of a `MORE`-split message (§5.1).
-pub(crate) const FRAGMENT: usize = 60 * 1024;
+/// Largest body of one fragment of a `MORE`-split message (§5.1): frames
+/// stay within 64 KiB (§5.3).
+pub(crate) const FRAGMENT: usize = 64 * 1024 - farwing_protocol::peer::HEADER_LEN;
 
 /// Encode `body` as one frame, or as several with `MORE` set on all but the
 /// last when it exceeds [`FRAGMENT`]. Only requests and responses (non-zero
@@ -76,20 +77,25 @@ impl Reassembly {
         if !more && !self.partial.contains_key(&key) {
             return Ok(Some(body.to_vec()));
         }
-        anyhow::ensure!(header.request_id != 0, "推送消息不能分片");
+        let text = crate::i18n::t();
+        anyhow::ensure!(header.request_id != 0, "{}", text.features.peer_push_fragmented);
         if !self.partial.contains_key(&key) {
-            anyhow::ensure!(self.partial.len() < 16, "未完成的分片消息过多");
+            anyhow::ensure!(self.partial.len() < 16, "{}", text.features.peer_too_many_partial_messages);
         }
         let buffer = self.partial.entry(key).or_default();
         if buffer.len() + body.len() > self.limit {
             self.partial.remove(&key);
-            anyhow::bail!("分片消息过大");
+            anyhow::bail!("{}", text.features.peer_message_too_large);
         }
         buffer.extend_from_slice(body);
         if more {
             return Ok(None);
         }
         Ok(self.partial.remove(&key))
+    }
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.partial.is_empty()
     }
     pub(crate) fn clear(&mut self) {
         self.partial.clear();

@@ -555,7 +555,7 @@ message Flow  { int32 channel = 1; uint32 stream = 2; uint64 credit = 3; int32 k
   - 接收方写盘后，每空出四分之一窗口发一次 FLOW。交付跟得上时窗口倍增，上限 64 MiB。
   - 超出信用视为协议错误：被控会以 `ItemDone{PROTOCOL}` 终止该传输（`host.rs:248-256`）。
   - 只计 `data` 的字节数。
-- **通道**：原生 FILE 走 session，TRANSFER/FLOW 走 bulk，bulk 的积压不超过 256 KiB（`src/features/file_transfer/mod.rs:205-206`、`:237-242`，`src/transport/bulk.rs:17-19`）。被控接收时不看通道：session、bulk、control 都可以（`files.rs:89-110`，`ingress.rs:64-71`）。被控发送时 TRANSFER/FLOW 走 bulk，其余走 session（`files.rs:214-221`）。
+- **通道**：FILE 走 session，TRANSFER/FLOW 走 bulk，bulk 的积压有上限（`src/transport/outbox.rs`）。被控只在 session、bulk 上接收文件消息，control 上的不处理。被控发送时 TRANSFER/FLOW 走 bulk，其余走 session。
 
 ### 4.3 路径、目标文件夹与冲突
 

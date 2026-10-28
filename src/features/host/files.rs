@@ -20,8 +20,6 @@ pub(crate) struct Status {
     pub active: bool,
     pub error: Option<String>,
 }
-/// Queue limit of the session channel for file responses.
-const SESSION_QUEUE: usize = 2 * 1024 * 1024;
 #[derive(Default)]
 struct State {
     capabilities: executor::Capabilities,
@@ -70,22 +68,6 @@ impl Receiver {
             s.channels.remove(channel.label());
             s.generation = s.generation.wrapping_add(1);
         }
-    }
-    // The caller validates the current CONTROL stream/input generation.
-    // Admit only file envelopes and never block ACK/input delivery on disk or IPC.
-    pub fn receive_control(&self, bytes: &[u8]) -> Result<bool> {
-        if !executor::claims(bytes) {
-            return Ok(false);
-        }
-        let delivery = {
-            let state = lock(&self.0);
-            state.incoming.clone().map(|tx| (tx, state.generation))
-        };
-        if let Some((tx, generation)) = delivery {
-            tx.try_send((generation, bytes.to_vec()))
-                .map_err(|_| anyhow::anyhow!(t().features.host_file_queue_full))?;
-        }
-        Ok(true)
     }
     pub async fn receive(&self, channel: &Arc<RTCDataChannel>, bytes: &[u8]) -> Result<bool> {
         if !executor::claims(bytes) {
@@ -222,43 +204,13 @@ async fn send(
             .ok_or_else(|| anyhow::anyhow!(t().features.host_file_channel_closed))?
     };
     let permitted = || lease.requested() && (lease.file_access() || rejection);
-    if packet.bulk {
-        // File data shares the bulk channel's writer gate with clipboard,
-        // drag and diagnostics data.
-        let current = || {
-            permitted()
-                && !cancel.is_cancelled()
-                && lock(&receiver.0).generation == generation
-        };
-        if !current() {
-            return Ok(());
-        }
-        return crate::transport::bulk::send(&channel, bytes::Bytes::from(packet.data), current)
-            .await;
-    }
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    // The session writer owns no low-water callback; poll its queue.
-    while channel.buffered_amount().await + packet.data.len() > SESSION_QUEUE {
-        if !permitted() {
-            return Ok(());
-        }
-        ensure!(
-            !cancel.is_cancelled()
-                && channel.ready_state() == RTCDataChannelState::Open
-                && tokio::time::Instant::now() < deadline,
-            "{}", t().features.host_file_send_timeout
-        );
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    ensure!(
-        !cancel.is_cancelled() && channel.ready_state() == RTCDataChannelState::Open,
-        "{}", t().features.host_file_channel_not_ready
-    );
-    if !permitted() {
+    // Both channels go through their outboxes: file data shares the bulk
+    // one with clipboard, drag and diagnostics data.
+    let current = || {
+        permitted() && !cancel.is_cancelled() && lock(&receiver.0).generation == generation
+    };
+    if !current() {
         return Ok(());
     }
-    ensure!(lock(&receiver.0).generation == generation, "{}", t().features.host_file_channel_replaced);
-    let bytes = bytes::Bytes::from(packet.data);
-    tokio::time::timeout_at(deadline, channel.send(&bytes)).await??;
-    Ok(())
+    crate::transport::outbox::send_while(&channel, bytes::Bytes::from(packet.data), current).await
 }

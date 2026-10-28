@@ -48,7 +48,7 @@ impl UpdateNotice {
                 _ => anyhow::bail!("更新通知通道尚未就绪"),
             }
             let bytes = crate::features::stream_control::publisher::update_started();
-            if let Err(error) = channel.send(&bytes::Bytes::from(bytes)).await {
+            if let Err(error) = crate::transport::outbox::send(&channel, bytes::Bytes::from(bytes)).await {
                 if matches!(
                     channel.ready_state(),
                     RTCDataChannelState::Closing | RTCDataChannelState::Closed
@@ -56,7 +56,7 @@ impl UpdateNotice {
                     self.cancel.cancelled().await;
                     return Ok(false);
                 }
-                return Err(error.into());
+                return Err(error);
             }
             // In our SCTP implementation this counter is released by SACK, not
             // merely when send() queues the message. Keep the connection alive

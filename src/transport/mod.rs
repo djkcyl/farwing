@@ -1,6 +1,6 @@
 //! Transport ownership and module boundaries.
 
-pub(crate) mod bulk;
+pub(crate) mod outbox;
 pub(crate) mod direct;
 pub(crate) mod happy_eyeballs;
 pub(crate) mod nat;

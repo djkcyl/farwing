@@ -3,23 +3,18 @@
 //! A `FILE` frame (session channel) carries one [`FileMessage`]. Requests
 //! carry a non-zero FPP request ID and are answered with the same ID and the
 //! `RESPONSE` flag; `ItemDone` pushes carry ID 0. A message larger than
-//! [`FRAGMENT`] is split over consecutive frames of the same ID, all but the
+//! [`crate::protocol::peer::FRAGMENT`] is split over consecutive frames of the same ID, all but the
 //! last flagged `MORE` (§5.1). File data travels as `TRANSFER{kind: FILE}`
 //! paced by `FLOW{channel: BULK, kind: FILE}` on the bulk channel.
 use super::model::{FileEntry, FileInfo, entry};
 use crate::i18n::t;
 use crate::protocol::peer::{FrameType, Header, flags};
 use crate::transport::transfer::{self, Chunk, Flow};
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{Context as _, Result};
 use prost::Message as _;
-use std::collections::HashMap;
 
-/// Largest body of one `FILE` frame (§5.3: frames stay within 64 KiB).
-pub(crate) const FRAGMENT: usize = 64 * 1024 - farwing_protocol::peer::HEADER_LEN;
 /// Largest reassembled `FILE` message.
 pub(crate) const MAX_MESSAGE: usize = 32 * 1024 * 1024;
-/// Partially reassembled messages one receiver keeps at a time.
-const MAX_PARTIAL: usize = 16;
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct FileMessage {
@@ -497,23 +492,7 @@ pub(crate) fn entry_of(value: &FileEntry, roots: bool) -> Entry {
 
 fn frames(flags: u8, request_id: u32, body: Body) -> Vec<Vec<u8>> {
     let bytes = FileMessage { body: Some(body) }.encode_to_vec();
-    if bytes.len() <= FRAGMENT {
-        return vec![farwing_protocol::peer::encode(
-            FrameType::File,
-            flags,
-            request_id,
-            &bytes,
-        )];
-    }
-    let count = bytes.len().div_ceil(FRAGMENT);
-    bytes
-        .chunks(FRAGMENT)
-        .enumerate()
-        .map(|(index, part)| {
-            let more = if index + 1 < count { flags::MORE } else { 0 };
-            farwing_protocol::peer::encode(FrameType::File, flags | more, request_id, part)
-        })
-        .collect()
+    crate::protocol::peer::fragments(FrameType::File, flags, request_id, &bytes)
 }
 
 /// The frames of request `request_id` (non-zero).
@@ -618,38 +597,23 @@ pub(crate) struct Received {
     pub body: std::result::Result<Body, Failure>,
 }
 
-/// Joins `MORE` fragments of `FILE` messages, keyed by request ID and
-/// direction. Fragments of one message arrive in order (the session channel
-/// is ordered); fragments of different messages may interleave.
-#[derive(Default)]
-pub(crate) struct Reassembly(HashMap<(u32, bool), Vec<u8>>);
+/// Joins the `MORE` fragments of `FILE` messages
+/// ([`crate::protocol::peer::Reassembly`]).
+pub(crate) struct Reassembly(crate::protocol::peer::Reassembly);
+
+impl Default for Reassembly {
+    fn default() -> Self {
+        Self(crate::protocol::peer::Reassembly::new(MAX_MESSAGE))
+    }
+}
 
 impl Reassembly {
     /// Feed one `FILE` frame; returns the message once it is complete.
     pub(crate) fn push(&mut self, header: &Header, body: &[u8]) -> Result<Option<Received>> {
-        let more = header.flags & flags::MORE != 0;
-        let key = (header.request_id, header.is_response());
-        let whole;
-        let body = if more || self.0.contains_key(&key) {
-            ensure!(header.request_id != 0, "{}", t().features.transfer_push_fragmented);
-            if !self.0.contains_key(&key) {
-                ensure!(self.0.len() < MAX_PARTIAL, "{}", t().features.transfer_too_many_partial_messages);
-            }
-            let buffer = self.0.entry(key).or_default();
-            if buffer.len() + body.len() > MAX_MESSAGE {
-                self.0.remove(&key);
-                anyhow::bail!("{}", t().features.transfer_message_too_large);
-            }
-            buffer.extend_from_slice(body);
-            if more {
-                return Ok(None);
-            }
-            whole = self.0.remove(&key).unwrap_or_default();
-            whole.as_slice()
-        } else {
-            body
-        };
-        decode_message(header, body).map(Some)
+        self.0
+            .push(header, body)?
+            .map(|whole| decode_message(header, &whole))
+            .transpose()
     }
 }
 

@@ -1,5 +1,5 @@
 //! Farwing peer data channels: binding, frame-type routing and ordered senders.
-use super::workers::{SessionWorkers, std_mutex_lock};
+use super::workers::SessionWorkers;
 use crate::diagnostics::performance::PerformanceMonitor;
 use crate::features::stream_control::{
     OutgoingControlMessage, StreamControlHandle, encode_pb_echo_request,
@@ -12,7 +12,7 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use webrtc::data_channel::RTCDataChannel;
-use webrtc::data_channel::data_channel_init::{RTCDataChannelInit, RTCDataChannelPriority};
+use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
@@ -23,10 +23,7 @@ pub const DATA_CHANNEL_LABELS: [&str; 5] = label::ALL;
 pub(super) struct DataChannels {
     pub(super) port_mapping: Arc<crate::features::port_mapping::Transport>,
     pub(super) _local_channels: Arc<Vec<Arc<RTCDataChannel>>>,
-    pub(super) incoming_channels: Arc<std::sync::Mutex<Vec<Arc<RTCDataChannel>>>>,
-    pub(super) performance: PerformanceMonitor,
     pub(super) stream_control: StreamControlHandle,
-    pub(super) fct: FctControl,
     pub(super) workers: Arc<SessionWorkers>,
 }
 
@@ -53,9 +50,7 @@ impl DataChannels {
             stream_control.diagnostics().bind(channel);
             Self::install_handlers(
                 channel,
-                performance.clone(),
                 stream_control.clone(),
-                true,
                 fct.clone(),
                 &workers,
                 Arc::clone(&port_mapping),
@@ -86,10 +81,13 @@ impl DataChannels {
             fct.clone(),
             stream_control.clone(),
         ));
-        workers.spawn(send_control_messages(
-            control_channel,
+        workers.spawn(send_session_messages(
             text_channel,
             control_messages,
+            stream_control.clone(),
+        ));
+        workers.spawn(send_control_messages(
+            control_channel,
             echo_responses,
             stream_control.clone(),
             fct.clone(),
@@ -98,26 +96,18 @@ impl DataChannels {
         Self {
             _local_channels: Arc::new(local_channels),
             port_mapping,
-            incoming_channels: Arc::new(std::sync::Mutex::new(Vec::new())),
-            performance,
             stream_control,
-            fct,
             workers,
         }
     }
 
     pub(super) fn install_handlers(
         channel: &Arc<RTCDataChannel>,
-        _performance: PerformanceMonitor,
         stream_control: StreamControlHandle,
-        local_channel: bool,
         fct: FctControl,
         workers: &Arc<SessionWorkers>,
         port_mapping: Arc<crate::features::port_mapping::Transport>,
     ) {
-        if !local_channel {
-            fct.bind_stream(channel.id(), channel.label() == label::CONTROL);
-        }
         let channel_label = channel.label().to_owned();
         let opened_channel = Arc::downgrade(channel);
         let open_stream_control = stream_control.clone();
@@ -136,7 +126,7 @@ impl DataChannels {
                     return;
                 };
                 tracing::info!(%label, stream_id = opened_channel.id(), "peer data channel opened");
-                if local_channel && matches!(label.as_str(), label::CONTROL | label::SESSION) {
+                if matches!(label.as_str(), label::CONTROL | label::SESSION) {
                     stream_control.set_data_channel_open(&label, true);
                 }
                 if label == label::CONTROL {
@@ -152,13 +142,14 @@ impl DataChannels {
         let closed_channel = Arc::downgrade(channel);
         let close_mapping = Arc::clone(&port_mapping);
         channel.on_close(Box::new(move || {
-            if local_channel && matches!(label.as_str(), label::SESSION | label::BULK) {
+            if matches!(label.as_str(), label::SESSION | label::BULK) {
                 close_stream_control.file_transfer().close();
                 if let Some(channel) = closed_channel.upgrade() {
                     close_stream_control.drag_drop().close(&channel);
                 }
             }
-            if local_channel && label == label::BULK {
+            // Forwarded connections live on the tunnel and dgram channels.
+            if matches!(label.as_str(), label::TUNNEL | label::DGRAM) {
                 close_mapping.close();
             }
             let label = label.clone();
@@ -172,7 +163,7 @@ impl DataChannels {
                 {
                     fct.set_control_stream(channel.id(), false);
                 }
-                if local_channel && matches!(label.as_str(), label::CONTROL | label::SESSION) {
+                if matches!(label.as_str(), label::CONTROL | label::SESSION) {
                     stream_control.set_data_channel_open(&label, false);
                 }
             })
@@ -197,7 +188,6 @@ impl DataChannels {
             Box::pin(async move {
                 route_message(
                     &label,
-                    local_channel,
                     &message.data,
                     &stream_control,
                     &mapping,
@@ -207,28 +197,12 @@ impl DataChannels {
             })
         }));
     }
-
-    pub(super) fn attach_remote_channel(&self, channel: Arc<RTCDataChannel>) {
-        let label = channel.label().to_owned();
-        tracing::info!(%label, "remote peer data channel received");
-        Self::install_handlers(
-            &channel,
-            self.performance.clone(),
-            self.stream_control.clone(),
-            false,
-            self.fct.clone(),
-            &self.workers,
-            Arc::clone(&self.port_mapping),
-        );
-        std_mutex_lock(&self.incoming_channels).push(channel);
-    }
 }
 
 /// Route one received frame by its type. Channels only select delivery
 /// quality; the frame header decides the owner.
 async fn route_message(
     label: &str,
-    local_channel: bool,
     data: &Bytes,
     stream_control: &StreamControlHandle,
     mapping: &Arc<crate::features::port_mapping::Transport>,
@@ -242,12 +216,12 @@ async fn route_message(
         }
     };
     let result = match header.frame_type() {
-        Some(FrameType::Drag) => match (local_channel, channel) {
-            (true, Some(channel)) => stream_control
+        Some(FrameType::Drag) => match channel {
+            Some(channel) => stream_control
                 .drag_drop()
                 .receive(&channel, data, false)
                 .map_err(|error| ("native drag", error)),
-            _ => Ok(()),
+            None => Ok(()),
         },
         Some(FrameType::Port) => mapping
             .receive(data)
@@ -268,12 +242,12 @@ async fn route_message(
                     .map(|_| ())
                     .map_err(|error| ("file transfer", error)),
                 Some(kind::CLIPBOARD) => receive_clipboard(stream_control, data),
-                Some(kind::DRAG) => match (local_channel, channel) {
-                    (true, Some(channel)) => stream_control
+                Some(kind::DRAG) => match channel {
+                    Some(channel) => stream_control
                         .drag_drop()
                         .receive(&channel, data, true)
                         .map_err(|error| ("native drag", error)),
-                    _ => Ok(()),
+                    None => Ok(()),
                 },
                 Some(kind::DIAGNOSTICS) => stream_control
                     .diagnostics()
@@ -343,10 +317,58 @@ fn receive_clipboard(
     }
 }
 
-pub(super) async fn send_control_messages(
-    control_channel: Arc<RTCDataChannel>,
+/// The session channel's sender: requests, annotation strokes and receiver
+/// statistics, through its outbox.
+pub(super) async fn send_session_messages(
     text_channel: Arc<RTCDataChannel>,
     mut messages: mpsc::UnboundedReceiver<OutgoingControlMessage>,
+    stream_control: StreamControlHandle,
+) {
+    let mut annotation_tick = tokio::time::interval(Duration::from_millis(16));
+    annotation_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut stats_tick = tokio::time::interval(Duration::from_secs(1));
+    stats_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    while text_channel.ready_state() != RTCDataChannelState::Closed {
+        tokio::select! {
+            _ = annotation_tick.tick() => stream_control.annotation_tick(),
+            _ = stats_tick.tick() => {
+                if let Some(frame) = stream_control.receiver_stats_frame()
+                    && let Err(error) = crate::transport::outbox::send(&text_channel, Bytes::from(frame)).await
+                {
+                    tracing::debug!(%error, "receiver statistics send failed");
+                }
+            }
+            message = messages.recv() => {
+                let Some(message) = message else { break; };
+                if let Some(generation) = message.annotation_generation {
+                    if !stream_control.annotation_message_current(message.sequence, generation) { continue; }
+                }
+                let is_annotation = message.annotation_generation.is_some();
+                let bytes = message.payload.len();
+                let is_screen_request = message.completion.is_some();
+                match crate::transport::outbox::send(&text_channel, Bytes::from(message.payload)).await {
+                    Ok(()) => {
+                        if let Some(done) = message.completion { let _ = done.send(Ok(())); }
+                        if is_annotation { tracing::debug!(sequence = message.sequence, bytes, "annotation request sent"); }
+                        else { tracing::info!(sequence = message.sequence, bytes, is_screen_request, "viewing control request sent"); }
+                    }
+                    Err(error) => {
+                        let description = error.to_string();
+                        if let Some(done) = message.completion { let _ = done.send(Err(description.clone())); }
+                        if is_annotation { stream_control.annotation_send_failed(message.sequence, &description); }
+                        else if !is_screen_request { stream_control.mark_send_failed(message.sequence, &description); }
+                        tracing::warn!(sequence = message.sequence, %error, "runtime viewer request send failed");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The control channel's sender (over FCT): HELLO until it is answered,
+/// HELLO responses and the cursor colour.
+pub(super) async fn send_control_messages(
+    control_channel: Arc<RTCDataChannel>,
     mut echo_responses: mpsc::UnboundedReceiver<Vec<u8>>,
     stream_control: StreamControlHandle,
     fct: FctControl,
@@ -356,14 +378,12 @@ pub(super) async fn send_control_messages(
     const PB_CONNECT_MAX_ATTEMPTS: u32 = 30;
     let notifications = stream_control.protocol_notifications();
     let mut generation = None;
-    let mut annotation_tick = tokio::time::interval(Duration::from_millis(16));
-    annotation_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut stats_tick = tokio::time::interval(Duration::from_secs(1));
-    stats_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut profile_tick = tokio::time::interval(Duration::from_secs(1));
+    profile_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut attempts = 0_u32;
     let mut timer: Option<tokio::time::Interval> = None;
     let mut profile = crate::features::stream_control::ProfileWatch::new();
-    loop {
+    while control_channel.ready_state() != RTCDataChannelState::Closed {
         let changed = notifications.notified();
         tokio::pin!(changed);
         changed.as_mut().enable();
@@ -381,20 +401,9 @@ pub(super) async fn send_control_messages(
         if !status.open || status.connected {
             timer = None;
         }
-        if control_channel.ready_state() == RTCDataChannelState::Closed
-            && text_channel.ready_state() == RTCDataChannelState::Closed
-        {
-            break;
-        }
         tokio::select! {
             _ = &mut changed => continue,
-            _ = annotation_tick.tick() => stream_control.annotation_tick(),
-            _ = stats_tick.tick() => {
-                if let Some(frame) = stream_control.receiver_stats_frame()
-                    && let Err(error) = text_channel.send(&Bytes::from(frame)).await
-                {
-                    tracing::debug!(%error, "receiver statistics send failed");
-                }
+            _ = profile_tick.tick() => {
                 // A cursor colour changed in settings applies at once.
                 if status.connected
                     && let Some(hello) = profile.changed()
@@ -427,29 +436,6 @@ pub(super) async fn send_control_messages(
                 match fct.send_control(&control_channel, encode_pb_echo_request()).await {
                     Ok(bytes) => tracing::debug!(attempt = attempts, bytes, "sent peer HELLO"),
                     Err(error) => tracing::warn!(attempt = attempts, %error, "peer HELLO send failed"),
-                }
-            }
-            message = messages.recv() => {
-                let Some(message) = message else { break; };
-                if let Some(generation) = message.annotation_generation {
-                    if !stream_control.annotation_message_current(message.sequence, generation) { continue; }
-                }
-                let is_annotation = message.annotation_generation.is_some();
-                let payload = Bytes::from(message.payload);
-                let is_screen_request = message.completion.is_some();
-                match text_channel.send(&payload).await {
-                    Ok(bytes) => {
-                        if let Some(done) = message.completion { let _ = done.send(Ok(())); }
-                        if is_annotation { tracing::debug!(sequence = message.sequence, bytes, "annotation request sent"); }
-                        else { tracing::info!(sequence = message.sequence, bytes, is_screen_request, "viewing control request sent"); }
-                    }
-                    Err(error) => {
-                        let description = error.to_string();
-                        if let Some(done) = message.completion { let _ = done.send(Err(description.clone())); }
-                        if is_annotation { stream_control.annotation_send_failed(message.sequence, &description); }
-                        else if !is_screen_request { stream_control.mark_send_failed(message.sequence, &description); }
-                        tracing::warn!(sequence = message.sequence, %error, "runtime viewer request send failed");
-                    }
                 }
             }
             response = echo_responses.recv() => {
@@ -592,24 +578,20 @@ async fn recover_remote_input(
     }
 }
 
+/// Channels open in-band (DCEP). Their order on the wire comes from the
+/// outboxes' bounded queues, not from DCEP priorities, which the SCTP
+/// scheduler does not use.
 pub(super) fn data_channel_init(label: &str) -> RTCDataChannelInit {
-    let priority = match label {
-        label::CONTROL | label::BULK => RTCDataChannelPriority::High,
-        label::SESSION => RTCDataChannelPriority::Medium,
-        _ => RTCDataChannelPriority::Low,
-    };
     if label == label::DGRAM {
         // UDP forwarding: a late datagram is useless; never retransmit.
         return RTCDataChannelInit {
             ordered: Some(false),
             max_retransmits: Some(0),
-            priority: Some(priority),
             ..Default::default()
         };
     }
     RTCDataChannelInit {
         ordered: Some(true),
-        priority: Some(priority),
         ..Default::default()
     }
 }

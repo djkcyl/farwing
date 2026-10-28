@@ -255,19 +255,19 @@ code: unsupported | bad_request | forbidden | not_found | busy | unavailable | i
 | PARTICIPANTS | 0x0902 | session | 参与者列表与控制权持有者 |
 | FLOW | 0x0A01 | 各数据通道 | 信用窗口更新（§8） |
 
-### 5.3 数据通道（全部预协商，`negotiated: true`）
+### 5.3 数据通道（主控创建，带内 DCEP）
 
-| 标签 | id | 可靠性 | 用途 |
-| --- | --- | --- | --- |
-| `farwing.control.v2` | 0 | 有序可靠；协商 FCT 后经 FCT | INPUT / POINTER / CURSOR |
-| `farwing.session.v2` | 2 | 有序可靠 | HELLO / SESSION / AUDIO / HOST_EVENT / CLIPBOARD / FILE / DRAG / ANNOTATION / DIAGNOSTICS / PERMISSIONS / PARTICIPANTS |
-| `farwing.bulk.v2` | 4 | 有序可靠 | TRANSFER、FLOW（文件、剪贴板、拖放、诊断包共用） |
-| `farwing.tunnel.v2` | 6 | 有序可靠 | PORT、FLOW |
-| `farwing.dgram.v2` | 8 | 无序，maxRetransmits=0 | PORT_DGRAM |
+| 标签 | 可靠性 | 用途 |
+| --- | --- | --- |
+| `farwing.control.v2` | 有序可靠；协商 FCT 后经 FCT | INPUT / POINTER / CURSOR |
+| `farwing.session.v2` | 有序可靠 | HELLO / SESSION / AUDIO / HOST_EVENT / CLIPBOARD / FILE / DRAG / ANNOTATION / DIAGNOSTICS / PERMISSIONS / PARTICIPANTS |
+| `farwing.bulk.v2` | 有序可靠 | TRANSFER、FLOW（文件、剪贴板、拖放、诊断包共用） |
+| `farwing.tunnel.v2` | 有序可靠 | PORT、FLOW |
+| `farwing.dgram.v2` | 无序，maxRetransmits=0 | PORT_DGRAM |
 
-- 单个数据帧不超过 64 KiB；更大的消息按 §5.1 用 MORE 分片。
-- 每个连接只有一个写出调度器，优先级 control > session > tunnel > bulk。bulk/tunnel 在 SCTP 中排队的字节限制在 256 KiB 内。
-- bulk 通道的所有发送方（FILE、CLIPBOARD、DRAG、DIAGNOSTICS）共用一个写出闸门（`src/transport/bulk.rs`）：同一个 `on_buffered_amount_low` 回调（低水位 128 KiB）唤醒所有等待者，检查空间与入队串行进行，合计排队不超过 256 KiB。
+- 不用预协商（`negotiated`）：所用的 SCTP 实现中，对端数据先于本端打开同号通道到达时会被当作 DCEP 新通道接受，预协商通道有竞态。被控不创建通道。
+- 单个数据帧不超过 64 KiB；更大的消息按 §5.1 用 MORE 分片（各功能共用一个分片与重组实现）。
+- session、bulk、tunnel 每个通道一个写出口（`src/transport/outbox.rs`）：所有发送方经它入队，它独占该通道的 `on_buffered_amount_low` 回调，空间检查与入队串行进行，同一消息的分片连续入队。bulk/tunnel 在 SCTP 中排队不超过 768 KiB，session 不超过 1 MiB（计入在途字节，SACK 后释放；吞吐上限约为排队上限 / RTT）。SCTP 按消息轮转各通道，整个关联未发送的数据约 2 MB 封顶，bulk 与 tunnel 合计低于此值，session 帧总能入队。DCEP 优先级 SCTP 不使用，不设置。
 - v1 的 `farwing.diag` 诊断通道与 `DRAG_DATA`（0x0502）帧类型已删除。
 - `on_message` 只按帧类型分发，不在接收回调里等待业务处理。
 

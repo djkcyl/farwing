@@ -161,7 +161,7 @@ impl Receiver {
             b.channel.upgrade()
         };
         if let Some(channel) = channel {
-            let _ = channel.send(&bytes::Bytes::from(protocol::reset())).await;
+            let _ = crate::transport::outbox::send(&channel, bytes::Bytes::from(protocol::reset())).await;
         }
     }
     /// Whether this participant views the screens; the overlay goes when
@@ -215,12 +215,11 @@ impl Receiver {
             _ => Err(Refusal::Invalid),
         };
         if current() {
-            channel
-                .send(&bytes::Bytes::from(protocol::response(
-                    id,
-                    outcome.map_err(Refusal::reason),
-                )))
-                .await?;
+            crate::transport::outbox::send(
+                channel,
+                bytes::Bytes::from(protocol::response(id, outcome.map_err(Refusal::reason))),
+            )
+            .await?;
         }
         Ok(true)
     }

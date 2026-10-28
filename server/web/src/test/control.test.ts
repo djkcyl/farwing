@@ -82,16 +82,17 @@ describe('session', () => {
   });
 
   test('fragments join per request', () => {
-    const body = Uint8Array.from({ length: 150 }, (_, i) => i);
-    const frames = fpp.encodeFragments(fpp.Type.FILE, body, 64, fpp.Flag.RESPONSE, 7);
+    const body = Uint8Array.from({ length: 2 * fpp.FRAGMENT + 50 }, (_, i) => i & 0xff);
+    const frames = fpp.encodeFragments(fpp.Type.FILE, body, fpp.Flag.RESPONSE, 7);
     expect(frames.length).toBe(3);
-    const join = new fpp.Reassembly(1000);
+    expect(frames.every((f) => f.length <= 65536)).toBe(true);
+    const join = new fpp.Reassembly(body.length);
     const out = frames.map((f) => join.push(fpp.decode(f.slice().buffer)!));
     expect(out[0]).toBeUndefined();
     expect(out[1]).toBeUndefined();
     expect(out[2]?.body).toEqual(body);
     expect(out[2]?.flags).toBe(fpp.Flag.RESPONSE);
-    expect(() => new fpp.Reassembly(100).push(fpp.decode(frames[0].slice().buffer)!)).not.toThrow();
+    expect(() => new fpp.Reassembly(fpp.FRAGMENT).push(fpp.decode(frames[0].slice().buffer)!)).not.toThrow();
   });
 });
 

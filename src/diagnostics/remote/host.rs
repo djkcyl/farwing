@@ -92,7 +92,7 @@ impl Host {
             .upgrade()
             .filter(|c| c.ready_state() == RTCDataChannelState::Open)
             .ok_or_else(|| anyhow::anyhow!(crate::i18n::t().session.diag_channel_closed))?;
-        tokio::time::timeout(TIMEOUT, channel.send(&Bytes::from(frame))).await??;
+        tokio::time::timeout(TIMEOUT, crate::transport::outbox::send(&channel, Bytes::from(frame))).await??;
         Ok(())
     }
     /// Refuses request `id`; the controller words the code, the reason
@@ -312,7 +312,7 @@ impl Host {
                 last: offset + count as u64 == size,
                 entry: 0,
             };
-            crate::transport::bulk::send(
+            crate::transport::outbox::send_while(
                 &bulk,
                 Bytes::from(peer::message(FrameType::Transfer, &chunk)),
                 || allowed() && !job.is_cancelled(),

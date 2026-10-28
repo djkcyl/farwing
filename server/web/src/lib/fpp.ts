@@ -59,14 +59,17 @@ export function encode(type: number, body: Uint8Array, flags = 0, requestId = 0)
   return out;
 }
 
-/// A message split into frames of at most `chunk` body bytes (MORE on all
-/// but the last), as CLIPBOARD (60 KiB) and FILE (65526 B) do.
-export function encodeFragments(type: number, body: Uint8Array, chunk: number, flags = 0, requestId = 0): Uint8Array[] {
-  if (body.length <= chunk) return [encode(type, body, flags, requestId)];
+/// Largest body of one fragment: frames stay within 64 KiB.
+export const FRAGMENT = 65536 - 10;
+
+/// A message split into frames of at most `FRAGMENT` body bytes (MORE on
+/// all but the last).
+export function encodeFragments(type: number, body: Uint8Array, flags = 0, requestId = 0): Uint8Array[] {
+  if (body.length <= FRAGMENT) return [encode(type, body, flags, requestId)];
   const out: Uint8Array[] = [];
-  for (let at = 0; at < body.length; at += chunk) {
-    const last = at + chunk >= body.length;
-    out.push(encode(type, body.subarray(at, at + chunk), flags | (last ? 0 : Flag.MORE), requestId));
+  for (let at = 0; at < body.length; at += FRAGMENT) {
+    const last = at + FRAGMENT >= body.length;
+    out.push(encode(type, body.subarray(at, at + FRAGMENT), flags | (last ? 0 : Flag.MORE), requestId));
   }
   return out;
 }

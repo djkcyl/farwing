@@ -255,9 +255,9 @@ impl NativePeer {
             data_channels.stream_control.clone(),
             video_tracks.clone(),
         ));
-        let data_channels_for_remote = data_channels.clone();
+        // Every channel is opened here; the host opens none.
         connection.on_data_channel(Box::new(move |channel| {
-            data_channels_for_remote.attach_remote_channel(channel);
+            tracing::warn!(label = channel.label(), "ignored a data channel opened by the host");
             Box::pin(async {})
         }));
 

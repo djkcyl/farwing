@@ -86,14 +86,6 @@ impl ControlIngress {
                         _ => {}
                     }
                 }
-                match control_files.receive_control(bytes) {
-                    Ok(true) => return Ok(()),
-                    Ok(false) => {}
-                    Err(error) => {
-                        tracing::warn!(%error, "host CONTROL file request rejected");
-                        return Ok(());
-                    }
-                }
                 // A participant may ask for its own cursor colour (again
                 // later in the session to change it; 0 = the given colour).
                 if let Some(membership) = &membership

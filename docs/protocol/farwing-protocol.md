@@ -580,18 +580,20 @@ POST /sessions        session.start            首个 rtc.answer
 
 ### 5.3 数据通道
 
-主控创建全部通道（带内 DCEP，非预协商），被控按标签接受；被控收到其他标签的通道不使用。
+主控创建全部通道（带内 DCEP，非预协商，不设优先级），被控按标签接受；被控收到其他标签的通道不使用。
 
-| 标签 | 可靠性 | SCTP 优先级 | 帧类型 |
-|------|--------|------------|--------|
-| `farwing.control.v2` | 有序可靠；协商 FCT 后经 FCT（§5.6） | 高 | HELLO、INPUT、POINTER、CURSOR；以及主控的 SESSION `VideoFeedback`、`ForwardStatus`（§6.6、§6.7） |
-| `farwing.session.v2` | 有序可靠 | 中 | SESSION、AUDIO、HOST_EVENT、CLIPBOARD、FILE、DRAG、ANNOTATION、DIAGNOSTICS、PERMISSIONS、PARTICIPANTS |
-| `farwing.bulk.v2` | 有序可靠 | 高 | TRANSFER、FLOW（文件、剪贴板、拖放、诊断包共用） |
-| `farwing.tunnel.v2` | 有序可靠 | 低 | PORT、FLOW（`channel = TUNNEL`） |
-| `farwing.dgram.v2` | 无序，`maxRetransmits = 0` | 低 | PORT_DGRAM |
+| 标签 | 可靠性 | 帧类型 |
+|------|--------|--------|
+| `farwing.control.v2` | 有序可靠；协商 FCT 后经 FCT（§5.6） | HELLO、INPUT、POINTER、CURSOR；以及主控的 SESSION `VideoFeedback`、`ForwardStatus`（§6.6、§6.7） |
+| `farwing.session.v2` | 有序可靠 | SESSION、AUDIO、HOST_EVENT、CLIPBOARD、FILE、DRAG、ANNOTATION、DIAGNOSTICS、PERMISSIONS、PARTICIPANTS |
+| `farwing.bulk.v2` | 有序可靠 | TRANSFER、FLOW（文件、剪贴板、拖放、诊断包共用） |
+| `farwing.tunnel.v2` | 有序可靠 | PORT、FLOW（`channel = TUNNEL`） |
+| `farwing.dgram.v2` | 无序，`maxRetransmits = 0` | PORT_DGRAM |
 
 - 主控在 SDP 中声明 `a=max-message-size:524288`。
-- bulk 通道的所有发送方共用一个写出闸门：同一个 `on_buffered_amount_low` 回调（低水位 128 KiB）唤醒所有等待者，空间检查与入队串行进行，合计在 SCTP 中排队不超过 256 KiB；单帧 30 秒内无法入队则该发送失败。tunnel 通道同样限制在 256 KiB；dgram 排队超过 1 MiB 时丢弃新数据报。
+- 数据帧不超过 64 KiB，更大的消息用 MORE 分片（每片正文 65526 字节）。
+- session、bulk、tunnel 各有一个写出口：该通道的所有发送方经它入队，它独占 `on_buffered_amount_low` 回调（低水位为上限的一半），空间检查与入队串行进行，同一消息的分片连续入队；bulk、tunnel 在 SCTP 中排队不超过 768 KiB，session 不超过 1 MiB（含在途字节）；单帧 30 秒内无法入队则该发送失败。dgram 排队超过 1 MiB 时丢弃新数据报。浏览器的 bulk 发送在未发出的字节超过 1 MiB 时等待。
+- tunnel 或 dgram 通道关闭时，两端结束全部端口转发连接；bulk 通道关闭不影响端口转发。
 
 ### 5.4 帧类型
 

@@ -99,9 +99,11 @@ impl Controller {
                 result = download(&owner, generation, &session, &bulk, id, stream, rx, &job) => result,
             };
             if result.is_err() && !stop.is_cancelled() && session.ready_state() == RTCDataChannelState::Open {
-                let _ = session
-                    .send(&Bytes::from(frame(0, 0, Body::Cancel(Cancel { stream }))))
-                    .await;
+                let _ = crate::transport::outbox::send(
+                    &session,
+                    Bytes::from(frame(0, 0, Body::Cancel(Cancel { stream }))),
+                )
+                .await;
             }
             owner.update(generation, |v| {
                 v.busy = false;
@@ -206,7 +208,7 @@ impl Drop for Partial {
 async fn download(
     owner: &Controller,
     generation: u64,
-    session: &RTCDataChannel,
+    session: &Arc<RTCDataChannel>,
     bulk: &Arc<RTCDataChannel>,
     id: u32,
     stream: u32,
@@ -233,9 +235,7 @@ async fn download(
     let mut file = tokio::fs::File::from_std(file);
     // Chunks may overtake `Ready` (different channels): accept them within
     // the credit before the size is known.
-    session
-        .send(&Bytes::from(frame(0, id, Body::Request(Request { stream }))))
-        .await?;
+    crate::transport::outbox::send(session, Bytes::from(frame(0, id, Body::Request(Request { stream })))).await?;
     let mut window = Window::new();
     let mut hash = Sha256::new();
     let mut ready: Option<Ready> = None;
@@ -321,7 +321,7 @@ async fn download(
                         credit,
                         kind: transfer::kind::DIAGNOSTICS,
                     };
-                    crate::transport::bulk::send(
+                    crate::transport::outbox::send_while(
                         bulk,
                         Bytes::from(peer::message(FrameType::Flow, &flow)),
                         || !job.is_cancelled(),

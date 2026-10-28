@@ -445,7 +445,7 @@ webrtc-rs 的匹配规则（`vendor/webrtc`）：
 | `farwing.tunnel.v2` | `{ordered: true}` | 可选 |
 | `farwing.dgram.v2` | `{ordered: false, maxRetransmits: 0}` | 可选 |
 
-- 定义见 `src/transport/rtc/channels.rs:619-639`（`data_channel_init`）。原生另设了 priority（control/bulk 高、session 中、其余低），被控不读取。
+- 定义见 `src/transport/rtc/channels.rs`（`data_channel_init`）。原生也不设 priority（SCTP 不使用）。
 - **不能用 `negotiated: true`**：被控本身不创建任何通道（全仓库只有主控 `src/transport/rtc/peer.rs:217` 调用 `create_data_channel`），只在 `on_data_channel`（DCEP）时按标签绑定（`src/features/host/peer/mod.rs:728-761`，`src/features/host/peer/channels.rs:52-115`）。预协商的通道永远不会触发 `on_data_channel`，被控收不到 HELLO，也就不会推流。
 - `protocol` 用缺省的空串，`binaryType = "arraybuffer"`。**只发二进制**（`ArrayBuffer`/`Uint8Array`），不要发字符串。
 - 原生按 `DATA_CHANNEL_LABELS` 的顺序创建 5 个通道（`peer.rs:214-221`）。被控不要求 bulk、tunnel、dgram 存在，但建议照建，与原生保持一致。

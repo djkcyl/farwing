@@ -84,14 +84,12 @@ impl Controller {
         binding.workers.push(tokio::spawn(write(
             text,
             control_rx,
-            false,
             Arc::downgrade(&self.0),
             endpoint.clone(),
         )));
         binding.workers.push(tokio::spawn(write(
             file,
             bulk_rx,
-            true,
             Arc::downgrade(&self.0),
             endpoint.clone(),
         )));
@@ -278,28 +276,15 @@ fn fail(state: &Weak<Mutex<Binding>>, endpoint: &Endpoint, error: String) {
 async fn write(
     channel: Arc<RTCDataChannel>,
     mut input: mpsc::Receiver<Vec<u8>>,
-    bulk: bool,
     state: Weak<Mutex<Binding>>,
     endpoint: Endpoint,
 ) {
     let stop = endpoint.stop_token();
     loop {
         let data = tokio::select! { _=stop.cancelled()=>break, v=input.recv()=>match v {Some(v)=>v,None=>break} };
-        let result = if bulk {
-            crate::transport::bulk::send(&channel, bytes::Bytes::from(data), || !stop.is_cancelled())
-                .await
-        } else {
-            tokio::time::timeout(Duration::from_secs(30), async {
-                while channel.buffered_amount().await + data.len() > 2 * 1024 * 1024 {
-                    tokio::select! { _=stop.cancelled()=>anyhow::bail!("{}", t().features.drag_ended), _=tokio::time::sleep(Duration::from_millis(5))=>{} }
-                }
-                ensure!(channel.ready_state() == RTCDataChannelState::Open, "{}", t().features.drag_data_channel_closed);
-                channel.send(&bytes::Bytes::from(data)).await?;
-                Ok::<_, anyhow::Error>(())
-            })
-            .await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("{}", t().features.drag_send_timeout)))
-        };
+        let result =
+            crate::transport::outbox::send_while(&channel, bytes::Bytes::from(data), || !stop.is_cancelled())
+                .await;
         if result.is_err() {
             fail(&state, &endpoint, t().features.drag_send_failed.into());
             break;

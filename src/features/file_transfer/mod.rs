@@ -23,7 +23,7 @@ use std::{
 };
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use webrtc::data_channel::{RTCDataChannel, data_channel_state::RTCDataChannelState};
+use webrtc::data_channel::RTCDataChannel;
 
 use crate::i18n::t;
 use crate::transport::transfer::{Chunk, Credit, INITIAL_WINDOW, Window};
@@ -34,8 +34,6 @@ pub(crate) fn lock<T>(v: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 /// How long a request waits for its response.
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(60);
-/// Queue limit of the session channel for (possibly fragmented) requests.
-const SESSION_QUEUE: usize = 4 * 1024 * 1024;
 
 /// What arrives for a running transfer.
 pub(crate) enum Inbound {
@@ -106,7 +104,6 @@ pub(crate) struct Transport {
     changed: Notify,
     requests: AtomicU32,
     transfers: AtomicU32,
-    session_lock: tokio::sync::Mutex<()>,
 }
 
 /// Removes an unanswered request when its waiter goes away.
@@ -203,38 +200,16 @@ impl Transport {
     async fn send_session(&self, frames: Vec<Vec<u8>>) -> Result<()> {
         let channel = lock(&self.session).upgrade().context(t().features.transfer_channel_not_connected)?;
         // Fragments of one message go out back to back.
-        let _gate = tokio::time::timeout(Duration::from_secs(30), self.session_lock.lock())
+        crate::transport::outbox::send_all(&channel, frames.into_iter().map(Bytes::from), || true)
             .await
-            .context(t().features.transfer_send_queue_timeout)?;
-        for frame in frames {
-            let frame = Bytes::from(frame);
-            tokio::time::timeout(Duration::from_secs(30), async {
-                // The session writer owns this channel's low-water callback; poll.
-                while channel.buffered_amount().await + frame.len() > SESSION_QUEUE {
-                    ensure!(
-                        channel.ready_state() == RTCDataChannelState::Open,
-                        "{}", t().features.transfer_channel_closed
-                    );
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-                ensure!(
-                    channel.ready_state() == RTCDataChannelState::Open,
-                    "{}", t().features.transfer_channel_closed
-                );
-                channel.send(&frame).await?;
-                Ok::<_, anyhow::Error>(())
-            })
-            .await
-            .context(t().features.transfer_send_timeout)??;
-        }
-        Ok(())
+            .context(t().features.transfer_send_timeout)
     }
 
-    /// Send one frame on the bulk channel through its shared writer gate
-    /// (at most [`crate::transport::bulk::QUEUE`] bytes queued in SCTP).
+    /// Send one frame on the bulk channel through its outbox
+    /// (at most [`crate::transport::outbox::BULK_QUEUE`] bytes queued in SCTP).
     async fn send_bulk(&self, frame: Vec<u8>) -> Result<()> {
         let channel = lock(&self.bulk).upgrade().context(t().features.transfer_data_channel_not_connected)?;
-        crate::transport::bulk::send(&channel, Bytes::from(frame), || self.supported())
+        crate::transport::outbox::send_while(&channel, Bytes::from(frame), || self.supported())
             .await
             .context(t().features.transfer_data_send_failed)
     }

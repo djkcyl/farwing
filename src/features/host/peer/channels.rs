@@ -404,7 +404,7 @@ impl Business {
         {
             match audio.quality_request(data) {
                 Ok(Some(response)) => {
-                    let _ = channel.send(&Bytes::from(response)).await;
+                    let _ = crate::transport::outbox::send(channel, Bytes::from(response)).await;
                     return;
                 }
                 Err(error) => {
@@ -433,8 +433,7 @@ impl Business {
                             };
                             if let Some(channel) = weak.upgrade()
                                 && !cancel.is_cancelled()
-                                && let Err(error) = channel
-                                    .send(&Bytes::from(turn.response(result)))
+                                && let Err(error) = crate::transport::outbox::send(&channel, Bytes::from(turn.response(result)))
                                     .await
                             {
                                 tracing::debug!(%error, "control request response failed");
@@ -445,8 +444,7 @@ impl Business {
                     let result = control_turn(&lease, turn.take, turn.automatic);
                     if let Some(channel) = weak.upgrade()
                         && !cancel.is_cancelled()
-                        && let Err(error) = channel
-                            .send(&Bytes::from(turn.response(result)))
+                        && let Err(error) = crate::transport::outbox::send(&channel, Bytes::from(turn.response(result)))
                             .await
                     {
                         tracing::debug!(%error, "control token response failed");
@@ -474,7 +472,7 @@ impl Business {
                                     .map_err(crate::features::host::microphone::refusal),
                             );
                             if let Err(error) =
-                                channel.send(&Bytes::from(response)).await
+                                crate::transport::outbox::send(&channel, Bytes::from(response)).await
                             {
                                 microphone.transport_lost();
                                 tracing::debug!(%error,"host microphone response failed");
@@ -511,7 +509,7 @@ impl Business {
             }
             _ => {
                 if let Some(reply) = crate::protocol::peer::unsupported(data)
-                    && let Err(error) = channel.send(&Bytes::from(reply)).await
+                    && let Err(error) = crate::transport::outbox::send(channel, Bytes::from(reply)).await
                 {
                     tracing::debug!(%error, "host unsupported-request reply failed");
                 }
@@ -535,7 +533,7 @@ impl Business {
                         if cancel.is_cancelled() {
                             break;
                         }
-                        let result = channel.send(&Bytes::from(response)).await;
+                        let result = crate::transport::outbox::send(&channel, Bytes::from(response)).await;
                         if let Err(error) = result {
                             tracing::warn!(%error, "host business response failed");
                         }
@@ -557,7 +555,7 @@ impl Business {
                         farwing_protocol::peer::error_code::INTERNAL,
                         "",
                     );
-                    if let Err(error) = channel.send(&Bytes::from(reply)).await {
+                    if let Err(error) = crate::transport::outbox::send(&channel, Bytes::from(reply)).await {
                         tracing::debug!(%error, "host business error reply failed");
                     }
                 }
@@ -567,15 +565,16 @@ impl Business {
 }
 
 pub(super) async fn send_business(
-    channel: &RTCDataChannel,
+    channel: &Arc<RTCDataChannel>,
     control: bool,
     kcp: &crate::transport::fct::FctControl,
     bytes: Vec<u8>,
-) -> Result<usize> {
+) -> Result<()> {
     if control {
-        return kcp.send_control(channel, bytes).await;
+        kcp.send_control(channel, bytes).await?;
+        return Ok(());
     }
-    Ok(channel.send(&Bytes::from(bytes)).await?)
+    crate::transport::outbox::send(channel, Bytes::from(bytes)).await
 }
 
 pub(super) async fn publish_state(
@@ -640,7 +639,7 @@ pub(super) async fn publish_state(
             let payload = Bytes::copy_from_slice(&hello);
             let sent = tokio::select! {
                 _ = cancel.cancelled() => break,
-                result = channel.send(&payload) => result,
+                result = crate::transport::outbox::send(&channel, payload) => result,
             };
             if sent.is_ok() {
                 last_audio_quality = Some(hello);

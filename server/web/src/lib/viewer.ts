@@ -136,8 +136,9 @@ export interface MicrophoneStatus {
   message?: string;
 }
 
-/// Bulk sends wait while more than this is queued.
-const BULK_HIGH = 4 * 1024 * 1024;
+/// Bulk sends wait while more than this is queued (unsent bytes; the
+/// browser does not count those in flight).
+const BULK_HIGH = 1024 * 1024;
 
 /// Codec names in `session.start` and wire codec numbers in SESSION, by
 /// this viewer's codec number.
@@ -437,7 +438,7 @@ export class Viewer {
         label === 'farwing.dgram.v2' ? { ordered: false, maxRetransmits: 0 } : { ordered: true },
       );
       dc.binaryType = 'arraybuffer';
-      if (label === 'farwing.bulk.v2') dc.bufferedAmountLowThreshold = 1024 * 1024;
+      if (label === 'farwing.bulk.v2') dc.bufferedAmountLowThreshold = BULK_HIGH / 2;
       this.channels.set(label, dc);
       dc.onmessage = (event) => {
         if (event.data instanceof ArrayBuffer) this.onFrame(label, event.data);
@@ -785,11 +786,9 @@ export class Viewer {
     return rid;
   }
 
-  /// A frame on the session channel, split as CLIPBOARD (60 KiB) and FILE
-  /// (65526 B) messages are.
+  /// A message on the session channel, in fragments when it is large.
   private sendSession(type: number, body: Uint8Array, flags = 0, requestId = 0) {
-    const chunk = type === fpp.Type.FILE ? 65526 : type === fpp.Type.CLIPBOARD ? 60 * 1024 : fpp.MAX_FRAME;
-    for (const frame of fpp.encodeFragments(type, body, chunk, flags, requestId)) {
+    for (const frame of fpp.encodeFragments(type, body, flags, requestId)) {
       this.sendFrame('farwing.session.v2', frame);
     }
   }

@@ -421,13 +421,12 @@ impl Clipboard {
             let owner = owner.clone();
             async move {
                 if is_bulk(&data) {
-                    crate::transport::bulk::send(&bulk, Bytes::from(data), || {
+                    crate::transport::outbox::send_while(&bulk, Bytes::from(data), || {
                         owner.delivery_allowed(epoch)
                     })
                     .await
                 } else {
-                    session.send(&Bytes::from(data)).await?;
-                    Ok(())
+                    crate::transport::outbox::send(&session, Bytes::from(data)).await
                 }
             }
         })

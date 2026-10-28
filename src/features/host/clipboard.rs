@@ -242,7 +242,7 @@ async fn binding(
             backend.policy(policy, pull, native);
             let files = (policy.files && policy.enabled) || (pull.files && pull.enabled);
             if permission != Some(files) {
-                channel.send(&bytes::Bytes::from(crate::features::stream_control::publisher::clipboard_permission(files))).await?;
+                crate::transport::outbox::send(&channel, bytes::Bytes::from(crate::features::stream_control::publisher::clipboard_permission(files))).await?;
                 permission = Some(files);
             }
             let status = backend.status();
@@ -270,7 +270,7 @@ async fn binding(
                         // Stream data is credit-limited; wait for the bulk writer.
                         if bulk_tx.send(packet).await.is_err() { native_failed=true; }
                     } else {
-                        channel.send(&bytes::Bytes::from(packet.data)).await?;
+                        crate::transport::outbox::send(&channel, bytes::Bytes::from(packet.data)).await?;
                     }
                 },
             }
@@ -314,7 +314,7 @@ async fn bulk(
         let channel = super::lock(&receiver.0).file.upgrade();
         let result = match channel {
             Some(channel) => {
-                crate::transport::bulk::send(&channel, bytes::Bytes::from(packet.data), current)
+                crate::transport::outbox::send_while(&channel, bytes::Bytes::from(packet.data), current)
                     .await
             }
             None => Err(anyhow::anyhow!("剪贴板数据通道已关闭")),

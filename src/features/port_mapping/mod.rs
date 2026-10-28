@@ -35,9 +35,6 @@ use crate::i18n::t;
 use wire::Body;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
-/// Bytes the tunnel may have queued in SCTP; keeps control frames ahead of
-/// bulk forwarding (`docs/protocol/v2-design.md` §5.3).
-const TUNNEL_QUEUE: usize = 256 * 1024;
 /// Bytes the dgram channel may have queued before datagrams are dropped.
 const DATAGRAM_QUEUE: usize = 1024 * 1024;
 /// Datagrams waiting for one association before new ones are dropped.
@@ -96,7 +93,6 @@ pub(crate) struct Transport {
     streams: Mutex<HashMap<u32, Arc<Stream>>>,
     changed: Notify,
     serial: AtomicU32,
-    send_lock: tokio::sync::Mutex<()>,
 }
 impl Default for Transport {
     fn default() -> Self {
@@ -106,7 +102,6 @@ impl Default for Transport {
             streams: Mutex::default(),
             changed: Notify::new(),
             serial: AtomicU32::new(0),
-            send_lock: tokio::sync::Mutex::new(()),
         }
     }
 }
@@ -120,18 +115,6 @@ impl Transport {
         match channel.label() {
             crate::protocol::peer::channel::TUNNEL => {
                 *lock(&self.tunnel) = Arc::downgrade(channel);
-                channel
-                    .set_buffered_amount_low_threshold(TUNNEL_QUEUE / 2)
-                    .await;
-                let transport = Arc::downgrade(self);
-                channel
-                    .on_buffered_amount_low(Box::new(move || {
-                        if let Some(transport) = transport.upgrade() {
-                            transport.wake();
-                        }
-                        Box::pin(async {})
-                    }))
-                    .await;
             }
             crate::protocol::peer::channel::DGRAM => {
                 *lock(&self.datagrams) = Arc::downgrade(channel);
@@ -294,35 +277,12 @@ impl Transport {
     pub(crate) fn datagram_taken(stream: &Stream) {
         stream.datagrams.fetch_sub(1, Ordering::AcqRel);
     }
-    /// Send a frame on the tunnel once SCTP has room for it.
+    /// Send a frame through the tunnel's outbox (at most
+    /// [`crate::transport::outbox::BULK_QUEUE`] bytes queued in SCTP, so
+    /// session frames stay ahead of forwarded data).
     async fn send_frame(&self, bytes: Vec<u8>) -> Result<()> {
-        let bytes = Bytes::from(bytes);
         let channel = lock(&self.tunnel).upgrade().context(t().features.mapping_connection_closed)?;
-        tokio::time::timeout(TIMEOUT, async {
-            let _guard = self.send_lock.lock().await;
-            loop {
-                let wake = self.changed.notified();
-                tokio::pin!(wake);
-                wake.as_mut().enable();
-                ensure!(
-                    channel.ready_state() == RTCDataChannelState::Open,
-                    "{}",
-                    t().features.mapping_connection_closed
-                );
-                if channel.buffered_amount().await + bytes.len() <= TUNNEL_QUEUE {
-                    break;
-                }
-                tokio::select! {
-                    _ = wake => {},
-                    _ = tokio::time::sleep(Duration::from_millis(20)) => {},
-                }
-            }
-            channel.send(&bytes).await?;
-            Ok::<_, anyhow::Error>(())
-        })
-        .await
-        .context(t().features.mapping_send_timeout)??;
-        Ok(())
+        crate::transport::outbox::send(&channel, Bytes::from(bytes)).await
     }
     pub(crate) async fn send(&self, body: Body) -> Result<()> {
         self.send_frame(wire::encode(body)).await
