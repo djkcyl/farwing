@@ -1,7 +1,7 @@
 //! Same protocol engine in portable mode and in an ordinary-user service child.
 use super::*;
 use crate::i18n::t;
-use crate::platform::windows::host_service::{pipe::Pipe, process, vault};
+use crate::platform::windows::host_service::{pipe::Pipe, process, vault, wake::Wake};
 use prost::Message as _;
 use std::{
     sync::{
@@ -16,6 +16,9 @@ static PREFIX: std::sync::LazyLock<String> =
 const BATCH: usize = 16;
 /// Bytes of outgoing frames per exchange.
 const BATCH_BYTES: usize = 1024 * 1024;
+/// How long an idle worker sleeps between looks at its session and policy;
+/// queued frames wake it at once.
+const IDLE: Duration = Duration::from_millis(100);
 #[derive(prost::Message)]
 struct Request {
     #[prost(message, optional, tag = "6")]
@@ -37,6 +40,9 @@ struct Reply {
     notices: Vec<notices::Notice>,
     #[prost(message, repeated, tag = "1")]
     packets: Vec<Packet>,
+    /// The agent's readiness event, in its first reply.
+    #[prost(string, optional, tag = "3")]
+    wake: Option<String>,
 }
 pub(crate) struct Backend {
     pub notices: notices::Journal,
@@ -45,11 +51,14 @@ pub(crate) struct Backend {
     pub ready: Arc<AtomicBool>,
     pub error: Arc<Mutex<Option<String>>>,
     pub output: mpsc::Receiver<(u64, Packet)>,
+    wake: Arc<Wake>,
     worker: tokio::task::JoinHandle<()>,
     stop: CancellationToken,
 }
 impl Backend {
-    pub fn new(scope: String, stop: CancellationToken) -> Self {
+    pub fn new(scope: String, stop: CancellationToken) -> Result<Self> {
+        let wake = Arc::new(Wake::new()?);
+        let worker_wake = wake.clone();
         let (input, rx) = mpsc::channel(32);
         let (tx, output) = mpsc::channel(32);
         let policy = Arc::new(Mutex::new((0, false, Capabilities::default())));
@@ -64,30 +73,39 @@ impl Backend {
         let activity = crate::platform::windows::host_service::activity::Work::new();
         let worker = tokio::task::spawn_blocking(move || {
             let _activity = activity;
-            if let Err(e) = worker(scope, rx, tx, settings, available, cancel, updates) {
+            if let Err(e) = worker(scope, rx, tx, settings, available, cancel, updates, worker_wake) {
                 tracing::warn!(error=%format!("{e:#}"), "host file executor stopped");
                 *super::super::lock(&status) = Some(e.to_string());
             }
         });
-        Self {
+        Ok(Self {
             notices,
             input,
             policy,
             ready,
             error,
             output,
+            wake,
             worker,
             stop,
-        }
+        })
     }
     pub fn policy(&self, enabled: bool, capabilities: Capabilities) -> u64 {
         let mut state = super::super::lock(&self.policy);
+        let changed = state.1 != enabled || state.2 != capabilities;
         if state.1 != enabled {
             state.0 = state.0.wrapping_add(1);
             state.1 = enabled;
         }
         state.2 = capabilities;
+        if changed {
+            self.wake.notify();
+        }
         state.0
+    }
+    /// A frame was queued on `input`.
+    pub fn notify(&self) {
+        self.wake.notify();
     }
     pub async fn close(self) -> Vec<notices::Notice> {
         self.stop.cancel();
@@ -100,18 +118,23 @@ struct Local {
     scope: String,
     revision: u64,
     engine: Option<Engine>,
+    /// Moves the engine's frames to `rx` and wakes the worker.
+    forward: Option<tokio::task::JoinHandle<()>>,
+    wake: Arc<Wake>,
     tx: mpsc::Sender<Packet>,
     rx: mpsc::Receiver<Packet>,
     runtime: tokio::runtime::Runtime,
 }
 impl Local {
-    fn new(scope: String) -> Result<Self> {
+    fn new(scope: String, wake: Arc<Wake>) -> Result<Self> {
         let (tx, rx) = mpsc::channel(32);
         Ok(Self {
             journal: Default::default(),
             scope,
             revision: 0,
             engine: None,
+            forward: None,
+            wake,
             tx,
             rx,
             runtime: tokio::runtime::Builder::new_multi_thread()
@@ -137,6 +160,11 @@ impl Local {
                 engine.revoked()
             };
             self.runtime.block_on(engine.close());
+            // Nothing of the closed engine may follow.
+            if let Some(forward) = self.forward.take() {
+                forward.abort();
+                let _ = self.runtime.block_on(forward);
+            }
             while self.rx.try_recv().is_ok() {}
             for packet in denied {
                 self.tx.try_send(packet)?;
@@ -144,11 +172,17 @@ impl Local {
         }
         self.revision = request.revision;
         if request.enabled && !request.close && self.engine.is_none() {
-            self.engine = Some(Engine::new(
-                &self.scope,
-                self.tx.clone(),
-                self.journal.clone(),
-            )?);
+            let (output, mut frames) = mpsc::channel(32);
+            let (tx, wake) = (self.tx.clone(), self.wake.clone());
+            self.forward = Some(self.runtime.spawn(async move {
+                while let Some(packet) = frames.recv().await {
+                    if tx.send(packet).await.is_err() {
+                        break;
+                    }
+                    wake.notify();
+                }
+            }));
+            self.engine = Some(Engine::new(&self.scope, output, self.journal.clone())?);
         }
         let mut packets = Vec::new();
         for packet in request.packets {
@@ -184,6 +218,7 @@ impl Local {
         Ok(Reply {
             packets,
             notices: self.journal.take(),
+            wake: None,
         })
     }
 }
@@ -199,6 +234,8 @@ struct Remote {
     pipe: Pipe,
     agent: crate::platform::windows::host_service::user_backend::Lease,
     session: u32,
+    /// Signalled by the agent when it has frames.
+    wake: Option<Wake>,
 }
 impl Remote {
     fn new(stop: &CancellationToken) -> Result<Self> {
@@ -221,19 +258,28 @@ impl Remote {
             pipe,
             agent,
             session,
+            wake: None,
         })
     }
-    fn exchange(&self, request: &Request, stop: &CancellationToken) -> Result<Reply> {
+    fn exchange(&mut self, request: &Request, stop: &CancellationToken) -> Result<Reply> {
         let allowed = || {
             !stop.is_cancelled() && self.agent.alive() && process::active_session() == self.session
         };
         self.pipe.send_raw(request.encode_to_vec(), allowed)?;
-        Reply::decode(
+        let reply = Reply::decode(
             self.pipe
                 .receive_raw(Duration::from_secs(10), allowed)?
                 .as_slice(),
-        )
-        .map_err(Into::into)
+        )?;
+        if self.wake.is_none()
+            && let Some(name) = &reply.wake
+        {
+            match Wake::open(name) {
+                Ok(wake) => self.wake = Some(wake),
+                Err(error) => tracing::warn!(%error, "file agent event unavailable; polling it"),
+            }
+        }
+        Ok(reply)
     }
 }
 fn worker(
@@ -244,16 +290,18 @@ fn worker(
     ready: Arc<AtomicBool>,
     stop: CancellationToken,
     updates: notices::Journal,
+    wake: Arc<Wake>,
 ) -> Result<()> {
     let system = vault::sid(std::process::id())? == "S-1-5-18";
     let mut local = if system {
         None
     } else {
-        Some(Local::new(scope.clone())?)
+        Some(Local::new(scope.clone(), wake.clone())?)
     };
     let mut remote: Option<Remote> = None;
     let mut retry = Instant::now();
-    // Busy while frames move in either direction; poll slowly when idle.
+    // Busy while frames move in either direction; asleep until something is
+    // queued when idle (input, policy and engine output all signal).
     let mut idle = false;
     let result = (|| -> Result<()> {
         while !stop.is_cancelled() {
@@ -261,7 +309,18 @@ fn worker(
             match input.try_recv() {
                 Ok(p) => packets.push(p),
                 Err(mpsc::error::TryRecvError::Disconnected) => break,
-                Err(_) if idle => std::thread::sleep(Duration::from_millis(5)),
+                Err(_) if idle => {
+                    let remote_wake = remote.as_ref().and_then(|r| r.wake.as_ref());
+                    let timeout = if remote.is_some() && remote_wake.is_none() {
+                        Duration::from_millis(5)
+                    } else {
+                        IDLE
+                    };
+                    wake.wait(remote_wake, timeout)?;
+                    if let Ok(p) = input.try_recv() {
+                        packets.push(p);
+                    }
+                }
                 Err(_) => {}
             }
             for _ in 1..BATCH {
@@ -300,7 +359,7 @@ fn worker(
             let received = !request.packets.is_empty();
             let reply = if let Some(local) = &mut local {
                 local.exchange(request)?
-            } else if let Some(remote) = &remote {
+            } else if let Some(remote) = &mut remote {
                 remote.exchange(&request, &stop)?
             } else {
                 let failure = if requested {
@@ -310,6 +369,7 @@ fn worker(
                 };
                 Reply {
                     notices: Vec::new(),
+                    wake: None,
                     packets: request
                         .packets
                         .iter()
@@ -340,7 +400,7 @@ fn worker(
         }
         Ok(())
     })();
-    if let Some(remote) = remote {
+    if let Some(mut remote) = remote {
         let close = Request {
             capabilities: None,
             revision: 0,
@@ -400,6 +460,14 @@ pub(crate) fn run(name: &str, parent: u32) -> Result<()> {
             && pipe.queued_bytes().is_ok()
     };
     let mut local: Option<Local> = None;
+    // The parent sleeps until this is signalled (or polls without it).
+    let (wake, mut wake_name) = match Wake::named() {
+        Ok((wake, name)) => (Arc::new(wake), Some(name)),
+        Err(error) => {
+            tracing::warn!(%error, "file agent event unavailable; the parent polls");
+            (Arc::new(Wake::new()?), None)
+        }
+    };
     while permitted() {
         let request = Request::decode(
             pipe.receive_raw(Duration::from_secs(10), permitted)?
@@ -407,9 +475,10 @@ pub(crate) fn run(name: &str, parent: u32) -> Result<()> {
         )?;
         let close = request.close;
         if local.is_none() {
-            local = Some(Local::new(request.scope.clone())?);
+            local = Some(Local::new(request.scope.clone(), wake.clone())?);
         }
-        let reply = local.as_mut().unwrap().exchange(request)?;
+        let mut reply = local.as_mut().unwrap().exchange(request)?;
+        reply.wake = wake_name.take();
         pipe.send_raw(reply.encode_to_vec(), permitted)?;
         if close {
             break;

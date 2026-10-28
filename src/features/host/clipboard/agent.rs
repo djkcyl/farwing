@@ -1,5 +1,5 @@
 //! Ordinary-user clipboard execution for the SYSTEM resident. Only bounded protocol frames cross IPC.
-use super::wake::Wake;
+use crate::platform::windows::host_service::wake::Wake;
 use super::{Clipboard, Settings, Status};
 use crate::features::drag_drop::{Endpoint, HostPolicy, Role};
 use crate::i18n::t;
@@ -14,6 +14,8 @@ use tokio_util::sync::CancellationToken;
 
 static PREFIX: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| crate::product::pipe_name("Clipboard."));
+/// How long an idle worker sleeps between desktop checks.
+const IDLE: Duration = Duration::from_millis(100);
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Policy {
     revision: u64,
@@ -466,14 +468,24 @@ fn worker(
                         Ok(()) => break,
                         Err(tokio::sync::mpsc::error::TrySendError::Full(value)) => {
                             packet = value;
-                            wake.wait(None)?;
+                            wake.wait(None, Duration::from_millis(10))?;
                         }
                         Err(_) => anyhow::bail!("{}", t().features.clipboard_network_send_closed),
                     }
                 }
             }
             if !had_input && !had_output {
-                wake.wait(remote.as_ref().and_then(|r| r.wake.as_ref()))?;
+                // Every producer signals: the network side, the policy, the
+                // local clipboard and drag endpoint, the agent's own event.
+                // The timeout only re-checks the desktop; an agent without
+                // its event is polled.
+                let remote_wake = remote.as_ref().and_then(|r| r.wake.as_ref());
+                let idle = if remote.is_some() && remote_wake.is_none() {
+                    Duration::from_millis(10)
+                } else {
+                    IDLE
+                };
+                wake.wait(remote_wake, idle)?;
             }
         }
         Ok(())

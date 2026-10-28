@@ -412,6 +412,7 @@ pub(crate) struct System {
     pub service_pipe_wait_failed: &'static str,
     pub service_disconnected: &'static str,
     pub service_input_permission_revoked: &'static str,
+    pub agent_wake_invalid: &'static str,
     pub service_message_too_long: &'static str,
     pub service_message_invalid: &'static str,
     // host_service/process.rs
@@ -1065,6 +1066,7 @@ pub(crate) const ZH_CN: System = System {
     service_pipe_wait_failed: "无法等待被控服务",
     service_disconnected: "被控服务已断开",
     service_input_permission_revoked: "输入许可已撤销",
+    agent_wake_invalid: "用户代理唤醒事件无效",
     service_message_too_long: "被控服务消息过长",
     service_message_invalid: "被控服务消息无效",
     // host_service/process.rs
@@ -1703,6 +1705,7 @@ pub(crate) const EN: System = System {
     service_pipe_wait_failed: "Couldn't wait for the host service",
     service_disconnected: "Host service disconnected",
     service_input_permission_revoked: "Input permission revoked",
+    agent_wake_invalid: "User agent wake event invalid",
     service_message_too_long: "Host service message is too long",
     service_message_invalid: "Invalid host service message",
     // host_service/process.rs

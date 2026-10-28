@@ -1,30 +1,37 @@
-//! Queue readiness only; permissions and payloads stay on the authenticated pipe.
-use crate::platform::windows::host_service::pipe::Handle;
+//! Readiness events of the user agents (clipboard, files): a worker sleeps
+//! until something is queued for it, instead of polling. Only readiness is
+//! signalled; permissions and payloads stay on the authenticated pipe.
+use super::pipe::Handle;
 use crate::i18n::t;
 use anyhow::{Result, ensure};
+use std::time::Duration;
 use windows::{
     Win32::{Foundation::*, System::Threading::*},
     core::PCWSTR,
 };
-pub(super) struct Wake(Handle);
+
+pub(crate) struct Wake(Handle);
 // Event handles support concurrent SetEvent/wait; Arc owners keep them alive.
 unsafe impl Send for Wake {}
 unsafe impl Sync for Wake {}
+
 static PREFIX: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| crate::product::global_object("Clipboard.Wake."));
+    std::sync::LazyLock::new(|| crate::product::global_object("Agent.Wake."));
+
 impl Wake {
+    /// An unnamed auto-reset event, for one process.
     pub fn new() -> Result<Self> {
-        Ok(Self(Handle(unsafe {
-            CreateEventW(None, false, false, None)?
-        })))
+        Ok(Self(Handle(unsafe { CreateEventW(None, false, false, None)? })))
     }
+    /// A named event the agent creates and tells its privileged parent about.
     pub fn named() -> Result<(Self, String)> {
         let name = format!("{}{}", *PREFIX, uuid::Uuid::new_v4().simple());
         let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
         let handle = Handle(unsafe { CreateEventW(None, false, false, PCWSTR(wide.as_ptr()))? });
         ensure!(
             unsafe { GetLastError() } != ERROR_ALREADY_EXISTS,
-            "剪贴板唤醒事件已存在"
+            "{}",
+            t().system.agent_wake_invalid
         );
         Ok((Self(handle), name))
     }
@@ -32,7 +39,7 @@ impl Wake {
         let suffix = name
             .strip_prefix(PREFIX.as_str())
             .filter(|s| s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit()));
-        ensure!(suffix.is_some(), "剪贴板唤醒事件名称无效");
+        ensure!(suffix.is_some(), "{}", t().system.agent_wake_invalid);
         let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
         Ok(Self(Handle(unsafe {
             OpenEventW(SYNCHRONIZATION_SYNCHRONIZE, false, PCWSTR(wide.as_ptr()))?
@@ -41,20 +48,22 @@ impl Wake {
     pub fn notify(&self) {
         let _ = unsafe { SetEvent(self.0.0) };
     }
-    pub fn wait(&self, remote: Option<&Self>) -> Result<()> {
+    /// Until this or `remote` is signalled, at most `timeout`.
+    pub fn wait(&self, remote: Option<&Self>, timeout: Duration) -> Result<()> {
         let handles = [self.0.0, remote.map_or(self.0.0, |r| r.0.0)];
         let handles = if remote.is_some() {
             &handles[..]
         } else {
             &handles[..1]
         };
-        let result = unsafe { WaitForMultipleObjects(handles, false, 10) };
+        let millis = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
+        let result = unsafe { WaitForMultipleObjects(handles, false, millis) };
         ensure!(
             result == WAIT_TIMEOUT
                 || (result.0 >= WAIT_OBJECT_0.0
                     && result.0 < WAIT_OBJECT_0.0 + handles.len() as u32),
             "{}",
-            t().features.clipboard_wait_failed
+            t().system.service_pipe_wait_failed
         );
         Ok(())
     }

@@ -3,7 +3,6 @@
 //! Native work never runs on media/input threads.
 pub(crate) mod agent;
 mod frame;
-mod wake;
 
 use crate::features::clipboard::Clipboard;
 use crate::i18n::t;

@@ -10,3 +10,4 @@ pub(crate) mod resident;
 pub(crate) mod startup;
 pub(crate) mod user_backend;
 pub(crate) mod vault;
+pub(crate) mod wake;

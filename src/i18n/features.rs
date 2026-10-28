@@ -500,7 +500,6 @@ pub(crate) struct Features {
     pub clipboard_agent_message_too_large: &'static str,
     pub clipboard_agent_duplicate_payload: &'static str,
     pub clipboard_agent_orphan_payload: &'static str,
-    pub clipboard_wait_failed: &'static str,
     // drag and drop
     pub drag_ended: &'static str,
     pub drag_not_accepted: &'static str,
@@ -1862,7 +1861,6 @@ pub(crate) const ZH_CN: Features = Features {
     clipboard_agent_message_too_large: "剪贴板代理消息过大",
     clipboard_agent_duplicate_payload: "剪贴板代理消息载荷重复",
     clipboard_agent_orphan_payload: "剪贴板代理消息载荷无归属",
-    clipboard_wait_failed: "剪贴板队列等待失败",
     // drag and drop
     drag_ended: "拖放已结束",
     drag_not_accepted: "目标未接受拖放",
@@ -3158,7 +3156,6 @@ pub(crate) const EN: Features = Features {
     clipboard_agent_message_too_large: "Clipboard agent message too large",
     clipboard_agent_duplicate_payload: "Duplicate clipboard agent payload",
     clipboard_agent_orphan_payload: "Unexpected clipboard agent payload",
-    clipboard_wait_failed: "Clipboard queue wait failed",
     // drag and drop
     drag_ended: "Drag ended",
     drag_not_accepted: "The target hasn't accepted the drop",

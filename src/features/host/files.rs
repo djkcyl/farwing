@@ -134,10 +134,13 @@ pub(super) async fn run(
             pending = None;
         }
         if backend.is_none() && ready && pending.is_some() {
-            backend = Some((
-                generation,
-                Backend::new(scope.clone(), cancel.child_token()),
-            ));
+            match Backend::new(scope.clone(), cancel.child_token()) {
+                Ok(created) => backend = Some((generation, created)),
+                Err(error) => {
+                    lease.file_status(Status { active: false, error: Some(error.to_string()) });
+                    break;
+                }
+            }
         }
         let allowed = lease.file_access() && connected.load(Ordering::Acquire);
         let revision = backend.as_ref().map_or(0, |(_, b)| {
@@ -164,7 +167,10 @@ pub(super) async fn run(
             permit=async{match &sender{Some(tx)=>tx.reserve().await,None=>std::future::pending().await}}, if pending.is_some()=>{
                 let Ok(permit)=permit else{break};
                 let packet=pending.take().unwrap();
-                if packet.0==revision||packet.0==u64::MAX{permit.send((revision,packet.1));}
+                if packet.0==revision||packet.0==u64::MAX{
+                    permit.send((revision,packet.1));
+                    if let Some((_,b))=&backend{b.notify();}
+                }
             },
             packet=async{match &mut backend{Some((_,b))=>b.output.recv().await,None=>std::future::pending().await}}=>{
                 if let Some((packet_revision,packet))=packet {
