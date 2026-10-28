@@ -118,6 +118,11 @@ pub(crate) struct Features {
     pub microphone_timeout: &'static str,
     pub microphone_worker_stopped: &'static str,
     pub microphone_request_withdrawn: &'static str,
+    /// The host's answer to the remote microphone (shown on the viewer).
+    pub remote_microphone_component_unavailable: &'static str,
+    pub remote_microphone_not_allowed: &'static str,
+    pub remote_microphone_initialization_failed: &'static str,
+    pub remote_microphone_failed: &'static str,
     // host/wol.rs, host/wol/setup.rs, wol parts of host/access.rs
     pub wol_assistance_not_allowed: &'static str,
     pub wol_send_interrupted: &'static str,
@@ -1581,6 +1586,10 @@ pub(crate) const ZH_CN: Features = Features {
     microphone_timeout: "麦克风设置超时",
     microphone_worker_stopped: "麦克风执行线程已结束",
     microphone_request_withdrawn: "麦克风请求已撤销",
+    remote_microphone_component_unavailable: "对方的虚拟声卡不可用",
+    remote_microphone_not_allowed: "对方未允许麦克风输入",
+    remote_microphone_initialization_failed: "对方的虚拟声卡初始化失败",
+    remote_microphone_failed: "远端麦克风请求失败",
     // host/wol.rs, host/wol/setup.rs
     wol_assistance_not_allowed: "当前账号无法开启局域网唤醒协助",
     wol_send_interrupted: "唤醒报文发送已中断",
@@ -2953,6 +2962,10 @@ pub(crate) const EN: Features = Features {
     microphone_timeout: "Microphone settings timed out",
     microphone_worker_stopped: "Microphone worker stopped",
     microphone_request_withdrawn: "Microphone request withdrawn",
+    remote_microphone_component_unavailable: "The other side's virtual sound card is unavailable",
+    remote_microphone_not_allowed: "The other side doesn't allow microphone input",
+    remote_microphone_initialization_failed: "The other side's virtual sound card failed to start",
+    remote_microphone_failed: "The remote microphone request failed",
     // host/wol.rs, host/wol/setup.rs
     wol_assistance_not_allowed: "This account can't turn on Wake-on-LAN assistance",
     wol_send_interrupted: "Sending wake packets was interrupted",

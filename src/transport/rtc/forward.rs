@@ -7,7 +7,7 @@
 
 use super::clock::{RemoteNtpEstimator, observe_remote_ntp};
 use super::core::ConnectionCore;
-use super::feedback::{RTP_DEFAULT_RTT, send_picture_loss_indication};
+use super::feedback::send_picture_loss_indication;
 use super::peer::{IceServer, ReceiveParameters};
 use super::receive::{TrackForwardContext, forward_remote_track};
 use super::tracks::{MediaKind, VideoTrackRegistry};
@@ -538,9 +538,9 @@ impl Forwarding {
                             connection,
                             video_annexb_sinks: Arc::clone(&track_source.sinks),
                             performance: track_source.performance.clone(),
-                            nack_rtt_micros: Arc::new(AtomicU64::new(
-                                RTP_DEFAULT_RTT.as_micros() as u64,
-                            )),
+                            // The connection's measured round trip (kept current
+                            // by its statistics), not a fixed default.
+                            nack_rtt_micros: context.rtt_micros.clone(),
                             remote_ntp,
                             receiver_feedback: Some(receiver_feedback),
                             receiver_feedback_sender: feedback,

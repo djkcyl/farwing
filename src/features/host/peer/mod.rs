@@ -1110,7 +1110,7 @@ impl Peer {
                 id: info.screen.id,
                 fps: info.screen.fps,
                 kind: info.kind,
-                hdr: i32::from(info.screen.hdr),
+                hdr: info.screen.hdr,
             })
             .collect()
     }

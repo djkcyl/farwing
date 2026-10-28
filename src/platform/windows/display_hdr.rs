@@ -20,7 +20,7 @@ pub(crate) fn capabilities(fallback_fps: u32) -> Vec<DisplayCapability> {
             id: 0,
             fps: fallback_fps,
             kind: 0,
-            hdr: -1,
+            hdr: false,
         }],
     }
 }
@@ -175,21 +175,6 @@ unsafe fn query_active(fallback_fps: u32) -> Result<Vec<DisplayCapability>, ()> 
             .iter()
             .enumerate()
             .map(|(index, path)| {
-                let mut info = DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO {
-                    header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
-                        r#type: DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,
-                        size: std::mem::size_of::<DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO>() as u32,
-                        adapterId: path.targetInfo.adapterId,
-                        id: path.targetInfo.id,
-                    },
-                    ..Default::default()
-                };
-                let queried = unsafe { DisplayConfigGetDeviceInfo(&mut info.header) } == 0;
-                let flags = if queried {
-                    unsafe { info.Anonymous.value }
-                } else {
-                    0
-                };
                 let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
                     header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
                         r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
@@ -220,15 +205,9 @@ unsafe fn query_active(fallback_fps: u32) -> Result<Vec<DisplayCapability>, ()> 
                     id: index as i32,
                     fps,
                     kind: 0,
-                    // 0 requires actual HDR10 output. AdvancedColorEnabled
-                    // alone can mean WCG/ACM on Windows 11, and is not sufficient.
-                    hdr: if hdr {
-                        0
-                    } else if flags & 1 != 0 && flags & 2 == 0 {
-                        -2
-                    } else {
-                        -1
-                    },
+                    // Actual HDR10 output: AdvancedColorEnabled alone can
+                    // mean WCG/ACM on Windows 11, and is not sufficient.
+                    hdr,
                 }
             })
             .collect());

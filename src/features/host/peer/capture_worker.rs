@@ -398,7 +398,13 @@ pub(super) fn capture_loop(
             continue;
         }
 
-        let mut bounds = if automatic.is_some() {
+        // A settled automatic tier is kept for the stream: nothing to probe
+        // toward any more.
+        let settled = automatic.as_ref().is_some_and(|auto| auto.settled());
+        if settled {
+            initial_auto = false;
+        }
+        let mut bounds = if automatic.is_some() && !settled {
             crate::features::host::parameters::automatic(
                 wanted.format,
                 wanted.quality,

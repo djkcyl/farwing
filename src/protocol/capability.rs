@@ -27,7 +27,8 @@ pub(crate) struct DisplayCapability {
     pub fps: u32,
     #[serde(rename = "type")]
     pub kind: i32,
-    pub hdr: i32,
+    /// The display outputs HDR10 (not merely wide colour).
+    pub hdr: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

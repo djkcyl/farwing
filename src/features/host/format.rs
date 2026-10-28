@@ -366,12 +366,8 @@ impl Negotiated {
                         selected = Some((choice, fps, maximum, color));
                         break 'color;
                     }
-                    fps = match fps {
-                        144.. => 90,
-                        90..=143 => 60,
-                        60..=89 => 30,
-                        _ => 0,
-                    };
+                    // The next common rate below: 120, 90, 60, 30.
+                    fps = [120, 90, 60, 30].into_iter().find(|&rate| rate < fps).unwrap_or(0);
                 }
             }
         }

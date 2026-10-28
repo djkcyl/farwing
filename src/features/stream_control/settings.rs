@@ -491,14 +491,14 @@ pub(super) fn ensure_hdr_displays(state: &StreamControlState) -> Result<()> {
     anyhow::ensure!(
         cap.remote_display_info
             .iter()
-            .any(|display| display.hdr == 0),
+            .any(|display| display.hdr),
         "{}",
         t().features.stream_host_hdr_off
     );
     anyhow::ensure!(
         cap.local_display_info
             .iter()
-            .any(|display| display.hdr == 0),
+            .any(|display| display.hdr),
         "{}",
         t().features.stream_local_hdr_off
     );

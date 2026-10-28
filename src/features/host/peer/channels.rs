@@ -461,7 +461,26 @@ pub(super) async fn bind_channel(
                         }
                     }
                 }
-                Err(error) => tracing::warn!(%error,"rejected malformed host business message"),
+                Err(error) => {
+                    tracing::warn!(%error, "host business request failed");
+                    // A request is always answered: the controller settles it
+                    // (and words the failure in its own language).
+                    if let Ok((header, _)) = farwing_protocol::peer::decode(&message.data)
+                        && header.request_id != 0
+                        && !header.is_response()
+                        && header.frame_type() == Some(crate::protocol::peer::FrameType::Session)
+                        && let Some(channel) = weak.upgrade()
+                    {
+                        let reply = crate::features::stream_control::wire::error_response(
+                            header.request_id,
+                            farwing_protocol::peer::error_code::INTERNAL,
+                            "",
+                        );
+                        if let Err(error) = channel.send(&Bytes::from(reply)).await {
+                            tracing::debug!(%error, "host business error reply failed");
+                        }
+                    }
+                }
             }
         })
     }));
