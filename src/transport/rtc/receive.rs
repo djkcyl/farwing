@@ -2,7 +2,7 @@
 use super::clock::{RemoteNtpEstimator, frame_sender_timing};
 use super::feedback::{
     ACTIVE_STREAM_WINDOW, ArrivalCounter, KEYFRAME_PACKET_WINDOW, NackRequester,
-    RTP_NACK_PROCESS_INTERVAL, RtcpFeedbackBuffer, send_picture_loss_indication,
+    RTP_NACK_PROCESS_INTERVAL, RtcpFeedbackBuffer,
 };
 use super::ingress::{
     MediaRecoveryFlags, OrderedVideoIngress, PendingMediaPacket, VideoIngressOrigin,
@@ -444,8 +444,9 @@ pub(super) async fn forward_video_track(
                     nack_requester.outstanding(),
                     nack_requester.final_lost_packets(),
                 );
-                rtcp_feedback.request_keyframe &= picture.needed(source);
-                rtcp_feedback.flush(&connection, track.ssrc()).await;
+                rtcp_feedback
+                    .flush(&connection, track.ssrc(), nack_requester.rtt, picture.needed(source))
+                    .await;
             }
             Event::ReceiverDeadline => {
                 let now = Instant::now();
@@ -668,6 +669,7 @@ pub(super) async fn forward_video_track(
                         {
                             last_keyframe_timestamp = Some(media.packet.header.timestamp);
                             last_keyframe_packet_at = Some(now);
+                            rtcp_feedback.keyframe_arrived();
                         }
                     }
                     // The viewer decides its playout buffer: none for the
@@ -715,8 +717,9 @@ pub(super) async fn forward_video_track(
                     // Parameter failure overrides this packet's buffered NACK.
                     // Packet-buffer/complete-frame feedback occurs after this flush.
                     rtcp_feedback.request_keyframe |= !prepared;
-                    rtcp_feedback.request_keyframe &= picture.needed(source);
-                    rtcp_feedback.flush(&connection, track.ssrc()).await;
+                    rtcp_feedback
+                        .flush(&connection, track.ssrc(), nack_requester.rtt, picture.needed(source))
+                        .await;
                     result = if prepared {
                         receiver.receive_prepared(parsed)
                     } else {
@@ -826,13 +829,8 @@ pub(super) async fn emit_video_receiver_result(
     // Without a window (it closed) nobody waits for the keyframe, nor for
     // one from a connection whose frames are not shown: asking would cost
     // every forwarded viewer one.
-    if result.request_keyframe
-        && picture.needed(source)
-        && !video_sinks.lock().await.is_empty()
-    {
-        tracing::debug!(media_ssrc, "the frame assembler asks for a keyframe");
-        let _ = send_picture_loss_indication(connection, media_ssrc).await;
-    }
+    let needed = picture.needed(source) && !video_sinks.lock().await.is_empty();
+    rtcp_feedback.request_keyframe |= result.request_keyframe;
     performance.record_predecode_drops(result.predecode_drops);
     performance.set_frame_buffer_frames(result.frame_buffer_frames);
     for frame in result.frames {
@@ -856,7 +854,7 @@ pub(super) async fn emit_video_receiver_result(
                     Ok(plain) => Some(plain),
                     Err(error) => {
                         tracing::debug!(%error, "forwarded frame not decrypted; asking for a keyframe");
-                        let _ = send_picture_loss_indication(connection, media_ssrc).await;
+                        rtcp_feedback.request_keyframe = true;
                         None
                     }
                 }
@@ -950,4 +948,7 @@ pub(super) async fn emit_video_receiver_result(
         // accepts this frame, its completion returns the admission token and
         // the existing receiver recovery remains available for a retry.
     }
+    rtcp_feedback
+        .flush(connection, media_ssrc, nack_requester.rtt, needed)
+        .await;
 }

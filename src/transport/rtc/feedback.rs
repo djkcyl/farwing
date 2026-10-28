@@ -78,10 +78,16 @@ pub(super) struct NackBatch {
     pub(super) late: bool,
 }
 
+/// A track's RTCP feedback: NACKs, and the one gate every keyframe request
+/// of its receive path goes through (lost packets, missing parameter sets,
+/// the frame assembler and decoder, undecryptable forwarded frames).
 #[derive(Default)]
 pub(super) struct RtcpFeedbackBuffer {
     pub(super) request_keyframe: bool,
     pub(super) nack_sequences: Vec<u16>,
+    /// When the last keyframe request went out; cleared when a keyframe
+    /// arrives.
+    keyframe_requested: Option<Instant>,
 }
 
 impl RtcpFeedbackBuffer {
@@ -90,11 +96,31 @@ impl RtcpFeedbackBuffer {
         self.nack_sequences.extend(batch.sequences);
     }
 
-    pub(super) async fn flush(&mut self, connection: &RTCPeerConnection, media_ssrc: u32) {
-        let request_keyframe = std::mem::take(&mut self.request_keyframe);
+    /// A keyframe arrived: the next loss may ask again at once.
+    pub(super) fn keyframe_arrived(&mut self) {
+        self.keyframe_requested = None;
+    }
+
+    /// Send what was buffered. A keyframe request goes out at most once per
+    /// `keyframe_request_spacing(rtt)` until a keyframe arrives; `needed`:
+    /// someone shows this track's pictures.
+    pub(super) async fn flush(
+        &mut self,
+        connection: &RTCPeerConnection,
+        media_ssrc: u32,
+        rtt: Duration,
+        needed: bool,
+    ) {
+        let now = Instant::now();
+        let request_keyframe = std::mem::take(&mut self.request_keyframe)
+            && needed
+            && self
+                .keyframe_requested
+                .is_none_or(|at| now.saturating_duration_since(at) >= keyframe_request_spacing(rtt));
         let nack_sequences = std::mem::take(&mut self.nack_sequences);
         if request_keyframe {
-            tracing::debug!(media_ssrc, "losses ask for a keyframe");
+            self.keyframe_requested = Some(now);
+            tracing::debug!(media_ssrc, "the receive path asks for a keyframe");
             if let Err(error) = send_picture_loss_indication(connection, media_ssrc).await {
                 tracing::warn!(%error, "buffered keyframe request failed");
             }
