@@ -817,43 +817,19 @@ fn set_rate(
     buffer_fps: u32,
     size: (u32, u32),
 ) {
-    config.rcParams.averageBitRate = rate.target;
-    config.rcParams.maxBitRate = rate.peak.max(rate.target);
-    // VBV is a bit allocation window, not queued input frames. A time floor
-    // preserves detail during IDR recovery at high FPS; retain the existing
-    // larger allowance when input FPS is low. No startup buffering is added.
-    let frames = if rate.smooth {
-        // About one second: quality first for watching video.
-        u64::from(buffer_fps.max(1))
-    } else if codec == Codec::Av1 {
-        1
-    } else {
-        5
-    };
-    config.rcParams.vbvBufferSize = (u64::from(rate.target) * frames / u64::from(buffer_fps.max(1)))
-        .max(u64::from(rate.target) / 8)
-        .min(u64::from(u32::MAX)) as u32;
+    let plan = crate::media::encoding::plan::plan(rate, codec, buffer_fps, size, Backend::Nvidia);
+    config.rcParams.averageBitRate = plan.target;
+    config.rcParams.maxBitRate = plan.peak;
+    config.rcParams.vbvBufferSize = plan.buffer.unwrap_or_default().min(u64::from(u32::MAX)) as u32;
     config.rcParams.vbvInitialDelay = 0;
     if codec == Codec::Av1 {
-        let qp = av1_minimum_qp(rate.quality_target.bitrate, size, rate.quality_target.fps);
-        config.rcParams.set_enableMinQP(u32::from(qp != 0));
+        config.rcParams.set_enableMinQP(u32::from(plan.min_qp != 0));
         config.rcParams.minQP = nv::NV_ENC_QP {
-            qpInterP: qp,
-            qpInterB: qp,
-            qpIntra: qp,
+            qpInterP: plan.min_qp,
+            qpInterB: plan.min_qp,
+            qpIntra: plan.min_qp,
         };
     }
-}
-fn av1_minimum_qp(bitrate: u32, size: (u32, u32), fps: u32) -> u32 {
-    // The selected ceiling/FPS stay stable through congestion and idle input.
-    // One policy for every tier, custom rate and bit depth. Keep the measured
-    // conservative floor at <=0.1 bits/pixel/frame, then smoothly release it
-    // by 0.2 so a generous budget can still improve precision. This limits
-    // refinement, never forces frames to spend the available bandwidth.
-    let pixels_per_second =
-        f64::from(size.0.max(1)) * f64::from(size.1.max(1)) * f64::from(fps.max(1));
-    let density = f64::from(bitrate) / pixels_per_second;
-    ((0.2 - density) * 400.0).round().clamp(0.0, 40.0) as u32
 }
 struct Mapped<'a> {
     api: &'a Api,

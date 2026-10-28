@@ -806,7 +806,17 @@ impl Encoder {
             self.set(
                 b"VBVBufferSize\0",
                 b"HevcVBVBufferSize\0",
-                integer(runtime_vbv(rate, self.format.codec, update.buffer_fps)),
+                integer(
+                    crate::media::encoding::plan::plan(
+                        rate,
+                        self.format.codec,
+                        update.buffer_fps,
+                        (0, 0),
+                        super::format::Backend::Amd,
+                    )
+                    .buffer
+                    .unwrap_or_default() as i64,
+                ),
             ),
             self.set(
                 b"PeakBitrate\0",
@@ -1123,25 +1133,6 @@ impl Encoder {
 }
 fn vbv(rate: Rate) -> i64 {
     i64::from(rate.peak.max(rate.target))
-}
-fn runtime_vbv(rate: Rate, codec: Codec, fps: u32) -> i64 {
-    if rate.smooth {
-        // About one second: quality first for watching video.
-        return vbv(rate);
-    }
-    let frames = if codec != Codec::Av1 && rate.peak.max(rate.target) < 120_000_000 {
-        5
-    } else {
-        1
-    };
-    let original = vbv(rate) * frames / i64::from(fps.max(1));
-    if codec == Codec::Av1 {
-        original
-    } else {
-        // AMF needs more transient allocation than NVENC to recover an IDR
-        // without a run of duplicate pictures. Preserve lower-FPS headroom.
-        original.max(vbv(rate) / 5)
-    }
 }
 fn color_profile(color: super::format::Color) -> i64 {
     if color.is_hdr() {

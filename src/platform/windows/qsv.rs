@@ -1260,18 +1260,22 @@ fn set_rate(params: &mut v::mfxVideoParam, rate: Rate) {
         let encoding = &mut mfx.__bindgen_anon_1.__bindgen_anon_1;
         encoding.__bindgen_anon_2.TargetKbps = (rate.target / 1000).div_ceil(factor).max(1) as u16;
         encoding.__bindgen_anon_3.MaxKbps = peak.div_ceil(factor) as u16;
-        if rate.smooth {
-            // About one second: quality first for watching video.
-            encoding.BufferSizeInKB = (rate.target / 8000)
+        let av1 = mfx.CodecId == v::MFX_CODEC_AV1 as u32;
+        let plan = crate::media::encoding::plan::plan(
+            rate,
+            if av1 { super::format::Codec::Av1 } else { super::format::Codec::H264 },
+            rate.fps,
+            (0, 0),
+            super::format::Backend::Intel,
+        );
+        if let Some(bits) = plan.buffer {
+            encoding.BufferSizeInKB = ((bits / 8000) as u32)
                 .div_ceil(factor)
                 .max(1)
                 .min(u16::MAX as u32) as u16;
-        } else if mfx.CodecId == v::MFX_CODEC_AV1 as u32 {
-            encoding.BufferSizeInKB = (rate.target / rate.fps.max(1) / 8000)
-                .div_ceil(factor)
-                .max(1)
-                .min(u16::MAX as u32) as u16;
-            encoding.__bindgen_anon_1.InitialDelayInKB = 0;
+            if av1 && !rate.smooth {
+                encoding.__bindgen_anon_1.InitialDelayInKB = 0;
+            }
         }
         mfx.FrameInfo.FrameRateExtN = rate.fps;
         mfx.FrameInfo.FrameRateExtD = 1;
