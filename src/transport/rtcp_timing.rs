@@ -610,7 +610,6 @@ impl Interceptor for RtcpTiming {
                 || info.mime_type.eq_ignore_ascii_case("video/AV1")
                 || is_audio))
             || info.mime_type.eq_ignore_ascii_case(crate::transport::rsfec::MIME_TYPE)
-            || info.mime_type.eq_ignore_ascii_case("video/flexfec-03")
         {
             let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
             if !state.receive_order.contains(&info.ssrc) {

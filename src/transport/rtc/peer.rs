@@ -796,9 +796,6 @@ impl NativePeer {
                         rsfec_config,
                         video_payload_codecs,
                         rtx_payload_apt,
-                        flexfec_payload_types,
-                        red_payload_types,
-                        ulpfec_payload_types,
                     } = ReceiveParameters::of(&parameters);
                     let ssrc = track.ssrc();
                     let remote_ntp =
@@ -826,9 +823,6 @@ impl NativePeer {
                         codec = %codec,
                         payload_type = track.payload_type(),
                         ssrc,
-                        red_payload_types = ?red_payload_types,
-                        ulpfec_payload_types = ?ulpfec_payload_types,
-                        flexfec_payload_types = ?flexfec_payload_types,
                         "remote RTP track selected"
                     );
                     let _ = announcement_tx.send(ForwardedTrack {
@@ -853,9 +847,6 @@ impl NativePeer {
                                 codec_fmtp,
                                 video_payload_codecs,
                                 rtx_payload_apt,
-                                red_payload_types,
-                                ulpfec_payload_types,
-                                flexfec_payload_types,
                                 rsfec_config,
                                 extmap_allow_mixed,
                                 audio,
@@ -913,15 +904,12 @@ impl Drop for NativePeer {
     }
 }
 
-/// The negotiated receive codecs of one track: payload formats, repair and
-/// FEC payload types.
+/// The negotiated receive codecs of one track: payload formats, RTX and
+/// RS-FEC.
 pub(super) struct ReceiveParameters {
     pub rsfec_config: Option<RsFecConfig>,
     pub video_payload_codecs: std::collections::HashMap<u8, (String, String)>,
     pub rtx_payload_apt: std::collections::HashMap<u8, u8>,
-    pub flexfec_payload_types: std::collections::HashSet<u8>,
-    pub red_payload_types: std::collections::HashSet<u8>,
-    pub ulpfec_payload_types: std::collections::HashSet<u8>,
 }
 
 impl ReceiveParameters {
@@ -980,43 +968,10 @@ impl ReceiveParameters {
                 Some((entry.payload_type, apt))
             })
             .collect();
-        let flexfec_payload_types = parameters
-            .codecs
-            .iter()
-            .filter(|entry| {
-                entry
-                    .capability
-                    .mime_type
-                    .eq_ignore_ascii_case("video/flexfec-03")
-            })
-            .map(|entry| entry.payload_type)
-            .collect();
-        let red_payload_types = parameters
-            .codecs
-            .iter()
-            .filter(|entry| {
-                entry.capability.mime_type.eq_ignore_ascii_case("video/red")
-            })
-            .map(|entry| entry.payload_type)
-            .collect();
-        let ulpfec_payload_types = parameters
-            .codecs
-            .iter()
-            .filter(|entry| {
-                entry
-                    .capability
-                    .mime_type
-                    .eq_ignore_ascii_case("video/ulpfec")
-            })
-            .map(|entry| entry.payload_type)
-            .collect();
         Self {
             rsfec_config,
             video_payload_codecs,
             rtx_payload_apt,
-            flexfec_payload_types,
-            red_payload_types,
-            ulpfec_payload_types,
         }
     }
 }

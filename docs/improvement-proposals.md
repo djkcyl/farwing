@@ -177,6 +177,7 @@
 - 删除 SDP 和代码里 Farwing 被控从不发送的 RED、ULPFEC、FlexFEC-03、goog-remb、CVO、rid。
 - 收益：单包有效载荷约多 4–7%（估算）。
 - 状态（2026-10-18）：视频扩展已是 8 项一字节头；`urn:farwing:rtp-hdrext:frame-meta` 已实现（纪元、帧号、参考帧号、关键帧 / 恢复 / 长期参考标志），新画面与换源仍用各自的扩展。
+- 状态（2026-10-28）：主控已删除 RED、ULPFEC、FlexFEC-03 的注册与接收路径，只保留 RS-FEC。
 
 **F5：FEC。**
 - 现状：跨帧分组，小帧要攒够包数才封块，修复延迟约等于一个 RTT，并不比 NACK 快；冗余假设丢包相互独立，不适合 Wi-Fi 突发；FEC 与 RTX 会重复修复同一个包。

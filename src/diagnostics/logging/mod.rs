@@ -122,7 +122,7 @@ modules! {
     ("host", false, ["farwing::features::host", "farwing_codec::encoder", "farwing::platform::windows::software_encoder", "farwing::media::encoding", "farwing::platform::windows::capture", "farwing::platform::windows::encoder", "farwing::platform::windows::nvenc", "farwing::platform::windows::amf", "farwing::platform::windows::qsv", "farwing::platform::windows::gdi", "farwing::platform::windows::preprocess", "farwing::platform::windows::transfer", "farwing::platform::windows::gpu_conversion", "farwing::platform::windows::cursor", "farwing::platform::windows::wol"]),
     ("signal", false, ["farwing::transport::signal"]),
     ("rtc", false, ["farwing::transport::rtc", "farwing::transport::fct"]),
-    ("recovery", false, ["farwing::transport::video_receiver", "farwing::nack_audit", "farwing::transport::rsfec", "farwing::transport::ulpfec", "farwing::transport::flexfec", "farwing::transport::xor_fec"]),
+    ("recovery", false, ["farwing::transport::video_receiver", "farwing::nack_audit", "farwing::transport::rsfec"]),
     ("decoder", false, ["farwing::media::decoder", "farwing::media::decoder_pool", "farwing::media::decoder_result", "farwing::media::codec_parameters", "farwing_codec::decoder", "farwing_h264", "farwing_av1::bitstream", "farwing_av1::decoder", "farwing::platform::windows::decoder", "farwing::platform::windows::surface"]),
     ("viewer", false, ["farwing::application::viewer", "farwing::session::controller::windows", "farwing::media::video_color", "farwing::media::video_format", "farwing::platform::windows::video_shader", "farwing::platform::windows::swapchain"]),
     ("audio", false, ["farwing::media::audio", "farwing::media::microphone"]),

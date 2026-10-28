@@ -685,7 +685,7 @@ last_served: Option<{request, frame_id, at}>
 
 **确定性丢包与延迟注入器**（只在 `dev` 命令或调试构建中启用）：
 
-- **位置**：主控 `receive.rs` 中，所有恢复手段（RTX 解包、RS-FEC、ULPFEC/FlexFEC）完成之后、交给 `NackRequester` 与 `VideoStreamReceiver` 之前，即处理 `pending_media` 处（`receive.rs:599` 附近）。
+- **位置**：主控 `receive.rs` 中，所有恢复手段（RTX 解包、RS-FEC）完成之后、交给 `NackRequester` 与 `VideoStreamReceiver` 之前，即处理 `pending_media` 处（`receive.rs:599` 附近）。
   - 按**原始序号**过滤，被 RTX 或 FEC 恢复出来的同一个包也一起丢弃，保证丢失不可恢复。
 - **规则**（环境变量 `FARWING_DEV_VIDEO_LOSS` 或 `dev video --loss`）：
   - `frame:N[,every=M]`：丢弃第 N 帧（按 RTP 时间戳计）的全部包，之后每 M 帧丢一次；

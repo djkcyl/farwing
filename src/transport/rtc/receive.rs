@@ -5,9 +5,9 @@ use super::feedback::{
     RTP_NACK_PROCESS_INTERVAL, RtcpFeedbackBuffer, send_picture_loss_indication,
 };
 use super::ingress::{
-    MediaRecoveryFlags, OrderedVideoIngress, PendingMediaPacket, RedPacket, VideoIngressOrigin,
-    VideoInterceptorDrainers, parse_flexfec_recovered_packets, parse_rsfec_recovered_packets,
-    parse_ulpfec_recovered_packets, recover_rtx_packet, remember_fec_source, unwrap_red_packet,
+    MediaRecoveryFlags, OrderedVideoIngress, PendingMediaPacket, VideoIngressOrigin,
+    VideoInterceptorDrainers, parse_rsfec_recovered_packets, recover_rtx_packet,
+    remember_fec_source,
 };
 use super::negotiation::{
     REPAIRED_RTP_STREAM_ID_URI, RTP_STREAM_ID_URI, VIDEO_CAPTURE_INDEX_URI,
@@ -21,14 +21,12 @@ use super::tracks::{
 use super::workers::SessionWorkers;
 use crate::diagnostics::performance::PerformanceMonitor;
 use crate::media::VideoCodec;
-use crate::transport::flexfec::FlexFecReceiver;
 use crate::transport::video_receiver::{
     VideoStreamReceiver, ReceiverResult, VideoCodecKind, VideoHeaderExtensions,
 };
 use crate::transport::rsfec::{RsFecConfig, RsFecReceiver, normalize_rtx_source};
-use crate::transport::ulpfec::UlpfecReceiver;
 use bytes::Bytes;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::{Duration, Instant};
@@ -37,7 +35,6 @@ use tokio_util::sync::CancellationToken;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::rtp::packet::Packet as RtpPacket;
-use webrtc::util::marshal::Marshal;
 
 pub(super) struct TrackForwardContext {
     /// The track comes through the server's forwarder.
@@ -49,9 +46,6 @@ pub(super) struct TrackForwardContext {
     pub(super) codec_fmtp: String,
     pub(super) video_payload_codecs: HashMap<u8, (String, String)>,
     pub(super) rtx_payload_apt: HashMap<u8, u8>,
-    pub(super) red_payload_types: HashSet<u8>,
-    pub(super) ulpfec_payload_types: HashSet<u8>,
-    pub(super) flexfec_payload_types: HashSet<u8>,
     pub(super) rsfec_config: Option<RsFecConfig>,
     pub(super) extmap_allow_mixed: bool,
     pub(super) audio: crate::media::audio::AudioPlayback,
@@ -88,9 +82,6 @@ pub(super) async fn forward_remote_track(
         codec_fmtp,
         video_payload_codecs,
         rtx_payload_apt,
-        red_payload_types,
-        ulpfec_payload_types,
-        flexfec_payload_types,
         rsfec_config,
         extmap_allow_mixed,
         audio,
@@ -119,9 +110,6 @@ pub(super) async fn forward_remote_track(
             codec_fmtp,
             video_payload_codecs,
             rtx_payload_apt,
-            red_payload_types,
-            ulpfec_payload_types,
-            flexfec_payload_types,
             rsfec_config,
             extmap_allow_mixed,
             video_keyframe_tx,
@@ -203,9 +191,6 @@ pub(super) async fn forward_video_track(
     codec_fmtp: String,
     video_payload_codecs: HashMap<u8, (String, String)>,
     rtx_payload_apt: HashMap<u8, u8>,
-    red_payload_types: HashSet<u8>,
-    ulpfec_payload_types: HashSet<u8>,
-    flexfec_payload_types: HashSet<u8>,
     rsfec_config: Option<RsFecConfig>,
     extmap_allow_mixed: bool,
     video_keyframe_tx: watch::Sender<u64>,
@@ -330,8 +315,6 @@ pub(super) async fn forward_video_track(
     .collect::<Vec<_>>();
     let mut fec_receiver = rsfec_config
         .map(|config| RsFecReceiver::new(track.ssrc(), config.max_k, mutable_extensions.clone()));
-    let mut flexfec_receiver = FlexFecReceiver::new(track.ssrc(), mutable_extensions.clone());
-    let mut ulpfec_receiver = UlpfecReceiver::new(track.ssrc(), mutable_extensions.clone());
     let mut pending_media = VecDeque::<PendingMediaPacket>::new();
     let mut configured_payload_type = track.payload_type();
     let mut rtcp_feedback = RtcpFeedbackBuffer::default();
@@ -357,8 +340,6 @@ pub(super) async fn forward_video_track(
             arrivals = ArrivalCounter::default();
             fec_receiver = rsfec_config
                 .map(|c| RsFecReceiver::new(track.ssrc(), c.max_k, mutable_extensions.clone()));
-            flexfec_receiver = FlexFecReceiver::new(track.ssrc(), mutable_extensions.clone());
-            ulpfec_receiver = UlpfecReceiver::new(track.ssrc(), mutable_extensions.clone());
             rtcp_feedback = RtcpFeedbackBuffer::default();
             last_packet_received_at = None;
             last_keyframe_packet_at = None;
@@ -539,33 +520,18 @@ pub(super) async fn forward_video_track(
             }
             Event::Fec(packet, received_at) => {
                 performance.record_fec_packet_received();
-                if flexfec_payload_types.contains(&packet.header.payload_type) {
-                    match flexfec_receiver.receive_repair(
-                        packet.header.ssrc,
-                        packet.header.sequence_number,
-                        &packet.payload,
-                    ) {
-                        Ok(recovery) => {
-                            performance.record_fec_recovered(recovery.len());
-                            pending_media
-                                .extend(parse_flexfec_recovered_packets(recovery, received_at));
-                        }
-                        Err(error) => tracing::debug!(%error, "FlexFEC repair packet rejected"),
+                let Some(fec_receiver) = fec_receiver.as_mut() else {
+                    continue;
+                };
+                match fec_receiver.receive_repair(&packet.payload) {
+                    Ok(recovery) => {
+                        performance.record_fec_recovered(recovery.recovered_packets.len());
+                        pending_media.extend(parse_rsfec_recovered_packets(
+                            recovery.recovered_packets,
+                            received_at,
+                        ));
                     }
-                } else {
-                    let Some(fec_receiver) = fec_receiver.as_mut() else {
-                        continue;
-                    };
-                    match fec_receiver.receive_repair(&packet.payload) {
-                        Ok(recovery) => {
-                            performance.record_fec_recovered(recovery.recovered_packets.len());
-                            pending_media.extend(parse_rsfec_recovered_packets(
-                                recovery.recovered_packets,
-                                received_at,
-                            ));
-                        }
-                        Err(error) => tracing::warn!(%error, "RSFEC repair packet rejected"),
-                    }
+                    Err(error) => tracing::warn!(%error, "RSFEC repair packet rejected"),
                 }
             }
             Event::Media(mut media) => {
@@ -611,43 +577,6 @@ pub(super) async fn forward_video_track(
                     continue;
                 }
 
-                if red_payload_types.contains(&media.packet.header.payload_type) {
-                    match unwrap_red_packet(media.packet, &ulpfec_payload_types) {
-                        Ok(RedPacket::Media(packet)) => {
-                            media.rsfec_source = packet.marshal().ok();
-                            media.packet = packet;
-                        }
-                        Ok(RedPacket::Ulpfec {
-                            sequence_number,
-                            payload,
-                        }) => {
-                            performance.record_fec_packet_received();
-                            if media.flags.recovered_from_rtx {
-                                // WebRTC does not feed an RTX-recovered RED/FEC
-                                // packet back into the ULPFEC erasure decoder.
-                                continue;
-                            }
-                            match ulpfec_receiver.receive_repair(sequence_number, &payload) {
-                                Ok(recovery) => {
-                                    performance.record_fec_recovered(recovery.len());
-                                    pending_media.extend(parse_ulpfec_recovered_packets(
-                                        recovery,
-                                        media.received_at,
-                                    ));
-                                }
-                                Err(error) => {
-                                    tracing::debug!(%error, "ULPFEC repair packet rejected")
-                                }
-                            }
-                            continue;
-                        }
-                        Err(error) => {
-                            tracing::debug!(%error, "RED packet rejected");
-                            continue;
-                        }
-                    }
-                }
-
                 let recovered = media.flags.recovered_from_rtx || media.flags.recovered_by_fec;
                 if let Some(impairment) = impairment.as_mut()
                     && impairment.drops(
@@ -684,12 +613,9 @@ pub(super) async fn forward_video_track(
                         if let Some(source) = media.rsfec_source.take() {
                             remember_fec_source(
                                 &mut fec_receiver,
-                                &mut flexfec_receiver,
-                                &mut ulpfec_receiver,
                                 &mut pending_media,
                                 sequence_number,
                                 source,
-                                media.flags.recovered_from_rtx,
                                 media.received_at,
                                 &performance,
                             );
@@ -709,12 +635,9 @@ pub(super) async fn forward_video_track(
                         if let Some(source) = media.rsfec_source.take() {
                             remember_fec_source(
                                 &mut fec_receiver,
-                                &mut flexfec_receiver,
-                                &mut ulpfec_receiver,
                                 &mut pending_media,
                                 sequence_number,
                                 source,
-                                media.flags.recovered_from_rtx,
                                 media.received_at,
                                 &performance,
                             );
@@ -737,12 +660,9 @@ pub(super) async fn forward_video_track(
                         if let Some(source) = media.rsfec_source.take() {
                             remember_fec_source(
                                 &mut fec_receiver,
-                                &mut flexfec_receiver,
-                                &mut ulpfec_receiver,
                                 &mut pending_media,
                                 sequence_number,
                                 source,
-                                media.flags.recovered_from_rtx,
                                 media.received_at,
                                 &performance,
                             );
@@ -853,12 +773,9 @@ pub(super) async fn forward_video_track(
                 if let Some(source) = media.rsfec_source.take() {
                     remember_fec_source(
                         &mut fec_receiver,
-                        &mut flexfec_receiver,
-                        &mut ulpfec_receiver,
                         &mut pending_media,
                         sequence_number,
                         source,
-                        media.flags.recovered_from_rtx,
                         media.received_at,
                         &performance,
                     );

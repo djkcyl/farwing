@@ -78,7 +78,7 @@ const fn codec(
     }
 }
 
-pub const VIDEO_CODECS: [VideoCodec; 13] = [
+pub const VIDEO_CODECS: [VideoCodec; 9] = [
     codec("video/AV1", 104, "profile=0;level-idx=17;tier=0", Feedback::Primary),
     codec("video/rtx", 105, "apt=104", Feedback::Repair),
     codec("video/AV1", 106, "profile=1;level-idx=17;tier=0", Feedback::Primary),
@@ -92,10 +92,6 @@ pub const VIDEO_CODECS: [VideoCodec; 13] = [
         Feedback::Primary,
     ),
     codec("video/rtx", 99, "apt=98", Feedback::Repair),
-    codec("video/red", 100, "", Feedback::None),
-    codec("video/rtx", 101, "apt=100", Feedback::Nack),
-    codec("video/ulpfec", 102, "", Feedback::None),
-    codec("video/flexfec-03", 35, "repair-window=10000000", Feedback::None),
     codec(RSFEC_MIME_TYPE, 36, RSFEC_FMTP, Feedback::None),
 ];
 

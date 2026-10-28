@@ -1,11 +1,9 @@
 use super::workers::SessionWorkers;
 use crate::diagnostics::performance::PerformanceMonitor;
-use crate::transport::flexfec::FlexFecReceiver;
 use crate::transport::rsfec::RsFecReceiver;
-use crate::transport::ulpfec::UlpfecReceiver;
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::broadcast;
@@ -236,101 +234,11 @@ pub(super) fn parse_rsfec_recovered_packets(
         .collect()
 }
 
-pub(super) fn parse_flexfec_recovered_packets(
-    recovered_packets: Vec<Vec<u8>>,
-    received_at: Instant,
-) -> Vec<PendingMediaPacket> {
-    recovered_packets
-        .into_iter()
-        .filter_map(|recovered| {
-            let source = Bytes::from(recovered);
-            let mut raw = source.as_ref();
-            match RtpPacket::unmarshal(&mut raw) {
-                Ok(packet) => Some(PendingMediaPacket {
-                    packet,
-                    flags: MediaRecoveryFlags {
-                        recovered_from_rtx: false,
-                        recovered_by_fec: true,
-                    },
-                    received_at,
-                    rsfec_source: None,
-                }),
-                Err(error) => {
-                    tracing::warn!(%error, "FlexFEC recovered malformed RTP packet");
-                    None
-                }
-            }
-        })
-        .collect()
-}
-
-pub(super) fn parse_ulpfec_recovered_packets(
-    recovered_packets: Vec<Vec<u8>>,
-    received_at: Instant,
-) -> Vec<PendingMediaPacket> {
-    recovered_packets
-        .into_iter()
-        .filter_map(|recovered| {
-            let source = Bytes::from(recovered);
-            let mut raw = source.as_ref();
-            match RtpPacket::unmarshal(&mut raw) {
-                Ok(packet) => Some(PendingMediaPacket {
-                    packet,
-                    flags: MediaRecoveryFlags {
-                        recovered_from_rtx: false,
-                        recovered_by_fec: true,
-                    },
-                    received_at,
-                    rsfec_source: None,
-                }),
-                Err(error) => {
-                    tracing::warn!(%error, "ULPFEC recovered malformed RTP packet");
-                    None
-                }
-            }
-        })
-        .collect()
-}
-
-pub(super) enum RedPacket {
-    Media(RtpPacket),
-    Ulpfec {
-        sequence_number: u16,
-        payload: Bytes,
-    },
-}
-
-pub(super) fn unwrap_red_packet(
-    mut packet: RtpPacket,
-    ulpfec_payload_types: &HashSet<u8>,
-) -> Result<RedPacket> {
-    let Some((&red_header, payload)) = packet.payload.as_ref().split_first() else {
-        bail!("RED packet has no payload type header");
-    };
-    if red_header & 0x80 != 0 {
-        bail!("RED packet contains multiple blocks");
-    }
-    let payload_type = red_header & 0x7f;
-    if ulpfec_payload_types.contains(&payload_type) {
-        return Ok(RedPacket::Ulpfec {
-            sequence_number: packet.header.sequence_number,
-            payload: Bytes::copy_from_slice(payload),
-        });
-    }
-    packet.header.payload_type = payload_type;
-    packet.payload = Bytes::copy_from_slice(payload);
-    Ok(RedPacket::Media(packet))
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(super) fn remember_fec_source(
     rsfec_receiver: &mut Option<RsFecReceiver>,
-    flexfec_receiver: &mut FlexFecReceiver,
-    ulpfec_receiver: &mut UlpfecReceiver,
     pending_media: &mut VecDeque<PendingMediaPacket>,
     sequence_number: u16,
     source: Bytes,
-    from_rtx: bool,
     received_at: Instant,
     performance: &PerformanceMonitor,
 ) {
@@ -345,23 +253,6 @@ pub(super) fn remember_fec_source(
             }
             Err(error) => tracing::warn!(%error, "RSFEC media source rejected"),
         }
-    }
-    if from_rtx {
-        return;
-    }
-    match flexfec_receiver.remember_media(sequence_number, &source) {
-        Ok(recovery) => {
-            performance.record_fec_recovered(recovery.len());
-            pending_media.extend(parse_flexfec_recovered_packets(recovery, received_at));
-        }
-        Err(error) => tracing::debug!(%error, "FlexFEC media source rejected"),
-    }
-    match ulpfec_receiver.remember_media(sequence_number, &source) {
-        Ok(recovery) => {
-            performance.record_fec_recovered(recovery.len());
-            pending_media.extend(parse_ulpfec_recovered_packets(recovery, received_at));
-        }
-        Err(error) => tracing::debug!(%error, "ULPFEC media source rejected"),
     }
 }
 

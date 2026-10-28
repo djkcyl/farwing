@@ -390,7 +390,7 @@ m=audio … 111                (mid 0, a=sendrecv, msid audio_0 audio_0 + ssrc)
 m=video … (mid 1..5, a=recvonly，共 5 条)
    AV1 104/rtx 105 (profile=0;level-idx=17;tier=0)、AV1 106/rtx 107 (profile=1…)、
    H265 96/rtx 97、H264 98/rtx 99 (level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f)、
-   red 100/rtx 101、ulpfec 102、flexfec-03 35、x-farwing-rsfec 36
+   x-farwing-rsfec 36
    rtcp-fb：goog-remb transport-cc ccm fir nack nack pli rrtr
    extmap（7 项）：transport-wide-cc、sdes:mid、video-timing、urn:farwing:rtp-hdrext:sending-delay、color-space、
                  urn:farwing:rtp-hdrext:capture-index、urn:farwing:rtp-hdrext:new-frame

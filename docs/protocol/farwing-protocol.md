@@ -697,7 +697,6 @@ v1 的 `MOUSE_POLICY`、`AUDIO_QUALITY`、`FILE_BLOCK`、`DRAG_DATA`（0x0502）
 | 104 / 105 | AV1 profile 0 / RTX | `profile=0;level-idx=17;tier=0` | |
 | 106 / 107 | AV1 profile 1（4:4:4）/ RTX | `profile=1;level-idx=17;tier=0` | |
 | 36 | `x-farwing-rsfec`/90000 | `max-k=109;repair-window=10000000;rtx-as-source=1` | Farwing RS-FEC（§6.4） |
-| 100 / 101 | RED / RTX、102 ULPFEC、35 FlexFEC-03 | | 仅主控接收端注册；Farwing 被控不发送 |
 
 H.264 按 RFC 6184、H.265 按 RFC 7798（单 NAL 与 FU，不用 DONL）、AV1 按 AV1 RTP 规范打包。视频反馈：`nack`、`nack pli`、`ccm fir`、`transport-cc`、`rrtr`（主控另注册 `goog-remb`）。被控只注册它能编码的格式。
 
