@@ -6,33 +6,22 @@ use crate::media::video_color::VideoColorSpace;
 use crate::i18n::t;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
+/// One way to send a format: an encoder of this host and a decoder of the
+/// controller that both take it.
 #[derive(Clone, Debug)]
 pub(crate) struct Choice {
     pub capability: Capability,
+    /// The largest picture both sides take.
     pub maximum: (u32, u32),
-    format_maximum: (u32, u32),
     pub fps: u32,
     hardware_decode: bool,
-}
-impl Choice {
-    pub fn maximum_for(&self, requested: Option<(u32, u32)>) -> (u32, u32) {
-        // A complete RPC pair replaces the initial PB decoder size.
-        // It cannot enlarge the real encoder/JSON format capability.
-        requested.map_or(self.maximum, |size| {
-            (
-                size.0.min(self.format_maximum.0),
-                size.1.min(self.format_maximum.1),
-            )
-        })
-    }
 }
 #[derive(Debug)]
 pub(crate) struct Negotiated {
     pub choices: Vec<Choice>,
-    dual: crate::protocol::capability::DualCapability,
+    /// The codec the host prefers when the controller has no preference.
+    preferred_codec: Option<Codec>,
     codecs: AtomicU8,
-    encoder_true_color: bool,
-    sdr_10bit: bool,
     pub preferred_gpu: Option<u64>,
     pub gpu_compatibility: bool,
     source_gpu: AtomicU64,
@@ -42,13 +31,8 @@ impl Negotiated {
     pub(crate) fn deferred() -> Self {
         Self {
             choices: Vec::new(),
-            dual: crate::protocol::capability::DualCapability::negotiate(
-                &Default::default(),
-                Default::default(),
-            ),
+            preferred_codec: None,
             codecs: AtomicU8::new(15),
-            encoder_true_color: false,
-            sdr_10bit: false,
             preferred_gpu: None,
             gpu_compatibility: false,
             source_gpu: AtomicU64::new(0),
@@ -58,137 +42,71 @@ impl Negotiated {
     pub(crate) fn for_track(&self) -> Self {
         Self {
             choices: self.choices.clone(),
-            dual: self.dual.clone(),
+            preferred_codec: self.preferred_codec,
             codecs: AtomicU8::new(15),
-            encoder_true_color: self.encoder_true_color,
-            sdr_10bit: self.sdr_10bit,
             preferred_gpu: self.preferred_gpu,
             gpu_compatibility: self.gpu_compatibility,
             source_gpu: AtomicU64::new(self.source_gpu.load(Ordering::Relaxed)),
             requested_gpu: self.requested_gpu,
         }
     }
+    /// Every format an encoder of this host (`local`) and a decoder of the
+    /// controller (`decoders`) share.
     pub fn new(
         local: &[Capability],
-        remote: &crate::protocol::capability::DeviceCapability,
-        decoders: &[crate::features::stream_control::publisher::DecoderCapability],
+        decoders: &[farwing_protocol::session::Decoder],
         settings: super::EncodingSettings,
         source_gpu: u64,
     ) -> anyhow::Result<Self> {
         let requested_gpu = (settings.mode != super::EncoderMode::Software)
             .then_some(settings.gpu)
             .flatten();
-        let local_wire = crate::protocol::capability::DeviceCapability {
-            video_codec_capability: local.iter().map(Capability::wire).collect(),
-            ..Default::default()
-        };
-        let mut dual =
-            crate::protocol::capability::DualCapability::negotiate(&local_wire, remote.clone());
-        dual.preferred_codec = remote
-            .preferred_codec
-            .filter(|c| matches!(c, 1 | 2 | 5))
-            .or(settings.preferred_codec.preferred());
         let mut choices = Vec::new();
         for capability in local {
-            let Some(row) = dual
-                .exact(
-                    capability.format.codec.wire(),
-                    capability.format.chroma,
-                    capability.format.depth >= 10,
-                )
-                .filter(|r| r.result == 0)
-            else {
-                continue;
-            };
-            for peer in &remote.video_codec_capability {
-                if peer.video_codec != capability.format.codec.wire()
-                    || peer.chroma_sampling != capability.format.chroma
-                    || peer.bit_depth != capability.format.depth
-                    || peer.width < 2
-                    || peer.height < 2
+            let format = capability.format;
+            for decoder in decoders {
+                if Codec::of(decoder.codec) != format.codec
+                    || decoder.chroma444 != (format.chroma == 3)
+                    || decoder.bit10 != (format.depth == 10)
+                    || decoder.width < 2
+                    || decoder.height < 2
                 {
                     continue;
                 }
-                for decoder in decoders {
-                    if decoder.codec != peer.video_codec
-                        || decoder.chroma_sampling() != peer.chroma_sampling
-                        || decoder.width < 2
-                        || decoder.height < 2
-                    {
-                        continue;
-                    }
-                    choices.push(Choice {
-                        hardware_decode: peer.codec_impl != 37,
-                        capability: capability.clone(),
-                        format_maximum: (
-                            capability
-                                .maximum
-                                .0
-                                .min(peer.width as u32)
-                                .min(row.max_width as u32),
-                            capability
-                                .maximum
-                                .1
-                                .min(peer.height as u32)
-                                .min(row.max_height as u32),
-                        ),
-                        maximum: (
-                            capability
-                                .maximum
-                                .0
-                                .min(peer.width as u32)
-                                .min(decoder.width as u32)
-                                .min(row.max_width as u32),
-                            capability
-                                .maximum
-                                .1
-                                .min(peer.height as u32)
-                                .min(decoder.height as u32)
-                                .min(row.max_height as u32),
-                        ),
-                        fps: decoder.maximum_fps().min(
-                            if capability.backend == Backend::Software {
-                                farwing_codec::encoder::maximum_fps(
-                                    capability.format.codec.media(),
-                                )
-                            } else {
-                                144
-                            },
-                        ),
-                    });
-                }
+                choices.push(Choice {
+                    hardware_decode: decoder.hardware,
+                    capability: capability.clone(),
+                    maximum: (
+                        capability.maximum.0.min(decoder.width),
+                        capability.maximum.1.min(decoder.height),
+                    ),
+                    fps: if capability.backend == Backend::Software {
+                        farwing_codec::encoder::maximum_fps(format.codec.media())
+                    } else {
+                        144
+                    },
+                });
             }
         }
         if choices.is_empty() {
-            tracing::warn!(local=?local_wire.video_codec_capability,remote=?remote.video_codec_capability,
-                decoders=?decoders,intersection=?dual.frame_quality_capability,"host media capability intersection empty");
+            tracing::warn!(?local, ?decoders, "host media capability intersection empty");
             anyhow::bail!("{}", t().features.host_no_common_format);
         }
         Ok(Self {
             choices,
-            dual,
+            preferred_codec: settings.preferred_codec.preferred().map(Codec::of),
             codecs: AtomicU8::new(15),
-            // Computed from local encoder caps before intersection.
-            encoder_true_color: local.iter().any(|c| c.format.chroma == 3),
-            sdr_10bit: remote.sdr_10bit,
             preferred_gpu: crate::media::selection::resolve_gpu(requested_gpu),
             gpu_compatibility: settings.gpu_compatibility,
             source_gpu: AtomicU64::new(source_gpu),
             requested_gpu,
         })
     }
-    /// The controller decodes 10-bit SDR.
-    pub fn sdr_10bit(&self) -> bool {
-        self.sdr_10bit
-    }
-    pub fn encoder_true_color(&self) -> bool {
-        self.encoder_true_color
-    }
     pub fn source_gpu(&self, adapter: u64) {
         self.source_gpu.store(adapter, Ordering::Relaxed);
     }
-    pub fn preference(&self) -> (Option<crate::media::selection::GpuId>, Option<i32>) {
-        (self.requested_gpu, self.dual.preferred_codec)
+    pub fn preference(&self) -> (Option<crate::media::selection::GpuId>, Option<farwing_protocol::session::Codec>) {
+        (self.requested_gpu, self.preferred_codec.map(Codec::session))
     }
     pub fn selection_reason(
         &self,
@@ -206,12 +124,11 @@ impl Negotiated {
         {
             R::GpuFormat
         } else if self
-            .dual
             .preferred_codec
-            .is_some_and(|codec| codec != capability.format.codec.wire())
+            .is_some_and(|codec| codec != capability.format.codec)
         {
             R::CodecFormat
-        } else if self.preferred_gpu.is_some() || self.dual.preferred_codec.is_some() {
+        } else if self.preferred_gpu.is_some() || self.preferred_codec.is_some() {
             R::Preferred
         } else {
             R::Automatic
@@ -253,13 +170,9 @@ impl Negotiated {
             self.permits_codec(format.codec)
         }
     }
-    pub fn maximum_quality(&self, format: Format, source: (u32, u32), maximum: (u32, u32)) -> i32 {
-        let json_limit = self
-            .dual
-            .exact(format.codec.wire(), format.chroma, format.depth >= 10)
-            .filter(|r| r.result == 0)
-            .map_or(1, |r| r.max_frame_quality);
-        (1..=json_limit)
+    /// The highest tier whose picture of `source` fits `maximum`.
+    pub fn maximum_quality(&self, source: (u32, u32), maximum: (u32, u32)) -> i32 {
+        (1..=4)
             .filter(|&q| {
                 let output = crate::media::geometry::output_size(source.0, source.1, q);
                 crate::media::geometry::fits_within(output, maximum)
@@ -267,6 +180,41 @@ impl Negotiated {
             .max()
             .unwrap_or(1)
     }
+    /// What this participant can be sent: codecs, 4:4:4, HDR and the
+    /// highest tier.
+    pub fn limits(&self) -> crate::features::stream_control::wire::StreamLimits {
+        use crate::features::stream_control::wire::{Codec as WireCodec, Quality, StreamLimits};
+        let usable: Vec<_> = self
+            .choices
+            .iter()
+            .filter(|c| self.permits_format(c.capability.format))
+            .collect();
+        let mut codecs: Vec<_> = usable
+            .iter()
+            .map(|c| WireCodec::of(Some(c.capability.format.codec.session())) as i32)
+            .collect();
+        codecs.sort_unstable();
+        codecs.dedup();
+        let largest = usable
+            .iter()
+            .map(|c| c.maximum)
+            .max_by_key(|(w, h)| u64::from(*w) * u64::from(*h))
+            .unwrap_or_default();
+        let tier = (1..=4)
+            .filter(|&q| crate::media::geometry::fits_within(crate::media::geometry::dimensions(q), largest))
+            .max()
+            .unwrap_or(1);
+        StreamLimits {
+            codecs,
+            chroma444: usable.iter().any(|c| c.capability.format.chroma == 3),
+            hdr: usable.iter().any(|c| c.capability.format.depth == 10),
+            max_quality: [Quality::Low, Quality::Standard, Quality::High, Quality::Ultra]
+                [tier as usize - 1] as i32,
+        }
+    }
+    /// Pick the format for `config`: `codec` if set, 4:4:4 (`chroma` 3) and
+    /// HDR when asked and possible, at the highest frame rate up to the
+    /// requested one.
     pub fn apply(
         &self,
         config: &mut super::VideoConfig,
@@ -275,95 +223,49 @@ impl Negotiated {
         hdr: bool,
         source: (u32, u32),
     ) -> anyhow::Result<()> {
-        let mut dual = self.dual.clone();
-        dual.frame_quality_capability.retain(|row| {
-            Codec::from_wire(row.video_codec).is_some_and(|c| {
-                self.permits_format(Format {
-                    codec: c,
-                    chroma: row.chroma_sampling,
-                    depth: row.bit_depth,
-                }) && codec.is_none_or(|wanted| wanted == c)
-            }) && self.choices.iter().any(|choice| {
-                choice.capability.format.codec.wire() == row.video_codec
-                    && choice.capability.format.chroma == row.chroma_sampling
-                    && choice.capability.format.depth == row.bit_depth
-                    && choice.fps >= 30
-            })
-        });
-        let colors = if hdr {
-            vec![Color::Hdr, Color::Sdr]
+        let colors: &[Color] = if hdr {
+            &[Color::Hdr, Color::Sdr]
         } else {
-            vec![Color::Sdr]
+            &[Color::Sdr]
         };
-        let sampling = if chroma == 3 {
-            vec![3, 1]
-        } else {
-            vec![chroma]
-        };
+        let samplings: &[u8] = if chroma == 3 { &[3, 1] } else { &[1] };
         let desired = if matches!(config.quality, 5 | 6) {
             source
         } else {
             crate::media::geometry::output_size(source.0, source.1, config.quality)
         };
         let mut selected = None;
-        'color: for color in colors {
-            for &chroma in &sampling {
+        'color: for &color in colors {
+            for &chroma in samplings {
                 let mut fps = config.requested_fps;
                 while fps >= 30 {
-                    let mut eligible = dual.clone();
-                    eligible.frame_quality_capability.retain(|row| {
-                        self.choices.iter().any(|c| {
+                    let best = self
+                        .choices
+                        .iter()
+                        .filter(|c| {
+                            let format = c.capability.format;
                             c.fps >= fps
-                                && c.capability.format.codec.wire() == row.video_codec
-                                && c.capability.format.chroma == row.chroma_sampling
-                                && c.capability.format.depth == row.bit_depth
+                                && format.chroma == chroma
+                                && (!color.is_hdr() || format.depth == 10)
+                                && codec.is_none_or(|wanted| wanted == format.codec)
+                                && self.permits_format(format)
                         })
-                    });
-                    let mut best = None;
-                    for depth in [10, 8] {
-                        if !color.is_hdr() && depth == 10 && !self.sdr_10bit {
-                            continue;
-                        }
-                        if color.is_hdr() && depth != 10 {
-                            continue;
-                        }
-                        for choice in self.choices.iter().filter(|c| {
-                            c.fps >= fps
-                                && c.capability.format.chroma == chroma
-                                && c.capability.format.depth == depth
-                        }) {
-                            let Some(row) = eligible
-                                .exact(choice.capability.format.codec.wire(), chroma, depth == 10)
-                                .filter(|r| r.result == 0)
-                            else {
-                                continue;
-                            };
-                            let maximum = choice.maximum_for(config.requested_maximum);
-                            let limit = (
-                                maximum.0.min(row.max_width as u32),
-                                maximum.1.min(row.max_height as u32),
-                            );
-                            let size =
-                                crate::media::geometry::fit_size(desired.0, desired.1, limit);
-                            let score = crate::media::selection::candidate_rank(
+                        .max_by_key(|c| {
+                            let size = crate::media::geometry::fit_size(desired.0, desired.1, c.maximum);
+                            crate::media::selection::candidate_rank(
                                 size,
-                                choice.capability.backend != Backend::Software
-                                    && choice.hardware_decode,
-                                Some(row.video_codec) == self.dual.preferred_codec,
+                                c.capability.backend != Backend::Software && c.hardware_decode,
+                                Some(c.capability.format.codec) == self.preferred_codec,
                                 fps,
-                                choice.capability.adapter,
+                                c.capability.adapter,
                                 self.preferred_gpu,
                                 self.source_gpu.load(Ordering::Relaxed),
-                                row.video_codec,
-                                depth,
-                            );
-                            if best.as_ref().is_none_or(|(old, _, _)| score > *old) {
-                                best = Some((score, choice, limit));
-                            }
-                        }
-                    }
-                    if let Some((_, choice, maximum)) = best {
-                        selected = Some((choice, fps, maximum, color));
+                                c.capability.format.codec,
+                                c.capability.format.depth,
+                            )
+                        });
+                    if let Some(choice) = best {
+                        selected = Some((choice, fps, color));
                         break 'color;
                     }
                     // The next common rate below: 120, 90, 60, 30.
@@ -371,24 +273,23 @@ impl Negotiated {
                 }
             }
         }
-        let (choice, fps, row_maximum, color) =
+        let (choice, fps, color) =
             selected.ok_or_else(|| anyhow::anyhow!(t().features.host_requested_format_unsupported))?;
         config.color = color;
         config.format = choice.capability.format;
-        let maximum = choice.maximum_for(config.requested_maximum);
-        config.maximum = (maximum.0.min(row_maximum.0), maximum.1.min(row_maximum.1));
+        config.maximum = choice.maximum;
         config.maximum_fps = fps;
         config.fps = fps.min(config.fps_limit);
-        config.maximum_quality = self.maximum_quality(config.format, source, config.maximum);
+        config.maximum_quality = self.maximum_quality(source, config.maximum);
         config.auto_quality = config.auto_quality.min(config.maximum_quality);
         if !matches!(config.quality, 5 | 6) {
             config.quality = config.quality.min(config.maximum_quality);
         }
         Ok(())
     }
-    /// [`Self::apply`] with the codec the controller asked for, or the
-    /// host's choice where that codec is not available (on this screen's
-    /// GPU, or among the codecs the connection negotiated).
+    /// [`Self::apply`] with the codec the controller asked for (else the
+    /// host's preference), or any codec where that one is not available (on
+    /// this screen's GPU, or among the codecs the connection negotiated).
     pub fn apply_requested(
         &self,
         config: &mut super::VideoConfig,
@@ -396,7 +297,7 @@ impl Negotiated {
         hdr: bool,
         source: (u32, u32),
     ) -> anyhow::Result<()> {
-        if let Some(codec) = config.requested_codec
+        if let Some(codec) = config.requested_codec.or(self.preferred_codec)
             && self.apply(config, Some(codec), chroma, hdr, source).is_ok()
         {
             return Ok(());
@@ -428,10 +329,9 @@ impl Negotiated {
                     ))
             })
             .max_by_key(|c| {
-                let maximum = c.maximum_for(wanted.requested_maximum);
                 let desired =
                     crate::media::geometry::output_size(source.0, source.1, wanted.quality);
-                let fitted = crate::media::geometry::fit_size(desired.0, desired.1, maximum);
+                let fitted = crate::media::geometry::fit_size(desired.0, desired.1, c.maximum);
                 crate::media::selection::candidate_rank(
                     fitted,
                     c.capability.backend != Backend::Software && c.hardware_decode,
@@ -440,7 +340,7 @@ impl Negotiated {
                     c.capability.adapter,
                     self.preferred_gpu,
                     source_gpu,
-                    c.capability.format.codec.wire(),
+                    c.capability.format.codec,
                     c.capability.format.depth,
                 )
             })
@@ -484,4 +384,73 @@ pub(crate) fn color_extension(color: VideoColorSpace) -> Vec<u8> {
         }
     }
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use farwing_protocol::session;
+
+    fn encoder(codec: Codec, chroma: u8, depth: u8) -> Capability {
+        Capability {
+            adapter: 1,
+            backend: Backend::Nvidia,
+            format: Format { codec, chroma, depth },
+            maximum: (3840, 2160),
+        }
+    }
+    fn decoder(codec: session::Codec, chroma444: bool, bit10: bool) -> session::Decoder {
+        session::Decoder {
+            codec,
+            chroma444,
+            bit10,
+            width: 2560,
+            height: 1440,
+            hardware: true,
+        }
+    }
+
+    #[test]
+    fn formats_both_sides_take_set_the_choice() {
+        let negotiated = Negotiated::new(
+            &[
+                encoder(Codec::H265, 1, 8),
+                encoder(Codec::H265, 3, 8),
+                encoder(Codec::H265, 1, 10),
+                encoder(Codec::Av1, 1, 8),
+            ],
+            &[
+                decoder(session::Codec::Hevc, false, false),
+                decoder(session::Codec::Hevc, true, false),
+                decoder(session::Codec::Av1, false, false),
+            ],
+            Default::default(),
+            1,
+        )
+        .unwrap();
+        let limits = negotiated.limits();
+        assert!(limits.chroma444, "HEVC 4:4:4 on both sides");
+        assert!(!limits.hdr, "no 10-bit decoder");
+        assert_eq!(limits.max_quality(), crate::features::stream_control::wire::Quality::High);
+        let mut config = super::super::VideoConfig {
+            requested_fps: 60,
+            fps_limit: 60,
+            ..Default::default()
+        };
+        // 4:4:4 and HDR asked: 4:4:4 where possible, SDR without a 10-bit
+        // decoder; the requested codec wins over the preference order.
+        config.requested_codec = Some(Codec::H265);
+        negotiated
+            .apply_requested(&mut config, 3, true, (2560, 1440))
+            .unwrap();
+        assert_eq!(config.format, Format { codec: Codec::H265, chroma: 3, depth: 8 });
+        assert!(!config.color.is_hdr());
+        assert_eq!(config.maximum, (2560, 1440));
+        // Without a request AV1 ranks first.
+        config.requested_codec = None;
+        negotiated
+            .apply_requested(&mut config, 1, false, (2560, 1440))
+            .unwrap();
+        assert_eq!(config.format.codec, Codec::Av1);
+    }
 }

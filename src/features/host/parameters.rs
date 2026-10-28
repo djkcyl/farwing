@@ -289,15 +289,6 @@ pub(crate) enum WeakNetwork {
     /// quality, then the bitrate.
     FrameRate,
 }
-impl WeakNetwork {
-    pub fn from_wire(value: i32) -> Self {
-        if value == 1 {
-            Self::FrameRate
-        } else {
-            Self::Bitrate
-        }
-    }
-}
 
 /// The lowest frame rate the weak-network strategy goes to.
 pub(crate) const DEGRADED_FPS: u32 = 30;

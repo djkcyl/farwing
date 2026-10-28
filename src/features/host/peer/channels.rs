@@ -641,12 +641,12 @@ pub(super) async fn publish_state(
         }
         // Native layout changes and capture restart form one screen transition.
         // Do not publish a half-restored catalog while that owner is awaiting I/O.
-        let (list, media) = {
+        let (list, stream, media) = {
             let state = tokio::select! {
                 _ = cancel.cancelled() => break,
                 state = screens.lock() => state,
             };
-            (state.display_list(), reports.media())
+            (state.display_list(), state.stream_state(), reports.media())
         };
         let current = list.active;
         // The revision alone changes with every publication; the list is sent
@@ -677,30 +677,18 @@ pub(super) async fn publish_state(
         if last_screen.is_some() && last_capture.is_some() {
             reports.media_ready.set(true);
         }
-        if let Some((_, state)) = selected
-            && let Some(encoder) = state.encoder
-            && state.quality > 0
+        // Likewise the stream state, when what it says changes.
+        let said = (stream.settings, stream.limits.clone(), stream.tracks.clone());
+        if last_quality.as_ref() != Some(&said)
+            && send(
+                false,
+                crate::features::stream_control::wire::push(
+                    crate::features::stream_control::wire::SessionBody::Stream(stream),
+                ),
+            )
+            .await
         {
-            let key = (
-                state.screen.id,
-                state.quality,
-                state.fps,
-                state.format,
-                state.budget_size,
-                state.encoder,
-                state.capture.clone(),
-                state.screen.width,
-                state.screen.height,
-            );
-            if last_quality.as_ref() != Some(&key)
-                && send(
-                    false,
-                    publisher::quality_report(state.quality, encoder, &state.capture),
-                )
-                .await
-            {
-                last_quality = Some(key);
-            }
+            last_quality = Some(said);
         }
     }
 }

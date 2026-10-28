@@ -838,7 +838,6 @@ impl Shared {
                 caps_limit: None,
             },
             options: start.options,
-            capability: start.capability,
             ice_servers: Vec::new(),
             force_relay: false,
         };

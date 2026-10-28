@@ -192,8 +192,6 @@ pub(crate) fn controller_features() -> BTreeMap<String, u32> {
     let mut features = set(&[
         feature::TOUCH,
         feature::PEN,
-        feature::VIDEO_444,
-        feature::VIDEO_HDR,
         feature::DISPLAY_CONFIG,
         feature::DISPLAY_VIRTUAL,
         feature::CLIPBOARD,
@@ -232,8 +230,6 @@ pub(crate) fn host_features() -> BTreeMap<String, u32> {
 
 fn host_static_features() -> BTreeMap<String, u32> {
     set(&[
-        feature::VIDEO_444,
-        feature::VIDEO_HDR,
         feature::DISPLAY_CONFIG,
         feature::DISPLAY_VIRTUAL,
         feature::CLIPBOARD,
@@ -349,7 +345,7 @@ mod tests {
         let response = hello_response(Role::Host, 3);
         let received = decode_hello(&response).unwrap().unwrap();
         assert!(received.response && received.request_id == 3);
-        assert!(received.features().has(feature::VIDEO_HDR));
+        assert!(received.features().has(feature::VIDEO_RECOVERY));
         // Touch and pen only where synthetic pointers exist.
         assert_eq!(
             received.features().has(feature::TOUCH),

@@ -1,6 +1,5 @@
 //! Sending formats are negotiated independently from the SDP codec family.
 use crate::media::video_color::{HdrMetadata, VideoColorSpace};
-use crate::protocol::capability::CodecCapability;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Codec {
@@ -21,11 +20,26 @@ impl Codec {
             Self::Av1 => crate::media::VideoCodec::Av1,
         }
     }
-    pub fn wire(self) -> i32 {
+    pub fn session(self) -> farwing_protocol::session::Codec {
         match self {
-            Self::H264 => 1,
+            Self::H264 => farwing_protocol::session::Codec::H264,
+            Self::H265 => farwing_protocol::session::Codec::Hevc,
+            Self::Av1 => farwing_protocol::session::Codec::Av1,
+        }
+    }
+    pub fn of(codec: farwing_protocol::session::Codec) -> Self {
+        match codec {
+            farwing_protocol::session::Codec::H264 => Self::H264,
+            farwing_protocol::session::Codec::Hevc => Self::H265,
+            farwing_protocol::session::Codec::Av1 => Self::Av1,
+        }
+    }
+    /// The preference among codecs that do the same job: AV1, then HEVC.
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Av1 => 3,
             Self::H265 => 2,
-            Self::Av1 => crate::protocol::capability::AV1_CODEC_ID,
+            Self::H264 => 1,
         }
     }
     pub fn mime(self) -> &'static str {
@@ -33,14 +47,6 @@ impl Codec {
             Self::H264 => "video/H264",
             Self::H265 => "video/H265",
             Self::Av1 => "video/AV1",
-        }
-    }
-    pub fn from_wire(value: i32) -> Option<Self> {
-        match value {
-            1 => Some(Self::H264),
-            2 => Some(Self::H265),
-            crate::protocol::capability::AV1_CODEC_ID => Some(Self::Av1),
-            _ => None,
         }
     }
 }
@@ -67,16 +73,6 @@ impl Format {
     };
     pub fn valid(self) -> bool {
         matches!(self.chroma, 1 | 3) && matches!(self.depth, 8 | 10)
-    }
-    pub fn capability(self, implementation: i32, maximum: (u32, u32)) -> CodecCapability {
-        CodecCapability {
-            video_codec: self.codec.wire(),
-            width: maximum.0 as i32,
-            height: maximum.1 as i32,
-            chroma_sampling: self.chroma,
-            bit_depth: self.depth,
-            codec_impl: implementation,
-        }
     }
 }
 
@@ -119,27 +115,12 @@ pub(crate) enum Backend {
     Software,
 }
 impl Backend {
-    pub fn implementation(self) -> i32 {
-        match self {
-            Self::Nvidia => 0,
-            Self::Amd => 1,
-            Self::Intel => 2,
-            Self::Software => 5,
-        }
-    }
     pub fn name(self) -> &'static str {
         match self {
             Self::Nvidia => "NVIDIA NVENC",
             Self::Amd => "AMD AMF",
             Self::Intel => "INTEL QSV",
             Self::Software => "Farwing Rust",
-        }
-    }
-    // ReportQosStats carries a classification, not sender_para_info's name.
-    pub fn qos_type(self) -> &'static str {
-        match self {
-            Self::Software => "software",
-            Self::Nvidia | Self::Amd | Self::Intel => "hardware",
         }
     }
     pub fn accepts(self, format: Format) -> bool {
@@ -170,12 +151,6 @@ pub(crate) struct Capability {
     pub backend: Backend,
     pub format: Format,
     pub maximum: (u32, u32),
-}
-impl Capability {
-    pub fn wire(&self) -> CodecCapability {
-        self.format
-            .capability(self.backend.implementation(), self.maximum)
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

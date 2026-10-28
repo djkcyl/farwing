@@ -1,7 +1,6 @@
-//! Session negotiation payloads carried by `session.start` / `session.incoming`.
-//!
-//! The server validates their size and relays them; only the two clients
-//! interpret the fields.
+//! What a controller asks for when it starts a session (`session.start`,
+//! relayed as `session.incoming`): what it can decode, its display, and the
+//! stream it starts with. The server relays these; only the host reads them.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,64 +14,95 @@ pub enum ConnectType {
     Assist,
 }
 
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Resolution {
-    pub width: i32,
-    pub height: i32,
+/// Video codecs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Codec {
+    H264,
+    Hevc,
+    Av1,
 }
 
-/// Initial capture parameters requested by the controller.
+/// Stream quality: automatic, a tier by output size, or a custom bitrate.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Quality {
+    /// The host picks the tier from the bandwidth.
+    #[default]
+    Auto,
+    /// Up to 1280×720.
+    Low,
+    /// Up to 1920×1080.
+    Standard,
+    /// Up to 2560×1440.
+    High,
+    /// Up to 3840×2160.
+    Ultra,
+    /// Native size at [`StreamSettings::bitrate_kbps`].
+    Custom,
+}
+
+/// What gives way on a weak network.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WeakNetwork {
+    #[default]
+    Bitrate,
+    FrameRate,
+}
+
+/// A format the controller decodes, up to a size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decoder {
+    pub codec: Codec,
+    pub chroma444: bool,
+    pub bit10: bool,
+    pub width: u32,
+    pub height: u32,
+    /// Decoded in hardware.
+    pub hardware: bool,
+}
+
+/// The controller's display: displays the host creates for it take this
+/// size and scale.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalDisplay {
+    pub width: u32,
+    pub height: u32,
+    /// Percent; 0 when unknown.
+    #[serde(default)]
+    pub scale: u32,
+}
+
+/// The stream a participant asks for (also SESSION `StreamRequest` and
+/// `StreamState` on the peer channel).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct CaptureParams {
-    /// Frame-rate tier: 1 = 30, 2 = 60, 3 = 90, 4 = 144 FPS.
-    pub fps: i32,
-    /// Video quality tier 1..=6 (5 = automatic, 6 = custom bitrate); see stream control.
-    pub quality: i32,
-    pub cursor_capture: bool,
-    /// The controller's physical display size.
-    pub local_resolution: Option<Resolution>,
-    /// 1 = 4:2:0, 3 = 4:4:4 (true color).
-    pub chroma: i32,
-    /// Custom maximum bitrate in bit/s; 0 = automatic.
-    pub bitrate: i32,
+pub struct StreamSettings {
+    pub quality: Quality,
+    /// [`Quality::Custom`]: the bitrate ceiling.
+    pub bitrate_kbps: u32,
+    /// Frames per second, at most the controller's refresh rate.
+    pub fps: u32,
+    pub chroma444: bool,
     pub hdr: bool,
-    /// Automatic-quality sub-tier.
-    pub auto_quality: i32,
-    /// Controller display refresh limit (FPS).
-    pub fps_count: i32,
-    /// What gives way on a weak network: 0 = bitrate first, 1 = frame rate first.
-    pub weak_network: i32,
-    /// Quality-first encoding for watching video (cinema mode).
+    /// `None`: the host chooses.
+    pub codec: Option<Codec>,
+    /// The cursor is drawn into the picture.
+    pub cursor: bool,
+    pub weak_network: WeakNetwork,
+    /// Quality-first encoding for watching video.
     pub cinema: bool,
-    /// The video codec the controller chose (1 = H.264, 2 = H.265,
-    /// 5 = AV1); 0 lets the host choose.
-    pub codec: i32,
 }
 
-/// One decoder profile the controller can receive.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct DecoderCapability {
-    /// Receiver frame-rate capability (FPS).
-    pub fps: i32,
-    /// 1 = H.264, 2 = H.265, 5 = AV1.
-    pub codec: i32,
-    pub width: i32,
-    pub height: i32,
-    /// 1 = 4:2:0, 3 = 4:4:4.
-    pub chroma: i32,
-}
-
-/// Controller connect options (sent in `session.start`). Only media and
-/// display preferences: the session's purpose, type and the controller's
-/// identity are stated by the server in `session.incoming`, and in-session
-/// features are negotiated by the peer HELLO.
+/// Controller connect options (`session.start`). The session's purpose,
+/// type and the controller's identity are stated by the server in
+/// `session.incoming`; in-session features are negotiated by the peer HELLO.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ConnectOptions {
-    pub capture: Option<CaptureParams>,
-    pub decoders: Vec<DecoderCapability>,
+    pub decoders: Vec<Decoder>,
+    pub display: Option<LocalDisplay>,
+    /// The stream to start with; the host's defaults when absent.
+    pub stream: Option<StreamSettings>,
 }
-

@@ -235,9 +235,6 @@ enum Commands {
         /// 测试用：连上后为被控添加一块虚拟屏幕（同菜单里确认添加）
         #[arg(long, hide = true)]
         dev_virtual_screen: bool,
-        /// 测量用：自动画质从这一档开始（2–4），不使用也不保存记住的档位
-        #[arg(long, hide = true, value_parser = clap::value_parser!(i32).range(2..=4))]
-        dev_auto_quality: Option<i32>,
     },
     /// 经服务器连接一台设备（短号或设备 ID），打开观看窗口；无需登录
     Assist {
@@ -924,7 +921,6 @@ fn main() -> Result<()> {
             dev_audio_only,
             dev_cinema,
             dev_virtual_screen,
-            dev_auto_quality,
         } => {
             if let Some(spec) = dev_audio_only.as_deref() {
                 farwing::application::cli::dev_audio_only(spec)?;
@@ -934,9 +930,6 @@ fn main() -> Result<()> {
             }
             if let Some(cinema) = dev_cinema {
                 farwing::application::cli::dev_cinema(cinema);
-            }
-            if let Some(quality) = dev_auto_quality {
-                farwing::application::cli::dev_auto_quality(quality);
             }
             if let Some(spec) = dev_loss.as_deref() {
                 farwing::application::cli::dev_impair(spec)?;

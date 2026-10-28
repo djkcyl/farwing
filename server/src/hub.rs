@@ -1325,10 +1325,9 @@ impl Hub {
                 }
             },
             types::SESSION_START => self.on_session_start(&mut st, link_id, &conn, env),
-            types::RTC_OFFER
-            | types::RTC_ANSWER
-            | types::RTC_CANDIDATE
-            | types::SESSION_SETTING => self.on_relay(&mut st, link_id, &conn, env),
+            types::RTC_OFFER | types::RTC_ANSWER | types::RTC_CANDIDATE => {
+                self.on_relay(&mut st, link_id, &conn, env)
+            }
             types::SESSION_END => self.on_session_end(&mut st, link_id, &conn, env),
             types::SESSION_LEAVE => self.on_session_leave(&mut st, link_id, &conn, env),
             types::NODES_RTT if role == Role::Host => {
@@ -1462,7 +1461,6 @@ impl Hub {
             grants: s.grants.clone(),
             controller: s.controller.clone(),
             options: start.options,
-            capability: start.capability,
             ice_servers: self.servers_for(&sid, &s.host_device_id),
             force_relay: self.cfg.read().force_relay,
         };
@@ -1524,10 +1522,7 @@ impl Hub {
         let allowed = if from_controller {
             matches!(kind, types::RTC_OFFER | types::RTC_CANDIDATE)
         } else {
-            matches!(
-                kind,
-                types::RTC_ANSWER | types::RTC_CANDIDATE | types::SESSION_SETTING
-            )
+            matches!(kind, types::RTC_ANSWER | types::RTC_CANDIDATE)
         };
         if !allowed {
             conn.send(&err_env(
@@ -1590,16 +1585,7 @@ impl Hub {
                     return;
                 }
             }
-            _ => {
-                if env.data.get("kind").and_then(Value::as_str).is_none() {
-                    conn.send(&err_env(
-                        re,
-                        ErrorCode::BadRequest,
-                        "invalid session.setting",
-                    ));
-                    return;
-                }
-            }
+            _ => {}
         }
         let dest = if from_controller {
             Self::host_conn(st, &s.host_device_id)

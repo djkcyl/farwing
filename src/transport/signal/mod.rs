@@ -19,7 +19,7 @@ use farwing_protocol::realtime::{
     Envelope, Hello, RtcCandidate, RtcDescription, SessionStarted, network, types,
 };
 pub use negotiation::ControlSessionInfo;
-use negotiation::{RemoteRtc, SettingEvent, parse_remote_rtc, parse_setting};
+use negotiation::{RemoteRtc, parse_remote_rtc};
 use std::collections::VecDeque;
 use std::future::pending;
 use std::time::Duration;
@@ -148,23 +148,6 @@ fn report_negotiation(reporter: Option<NegotiationReporter<'_>>, event: Negotiat
     if let Some(reporter) = reporter {
         reporter(event);
     }
-}
-
-fn apply_device_capability(
-    capability: crate::protocol::capability::DeviceCapability,
-    control: &ControlSessionInfo,
-    peer: &NativePeer,
-) {
-    if capability.session_id != control.session_id {
-        tracing::warn!("ignored capabilities for another session");
-        return;
-    }
-    peer.stream_control_handle().set_capability(
-        crate::protocol::capability::DualCapability::negotiate(
-            &control.local_capability,
-            capability,
-        ),
-    );
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -402,14 +385,11 @@ impl SignalSession {
         purpose: crate::session::negotiation::ControlPurpose,
     ) -> Result<ControlSessionInfo> {
         tracing::debug!(?profile, "starting session handshake");
-        let decoder_support = detect_native_decoder_support(profile)?;
-        tracing::info!(
-            ?decoder_support,
-            "advertising native decoder configuration capabilities"
-        );
+        let decoders = detect_native_decoder_support(profile)?;
+        tracing::info!(?decoders, "offering native decoders");
         let mut start = build_session_start(
             &local.identity.device_id,
-            &decoder_support,
+            &decoders,
             profile,
             preferences,
             purpose,
@@ -460,7 +440,7 @@ impl SignalSession {
             ice_servers: started.ice_servers,
             force_relay: started.force_relay,
             attempt_id,
-            local_capability: decoder_support,
+            offer: start.options.clone(),
         };
         tracing::debug!(?info, "session handshake accepted");
         Ok(info)
@@ -679,15 +659,6 @@ impl SignalSession {
                     }
                 },
                 incoming = self.next() => match incoming? {
-                    Incoming::Message(envelope) if envelope.kind == types::SESSION_SETTING => {
-                        match parse_setting(&envelope, info) {
-                            Ok(Some(SettingEvent::DeviceCapability(capability))) => {
-                                apply_device_capability(capability, info, peer);
-                            }
-                            Ok(_) => pending_events.push_back(Incoming::Message(envelope)),
-                            Err(error) => tracing::warn!(%error, "discarded invalid session.setting during negotiation"),
-                        }
-                    }
                     Incoming::Message(envelope)
                         if matches!(envelope.kind.as_str(), types::RTC_ANSWER | types::RTC_CANDIDATE) =>
                     {
@@ -995,25 +966,6 @@ impl SignalSession {
                                         tracing::info!("the server's relay restarted; restarting ICE");
                                         forced_restart = true;
                                         ice_restart_at = Some(tokio::time::Instant::now());
-                                    }
-                                }
-                                types::SESSION_SETTING => {
-                                    let parsed = match parse_setting(&envelope, info) {
-                                        Ok(parsed) => parsed,
-                                        Err(error) => {
-                                            tracing::warn!(%error, "discarded invalid session.setting");
-                                            continue;
-                                        }
-                                    };
-                                    match parsed {
-                                        Some(SettingEvent::DeviceCapability(capability)) => {
-                                            apply_device_capability(capability, info, peer);
-                                        }
-                                        Some(SettingEvent::SenderInfo(infos)) => {
-                                            tracing::debug!(?infos, "host sender info received");
-                                            peer.performance_monitor().set_remote_senders(infos);
-                                        }
-                                        None => {}
                                     }
                                 }
                                 _ => {}

@@ -208,16 +208,30 @@ export interface Screens {
   current: number;
 }
 
-export interface Quality {
+/// What one video track carries (SESSION `StreamState`).
+export interface TrackState {
+  track: number;
+  screen: number;
+  /// Wire codec: 1 H.264, 2 HEVC, 3 AV1.
+  codec: number;
+  /// The tier in effect: 1 low … 4 ultra (automatic resolved), 5 custom.
+  quality: number;
+  fps: number;
   encoder: string;
   capture: string;
-  videoQuality: number;
+}
+
+/// The stream as the host sends it to this viewer.
+export interface StreamState {
+  revision: number;
+  /// Wire codecs this host can send this viewer.
+  codecs: number[];
+  tracks: TrackState[];
 }
 
 export type SessionMessage =
   | { kind: 'screens'; value: Screens }
-  | { kind: 'quality'; value: Quality }
-  | { kind: 'capture_setting_result'; errors: number[] }
+  | { kind: 'stream'; value: StreamState }
   /** `refusal`: `src/features/stream_control/control_turn.rs` `refusal`; `holder`: who holds control. */
   | { kind: 'turn_result'; held: boolean; refusal: number; holder: string }
   | { kind: 'microphone_result'; code: number }
@@ -264,20 +278,24 @@ export function parseSession(body: Uint8Array): SessionMessage {
       },
     };
   }
-  const quality = f.message(2);
-  if (quality) {
+  const stream = f.message(2);
+  if (stream) {
     return {
-      kind: 'quality',
+      kind: 'stream',
       value: {
-        encoder: quality.string(1),
-        capture: quality.string(2),
-        videoQuality: quality.int32(4),
+        revision: Number(stream.big(1)),
+        codecs: stream.message(3)?.bigs(1).map(Number) ?? [],
+        tracks: stream.messages(4).map((t) => ({
+          track: t.uint32(1),
+          screen: t.int32(2),
+          codec: t.int32(3),
+          quality: t.int32(7),
+          fps: t.uint32(10),
+          encoder: t.string(12),
+          capture: t.string(13),
+        })),
       },
     };
-  }
-  const result = f.message(20);
-  if (result) {
-    return { kind: 'capture_setting_result', errors: result.messages(1).map((e) => e.int32(1)) };
   }
   const turn = f.message(23);
   if (turn) return { kind: 'turn_result', held: turn.bool(1), refusal: turn.int32(3), holder: turn.string(4) };
@@ -353,37 +371,22 @@ export function captureControl(screenId: number, start: boolean, track?: number)
   return new Writer().message(5, capture).finish();
 }
 
-export interface CaptureSetting {
-  fps: number;
-  frameQuality: number;
-  cursorCapture: boolean;
-  maxCustomBitrate: number;
-  autoFrameQuality: number;
-  codecType: number;
-  maxScaleWidth: number;
-  maxScaleHeight: number;
-  fpsCount: number;
-  cinema: boolean;
+/// A change of this viewer's stream (SESSION `StreamRequest`); absent
+/// fields stay. `quality` is the wire tier (0 automatic, 1 low … 4 ultra),
+/// `codec` the wire codec (0: the host chooses).
+export interface StreamChange {
+  quality?: number;
+  fps?: number;
+  codec?: number;
+  cursor?: boolean;
 }
 
-/// Picture settings for every track of this session; no display change.
-export function captureSetting(s: CaptureSetting): Uint8Array {
-  const inner = new Writer()
-    .int(1, s.fps)
-    .int(2, s.frameQuality)
-    .int(3, s.cursorCapture)
-    .int(4, -2)
-    .int(5, -1)
-    .int(6, -1)
-    .int(7, 1)
-    .int(8, s.maxCustomBitrate)
-    .int(10, 1)
-    .int(12, s.autoFrameQuality)
-    .int(13, s.codecType)
-    .int(14, s.maxScaleWidth)
-    .int(15, s.maxScaleHeight)
-    .int(18, s.fpsCount)
-    .int(20, s.cinema);
+export function streamRequest(change: StreamChange): Uint8Array {
+  const inner = new Writer();
+  if (change.quality !== undefined) inner.intAlways(1, change.quality);
+  if (change.fps !== undefined) inner.intAlways(3, change.fps);
+  if (change.codec !== undefined) inner.intAlways(6, change.codec);
+  if (change.cursor !== undefined) inner.intAlways(7, change.cursor ? 1 : 0);
   return new Writer().message(10, inner).finish();
 }
 

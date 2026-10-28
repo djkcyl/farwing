@@ -69,7 +69,7 @@ pub(crate) fn request_id(sequence: i64) -> u32 {
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct SessionMessage {
-    #[prost(oneof = "SessionBody", tags = "1,2,3,4,5,7,8,10,11,16,17,20,21,22,23,24,25")]
+    #[prost(oneof = "SessionBody", tags = "1,2,3,4,5,7,8,10,11,16,17,22,23,24,25")]
     pub(crate) body: Option<SessionBody>,
 }
 
@@ -80,9 +80,10 @@ pub(crate) enum SessionBody {
     /// the list, a display or a track mapping changes.
     #[prost(message, tag = "1")]
     Displays(Displays),
-    /// Host encoder and quality status (H→C).
+    /// The stream as the host holds and sends it (H→C), whenever it
+    /// changes; also the answer to `StreamRequest`.
     #[prost(message, tag = "2")]
-    Quality(PbReportQosStats),
+    Stream(StreamState),
     /// Host virtual microphone state (H→C).
     #[prost(message, tag = "3")]
     Microphone(MicrophoneState),
@@ -93,8 +94,9 @@ pub(crate) enum SessionBody {
     #[prost(message, tag = "5")]
     Capture(CaptureControl),
     // ---------------------------------------------- requests (C→H)
+    /// A change of this participant's stream → [`StreamState`].
     #[prost(message, tag = "10")]
-    CaptureSetting(PbCaptureSettingRequest),
+    StreamRequest(StreamRequest),
     /// A change of the host's displays → [`DisplayDone`].
     #[prost(message, tag = "11")]
     Display(DisplayRequest),
@@ -118,8 +120,6 @@ pub(crate) enum SessionBody {
     #[prost(message, tag = "25")]
     ForwardStatus(ForwardStatus),
     // --------------------------------------------- responses (H→C)
-    #[prost(message, tag = "20")]
-    CaptureSettingResult(PbCaptureSettingResponse),
     /// Answer to `Capture` and `Display`.
     #[prost(message, tag = "21")]
     DisplayDone(DisplayDone),
@@ -133,11 +133,11 @@ impl SessionBody {
     pub(crate) fn name(&self) -> &'static str {
         match self {
             Self::Displays(_) => "Displays",
-            Self::Quality(_) => "Quality",
+            Self::Stream(_) => "Stream",
             Self::Microphone(_) => "Microphone",
             Self::ClipboardFiles(_) => "ClipboardFiles",
             Self::Capture(_) => "Capture",
-            Self::CaptureSetting(_) => "CaptureSetting",
+            Self::StreamRequest(_) => "StreamRequest",
             Self::ReceiverStats(_) => "ReceiverStats",
             Self::VideoFeedback(_) => "VideoFeedback",
             Self::Forward(_) => "Forward",
@@ -146,7 +146,6 @@ impl SessionBody {
             Self::MicrophonePolicy(_) => "MicrophonePolicy",
             Self::ControlTurn(_) => "ControlTurn",
             Self::ControlTurnResult(_) => "ControlTurnResult",
-            Self::CaptureSettingResult(_) => "CaptureSettingResult",
             Self::DisplayDone(_) => "DisplayDone",
             Self::MicrophoneResult(_) => "MicrophoneResult",
         }
@@ -344,52 +343,271 @@ pub(crate) struct ClipboardPermission {
     pub(crate) enabled: bool,
 }
 
-/// Host encoder and quality status.
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbReportQosStats {
-    /// `software` or `hardware`.
-    #[prost(string, tag = "1")]
-    pub(crate) encoder_type: String,
-    /// Capture backend name.
-    #[prost(string, tag = "2")]
-    pub(crate) capture_type: String,
-    /// Effective quality tier 1..4 (automatic already resolved) or 6 = custom.
-    #[prost(int32, tag = "4")]
-    pub(crate) video_quality: i32,
+/// Video codecs (0: the host chooses).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]
+#[repr(i32)]
+pub enum Codec {
+    Unspecified = 0,
+    H264 = 1,
+    Hevc = 2,
+    Av1 = 3,
 }
 
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbCaptureSettingRequest {
-    #[prost(int32, tag = "1")]
-    pub(crate) fps: i32,
-    #[prost(int32, tag = "2")]
-    pub(crate) frame_quality: i32,
-    #[prost(bool, tag = "3")]
-    pub(crate) cursor_capture: bool,
-    #[prost(int32, tag = "4")]
-    pub(crate) screen_id: i32,
-    #[prost(int32, tag = "7")]
-    pub(crate) chroma_format: i32,
-    #[prost(int32, tag = "8")]
-    pub(crate) max_custom_bitrate: i32,
-    #[prost(bool, tag = "11")]
-    pub(crate) enable_hdr: bool,
-    #[prost(int32, tag = "12")]
-    pub(crate) auto_frame_quality: i32,
-    #[prost(int32, tag = "13")]
-    pub(crate) codec_type: i32,
-    #[prost(int32, tag = "14")]
-    pub(crate) max_scale_width: i32,
-    #[prost(int32, tag = "15")]
-    pub(crate) max_scale_height: i32,
-    #[prost(int32, tag = "18")]
-    pub(crate) fps_count: i32,
-    /// What gives way on a weak network: 0 = bitrate first, 1 = frame rate first.
-    #[prost(int32, tag = "19")]
+/// Stream quality (`farwing_protocol::session::Quality`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]
+#[repr(i32)]
+pub enum Quality {
+    Auto = 0,
+    Low = 1,
+    Standard = 2,
+    High = 3,
+    Ultra = 4,
+    Custom = 5,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]
+#[repr(i32)]
+pub enum WeakNetwork {
+    Bitrate = 0,
+    FrameRate = 1,
+}
+
+/// The stream a participant asks for (`farwing_protocol::session::StreamSettings`).
+#[derive(Clone, Copy, PartialEq, Eq, prost::Message)]
+pub(crate) struct StreamSettings {
+    #[prost(enumeration = "Quality", tag = "1")]
+    pub(crate) quality: i32,
+    #[prost(uint32, tag = "2")]
+    pub(crate) bitrate_kbps: u32,
+    #[prost(uint32, tag = "3")]
+    pub(crate) fps: u32,
+    #[prost(bool, tag = "4")]
+    pub(crate) chroma444: bool,
+    #[prost(bool, tag = "5")]
+    pub(crate) hdr: bool,
+    #[prost(enumeration = "Codec", tag = "6")]
+    pub(crate) codec: i32,
+    #[prost(bool, tag = "7")]
+    pub(crate) cursor: bool,
+    #[prost(enumeration = "WeakNetwork", tag = "8")]
     pub(crate) weak_network: i32,
-    /// Quality-first encoding for watching video.
-    #[prost(bool, tag = "20")]
+    #[prost(bool, tag = "9")]
     pub(crate) cinema: bool,
+}
+
+/// A change of some of [`StreamSettings`]; absent fields stay. Refusals
+/// carry `updating` or `invalid`.
+#[derive(Clone, Copy, PartialEq, Eq, prost::Message)]
+pub(crate) struct StreamRequest {
+    #[prost(enumeration = "Quality", optional, tag = "1")]
+    pub(crate) quality: Option<i32>,
+    #[prost(uint32, optional, tag = "2")]
+    pub(crate) bitrate_kbps: Option<u32>,
+    #[prost(uint32, optional, tag = "3")]
+    pub(crate) fps: Option<u32>,
+    #[prost(bool, optional, tag = "4")]
+    pub(crate) chroma444: Option<bool>,
+    #[prost(bool, optional, tag = "5")]
+    pub(crate) hdr: Option<bool>,
+    #[prost(enumeration = "Codec", optional, tag = "6")]
+    pub(crate) codec: Option<i32>,
+    #[prost(bool, optional, tag = "7")]
+    pub(crate) cursor: Option<bool>,
+    #[prost(enumeration = "WeakNetwork", optional, tag = "8")]
+    pub(crate) weak_network: Option<i32>,
+    #[prost(bool, optional, tag = "9")]
+    pub(crate) cinema: Option<bool>,
+}
+
+/// The stream as the host holds and sends it to one participant.
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct StreamState {
+    /// Grows with every change; older states are dropped.
+    #[prost(uint64, tag = "1")]
+    pub(crate) revision: u64,
+    /// What the participant asked for, as the host holds it.
+    #[prost(message, optional, tag = "2")]
+    pub(crate) settings: Option<StreamSettings>,
+    #[prost(message, optional, tag = "3")]
+    pub(crate) limits: Option<StreamLimits>,
+    /// What each of its video tracks carries.
+    #[prost(message, repeated, tag = "4")]
+    pub(crate) tracks: Vec<TrackState>,
+}
+
+/// What this host can send this participant.
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct StreamLimits {
+    #[prost(enumeration = "Codec", repeated, tag = "1")]
+    pub(crate) codecs: Vec<i32>,
+    #[prost(bool, tag = "2")]
+    pub(crate) chroma444: bool,
+    /// 10-bit encoding for HDR displays.
+    #[prost(bool, tag = "3")]
+    pub(crate) hdr: bool,
+    /// The highest tier a decoder and an encoder share.
+    #[prost(enumeration = "Quality", tag = "4")]
+    pub(crate) max_quality: i32,
+}
+
+/// One video track as it is sent.
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct TrackState {
+    #[prost(uint32, tag = "1")]
+    pub(crate) track: u32,
+    #[prost(int32, tag = "2")]
+    pub(crate) screen: i32,
+    #[prost(enumeration = "Codec", tag = "3")]
+    pub(crate) codec: i32,
+    #[prost(bool, tag = "4")]
+    pub(crate) chroma444: bool,
+    #[prost(bool, tag = "5")]
+    pub(crate) hdr: bool,
+    #[prost(bool, tag = "6")]
+    pub(crate) bit10: bool,
+    /// The tier in effect (automatic resolved); [`Quality::Custom`] for a
+    /// custom bitrate.
+    #[prost(enumeration = "Quality", tag = "7")]
+    pub(crate) quality: i32,
+    #[prost(uint32, tag = "10")]
+    pub(crate) fps: u32,
+    #[prost(bool, tag = "11")]
+    pub(crate) hardware: bool,
+    /// The encoder and capture backends, for diagnostics.
+    #[prost(string, tag = "12")]
+    pub(crate) encoder: String,
+    #[prost(string, tag = "13")]
+    pub(crate) capture: String,
+}
+
+impl Codec {
+    pub(crate) fn of(codec: Option<farwing_protocol::session::Codec>) -> Self {
+        use farwing_protocol::session::Codec as C;
+        match codec {
+            None => Self::Unspecified,
+            Some(C::H264) => Self::H264,
+            Some(C::Hevc) => Self::Hevc,
+            Some(C::Av1) => Self::Av1,
+        }
+    }
+    pub(crate) fn session(self) -> Option<farwing_protocol::session::Codec> {
+        use farwing_protocol::session::Codec as C;
+        match self {
+            Self::Unspecified => None,
+            Self::H264 => Some(C::H264),
+            Self::Hevc => Some(C::Hevc),
+            Self::Av1 => Some(C::Av1),
+        }
+    }
+}
+
+impl Quality {
+    pub(crate) fn of(quality: farwing_protocol::session::Quality) -> Self {
+        use farwing_protocol::session::Quality as Q;
+        match quality {
+            Q::Auto => Self::Auto,
+            Q::Low => Self::Low,
+            Q::Standard => Self::Standard,
+            Q::High => Self::High,
+            Q::Ultra => Self::Ultra,
+            Q::Custom => Self::Custom,
+        }
+    }
+    pub(crate) fn session(self) -> farwing_protocol::session::Quality {
+        use farwing_protocol::session::Quality as Q;
+        match self {
+            Self::Auto => Q::Auto,
+            Self::Low => Q::Low,
+            Self::Standard => Q::Standard,
+            Self::High => Q::High,
+            Self::Ultra => Q::Ultra,
+            Self::Custom => Q::Custom,
+        }
+    }
+}
+
+impl From<farwing_protocol::session::StreamSettings> for StreamSettings {
+    fn from(settings: farwing_protocol::session::StreamSettings) -> Self {
+        use farwing_protocol::session::WeakNetwork as W;
+        Self {
+            quality: Quality::of(settings.quality) as i32,
+            bitrate_kbps: settings.bitrate_kbps,
+            fps: settings.fps,
+            chroma444: settings.chroma444,
+            hdr: settings.hdr,
+            codec: Codec::of(settings.codec) as i32,
+            cursor: settings.cursor,
+            weak_network: match settings.weak_network {
+                W::Bitrate => WeakNetwork::Bitrate,
+                W::FrameRate => WeakNetwork::FrameRate,
+            } as i32,
+            cinema: settings.cinema,
+        }
+    }
+}
+
+impl From<StreamSettings> for farwing_protocol::session::StreamSettings {
+    fn from(settings: StreamSettings) -> Self {
+        use farwing_protocol::session::WeakNetwork as W;
+        Self {
+            quality: settings.quality().session(),
+            bitrate_kbps: settings.bitrate_kbps,
+            fps: settings.fps,
+            chroma444: settings.chroma444,
+            hdr: settings.hdr,
+            codec: settings.codec().session(),
+            cursor: settings.cursor,
+            weak_network: match settings.weak_network() {
+                WeakNetwork::Bitrate => W::Bitrate,
+                WeakNetwork::FrameRate => W::FrameRate,
+            },
+            cinema: settings.cinema,
+        }
+    }
+}
+
+impl StreamRequest {
+    /// The fields of `to` that differ from `from`.
+    pub(crate) fn between(from: StreamSettings, to: StreamSettings) -> Self {
+        fn changed<T: PartialEq>(from: T, to: T) -> Option<T> {
+            (from != to).then_some(to)
+        }
+        Self {
+            quality: changed(from.quality, to.quality),
+            bitrate_kbps: changed(from.bitrate_kbps, to.bitrate_kbps),
+            fps: changed(from.fps, to.fps),
+            chroma444: changed(from.chroma444, to.chroma444),
+            hdr: changed(from.hdr, to.hdr),
+            codec: changed(from.codec, to.codec),
+            cursor: changed(from.cursor, to.cursor),
+            weak_network: changed(from.weak_network, to.weak_network),
+            cinema: changed(from.cinema, to.cinema),
+        }
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+    /// `settings` with this change.
+    pub(crate) fn apply(&self, mut settings: StreamSettings) -> StreamSettings {
+        settings.quality = self.quality.unwrap_or(settings.quality);
+        settings.bitrate_kbps = self.bitrate_kbps.unwrap_or(settings.bitrate_kbps);
+        settings.fps = self.fps.unwrap_or(settings.fps);
+        settings.chroma444 = self.chroma444.unwrap_or(settings.chroma444);
+        settings.hdr = self.hdr.unwrap_or(settings.hdr);
+        settings.codec = self.codec.unwrap_or(settings.codec);
+        settings.cursor = self.cursor.unwrap_or(settings.cursor);
+        settings.weak_network = self.weak_network.unwrap_or(settings.weak_network);
+        settings.cinema = self.cinema.unwrap_or(settings.cinema);
+        settings
+    }
+}
+
+/// Why a `StreamRequest` was refused (`PeerError::reason`).
+pub(crate) mod stream_reason {
+    /// The host is installing an update.
+    pub const UPDATING: &str = "updating";
+    /// A value out of range.
+    pub const INVALID: &str = "invalid";
 }
 
 /// What the controller receives, decodes and shows of the active video.
@@ -407,23 +625,6 @@ pub(crate) struct ReceiverStats {
     /// Frames dropped before decode or presentation since the last report.
     #[prost(uint32, tag = "5")]
     pub(crate) dropped_frames: u32,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbCaptureSettingResponse {
-    #[prost(message, repeated, tag = "1")]
-    pub(crate) errors: Vec<PbError>,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct PbError {
-    #[prost(int32, tag = "1")]
-    pub(crate) error_code: i32,
-    /// One of [`setting_reason`] (or empty); the receiver words it.
-    #[prost(string, tag = "2")]
-    pub(crate) error_message: String,
-    #[prost(string, tag = "3")]
-    pub(crate) error_detail: String,
 }
 
 /// What a display is ([`Display::kind`]).
@@ -620,12 +821,34 @@ mod receiver_stats_tests {
     }
 }
 
-/// Why a capture setting was not applied ([`PbError::error_message`]).
-pub(crate) mod setting_reason {
-    /// The host is installing an update.
-    pub const UPDATING: &str = "updating";
-    pub const INVALID_SCALE_LIMIT: &str = "invalid_scale_limit";
-    pub const UNSUPPORTED_CODEC: &str = "unsupported_codec";
-    /// Anything else; the host logs why.
-    pub const NOT_APPLIED: &str = "not_applied";
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    use farwing_protocol::session;
+
+    #[test]
+    fn a_request_carries_what_changed_and_applies_back() {
+        let before = session::StreamSettings {
+            quality: session::Quality::Auto,
+            fps: 60,
+            codec: Some(session::Codec::Av1),
+            cursor: true,
+            ..Default::default()
+        };
+        let after = session::StreamSettings {
+            quality: session::Quality::Custom,
+            bitrate_kbps: 30_000,
+            cursor: false,
+            ..before
+        };
+        let request = StreamRequest::between(before.into(), after.into());
+        assert_eq!(request.quality, Some(Quality::Custom as i32));
+        assert_eq!(request.bitrate_kbps, Some(30_000));
+        assert_eq!(request.cursor, Some(false));
+        assert_eq!((request.fps, request.codec, request.hdr), (None, None, None));
+        let applied: session::StreamSettings = request.apply(before.into()).into();
+        assert_eq!(applied, after);
+        assert!(StreamRequest::between(after.into(), after.into()).is_empty());
+    }
 }

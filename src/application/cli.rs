@@ -850,11 +850,6 @@ pub fn dev_quality(quality: &str) -> Result<()> {
     Ok(())
 }
 
-/// `connect --dev-auto-quality`: start automatic quality at this tier (not saved).
-pub fn dev_auto_quality(quality: i32) {
-    crate::features::stream_control::set_dev_auto_quality(quality);
-}
-
 pub fn dev_video_without_recovery() {
     crate::protocol::peer::disable_controller_recovery();
 }

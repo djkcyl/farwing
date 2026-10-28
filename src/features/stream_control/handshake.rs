@@ -1,19 +1,12 @@
 //! Channel and protocol handshake state transitions.
-use super::input::{expire_cursor_request, fail_cursor_request, smart_mouse_requested};
-use super::settings::{
-    apply_capture_setting_response, prepare_initial_capture_sync, refresh_active_screen,
-    reported_auto_quality, restore_confirmed_capture, viewing_quality_label,
-};
+use super::input::{fail_cursor_request, smart_mouse_requested};
+use super::settings::{apply_stream_state, refresh_active_screen};
 use super::wire::{SessionBody, encode_pb_echo_response};
-use super::{
-    PbHandshakeStatus, StreamControlHandle, StreamControlProtocol,
-    StreamControlState, VIDEO_QUALITY_AUTO, ViewingPreferenceUpdate, lock, protocol,
-};
+use super::{PbHandshakeStatus, StreamControlHandle, StreamControlProtocol, lock, protocol};
 use crate::i18n::t;
 use crate::protocol::peer::{self, FrameType};
 use crate::protocol::peer::feature;
 use crate::media::VideoCodec;
-use crate::protocol::capability::DualCapability;
 use anyhow::{Result, anyhow};
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -22,7 +15,6 @@ impl StreamControlHandle {
     pub(crate) fn poll_timeouts(&self) {
         let mut state = lock(&self.shared);
         self.expire_requests(&mut state);
-        expire_cursor_request(&mut state);
         self.refresh_mouse_policy(&mut state);
     }
 
@@ -36,16 +28,10 @@ impl StreamControlHandle {
                 if state.control_channel_open != open {
                     state.protocol_generation = state.protocol_generation.wrapping_add(1);
                     state.pb_connected = false;
-                    state.initial_capture_sync_sent = false;
                 }
                 state.control_channel_open = open;
             }
-            peer::channel::SESSION => {
-                state.text_channel_open = open;
-                if !open {
-                    state.initial_capture_sync_sent = false;
-                }
-            }
+            peer::channel::SESSION => state.text_channel_open = open,
             _ => return,
         }
         if !open {
@@ -59,9 +45,10 @@ impl StreamControlHandle {
             state.grants = None;
             state.annotation.disconnect();
             state.annotation_extension = None;
-            for waiting in state.requests.drain() {
+            for (id, waiting) in state.requests.drain() {
                 self.settle(
                     &mut state,
+                    id,
                     waiting,
                     Err(t().features.stream_display_disconnected_unconfirmed.into()),
                 );
@@ -74,24 +61,17 @@ impl StreamControlHandle {
             state.cursor_sync_needed = false;
             state.cursor_desired_capture = true;
             state.mouse_restore_point = None;
-            state.baseline.cursor_capture = true;
+            state.cursor_capture = true;
             state.mouse.set_ready(false);
-            if let Some((sequence, _, _)) = state.cursor_pending {
+            if let Some(sequence) = state.cursor_pending {
                 fail_cursor_request(
                     &mut state,
                     sequence,
                     t().features.stream_cursor_disconnected_unconfirmed.into(),
                 );
             }
-            if let Some(sequence) = state.pending_sequences.back().copied() {
-                state
-                    .performance
-                    .fail_stream_switch(sequence, (t().features.stream_channel_closed)(label));
-            }
-            state.pending_sequences.clear();
-            state.pending_capture_preferences.clear();
         }
-        self.maybe_send_initial_capture_sync(&mut state);
+        self.sync_stream_locked(&mut state);
         if open
             && protocol(&state) == StreamControlProtocol::CaptureSetting
             && state.control_channel_open
@@ -109,30 +89,10 @@ impl StreamControlHandle {
 
     pub(crate) fn set_video_stream(&self, codec: VideoCodec, video_track_index: i32) {
         let mut state = lock(&self.shared);
+        tracing::debug!(?codec, video_track_index, "video stream received");
         state.active_video_track_index = video_track_index;
-        // The initial CaptureSetting may already have selected another codec
-        // before the first RTP packet. Do not overwrite that intent with an
-        // old-format packet still in flight during the change.
-        if !state.initial_capture_sync_sent {
-            state.baseline.codec_type = match codec {
-                VideoCodec::H264 => 1,
-                VideoCodec::H265 => 2,
-                VideoCodec::Av1 => 5,
-            };
-        }
         refresh_active_screen(&mut state);
-        self.maybe_send_initial_capture_sync(&mut state);
-    }
-
-    pub(crate) fn set_capability(&self, capability: DualCapability) {
-        tracing::info!(capability = %serde_json::to_string(&capability).expect("integer capability fields serialize"),
-            "dual capability model updated");
-        let mut state = lock(&self.shared);
-        state.capability = Some(capability);
-        // Complete a pending initial configuration once its actual inputs
-        // exist. After it is submitted, late/duplicate capabilities do not
-        // trigger stream changes or decoder restarts.
-        self.maybe_send_initial_capture_sync(&mut state);
+        self.sync_stream_locked(&mut state);
     }
 
     pub(crate) fn select_viewed_video_track(&self, video_track_index: i32) {
@@ -146,29 +106,15 @@ impl StreamControlHandle {
             return;
         }
         let mut state = lock(&self.shared);
-        if let Some(waiting) = state
-            .requests
-            .take(super::wire::request_id(sequence))
-        {
-            self.settle(&mut state, waiting, Err((t().features.stream_send_failed)(error)));
+        let id = super::wire::request_id(sequence);
+        if let Some(waiting) = state.requests.take(id) {
+            self.settle(&mut state, id, waiting, Err((t().features.stream_send_failed)(error)));
             return;
         }
         if self.turn_send_failed(&mut state, sequence) {
             return;
         }
-        state
-            .pending_capture_preferences
-            .retain(|pending| pending.sequence != sequence);
         fail_cursor_request(&mut state, sequence, error.to_owned());
-        state
-            .pending_sequences
-            .retain(|pending| *pending != sequence);
-        if state.latest_requested_sequence != Some(sequence) {
-            return;
-        }
-        state.last_error = Some(error.to_owned());
-        restore_confirmed_capture(&mut state);
-        state.performance.fail_stream_switch(sequence, error);
     }
 
     pub(crate) fn protocol_notifications(&self) -> Arc<Notify> {
@@ -178,7 +124,6 @@ impl StreamControlHandle {
     pub(crate) fn set_viewing_enabled(&self, enabled: bool) {
         let mut state = lock(&self.shared);
         if enabled && !state.viewing_enabled {
-            state.initial_capture_sync_sent = false;
             state.restore_input_pending = state.device_preferences.control_enabled;
         }
         state.viewing_enabled = enabled;
@@ -188,7 +133,7 @@ impl StreamControlHandle {
             self.clipboard.suspend();
         }
         if enabled {
-            self.maybe_send_initial_capture_sync(&mut state);
+            self.sync_stream_locked(&mut state);
         }
     }
 
@@ -250,8 +195,8 @@ impl StreamControlHandle {
             tracing::warn!(code = %error.code, reason = %error.reason, "host refused a session request");
             let mut state = lock(&self.shared);
             if let Some(waiting) = state.requests.take(received.request_id) {
-                let refusal = super::display_settings::refusal_text(&error.reason);
-                self.settle(&mut state, waiting, Err(refusal));
+                let refusal = waiting.refusal(&error.reason);
+                self.settle(&mut state, received.request_id, waiting, Err(refusal));
                 return Ok(());
             }
             drop(state);
@@ -268,12 +213,16 @@ impl StreamControlHandle {
         if response
             && let Some(waiting) = state.requests.take(received.request_id)
         {
-            // The answer to a display or capture request: the display list
-            // it left.
-            if let SessionBody::Displays(list) = body {
-                super::display_settings::apply_displays(&mut state, list);
+            // The answer carries the display list or the stream state the
+            // request left.
+            match body {
+                SessionBody::Displays(list) => {
+                    super::display_settings::apply_displays(&mut state, list)
+                }
+                SessionBody::Stream(stream) => apply_stream_state(&mut state, stream),
+                _ => {}
             }
-            self.settle(&mut state, waiting, Ok(()));
+            self.settle(&mut state, received.request_id, waiting, Ok(()));
             self.refresh_mouse_policy(&mut state);
             return Ok(());
         }
@@ -287,29 +236,7 @@ impl StreamControlHandle {
             SessionBody::ClipboardFiles(permission) => {
                 state.clipboard_files_allowed = permission.enabled;
             }
-            SessionBody::Quality(qos) => {
-                if state.baseline.frame_quality == VIDEO_QUALITY_AUTO
-                    && let Some(auto_quality) = reported_auto_quality(qos.video_quality)
-                {
-                    state.baseline.auto_frame_quality = auto_quality;
-                    if state.confirmed_preferences.settings == state.settings
-                        && state.pending_capture_preferences.is_empty()
-                        && state.confirmed_preferences.auto_frame_quality != auto_quality
-                        && super::dev_auto_quality().is_none()
-                    {
-                        state.confirmed_preferences.auto_frame_quality = auto_quality;
-                        let update = if state.user_settings_requested {
-                            ViewingPreferenceUpdate::Settings(state.confirmed_preferences.saved())
-                        } else {
-                            ViewingPreferenceUpdate::AutoQuality(auto_quality)
-                        };
-                        state.preference_updates.send_replace(Some(update));
-                    }
-                    state.performance.set_quality(viewing_quality_label(&state));
-                }
-                tracing::debug!(encoder_type = %qos.encoder_type, capture_type = %qos.capture_type, video_quality = qos.video_quality,
-                    "QoS quality status received");
-            }
+            SessionBody::Stream(stream) => apply_stream_state(&mut state, stream),
             SessionBody::Displays(list) => super::display_settings::apply_displays(&mut state, list),
             body if response => match body {
                 SessionBody::MicrophoneResult(response) => {
@@ -318,16 +245,13 @@ impl StreamControlHandle {
                 SessionBody::ControlTurnResult(response) => {
                     self.turn_response_locked(&mut state, sequence, response);
                 }
-                SessionBody::CaptureSettingResult(capture) => {
-                    apply_capture_setting_response(&mut state, sequence, capture)
-                }
                 other => {
                     tracing::debug!(message = other.name(), "unmatched session response")
                 }
             },
             other => tracing::debug!(message = other.name(), "ignored session message"),
         }
-        self.maybe_send_initial_capture_sync(&mut state);
+        self.sync_stream_locked(&mut state);
         self.refresh_mouse_policy(&mut state);
         Ok(())
     }
@@ -460,7 +384,7 @@ impl StreamControlHandle {
                 "peer feature negotiation completed"
             );
         }
-        self.maybe_send_initial_capture_sync(&mut state);
+        self.sync_stream_locked(&mut state);
         self.refresh_mouse_policy(&mut state);
         drop(state);
         if handshake_changed {
@@ -474,21 +398,4 @@ impl StreamControlHandle {
         Ok(())
     }
 
-    pub(super) fn maybe_send_initial_capture_sync(&self, state: &mut StreamControlState) {
-        if !state.viewing_enabled {
-            return;
-        }
-        let outgoing = match prepare_initial_capture_sync(state) {
-            Ok(Some(outgoing)) => outgoing,
-            Ok(None) => return,
-            Err(error) => {
-                state.last_error = Some((t().features.stream_initial_settings_send_failed)(
-                    &error.to_string(),
-                ));
-                tracing::warn!(%error, "failed to prepare the initial capture-setting sync");
-                return;
-            }
-        };
-        let _ = self.send_locked(state, outgoing, None);
-    }
 }

@@ -44,9 +44,6 @@ pub mod flags {
 /// In-session feature names declared in [`Hello::features`] (name → version).
 /// A peer only declares what it can do at runtime.
 pub mod feature {
-    /// Full-chroma (4:4:4) video.
-    pub const VIDEO_444: &str = "video.444";
-    pub const VIDEO_HDR: &str = "video.hdr";
     /// Resolution, DPI and display-step requests.
     pub const DISPLAY_CONFIG: &str = "display.config";
     pub const DISPLAY_VIRTUAL: &str = "display.virtual";

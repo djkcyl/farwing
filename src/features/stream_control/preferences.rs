@@ -40,26 +40,11 @@ impl StreamControlHandle {
                 .map(|options| options.codec)
                 .unwrap_or_default()
         });
-        let Some(capability) = state.capability.as_mut() else {
-            return Ok(());
-        };
-        capability.prefer(effective.preferred());
+        state.codec_preference = effective.preferred();
         if self.participants.shared_view() {
             return Ok(());
         }
-        let settings = state.settings;
-        let before = state.baseline.codec_type;
-        let selected = super::settings::validate_format(
-            &state,
-            settings.quality,
-            settings.true_color,
-            settings.hdr,
-        )?;
-        if selected.is_none_or(|row| row.video_codec == before) {
-            return Ok(());
-        }
-        self.apply_settings_inner(&mut state, settings, None, true)?;
-        Ok(())
+        self.request_stream_locked(&mut state, None).map(drop)
     }
 
     pub(crate) fn device_preferences(&self) -> DevicePreferences {
@@ -100,8 +85,6 @@ impl StreamControlHandle {
             state.device_persistence_error =
                 Some((t().features.stream_mouse_throttle_failed)(&format!("{error:#}")));
         }
-        state.baseline.weak_network = preferences.weak_network.wire();
-        state.baseline.cinema = preferences.cinema;
         self.apply_playout_locked(&state);
         self.clipboard.set_files(preferences.clipboard_files);
         if let Err(error) = self.clipboard.set_enabled(preferences.clipboard_sync) {
@@ -128,11 +111,9 @@ impl StreamControlHandle {
         }
         state.device_preferences.weak_network = weak_network;
         state.device_preferences.cinema = cinema;
-        state.baseline.weak_network = weak_network.wire();
-        state.baseline.cinema = cinema;
         self.apply_playout_locked(&state);
         self.publish_device_preferences(&mut state);
-        self.request_baseline_locked(&mut state).map(drop)
+        self.request_stream_locked(&mut state, None).map(drop)
     }
     pub(crate) fn set_clipboard_enabled(&self, enabled: bool) -> Result<()> {
         self.clipboard.set_enabled(enabled)?;

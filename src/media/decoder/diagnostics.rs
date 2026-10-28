@@ -173,9 +173,8 @@ pub(crate) fn run(
         .map(|(name, writer)| (format!("DXVA11 · {name}"), Some(name), Some(writer)))
         .collect();
     all.push((crate::i18n::t().session.probe_software_backend.into(), None, None));
-    let mut sizes: Vec<_> = crate::protocol::capability::QUALITY_DIMENSIONS
-        .iter()
-        .map(|&(w, h)| (w as u32, h as u32))
+    let mut sizes: Vec<_> = std::iter::once((1280, 720))
+        .chain(super::PROBE_SIZES.into_iter().rev())
         .collect();
     let local = (display.width, display.height);
     if local.0 > 0 && local.1 > 0 && !sizes.contains(&local) {

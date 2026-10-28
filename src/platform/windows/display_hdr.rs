@@ -1,5 +1,4 @@
 //! Read-only Windows HDR capability queries. Never changes system display mode.
-use crate::protocol::capability::DisplayCapability;
 use windows::Win32::{
     Devices::Display::*,
     Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS},
@@ -12,17 +11,10 @@ use windows::{
     core::Interface,
 };
 
-pub(crate) fn capabilities(fallback_fps: u32) -> Vec<DisplayCapability> {
-    let queried = unsafe { query_active(fallback_fps) };
-    match queried {
-        Ok(displays) if !displays.is_empty() => displays,
-        _ => vec![DisplayCapability {
-            id: 0,
-            fps: fallback_fps,
-            kind: 0,
-            hdr: false,
-        }],
-    }
+/// Whether a display of this desktop outputs HDR10 (not merely wide
+/// colour: AdvancedColorEnabled alone can mean WCG/ACM on Windows 11).
+pub(crate) fn any_hdr() -> bool {
+    dxgi_outputs().into_iter().any(|(_, _, hdr)| hdr)
 }
 
 fn dxgi_outputs() -> Vec<(String, isize, bool)> {
@@ -135,82 +127,4 @@ pub(crate) fn sdr_white_scale_or(name: &str, fallback: f32) -> f32 {
         }
     }
     fallback
-}
-
-unsafe fn query_active(fallback_fps: u32) -> Result<Vec<DisplayCapability>, ()> {
-    let hdr_outputs = dxgi_outputs()
-        .into_iter()
-        .map(|(name, _, hdr)| (name, hdr))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    // Buffer sizes can change once between the two Windows enumeration calls.
-    for _ in 0..2 {
-        let (mut paths, mut modes) = (0, 0);
-        if unsafe { GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut paths, &mut modes) }
-            != ERROR_SUCCESS
-            || paths > 1024
-            || modes > 4096
-        {
-            return Err(());
-        }
-        let mut path_data = vec![DISPLAYCONFIG_PATH_INFO::default(); paths as usize];
-        let mut mode_data = vec![DISPLAYCONFIG_MODE_INFO::default(); modes as usize];
-        let result = unsafe {
-            QueryDisplayConfig(
-                QDC_ONLY_ACTIVE_PATHS,
-                &mut paths,
-                path_data.as_mut_ptr(),
-                &mut modes,
-                mode_data.as_mut_ptr(),
-                None,
-            )
-        };
-        if result == ERROR_INSUFFICIENT_BUFFER {
-            continue;
-        }
-        if result != ERROR_SUCCESS {
-            return Err(());
-        }
-        path_data.truncate(paths as usize);
-        return Ok(path_data
-            .iter()
-            .enumerate()
-            .map(|(index, path)| {
-                let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
-                    header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
-                        r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
-                        size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
-                        adapterId: path.sourceInfo.adapterId,
-                        id: path.sourceInfo.id,
-                    },
-                    ..Default::default()
-                };
-                let source_ok = unsafe { DisplayConfigGetDeviceInfo(&mut source.header) } == 0;
-                let end = source
-                    .viewGdiDeviceName
-                    .iter()
-                    .position(|c| *c == 0)
-                    .unwrap_or(source.viewGdiDeviceName.len());
-                let hdr = source_ok
-                    && hdr_outputs
-                        .get(&String::from_utf16_lossy(&source.viewGdiDeviceName[..end]))
-                        .copied()
-                        .unwrap_or(false);
-                let rate = path.targetInfo.refreshRate;
-                let fps = if rate.Denominator != 0 {
-                    ((rate.Numerator as f64 / rate.Denominator as f64).round() as u32).max(1)
-                } else {
-                    fallback_fps
-                };
-                DisplayCapability {
-                    id: index as i32,
-                    fps,
-                    kind: 0,
-                    // Actual HDR10 output: AdvancedColorEnabled alone can
-                    // mean WCG/ACM on Windows 11, and is not sufficient.
-                    hdr,
-                }
-            })
-            .collect());
-    }
-    Err(())
 }

@@ -17,6 +17,9 @@ pub(crate) const MIN_SESSION: std::time::Duration = std::time::Duration::from_se
 struct Store {
     #[serde(default)]
     devices: BTreeMap<String, Entry>,
+    /// The tier automatic quality settled at with each device.
+    #[serde(default)]
+    tiers: BTreeMap<String, Entry>,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -103,6 +106,65 @@ pub(crate) fn remember(device: &str, route: &str, bps: u32) {
     })();
     if let Err(error) = result {
         tracing::debug!(%error, "bandwidth memory could not be saved");
+    }
+}
+
+/// The tier automatic quality settled at in the last session with
+/// `device`, if recent: the next one starts there.
+pub(crate) fn remembered_tier(device: &str) -> Option<i32> {
+    if device.is_empty() {
+        return None;
+    }
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let now = chrono::Utc::now().timestamp();
+    read()
+        .tiers
+        .get(device)
+        .filter(|entry| now - entry.saved_at < MAX_AGE_SECONDS && (1..=4).contains(&entry.bps))
+        .map(|entry| entry.bps as i32)
+}
+
+/// Record the tier automatic quality settled at with `device`.
+pub(crate) fn remember_tier(device: &str, tier: i32) {
+    if device.is_empty() || !(1..=4).contains(&tier) {
+        return;
+    }
+    let Some(path) = path() else {
+        return;
+    };
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut store = read();
+    let now = chrono::Utc::now().timestamp();
+    store
+        .tiers
+        .retain(|_, entry| now - entry.saved_at < MAX_AGE_SECONDS);
+    store.tiers.insert(
+        device.to_owned(),
+        Entry {
+            bps: tier as u32,
+            saved_at: now,
+        },
+    );
+    while store.tiers.len() > ENTRIES {
+        let oldest = store
+            .tiers
+            .iter()
+            .min_by_key(|(_, entry)| entry.saved_at)
+            .map(|(device, _)| device.clone());
+        match oldest {
+            Some(device) => store.tiers.remove(&device),
+            None => break,
+        };
+    }
+    let result = (|| -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, serde_json::to_vec(&store)?)?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        tracing::debug!(%error, "automatic tier memory could not be saved");
     }
 }
 

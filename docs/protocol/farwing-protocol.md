@@ -424,7 +424,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
   "resumed":false}}
 ```
 
-恢复时 `resumed: true`：逻辑连接（在线状态、会话、承载关系）保留，但**不**重放断线期间的消息；双方重新发送当前快照（被控重新发送 `session.setting{kind:"capability"}`）。新的被控在线连接（非恢复）取代旧的（旧连接以 `4001` 关闭），递增 `epoch` 并以 `host_offline` 结束旧连接上的被控会话。
+恢复时 `resumed: true`：逻辑连接（在线状态、会话、承载关系）保留，但**不**重放断线期间的消息；会话内的状态都在对端连接上，无需重发。新的被控在线连接（非恢复）取代旧的（旧连接以 `4001` 关闭），递增 `epoch` 并以 `host_offline` 结束旧连接上的被控会话。
 
 在线连接（`role = host`）的 `hello` 可带 `probe_nodes: [{id, stun}]`：服务器的边缘中转节点及其 STUN 端点（`host:port`）。设备向每个端点并行发 3 次 STUN Binding（间隔 100 ms，最多等 2 秒），取最小往返，以 `nodes.rtt {rtt: {<节点 ID>: 毫秒 | null}}` 在同一连接上报告，连接存续期间每 30 分钟重测一次。服务器据此为会话两端各选最近的节点（farwing-protocol 之外的说明见 deployment-design §4.5）；中转凭据的用户名带节点 ID：`<过期>:<会话 ID>:<节点 ID>`。
 
@@ -475,12 +475,11 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 
 | type | 方向 | 连接 | data |
 |------|------|------|------|
-| `session.start` | C→S（带 `id`、`sid`） | 主控连接，或承载该会话的在线连接 | `{attempt_id, options: ConnectOptions, capability, purpose?}` → `ack: SessionStarted` |
+| `session.start` | C→S（带 `id`、`sid`） | 主控连接，或承载该会话的在线连接 | `{attempt_id, options: ConnectOptions, purpose?}` → `ack: SessionStarted` |
 | `session.incoming` | S→H | 被控在线连接，带 `sid` | `SessionIncoming` |
 | `rtc.offer` | C→S→H | 带 `sid`、`gen` | `{attempt_id, restart, network, sdp}` |
 | `rtc.answer` | H→S→C | 带 `sid`、`gen` | `{attempt_id, restart, network, sdp}` |
 | `rtc.candidate` | 双向 | 带 `sid` | `{attempt_id, candidate: {candidate, sdpMid, sdpMLineIndex, usernameFragment}}` |
-| `session.setting` | H→S→C | 带 `sid` | `{kind: "capability", capability}` / `{kind: "sender_info", infos: [{video_track_index, capture_impl, encoder_impl}]}` |
 | `session.permissions` | S→H、S→C | 带 `sid` | `{grants: [caps]}` |
 | `session.relay_lost` | S→H、S→C | 带 `sid` | `{ice_servers}`：服务器的内置中继重启时会话在它上面有分配；双方换用这些中继（换密钥时为新凭据），经中继的主控立即重启 ICE |
 | `session.end` | H→S | 被控在线连接，带 `sid` | `{reason}` |
@@ -496,7 +495,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `server.changed` | S→所有在线连接 | | `{url, previous, sha256?}`：公开地址或服务器自己的证书变了。保存的地址是 `previous`（或 `url`）的客户端确认 `url` 可以连上后改用它；固定了证书指纹的改为 `sha256`（反向代理时没有）。账号与设备登记不变 |
 
 - `SessionStarted`（`session.start` 的 `ack`）：`{participant_id, session_id, ice_servers, force_relay, host: {device_id, public_key}, relation, grants}`。
-- `SessionIncoming`：`{participant_id, attempt_id, purpose, connect_type: "account"|"assist", relation: "own"|"friend"|"trusted"|"assist", grants, controller: ControllerInfo, options, capability, ice_servers, force_relay}`。目的、类型、关系、授予的能力与主控身份以服务端为准；`options` 中的同类信息不作授权依据。经服务端时 `own`、`friend` 的 `connect_type` 为 `account`，`trusted`、`assist` 为 `assist`（§3.11）。`grants`：本账号设备为全部能力，好友为生效授权，受信任设备与访客为空：被控对 `trusted` 重新核对本机受信任设备记录（设备 ID 与公钥都须匹配，否则拒绝）并套用为它记录的能力，对 `assist` 套用访客默认权限。
+- `SessionIncoming`：`{participant_id, attempt_id, purpose, connect_type: "account"|"assist", relation: "own"|"friend"|"trusted"|"assist", grants, controller: ControllerInfo, options, ice_servers, force_relay}`。目的、类型、关系、授予的能力与主控身份以服务端为准；`options` 中的同类信息不作授权依据。经服务端时 `own`、`friend` 的 `connect_type` 为 `account`，`trusted`、`assist` 为 `assist`（§3.11）。`grants`：本账号设备为全部能力，好友为生效授权，受信任设备与访客为空：被控对 `trusted` 重新核对本机受信任设备记录（设备 ID 与公钥都须匹配，否则拒绝）并套用为它记录的能力，对 `assist` 套用访客默认权限。
 - `ControllerInfo`：`{device_id, alias, user_id, username, nickname, platform, version, public_key, caps_limit?}`；无账号的主控 `user_id`、`username`、`nickname` 为空。`caps_limit` 是服务端规定的能力上限：网页主控（`platform: "web"`）总是带（服务器设置“网页端可以使用的功能”），被控对所有关系的授权都按它裁剪；原生主控不带，不受此限制。
 - `IceServer`：`{urls, username, credential}`。TURN 凭据为 TURN REST 临时凭据：`username = "<过期 Unix 秒>:<session_id>"`，`credential = base64(HMAC-SHA1(shared_secret, username))`，默认 12 小时。NAT 探测端点以无凭据的 `stun:` 地址附加在列表中。
 - `network`（`rtc.offer`/`rtc.answer`）：`3` 全部候选；`1` 仅中继（服务器提供的全部中转方式：UDP、TCP、TLS）。主控在观看窗口切换线路时以重启 offer 发送；被控按它重新配置 ICE，其他取值不改配置。中继与直连之间的自动切换由 ICE 按实测路径质量完成（§7.5），不经信令。
@@ -504,16 +503,16 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 
 **客户端约定的载荷（服务端只校验大小并转发）**
 
-- `ConnectOptions`：`{screen_id, capture: CaptureParams?, decoders: [DecoderCapability], version}`。
-  - `CaptureParams`：`{fps(1:30 2:60 3:90 4:144), quality(1 低码率 2 高清 3 超清 4 原画 5 自动 6 自定义), cursor_capture, resolution_type, local_resolution, chosen_resolution, chroma(1 4:2:0 3 4:4:4), bitrate(bit/s，0 自动), hdr, auto_quality, fps_count, weak_network(0 先降码率 1 先降帧率), cinema, codec(0 由被控选择，1 H.264 2 H.265 5 AV1：双方都支持时会话从这种编码开始)}`。
-  - `DecoderCapability`：`{fps, codec(1 H.264 2 H.265 5 AV1), width, height, chroma}`。
-- `capability`（`session.start` 与 `session.setting{capability}`，`src/protocol/capability.rs`）：`{preferred_codec?, sdr_10bit, session_id, display_info: [{id, fps, type, hdr}], video_codec_capability: [{video_codec, width, height, chroma_sampling, bit_depth, codec_impl}]}`。
+- `ConnectOptions`（`crates/protocol/src/session.rs`）：`{decoders: [Decoder], display: LocalDisplay?, stream: StreamSettings?}`，服务端原样转发，只有被控解读。
+  - `Decoder`：`{codec: "h264"|"hevc"|"av1", chroma444, bit10, width, height, hardware}`：主控能解码的格式与最大尺寸。被控只选两端都支持的格式；10 位格式只在有对应解码器时使用（SDR 10 位与 HDR 都需要）。
+  - `LocalDisplay`：`{width, height, scale}`：被控为它新建的显示器（兜底屏、超级屏）取这个尺寸与缩放（`scale` 0 由被控决定）。
+  - `StreamSettings`：`{quality: "auto"|"low"|"standard"|"high"|"ultra"|"custom", bitrate_kbps（custom 的码率上限）, fps（不超过主控刷新率）, chroma444, hdr, codec?（空由被控选择）, cursor（光标画进画面）, weak_network: "bitrate"|"frame_rate", cinema}`：会话从这些设置开始；会话中用 SESSION `StreamRequest` 修改（§6、peer-messages.md）。自动画质的起始档位由被控按主控设备记住，不由主控提供。
 
 ### 4.6 会话流程与服务端校验
 
 1. 主控通过 HTTPS 创建会话（§3.10），用会话入场券建立主控连接（或在在线连接上，§4.7），发送 `session.start`。
 2. 服务端检查被控在线且仍是会话创建时的 `epoch`（否则 `error{device_offline}`），游客被控只接受 `connect_type = assist` 的会话（否则 `forbidden`）；记录 `attempt_id`、清零候选计数，向被控推送 `session.incoming`，向主控回 `ack`。同一会话可多次 `session.start`（会话重建），每次更换 `attempt_id`。
-3. `rtc.*` 与 `session.setting` 只在会话双方之间转发：主控只能发 `rtc.offer`/`rtc.candidate`，被控只能发 `rtc.answer`/`rtc.candidate`/`session.setting`（否则 `forbidden`）；`sid` 必须是该连接所属的会话；会话尚未开始时 `conflict`；`attempt_id` 不是当前尝试时 `conflict`；SDP、候选大小与候选数超限时 `payload_too_large`。带 `id` 的转发消息在转发后回 `ack {}`。服务端转发时去掉 `id`/`re`，保留 `sid` 与 `gen`。
+3. `rtc.*` 只在会话双方之间转发：主控只能发 `rtc.offer`/`rtc.candidate`，被控只能发 `rtc.answer`/`rtc.candidate`（否则 `forbidden`）；`sid` 必须是该连接所属的会话；会话尚未开始时 `conflict`；`attempt_id` 不是当前尝试时 `conflict`；SDP、候选大小与候选数超限时 `payload_too_large`。带 `id` 的转发消息在转发后回 `ack {}`。服务端转发时去掉 `id`/`re`，保留 `sid` 与 `gen`。
 4. 被控在收到 `session.incoming` 后即可应答 offer（媒体轨道预先协商）；SDP 带 §2.4 与 §7.2 的会话级属性。
 5. 结束：被控 `session.end{reason}`（服务端只转告 `revoked`、`kicked`、`identity_mismatch`、`media_failed`，其他按 `host_closed`）；主控 `bye`（主控连接）或 `session.leave`（在线连接）。
 
@@ -524,7 +523,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 - `POST /sessions` 带 `"presence": true`，不签发入场券。
 - `visit`：主控为一个观看窗口（或一次文件、端口转发会话）生成的 ID，服务器把同一 visit 的会话归入同一条连接记录（重连不另记）；`session.incoming` 把它告诉被控，直连时主控放在 `session.start` 里。被控在参与者离开、主控在窗口关闭时各自 `POST /records/reports` 上报摘要（`docs/connection-records.md`）。
 - 推送 `notice`（服务器 → 账号的在线设备）：数据为 `Notice` `{id, kind, data, created_at, read}`，种类与默认开关见 `docs/notifications.md`。
-- 在线连接上的 `session.start` 必须带 `sid`，且该会话的主控设备是本连接的设备、创建会话的账号与本连接的账号相同（否则 `error{forbidden}`）。此后该会话的 `rtc.offer`/`rtc.candidate` 从这条连接接受，发往主控的 `rtc.answer`/`rtc.candidate`/`session.setting`/`session.permissions`/`session.ended` 也发往这条连接。会话原来的主控连接（以入场券建立的）以 `4001` 关闭。
+- 在线连接上的 `session.start` 必须带 `sid`，且该会话的主控设备是本连接的设备、创建会话的账号与本连接的账号相同（否则 `error{forbidden}`）。此后该会话的 `rtc.offer`/`rtc.candidate` 从这条连接接受，发往主控的 `rtc.answer`/`rtc.candidate`/`session.permissions`/`session.ended` 也发往这条连接。会话原来的主控连接（以入场券建立的）以 `4001` 关闭。
 - 主控离开发送 `session.leave{}`（带 `sid`）；会话结束时只发 `session.ended`，不关闭在线连接。在线连接 `bye`、被新连接取代、恢复窗口过期或凭据吊销时，它承载的主控会话以 `controller_left` 结束；暂时断开（可恢复）时保留。
 - §3.11 的会话（受信任设备与访客）总是使用单独的主控连接。
 
@@ -633,7 +632,7 @@ v1 的 `MOUSE_POLICY`、`AUDIO_QUALITY`、`FILE_BLOCK`、`DRAG_DATA`（0x0502）
 
 | 类别 | 特性名 | 说明 |
 |------|--------|------|
-| 画面与显示 | `video.444`、`video.hdr`、`display.config`、`display.virtual` | 浏览器不声明 |
+| 显示 | `display.config`、`display.virtual` | 浏览器不声明 |
 | 光标 | `cursor.participants` | |
 | 数据 | `clipboard`、`clipboard.files`、`files` | |
 | 丢包恢复 | `video.recovery`（§6.6） | 浏览器不声明 |
@@ -662,7 +661,7 @@ v1 的 `MOUSE_POLICY`、`AUDIO_QUALITY`、`FILE_BLOCK`、`DRAG_DATA`（0x0502）
 
 消息字段见 [peer-messages.md](peer-messages.md)。
 
-- **SESSION**：请求带非 0 的 `request id`，被控以同一 id 并置 `RESPONSE` 回复；推送不回复。推送 `Displays`、`Quality`、`Microphone`、`ClipboardFiles`（H→C）与 `ReceiverStats`（C→H，每秒一次）。请求 `Capture`、`Display`（回复为请求完成后的 `Displays`，拒绝时 `PeerError` 带原因键）、`CaptureSetting`、`MicrophonePolicy`、`ControlTurn`（C→H）。显示变更需要 `display` 能力，麦克风需要 `microphone` 能力，获得控制权需要 `control` 能力。被控在显示器列表、任一显示器或视频轨对应关系变化时发送 `Displays`（内容相同不重发）。
+- **SESSION**：请求带非 0 的 `request id`，被控以同一 id 并置 `RESPONSE` 回复；推送不回复。推送 `Displays`、`Stream`、`Microphone`、`ClipboardFiles`（H→C）与 `ReceiverStats`（C→H，每秒一次）。请求 `Capture`、`Display`（回复为请求完成后的 `Displays`，拒绝时 `PeerError` 带原因键）、`StreamRequest`（只带变化的字段，回复为之后的 `Stream`）、`MicrophonePolicy`、`ControlTurn`（C→H）。显示变更需要 `display` 能力，麦克风需要 `microphone` 能力，获得控制权需要 `control` 能力。被控在显示器列表、任一显示器或视频轨对应关系变化时发送 `Displays`（内容相同不重发）。
 - **INPUT**：键按物理位置传 HID usage；锁定键状态以 `LockState` 纠正；系统命令只由主控菜单显式发送，被控先释放该参与者按住的键和按钮再执行。有键按下时主控在 50 ms 内没有发出任何 INPUT 帧就发一次 `Heartbeat`；被控在 `max(150 ms, 3×RTT + 50 ms)`（RTT 上限按 3 秒计，无 RTT 时取 150 ms）内收不到该参与者的 INPUT 即释放其按住的键。
 - **多人**：每位参与者各自一个 PeerConnection。同一时刻只有一位参与者持有控制权：开启键鼠控制时以 SESSION `ControlTurn` 获取，先到先得（重连后的自动恢复只在独自一人时生效）；只在持有者关闭键鼠控制、离开或失去 `control` 能力时释放。被控只注入持有者的键鼠，其他人的键鼠被丢弃。其他参与者共用一路多人观看流（1080p、60 fps、观影模式，见 v2-design §4.4）。被控以 `PARTICIPANTS` 广播列表与控制权持有者（列表或持有者变化时），以 `CURSOR`（`pointers = true`）把其他参与者的指针转发给每位参与者（接收方空闲 3 秒后淡出）。
 - **PERMISSIONS**：握手完成后与生效能力变化时由被控发送（服务端 `session.permissions`、被控本机开关或“禁止控制”）；生效能力 = 授予能力（本账号设备与好友由服务端给出，直连时由被控按缓存；受信任设备为被控为它记录的能力；访客为访客默认权限）∩ 被控本机上限。主控据此启停文件、剪贴板等功能。
@@ -881,7 +880,7 @@ ICE 代理在默认路由上发布私网 UDP/IPv4 主机候选后，为该端口
 
 ### 8.4 直连会话
 
-- 主控发送 `session.start{attempt_id, options, capability, purpose}`（带 `id`）。被控生成 `session_id` 与 `participant_id`，以 `ack: SessionStarted`（`ice_servers` 为空、`host` 为被控身份、`relation`、`grants`）回复，并把它作为一条 `session.incoming`（`connect_type`：访客为 `assist`，`own`、`friend`、`trusted` 为 `account`）交给与服务端会话共用的被控会话管理；被控照常按目的检查所需能力。
+- 主控发送 `session.start{attempt_id, options, purpose}`（带 `id`）。被控生成 `session_id` 与 `participant_id`，以 `ack: SessionStarted`（`ice_servers` 为空、`host` 为被控身份、`relation`、`grants`）回复，并把它作为一条 `session.incoming`（`connect_type`：访客为 `assist`，`own`、`friend`、`trusted` 为 `account`）交给与服务端会话共用的被控会话管理；被控照常按目的检查所需能力。
 - `rtc.offer`/`rtc.answer`/`rtc.candidate` 与经服务端时相同；SDP 照常带 `a=x-farwing-identity`，使用访问码的会话另带 `a=x-farwing-pake`（K 为本次 PAKE 的密钥）。
 - 被控结束参与者时向主控发 `session.ended{reason}`；主控断开或发 `session.end` 时被控以 `controller_left` 结束该参与者；被控停止直连时主控收到 `session.ended{host_closed}` 或连接断开。
 

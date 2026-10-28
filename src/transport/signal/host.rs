@@ -6,7 +6,7 @@ use crate::i18n::t;
 use crate::features::host::desktop;
 use crate::features::host::peer::Peer;
 use farwing_protocol::realtime::{
-    SenderInfo, SessionEnd, SessionIncoming, SessionSetting, reason,
+    SessionEnd, SessionIncoming, reason,
 };
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
@@ -19,9 +19,7 @@ pub(crate) enum Event {
     Power(crate::features::host::power::Event),
 }
 pub(crate) struct PreparedPeer {
-    preferred_codec: Option<i32>,
     peer: Peer,
-    capabilities: Vec<crate::features::host::format::Capability>,
 }
 
 /// One connected controller or viewer, keyed by its server session.
@@ -42,10 +40,6 @@ struct Participant {
     /// Cancels the preparation task while it runs.
     preparing: Option<tokio_util::sync::CancellationToken>,
     early_rtc: VecDeque<Envelope>,
-    capabilities: Vec<crate::features::host::format::Capability>,
-    preferred_codec: Option<i32>,
-    active_displays: Option<Vec<crate::protocol::capability::DisplayCapability>>,
-    active_encoder: Option<Vec<(usize, i32, (u32, u32), String)>>,
 }
 
 /// Host status while the server cannot be reached but direct connections can.
@@ -206,10 +200,6 @@ impl Session {
             Some((sid, candidate))=self.candidates.recv()=>Event::Candidate(sid, candidate),
             _=tokio::time::sleep(Duration::from_millis(250))=>Event::Poll,
         }
-    }
-
-    fn setting(sid: &str, setting: SessionSetting) -> Envelope {
-        Envelope::new(types::SESSION_SETTING, setting).with_sid(sid)
     }
 
     pub(crate) async fn apply(&mut self, event: Event, signal: &mut SignalSession) -> Result<()> {
@@ -386,10 +376,6 @@ impl Session {
                     && self.client.host.requested()
                     && !prepared.peer.access_revoked() =>
             {
-                participant.capabilities = prepared.capabilities;
-                participant.preferred_codec = prepared.preferred_codec;
-                participant.active_displays = None;
-                participant.active_encoder = None;
                 // Candidates of every participant arrive on one channel.
                 let mut candidates = std::mem::replace(
                     &mut prepared.peer.candidates,
@@ -405,7 +391,6 @@ impl Session {
                     }
                 });
                 participant.peer = Some(prepared.peer);
-                self.send_capability(&sid, signal).await?;
                 let early: Vec<_> = self
                     .participants
                     .get_mut(&sid)
@@ -459,68 +444,11 @@ impl Session {
                 // a normal remote close or network loss does not.
                 if status.error.is_some() {
                     self.client.host.invalidate_media().await;
-                    participant.capabilities.clear();
                 }
                 // A media failure is not a user kick. Preserve the remote
                 // controller's normal reconnect/rejoin classification.
                 self.remove(&sid, signal, None).await;
                 continue;
-            }
-            if let Some(capabilities) = peer.take_prepared_capabilities() {
-                participant.capabilities = capabilities;
-                self.send_capability(&sid, signal).await?;
-            }
-            let Some(participant) = self.participants.get_mut(&sid) else {
-                continue;
-            };
-            let Some(peer) = participant.peer.as_ref() else {
-                continue;
-            };
-            // Each participant is told about its own encoders.
-            {
-                let metadata: Vec<_> = peer
-                    .streams()
-                    .iter()
-                    .filter(|(_, s)| s.video.is_some())
-                    .filter_map(|(&index, s)| {
-                        s.encoder.map(|(implementation, maximum)| {
-                            (
-                                index,
-                                implementation,
-                                maximum,
-                                s.capture.clone().unwrap_or_else(|| "DXGI".into()),
-                            )
-                        })
-                    })
-                    .collect();
-                if metadata.is_empty() {
-                    participant.active_encoder = None;
-                } else if participant.active_encoder.as_ref() != Some(&metadata) {
-                    use crate::features::host::format::Backend;
-                    let infos: Vec<_> = metadata
-                        .iter()
-                        .map(|(index, implementation, _, capture)| {
-                            let encoder = match implementation {
-                                0 => Backend::Nvidia,
-                                1 => Backend::Amd,
-                                2 => Backend::Intel,
-                                _ => Backend::Software,
-                            }
-                            .name();
-                            SenderInfo {
-                                video_track_index: *index as u64,
-                                capture_impl: capture.clone(),
-                                encoder_impl: encoder.to_owned(),
-                            }
-                        })
-                        .collect();
-                    signal.send(Self::setting(&sid, SessionSetting::SenderInfo { infos }))?;
-                    tracing::info!(tracks = metadata.len(), "host sender media info published");
-                    participant.active_encoder = Some(metadata);
-                }
-            }
-            if participant.active_displays.as_ref() != Some(&peer.displays()) {
-                self.send_capability(&sid, signal).await?;
             }
         }
         if self.participants.is_empty() {
@@ -758,17 +686,10 @@ impl Session {
         let file_only = options.kind == kind::FILES;
         let ports_only = options.kind == kind::PORTS;
         let data_only = file_only || ports_only;
-        let capability = if incoming.capability.is_null() && data_only {
-            serde_json::json!({})
-        } else {
-            incoming.capability.clone()
-        };
-        let remote: crate::protocol::capability::DeviceCapability =
-            serde_json::from_value(capability).context("缺少主控解码能力")?;
         // The peer HELLO negotiates the in-session feature set.
         let audio_only = incoming.purpose == farwing_protocol::api::Purpose::Audio;
         tracing::info!(kind=options.kind,connect_type=options.connect_type,
-            decoders=?options.decoders,formats=?remote.video_codec_capability,
+            decoders=?options.decoders, stream=?options.stream,
             "host incoming media capabilities");
         anyhow::ensure!(
             matches!(options.kind, 1 | 5 | 9)
@@ -778,7 +699,7 @@ impl Session {
         );
         anyhow::ensure!(
             data_only
-                || (!remote.video_codec_capability.is_empty() && !options.decoders.is_empty()),
+                || !options.decoders.is_empty(),
             "主控解码能力为空"
         );
         let servers = incoming
@@ -914,7 +835,7 @@ impl Session {
             let result = async {
                 let mut display_ms = 0;
                 let mut media_ms = 0;
-                let (screen, config, negotiated, capabilities, deferred) = if audio_only || data_only
+                let (screen, config, negotiated, deferred) = if audio_only || data_only
                 {
                     (
                         None,
@@ -924,14 +845,12 @@ impl Session {
                             ..Default::default()
                         },
                         Arc::new(crate::features::host::format::Negotiated::deferred()),
-                        Vec::new(),
                         Some(crate::features::host::peer::screens::Deferred {
                             options: {
                                 let mut media = options.clone();
                                 media.kind = kind::DESKTOP;
                                 media
                             },
-                            remote,
                             encoding: encoding_settings,
                         }),
                     )
@@ -962,14 +881,12 @@ impl Session {
                         &options,
                         screen,
                         &capabilities,
-                        &remote,
                         encoding_settings,
                     )?;
                     (
                         Some(prepared.screen),
                         prepared.config,
                         prepared.negotiated,
-                        capabilities,
                         None,
                     )
                 };
@@ -982,6 +899,7 @@ impl Session {
                     servers,
                     relay,
                     config,
+                    options.stream,
                     negotiated,
                     deferred,
                     options.clipboard_level(),
@@ -994,11 +912,7 @@ impl Session {
                     peer_ms=peer_started.elapsed().as_millis(),
                     total_ms=preparation_started.elapsed().as_millis(),
                     "host connection preparation completed");
-                Ok(PreparedPeer {
-                    peer,
-                    capabilities,
-                    preferred_codec: encoding_settings.preferred_codec.preferred(),
-                })
+                Ok(PreparedPeer { peer })
             }
             .await;
             if result.is_err()
@@ -1022,10 +936,6 @@ impl Session {
                 peer: None,
                 preparing: Some(cancel),
                 early_rtc: VecDeque::new(),
-                capabilities: Vec::new(),
-                preferred_codec: None,
-                active_displays: None,
-                active_encoder: None,
             },
         );
         authorization.update(true, false, t().session.host_preparing_screen);
@@ -1089,34 +999,9 @@ impl Session {
         Ok(())
     }
 
-    pub(crate) async fn signaling_restored(&mut self, signal: &mut SignalSession) -> Result<()> {
-        if !self
-            .authorization
-            .as_ref()
-            .is_some_and(|lease| lease.requested())
-        {
-            return Ok(());
-        }
-        // A physical socket loss drops its queued messages. Publish the
-        // current idempotent snapshot again; never replay old requests.
-        let sids: Vec<_> = self
-            .participants
-            .iter()
-            .filter(|(_, p)| p.peer.as_ref().is_some_and(|peer| !peer.ended()))
-            .map(|(sid, _)| sid.clone())
-            .collect();
-        for sid in sids {
-            if let Some(participant) = self.participants.get_mut(&sid) {
-                participant.active_encoder = None;
-            }
-            self.send_capability(&sid, signal).await?;
-        }
-        if !self.participants.is_empty() {
-            tracing::info!(
-                participants = self.participants.len(),
-                "host realtime connection restored; current media metadata scheduled"
-            );
-        }
+    pub(crate) async fn signaling_restored(&mut self, _signal: &mut SignalSession) -> Result<()> {
+        // Every in-session state travels on the peer connection; the server
+        // carries nothing to send again.
         Ok(())
     }
 
@@ -1170,32 +1055,6 @@ impl Session {
                 tracing::warn!(%error, "host termination notice unavailable; stopping locally without replay")
             }
         }
-    }
-
-    async fn send_capability(&mut self, sid: &str, signal: &mut SignalSession) -> Result<()> {
-        let Some(participant) = self.participants.get_mut(sid) else {
-            return Ok(());
-        };
-        let capability = crate::protocol::capability::DeviceCapability {
-            preferred_codec: participant.preferred_codec,
-            sdr_10bit: true,
-            session_id: sid.to_owned(),
-            display_info: participant
-                .peer
-                .as_ref()
-                .context("缺少被控会话")?
-                .displays(),
-            video_codec_capability: participant.capabilities.iter().map(|c| c.wire()).collect(),
-        };
-        let displays = capability.display_info.clone();
-        signal.send(Self::setting(
-            sid,
-            SessionSetting::Capability {
-                capability: serde_json::to_value(&capability)?,
-            },
-        ))?;
-        participant.active_displays = Some(displays);
-        Ok(())
     }
 
     pub(crate) async fn close(mut self) {

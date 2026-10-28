@@ -130,7 +130,7 @@ pub(crate) struct ActiveEncoding {
     #[serde(default)]
     pub preferred_gpu: Option<crate::media::selection::GpuId>,
     #[serde(default)]
-    pub preferred_codec: Option<i32>,
+    pub preferred_codec: Option<farwing_protocol::session::Codec>,
     #[serde(default)]
     pub selection: crate::media::selection::SelectionReason,
     pub backend: super::format::Backend,
@@ -1698,18 +1698,6 @@ impl Lease {
         if self.primary(&state) {
             update(state.status.streams.entry(self.track).or_default());
             update_media_summary(&mut state.status);
-        }
-    }
-    /// This participant's streams (its own encoders and capture backends).
-    pub(crate) fn streams(&self) -> std::collections::BTreeMap<usize, StreamStatus> {
-        let state = lock(&self.handle.ownership);
-        match self.participant {
-            Some(key) => state
-                .participants
-                .get(&key)
-                .map(|p| p.streams.clone())
-                .unwrap_or_default(),
-            None => state.status.streams.clone(),
         }
     }
     pub(crate) fn video(&self, encoding: Option<ActiveEncoding>) {

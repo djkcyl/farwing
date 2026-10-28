@@ -1,9 +1,6 @@
 //! Session negotiation payloads exchanged over the realtime plane.
-use crate::diagnostics::performance::RemoteSenderInfo;
 use anyhow::{Context as _, Result};
-use farwing_protocol::realtime::{
-    Envelope, IceServer, RtcCandidate, RtcDescription, SessionSetting, types,
-};
+use farwing_protocol::realtime::{Envelope, IceServer, RtcCandidate, RtcDescription, types};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
 /// Controller-side state of an accepted `session.start`.
@@ -23,7 +20,8 @@ pub struct ControlSessionInfo {
     pub force_relay: bool,
     /// This controller's attempt ID (`session.start`).
     pub attempt_id: String,
-    pub(crate) local_capability: crate::protocol::capability::DeviceCapability,
+    /// What this controller offered: its decoders and starting stream.
+    pub(crate) offer: farwing_protocol::session::ConnectOptions,
 }
 
 impl std::fmt::Debug for ControlSessionInfo {
@@ -35,11 +33,6 @@ impl std::fmt::Debug for ControlSessionInfo {
             .field("force_relay", &self.force_relay)
             .finish_non_exhaustive()
     }
-}
-
-pub(super) enum SettingEvent {
-    DeviceCapability(crate::protocol::capability::DeviceCapability),
-    SenderInfo(Vec<RemoteSenderInfo>),
 }
 
 /// The peer's SDP is not bound to its device identity: the session is ended
@@ -58,31 +51,6 @@ impl std::error::Error for IdentityFailure {}
 /// Whether a session-scoped message belongs to `expected`.
 pub(super) fn same_session(envelope: &Envelope, expected: &ControlSessionInfo) -> bool {
     envelope.sid.as_deref() == Some(expected.session_id.as_str())
-}
-
-pub(super) fn parse_setting(
-    envelope: &Envelope,
-    expected: &ControlSessionInfo,
-) -> Result<Option<SettingEvent>> {
-    if envelope.kind != types::SESSION_SETTING || !same_session(envelope, expected) {
-        return Ok(None);
-    }
-    let setting: SessionSetting = envelope.body().context("decode session.setting")?;
-    Ok(Some(match setting {
-        SessionSetting::Capability { capability } => SettingEvent::DeviceCapability(
-            serde_json::from_value(capability).context("decode device capability")?,
-        ),
-        SessionSetting::SenderInfo { infos } => SettingEvent::SenderInfo(
-            infos
-                .into_iter()
-                .map(|info| RemoteSenderInfo {
-                    video_track_index: info.video_track_index,
-                    capture_impl: info.capture_impl,
-                    encoder_impl: info.encoder_impl,
-                })
-                .collect(),
-        ),
-    }))
 }
 
 pub(super) enum RemoteRtc {

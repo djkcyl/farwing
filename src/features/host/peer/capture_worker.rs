@@ -168,6 +168,7 @@ pub(super) fn capture_loop(
             tracing::info!(shared, format = ?wanted.format, "participant stream policy");
         }
         let requested_hdr = wanted.color.is_hdr();
+        let automatic_requested = wanted.quality == 5;
         // Gate HDR on the actual source, not only the requested setting.
         // Keep the request so same-source HDR recovery can re-enable the
         // negotiated format without rewriting user intent. Without a source
@@ -227,7 +228,9 @@ pub(super) fn capture_loop(
         if wanted.format.depth < 10 {
             wanted.color = crate::features::host::format::Color::Sdr;
         }
-        wanted.maximum = candidate.maximum_for(wanted.requested_maximum);
+        wanted.maximum = wanted.requested_maximum.map_or(candidate.maximum, |cap| {
+            (candidate.maximum.0.min(cap.0), candidate.maximum.1.min(cap.1))
+        });
         wanted.fps = wanted.fps.min(candidate.fps).min(screen.fps).max(1);
         // The group key uses the tier before this viewer's decoder cap and
         // weak-network strategy; those only lower the group's frame rate.
@@ -236,11 +239,8 @@ pub(super) fn capture_loop(
             wanted.fps = wanted.fps.min(wanted.receiver_fps);
         }
         metrics.report(wanted.fps, screen.adapter, candidate.capability.adapter);
-        let maximum_quality = negotiated.maximum_quality(
-            wanted.format,
-            (screen.width, screen.height),
-            wanted.maximum,
-        );
+        let maximum_quality =
+            negotiated.maximum_quality((screen.width, screen.height), wanted.maximum);
         let budget_size =
             crate::media::geometry::fit_size(screen.width, screen.height, wanted.maximum);
         if let Some(auto) = automatic.as_mut() {
@@ -561,12 +561,9 @@ pub(super) fn capture_loop(
                     handle.video(Some(output.video));
                     last_diagnostics = Some(output.video);
                 }
-                let mut active = lock(&config);
-                if active.revision == wanted.revision {
-                    active.reported_quality = output.quality;
-                }
-                drop(active);
                 let state = Published {
+                    automatic: automatic_requested,
+                    hdr: requested_hdr && output.format.depth == 10,
                     screen: output.screen,
                     capturing: true,
                     visible: true,
@@ -1239,13 +1236,10 @@ pub(super) fn capture_loop(
                 handle.video(Some(diagnostics));
                 last_diagnostics = Some(diagnostics);
             }
-            let mut active = lock(&config);
-            if active.revision == wanted.revision {
-                active.reported_quality = wanted.quality;
-            }
-            drop(active);
             let capture_name = desktop.as_ref().map_or("DXGI", |d| d.backend_name()).to_owned();
             let state = Published {
+                automatic: automatic_requested,
+                hdr: wanted.color.is_hdr(),
                 screen: screen.clone(),
                 capturing: true,
                 visible: true,

@@ -28,6 +28,7 @@ import {
   offerDependencyDescriptor,
   opusStereo,
   sessionAttribute,
+  VideoCodec,
   videoCodecPreferences,
   videoTracks,
   withoutAv1Level,
@@ -90,17 +91,16 @@ export interface ViewerEvents {
   ended?(ending: Ending): void;
   stream?(stream: MediaStream): void;
   screens?(screens: fpp.Screens): void;
-  quality?(quality: fpp.Quality): void;
+  streamState?(state: fpp.StreamState): void;
   permissions?(grants: string[]): void;
   participants?(value: { participants: fpp.Participant[]; controlling: string }): void;
   cursor?(shape: fpp.CursorShape): void;
   pointers?(pointers: fpp.ParticipantPointer[]): void;
   hostEvent?(event: fpp.HostEvent): void;
   audio?(state: fpp.AudioState): void;
-  captureResult?(errors: number[]): void;
   /// Codecs both sides support (the host's encoders ∩ this browser's
-  /// decoders), and the host's own preferred codec if it set one.
-  codecs?(codecs: VideoCodecId[], hostPreferred?: VideoCodecId): void;
+  /// decoders).
+  codecs?(codecs: VideoCodecId[]): void;
   /// The control token: held, being requested, or why it is not held.
   control?(state: ControlState): void;
   microphone?(state: MicrophoneStatus): void;
@@ -139,9 +139,18 @@ export interface MicrophoneStatus {
 /// Bulk sends wait while more than this is queued.
 const BULK_HIGH = 4 * 1024 * 1024;
 
-/// The automatic-quality tier the host last reported, per host: the next
-/// session starts there (as the native viewer does).
-const AUTO_TIER_KEY = 'farwing.viewer.auto.';
+/// Codec names in `session.start` and wire codec numbers in SESSION, by
+/// this viewer's codec number.
+const CODEC_NAMES: Record<VideoCodecId, string> = {
+  [VideoCodec.H264]: 'h264',
+  [VideoCodec.H265]: 'hevc',
+  [VideoCodec.AV1]: 'av1',
+};
+export const WIRE_CODEC: Record<VideoCodecId, number> = {
+  [VideoCodec.H264]: 1,
+  [VideoCodec.H265]: 2,
+  [VideoCodec.AV1]: 3,
+};
 
 /// Why the host kept control, from its code (`control_turn.rs` `refusal`).
 function refusalText(code: number, holder: string): string {
@@ -220,11 +229,6 @@ export async function accountAdmission(target: string, visit: string): Promise<A
   return { ticket, hostId: target };
 }
 
-interface HostCapability {
-  preferred_codec?: number;
-  video_codec_capability?: { video_codec: number; chroma_sampling: number; bit_depth: number }[];
-}
-
 export interface ViewerOptions {
   /// Obtain the session to join.
   admit(): Promise<Admission>;
@@ -265,11 +269,8 @@ export class Viewer {
   private sessionRequest = 1;
   private decoders: DecodeSupport[] = [];
   /// The picture quality asked for (5: automatic).
-  private frameQuality = 5;
   /// The host's capability, reported once its session channel works (the
   /// first screen list), since capture settings sent earlier are lost.
-  private hostCapability?: HostCapability;
-  private screensSeen = false;
   private audioTx?: RTCRtpTransceiver;
   private ssrcChecked = false;
   /// The Dependency Descriptor: asked for through the transceivers (verified
@@ -291,6 +292,7 @@ export class Viewer {
   /// Keep the token across reconnections.
   private wantControl = false;
   private mic?: { stream: MediaStream; ok: boolean; active: boolean };
+  private streamState?: fpp.StreamState;
   state: ViewerState = 'connecting';
   grants: string[] = [];
   readonly input: InputController;
@@ -368,35 +370,26 @@ export class Viewer {
         attempt_id: this.attempt,
         purpose: 'desktop',
         options: {
-          capture: {
-            fps: 2,
-            quality: 5,
-            cursor_capture: true,
-            local_resolution: { width, height },
-            chroma: 1,
-            bitrate: 0,
-            hdr: false,
-            auto_quality: this.autoTier(),
-            fps_count: 60,
-            weak_network: 0,
-            cinema: false,
-            codec: this.options.codec?.() ?? 0,
-          },
-          decoders: this.decoders.map((d) => ({ fps: 60, codec: d.codec, width: 3840, height: 2160, chroma: 1 })),
-        },
-        capability: {
-          sdr_10bit: false,
-          session_id: '',
-          display_info: [],
-          // codec_impl 32 is hardware decoding, 37 software (§2.4).
-          video_codec_capability: this.decoders.map((d) => ({
-            video_codec: d.codec,
+          decoders: this.decoders.map((d) => ({
+            codec: CODEC_NAMES[d.codec],
+            chroma444: false,
+            bit10: false,
             width: 3840,
             height: 2160,
-            chroma_sampling: 1,
-            bit_depth: 8,
-            codec_impl: d.hardware ? 32 : 37,
+            hardware: d.hardware,
           })),
+          display: { width, height, scale: Math.round(devicePixelRatio * 100) },
+          stream: {
+            quality: 'auto',
+            bitrate_kbps: 0,
+            fps: 60,
+            chroma444: false,
+            hdr: false,
+            codec: CODEC_NAMES[this.options.codec?.() as VideoCodecId] ?? null,
+            cursor: true,
+            weak_network: 'bitrate',
+            cinema: false,
+          },
         },
       },
       { sid: this.sid },
@@ -908,16 +901,8 @@ export class Viewer {
       }
       case fpp.Type.SESSION: {
         const message = fpp.parseSession(frame.body);
-        if (message.kind === 'screens') {
-          this.events.screens?.(message.value);
-          if (!this.screensSeen) {
-            this.screensSeen = true;
-            this.reportCodecs();
-          }
-        } else if (message.kind === 'quality') {
-          this.rememberTier(message.value.videoQuality);
-          this.events.quality?.(message.value);
-        } else if (message.kind === 'capture_setting_result') this.events.captureResult?.(message.errors);
+        if (message.kind === 'screens') this.events.screens?.(message.value);
+        else if (message.kind === 'stream') this.onStream(message.value);
         else if (message.kind === 'microphone_state') this.onMicrophoneState(message.state);
         else if (message.kind === 'forward') this.onForward(message.value);
         return;
@@ -995,24 +980,23 @@ export class Viewer {
     );
   }
 
-  /// The automatic tier is this viewer's (the host's last report).
-  setCapture(setting: Omit<fpp.CaptureSetting, 'autoFrameQuality'>) {
-    this.frameQuality = setting.frameQuality;
-    const rid = this.nextRequest();
-    const automatic = { ...setting, autoFrameQuality: this.autoTier() };
-    this.sendFrame('farwing.session.v2', fpp.encode(fpp.Type.SESSION, fpp.captureSetting(automatic), 0, rid));
+  /// Ask the host for a change of this viewer's stream; resolves once it
+  /// holds it (the new state arrives with the answer).
+  setStream(change: fpp.StreamChange): Promise<void> {
+    return this.request(fpp.Type.SESSION, fpp.streamRequest(change)).then(() => undefined);
   }
 
-  private autoTier(): number {
-    const tier = Number(localStorage.getItem(AUTO_TIER_KEY + this.admission?.hostId));
-    return tier >= 2 && tier <= 4 ? tier : 2;
-  }
-
-  private rememberTier(tier: number) {
-    const host = this.admission?.hostId;
-    if (host && this.frameQuality === 5 && tier >= 1 && tier <= 4) {
-      localStorage.setItem(AUTO_TIER_KEY + host, String(tier));
+  /// The host's stream state: the codecs both sides take, once known.
+  private onStream(state: fpp.StreamState) {
+    if (this.streamState && state.revision < this.streamState.revision) return;
+    const codecs = this.decoders.map((d) => d.codec).filter((c) => state.codecs.includes(WIRE_CODEC[c]));
+    const known = this.streamState ? this.streamState.codecs.join() : '';
+    this.streamState = state;
+    if (state.codecs.join() !== known) {
+      this.log(`host codecs ${state.codecs.join(',')}`);
+      this.events.codecs?.(codecs);
     }
+    this.events.streamState?.(state);
   }
 
   setAudioKbps(kbps: number) {
@@ -1205,9 +1189,6 @@ export class Viewer {
       case 'rtc.candidate':
         void this.onCandidate(envelope as Envelope<{ attempt_id: string; candidate: RTCIceCandidateInit }>);
         break;
-      case 'session.setting':
-        this.onSetting(envelope.data as { kind?: string; capability?: HostCapability });
-        break;
       case 'session.permissions':
         this.setGrants((envelope.data as { grants: string[] }).grants ?? this.grants);
         break;
@@ -1237,30 +1218,6 @@ export class Viewer {
       this.log('the server relay restarted; restarting ICE');
       await this.negotiate(true).catch((error: Error) => this.log(`restart failed: ${error.message}`));
     }
-  }
-
-  /// The host's capability (`session.setting` kind capability).
-  private onSetting(setting: { kind?: string; capability?: HostCapability }) {
-    if (setting.kind !== 'capability' || !setting.capability) return;
-    this.hostCapability = setting.capability;
-    this.reportCodecs();
-  }
-
-  private reportCodecs() {
-    const capability = this.hostCapability;
-    if (!capability || !this.screensSeen) return;
-    const encoders = new Set(
-      (capability.video_codec_capability ?? [])
-        .filter((c) => c.chroma_sampling === 1 && c.bit_depth === 8)
-        .map((c) => c.video_codec),
-    );
-    const common = this.decoders.map((d) => d.codec).filter((c) => encoders.has(c));
-    const preferred = capability.preferred_codec;
-    this.log(`host encoders ${[...encoders].join(',')} preferred=${preferred ?? '-'}`);
-    this.events.codecs?.(
-      common,
-      common.find((c) => c === preferred),
-    );
   }
 
   private async onClosed(code: number, reason: string) {

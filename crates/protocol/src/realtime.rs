@@ -86,7 +86,6 @@ pub mod types {
     // sessions
     pub const SESSION_START: &str = "session.start";
     pub const SESSION_INCOMING: &str = "session.incoming";
-    pub const SESSION_SETTING: &str = "session.setting";
     pub const SESSION_END: &str = "session.end";
     pub const SESSION_ENDED: &str = "session.ended";
     /// Controller → server on a presence connection that carries the
@@ -223,9 +222,6 @@ pub struct ResumeRefreshAck {
 pub struct SessionStart {
     pub attempt_id: String,
     pub options: ConnectOptions,
-    /// Controller decoder/display capability (opaque to the server).
-    #[serde(default)]
-    pub capability: Value,
     /// What the session is for. The server takes the purpose from the
     /// session ticket; a host's direct endpoint, which has no ticket, takes
     /// it from here and checks it against the participant's grants (§12.2).
@@ -344,8 +340,6 @@ pub struct SessionIncoming {
     #[serde(default)]
     pub controller: ControllerInfo,
     pub options: ConnectOptions,
-    #[serde(default)]
-    pub capability: Value,
     pub ice_servers: Vec<IceServer>,
     #[serde(default)]
     pub force_relay: bool,
@@ -394,26 +388,6 @@ pub struct Candidate {
 pub struct RtcCandidate {
     pub attempt_id: String,
     pub candidate: Candidate,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SenderInfo {
-    pub video_track_index: u64,
-    pub capture_impl: String,
-    pub encoder_impl: String,
-}
-
-/// `session.setting` (host → controller, relayed).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SessionSetting {
-    Capability {
-        capability: Value,
-    },
-    SenderInfo {
-        infos: Vec<SenderInfo>,
-    },
 }
 
 /// Reasons in `session.end` / `session.ended`.

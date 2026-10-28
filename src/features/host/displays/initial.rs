@@ -1,16 +1,7 @@
 //! Initial layout policy, before capabilities are probed or media tracks start.
 use super::*;
-use crate::features::stream_control::publisher::{ConnectOptions, Resolution};
+use crate::features::stream_control::publisher::ConnectOptions;
 use crate::i18n::t;
-
-fn size(value: Option<&Resolution>) -> Option<(u32, u32)> {
-    let value = value?;
-    let (w, h) = (
-        u32::try_from(value.width).ok()?,
-        u32::try_from(value.height).ok()?,
-    );
-    (w > 0 && h > 0).then_some((w, h))
-}
 
 impl Session {
     pub(crate) async fn prepare(&self, options: ConnectOptions) -> Result<capture::Screen> {
@@ -73,13 +64,10 @@ impl State {
         tracing::info!(screens = screens.len(), "host initial display selection");
         // A screen the host creates (fallback, super screen) takes the
         // controller's display size.
-        let virtual_size = size(
-            options
-                .params
-                .as_ref()
-                .and_then(|p| p.local_resolution.as_ref()),
-        )
-        .unwrap_or((1920, 1080));
+        let virtual_size = options
+            .display
+            .filter(|d| d.width > 0 && d.height > 0)
+            .map_or((1920, 1080), |d| (d.width, d.height));
         let mut automatic = None;
         let targets = Topology::query(true)?.metadata()?;
         if !self.preferences.super_enabled

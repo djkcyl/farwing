@@ -6,7 +6,18 @@ use yuv::{YuvBiPlanarImage, YuvConversionMode, YuvRange, YuvStandardMatrix, yuv_
 
 use crate::media::video_color::{ColorMatrix, RenderColor};
 use crate::media::{ConnectionMediaProfile, VideoCodec};
-use crate::protocol::capability::{CodecCapability, DeviceCapability, QUALITY_DIMENSIONS};
+use farwing_protocol::session::Decoder;
+
+/// The sizes a hardware decoder is probed at, largest first.
+pub(crate) const PROBE_SIZES: [(u32, u32); 3] = [(3840, 2160), (2560, 1440), (1920, 1080)];
+
+fn session_codec(codec: VideoCodec) -> farwing_protocol::session::Codec {
+    match codec {
+        VideoCodec::H264 => farwing_protocol::session::Codec::H264,
+        VideoCodec::H265 => farwing_protocol::session::Codec::Hevc,
+        VideoCodec::Av1 => farwing_protocol::session::Codec::Av1,
+    }
+}
 use crate::transport::rtc::EncodedVideoFrame;
 
 pub(crate) mod diagnostics;
@@ -479,8 +490,8 @@ fn poll_platform_decoder(
 struct DecoderInventory {
     adapters: Vec<u64>,
     /// Every codec, in advertising order.
-    hardware: Option<Vec<(VideoCodec, CodecCapability)>>,
-    software_av1: Option<Vec<CodecCapability>>,
+    hardware: Option<Vec<(VideoCodec, Decoder)>>,
+    software_av1: Option<Vec<Decoder>>,
 }
 
 static DECODER_INVENTORY: std::sync::Mutex<Option<DecoderInventory>> =
@@ -546,38 +557,34 @@ fn decoder_inventory<T>(
     value
 }
 
-fn probe_hardware_decoders() -> Vec<(VideoCodec, CodecCapability)> {
+fn probe_hardware_decoders() -> Vec<(VideoCodec, Decoder)> {
     let mut capabilities = Vec::new();
     let Ok(writers) = windows_surface::D3D11SurfaceWriter::available() else {
         return capabilities;
     };
-    for (codec, id) in [
-        (VideoCodec::H264, 1),
-        (VideoCodec::H265, 2),
-        (VideoCodec::Av1, 5),
-    ] {
+    for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
         for chroma in [1, 3] {
             for depth in [8, 10] {
-                for &(width, height) in QUALITY_DIMENSIONS[1..].iter().rev() {
+                for (width, height) in PROBE_SIZES {
                     if writers.iter().any(|writer| {
                         WindowsVideoDecoder::probe_format(
                             writer.device_handle(),
                             codec,
-                            width as u32,
-                            height as u32,
+                            width,
+                            height,
                             depth,
                             chroma,
                         )
                     }) {
                         capabilities.push((
                             codec,
-                            CodecCapability {
-                                video_codec: id,
+                            Decoder {
+                                codec: session_codec(codec),
+                                chroma444: chroma == 3,
+                                bit10: depth == 10,
                                 width,
                                 height,
-                                chroma_sampling: chroma,
-                                bit_depth: depth,
-                                codec_impl: 32,
+                                hardware: true,
                             },
                         ));
                         break;
@@ -589,22 +596,19 @@ fn probe_hardware_decoders() -> Vec<(VideoCodec, CodecCapability)> {
     capabilities
 }
 
-fn probe_software_av1() -> Vec<CodecCapability> {
+fn probe_software_av1() -> Vec<Decoder> {
     let mut capabilities = Vec::new();
     if let Ok(writer) = windows_surface::D3D11SurfaceWriter::new() {
         for chroma in [1, 3] {
             for depth in [8, 10] {
-                // Advertise support independently of other codecs. Only
-                // the common capabilities can establish a usable hardware
-                // alternative; DualCapability selects that after negotiation.
                 if writer.supports_software_av1(depth, chroma) {
-                    capabilities.push(CodecCapability {
-                        video_codec: 5,
+                    capabilities.push(Decoder {
+                        codec: farwing_protocol::session::Codec::Av1,
+                        chroma444: chroma == 3,
+                        bit10: depth == 10,
                         width: 1920,
                         height: 1080,
-                        chroma_sampling: chroma,
-                        bit_depth: depth,
-                        codec_impl: 37,
+                        hardware: false,
                     });
                 }
             }
@@ -613,9 +617,10 @@ fn probe_software_av1() -> Vec<CodecCapability> {
     capabilities
 }
 
+/// The formats this controller decodes, as the session offers them.
 pub(crate) fn detect_native_decoder_support(
     profile: ConnectionMediaProfile,
-) -> Result<DeviceCapability> {
+) -> Result<Vec<Decoder>> {
     std::thread::spawn(move || {
         let software_av1 =
             profile.decoder.mode.software() && profile.codec.accepts(VideoCodec::Av1);
@@ -634,14 +639,14 @@ pub(crate) fn detect_native_decoder_support(
             if profile.decoder.mode.software() && profile.codec.accepts(VideoCodec::H264) {
                 // This is the advertised software ceiling, not
                 // an arbitrary decoder rejection of a larger hardware-fallback AU.
-                for chroma_sampling in [1, 3] {
-                    capabilities.push(CodecCapability {
-                        video_codec: 1,
+                for chroma444 in [false, true] {
+                    capabilities.push(Decoder {
+                        codec: farwing_protocol::session::Codec::H264,
+                        chroma444,
+                        bit10: false,
                         width: 1920,
                         height: 1080,
-                        chroma_sampling,
-                        bit_depth: 8,
-                        codec_impl: 37,
+                        hardware: false,
                     });
                 }
             }
@@ -653,15 +658,7 @@ pub(crate) fn detect_native_decoder_support(
         if capabilities.is_empty() {
             bail!("no decoder supports the selected codec and decoding mode");
         }
-        Ok(DeviceCapability {
-            preferred_codec: profile.codec.preferred(),
-            sdr_10bit: true,
-            session_id: String::new(),
-            display_info: crate::platform::display_hdr::capabilities(
-                profile.local_display.refresh_hz,
-            ),
-            video_codec_capability: capabilities,
-        })
+        Ok(capabilities)
     })
     .join()
     .map_err(|_| anyhow!("native capability probe thread panicked"))?

@@ -592,8 +592,8 @@ impl TestServer {
 pub fn start_frame(id: &str, sid: &str, attempt: &str) -> Value {
     json!({"v": V, "type": "session.start", "id": id, "sid": sid, "data": {
         "attempt_id": attempt,
-        "options": {"screen_id": -1, "version": "0.1.0"},
-        "capability": {"codecs": ["h265"]}
+        "options": {"decoders": [{"codec": "hevc", "chroma444": false, "bit10": false,
+            "width": 1920, "height": 1080, "hardware": true}]}
     }})
 }
 

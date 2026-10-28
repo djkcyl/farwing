@@ -4,8 +4,7 @@
 use super::*;
 use crate::features::host::peer::screens::{ScreenInfo, Screens};
 use crate::features::stream_control::wire::{
-    self, CaptureControl, DisplayOp, DisplayRequest, PbCaptureSettingRequest, SessionBody,
-    display_reason, setting_reason,
+    self, CaptureControl, DisplayOp, DisplayRequest, SessionBody, display_reason, stream_reason,
 };
 use farwing_protocol::peer::error_code;
 use std::collections::BTreeMap;
@@ -146,9 +145,9 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
             }
             Ok(vec![answer(session, id, &result)].into())
         }
-        SessionBody::CaptureSetting(setting) => {
-            tracing::info!(?setting, "host capture setting received");
-            Ok(capture_setting(session, id, setting).await)
+        SessionBody::StreamRequest(request) => {
+            tracing::info!(?request, "host stream request");
+            Ok(vec![stream_request(session, id, request)].into())
         }
         SessionBody::MicrophonePolicy(_) => Ok(Received::default()),
         SessionBody::ReceiverStats(stats) => {
@@ -242,105 +241,20 @@ async fn display_request(session: &mut Screens, request: DisplayRequest) -> Resu
     }
 }
 
-/// The media settings of `setting` for its screen, or every screen of the
-/// session ([`EXISTING_SESSION_TRACKS`]).
-async fn capture_setting(session: &mut Screens, id: u32, setting: PbCaptureSettingRequest) -> Received {
-    let errors = if session.authorization().updating() {
+/// A change of this participant's stream: the state it leads to, or why
+/// it was refused.
+fn stream_request(session: &mut Screens, id: u32, request: wire::StreamRequest) -> Vec<u8> {
+    if session.authorization().updating() {
         // An update snapshots under this same screen owner lock. Do not
         // acknowledge settings that cannot survive it.
-        vec![PbError {
-            error_code: -2,
-            error_message: setting_reason::UPDATING.into(),
-            ..Default::default()
-        }]
-    } else {
-        let ids: Vec<_> = if setting.screen_id == EXISTING_SESSION_TRACKS {
-            session
-                .slots
-                .iter()
-                .filter_map(|s| s.screen.as_ref().or(s.suspended.as_ref()).map(|s| s.id))
-                .collect()
-        } else {
-            vec![setting.screen_id]
-        };
-        let mut errors = Vec::new();
-        for screen_id in ids {
-            match apply_setting(session, screen_id, &setting) {
-                Ok(mut result) => errors.append(&mut result),
-                Err(error) => {
-                    tracing::warn!(screen_id, error = %format!("{error:#}"), "host capture setting rejected");
-                    errors.push(PbError {
-                        error_code: -2,
-                        error_message: setting_reason::NOT_APPLIED.into(),
-                        ..Default::default()
-                    });
-                }
-            }
-        }
-        if errors.is_empty() {
-            errors.push(PbError::default());
-        }
-        if errors.iter().all(|e| matches!(e.error_code, 0 | -3 | -6)) {
-            // A successful request also updates the connection's capture
-            // defaults, even for a single screen. Other existing tracks
-            // keep their settings; newly attached captures inherit these.
-            let config = session
-                .slots
-                .iter()
-                .find(|s| {
-                    s.screen
-                        .as_ref()
-                        .or(s.suspended.as_ref())
-                        .is_some_and(|s| s.id == setting.screen_id)
-                })
-                .or_else(|| {
-                    session
-                        .slots
-                        .iter()
-                        .find(|s| s.screen.is_some() || s.suspended.is_some())
-                })
-                .map(|s| *crate::features::host::lock(&s.config));
-            if let Some(config) = config {
-                session.set_media_default(config);
-            }
-        }
-        errors
-    };
-    vec![wire::response(
-        id,
-        SessionBody::CaptureSettingResult(PbCaptureSettingResponse { errors }),
-    )]
-    .into()
-}
-
-fn apply_setting(
-    session: &Screens,
-    id: i32,
-    setting: &PbCaptureSettingRequest,
-) -> Result<Vec<PbError>> {
-    let index = session
-        .active_slot(id)
-        .or_else(|| {
-            session
-                .slots
-                .iter()
-                .position(|s| s.suspended.as_ref().is_some_and(|s| s.id == id))
-        })
-        .context(t().features.stream_display_not_captured)?;
-    let slot = &session.slots[index];
-    let screen = slot
-        .screen
-        .clone()
-        .or_else(|| slot.suspended.clone())
-        .context(t().features.stream_display_not_captured)?;
-    let mut setting = setting.clone();
-    setting.screen_id = screen.id;
-    Ok(super::apply_capture_setting(
-        &setting,
-        &screen,
-        &mut crate::features::host::lock(&slot.config),
-        &slot.negotiated,
-    ))
+        return wire::error_response(id, error_code::BUSY, stream_reason::UPDATING);
+    }
+    let settings = request.apply(session.stream().into()).into();
+    if !super::valid(&settings) {
+        return wire::error_response(id, error_code::BAD_REQUEST, stream_reason::INVALID);
+    }
+    session.set_stream(settings);
+    wire::response(id, SessionBody::Stream(session.stream_state()))
 }
 
 #[cfg(test)]

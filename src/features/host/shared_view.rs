@@ -58,7 +58,6 @@ pub(crate) fn formats(negotiated: &Negotiated) -> Vec<Format> {
         .into_iter()
         .filter(|format| {
             negotiated.permits_format(*format)
-                && (format.depth == 8 || negotiated.sdr_10bit())
                 && negotiated
                     .choices
                     .iter()

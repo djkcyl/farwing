@@ -109,7 +109,6 @@ impl Ready {
 
 pub(super) struct Reports {
     pub media_ready: Arc<Ready>,
-    pub capabilities: Mutex<Option<Vec<crate::features::host::format::Capability>>>,
     pub catalog: Mutex<Vec<ScreenInfo>>,
     pub current: AtomicI32,
     pub publications: Vec<Mutex<Option<watch::Receiver<Published>>>>,
@@ -159,6 +158,8 @@ pub(crate) struct Screens {
     cancel: CancellationToken,
     connected: Arc<AtomicBool>,
     base: VideoConfig,
+    /// The stream this participant asked for.
+    stream: farwing_protocol::session::StreamSettings,
     source_generation: u16,
     initial: Option<capture::Screen>,
     deferred: Option<Deferred>,
@@ -169,7 +170,6 @@ pub(crate) struct Screens {
 }
 pub(crate) struct Deferred {
     pub options: crate::features::stream_control::publisher::ConnectOptions,
-    pub remote: crate::protocol::capability::DeviceCapability,
     pub encoding: crate::features::host::EncodingSettings,
 }
 impl Screens {
@@ -274,17 +274,18 @@ impl Screens {
                 .prepare_media(screen.clone(), deferred.encoding.gpu_compatibility)
                 .await?;
             let capabilities = deferred.encoding.select(&media.codecs)?;
+            let mut options = deferred.options.clone();
+            options.stream = self.stream;
             let prepared = crate::features::host::desktop::Prepared::new(
-                &deferred.options,
+                &options,
                 screen,
                 &capabilities,
-                &deferred.remote,
                 deferred.encoding,
             )?;
-            Ok::<_, anyhow::Error>((prepared, capabilities))
+            Ok::<_, anyhow::Error>(prepared)
         }
         .await;
-        let (prepared, capabilities) = match preparation {
+        let prepared = match preparation {
             Ok(prepared) => prepared,
             Err(error) => {
                 if let Err(restore) = self.displays.rollback_preparation().await {
@@ -301,7 +302,6 @@ impl Screens {
             slot.negotiated = negotiated;
             *lock(&slot.config) = prepared.config;
         }
-        *lock(&self.reports.capabilities) = Some(capabilities);
         self.reports
             .current
             .store(prepared.screen.id, Ordering::Release);
@@ -310,8 +310,81 @@ impl Screens {
         self.reports.notify();
         Ok(Some(prepared.screen.id))
     }
-    pub(crate) fn set_media_default(&mut self, config: VideoConfig) {
-        self.base = config;
+    pub(crate) fn stream(&self) -> farwing_protocol::session::StreamSettings {
+        self.stream
+    }
+    /// This participant asks for `settings`: every track it has (shown or
+    /// stopped) and the ones it starts take them.
+    pub(crate) fn set_stream(&mut self, settings: farwing_protocol::session::StreamSettings) {
+        self.stream = settings;
+        self.base = crate::features::stream_control::publisher::config_of(
+            &settings,
+            self.base.auto_quality,
+            self.base,
+        );
+        for slot in &self.slots {
+            let Some(screen) = slot.screen.as_ref().or(slot.suspended.as_ref()) else {
+                continue;
+            };
+            let mut config = lock(&slot.config);
+            if let Err(error) = crate::features::stream_control::publisher::configure(
+                &settings,
+                screen,
+                &mut config,
+                &slot.negotiated,
+            ) {
+                tracing::warn!(screen = screen.id, error = %format!("{error:#}"), "stream settings not applied to a track");
+            }
+        }
+        self.reports.notify();
+    }
+    /// The stream as this participant gets it.
+    pub(crate) fn stream_state(&self) -> crate::features::stream_control::wire::StreamState {
+        use crate::features::stream_control::wire::{self, Quality};
+        let revision = *self.reports.changed.borrow();
+        let tracks = self
+            .reports
+            .media()
+            .into_iter()
+            .filter(|(_, state)| state.capturing)
+            .map(|(index, state)| wire::TrackState {
+                track: index as u32,
+                screen: state.screen.id,
+                codec: wire::Codec::of(Some(state.format.codec.session())) as i32,
+                chroma444: state.format.chroma == 3,
+                hdr: state.hdr,
+                bit10: state.format.depth == 10,
+                quality: match state.quality {
+                    1 => Quality::Low,
+                    3 => Quality::High,
+                    4 => Quality::Ultra,
+                    6 => Quality::Custom,
+                    _ => Quality::Standard,
+                } as i32,
+                fps: state.fps,
+                hardware: state
+                    .encoder
+                    .is_some_and(|b| b != crate::features::host::format::Backend::Software),
+                encoder: state.encoder.map(|b| b.name().to_owned()).unwrap_or_default(),
+                capture: state.capture,
+            })
+            .collect();
+        wire::StreamState {
+            revision,
+            settings: Some(self.stream.into()),
+            limits: Some(self.slots[0].negotiated.limits()),
+            tracks,
+        }
+    }
+    /// The tier automatic quality settled at for this participant, if it
+    /// runs in automatic quality.
+    pub(super) fn settled_tier(reports: &Reports) -> Option<i32> {
+        reports
+            .media()
+            .into_iter()
+            .find(|(_, state)| state.capturing && state.automatic)
+            .map(|(_, state)| state.quality)
+            .filter(|tier| (1..=4).contains(tier))
     }
     pub(crate) fn authorization(&self) -> Lease {
         self.lease.clone()
@@ -322,6 +395,7 @@ impl Screens {
         cancel: CancellationToken,
         connected: Arc<AtomicBool>,
         initial: VideoConfig,
+        stream: farwing_protocol::session::StreamSettings,
         negotiated: Arc<Negotiated>,
         network: Transport,
         selected: Option<capture::Screen>,
@@ -330,7 +404,6 @@ impl Screens {
     ) -> Result<Self> {
         let reports = Arc::new(Reports {
             media_ready: Arc::new(Ready::default()),
-            capabilities: Mutex::new(None),
             catalog: Mutex::default(),
             current: AtomicI32::new(selected.as_ref().map_or(-1, |s| s.id)),
             publications: (0..TRACK_COUNT).map(|_| Mutex::new(None)).collect(),
@@ -384,6 +457,7 @@ impl Screens {
             cancel,
             connected,
             base: initial,
+            stream,
             source_generation: 0,
             initial: selected.clone(),
             deferred,
@@ -554,15 +628,13 @@ impl Screens {
             "{}",
             t().features.peer_lease_expired
         );
-        let requested_format = config.format;
         self.slots[index]
             .negotiated
             .source_gpu(screen.render_adapter.unwrap_or(screen.adapter));
-        let requested_hdr = config.color.is_hdr();
         self.slots[index].negotiated.apply_requested(
             &mut config,
-            requested_format.chroma,
-            requested_hdr,
+            if self.stream.chroma444 { 3 } else { 1 },
+            self.stream.hdr,
             (screen.width, screen.height),
         )?;
         self.stop_at(index).await;
@@ -579,6 +651,8 @@ impl Screens {
         *lock(&slot.config) = config;
         self.source_generation = self.source_generation.wrapping_add(1);
         let (tx, mut rx) = watch::channel(Published {
+            automatic: config.quality == 5,
+            hdr: config.color.is_hdr(),
             screen: screen.clone(),
             // The slot already owns this source. Native preparation is not a
             // stopped stream: publishing track=-1/CaptureChange=99 here races

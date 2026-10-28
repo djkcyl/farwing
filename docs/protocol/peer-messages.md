@@ -138,19 +138,18 @@ Click {
 SessionMessage { oneof body {
   // 推送（request id = 0）
   Displays displays = 1                             // H→C；也是 capture 与 display 请求的响应
-  PbReportQosStats quality = 2                      // H→C
+  StreamState stream = 2                            // H→C；也是 stream_request 的响应
   MicrophoneState microphone = 3                    // H→C
   ClipboardPermission clipboard_files = 4           // H→C
   ReceiverStats receiver_stats = 7                  // C→H，每秒一次
   VideoFeedback video_feedback = 8                  // C→H，control 通道（FCT），`video.recovery`
   // 请求（C→H）
   CaptureControl capture = 5                        // → 1
-  PbCaptureSettingRequest capture_setting = 10      // → 20
+  StreamRequest stream_request = 10                 // → 2
   DisplayRequest display = 11                       // → 1
   PolicyRequest microphone_policy = 16              // → 22
   TurnRequest control_turn = 17                     // → 23
   // 响应（H→C）
-  PbCaptureSettingResponse capture_setting_result = 20
   PolicyResponse microphone_result = 22
   TurnResponse control_turn_result = 23
 }}
@@ -185,10 +184,41 @@ Display {
 }
 Size { width: uint32 = 1, height: uint32 = 2 }
 
-PbReportQosStats {
-  encoder_type: string = 1   // software | hardware
-  capture_type: string = 2   // 采集后端名
-  video_quality: int32 = 4   // 生效档位 1..4（自动已解析）或 6 自定义
+StreamSettings {                // 本参与者要求的串流（与 session.start 的 StreamSettings 相同）
+  quality: Quality = 1          // 0 自动，1 低（720p），2 标准（1080p），3 高（1440p），4 超高（4K），5 自定义码率
+  bitrate_kbps: uint32 = 2      // 自定义码率上限
+  fps: uint32 = 3               // 不超过主控刷新率
+  chroma444: bool = 4
+  hdr: bool = 5
+  codec: Codec = 6              // 0 由被控选择，1 H.264，2 HEVC，3 AV1
+  cursor: bool = 7              // 光标画进画面
+  weak_network: WeakNetwork = 8 // 0 先降码率，1 先降帧率
+  cinema: bool = 9
+}
+StreamState {                   // 被控持有并发送给本参与者的串流
+  revision: uint64 = 1          // 每次变化增大，主控丢弃更旧的
+  settings: StreamSettings = 2  // 被控持有的本参与者要求
+  limits: StreamLimits = 3
+  tracks: repeated TrackState = 4
+}
+StreamLimits {                  // 两端都支持的
+  codecs: repeated Codec = 1
+  chroma444: bool = 2
+  hdr: bool = 3                 // 有 10 位格式
+  max_quality: Quality = 4      // 编码器与解码器都能达到的最高档
+}
+TrackState {                    // 一条视频轨实际发送的
+  track: uint32 = 1             // video_N
+  screen: int32 = 2
+  codec: Codec = 3
+  chroma444: bool = 4
+  hdr: bool = 5
+  bit10: bool = 6
+  quality: Quality = 7          // 生效档位（自动已解析），自定义为 5
+  fps: uint32 = 10
+  hardware: bool = 11
+  encoder: string = 12          // 编码与采集后端名，仅供诊断
+  capture: string = 13
 }
 MicrophoneState { state: int32 = 1 }       // 1 ACTIVE（正在播放主控麦克风），2 INACTIVE，3 RESTART（被控音频链路出错，主控重启本地采集）
 ClipboardPermission { enabled: bool = 1 }  // 被控是否接收剪贴板文件
@@ -226,25 +256,9 @@ ReceiverStats {
 ### 请求与响应
 
 ```
-PbCaptureSettingRequest {
-  fps: int32 = 1                    // 1:30 2:60 3:90 4:144
-  frame_quality: int32 = 2          // 1 低码率 2 高清 3 超清 4 原画 5 自动 6 自定义
-  cursor_capture: bool = 3          // 画面合成光标
-  screen_id: int32 = 4              // -2 本会话所有正在采集或暂停的轨道；其他为具体屏幕
-  chroma_format: int32 = 7          // 1 4:2:0，3 4:4:4
-  max_custom_bitrate: int32 = 8     // bit/s
-  enable_hdr: bool = 11
-  auto_frame_quality: int32 = 12    // 自动画质的当前档位
-  codec_type: int32 = 13            // 1 H.264，2 H.265，5 AV1
-  max_scale_width: int32 = 14       // 主控的缩放上限
-  max_scale_height: int32 = 15
-  fps_count: int32 = 18             // 主控显示刷新率上限
-  weak_network: int32 = 19          // 0 优先降码率，1 优先降帧率
-  cinema: bool = 20                 // 观影模式
+StreamRequest {                 // StreamSettings 的各字段都是 optional：只带变化的，未带的保持不变
+  ...
 }
-PbCaptureSettingResponse { errors: repeated PbError = 1 }   // 每个屏幕一条；全部为空时补一条 0
-PbError { error_code: int32 = 1, error_message: string = 2, error_detail: string = 3 }
-
 DisplayRequest { oneof op {
   SetMode set_mode = 1                 // { id, width, height }：显示器列出的模式；虚拟屏与超级屏可以是任意尺寸
   SetScale set_scale = 2               // { id, scale }：scales 中的一个
@@ -272,15 +286,7 @@ TurnResponse {
 
 **ControlTurn**：主控开启键鼠控制时发送 `take = true`，关闭时发送 `take = false`。无人持有且本参与者拥有 `control` 能力时获得；他人持有或没有 `control` 能力时 `held = false`，主控关闭键鼠控制并按 `refusal` 提示。因未授权（`refusal = 2`）被拒时，提示里可以“请求本次控制”：主控再发 `take = true, ask = true`，被控端弹出“请求键鼠控制 · 仅本次连接”，用户允许后本参与者在本次连接内拥有 `control`（`PERMISSIONS` 随之包含 `control`，主人收回控制权时失效，不写入受信任设备），回复 `held = true`；拒绝或 60 秒无人回应时 `refusal = 5`。等待期间控制通道照常工作。`automatic = true` 时，只有本参与者已经持有、或会话中只有它一人才会获得；否则 `held = false`，主控静默回到仅观看。获取请求发不出去或被控回 `ERROR` 时，主控同样关闭键鼠控制（提示“未能向被控端请求键鼠控制权”，`automatic` 时不提示）。释放总是成功。控制权的其他变化（持有者离开、失去 `control` 能力）只经 `PARTICIPANTS.controlling` 通知。
 
-**CaptureSetting 结果码**（`PbError.error_code`）
-
-| 码 | 含义 |
-|----|------|
-| 0 | 成功 |
-| -1 | 无效或不支持 |
-| -2 | 正在更新，或未能应用 |
-| -3 | 请求帧率超过屏幕刷新率（提示，不算失败） |
-| -6 | 全彩（4:4:4）开关结果，`error_detail = {"error_code": 0 已开启 \| 1 编码器不支持 \| 2 支持但未生效 \| 5 已关闭}` |
+**StreamRequest**：被控把变化合并进本参与者的设置，应用到它所有的视频轨（正在采集的与暂停的），以之后的 `StreamState` 回复。做不到的部分（解码器或编码器不支持 4:4:4、显示器不是 HDR、帧率高于屏幕刷新率、所要编码不可用）照常回复，`StreamState.tracks` 写明实际发送的，主控据此提示。拒绝时回 `PeerError`：`updating`（busy，被控正在更新）、`invalid`（bad_request，数值越界）。光标、观影等不影响码率的字段变化不会让自动画质重新选档。
 
 **Capture 与 Display 请求**：成功时以 `Displays`（本参与者看到的、请求完成后的列表）回复；失败时回 `RESPONSE|ERROR` + `PeerError{code, reason}`：
 

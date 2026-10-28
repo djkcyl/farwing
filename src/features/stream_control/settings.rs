@@ -1,20 +1,85 @@
-//! Capture proposals, validation, acknowledgement and saved preference policy.
-use super::input::{expire_cursor_request, fail_cursor_request};
-use super::wire::{PbCaptureSettingRequest, PbCaptureSettingResponse, PbError};
+//! The stream this controller asks for: the settings it requests (one
+//! `StreamRequest` with what changed), the state the host reports
+//! (`StreamState`), and the saved preferences.
+use super::input::fail_cursor_request;
+use super::requests::Waiting;
+use super::wire::{self, SessionBody, StreamRequest};
 use super::{
-    CAPTURE_RESULT_FPS_ADJUSTED, CHROMA_420, CHROMA_444, CaptureSettingBaseline,
-    EXISTING_SESSION_TRACKS, FPS_30, FPS_60, FPS_90, FPS_144, MAX_CUSTOM_BITRATE_MBPS,
-    OutgoingControlMessage, RemoteDisplayState,
-    StreamControlHandle, StreamControlPreferences, StreamControlProtocol, StreamControlSettings,
-    StreamControlState, StreamQuality, VIDEO_QUALITY_AUTO,
-    VIDEO_QUALITY_BLURAY, VIDEO_QUALITY_CUSTOM, VIDEO_QUALITY_FAST, VIDEO_QUALITY_GENERAL,
-    VIDEO_QUALITY_HD, ViewingPreferenceUpdate, custom_bitrate_supported, ensure_ready,
-    feature_supported, lock, protocol,
+    MAX_CUSTOM_BITRATE_MBPS, RemoteDisplayState, StreamControlHandle, StreamControlPreferences,
+    StreamControlSettings, StreamControlState, StreamQuality, custom_bitrate_supported,
+    ensure_ready, feature_supported, lock,
 };
 use crate::i18n::t;
-use crate::media::FrameRateChoice;
-use crate::protocol::capability::FrameQualityCapability;
-use anyhow::{Result, anyhow, bail};
+use crate::media::{FrameRateChoice, LocalDisplayInfo};
+use anyhow::{Result, bail};
+use farwing_protocol::session::{self, StreamSettings};
+
+/// How long the host may take to apply a stream change.
+const STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// What this controller's choices ask of the host.
+pub(crate) struct Wanted {
+    pub settings: StreamControlSettings,
+    pub display: LocalDisplayInfo,
+    pub custom_bitrate_limit: u32,
+    pub codec: Option<session::Codec>,
+    pub cursor: bool,
+    pub weak_network: crate::features::viewing_settings::WeakNetwork,
+    pub cinema: bool,
+}
+
+impl Wanted {
+    pub(crate) fn stream(&self) -> StreamSettings {
+        let settings = self.settings;
+        StreamSettings {
+            quality: match settings.quality {
+                StreamQuality::Auto => session::Quality::Auto,
+                StreamQuality::Fast => session::Quality::Low,
+                StreamQuality::Clear => session::Quality::Standard,
+                StreamQuality::High => session::Quality::High,
+                StreamQuality::Original => session::Quality::Ultra,
+                StreamQuality::Custom => session::Quality::Custom,
+            },
+            bitrate_kbps: if settings.quality == StreamQuality::Custom {
+                settings.custom_bitrate_mbps.min(self.custom_bitrate_limit) * 1_000
+            } else {
+                0
+            },
+            // No faster than this display shows.
+            fps: settings
+                .frame_rate
+                .value(self.display)
+                .min(self.display.refresh_hz.max(1))
+                .max(1),
+            chroma444: settings.true_color,
+            hdr: settings.hdr,
+            codec: self.codec,
+            cursor: self.cursor,
+            weak_network: match self.weak_network {
+                crate::features::viewing_settings::WeakNetwork::Bitrate => {
+                    session::WeakNetwork::Bitrate
+                }
+                crate::features::viewing_settings::WeakNetwork::FrameRate => {
+                    session::WeakNetwork::FrameRate
+                }
+            },
+            cinema: self.cinema,
+        }
+    }
+}
+
+fn wanted(state: &StreamControlState) -> StreamSettings {
+    Wanted {
+        settings: state.settings,
+        display: state.local_display,
+        custom_bitrate_limit: state.custom_bitrate_limit,
+        codec: state.codec_preference,
+        cursor: state.cursor_capture,
+        weak_network: state.device_preferences.weak_network,
+        cinema: state.device_preferences.cinema,
+    }
+    .stream()
+}
 
 impl StreamControlHandle {
     /// One `ReceiverStats` report for the host, once video is negotiated:
@@ -43,66 +108,47 @@ impl StreamControlHandle {
             .saturating_add(snapshot.dropped_present_frames);
         let new_drops = dropped.saturating_sub(state.reported_drops);
         state.reported_drops = dropped;
-        Some(super::wire::push(super::wire::SessionBody::ReceiverStats(
-            super::wire::ReceiverStats {
-                receive_fps: snapshot.receive_fps as f32,
-                decode_fps: snapshot.decode_fps as f32,
-                render_fps: snapshot.render_fps as f32,
-                decode_delay_ms: snapshot.decode_pipeline_delay_ms as f32,
-                dropped_frames: u32::try_from(new_drops).unwrap_or(u32::MAX),
-            },
-        )))
+        Some(wire::push(SessionBody::ReceiverStats(wire::ReceiverStats {
+            receive_fps: snapshot.receive_fps as f32,
+            decode_fps: snapshot.decode_fps as f32,
+            render_fps: snapshot.render_fps as f32,
+            decode_delay_ms: snapshot.decode_pipeline_delay_ms as f32,
+            dropped_frames: u32::try_from(new_drops).unwrap_or(u32::MAX),
+        })))
     }
 
-    /// Send the current capture baseline (after a device-preference change).
-    /// Before the session is ready the initial capture sync carries it.
-    pub(super) fn request_baseline_locked(&self, state: &mut StreamControlState) -> Result<Option<i64>> {
-        if ensure_ready(state).is_err() || !state.initial_capture_sync_sent {
-            return Ok(None);
+    /// What this controller offered at `session.start`: the decoders, and
+    /// the stream the host starts with.
+    pub(crate) fn set_offer(&self, offer: &session::ConnectOptions) {
+        let mut state = lock(&self.shared);
+        state.decoders = offer.decoders.clone();
+        state.held = offer.stream.map(wire::StreamSettings::from);
+        if let Some(stream) = offer.stream {
+            state.codec_preference = stream.codec;
+            state.cursor_capture = stream.cursor;
         }
-        let active_protocol = protocol(state);
-        if active_protocol != StreamControlProtocol::CaptureSetting {
-            return Ok(None);
-        }
-        let sequence = state.next_sequence;
-        let payload = encode_capture_setting(sequence, state.baseline)?;
-        state.next_sequence = state.next_sequence.wrapping_add(1);
-        state.pending_sequences.push_back(sequence);
-        state.last_error = None;
-        state.last_notice = None;
-        self.send_locked(
-            state,
-            OutgoingControlMessage {
-                annotation_generation: None,
-                sequence,
-                payload,
-                protocol: active_protocol,
-                completion: None,
-            },
-            None,
-        )
-        .map(Some)
     }
 
     pub(crate) fn restore_preferences(&self, preferences: StreamControlPreferences) -> Result<()> {
         let mut state = lock(&self.shared);
-        if state.initial_capture_sync_sent || state.baseline.codec_type != 0 {
-            bail!("{}", t().features.stream_preferences_restore_too_late);
+        if preferences.settings.quality == StreamQuality::Custom
+            && !(1..=MAX_CUSTOM_BITRATE_MBPS).contains(&preferences.settings.custom_bitrate_mbps)
+        {
+            bail!(
+                "{}",
+                (t().features.stream_custom_bitrate_range)(MAX_CUSTOM_BITRATE_MBPS)
+            );
         }
         state.custom_bitrate_limit = preferences
             .custom_bitrate_limit
             .unwrap_or(MAX_CUSTOM_BITRATE_MBPS);
-        set_requested_settings(&mut state, preferences.settings)?;
-        state.baseline.auto_frame_quality = preferences.auto_frame_quality;
+        state.settings = preferences.settings;
         state.confirmed_preferences = preferences;
         if let Some(audio) = preferences.audio {
             self.audio.set_settings(audio);
         }
         state.performance.set_quality(viewing_quality_label(&state));
-        tracing::info!(
-            ?preferences,
-            "restored viewing preferences for a new room generation"
-        );
+        tracing::info!(?preferences, "restored viewing preferences for a new room generation");
         drop(state);
         if let Some(device) = preferences.device {
             self.restore_device_preferences(device);
@@ -128,12 +174,13 @@ impl StreamControlHandle {
         format_proposal(&lock(&self.shared), true_color, hdr)
     }
 
+    /// 4:4:4 and HDR apply to every display of the session.
     pub(crate) fn apply_format(
         &self,
-        screen_id: i32,
+        _screen_id: i32,
         settings: StreamControlSettings,
     ) -> Result<i64> {
-        self.apply_settings_target(&mut lock(&self.shared), settings, Some(screen_id))
+        self.apply(settings)
     }
 
     pub(super) fn apply_settings_locked(
@@ -141,361 +188,250 @@ impl StreamControlHandle {
         state: &mut StreamControlState,
         settings: StreamControlSettings,
     ) -> Result<i64> {
-        self.apply_settings_target(state, settings, None)
-    }
-
-    pub(super) fn apply_settings_target(
-        &self,
-        state: &mut StreamControlState,
-        settings: StreamControlSettings,
-        screen: Option<i32>,
-    ) -> Result<i64> {
-        self.apply_settings_inner(state, settings, screen, false)
-    }
-
-    /// `reselect`: choose the format again even if nothing else changed
-    /// (the preferred codec did).
-    pub(super) fn apply_settings_inner(
-        &self,
-        mut state: &mut StreamControlState,
-        settings: StreamControlSettings,
-        screen: Option<i32>,
-        reselect: bool,
-    ) -> Result<i64> {
-        {
-            expire_cursor_request(&mut state);
-            ensure_ready(&state)?;
-            let active_protocol = protocol(&state);
-            if matches!(settings.quality, StreamQuality::Custom)
-                && !custom_bitrate_supported(&state)
-            {
-                bail!("{}", t().features.stream_custom_bitrate_unsupported);
-            }
+        ensure_ready(state)?;
+        if settings.quality == StreamQuality::Custom {
             anyhow::ensure!(
-                settings.quality != StreamQuality::Custom
-                    || settings.custom_bitrate_mbps <= state.custom_bitrate_limit
+                custom_bitrate_supported(state),
+                "{}",
+                t().features.stream_custom_bitrate_unsupported
+            );
+            anyhow::ensure!(
+                (1..=MAX_CUSTOM_BITRATE_MBPS).contains(&settings.custom_bitrate_mbps),
+                "{}",
+                (t().features.stream_custom_bitrate_range)(MAX_CUSTOM_BITRATE_MBPS)
+            );
+            anyhow::ensure!(
+                settings.custom_bitrate_mbps <= state.custom_bitrate_limit
                     || (state.settings.quality == StreamQuality::Custom
                         && settings.custom_bitrate_mbps == state.settings.custom_bitrate_mbps),
                 "{}",
                 (t().features.stream_custom_bitrate_limit)(state.custom_bitrate_limit)
             );
-            let quality_changed = settings.quality != state.settings.quality;
-            let color_changed = settings.true_color != state.settings.true_color;
-            let hdr_changed = settings.hdr != state.settings.hdr;
-            if hdr_changed {
-                anyhow::ensure!(
-                    state.peer.has(crate::protocol::peer::feature::VIDEO_HDR),
-                    "{}",
-                    t().features.stream_hdr_switch_unsupported
-                );
-                if settings.hdr {
-                    ensure_hdr_displays(&state)?;
-                }
-            }
-            if color_changed {
-                anyhow::ensure!(
-                    color_supported(&state),
-                    "{}",
-                    t().features.stream_color_unsupported
-                );
-            }
-            let selected = if reselect
-                || color_changed
-                || hdr_changed
-                || (quality_changed && !matches!(settings.quality, StreamQuality::Custom))
-            {
-                validate_format(&state, settings.quality, settings.true_color, settings.hdr)?
-            } else {
-                None
-            };
-            let previous_quality = state.settings.quality;
-            set_requested_settings(&mut state, settings)?;
-            if settings.quality == StreamQuality::Auto
-                && matches!(
-                    previous_quality,
-                    StreamQuality::Clear | StreamQuality::High | StreamQuality::Original
-                )
-            {
-                state.baseline.auto_frame_quality = previous_quality.protobuf();
-            }
-            if let Some(selected) = selected {
-                apply_codec_limits(&mut state, selected);
-            }
-            constrain_auto_quality(&mut state);
-            tracing::debug!(
-                screen_id = EXISTING_SESSION_TRACKS,
-                enable_hdr = state.baseline.enable_hdr,
-                requested_fps = state.baseline.requested_fps,
-                fps_count = state.baseline.fps_count,
-                frame_quality = state.baseline.frame_quality,
-                auto_frame_quality = state.baseline.auto_frame_quality,
-                max_scale_width = state.baseline.max_scale_width,
-                max_scale_height = state.baseline.max_scale_height,
-                chroma_format = state.baseline.chroma_format,
-                codec_type = state.baseline.codec_type,
-                max_custom_bitrate = state.baseline.max_custom_bitrate,
-                "runtime capture-setting snapshot prepared"
-            );
-
-            let sequence = state.next_sequence;
-            let payload = match active_protocol {
-                StreamControlProtocol::CaptureSetting => {
-                    let mut request = capture_setting_request(state.baseline)?;
-                    if let Some(id) = screen {
-                        let _screen = state
-                            .screens
-                            .iter()
-                            .find(|s| s.id == id)
-                            .ok_or_else(|| {
-                                anyhow!("{}", t().features.stream_display_disconnected)
-                            })?;
-                        request.screen_id = id;
-                        // Format/quality changes do not own the physical mode.
-                        // A cached ScreenSources size may predate a game's mode switch.
-                    }
-                    encode_capture_request(sequence, request)
-                }
-
-                StreamControlProtocol::Negotiating => {
-                    bail!("{}", t().features.stream_negotiation_pending)
-                }
-            };
-            state.next_sequence = state.next_sequence.wrapping_add(1);
-            state.pending_sequences.push_back(sequence);
-            // An explicit full snapshot also satisfies initial synchronization,
-            // including a supported choice after a rejected restored preference.
-            state.initial_capture_sync_sent = true;
-            state.last_error = None;
-            state.last_notice = None;
-            let outgoing = OutgoingControlMessage {
-                annotation_generation: None,
-                sequence,
-                payload,
-                protocol: active_protocol,
-                completion: None,
-            };
-            let switch_target = format!(
-                "{} · {}",
-                settings.quality.label(),
-                settings.frame_rate.label(state.local_display)
-            );
-            state.user_settings_requested = true;
-            let sent = self.send_locked(&mut state, outgoing, Some(switch_target))?;
-            Ok(sent)
         }
-    }
-}
-
-pub(super) fn set_requested_settings(
-    state: &mut StreamControlState,
-    settings: StreamControlSettings,
-) -> Result<()> {
-    if settings.quality == StreamQuality::Custom
-        && !(1..=MAX_CUSTOM_BITRATE_MBPS).contains(&settings.custom_bitrate_mbps)
-    {
-        bail!(
-            "{}",
-            (t().features.stream_custom_bitrate_range)(MAX_CUSTOM_BITRATE_MBPS)
-        );
-    }
-    let requested_fps = settings.frame_rate.value(state.local_display);
-    state.baseline.requested_fps = requested_fps;
-    state.baseline.fps_count = state
-        .local_display
-        .refresh_hz
-        .clamp(1, requested_fps.max(1));
-    state.baseline.frame_quality = settings.quality.protobuf();
-    state.baseline.enable_hdr = settings.hdr;
-    state.baseline.chroma_format = if settings.true_color {
-        CHROMA_444
-    } else {
-        CHROMA_420
-    };
-    state.baseline.max_custom_bitrate = match settings.quality {
-        StreamQuality::Custom => {
-            settings.custom_bitrate_mbps.min(state.custom_bitrate_limit) * 1_000_000
+        if settings.hdr && !state.settings.hdr {
+            ensure_hdr(state)?;
         }
-        _ => 0,
-    };
-    state.settings = settings;
-    Ok(())
-}
-
-pub(super) fn prepare_initial_capture_sync(
-    state: &mut StreamControlState,
-) -> Result<Option<OutgoingControlMessage>> {
-    if state.initial_capture_sync_sent
-        || !state.control_channel_open
-        || !state.text_channel_open
-        || !state.pb_connected
-        || state.remote_display.is_none()
-    {
-        return Ok(None);
-    }
-    let active_protocol = protocol(state);
-    if matches!(state.settings.quality, StreamQuality::Custom) && !custom_bitrate_supported(&state)
-    {
-        bail!("{}", t().features.stream_custom_bitrate_unsupported);
-    }
-    if (state.settings.hdr || state.settings.true_color) && state.capability.is_none() {
-        return Ok(None);
-    }
-    if let Some(cap) = &state.capability {
-        let original = state.settings;
-        let hdr_allowed = ensure_hdr_displays(state).is_ok();
-        let color_allowed = color_supported(state);
-        let candidates = [
-            (original.true_color, original.hdr),
-            (false, original.hdr),
-            (original.true_color, false),
-            (false, false),
-        ];
-        if let Some((color, hdr)) = candidates.into_iter().find(|(color, hdr)| {
-            (!*hdr || hdr_allowed)
-                && (!*color || color_allowed)
-                && cap.select(if *color { 3 } else { 1 }, *hdr, 0).result == 0
-        }) {
-            if color != original.true_color || hdr != original.hdr {
-                let mut settings = original;
-                settings.true_color = color;
-                settings.hdr = hdr;
-                set_requested_settings(state, settings)?;
-                state.last_notice = Some(t().features.stream_color_restore_failed.into());
-            }
-        }
-    }
-    if let Some(capability) = &state.capability {
-        let requested = state.settings.quality.capability_quality();
-        let selected = capability.select(
-            state.baseline.chroma_format as u8,
-            state.settings.hdr,
-            requested,
-        );
-        if selected.result != 0 {
-            bail!(
+        if settings.true_color && !state.settings.true_color {
+            anyhow::ensure!(
+                color_supported(state),
                 "{}",
-                (t().features.stream_color_format_unsupported)(selected.result)
+                t().features.stream_color_unsupported
             );
         }
-        if !matches!(requested, 0 | 5) && selected.max_frame_quality < requested {
-            let mut settings = state.settings;
-            settings.quality =
-                quality_from_capability(selected.max_frame_quality).ok_or_else(|| {
-                    anyhow!("invalid negotiated quality {}", selected.max_frame_quality)
-                })?;
-            set_requested_settings(state, settings)?;
-            state.last_notice =
-                Some((t().features.stream_quality_adjusted)(settings.quality.label()));
+        let previous = state.settings;
+        state.settings = settings;
+        state.user_settings_requested = true;
+        let target = format!(
+            "{} · {}",
+            settings.quality.label(),
+            settings.frame_rate.label(state.local_display)
+        );
+        match self.request_stream_locked(state, Some(target)) {
+            Ok(Some(sequence)) => Ok(sequence),
+            Ok(None) => {
+                // The host already holds it.
+                confirm(state, settings, true);
+                Ok(0)
+            }
+            Err(error) => {
+                state.settings = previous;
+                Err(error)
+            }
         }
-        apply_codec_limits(state, selected);
     }
-    // Submit from screen state and negotiated capabilities, independently
-    // of first-frame delivery.
-    // If neither negotiation nor RTP supplied a codec, keep waiting rather
-    // than inventing a default codec or an incomplete RPC.
-    if state.baseline.codec_type == 0 {
-        return Ok(None);
-    }
-    constrain_auto_quality(state);
-    let baseline = state.baseline;
-    let sequence = state.next_sequence;
-    let payload = match active_protocol {
-        StreamControlProtocol::CaptureSetting => encode_capture_setting(sequence, baseline)?,
 
-        StreamControlProtocol::Negotiating => return Ok(None),
-    };
-    state.next_sequence = state.next_sequence.wrapping_add(1);
-    state.pending_sequences.push_back(sequence);
-    state.initial_capture_sync_sent = true;
-    tracing::info!(
-        sequence,
-        protocol = active_protocol.label(),
-        requested_fps = baseline.requested_fps,
-        fps_count = baseline.fps_count,
-        frame_quality = baseline.frame_quality,
-        auto_frame_quality = baseline.auto_frame_quality,
-        max_custom_bitrate = baseline.max_custom_bitrate,
-        screen_id = EXISTING_SESSION_TRACKS,
-        max_scale_width = baseline.max_scale_width,
-        max_scale_height = baseline.max_scale_height,
-        codec_type = baseline.codec_type,
-        "initial capture-setting snapshot prepared"
-    );
-    Ok(Some(OutgoingControlMessage {
-        annotation_generation: None,
-        sequence,
-        payload,
-        protocol: active_protocol,
-        completion: None,
-    }))
+    /// Ask the host for what this controller wants now, when it differs
+    /// from what the host holds; `None` when nothing differs.
+    pub(super) fn request_stream_locked(
+        &self,
+        state: &mut StreamControlState,
+        switch_target: Option<String>,
+    ) -> Result<Option<i64>> {
+        let Some(held) = state.held else {
+            return Ok(None);
+        };
+        let wanted: wire::StreamSettings = wanted(state).into();
+        let request = StreamRequest::between(held, wanted);
+        if request.is_empty() {
+            return Ok(None);
+        }
+        let sequence = self.send_request(
+            state,
+            SessionBody::StreamRequest(request),
+            Waiting::Stream {
+                settings: state.settings,
+                persist: state.user_settings_requested,
+                before: held,
+            },
+            STREAM_TIMEOUT,
+        )?;
+        tracing::info!(sequence, ?request, "stream change requested");
+        state.held = Some(wanted);
+        state.latest_requested_sequence = Some(sequence);
+        state.pending_stream = Some(sequence);
+        if request.cursor.is_some() {
+            state.cursor_pending = Some(sequence);
+            state.cursor_error = None;
+        }
+        state.last_error = None;
+        state.last_notice = None;
+        if let Some(target) = switch_target {
+            state.performance.begin_stream_switch(sequence, target);
+        }
+        Ok(Some(sequence))
+    }
+
+    /// Ask for what changed once the session can take it (the cursor
+    /// policy, device preferences loaded after the start).
+    pub(super) fn sync_stream_locked(&self, state: &mut StreamControlState) {
+        if !state.viewing_enabled || ensure_ready(state).is_err() {
+            return;
+        }
+        if let Err(error) = self.request_stream_locked(state, None) {
+            tracing::warn!(%error, "stream change not sent");
+            state.last_error = Some(error.to_string());
+        }
+    }
+
+    /// The host answered stream request `sequence`.
+    pub(super) fn stream_settled(
+        &self,
+        state: &mut StreamControlState,
+        sequence: i64,
+        settings: StreamControlSettings,
+        persist: bool,
+        before: wire::StreamSettings,
+        result: std::result::Result<(), String>,
+    ) {
+        let latest = state.latest_requested_sequence == Some(sequence);
+        if state.pending_stream == Some(sequence) {
+            state.pending_stream = None;
+        }
+        if state.cursor_pending == Some(sequence) {
+            match &result {
+                Ok(()) => state.cursor_pending = None,
+                Err(error) => fail_cursor_request(state, sequence, error.clone()),
+            }
+        }
+        match result {
+            Ok(()) => {
+                confirm(state, settings, persist);
+                if latest {
+                    state.last_applied_sequence = Some(sequence);
+                    state.last_error = None;
+                    state.last_notice = notices(state);
+                    state.performance.acknowledge_stream_switch(sequence);
+                    state.performance.set_quality(viewing_quality_label(state));
+                }
+                tracing::info!(sequence, "stream change applied by the host");
+            }
+            Err(error) => {
+                tracing::warn!(sequence, %error, "stream change refused");
+                if latest {
+                    state.held = Some(before);
+                    state.settings = state.confirmed_preferences.settings;
+                    state.last_error = Some(error.clone());
+                    state.last_notice = None;
+                    state.performance.fail_stream_switch(sequence, error);
+                }
+            }
+        }
+    }
 }
 
-pub(super) fn quality_from_capability(quality: i32) -> Option<StreamQuality> {
-    match quality {
-        1 => Some(StreamQuality::Fast),
-        2 => Some(StreamQuality::Clear),
-        3 => Some(StreamQuality::High),
-        4 => Some(StreamQuality::Original),
-        _ => None,
+/// The host holds `settings`: they are this device's preference now.
+fn confirm(state: &mut StreamControlState, settings: StreamControlSettings, persist: bool) {
+    let changed = state.confirmed_preferences.settings != settings;
+    state.confirmed_preferences.settings = settings;
+    // Reapplying a confirmed choice must repair a failed local save.
+    if persist && (changed || state.persistence_error.is_some()) {
+        state.preference_updates.send_replace(Some(settings));
     }
+}
+
+/// What the host could not give, as a notice.
+fn notices(state: &StreamControlState) -> Option<String> {
+    let stream = state.stream_state.as_ref()?;
+    let settings = stream.settings?;
+    let mut notices = Vec::new();
+    if settings.chroma444
+        && !stream.tracks.is_empty()
+        && !stream.tracks.iter().any(|t| t.chroma444)
+    {
+        notices.push(t().features.stream_yuv444_fallback);
+    }
+    if stream
+        .tracks
+        .iter()
+        .map(|t| t.fps)
+        .max()
+        .is_some_and(|fps| fps < settings.fps)
+    {
+        notices.push(t().features.stream_fps_reduced);
+    }
+    (!notices.is_empty()).then(|| notices.join("; "))
+}
+
+/// Take in the host's stream state (a push, or the answer to a request);
+/// an older state than the one in effect is dropped.
+pub(super) fn apply_stream_state(state: &mut StreamControlState, stream: wire::StreamState) {
+    if state
+        .stream_state
+        .as_ref()
+        .is_some_and(|current| stream.revision < current.revision)
+    {
+        return;
+    }
+    // While a request is out, what this controller asked for stands.
+    if state.pending_stream.is_none() {
+        state.held = stream.settings.or(state.held);
+    }
+    tracing::debug!(revision = stream.revision, tracks = stream.tracks.len(), "stream state received");
+    state.performance.set_remote_senders(
+        stream
+            .tracks
+            .iter()
+            .map(|track| crate::diagnostics::performance::RemoteSenderInfo {
+                video_track_index: u64::from(track.track),
+                capture_impl: track.capture.clone(),
+                encoder_impl: track.encoder.clone(),
+            })
+            .collect(),
+    );
+    state.stream_state = Some(stream);
+    state.performance.set_quality(viewing_quality_label(state));
 }
 
 pub(super) fn color_supported(state: &StreamControlState) -> bool {
-    state.peer.has(crate::protocol::peer::feature::VIDEO_444)
-        && feature_supported(
-            state,
-            crate::account::feature_ability::Feature::Host,
-        )
-        && state.capability.is_some()
+    feature_supported(state, crate::account::feature_ability::Feature::Host)
+        && state
+            .stream_state
+            .as_ref()
+            .and_then(|s| s.limits.as_ref())
+            .is_some_and(|limits| limits.chroma444)
 }
 
-pub(super) fn validate_format(
-    state: &StreamControlState,
-    quality: StreamQuality,
-    true_color: bool,
-    hdr: bool,
-) -> Result<Option<FrameQualityCapability>> {
-    let Some(capability) = &state.capability else {
-        return Ok(None);
-    };
-    let requested = quality.capability_quality();
-    let selected = capability.select(if true_color { 3 } else { 1 }, hdr, requested);
-    if selected.result != 0
-        || (!matches!(requested, 0 | 5) && selected.max_frame_quality < requested)
-    {
-        bail!(
-            "{}",
-            (t().features.stream_quality_unsupported_with_color)(
-                quality.label(),
-                selected.max_frame_quality,
-                selected.result
-            )
-        );
-    }
-    Ok(Some(selected))
-}
-
-pub(super) fn ensure_hdr_displays(state: &StreamControlState) -> Result<()> {
-    anyhow::ensure!(
-        state.peer.has(crate::protocol::peer::feature::VIDEO_HDR),
-        "{}",
-        t().features.stream_hdr_unsupported
-    );
-    let cap = state
-        .capability
+/// HDR takes a 10-bit format both sides support, and HDR on the viewed
+/// display and on this one.
+pub(super) fn ensure_hdr(state: &StreamControlState) -> Result<()> {
+    let limits = state
+        .stream_state
         .as_ref()
-        .ok_or_else(|| anyhow!("{}", t().features.stream_waiting_hdr_capability))?;
+        .and_then(|s| s.limits.as_ref())
+        .ok_or_else(|| anyhow::anyhow!("{}", t().features.stream_waiting_hdr_capability))?;
+    anyhow::ensure!(limits.hdr, "{}", t().features.stream_hdr_unsupported);
+    let viewed = state.remote_display.map(|d| d.screen_id);
     anyhow::ensure!(
-        cap.remote_display_info
+        state
+            .screens
             .iter()
-            .any(|display| display.hdr),
+            .filter(|s| viewed.is_none_or(|id| s.id == id))
+            .any(|s| s.display.hdr),
         "{}",
         t().features.stream_host_hdr_off
     );
     anyhow::ensure!(
-        cap.local_display_info
-            .iter()
-            .any(|display| display.hdr),
+        crate::platform::display_hdr::any_hdr(),
         "{}",
         t().features.stream_local_hdr_off
     );
@@ -510,84 +446,19 @@ pub(super) fn format_proposal(
     let mut settings = state.settings;
     if let Some(enabled) = color {
         anyhow::ensure!(
-            color_supported(state),
+            !enabled || color_supported(state),
             "{}",
             t().features.stream_color_unsupported
         );
         settings.true_color = enabled;
     }
     if let Some(enabled) = hdr {
-        anyhow::ensure!(
-        state.peer.has(crate::protocol::peer::feature::VIDEO_HDR),
-        "{}",
-        t().features.stream_hdr_unsupported
-    );
+        if enabled {
+            ensure_hdr(state)?;
+        }
         settings.hdr = enabled;
     }
-    if hdr == Some(true) {
-        ensure_hdr_displays(state)?;
-    }
-    let cap = state
-        .capability
-        .as_ref()
-        .ok_or_else(|| anyhow!("{}", t().features.stream_waiting_capability))?;
-    let mut selected = cap.select(
-        if settings.true_color { 3 } else { 1 },
-        settings.hdr,
-        settings.quality.capability_quality(),
-    );
-    if selected.result != 0 && settings.hdr && settings.true_color {
-        if hdr == Some(true) {
-            selected = cap.select(1, true, settings.quality.capability_quality());
-            if selected.result == 0 {
-                settings.true_color = false;
-            }
-        } else if color == Some(true) {
-            selected = cap.select(3, false, settings.quality.capability_quality());
-            if selected.result == 0 {
-                settings.hdr = false;
-            }
-        }
-    }
-    anyhow::ensure!(
-        selected.result == 0,
-        "{}",
-        t().features.stream_color_hdr_unsupported
-    );
-    let requested = settings.quality.capability_quality();
-    if !matches!(requested, 0 | 5) && selected.max_frame_quality < requested {
-        settings.quality = quality_from_capability(selected.max_frame_quality)
-            .ok_or_else(|| anyhow!("{}", t().features.stream_no_quality_tier))?;
-    }
     Ok(settings)
-}
-
-pub(super) fn apply_codec_limits(state: &mut StreamControlState, selected: FrameQualityCapability) {
-    state.baseline.codec_type = selected.video_codec;
-    state.baseline.max_scale_width = selected.max_width as u32;
-    state.baseline.max_scale_height = selected.max_height as u32;
-}
-
-pub(super) fn constrain_auto_quality(state: &mut StreamControlState) {
-    if state.baseline.frame_quality != VIDEO_QUALITY_AUTO {
-        return;
-    }
-    if let Some(row) = state
-        .capability
-        .as_ref()
-        .and_then(|cap| {
-            cap.exact(
-                state.baseline.codec_type,
-                state.baseline.chroma_format as u8,
-                state.settings.hdr,
-            )
-        })
-        .filter(|row| row.result == 0)
-        && let Some(maximum) = quality_from_capability(row.max_frame_quality)
-        && state.baseline.auto_frame_quality > maximum.protobuf()
-    {
-        state.baseline.auto_frame_quality = maximum.protobuf();
-    }
 }
 
 pub(super) fn refresh_active_screen(state: &mut StreamControlState) {
@@ -622,263 +493,48 @@ pub(super) fn refresh_active_screen(state: &mut StreamControlState) {
     );
 }
 
-pub(super) fn apply_capture_setting_response(
-    state: &mut StreamControlState,
-    request_id: i64,
-    response: PbCaptureSettingResponse,
-) {
-    let current = state.latest_requested_sequence == Some(request_id)
-        && state.pending_sequences.contains(&request_id);
-    let mut reported_color = None;
-    let mut failures = Vec::new();
-    let mut notices = Vec::new();
-    for error in response.errors {
-        match error.error_code {
-            0 => {}
-            -6 => {
-                match serde_json::from_str::<serde_json::Value>(&error.error_detail)
-                    .ok()
-                    .and_then(|v| v.get("error_code").and_then(|n| n.as_i64()))
-                {
-                    Some(code @ (0 | 1 | 2 | 3 | 4 | 5)) => {
-                        reported_color = Some(matches!(code, 0 | 3 | 4));
-                        if matches!(code, 1 | 2) {
-                            notices.push(t().features.stream_yuv444_fallback.into());
-                        }
-                        if matches!(code, 3 | 4) {
-                            notices.push(t().features.stream_yuv444_kept.into());
-                        }
-                    }
-                    _ => failures.push(format_pb_error(error)),
-                }
-            }
-            CAPTURE_RESULT_FPS_ADJUSTED => notices.push(t().features.stream_fps_reduced.into()),
-            _ => failures.push(format_pb_error(error)),
-        }
+/// A refused stream request in the interface language, from its reason.
+pub(super) fn refusal_text(reason: &str) -> String {
+    match reason {
+        wire::stream_reason::UPDATING => t().features.stream_host_updating_settings_locked,
+        _ => t().features.stream_setting_not_applied,
     }
-    if let Some(enabled) = reported_color
-        && let Some(pending) = state
-            .pending_capture_preferences
-            .iter_mut()
-            .find(|p| p.sequence == request_id)
-    {
-        pending.preferences.settings.true_color = enabled;
-    }
-    finish_request(state, request_id, failures, notices);
-    if current && let Some(enabled) = reported_color {
-        apply_reported_color(state, enabled, state.user_settings_requested);
-    }
+    .into()
 }
 
-pub(super) fn apply_reported_color(state: &mut StreamControlState, enabled: bool, persist: bool) {
-    state.settings.true_color = enabled;
-    state.baseline.chroma_format = if enabled { CHROMA_444 } else { CHROMA_420 };
-    let changed = state.confirmed_preferences.settings.true_color != enabled;
-    state.confirmed_preferences.settings.true_color = enabled;
-    if let Ok(Some(selected)) =
-        validate_format(state, state.settings.quality, enabled, state.settings.hdr)
-    {
-        apply_codec_limits(state, selected);
-    }
-    if changed && persist {
-        state
-            .preference_updates
-            .send_replace(Some(ViewingPreferenceUpdate::Settings(
-                state.confirmed_preferences.saved(),
-            )));
-    }
-}
-
-/// A rejected setting in the interface language, from its reason.
-pub(super) fn format_pb_error(error: PbError) -> String {
-    use super::wire::setting_reason as reason;
-    let text = &t().features;
-    match error.error_message.as_str() {
-        reason::UPDATING => text.stream_host_updating_settings_locked.into(),
-        reason::INVALID_SCALE_LIMIT => text.stream_invalid_scale_limit.into(),
-        reason::UNSUPPORTED_CODEC => text.stream_unsupported_codec.into(),
-        _ => text.stream_setting_not_applied.into(),
-    }
-}
-
-pub(super) fn reported_auto_quality(quality: i32) -> Option<i32> {
-    // The uninitialized protobuf value 0 is rejected before translation to
-    // the menu tier; the translated auto sub-tier is then preserved. Do not
-    // let startup QoS reset it to Clear.
+pub(super) fn quality_name(quality: wire::Quality) -> &'static str {
     match quality {
-        0 => None,
-        VIDEO_QUALITY_FAST..=VIDEO_QUALITY_CUSTOM => Some(quality),
-        // An unknown nonzero value maps to the first menu tier, which is
-        // written back as General. This is not the zero/uninitialized case.
-        _ => Some(VIDEO_QUALITY_GENERAL),
-    }
-}
-
-pub(super) fn quality_name(quality: i32) -> &'static str {
-    match quality {
-        VIDEO_QUALITY_BLURAY => t().features.stream_quality_original,
-        VIDEO_QUALITY_HD => t().features.stream_quality_ultra,
-        VIDEO_QUALITY_GENERAL => t().features.stream_quality_high,
-        VIDEO_QUALITY_FAST => t().features.stream_quality_low_bitrate,
+        wire::Quality::Ultra => t().features.stream_quality_original,
+        wire::Quality::High => t().features.stream_quality_ultra,
+        wire::Quality::Low => t().features.stream_quality_low_bitrate,
         _ => t().features.stream_quality_high,
     }
 }
 
-pub(super) fn baseline_quality_label(baseline: &CaptureSettingBaseline) -> String {
-    match baseline.frame_quality {
-        VIDEO_QUALITY_FAST..=VIDEO_QUALITY_BLURAY => {
-            quality_name(baseline.frame_quality).to_owned()
-        }
-        VIDEO_QUALITY_AUTO => {
-            (t().features.stream_quality_auto_with)(quality_name(baseline.auto_frame_quality))
-        }
-        VIDEO_QUALITY_CUSTOM if baseline.max_custom_bitrate >= 1_000_000 => {
-            format!("{} Mbps", baseline.max_custom_bitrate / 1_000_000)
-        }
-        VIDEO_QUALITY_CUSTOM => t().features.stream_quality_custom.to_owned(),
-        _ => "auto".to_owned(),
-    }
+/// The tier automatic quality runs at for the viewed track.
+pub(super) fn automatic_tier(state: &StreamControlState) -> Option<wire::Quality> {
+    let tracks = &state.stream_state.as_ref()?.tracks;
+    tracks
+        .iter()
+        .find(|t| t.track as i32 == state.active_video_track_index)
+        .or(tracks.first())
+        .map(|t| t.quality())
+        .filter(|q| *q != wire::Quality::Custom)
 }
 
 pub(super) fn viewing_quality_label(state: &StreamControlState) -> String {
-    baseline_quality_label(&state.baseline)
-}
-
-pub(super) fn finish_request(
-    state: &mut StreamControlState,
-    request_id: i64,
-    failures: Vec<String>,
-    notices: Vec<String>,
-) {
-    if !state.pending_sequences.contains(&request_id) {
-        return;
-    }
-    let Some(index) = state
-        .pending_capture_preferences
-        .iter()
-        .position(|pending| pending.sequence == request_id)
-    else {
-        return;
-    };
-    let completed = state
-        .pending_capture_preferences
-        .remove(index)
-        .expect("matched capture request");
-    state
-        .pending_sequences
-        .retain(|pending| *pending != request_id);
-    if failures.is_empty() {
-        // A successful complete snapshot supersedes older snapshots. A
-        // refusal does not: older requests still retain their own ACKs.
-        for earlier in state.pending_capture_preferences.drain(..index) {
+    match state.settings.quality {
+        StreamQuality::Auto => (t().features.stream_quality_auto_with)(quality_name(
+            automatic_tier(state).unwrap_or(wire::Quality::Standard),
+        )),
+        StreamQuality::Custom => format!(
+            "{} Mbps",
             state
-                .pending_sequences
-                .retain(|seq| *seq != earlier.sequence);
-        }
-        if completed.cursor_capture == state.baseline.cursor_capture {
-            state.cursor_error = None;
-        }
-        if state
-            .cursor_pending
-            .is_some_and(|(seq, _, _)| !state.pending_sequences.contains(&seq))
-        {
-            state.cursor_pending = None;
-        }
-        let settings_changed = state.confirmed_preferences.saved() != completed.preferences.saved();
-        state.confirmed_preferences = completed.preferences;
-        // Reapplying a confirmed choice must repair a failed local save even
-        // when it equals the in-memory default restored after a read failure.
-        if completed.persist && (settings_changed || state.persistence_error.is_some()) {
-            state
-                .preference_updates
-                .send_replace(Some(ViewingPreferenceUpdate::Settings(
-                    completed.preferences.saved(),
-                )));
-        }
-    } else {
-        fail_cursor_request(state, request_id, failures.join("; "));
-    }
-    if state.latest_requested_sequence != Some(request_id) {
-        return;
-    }
-    if failures.is_empty() {
-        state.last_applied_sequence = Some(request_id);
-        state.last_error = None;
-        state.last_notice = (!notices.is_empty()).then(|| notices.join("; "));
-        state.performance.acknowledge_stream_switch(request_id);
-        state.performance.set_quality(viewing_quality_label(state));
-        tracing::info!(
-            sequence = request_id,
-            "runtime stream settings applied by remote host"
-        );
-        if let Some(notice) = state.last_notice.as_deref() {
-            tracing::info!(sequence = request_id, %notice, "remote host adjusted runtime stream settings");
-        }
-    } else {
-        let error = failures.join("; ");
-        restore_confirmed_capture(state);
-        state.last_error = Some(error.clone());
-        state.last_notice = None;
-        state
-            .performance
-            .fail_stream_switch(request_id, error.clone());
-        tracing::warn!(sequence = request_id, %error, "remote host rejected runtime stream settings");
-    }
-}
-
-pub(super) fn restore_confirmed_capture(state: &mut StreamControlState) {
-    let confirmed = state.confirmed_preferences;
-    let _ = set_requested_settings(state, confirmed.settings);
-    state.baseline.auto_frame_quality = confirmed.auto_frame_quality;
-    if let Ok(Some(selected)) = validate_format(
-        state,
-        confirmed.settings.quality,
-        confirmed.settings.true_color,
-        confirmed.settings.hdr,
-    ) {
-        apply_codec_limits(state, selected);
-    }
-}
-
-pub(super) fn encode_capture_setting(
-    sequence: i64,
-    baseline: CaptureSettingBaseline,
-) -> Result<Vec<u8>> {
-    let request = capture_setting_request(baseline)?;
-    Ok(encode_capture_request(sequence, request))
-}
-
-pub(super) fn capture_setting_request(
-    baseline: CaptureSettingBaseline,
-) -> Result<PbCaptureSettingRequest> {
-    Ok(PbCaptureSettingRequest {
-        fps: fps_to_protobuf(baseline.requested_fps),
-        frame_quality: baseline.frame_quality,
-        cursor_capture: baseline.cursor_capture,
-        screen_id: EXISTING_SESSION_TRACKS,
-        chroma_format: baseline.chroma_format,
-        max_custom_bitrate: i32::try_from(baseline.max_custom_bitrate)?,
-        enable_hdr: baseline.enable_hdr,
-        auto_frame_quality: baseline.auto_frame_quality,
-        codec_type: baseline.codec_type,
-        max_scale_width: i32::try_from(baseline.max_scale_width)?,
-        max_scale_height: i32::try_from(baseline.max_scale_height)?,
-        fps_count: i32::try_from(baseline.fps_count)?,
-        weak_network: baseline.weak_network,
-        cinema: baseline.cinema,
-    })
-}
-
-pub(super) fn encode_capture_request(sequence: i64, request: PbCaptureSettingRequest) -> Vec<u8> {
-    super::wire::request(sequence, super::wire::SessionBody::CaptureSetting(request))
-}
-
-pub(super) fn fps_to_protobuf(fps: u32) -> i32 {
-    match fps {
-        30 => FPS_30,
-        60 => FPS_60,
-        90 => FPS_90,
-        _ => FPS_144,
+                .settings
+                .custom_bitrate_mbps
+                .min(state.custom_bitrate_limit)
+        ),
+        quality => quality.label().to_owned(),
     }
 }
 

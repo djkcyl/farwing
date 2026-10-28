@@ -209,7 +209,7 @@ Farwing.exe dev video --device-id <ID> [--seconds 60] [--codec h264|h265|av1] [-
 
 要在本机看直连与中转的自动切换，在被控端设 `FARWING_DEV_DIRECT_LOSS=<百分比>[,<Unix 时间（秒）>]`：会话在直连上时丢掉这么多媒体包和切回前的压测包（连通检查不丢，像运营商对 P2P 流量做 QoS），切到中继后不再丢；给出时间时只丢到那一刻，用来看网络恢复后切回直连。主控日志的 `path switch` 行记录每次切换；主控加 `--log-level "info,webrtc_ice::agent::path=debug"` 可看到每秒的测量值。需要服务器提供 TURN。也可以在主控端设 `FARWING_DEV_PATH_LOSS=<类别>:<百分比>[,…][,until:<Unix 时间（秒）>]`（类别 `direct`、`udp-relay`、`stream-relay`），按主控判断的路径类别丢掉收到的媒体与压测包，用来看会话在直连、UDP 中转与 TCP / TLS 中转之间的选择（中转服务器在局域网内时被控会把经中转的路径当作局域网，被控端的开关这时不准）；`path switch` 行注明两条路径的类别（`direct`、`UDP relay`、`TCP/TLS relay`）。
 
-被控探测可用带宽时用高精度定时器按 2 ms 节拍发送探测包。`connect` 另有测量用的隐藏参数 `--dev-auto-quality <2–4>`：自动画质从指定档位开始，不使用也不保存观看端记住的档位，让每次测量从同一档位开始。
+被控探测可用带宽时用高精度定时器按 2 ms 节拍发送探测包。自动画质的起始档位由被控按主控设备记住。
 
 量浏览器观看者的丢包恢复时，可以在被控端设环境变量 `FARWING_HOST_VIDEO_LOSS=N,M`：每个视频轨跳过发送的第 N 帧及之后每第 M 帧（关键帧除外），这些包占用序号但不发送、也不留作重传，接收端修不回来。
 

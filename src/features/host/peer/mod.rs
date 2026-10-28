@@ -63,6 +63,9 @@ struct RemoteIce {
 
 #[derive(Clone, PartialEq, Eq)]
 struct Published {
+    /// Automatic quality: `quality` is the tier it settled at.
+    automatic: bool,
+    hdr: bool,
     screen: capture::Screen,
     capturing: bool,
     visible: bool,
@@ -112,6 +115,7 @@ impl Peer {
         ice_servers: Vec<RTCIceServer>,
         relay: bool,
         initial: VideoConfig,
+        stream: farwing_protocol::session::StreamSettings,
         negotiated: Arc<super::format::Negotiated>,
         deferred: Option<screens::Deferred>,
         clipboard_level: i32,
@@ -397,6 +401,7 @@ impl Peer {
             cancel.clone(),
             connected.clone(),
             initial,
+            stream,
             negotiated.clone(),
             transport.clone(),
             screen.clone(),
@@ -1088,26 +1093,8 @@ impl Peer {
         }
         self.core.add_remote_candidate(candidate).await
     }
-    /// This participant's streams, for its sender information.
-    pub(crate) fn streams(&self) -> std::collections::BTreeMap<usize, super::StreamStatus> {
-        self.handle.streams()
-    }
     pub(crate) fn access_revoked(&self) -> bool {
         !self.handle.requested()
-    }
-    pub(crate) fn displays(&self) -> Vec<crate::protocol::capability::DisplayCapability> {
-        lock(&self.reports.catalog)
-            .iter()
-            .map(|info| crate::protocol::capability::DisplayCapability {
-                id: info.screen.id,
-                fps: info.screen.fps,
-                kind: info.kind as i32,
-                hdr: info.screen.hdr,
-            })
-            .collect()
-    }
-    pub(crate) fn take_prepared_capabilities(&self) -> Option<Vec<super::format::Capability>> {
-        lock(&self.reports.capabilities).take()
     }
     pub(crate) fn ended(&self) -> bool {
         self.cancel.is_cancelled()
@@ -1118,8 +1105,12 @@ impl Peer {
         {
             let device = self.handle.controller_device();
             let estimate = self.transport.estimate();
+            let tier = screens::Screens::settled_tier(&self.reports);
             tokio::task::spawn_blocking(move || {
-                super::bandwidth::remember(&device, route, estimate)
+                super::bandwidth::remember(&device, route, estimate);
+                if let Some(tier) = tier {
+                    super::bandwidth::remember_tier(&device, tier);
+                }
             });
         }
         let started = std::time::Instant::now();

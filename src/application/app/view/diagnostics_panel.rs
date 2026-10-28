@@ -677,10 +677,10 @@ impl DeviceCenterApp {
                     ui,
                     text.preferred_codec,
                     match active.preferred_codec {
-                        Some(1) => "H.264",
-                        Some(2) => "HEVC",
-                        Some(5) => "AV1",
-                        _ => text.automatic,
+                        Some(farwing_protocol::session::Codec::H264) => "H.264",
+                        Some(farwing_protocol::session::Codec::Hevc) => "HEVC",
+                        Some(farwing_protocol::session::Codec::Av1) => "AV1",
+                        None => text.automatic,
                     },
                 );
                 diagnostics_row(ui, text.selection_reason, active.selection.label());

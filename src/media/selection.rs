@@ -1,14 +1,5 @@
 //! Local implementation preferences. Capabilities and hard limits remain separate.
 use serde::{Deserialize, Serialize};
-pub(crate) fn codec_rank(codec: i32) -> u8 {
-    match codec {
-        5 => 3,
-        2 => 2,
-        1 => 1,
-        _ => 0,
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn candidate_rank(
     size: (u32, u32),
@@ -18,7 +9,7 @@ pub(crate) fn candidate_rank(
     adapter: u64,
     preferred: Option<u64>,
     source: u64,
-    codec: i32,
+    codec: crate::media::encoding::Codec,
     depth: u8,
 ) -> (u64, bool, bool, u32, bool, bool, u8, u8) {
     (
@@ -28,7 +19,7 @@ pub(crate) fn candidate_rank(
         fps,
         Some(adapter) == preferred,
         adapter == source,
-        codec_rank(codec),
+        codec.rank(),
         depth,
     )
 }

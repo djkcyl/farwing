@@ -9,8 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::i18n::t;
 
 use crate::features::stream_control::{
-    LoadedStreamControl, MAX_CUSTOM_BITRATE_MBPS, SavedStreamControl, StreamControlHandle,
-    StreamControlSettings, ViewingPreferenceUpdate,
+    MAX_CUSTOM_BITRATE_MBPS, StreamControlHandle, StreamControlSettings,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,12 +62,6 @@ pub(crate) enum WeakNetwork {
     FrameRate,
 }
 impl WeakNetwork {
-    pub(crate) fn wire(self) -> i32 {
-        match self {
-            Self::Bitrate => 0,
-            Self::FrameRate => 1,
-        }
-    }
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Bitrate => t().features.viewing_weak_network_bitrate,
@@ -134,7 +127,6 @@ pub(crate) struct ViewingSettingsStore {
 struct Record {
     schema: u8,
     settings: Option<StreamControlSettings>,
-    auto_frame_quality: i32,
 }
 
 impl Record {
@@ -158,7 +150,7 @@ impl Record {
         anyhow::ensure!(
             self.settings.is_none_or(|settings| {
                 (1..=MAX_CUSTOM_BITRATE_MBPS).contains(&settings.custom_bitrate_mbps)
-            }) && (1..=6).contains(&self.auto_frame_quality),
+            }),
             "{}",
             t().features.viewing_saved_settings_invalid
         );
@@ -226,7 +218,7 @@ impl ViewingSettingsStore {
         })
     }
 
-    pub(crate) async fn load(&self) -> Result<Option<LoadedStreamControl>> {
+    pub(crate) async fn load(&self) -> Result<Option<StreamControlSettings>> {
         let entry = Arc::clone(&self.viewing);
         tokio::task::spawn_blocking(move || {
             let bytes = match entry.get_secret() {
@@ -234,23 +226,18 @@ impl ViewingSettingsStore {
                 Err(Error::NoEntry) => return Ok(None),
                 Err(_) => bail!("{}", t().features.viewing_settings_read_failed),
             };
-            let record = Record::decode(&bytes)?;
-            Ok(Some(LoadedStreamControl {
-                settings: record.settings,
-                auto_frame_quality: record.auto_frame_quality,
-            }))
+            Ok(Record::decode(&bytes)?.settings)
         })
         .await
         .context(t().features.viewing_settings_read_interrupted)?
     }
 
-    async fn save(&self, saved: SavedStreamControl) -> Result<()> {
+    async fn save(&self, settings: StreamControlSettings) -> Result<()> {
         let entry = Arc::clone(&self.viewing);
         tokio::task::spawn_blocking(move || {
             let record = Record {
                 schema: 1,
-                settings: Some(saved.settings),
-                auto_frame_quality: saved.auto_frame_quality,
+                settings: Some(settings),
             };
             record.validate()?;
             let bytes = serde_json::to_vec(&record)?;
@@ -463,12 +450,7 @@ impl ViewingSettingsStore {
                 if changed || updates.has_changed().unwrap_or(false) {
                     let settings = *updates.borrow_and_update();
                     if let Some(settings) = settings {
-                        let result = match settings {
-                            ViewingPreferenceUpdate::Settings(saved) => self.save(saved).await,
-                            ViewingPreferenceUpdate::AutoQuality(quality) => {
-                                self.save_auto_quality(quality).await
-                            }
-                        };
+                        let result = self.save(settings).await;
                         let error = result.err().map(|e| e.to_string());
                         if error.is_none() {
                             tracing::info!(?settings, "saved viewing settings for this device");
@@ -485,34 +467,6 @@ impl ViewingSettingsStore {
             stop,
             task: Some(task),
         }
-    }
-}
-
-impl ViewingSettingsStore {
-    async fn save_auto_quality(&self, quality: i32) -> Result<()> {
-        let entry = Arc::clone(&self.viewing);
-        tokio::task::spawn_blocking(move || {
-            let mut record = match entry.get_secret() {
-                Ok(bytes) => Record::decode(&bytes)?,
-                Err(Error::NoEntry) => Record {
-                    schema: 1,
-                    settings: None,
-                    auto_frame_quality: quality,
-                },
-                Err(_) => bail!("{}", t().features.viewing_settings_read_failed),
-            };
-            anyhow::ensure!(
-                (1..=6).contains(&quality),
-                "{}",
-                t().features.viewing_auto_quality_invalid
-            );
-            record.auto_frame_quality = quality;
-            entry
-                .set_secret(&serde_json::to_vec(&record)?)
-                .map_err(|_| anyhow::anyhow!("{}", t().features.viewing_auto_quality_save_failed))
-        })
-        .await
-        .context(t().features.viewing_auto_quality_save_interrupted)?
     }
 }
 

@@ -1,9 +1,8 @@
 //! Sending-side business protocol; deliberately separate from viewer consumers.
-use super::wire::{PbCaptureSettingRequest, SessionBody, microphone_state};
+use super::wire::{SessionBody, microphone_state};
 use super::*;
 use crate::features::host::VideoConfig;
 use crate::features::host::capture::Screen;
-use anyhow::Context as _;
 
 mod displays;
 pub(crate) use displays::{display_list, receive_session, refuse};
@@ -95,52 +94,25 @@ pub(crate) mod kind {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ConnectOptions {
     pub kind: i32,
-    pub params: Option<CaptureParams>,
-    pub decoders: Vec<DecoderCapability>,
+    pub decoders: Vec<farwing_protocol::session::Decoder>,
+    pub display: Option<farwing_protocol::session::LocalDisplay>,
+    /// The stream the session starts with.
+    pub stream: farwing_protocol::session::StreamSettings,
     /// The controller's device ID.
     pub device_id: String,
     pub connect_type: i32,
     features: std::collections::BTreeMap<String, u32>,
 }
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct Resolution {
-    #[prost(int32, tag = "1")]
-    pub width: i32,
-    #[prost(int32, tag = "2")]
-    pub height: i32,
-}
 impl ConnectOptions {
     pub fn from_wire(wire: &farwing_protocol::session::ConnectOptions) -> Self {
-        let resolution = |r: &farwing_protocol::session::Resolution| Resolution {
-            width: r.width,
-            height: r.height,
-        };
         Self {
-            params: wire.capture.as_ref().map(|c| CaptureParams {
-                fps: c.fps,
-                quality: c.quality,
-                cursor_capture: c.cursor_capture,
-                local_resolution: c.local_resolution.as_ref().map(resolution),
-                chroma: c.chroma,
-                bitrate: c.bitrate,
-                hdr: c.hdr,
-                auto_quality: c.auto_quality,
-                fps_count: c.fps_count,
-                weak_network: c.weak_network,
-                cinema: c.cinema,
-                codec: c.codec,
+            decoders: wire.decoders.clone(),
+            display: wire.display,
+            stream: wire.stream.unwrap_or(farwing_protocol::session::StreamSettings {
+                fps: 60,
+                cursor: true,
+                ..Default::default()
             }),
-            decoders: wire
-                .decoders
-                .iter()
-                .map(|d| DecoderCapability {
-                    fps: d.fps,
-                    codec: d.codec,
-                    width: d.width,
-                    height: d.height,
-                    chroma: d.chroma,
-                })
-                .collect(),
             // Set by the host from the server's `session.incoming`.
             kind: 0,
             device_id: String::new(),
@@ -173,67 +145,6 @@ fn clipboard_level(features: &crate::protocol::peer::PeerFeatures) -> i32 {
         0
     }
 }
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct DecoderCapability {
-    #[prost(int32, tag = "1")]
-    pub fps: i32,
-    #[prost(int32, tag = "2")]
-    pub codec: i32,
-    #[prost(int32, tag = "3")]
-    pub width: i32,
-    #[prost(int32, tag = "4")]
-    pub height: i32,
-    #[prost(int32, tag = "5")]
-    pub chroma: i32,
-}
-impl DecoderCapability {
-    pub fn chroma_sampling(&self) -> u8 {
-        // Protobuf's unspecified value means 4:2:0.
-        // Android currently leaves this field unset, including for HEVC.
-        match self.chroma {
-            2..=4 => self.chroma as u8,
-            _ => 1,
-        }
-    }
-
-    pub fn maximum_fps(&self) -> u32 {
-        // Convert a numeric rate to the protocol's tiers;
-        // this is distinct from CaptureParams' 1/2/3/4 frame-rate enum.
-        match self.fps as u32 {
-            117.. => 144,
-            75..=116 => 90,
-            45..=74 => 60,
-            _ => 30,
-        }
-    }
-}
-#[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct CaptureParams {
-    #[prost(int32, tag = "1")]
-    pub fps: i32,
-    #[prost(int32, tag = "2")]
-    pub quality: i32,
-    #[prost(bool, tag = "3")]
-    pub cursor_capture: bool,
-    #[prost(message, optional, tag = "5")]
-    pub local_resolution: Option<Resolution>,
-    #[prost(int32, tag = "7")]
-    pub chroma: i32,
-    #[prost(int32, tag = "8")]
-    pub bitrate: i32,
-    #[prost(bool, tag = "9")]
-    pub hdr: bool,
-    #[prost(int32, tag = "10")]
-    pub auto_quality: i32,
-    #[prost(int32, tag = "11")]
-    pub fps_count: i32,
-    #[prost(int32, tag = "12")]
-    pub weak_network: i32,
-    #[prost(bool, tag = "13")]
-    pub cinema: bool,
-    #[prost(int32, tag = "14")]
-    pub codec: i32,
-}
 
 /// `HELLO` sent by the host when its control channel opens.
 pub(crate) fn hello_request() -> Vec<u8> {
@@ -259,86 +170,91 @@ impl From<Vec<Vec<u8>>> for Received {
         }
     }
 }
-pub(crate) fn quality_report(
-    quality: i32,
-    encoder: crate::features::host::format::Backend,
-    capture: &str,
-) -> Vec<u8> {
-    super::wire::push(SessionBody::Quality(PbReportQosStats {
-        encoder_type: encoder.qos_type().into(),
-        capture_type: capture.into(),
-        video_quality: quality,
-    }))
+/// The host's quality number of `quality` (1–4 a tier, 5 automatic, 6
+/// custom).
+pub(crate) fn quality_number(quality: farwing_protocol::session::Quality) -> i32 {
+    use farwing_protocol::session::Quality as Q;
+    match quality {
+        Q::Low => 1,
+        Q::Standard => 2,
+        Q::High => 3,
+        Q::Ultra => 4,
+        Q::Auto => 5,
+        Q::Custom => 6,
+    }
 }
 
-pub(crate) fn config(params: Option<&CaptureParams>) -> VideoConfig {
-    let Some(p) = params else {
-        return VideoConfig::default();
-    };
-    VideoConfig {
-        fps: fps(p.fps, p.fps_count),
-        requested_fps: fps(p.fps, 0),
-        fps_limit: if p.fps_count > 0 {
-            p.fps_count as u32
-        } else {
-            144
-        },
-        bitrate: bitrate(p.quality, p.auto_quality, p.bitrate),
-        quality: quality(p.quality),
-        auto_quality: auto_quality(p.auto_quality),
-        revision: 0,
-        reported_quality: if p.quality == 5 {
-            auto_quality(p.auto_quality)
-        } else {
-            quality(p.quality)
-        },
-        sending: true,
-        capturing: true,
-        cursor_capture: p.cursor_capture,
-        weak_network: crate::features::host::parameters::WeakNetwork::from_wire(p.weak_network),
-        cinema: p.cinema,
-        // The session starts with the controller's codec rather than
-        // replacing the host's choice right after.
-        requested_codec: crate::features::host::format::Codec::from_wire(p.codec),
-        ..Default::default()
-    }
+/// The frame rates a stream takes.
+const FPS: std::ops::RangeInclusive<u32> = 1..=240;
+/// The custom bitrates a stream takes (kbit/s).
+const BITRATE_KBPS: std::ops::RangeInclusive<u32> = 1_000..=MAX_CUSTOM_BITRATE_MBPS * 1_000;
+
+/// Whether the host takes `settings`.
+pub(crate) fn valid(settings: &farwing_protocol::session::StreamSettings) -> bool {
+    FPS.contains(&settings.fps)
+        && (settings.quality != farwing_protocol::session::Quality::Custom
+            || BITRATE_KBPS.contains(&settings.bitrate_kbps))
 }
-fn fps(level: i32, count: i32) -> u32 {
-    let requested = match level {
-        1 => 30,
-        2 => 60,
-        3 => 90,
-        4 => 144,
-        _ => 30,
-    };
-    if count > 0 {
-        requested.min(count as u32)
+
+/// `config` asking for `settings`; `auto_start` is the tier automatic
+/// quality starts from. The format is chosen separately ([`configure`]).
+pub(crate) fn config_of(
+    settings: &farwing_protocol::session::StreamSettings,
+    auto_start: i32,
+    mut config: VideoConfig,
+) -> VideoConfig {
+    use farwing_protocol::session::WeakNetwork;
+    let fps = settings.fps.clamp(*FPS.start(), *FPS.end());
+    config.fps = fps.min(config.maximum_fps.max(1));
+    config.requested_fps = fps;
+    config.fps_limit = fps;
+    config.quality = quality_number(settings.quality);
+    config.auto_quality = auto_start.clamp(1, 4);
+    config.bitrate = if settings.quality == farwing_protocol::session::Quality::Custom {
+        settings
+            .bitrate_kbps
+            .clamp(*BITRATE_KBPS.start(), *BITRATE_KBPS.end())
+            * 1_000
     } else {
-        requested
-    }
+        0
+    };
+    config.cursor_capture = settings.cursor;
+    config.weak_network = match settings.weak_network {
+        WeakNetwork::Bitrate => crate::features::host::parameters::WeakNetwork::Bitrate,
+        WeakNetwork::FrameRate => crate::features::host::parameters::WeakNetwork::FrameRate,
+    };
+    config.cinema = settings.cinema;
+    config.requested_codec = settings.codec.map(crate::features::host::format::Codec::of);
+    // The participant's own settings from the start (`session.start`).
+    config.configured = true;
+    config
 }
-fn quality(value: i32) -> i32 {
-    // Unspecified and unknown quality use the general tier.
-    match value {
-        1..=6 => value,
-        _ => 2,
-    }
-}
-fn auto_quality(value: i32) -> i32 {
-    // The automatic baseline is general, HD, or Blu-ray.
-    match value {
-        3 | 4 => value,
-        _ => 2,
-    }
-}
-fn bitrate(quality: i32, auto: i32, custom: i32) -> u32 {
-    match if quality == 5 { auto } else { quality } {
-        4 => 30_000_000,
-        3 => 14_000_000,
-        // Both CaptureParams and CaptureSetting carry bits/second on the wire.
-        6 => custom.clamp(1_000_000, MAX_CUSTOM_BITRATE_MBPS as i32 * 1_000_000) as u32,
-        _ => 8_000_000,
-    }
+
+/// Choose the format of `config` for `screen`: the requested codec, 4:4:4
+/// and HDR where they are possible.
+pub(crate) fn configure(
+    settings: &farwing_protocol::session::StreamSettings,
+    screen: &Screen,
+    config: &mut VideoConfig,
+    negotiated: &crate::features::host::format::Negotiated,
+) -> Result<()> {
+    let mut next = config_of(settings, config.auto_quality, *config);
+    next.revision = next.revision.wrapping_add(1);
+    negotiated.apply_requested(
+        &mut next,
+        if settings.chroma444 { 3 } else { 1 },
+        settings.hdr,
+        (screen.width, screen.height),
+    )?;
+    *config = next;
+    tracing::info!(
+        fps = config.fps,
+        quality = config.quality,
+        format = ?config.format,
+        maximum = ?config.maximum,
+        "host stream settings applied"
+    );
+    Ok(())
 }
 
 /// Host side of the peer `HELLO` on a control or session channel.
@@ -372,122 +288,6 @@ pub(crate) fn receive(bytes: &[u8]) -> Result<Received> {
         ),
         ..Default::default()
     })
-}
-
-/// Apply the media part of a `CaptureSetting` to one capture slot.
-/// Display changes are carried out (and validated) by the caller; the
-/// setting must describe the screen's current mode. Returns the per-screen
-/// results (`docs/protocol/v2-design.md` §6).
-pub(crate) fn apply_capture_setting(
-    setting: &PbCaptureSettingRequest,
-    screen: &Screen,
-    config: &mut VideoConfig,
-    negotiated: &crate::features::host::format::Negotiated,
-) -> Vec<PbError> {
-    let mut errors = Vec::new();
-    if setting.max_scale_width != 0
-        && setting.max_scale_height != 0
-        && (setting.max_scale_width < 2 || setting.max_scale_height < 2)
-    {
-        errors.push(PbError {
-            error_code: -1,
-            error_message: super::wire::setting_reason::INVALID_SCALE_LIMIT.into(),
-            ..Default::default()
-        });
-        return errors;
-    }
-    let mut next = *config;
-    // Both axes must be present; an incomplete pair uses normal decoder
-    // negotiation rather than retaining a stale limit.
-    next.requested_maximum = (setting.max_scale_width > 0 && setting.max_scale_height > 0)
-        .then_some((
-            setting.max_scale_width as u32,
-            setting.max_scale_height as u32,
-        ));
-    next.fps = fps(setting.fps, setting.fps_count);
-    next.requested_fps = fps(setting.fps, 0);
-    next.fps_limit = if setting.fps_count > 0 {
-        setting.fps_count as u32
-    } else {
-        144
-    };
-    next.cursor_capture = setting.cursor_capture;
-    next.weak_network =
-        crate::features::host::parameters::WeakNetwork::from_wire(setting.weak_network);
-    next.cinema = setting.cinema;
-    next.bitrate = bitrate(
-        setting.frame_quality,
-        setting.auto_frame_quality,
-        setting.max_custom_bitrate,
-    );
-    next.quality = quality(setting.frame_quality);
-    next.auto_quality = auto_quality(setting.auto_frame_quality);
-    next.revision = next.revision.wrapping_add(1);
-    next.configured = true;
-    // The codec the controller asks for (it changes when its user picks
-    // another); the host's choice where that one is not available here.
-    let codec = crate::features::host::format::Codec::from_wire(setting.codec_type);
-    next.requested_codec = codec;
-    let selected = if setting.codec_type == 0 || codec.is_some() {
-        negotiated.apply_requested(
-            &mut next,
-            if setting.chroma_format == 3 { 3 } else { 1 },
-            setting.enable_hdr,
-            (screen.width, screen.height),
-        )
-    } else {
-        Err(anyhow!("{}", t().features.stream_unsupported_codec))
-    };
-    match selected {
-        Ok(()) => {
-            // -6 reports the true-colour result, including a successful
-            // enable or disable; it is not a failure.
-            let color_result = if setting.chroma_format == 3 {
-                if next.format.chroma != 3 {
-                    Some(if negotiated.encoder_true_color() { 2 } else { 1 })
-                } else if config.format.chroma != 3 {
-                    Some(0)
-                } else {
-                    None
-                }
-            } else if config.format.chroma == 3 {
-                Some(5)
-            } else {
-                None
-            };
-            if let Some(code) = color_result {
-                errors.push(PbError {
-                    error_code: -6,
-                    error_detail: serde_json::json!({"error_code":code}).to_string(),
-                    ..Default::default()
-                });
-            }
-            // The requested frame rate exceeds what this screen refreshes at.
-            if setting.fps_count > 0 && setting.fps_count as u32 > screen.fps {
-                errors.push(PbError {
-                    error_code: CAPTURE_RESULT_FPS_ADJUSTED,
-                    ..Default::default()
-                });
-            }
-            *config = next;
-        }
-        Err(error) => {
-            tracing::warn!(error = %format!("{error:#}"), "requested format not applied");
-            errors.push(PbError {
-                error_code: -1,
-                error_message: super::wire::setting_reason::UNSUPPORTED_CODEC.into(),
-                ..Default::default()
-            })
-        }
-    }
-    tracing::info!(
-        fps = config.fps,
-        bitrate = config.bitrate,
-        quality = config.quality,
-        maximum = ?config.maximum,
-        "host capture setting applied"
-    );
-    errors
 }
 
 /// Whether this host accepts files on the clipboard.

@@ -265,8 +265,7 @@ impl ControllerConnection {
         let display = detect_local_display().unwrap_or(LocalDisplayInfo::FALLBACK);
         let mut profile = options.resolve(display)?;
         if let Ok(store) = client.viewing_settings_store(&device.device_id)
-            && let Ok(Some(saved)) = store.load().await
-            && let Some(settings) = saved.settings
+            && let Ok(Some(settings)) = store.load().await
         {
             profile.stream_fps = settings.frame_rate.value(display);
             profile.decoder_fps_cap = display.refresh_hz.max(profile.stream_fps);
@@ -543,6 +542,7 @@ impl ControllerConnection {
             }
         };
         peer.stream_control_handle().set_feature_policy(features);
+        peer.stream_control_handle().set_offer(&control.offer);
         peer.stream_control_handle()
             .set_viewing_enabled(purpose == crate::session::negotiation::ControlPurpose::Viewing);
         peer.stream_control_handle()

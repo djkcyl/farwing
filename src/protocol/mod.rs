@@ -1,6 +1,5 @@
 //! Farwing Peer Protocol payloads and capability negotiation.
 
-pub(crate) mod capability;
 pub(crate) mod input;
 pub(crate) mod pointer;
 pub(crate) mod peer;

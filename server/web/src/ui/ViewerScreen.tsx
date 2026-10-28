@@ -11,7 +11,7 @@ import { argbCss, type AnnotationState } from '../lib/annotation';
 import { ApiError, call, errorText, hasToken } from '../lib/api';
 import { DEFAULT_DIR, droppedEntries, type TransferInfo } from '../lib/files';
 import { capText, displayName, num } from '../lib/format';
-import type { CursorShape, HostEvent, Participant, ParticipantPointer, Quality, Screens } from '../lib/fpp';
+import type { CursorShape, HostEvent, Participant, ParticipantPointer, Screens, StreamState } from '../lib/fpp';
 import { HostEventKind } from '../lib/fpp';
 import { SystemCommand, Usage } from '../lib/input';
 import { PeerRequestError } from '../lib/peerio';
@@ -27,6 +27,7 @@ import {
   type Ending,
   type MicrophoneStatus,
   type ViewerState,
+  WIRE_CODEC,
 } from '../lib/viewer';
 import { FilesPanel, TransferList } from './FilesPanel';
 import { Icon, type IconName } from './icons';
@@ -291,19 +292,15 @@ export interface ViewerScreenProps {
   autoRetry?: boolean;
 }
 
-function sendCapture(v: Viewer, quality: number, fps: number, codec: number, cursor = true) {
-  v.setCapture({
-    fps: fps >= 60 ? 2 : 1,
-    frameQuality: quality,
-    // Off while controlling with an absolute mouse: the cursor is local.
-    cursorCapture: cursor,
-    maxCustomBitrate: 0,
-    // 0 lets the host choose among the codecs both sides support.
-    codecType: codec,
-    maxScaleWidth: 0,
-    maxScaleHeight: 0,
-    fpsCount: fps,
-    cinema: false,
+/// Ask the host for this picture: the tier (5 automatic), frame rate,
+/// codec (0: the host chooses) and whether the cursor is drawn into it (off
+/// while controlling with an absolute mouse: the cursor is local).
+function sendCapture(v: Viewer, quality: number, fps: number, codec: number, cursor = true): Promise<void> {
+  return v.setStream({
+    quality: quality === 5 ? 0 : quality,
+    fps,
+    codec: codec ? WIRE_CODEC[codec as VideoCodecId] : 0,
+    cursor,
   });
 }
 
@@ -325,7 +322,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
   const [retryAt, setRetryAt] = useState<number>();
   const [now, setNow] = useState(() => Date.now());
   const [screens, setScreens] = useState<Screens>();
-  const [quality, setQuality] = useState<Quality>();
+  const [streamState, setStreamState] = useState<StreamState>();
   const [grants, setGrants] = useState<string[]>([]);
   const [people, setPeople] = useState<{ participants: Participant[]; controlling: string }>();
   /// The picture comes through the server's forwarder in this mode.
@@ -366,7 +363,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
   // Refused for lack of the grant: offer to ask the host's user.
   const [askControl, setAskControl] = useState(false);
   const [codec, setCodec] = useState(storedCodec);
-  const [codecs, setCodecs] = useState<{ common: VideoCodecId[]; hostPreferred?: VideoCodecId }>();
+  const [codecs, setCodecs] = useState<VideoCodecId[]>();
   const pointerSent = useRef(0);
   // The capture setting last sent, re-sent with a stored codec choice once
   // the host's capability arrives.
@@ -429,7 +426,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
             setAudioTrack(stream.getAudioTracks()[0]);
           },
           screens: setScreens,
-          quality: setQuality,
+          streamState: setStreamState,
           permissions: (g) => setGrants([...g]),
           participants: setPeople,
           forwarding: setForwarding,
@@ -456,16 +453,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
             }
             if (a.kbps) setAudioKbps(a.kbps);
           },
-          codecs: (common, hostPreferred) => {
-            setCodecs({ common, hostPreferred });
-            const wanted = capture.current.codec;
-            if (wanted && common.includes(wanted as VideoCodecId)) {
-              sendCapture(v, capture.current.quality, capture.current.fps, wanted);
-            }
-          },
-          captureResult: (errors) => {
-            if (errors.some((c) => c === -1 || c === -2)) toast(messagesNow().viewer.screen.captureRejected, 'red');
-          },
+          codecs: setCodecs,
           control: (c) => {
             setControl(c);
             if (c.message) setBanner(c.message);
@@ -694,7 +682,10 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
     viewer.current?.setQualityChoice(q);
     if (c) localStorage.setItem(CODEC_KEY, String(c));
     else localStorage.removeItem(CODEC_KEY);
-    if (viewer.current) sendCapture(viewer.current, q, f, c, capture.current.cursor);
+    if (viewer.current)
+      sendCapture(viewer.current, q, f, c, capture.current.cursor).catch(() =>
+        toast(messagesNow().viewer.screen.captureRejected, 'red'),
+      );
   };
 
   // Control ------------------------------------------------------------------
@@ -744,7 +735,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
     if (!v || !playing0 || capture.current.cursor === cursorInPicture) return;
     capture.current = { ...capture.current, cursor: cursorInPicture };
     const c = capture.current;
-    sendCapture(v, c.quality, c.fps, c.codec, c.cursor);
+    void sendCapture(v, c.quality, c.fps, c.codec, c.cursor).catch(() => undefined);
   }, [cursorInPicture, playing0]);
 
   // Keyboard Lock in full screen: Win, Alt+Tab and Esc go to the host.
@@ -892,7 +883,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
   };
   const usedCodec = CODECS.find((c) => c.mime === stats?.codec?.toUpperCase());
   // A stored choice this host cannot encode counts as automatic.
-  const chosenCodec = codecs?.common.includes(codec as VideoCodecId) ? codec : 0;
+  const chosenCodec = codecs?.includes(codec as VideoCodecId) ? codec : 0;
 
   const current = screens?.screens.find((s) => s.id === screens.current);
   // The screen in video_0: what input positions refer to.
@@ -927,11 +918,14 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
     return tier ? t.viewer.screen.qualities[tier.key] : '';
   };
   // Automatic names the tier the host reports.
+  const reportedTier = streamState?.tracks.find((track) => track.track === 0)?.quality ?? 0;
   const qualityText =
-    shownQuality === 5 && quality && quality.videoQuality >= 1 && quality.videoQuality <= 4
-      ? t.viewer.stats.autoWith(tierName(quality.videoQuality))
+    shownQuality === 5 && reportedTier >= 1 && reportedTier <= 4
+      ? t.viewer.stats.autoWith(tierName(reportedTier))
       : tierName(shownQuality);
   tierNow.current = shownQuality;
+  const sent = streamState?.tracks.find((track) => track.track === 0);
+  const encoderText = sent ? `${sent.encoder || '—'} · ${sent.capture || '—'}` : '—';
   const controller = people?.participants.find((p) => p.id === people.controlling);
 
   // Our indicator pointer and clicks, when shared: normalized to the picture.
@@ -1240,33 +1234,25 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
                 {f} FPS
               </MenuItem>
             ))}
-            {codecs && codecs.common.length > 1 && (
+            {codecs && codecs.length > 1 && (
               <>
                 <div className="menu-label">{t.viewer.screen.codec}</div>
-                {codecs.hostPreferred ? (
-                  <div className="menu-note small faint">
-                    {t.viewer.screen.hostCodec(CODECS.find((c) => c.id === codecs.hostPreferred)?.label ?? '')}
-                  </div>
-                ) : (
-                  <>
-                    <MenuItem
-                      selected={!chosenCodec}
-                      hint={!chosenCodec && usedCodec ? usedCodec.label : undefined}
-                      onClick={() => applyCapture(frameQuality, fps, 0)}
-                    >
-                      {t.viewer.screen.auto}
-                    </MenuItem>
-                    {CODECS.filter((c) => codecs.common.includes(c.id)).map((c) => (
-                      <MenuItem
-                        key={c.id}
-                        selected={chosenCodec === c.id}
-                        onClick={() => applyCapture(frameQuality, fps, c.id)}
-                      >
-                        {c.label}
-                      </MenuItem>
-                    ))}
-                  </>
-                )}
+                <MenuItem
+                  selected={!chosenCodec}
+                  hint={!chosenCodec && usedCodec ? usedCodec.label : undefined}
+                  onClick={() => applyCapture(frameQuality, fps, 0)}
+                >
+                  {t.viewer.screen.auto}
+                </MenuItem>
+                {CODECS.filter((c) => codecs.includes(c.id)).map((c) => (
+                  <MenuItem
+                    key={c.id}
+                    selected={chosenCodec === c.id}
+                    onClick={() => applyCapture(frameQuality, fps, c.id)}
+                  >
+                    {c.label}
+                  </MenuItem>
+                ))}
               </>
             )}
             {audioAllowed && (
@@ -1460,7 +1446,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
             history={perfHistory}
             forwarding={forwarding}
             uptime={uptime}
-            encoder={quality ? `${quality.encoder || '—'} · ${quality.capture || '—'}` : '—'}
+            encoder={encoderText}
             audioAllowed={audioAllowed}
             audioKbps={audioKbps}
             grants={grants}

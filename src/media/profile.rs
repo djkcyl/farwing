@@ -122,12 +122,13 @@ impl CodecPreference {
         Self::PreferH264,
     ];
     pub const ONLY: [Self; 3] = [Self::Av1, Self::H265, Self::H264];
-    pub fn preferred(self) -> Option<i32> {
+    pub fn preferred(self) -> Option<farwing_protocol::session::Codec> {
+        use farwing_protocol::session::Codec;
         match self {
             Self::Auto => None,
-            Self::PreferH264 | Self::H264 => Some(1),
-            Self::PreferH265 | Self::H265 => Some(2),
-            Self::PreferAv1 | Self::Av1 => Some(5),
+            Self::PreferH264 | Self::H264 => Some(Codec::H264),
+            Self::PreferH265 | Self::H265 => Some(Codec::Hevc),
+            Self::PreferAv1 | Self::Av1 => Some(Codec::Av1),
         }
     }
     pub fn restricted(self) -> bool {

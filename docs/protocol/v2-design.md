@@ -163,9 +163,9 @@ grants(owner_user, grantee_user, device_id NULL, caps TEXT, updated_at)
   - **关键帧：** 新成员加入、任一成员的 PLI/FIR（各自的 RTT 门限之后）、组员丢帧或重新协商，都会请求整组的下一帧为关键帧。组长的观看者声明了 `video.recovery` 时，它自己的丢包改由恢复帧解决（farwing-protocol.md §6.6，2026-10-18）；组员的恢复请求仍转成整组关键帧。组员的接收队列为 3 帧，跟不上时漏掉的帧由序号发现，之后丢弃非关键帧直到关键帧到达（1 s 内未到则再次请求）。
   - **自动画质：** 每位成员按自己的带宽估计定档；定档结果不同即离开原组，加入或新开相应的组。
   - **编码路数上限：** 第 5 种参数出现时，加入同一屏幕、同一编码格式的最接近的组：优先同一编码器，其次不大于自己档位的最大画面，再次尺寸最接近；画面按该组的参数发送。没有可共用的组（其他屏幕或编码格式）时仍新开一路并记录警告。
-  - **诊断：** 组员的编码器信息、`SenderInfo`、画质推送（`Quality`）与发布状态取自组长上报的当前输出；光标形状由组长采集后共享。
+  - **诊断：** 组员的编码器信息、串流状态（`Stream`）与发布状态取自组长上报的当前输出；光标形状由组长采集后共享。
   - 硬件编码会话不足时，该组的组长回落到下一个编码候选（其分组键随之变化）。
-  - 新成员在收到自己的首个 CaptureSetting 之前（最多 2 s），起始参数只作暂代：有同一屏幕、同一编码格式的组时先跟随最接近的组，不为马上要变的参数新开编码器；设置到达后按自己的分组键加入或新开组（与所跟随组的键相同则留在原组）。没有可跟随的组时照常新开。
+  - 新成员的设置还不可用时（最多 2 s），起始参数只作暂代：有同一屏幕、同一编码格式的组时先跟随最接近的组，不为马上要变的参数新开编码器；设置到达后按自己的分组键加入或新开组（与所跟随组的键相同则留在原组）。没有可跟随的组时照常新开。
   - 实现状态：已实现。本机验证：两位主控同屏同参数时只有一路编码，组员按 144 fps 转发；一方改画质即另开编码器；组长断开后约 0.12 s 内组员接替并继续出帧；任一方的 PLI 都让整组下一帧为关键帧并被双方收到。编码路数上限与最接近组的选择只有单元测试。不同网络条件下的多人共享、3 人以上、编码路数上限需双机测试。
 - **音频：** 同一播放设备的系统声音只采集一路（`platform/windows/loopback/shared.rs`，2026-10-18），分发给每位参与者；各参与者仍按自己的音质设置编码。
 - **控制权（`src/features/host/participants.rs`）：** 同一时刻只有一位参与者持有控制权，被控只注入持有者的键鼠，其他人的 INPUT 被丢弃。
@@ -287,7 +287,7 @@ Hello {
 - HELLO 是普通请求（request_id 非 0），被控以 HELLO 响应（RESPONSE）。
 - 帧头版本字节为 2，数据通道标签见 §5.3；版本不符的帧直接丢弃。协议版本（3）只在 HELLO、HTTPS 头与信令信封中协商。
 - 门控只看特性名，不再有数值“等级”。连接建立之前（HELLO 到达前）被控按原生主控的特性集合准备会话。
-- **特性名：** `video.444`、`video.hdr`、`display.config`、`display.virtual`、`cursor.participants`、`clipboard`、`clipboard.files`、`files`、`video.recovery`、`touch`、`pen`（完整说明见 farwing-protocol.md §5.5）。其余功能两端总是具备，不作为特性声明。
+- **特性名：** `display.config`、`display.virtual`、`cursor.participants`、`clipboard`、`clipboard.files`、`files`、`video.recovery`、`touch`、`pen`（完整说明见 farwing-protocol.md §5.5）。其余功能两端总是具备，不作为特性声明。
 
 ## 6. SESSION v2：媒体与显示控制
 
@@ -298,7 +298,7 @@ Hello {
 | tag | 消息 | 方向 | 内容 | 说明 |
 | --- | --- | --- | --- | --- |
 | 1 | `Displays` | H→C | `{revision, displays[], active}` | 显示器列表、任一显示器或视频轨对应关系变化时发送（内容相同不重发）；也是 `Capture`、`Display` 请求的回复。字段见 peer-messages.md |
-| 2 | `Quality` | H→C | `{encoder_type, capture_type, video_quality}` | `video_quality` 为生效档位 1..4（自动已解析）或 6=自定义；主控仅在自动画质下用它更新自动档位。去掉只用于日志的四档参考码率 |
+| 2 | `Stream` | H→C | `StreamState{revision, settings, limits, tracks[]}` | 本参与者的串流：被控持有的设置、两端都支持的（编码、4:4:4、HDR、最高档）、每条视频轨实际发送的；也是 `StreamRequest` 的回复 |
 | 3 | `Microphone` | H→C | `{state: 1 ACTIVE / 2 INACTIVE / 3 RESTART}` | 被控虚拟麦克风状态；RESTART 表示被控音频链路出错，主控重启本地采集 |
 | 4 | `ClipboardFiles` | H→C | `{enabled}` | 被控是否接收剪贴板文件 |
 
@@ -306,19 +306,18 @@ Hello {
 
 | 请求 tag | 请求 | 响应 | 说明 |
 | --- | --- | --- | --- |
-| 10 | `CaptureSetting` | 20 `CaptureSettingResult{errors[]}` | 见 6.3 |
+| 10 | `StreamRequest` | 2 `Stream` | 见 6.3 |
 | 5 | `Capture{screen_id, start, track?}` | 1 `Displays` | 开始/停止采集；`-1` 表示本会话全部屏幕（停止保留槽位，`start(-1)` 恢复）；`track` 让单画面的主控在同一条轨道上换屏 |
 | 11 | `Display{set_mode \| set_scale \| add_virtual \| remove \| enter_exclusive \| exit_exclusive}` | 1 `Displays` | 需要 `display` 能力；拒绝时 `PeerError` 带原因键（peer-messages.md）。物理屏不支持的尺寸不自动转超级屏 |
 | 16 | `MicrophonePolicy{policy: bit0 开启}` | 22 `MicrophoneResult{error_code}` | 0；`0x0e003001` 组件不可用；`0x0e003006` 不允许；`0x0e003012` 初始化失败。需要 `microphone` 能力 |
 
-### 6.3 CaptureSetting
+### 6.3 StreamRequest
 
-字段沿用 v1 编号（`fps` 档位 1..4、`frame_quality` 1..6、`cursor_capture`、`screen_id`、`chroma_format`、`max_custom_bitrate`（bit/s）、`enable_hdr`、`auto_frame_quality`、`codec_type`、`max_scale_*`、`fps_count`）。只管媒体设置，显示变更走 `Display` 请求。
-
-- `screen_id = -2`：本会话所有正在采集或暂停的轨道；其他值为具体屏幕。
-- 结果码：`0` 成功；`-1` 无效或不支持；`-2` 正在更新或未能应用；`-3` 请求帧率超过屏幕刷新率（提示，不算失败）；`-6 + {"error_code":0|1|2|5}` 全彩（4:4:4）开关结果（0 已开启，1 编码器不支持，2 支持但未生效，5 已关闭）。
-- 每个屏幕一条结果；`-2` 时按屏幕拼接，全部为空时补一条 `0`。
-- v2 新增：`19 weak_network`（0 优先降码率，1 优先降帧率）、`20 cinema`（观影模式）。会话起始参数 `CaptureParams` 带同名字段，主控按设备记住并在首个 CaptureSetting 中发送。
+- 会话从 `session.start` 的 `StreamSettings` 开始；之后主控只发变化的字段（`StreamRequest` 的字段都是 optional），被控合并后应用到本参与者的全部视频轨，回复 `StreamState`。
+- 画质、帧率、4:4:4、HDR 对本会话所有屏幕生效；HDR 只在 HDR 显示器上生效，其他屏幕照常 SDR。
+- 被控单方决定实际格式：所要编码不可用时换用其他编码，做不到 4:4:4 或 HDR 时退回，帧率受屏幕刷新率与编码器限制；`StreamState.tracks` 报告实际值，主控据此提示。
+- 自动画质的起始档位由被控按主控设备记住（会话 ≥ 15 s、7 天内有效）。
+- 拒绝：`updating`、`invalid`（`PeerError.reason`）。
 
 ### 6.3.1 码率与画面策略（P5）
 

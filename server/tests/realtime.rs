@@ -67,7 +67,7 @@ async fn presence_hello_heartbeat_and_resume() {
     let dev = srv.account_device("alice", "HOST", true).await;
     let (mut ws, hello) = srv.presence(&dev).await;
     let d = &hello["data"];
-    assert_eq!(hello["v"], 2);
+    assert_eq!(hello["v"], V);
     assert_eq!(d["epoch"], 1);
     assert_eq!(d["resumed"], false);
     assert_eq!(d["heartbeat_ms"], 200);
@@ -191,7 +191,7 @@ async fn full_session_flow_relay_and_endings() {
     assert_eq!(d["controller"]["alias"], "CTRL");
     assert_eq!(d["controller"]["platform"], "windows");
     assert_eq!(d["controller"]["public_key"], ctrl.public_key().as_str());
-    assert_eq!(d["capability"], json!({"codecs": ["h265"]}));
+    assert_eq!(d["options"]["decoders"][0]["codec"], "hevc");
     assert_eq!(d["force_relay"], false);
     assert!(d.get("network").is_none());
     let ice = d["ice_servers"].as_array().unwrap();
@@ -260,15 +260,6 @@ async fn full_session_flow_relay_and_endings() {
         cw.recv_type("rtc.candidate").await["data"]["candidate"]["sdpMLineIndex"],
         0
     );
-
-    // session.setting H -> C.
-    p.host_ws
-        .send(json!({"v": V, "type": "session.setting", "sid": sid,
-            "data": {"kind": "capability", "capability": {"displays": 2}}}))
-        .await;
-    let setting = cw.recv_type("session.setting").await;
-    assert_eq!(setting["data"]["kind"], "capability");
-    assert_eq!(setting["data"]["capability"]["displays"], 2);
 
     // Validation: stale attempt, wrong direction, wrong session, host-side start.
     cw.send(
@@ -765,11 +756,6 @@ async fn presence_connection_carries_controller_sessions() {
     let answer = cp.recv_type("rtc.answer").await;
     assert_eq!(answer["sid"], sid.as_str());
     assert_eq!(answer["data"]["sdp"], "v=0 answer");
-    p.host_ws
-        .send(json!({"v": V, "type": "session.setting", "sid": sid,
-            "data": {"kind": "capability", "capability": {"displays": 1}}}))
-        .await;
-    assert_eq!(cp.recv_type("session.setting").await["sid"], sid.as_str());
     // Wrong direction on the carrying link.
     cp.send(json!({"v": V, "type": "rtc.answer", "id": "w1", "sid": sid, "data": {"attempt_id": "att-1", "sdp": "x"}}))
         .await;

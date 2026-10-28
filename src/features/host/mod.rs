@@ -43,7 +43,6 @@ pub(crate) fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) use access::{
     ParticipantLimit,
     AccessRequest, ActiveEncoding, Handle, Lease, RemoteAction, SessionLease, Status,
-    StreamStatus,
 };
 pub(crate) use encoding_settings::{EncoderCodec, EncoderMode, EncodingSettings};
 
@@ -71,10 +70,9 @@ pub(crate) struct VideoConfig {
     pub quality: i32,
     pub auto_quality: i32,
     pub revision: u64,
-    pub reported_quality: i32,
     pub format: format::Format,
     pub color: format::Color,
-    // Runtime CaptureSetting scale bounds, separate from initial decoder caps.
+    /// A size cap below what the decoder takes (the shared stream).
     pub requested_maximum: Option<(u32, u32)>,
     pub maximum: (u32, u32),
     pub maximum_fps: u32,
@@ -103,7 +101,6 @@ impl Default for VideoConfig {
             quality: 2,
             auto_quality: 2,
             revision: 0,
-            reported_quality: 2,
             format: format::Format::AVC,
             color: format::Color::Sdr,
             requested_maximum: None,

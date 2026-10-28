@@ -1,14 +1,11 @@
 //! Remote input and cursor policy transitions.
-use super::settings::encode_capture_setting;
 use super::{
-    OutgoingControlMessage, StreamControlHandle, StreamControlProtocol,
-    StreamControlState, ensure_ready, lock, protocol,
+    StreamControlHandle, StreamControlProtocol, StreamControlState, ensure_ready, lock, protocol,
 };
 use crate::features::remote_cursor::RemoteCursor;
 use crate::features::remote_input::MouseMode;
 use crate::i18n::t;
 use anyhow::{Result, bail};
-use std::time::Instant;
 
 impl StreamControlHandle {
     pub(crate) fn set_mouse_transport_ready(&self, connected: bool) {
@@ -27,20 +24,13 @@ impl StreamControlHandle {
             state.mouse_restore_point = None;
             // Revoke actual input now. A focused, ready viewer may later restore
             // the separately saved intent; held keys/clicks are never replayed.
-            state.baseline.cursor_capture = true;
-            state.initial_capture_sync_sent = false;
-            if let Some((sequence, _, _)) = state.cursor_pending {
+            state.cursor_capture = true;
+            if let Some(sequence) = state.cursor_pending {
                 fail_cursor_request(
                     &mut state,
                     sequence,
                     t().features.stream_mouse_connection_lost.into(),
                 );
-                state
-                    .pending_sequences
-                    .retain(|pending| *pending != sequence);
-                state
-                    .pending_capture_preferences
-                    .retain(|pending| pending.sequence != sequence);
             }
             state.mouse.set_ready(false);
         } else {
@@ -49,7 +39,7 @@ impl StreamControlHandle {
                     && state.control_channel_open
                     && state.text_channel_open,
             );
-            self.maybe_send_initial_capture_sync(&mut state);
+            self.sync_stream_locked(&mut state);
         }
     }
 
@@ -118,7 +108,6 @@ impl StreamControlHandle {
 
     fn change_mouse_mode(&self, mode: MouseMode, user_choice: bool, ask: bool) -> Result<()> {
         let mut state = lock(&self.shared);
-        expire_cursor_request(&mut state);
         state.mouse_restore_point = None;
         let was_controlling = state.mouse.mode() != MouseMode::View;
         if mode == MouseMode::View {
@@ -226,52 +215,20 @@ impl StreamControlHandle {
         state: &mut StreamControlState,
         visible: bool,
     ) -> Result<i64> {
-        expire_cursor_request(state);
         ensure_ready(state)?;
-        let sequence = state.next_sequence;
-        let mut baseline = state.baseline;
-        baseline.cursor_capture = visible;
-        // Update desired capture immediately, independently of
-        // ACKs. Later complete snapshots must carry this same current intent.
-        state.baseline.cursor_capture = visible;
-        let active_protocol = protocol(state);
-        let payload = match active_protocol {
-            StreamControlProtocol::CaptureSetting => encode_capture_setting(sequence, baseline)?,
-
-            StreamControlProtocol::Negotiating => {
-                bail!("{}", t().features.stream_negotiation_pending)
-            }
-        };
-        state.next_sequence = state.next_sequence.wrapping_add(1);
-        state.pending_sequences.push_back(sequence);
-        state.cursor_pending = Some((sequence, visible, Instant::now()));
-        state.initial_capture_sync_sent = true;
+        // The current intent: later stream requests carry it too.
+        state.cursor_capture = visible;
         state.cursor_error = None;
-        state.last_error = None;
-        state.last_notice = None;
-        let result = self.send_locked(
-            state,
-            OutgoingControlMessage {
-                annotation_generation: None,
-                sequence,
-                payload,
-                protocol: active_protocol,
-                completion: None,
-            },
-            Some(
-                if visible {
-                    t().features.stream_show_remote_cursor
-                } else {
-                    t().features.stream_hide_remote_cursor
-                }
-                .into(),
-            ),
-        );
-        if let Err(error) = &result {
-            fail_cursor_request(state, sequence, error.to_string());
-        }
+        let target = if visible {
+            t().features.stream_show_remote_cursor
+        } else {
+            t().features.stream_hide_remote_cursor
+        };
+        let sequence = self
+            .request_stream_locked(state, Some(target.into()))?
+            .unwrap_or(0);
         tracing::info!(sequence, visible, "remote cursor visibility requested");
-        result
+        Ok(sequence)
     }
 
     pub(super) fn refresh_mouse_policy(&self, state: &mut StreamControlState) {
@@ -317,7 +274,7 @@ impl StreamControlHandle {
             return;
         }
         state.cursor_sync_needed = false;
-        if wanted == state.baseline.cursor_capture && state.cursor_error.is_none() {
+        if wanted == state.cursor_capture && state.cursor_error.is_none() {
             return;
         }
         // Failure does not revoke input or retry forever. A new policy change
@@ -343,30 +300,9 @@ pub(super) fn mouse_policy(state: &StreamControlState, mode: MouseMode) -> (bool
 }
 
 pub(super) fn fail_cursor_request(state: &mut StreamControlState, sequence: i64, error: String) {
-    if state
-        .cursor_pending
-        .is_some_and(|(pending, _, _)| pending == sequence)
-    {
+    if state.cursor_pending == Some(sequence) {
         state.cursor_pending = None;
         state.cursor_error = Some(error);
     }
 }
 
-pub(super) fn expire_cursor_request(state: &mut StreamControlState) {
-    if let Some((sequence, _, started)) = state.cursor_pending
-        && started.elapsed() >= std::time::Duration::from_secs(10)
-    {
-        let error = t().features.stream_cursor_confirmation_timeout.to_owned();
-        fail_cursor_request(state, sequence, error.clone());
-        state
-            .pending_capture_preferences
-            .retain(|pending| pending.sequence != sequence);
-        state
-            .pending_sequences
-            .retain(|pending| *pending != sequence);
-        state
-            .performance
-            .fail_stream_switch(sequence, error.clone());
-        state.last_error = Some(error);
-    }
-}

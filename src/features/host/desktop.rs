@@ -2,7 +2,6 @@
 use super::{VideoConfig, capture, encoder, format};
 use crate::features::stream_control::publisher;
 use crate::i18n::t;
-use crate::protocol::capability::DeviceCapability;
 use anyhow::{Context, Result, ensure};
 use std::sync::Arc;
 
@@ -366,30 +365,29 @@ impl Prepared {
         options: &publisher::ConnectOptions,
         screen: capture::Screen,
         capabilities: &[format::Capability],
-        remote: &DeviceCapability,
         settings: super::EncodingSettings,
     ) -> Result<Self> {
         let negotiated = Arc::new(format::Negotiated::new(
             capabilities,
-            remote,
             &options.decoders,
             settings,
             screen.render_adapter.unwrap_or(screen.adapter),
         )?);
-        let mut config = publisher::config(options.params.as_ref());
-        let chroma = options
-            .params
-            .as_ref()
-            .map_or(1, |p| if p.chroma == 3 { 3 } else { 1 });
-        let hdr = options.params.as_ref().is_some_and(|p| p.hdr);
-        negotiated.apply_requested(&mut config, chroma, hdr, (screen.width, screen.height))?;
+        let auto_start = super::bandwidth::remembered_tier(&options.device_id).unwrap_or(2);
+        let mut config = publisher::config_of(&options.stream, auto_start, VideoConfig::default());
+        negotiated.apply_requested(
+            &mut config,
+            if options.stream.chroma444 { 3 } else { 1 },
+            options.stream.hdr,
+            (screen.width, screen.height),
+        )?;
         tracing::info!(
-            parameters = ?options.params,
+            stream = ?options.stream,
+            auto_start,
             requested_fps = config.requested_fps,
-            fps_limit = config.fps_limit,
             maximum_fps = config.maximum_fps,
             effective_fps = config.fps,
-            "host initial capture settings negotiated"
+            "host initial stream settings negotiated"
         );
         Ok(Self {
             screen,

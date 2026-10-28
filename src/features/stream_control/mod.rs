@@ -15,23 +15,29 @@ pub use crate::features::network_control::NetworkControlSnapshot;
 pub use crate::features::remote_cursor::{CursorImage, RemoteCursor};
 pub use crate::features::remote_input::MouseMode;
 use crate::media::{ConnectionMediaProfile, FrameRateChoice, LocalDisplayInfo};
-use crate::protocol::capability::DualCapability;
 use anyhow::{Result, anyhow, bail};
 pub use display_settings::{
     DisplayChangeRequest, DisplayChangeStatus, DisplayResolution, RemoteDisplayInfo,
     RemoteDisplayMode,
 };
 pub use display_topology::{DisplayTopologyAction, DisplayTopologyStatus, DisplayTopologySupport};
-use input::expire_cursor_request;
-use settings::{
-    color_supported, format_proposal, frame_rate_choice, quality_name,
-    restore_confirmed_capture, viewing_quality_label,
-};
+use settings::{color_supported, format_proposal, frame_rate_choice, viewing_quality_label};
+pub(crate) use settings::Wanted;
+
+/// The settings of a device with nothing saved.
+pub(crate) fn default_settings(profile: ConnectionMediaProfile) -> StreamControlSettings {
+    StreamControlSettings {
+        true_color: false,
+        hdr: false,
+        quality: StreamQuality::Auto,
+        frame_rate: frame_rate_choice(profile.stream_fps),
+        custom_bitrate_mbps: DEFAULT_CUSTOM_BITRATE_MBPS,
+    }
+}
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 use tokio::sync::{Notify, mpsc};
-use wire::{PbCaptureSettingResponse, PbError, PbReportQosStats};
 pub(crate) use wire::{ProfileWatch, encode_pb_echo_request};
 
 pub(crate) mod annotation;
@@ -41,25 +47,8 @@ mod microphone;
 mod preferences;
 pub(crate) mod publisher;
 
-const VIDEO_QUALITY_FAST: i32 = 1;
-const VIDEO_QUALITY_GENERAL: i32 = 2;
-const VIDEO_QUALITY_HD: i32 = 3;
-const VIDEO_QUALITY_BLURAY: i32 = 4;
-const VIDEO_QUALITY_AUTO: i32 = 5;
-const VIDEO_QUALITY_CUSTOM: i32 = 6;
-
-const FPS_30: i32 = 1;
-const FPS_60: i32 = 2;
-const FPS_90: i32 = 3;
-const FPS_144: i32 = 4;
-
-const CHROMA_420: i32 = 1;
-const CHROMA_444: i32 = 3;
-/// Screen id -2: every track of the session.
-const EXISTING_SESSION_TRACKS: i32 = -2;
 const DEFAULT_CUSTOM_BITRATE_MBPS: u32 = 30;
 pub const MAX_CUSTOM_BITRATE_MBPS: u32 = 500;
-const CAPTURE_RESULT_FPS_ADJUSTED: i32 = -3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -76,8 +65,14 @@ impl StreamQuality {
     /// The tier's bitrate ceiling (bps) for `screen` at `fps` (the host
     /// caps it at the screen's refresh rate); `None` for 自动 and 自定义.
     pub(crate) fn ceiling(self, screen: &RemoteScreen, fps: u32, true_color: bool) -> Option<u32> {
-        let quality = self.capability_quality();
-        if !(1..=4).contains(&quality) || screen.width == 0 || screen.height == 0 {
+        let quality = match self {
+            Self::Fast => 1,
+            Self::Clear => 2,
+            Self::High => 3,
+            Self::Original => 4,
+            Self::Auto | Self::Custom => return None,
+        };
+        if screen.width == 0 || screen.height == 0 {
             return None;
         }
         let fps = if screen.refresh_hz > 0 { fps.min(screen.refresh_hz) } else { fps };
@@ -89,17 +84,6 @@ impl StreamQuality {
         ))
     }
 
-    const fn capability_quality(self) -> i32 {
-        match self {
-            Self::Auto => 0,
-            Self::Fast => 1,
-            Self::Clear => 2,
-            Self::High => 3,
-            Self::Original => 4,
-            Self::Custom => 5,
-        }
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Self::Auto => t().features.stream_quality_auto,
@@ -108,17 +92,6 @@ impl StreamQuality {
             Self::Clear => t().features.stream_quality_high,
             Self::Custom => t().features.stream_quality_custom,
             Self::Fast => t().features.stream_quality_low_bitrate,
-        }
-    }
-
-    const fn protobuf(self) -> i32 {
-        match self {
-            Self::Auto => VIDEO_QUALITY_AUTO,
-            Self::Original => VIDEO_QUALITY_BLURAY,
-            Self::High => VIDEO_QUALITY_HD,
-            Self::Clear => VIDEO_QUALITY_GENERAL,
-            Self::Custom => VIDEO_QUALITY_CUSTOM,
-            Self::Fast => VIDEO_QUALITY_FAST,
         }
     }
 }
@@ -146,23 +119,6 @@ pub struct StreamControlSettings {
     pub frame_rate: FrameRateChoice,
     pub quality: StreamQuality,
     pub custom_bitrate_mbps: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SavedStreamControl {
-    pub settings: StreamControlSettings,
-    pub auto_frame_quality: i32,
-}
-
-pub(crate) struct LoadedStreamControl {
-    pub settings: Option<StreamControlSettings>,
-    pub auto_frame_quality: i32,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum ViewingPreferenceUpdate {
-    Settings(SavedStreamControl),
-    AutoQuality(i32),
 }
 
 pub fn custom_bitrate_choices(limit: u32) -> Vec<u32> {
@@ -194,45 +150,12 @@ pub(crate) struct StreamControlPreferences {
     pub(crate) settings: StreamControlSettings,
     pub(crate) custom_bitrate_limit: Option<u32>,
     audio: Option<crate::media::audio::AudioSettings>,
-    auto_frame_quality: i32,
-    device: Option<crate::features::viewing_settings::DevicePreferences>,
+    pub(crate) device: Option<crate::features::viewing_settings::DevicePreferences>,
 }
 
 impl StreamControlPreferences {
-    fn saved(self) -> SavedStreamControl {
-        SavedStreamControl {
-            settings: self.settings,
-            auto_frame_quality: self.auto_frame_quality,
-        }
-    }
-    pub(crate) fn initial_capture_quality(self) -> Result<(u64, u64, u64)> {
-        let bitrate = if self.settings.quality == StreamQuality::Custom {
-            if !(1..=MAX_CUSTOM_BITRATE_MBPS).contains(&self.settings.custom_bitrate_mbps) {
-                bail!("{}", t().features.stream_custom_bitrate_out_of_range);
-            }
-            u64::from(
-                self.settings
-                    .custom_bitrate_mbps
-                    .min(self.custom_bitrate_limit.unwrap_or(MAX_CUSTOM_BITRATE_MBPS)),
-            ) * 1_000_000
-        } else {
-            0
-        };
-        Ok((
-            u64::try_from(self.settings.quality.protobuf())?,
-            u64::try_from(self.auto_frame_quality)?,
-            bitrate,
-        ))
-    }
-
-    pub(crate) fn from_saved(saved: LoadedStreamControl, profile: ConnectionMediaProfile) -> Self {
-        let mut settings = saved.settings.unwrap_or(StreamControlSettings {
-            true_color: false,
-            hdr: false,
-            quality: StreamQuality::Auto,
-            frame_rate: frame_rate_choice(profile.stream_fps),
-            custom_bitrate_mbps: DEFAULT_CUSTOM_BITRATE_MBPS,
-        });
+    pub(crate) fn from_saved(saved: StreamControlSettings, _profile: ConnectionMediaProfile) -> Self {
+        let mut settings = saved;
         if let Some(quality) = dev_quality() {
             settings.quality = quality;
         }
@@ -242,11 +165,6 @@ impl StreamControlPreferences {
             device: None,
             custom_bitrate_limit: None,
             audio: None,
-            auto_frame_quality: if settings.quality == StreamQuality::Auto {
-                dev_auto_quality().unwrap_or(saved.auto_frame_quality)
-            } else {
-                VIDEO_QUALITY_GENERAL
-            },
         }
     }
 }
@@ -379,24 +297,6 @@ pub(crate) struct OutgoingControlMessage {
     pub completion: Option<tokio::sync::oneshot::Sender<std::result::Result<(), String>>>,
 }
 
-#[derive(Clone, Copy)]
-struct CaptureSettingBaseline {
-    requested_fps: u32,
-    fps_count: u32,
-    frame_quality: i32,
-    auto_frame_quality: i32,
-    cursor_capture: bool,
-    chroma_format: i32,
-    max_custom_bitrate: u32,
-    enable_hdr: bool,
-    codec_type: i32,
-    max_scale_width: u32,
-    max_scale_height: u32,
-    /// Weak-network strategy and cinema mode (device preferences).
-    weak_network: i32,
-    cinema: bool,
-}
-
 fn binding(id: i32, kind: wire::DisplayKind) -> u64 {
     (id as u32 as u64) | ((kind as i32 as u32 as u64) << 32)
 }
@@ -416,13 +316,6 @@ impl ScreenBaseline {
     fn binding(&self) -> u64 {
         binding(self.id, self.display.kind)
     }
-}
-
-struct PendingCapturePreferences {
-    sequence: i64,
-    preferences: StreamControlPreferences,
-    cursor_capture: bool,
-    persist: bool,
 }
 
 struct StreamControlState {
@@ -453,8 +346,11 @@ struct StreamControlState {
     mouse_restore_point: Option<(i32, [f64; 2])>,
     mouse: crate::features::remote_input::RemoteInput,
     mouse_transport_connected: bool,
-    cursor_pending: Option<(i64, bool, Instant)>,
+    /// The stream request carrying the cursor change in flight.
+    cursor_pending: Option<i64>,
     cursor_error: Option<String>,
+    /// The cursor is drawn into the picture (the mouse policy wants it).
+    cursor_capture: bool,
     /// SESSION requests awaiting the host's answer.
     requests: requests::Requests,
     /// The revision of the display list in effect.
@@ -469,8 +365,17 @@ struct StreamControlState {
     assistance: bool,
 
     settings: StreamControlSettings,
-    baseline: CaptureSettingBaseline,
-    capability: Option<DualCapability>,
+    /// What the host holds of this controller's stream (the start offer,
+    /// then each request).
+    held: Option<wire::StreamSettings>,
+    /// The host's latest stream state.
+    stream_state: Option<wire::StreamState>,
+    /// The stream request in flight.
+    pending_stream: Option<i64>,
+    /// The codec this device prefers; `None` lets the host choose.
+    codec_preference: Option<farwing_protocol::session::Codec>,
+    /// What this controller decodes (its start offer).
+    decoders: Vec<farwing_protocol::session::Decoder>,
     remote_display: Option<RemoteDisplayState>,
     control_channel_open: bool,
     text_channel_open: bool,
@@ -478,17 +383,14 @@ struct StreamControlState {
     pb_connected: bool,
     /// Features the host declared in its `HELLO`.
     peer: crate::protocol::peer::PeerFeatures,
-    initial_capture_sync_sent: bool,
     viewing_enabled: bool,
     next_sequence: i64,
-    pending_sequences: VecDeque<i64>,
     last_applied_sequence: Option<i64>,
     latest_requested_sequence: Option<i64>,
     last_error: Option<String>,
     last_notice: Option<String>,
-    preference_updates: tokio::sync::watch::Sender<Option<ViewingPreferenceUpdate>>,
+    preference_updates: tokio::sync::watch::Sender<Option<StreamControlSettings>>,
     confirmed_preferences: StreamControlPreferences,
-    pending_capture_preferences: VecDeque<PendingCapturePreferences>,
     user_settings_requested: bool,
     persistence_error: Option<String>,
     audio_persistence_error: Option<String>,
@@ -521,10 +423,6 @@ impl StreamControlHandle {
         let (outgoing, receiver) = mpsc::unbounded_channel();
         let (echo_responses, echo_receiver) = mpsc::unbounded_channel();
         let frame_rate = frame_rate_choice(profile.stream_fps);
-        let fps_count = profile
-            .local_display
-            .refresh_hz
-            .clamp(1, profile.stream_fps.max(1));
         let mouse = crate::features::remote_input::RemoteInput::default();
         let cursor = crate::features::remote_cursor::RemoteCursorState::default();
         let state = StreamControlState {
@@ -554,6 +452,8 @@ impl StreamControlHandle {
             mouse_transport_connected: false,
             cursor_pending: None,
             cursor_error: None,
+            // Watching needs capture-side cursor motion.
+            cursor_capture: true,
             requests: Default::default(),
             displays_revision: 0,
             local_display: profile.local_display,
@@ -572,37 +472,19 @@ impl StreamControlHandle {
                 quality: StreamQuality::Auto,
                 custom_bitrate_mbps: DEFAULT_CUSTOM_BITRATE_MBPS,
             },
-            baseline: CaptureSettingBaseline {
-                requested_fps: profile.stream_fps,
-                fps_count,
-                frame_quality: VIDEO_QUALITY_AUTO,
-                auto_frame_quality: VIDEO_QUALITY_GENERAL,
-                // Independent CursorShape coordinates are only sampled at
-                // shape changes. Watching needs capture-side cursor motion.
-                cursor_capture: true,
-                chroma_format: CHROMA_420,
-                max_custom_bitrate: 0,
-                enable_hdr: false,
-                codec_type: 0,
-                // Initial defaults, replaced when negotiation data is
-                // available. Not hardware capability or a user-selected
-                // output-resolution ceiling.
-                max_scale_width: 1920,
-                max_scale_height: 1080,
-                weak_network: 0,
-                cinema: dev_cinema().unwrap_or(false),
-            },
-            capability: None,
+            held: None,
+            stream_state: None,
+            pending_stream: None,
+            codec_preference: profile.codec.preferred(),
+            decoders: Vec::new(),
             remote_display: None,
             control_channel_open: false,
             text_channel_open: false,
             protocol_generation: 0,
             pb_connected: false,
             peer: Default::default(),
-            initial_capture_sync_sent: false,
             viewing_enabled: true,
             next_sequence: 1,
-            pending_sequences: VecDeque::new(),
             last_applied_sequence: None,
             latest_requested_sequence: None,
             last_error: None,
@@ -619,9 +501,7 @@ impl StreamControlHandle {
                     custom_bitrate_mbps: DEFAULT_CUSTOM_BITRATE_MBPS,
                 },
                 audio: None,
-                auto_frame_quality: VIDEO_QUALITY_GENERAL,
             },
-            pending_capture_preferences: VecDeque::new(),
             user_settings_requested: false,
             persistence_error: None,
             audio_persistence_error: None,
@@ -749,7 +629,7 @@ impl StreamControlHandle {
 
     pub fn snapshot(&self) -> StreamControlSnapshot {
         let mut state = lock(&self.shared);
-        expire_cursor_request(&mut state);
+        self.expire_requests(&mut state);
         let active_protocol = protocol(&state);
         let mut network = self.network.snapshot();
         if !feature_supported(
@@ -767,20 +647,22 @@ impl StreamControlHandle {
             Some(t().features.stream_waiting_feature_negotiation)
         } else if state.remote_display.is_none() {
             Some(t().features.stream_waiting_screen_baseline)
-        } else if state.baseline.codec_type == 0 {
-            Some(t().features.stream_waiting_codec_negotiation)
         } else {
             None
         };
         StreamControlSnapshot {
-            hdr_supported: state.peer.has(crate::protocol::peer::feature::VIDEO_HDR)
-                && state.capability.is_some(),
+            hdr_supported: state
+                .stream_state
+                .as_ref()
+                .and_then(|s| s.limits.as_ref())
+                .is_some_and(|limits| limits.hdr)
+                && state.decoders.iter().any(|d| d.bit10),
             hdr_unavailable: format_proposal(&state, None, Some(true))
                 .err()
                 .map(|e| e.to_string()),
             custom_bitrate_limit: state.custom_bitrate_limit,
-            auto_quality_label: (t().features.stream_quality_auto_with)(quality_name(
-                state.baseline.auto_frame_quality,
+            auto_quality_label: (t().features.stream_quality_auto_with)(settings::quality_name(
+                settings::automatic_tier(&state).unwrap_or(wire::Quality::Standard),
             )),
             true_color_supported: color_supported(&state),
             mouse_preference: state.device_preferences.mouse_mode,
@@ -831,7 +713,7 @@ impl StreamControlHandle {
             ready: waiting_for.is_none()
                 && active_protocol == StreamControlProtocol::CaptureSetting,
             waiting_for,
-            pending_sequence: state.pending_sequences.back().copied(),
+            pending_sequence: state.pending_stream,
             last_applied_sequence: state.last_applied_sequence,
             last_error: state.last_error.clone(),
             last_notice: state.last_notice.clone(),
@@ -870,7 +752,6 @@ impl StreamControlHandle {
             custom_bitrate_limit: (state.custom_bitrate_limit < MAX_CUSTOM_BITRATE_MBPS)
                 .then_some(state.custom_bitrate_limit),
             audio: Some(self.audio.settings()),
-            auto_frame_quality: state.confirmed_preferences.auto_frame_quality,
         }
     }
     pub(crate) fn network_control(&self) -> crate::features::network_control::NetworkControl {
@@ -907,7 +788,7 @@ impl StreamControlHandle {
 
     pub(crate) fn preference_updates(
         &self,
-    ) -> tokio::sync::watch::Receiver<Option<ViewingPreferenceUpdate>> {
+    ) -> tokio::sync::watch::Receiver<Option<StreamControlSettings>> {
         lock(&self.shared).preference_updates.subscribe()
     }
 
@@ -927,56 +808,12 @@ impl StreamControlHandle {
         lock(&self.shared).audio_persistence_error = error;
     }
 
-    fn send_locked(
-        &self,
-        state: &mut StreamControlState,
-        outgoing: OutgoingControlMessage,
-        target: Option<String>,
-    ) -> Result<i64> {
-        let sequence = outgoing.sequence;
-        state.latest_requested_sequence = Some(sequence);
-        if let Some(target) = target {
-            state.performance.begin_stream_switch(sequence, target);
-        }
-        // Enqueue before releasing the state lock: an automatic request cannot
-        // overtake a later explicit user choice on this reliable channel.
-        if self.outgoing.send(outgoing).is_err() {
-            state.initial_capture_sync_sent = false;
-            state.pending_sequences.clear();
-            state.pending_capture_preferences.clear();
-            restore_confirmed_capture(state);
-            state.last_error = Some(t().features.stream_settings_sender_stopped.to_owned());
-            state
-                .performance
-                .fail_stream_switch(sequence, t().features.stream_settings_sender_stopped);
-            bail!("{}", t().features.stream_settings_sender_stopped);
-        }
-        state
-            .pending_capture_preferences
-            .push_back(PendingCapturePreferences {
-                sequence,
-                preferences: StreamControlPreferences {
-                    device: None,
-                    custom_bitrate_limit: (state.custom_bitrate_limit < MAX_CUSTOM_BITRATE_MBPS)
-                        .then_some(state.custom_bitrate_limit),
-                    settings: state.settings,
-                    audio: None,
-                    auto_frame_quality: state.baseline.auto_frame_quality,
-                },
-                cursor_capture: state.baseline.cursor_capture,
-                persist: state.user_settings_requested,
-            });
-        Ok(sequence)
-    }
 }
 
 fn ensure_ready(state: &StreamControlState) -> Result<()> {
     ensure_business_ready(state)?;
     if state.remote_display.is_none() {
         bail!("{}", t().features.stream_screen_state_not_ready);
-    }
-    if state.baseline.codec_type == 0 {
-        bail!("{}", t().features.stream_codec_not_negotiated);
     }
     Ok(())
 }
@@ -1056,11 +893,7 @@ pub(crate) fn take_dev_virtual_screen(ready: bool) -> bool {
     ready && DEV_VIRTUAL_SCREEN.swap(false, std::sync::atomic::Ordering::AcqRel)
 }
 
-static DEV_AUTO_QUALITY: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
-
-/// `connect --dev-auto-quality`: start automatic quality at this tier instead
-/// of the one saved for the device, and do not save the settled tier
-/// (measurements: every run starts alike).
+/// `connect --dev-quality`: start at this tier (not saved).
 static DEV_QUALITY: std::sync::OnceLock<StreamQuality> = std::sync::OnceLock::new();
 
 /// `connect --dev-audio-only A,B`: audio only A seconds after the first
@@ -1075,19 +908,10 @@ pub(crate) fn take_dev_audio_switch() -> Option<(u64, u64)> {
     DEV_AUDIO_SWITCH.lock().unwrap_or_else(|p| p.into_inner()).take()
 }
 
-/// `connect --dev-quality`: start at this tier (not saved).
 pub(crate) fn set_dev_quality(quality: StreamQuality) {
     let _ = DEV_QUALITY.set(quality);
 }
 
 fn dev_quality() -> Option<StreamQuality> {
     DEV_QUALITY.get().copied()
-}
-
-pub(crate) fn set_dev_auto_quality(quality: i32) {
-    let _ = DEV_AUTO_QUALITY.set(quality);
-}
-
-fn dev_auto_quality() -> Option<i32> {
-    DEV_AUTO_QUALITY.get().copied()
 }
