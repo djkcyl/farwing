@@ -82,8 +82,11 @@ fn connect_options(
             .custom_bitrate_limit
             .unwrap_or(crate::features::stream_control::MAX_CUSTOM_BITRATE_MBPS),
         codec: profile.codec.preferred(),
-        // The viewing policy follows once the session runs.
-        cursor: false,
+        // The host draws the cursor into the picture unless this viewer
+        // draws it (controlling with the local or smart pointer); the
+        // policy follows the session from there.
+        cursor: !device.control_enabled
+            || device.mouse_mode == crate::features::remote_input::MouseMode::Remote,
         weak_network: device.weak_network,
         cinema: device.cinema,
     }
