@@ -70,6 +70,28 @@ async fn admin_allow_list_limits_the_console_by_address() {
 }
 
 #[tokio::test]
+async fn an_allow_list_must_keep_the_admin_who_saves_it() {
+    let srv = start().await;
+    srv.create_user("root");
+    promote(&srv, "root");
+    let root = browser(&srv, "root").await;
+    let r = srv
+        .put("/api/v2/admin/settings", &root, json!({"web": {"admin_allow": ["10.9.0.0/16"]}}))
+        .await;
+    r.err_reason(400, "bad_request", "setting_invalid");
+    assert_eq!(r.body["error"]["details"]["problem"], "excludes_you");
+    srv.put(
+        "/api/v2/admin/settings",
+        &root,
+        json!({"web": {"admin_allow": ["10.9.0.0/16", "127.0.0.0/8"]}}),
+    )
+    .await
+    .ok();
+    srv.get("/api/v2/admin/overview", &root).await.ok();
+    srv.shutdown().await;
+}
+
+#[tokio::test]
 async fn totp_guards_the_admin_console() {
     let srv = start().await;
     srv.create_user("root");

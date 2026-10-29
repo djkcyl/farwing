@@ -172,6 +172,16 @@ pub async fn get(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Json<Se
 
 /// Apply `cfg` and record it in the audit log.
 async fn apply_and_log(app: &App, admin: &AdminAuth, cfg: Config) -> ApiResult<Json<Applied>> {
+    // The administrator saving the list stays in it: one outside it could
+    // not open the console again.
+    let allow = &cfg.web.admin_allow;
+    if !allow.is_empty() && !allow.iter().any(|n| n.contains(&admin.ip)) {
+        return Err(setting_error(SettingError::new(
+            "web.admin_allow",
+            "excludes_you",
+            format!("{} is not in the list", admin.ip),
+        )));
+    }
     let old = app.cfg();
     let groups = changed_groups(&old, &cfg);
     let outcome = app.control().apply(cfg).await.map_err(|e| {

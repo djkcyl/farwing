@@ -16,7 +16,8 @@ use std::time::Duration;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SettingError {
     pub field: String,
-    /// `required`, `invalid`, `out_of_range`, `conflict` or `unavailable`.
+    /// `required`, `invalid`, `out_of_range`, `conflict`, `unavailable` or
+    /// `excludes_you`.
     pub problem: &'static str,
     pub message: String,
 }
