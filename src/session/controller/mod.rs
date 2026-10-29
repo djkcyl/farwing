@@ -228,6 +228,25 @@ impl ControllerConnection {
         )
         .await
     }
+    /// A session for the host's diagnostic bundle: needs only the
+    /// diagnostics permission.
+    pub(crate) async fn connect_diagnostics(
+        client: &AuthenticatedClient,
+        device: &crate::account::api::DeviceInfo,
+        policy: crate::account::feature_ability::FeaturePolicy,
+        options: ConnectionMediaOptions,
+        cancel: &CancellationToken,
+    ) -> Result<Self> {
+        Self::connect_business(
+            client,
+            device,
+            policy,
+            options,
+            cancel,
+            crate::session::negotiation::ControlPurpose::Diagnostics,
+        )
+        .await
+    }
     /// A viewing session without a window or playback, for scripted input
     /// (`dev input`). Video is negotiated but no screen is captured.
     pub(crate) async fn connect_headless(

@@ -630,7 +630,7 @@ impl Session {
             farwing_protocol::api::Purpose::Desktop | farwing_protocol::api::Purpose::Audio => {
                 kind::DESKTOP
             }
-            farwing_protocol::api::Purpose::Files => kind::FILES,
+            farwing_protocol::api::Purpose::Files | farwing_protocol::api::Purpose::Diagnostics => kind::FILES,
             farwing_protocol::api::Purpose::Ports => kind::PORTS,
         };
         crate::account::api::validate_device_id(&incoming.controller.device_id)
@@ -750,8 +750,10 @@ impl Session {
             direct = signal.is_direct(&session_id),
             "host participant capabilities"
         );
+        // A diagnostics session runs like a file session but needs only its
+        // own permission.
         anyhow::ensure!(
-            !file_only || authorization.file_access(),
+            incoming.purpose != farwing_protocol::api::Purpose::Files || authorization.file_access(),
             "本机未允许文件传输"
         );
         anyhow::ensure!(

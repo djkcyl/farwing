@@ -113,7 +113,7 @@ async fn run(
     );
     let policy = client.feature_catalog().policy_for(target);
     let connection =
-        ControllerConnection::connect_files(client, target, policy, options, &job.cancel)
+        ControllerConnection::connect_diagnostics(client, target, policy, options, &job.cancel)
             .await
             .context(crate::i18n::t().session.rdiag_connect_failed)?;
     lock(&job.view).progress.stage = crate::i18n::t().session.rdiag_waiting_response.into();

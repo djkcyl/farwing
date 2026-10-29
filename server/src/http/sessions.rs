@@ -93,7 +93,7 @@ pub fn policy_allows(target: &DeviceRow, purpose: Purpose) -> bool {
     target.host_supported()
         && p.control
         && match purpose {
-            Purpose::Desktop | Purpose::Audio => true,
+            Purpose::Desktop | Purpose::Audio | Purpose::Diagnostics => true,
             Purpose::Files => p.files,
             Purpose::Ports => p.ports,
         }

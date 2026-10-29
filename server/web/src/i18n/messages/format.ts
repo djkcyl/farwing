@@ -37,6 +37,7 @@ export const zh = {
     audio: '声音',
     files: '文件',
     ports: '端口转发',
+    diagnostics: '诊断',
   },
   /** Session capabilities (`farwing_protocol::caps`). */
   caps: {
@@ -99,6 +100,7 @@ export const en: typeof zh = {
     audio: 'Audio',
     files: 'Files',
     ports: 'Port forwarding',
+    diagnostics: 'Diagnostics',
   },
   caps: {
     view: 'View screen',

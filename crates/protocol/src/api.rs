@@ -571,6 +571,8 @@ pub enum Purpose {
     Audio,
     Files,
     Ports,
+    /// The host's diagnostic bundle (no picture, no files).
+    Diagnostics,
 }
 
 impl Purpose {
@@ -580,6 +582,7 @@ impl Purpose {
             Self::Audio => "audio",
             Self::Files => "files",
             Self::Ports => "ports",
+            Self::Diagnostics => "diagnostics",
         }
     }
     /// Capability a participant needs to open a session of this purpose.
@@ -588,6 +591,7 @@ impl Purpose {
             Self::Desktop | Self::Audio => crate::caps::VIEW,
             Self::Files => crate::caps::FILES,
             Self::Ports => crate::caps::PORTS,
+            Self::Diagnostics => crate::caps::DIAGNOSTICS,
         }
     }
 }

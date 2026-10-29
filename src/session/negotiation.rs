@@ -17,6 +17,7 @@ pub(crate) enum ControlPurpose {
     Audio,
     PortMapping,
     FileTransfer,
+    Diagnostics,
 }
 
 impl ControlPurpose {
@@ -26,6 +27,7 @@ impl ControlPurpose {
             Self::Audio => Purpose::Audio,
             Self::PortMapping => Purpose::Ports,
             Self::FileTransfer => Purpose::Files,
+            Self::Diagnostics => Purpose::Diagnostics,
         }
     }
 }

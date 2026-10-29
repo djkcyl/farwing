@@ -84,6 +84,7 @@ pub(crate) const ZH_CN: Records = Records {
         "audio" => "声音",
         "files" => "文件",
         "ports" => "端口转发",
+        "diagnostics" => "诊断",
         _ => "",
     },
     route: |r| match r {
@@ -210,6 +211,7 @@ pub(crate) const EN: Records = Records {
         "audio" => "Sound",
         "files" => "Files",
         "ports" => "Port forwarding",
+        "diagnostics" => "Diagnostics",
         _ => "",
     },
     route: |r| match r {
