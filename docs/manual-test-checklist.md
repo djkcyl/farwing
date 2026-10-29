@@ -1,6 +1,6 @@
 # Farwing 0.1.0 双机手动测试清单
 
-本清单覆盖本机无法验证、或只在本机回环上验证过的功能。每项给出前置条件、步骤与预期结果；记录结果时请附上两端日志（`%LOCALAPPDATA%\Farwing\logs`，多 profile 时在 `profiles\<名称>\logs`；安装后台服务后，服务的日志在 `C:\Windows\System32\config\systemprofile\AppData\Local\Farwing\logs`）与诊断包。
+本清单覆盖本机无法验证、或只在本机回环上验证过的功能。每项给出前置条件、步骤与预期结果；记录结果时请附上两端日志（`%LOCALAPPDATA%\Farwing\logs`，多 profile 时在 `profiles\<名称>\logs`；安装后台服务后，服务与后台主机的日志在 `C:\ProgramData\Farwing\host\logs`）与诊断包。
 
 单机多 profile 已验证的项目与结果见 [selftest-results.md](selftest-results.md)；剩余项目按环境分批的执行顺序见 [dual-machine-runsheet.md](dual-machine-runsheet.md)。
 
@@ -474,3 +474,18 @@
 | 32.14 | 被控或主控装有 VPN、虚拟网卡（TUN、Teredo、Hyper-V 等）时在局域网和公网各连接几次 | 都能连上，连接速度不比以前慢；日志里 `host selected transport path` 选的是真实网卡的地址 |
 | 32.15 | 被控重启 Windows 后第一次被连接（之前连接过、检查结果已缓存） | 被控日志有 `host hardware encoder initialized`，没有 `encoder adapter failed`；画面用硬件编码（统计面板的编码器不是软件） |
 | 32.10 | 被控接 4K 120/144 Hz 屏，主控选 4K 档、144 fps 看动态画面几分钟 | 实际帧率接近设定，没有持续卡顿；任务管理器里两端 CPU 不超过单核 50 % 左右，被控显卡"Video Encode"不长期满载 |
+
+## 33. 后台主机降权（2026-10-29）
+
+后台主机以 LocalService 加 Farwing 专属 SID 运行，SYSTEM 只用于采集、输入代理、Ctrl+Alt+Del 和服务代办的事（关机重启、网络唤醒设置、驱动句柄、默认音频设备、壁纸）。以下各项在默认身份下测；有问题时在安装目录放 `resident-system` 文件、重启服务，用 SYSTEM 身份再测一次作对照（见 18.5）。
+
+| 编号 | 步骤 | 预期 |
+|---|---|---|
+| 33.1 | 按 18.1–18.3：注销后连接并登录、锁屏时发 Ctrl+Alt+Del 解锁、重启不登录直接连接 | 都正常；服务日志里每次都是 `background host started ... as_service=true`，没有 `falls back to SYSTEM` |
+| 33.2 | H 上切换到另一个 Windows 用户（快速用户切换），再切回来 | 每次切换后都能连接并看到当前用户的桌面 |
+| 33.3 | H 上全屏播放视频或运行全屏游戏，C 开始标注 | 标注画在全屏画面之上，不被遮住 |
+| 33.4 | H 的 Farwing 虚拟声卡正常时，C 开麦克风；断开连接；再连上开麦克风后在 H 上重启后台服务 | 使用时 H 的默认麦克风是 Farwing 虚拟麦克风；断开或服务重启后恢复成 H 用户原来的默认设备 |
+| 33.5 | 按 19.1、19.2：C 发送重启；H 在设备中心配置局域网唤醒 | 重启执行；网络唤醒配置成功（由服务完成，不弹 UAC） |
+| 33.6 | C 观看时添加、移除虚拟屏 | 虚拟屏出现并可观看，移除后消失 |
+| 33.7 | 从旧版本升级后，查看 H 的受信任设备与 C 的直连 | 旧版本记在 SYSTEM 配置里的受信任设备不保留，需要重新添加；重新添加后重启服务仍在 |
+
