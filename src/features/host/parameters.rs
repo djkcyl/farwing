@@ -279,7 +279,14 @@ impl AutoQuality {
         let mean = |window: &VecDeque<u32>| -> u32 {
             (window.iter().map(|v| u64::from(*v)).sum::<u64>() / window.len() as u64) as u32
         };
-        let probe = mean(&self.probes);
+        // The median: the first observation is often the starting estimate,
+        // taken before any probing, and must not hold the decision a tier
+        // short.
+        let probe = {
+            let mut sorted = self.probes.iter().copied().collect::<Vec<_>>();
+            sorted.sort_unstable();
+            sorted[sorted.len() / 2]
+        };
         let lower = mean(&self.lower);
         let bounds = standard(format, self.current, source, fps);
         let mut selected = self.current;
@@ -304,6 +311,8 @@ impl AutoQuality {
             selected = self.current.down().unwrap_or(Tier::P720).max(Tier::P1080);
         }
         selected = selected.min(self.maximum);
+        tracing::debug!(observed = self.observed, probe, lower, latest = sample.probe, current = ?self.current,
+            ?selected, "automatic quality observation");
         if selected == self.current {
             None
         } else {
@@ -656,6 +665,12 @@ mod tests {
         assert_eq!(auto.tier(), Tier::P1080, "not on the first probes");
         observe(&mut auto, 2, fast);
         assert_eq!(auto.tier(), Tier::P2160, "straight to the highest tier it clears");
+        // The first observation is the starting estimate, before probing.
+        let mut auto = AutoQuality::new(Tier::P1080, Tier::P2160);
+        observe(&mut auto, 0, NetworkSample { probe: 1_500_000, ..fast });
+        observe(&mut auto, 1, fast);
+        observe(&mut auto, 2, fast);
+        assert_eq!(auto.tier(), Tier::P2160, "not held back by the starting estimate");
         // An estimate between the tiers stops on the way.
         let mut auto = AutoQuality::new(Tier::P1080, Tier::P2160);
         let medium = NetworkSample { probe: 18_000_000, ..fast };
