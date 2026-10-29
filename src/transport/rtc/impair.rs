@@ -14,6 +14,10 @@
 //! - `net:P,R[,seed=S]` is a Gilbert–Elliott channel in front of the
 //!   receiver, applied to every video packet (media, RTX, FEC) before repair,
 //!   so NACK and FEC can repair what it drops, as on a real network;
+//! - `outage:START_MS+DURATION_MS` loses every video packet (media, RTX,
+//!   FEC) arriving in that window (counted from the first packet) before
+//!   repair, as when the network drops out: what was lost can be
+//!   retransmitted once it is back;
 //! - `rate:MBPS[,queue=MS]` passes every video packet (media, RTX, FEC)
 //!   through a bottleneck of that rate with a drop-tail queue holding at most
 //!   MS of data (default 200 ms), so large frames take their real
@@ -51,12 +55,20 @@ pub(crate) struct Network {
     seed: u64,
 }
 
+/// A network outage in front of the receiver (repairable afterwards).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Outage {
+    start: Duration,
+    duration: Duration,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Config {
     rules: Vec<Rule>,
     delay: Duration,
     link: Option<Link>,
     network: Option<Network>,
+    outage: Option<Outage>,
     mtu: Option<usize>,
 }
 
@@ -111,6 +123,13 @@ impl Config {
                         config.rules.push(Rule::Gilbert { enter, leave, seed });
                     }
                 }
+                "outage" => {
+                    let (start, duration) = value.split_once('+').context("outage 要写成 起点毫秒+时长毫秒")?;
+                    config.outage = Some(Outage {
+                        start: Duration::from_millis(number(start)?),
+                        duration: Duration::from_millis(number(duration)?),
+                    });
+                }
                 "delay" => config.delay = Duration::from_millis(number(value)?),
                 "mtu" => config.mtu = Some(number(value)? as usize),
                 "rate" => {
@@ -152,6 +171,10 @@ impl Config {
 
     pub(crate) fn network(&self) -> Option<Network> {
         self.network
+    }
+
+    pub(crate) fn outage(&self) -> Option<Outage> {
+        self.outage
     }
 }
 
@@ -197,6 +220,48 @@ impl NetworkLoss {
 }
 
 static NETWORK_DROPS: AtomicU64 = AtomicU64::new(0);
+
+/// The window of an `Outage`, fed in arrival order.
+pub(crate) struct OutageWindow {
+    outage: Outage,
+    started: Option<Instant>,
+    dropping: bool,
+}
+
+impl OutageWindow {
+    pub(crate) fn new(outage: Outage) -> Self {
+        Self {
+            outage,
+            started: None,
+            dropping: false,
+        }
+    }
+
+    /// Whether a packet arriving at `now` is lost. `media`: the RTP
+    /// timestamp of a primary media packet, which records the loss.
+    pub(crate) fn drops(&mut self, now: Instant, media: Option<u32>) -> bool {
+        let elapsed = now.saturating_duration_since(*self.started.get_or_insert(now));
+        let drop = elapsed >= self.outage.start && elapsed < self.outage.start + self.outage.duration;
+        if drop {
+            NETWORK_DROPS.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(timestamp) = media {
+            if drop {
+                let mut events = EVENTS.lock().unwrap_or_else(|p| p.into_inner());
+                match events.last_mut() {
+                    Some(event) if self.dropping => event.packets += 1,
+                    _ => events.push(LossEvent {
+                        at: now,
+                        rtp_timestamp: timestamp,
+                        packets: 1,
+                    }),
+                }
+            }
+            self.dropping = drop;
+        }
+        drop
+    }
+}
 
 /// Packets the `net:` channel dropped before repair.
 pub(crate) fn network_drops() -> u64 {
@@ -464,6 +529,13 @@ mod tests {
                 enter: 0.01,
                 leave: 0.5,
                 seed: 3
+            })
+        );
+        assert_eq!(
+            Config::parse("outage:4000+1500").unwrap().outage(),
+            Some(Outage {
+                start: Duration::from_secs(4),
+                duration: Duration::from_millis(1500)
             })
         );
         assert!(Config::parse("frame:0").is_err());

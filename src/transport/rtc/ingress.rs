@@ -54,6 +54,8 @@ pub(super) struct OrderedVideoIngress {
     bottleneck: Option<super::impair::Bottleneck>,
     /// `dev video --loss net:P,R`: random loss in front of the receiver.
     network: Option<super::impair::NetworkLoss>,
+    /// `dev video --loss outage:START+DURATION`: the network drops out.
+    outage: Option<super::impair::OutageWindow>,
     /// A packet taken from the broadcast and when it is due, so that a
     /// cancelled `recv` does not lose it.
     held: Option<(VideoIngressPacket, Instant)>,
@@ -81,18 +83,25 @@ impl OrderedVideoIngress {
             network: super::impair::config()
                 .and_then(|c| c.network())
                 .map(super::impair::NetworkLoss::new),
+            outage: super::impair::config()
+                .and_then(|c| c.outage())
+                .map(super::impair::OutageWindow::new),
             held: None,
         })
     }
 
     /// Cancel-safe.
     pub(super) async fn recv(&mut self) -> Result<VideoIngressPacket> {
-        if self.delay.is_zero() && self.bottleneck.is_none() && self.network.is_none() {
+        if self.delay.is_zero() && self.bottleneck.is_none() && self.network.is_none() && self.outage.is_none() {
             return self.next().await;
         }
         while self.held.is_none() {
             let packet = self.next().await?;
             if self.network.as_mut().is_some_and(|n| n.drops()) {
+                continue;
+            }
+            let media = matches!(packet.origin, VideoIngressOrigin::Primary).then_some(packet.packet.header.timestamp);
+            if self.outage.as_mut().is_some_and(|o| o.drops(packet.received_at, media)) {
                 continue;
             }
             let left = match self.bottleneck.as_mut() {
