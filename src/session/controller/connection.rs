@@ -232,14 +232,18 @@ impl ResolvedConnection {
             }
         };
         self.profile.codec = self.default_codec;
-        if !self.default_codec.restricted()
-            && let Some(store) = &store
-        {
+        // This device's saved choices (weak-network strategy, cinema, input)
+        // go with the session request: the host starts with them.
+        let mut saved_device = None;
+        if let Some(store) = &store {
             match cancellable(cancel, store.load_device()).await {
                 Ok(saved) => {
-                    if let Some(codec) = saved.codec {
+                    if !self.default_codec.restricted()
+                        && let Some(codec) = saved.codec
+                    {
                         self.profile.codec = codec;
                     }
+                    saved_device = Some(saved);
                 }
                 Err(error) if cancel.is_cancelled() => return Err(error),
                 Err(error) => persistence_error = Some(error.to_string()),
@@ -261,6 +265,16 @@ impl ResolvedConnection {
                 Err(error) if cancel.is_cancelled() => return Err(error),
                 Err(error) => persistence_error = Some(error.to_string()),
             }
+        }
+        if let Some(device) = saved_device {
+            let profile = self.profile;
+            let preferences = self.preferences.get_or_insert_with(|| {
+                crate::features::stream_control::StreamControlPreferences::from_saved(
+                    crate::features::stream_control::default_settings(profile),
+                    profile,
+                )
+            });
+            preferences.device.get_or_insert(device);
         }
         if let Some(preferences) = self.preferences.as_mut() {
             preferences.custom_bitrate_limit = bitrate_limit;

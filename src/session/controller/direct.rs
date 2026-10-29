@@ -331,6 +331,19 @@ async fn connect_once(
         if audio.is_none() {
             audio = store.load_audio().await.ok().flatten();
         }
+        // The saved weak-network strategy, cinema and input choices go with
+        // the session request.
+        if let Ok(device) = store.load_device().await {
+            preferences
+                .get_or_insert_with(|| {
+                    crate::features::stream_control::StreamControlPreferences::from_saved(
+                        crate::features::stream_control::default_settings(profile),
+                        profile,
+                    )
+                })
+                .device
+                .get_or_insert(device);
+        }
     }
     let mut audio = audio.unwrap_or(crate::media::audio::AudioSettings {
         volume: 100,
