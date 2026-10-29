@@ -63,8 +63,9 @@ pub(crate) struct Bridge {
     pcm: Pcm,
 }
 impl Bridge {
-    pub fn open() -> Result<Self> {
-        let handle = Handle(
+    /// A handle to the bridge as this process may open it.
+    pub(crate) fn raw() -> Result<Handle> {
+        Ok(Handle(
             unsafe {
                 CreateFileW(
                     w!(r"\\.\FarwingAudioBridge"),
@@ -77,7 +78,17 @@ impl Bridge {
                 )
             }
             .map_err(install::bridge_open_error)?,
-        );
+        ))
+    }
+    pub fn open() -> Result<Self> {
+        // The background host gets its handle from the service.
+        let handle = if crate::platform::windows::host_service::resident::is_owner() {
+            crate::platform::windows::host_service::requests::device(
+                crate::platform::windows::host_service::requests::Device::AudioBridge,
+            )?
+        } else {
+            Self::raw()?
+        };
         let event = Handle(unsafe { CreateEventW(None, true, false, None)? });
         let mut bridge = Self {
             handle,

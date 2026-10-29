@@ -31,6 +31,11 @@ static OWNER: AtomicBool = AtomicBool::new(false);
 pub(crate) fn is_owner() -> bool {
     OWNER.load(Ordering::Acquire)
 }
+/// The service that started this resident (0: not a resident).
+static SERVICE: AtomicU32 = AtomicU32::new(0);
+pub(crate) fn service_pid() -> Option<u32> {
+    Some(SERVICE.load(Ordering::Acquire)).filter(|pid| *pid != 0)
+}
 /// The background service hosts this profile. Machine-wide components
 /// belong to the default profile; other profiles always run portable.
 pub(crate) fn managed() -> bool {
@@ -291,6 +296,11 @@ pub(crate) fn supervise(running: impl Fn() -> bool + Sync) -> Result<()> {
             let result = serve_control(&alive, &paused, &child_pid);
             stopped.store(true, Ordering::Release);
             result
+        });
+        scope.spawn(|| {
+            if let Err(error) = super::requests::serve(&alive, &child_pid) {
+                tracing::warn!(%error, "resident request service stopped");
+            }
         });
         let mut child: Option<(u32, process::Agent)> = None;
         let mut next_start = std::time::Instant::now();
@@ -619,7 +629,33 @@ pub(crate) fn run(parent: u32) -> Result<()> {
     let stop_raw = stop_event.0.0 as usize;
     let parent_raw = parent_handle.0.0 as usize;
     let running = || unsafe { windows::Win32::System::Threading::WaitForSingleObject(windows::Win32::Foundation::HANDLE(stop_raw as *mut _), 0) == windows::Win32::Foundation::WAIT_TIMEOUT } && process::active_session() == session && unsafe { windows::Win32::System::Threading::WaitForSingleObject(windows::Win32::Foundation::HANDLE(parent_raw as *mut _), 0) == windows::Win32::Foundation::WAIT_TIMEOUT };
+    SERVICE.store(parent, Ordering::Release);
     OWNER.store(true, Ordering::Release);
+    if vault::root().is_ok_and(|root| root.join("identity-check").is_file()) {
+        std::thread::spawn(move || {
+            for device in [super::requests::Device::Display, super::requests::Device::AudioBridge] {
+                match super::requests::device(device) {
+                    Ok(_) => tracing::info!(?device, "device handle from the service"),
+                    Err(error) => tracing::info!(?device, error = %format!("{error:#}"), "no device handle from the service"),
+                }
+            }
+            match process::run_as_local_service(
+                session,
+                true,
+                "identity-check",
+                &[],
+                Duration::from_secs(120),
+                &|| true,
+            ) {
+                Ok(output) => {
+                    for line in String::from_utf8_lossy(&output).lines() {
+                        tracing::info!(check = line, "LocalService identity check");
+                    }
+                }
+                Err(error) => tracing::warn!(error = %format!("{error:#}"), "LocalService identity check failed"),
+            }
+        });
+    }
     crate::features::host::displays::recovery::recover_abandoned()?;
     if let Err(error) = super::super::virtual_audio::Defaults::recover_defaults() {
         // Before Windows logon there is no user's default microphone to touch.

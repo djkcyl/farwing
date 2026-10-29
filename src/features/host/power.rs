@@ -9,7 +9,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Action {
     Shutdown,
     Reboot,
@@ -138,7 +138,12 @@ impl Request {
             "{}", t().features.power_permission_revoked
         );
         self.claim()?;
-        let result = crate::platform::windows::system_power::execute(self.command.action);
+        // The background host has the service do it.
+        let result = if crate::platform::windows::host_service::resident::is_owner() {
+            crate::platform::windows::host_service::requests::power(self.command.action)
+        } else {
+            crate::platform::windows::system_power::execute(self.command.action)
+        };
         if result.is_err() {
             let mut s = super::lock(&self.owner.0);
             if s.binding == self.binding && s.epoch == self.epoch {

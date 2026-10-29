@@ -182,6 +182,10 @@ pub(crate) fn configure_elevated(guid: String, mac: String) -> Result<()> {
 
 pub(crate) fn configure(key: &AdapterKey, cancel: &CancellationToken) -> Result<Vec<Adapter>> {
     key.validate()?;
+    // The background host has the service do it.
+    if crate::platform::windows::host_service::resident::is_owner() {
+        return crate::platform::windows::host_service::requests::wol_configure(key);
+    }
     if crate::platform::windows::components::elevated()? {
         return inspect(Some(key), true, cancel);
     }

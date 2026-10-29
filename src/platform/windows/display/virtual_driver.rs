@@ -172,12 +172,9 @@ impl Driver {
     pub(crate) fn device_instance() -> Result<String> {
         Ok(Self::interface()?.1)
     }
-    pub(crate) fn open() -> Result<Self> {
+    /// A handle to the driver as this process may open it.
+    pub(crate) fn raw() -> Result<crate::platform::windows::host_service::pipe::Handle> {
         let (path, _) = Self::interface()?;
-        // DisplayMutation serializes topology/ownership changes across processes.
-        // Read-only fallback inventory may coexist with the session's watchdog;
-        // the driver also serializes its inventory and exempts only the singleton
-        // fallback from expiry. A second handle does not acquire session ownership.
         let handle = unsafe {
             CreateFileW(
                 PCWSTR(path.as_ptr()),
@@ -190,7 +187,22 @@ impl Driver {
             )
         }
         .context(t().system.driver_display_open_failed)?;
-        let driver = Self(handle, std::cell::Cell::new(false));
+        Ok(crate::platform::windows::host_service::pipe::Handle(handle))
+    }
+    pub(crate) fn open() -> Result<Self> {
+        // DisplayMutation serializes topology/ownership changes across processes.
+        // Read-only fallback inventory may coexist with the session's watchdog;
+        // the driver also serializes its inventory and exempts only the singleton
+        // fallback from expiry. A second handle does not acquire session ownership.
+        // The background host gets its handle from the service.
+        let handle = if crate::platform::windows::host_service::resident::is_owner() {
+            crate::platform::windows::host_service::requests::device(
+                crate::platform::windows::host_service::requests::Device::Display,
+            )?
+        } else {
+            Self::raw()?
+        };
+        let driver = Self(handle.into_raw(), std::cell::Cell::new(false));
         let mut version = [0u8; 4];
         let returned = driver.control(0x8ff, &[], &mut version)?;
         ensure!(

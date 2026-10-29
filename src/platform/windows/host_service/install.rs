@@ -141,7 +141,35 @@ pub(crate) fn verify_running(pid: u32) -> Result<()> {
 pub(crate) fn verify_resident(pid: u32) -> Result<()> {
     verify_endpoint(pid, false)
 }
+/// The service's PID as the background host and its children know it, for
+/// identities that may not query the service manager (LocalService).
+fn known_service_pid() -> Option<u32> {
+    super::resident::service_pid().or_else(|| std::env::var("FARWING_SERVICE_PID").ok()?.parse().ok())
+}
 fn verify_endpoint(pid: u32, check_client: bool) -> Result<()> {
+    match verify_with_manager(pid) {
+        Ok(()) => {}
+        // The service started this process (or its parent): it knows the PID.
+        Err(_) if pid != 0 && known_service_pid() == Some(pid) => {}
+        Err(error) => return Err(error),
+    }
+    // Ordinary users cannot open the SYSTEM process. SCM owns both the verified
+    // executable path and running PID; the pipe supplies its server PID.
+    let registered = images()?;
+    if check_client {
+        let own = super::process::image_hash(&std::env::current_exe()?)?;
+        if own != registered.client && own != registered.host {
+            return Err(NeedsUpdate.into());
+        }
+    }
+    ensure!(
+        super::process::image_hash(&deployment::image()?)? == registered.host,
+        "{}",
+        t().system.service_files_mismatch
+    );
+    Ok(())
+}
+fn verify_with_manager(pid: u32) -> Result<()> {
     let manager = manager(SC_MANAGER_CONNECT)?;
     let service = service(&manager, SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS)?
         .context(t().system.service_host_not_installed)?;
@@ -163,20 +191,6 @@ fn verify_endpoint(pid: u32, check_client: bool) -> Result<()> {
         pid != 0 && state.dwCurrentState == SERVICE_RUNNING && state.dwProcessId == pid,
         "{}",
         t().system.service_invalid_identity
-    );
-    // Ordinary users cannot open the SYSTEM process. SCM owns both the verified
-    // executable path and running PID; the pipe supplies its server PID.
-    let registered = images()?;
-    if check_client {
-        let own = super::process::image_hash(&std::env::current_exe()?)?;
-        if own != registered.client && own != registered.host {
-            return Err(NeedsUpdate.into());
-        }
-    }
-    ensure!(
-        super::process::image_hash(&deployment::image()?)? == registered.host,
-        "{}",
-        t().system.service_files_mismatch
     );
     Ok(())
 }

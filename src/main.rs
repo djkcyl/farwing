@@ -104,6 +104,8 @@ enum Commands {
     PluginVideoHost,
     #[command(hide = true)]
     EncoderProbe,
+    #[command(hide = true)]
+    IdentityCheck,
 
     #[command(hide = true)]
     PluginHost { manifest: PathBuf },
@@ -491,6 +493,7 @@ fn main() -> Result<()> {
                     | Commands::Notification { .. }
                     | Commands::PluginVideoHost
                     | Commands::EncoderProbe
+                    | Commands::IdentityCheck
                     | Commands::DisplayRecovery { .. }
                     | Commands::Component { .. }
                     | Commands::Service
@@ -631,6 +634,7 @@ fn main() -> Result<()> {
         Commands::DisplayRecovery { token } => farwing::application::display_recovery(&token),
         Commands::PluginVideoHost => farwing::plugins::video::host(),
         Commands::EncoderProbe => farwing::application::encoder_probe(),
+        Commands::IdentityCheck => farwing::application::identity_check(),
         Commands::Notification { .. } => {
             unreachable!("notification activation is handled before application startup")
         }

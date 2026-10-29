@@ -289,6 +289,26 @@ fn probe_in_child(
     use std::io::{Read, Write};
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
+    let request = serde_json::to_vec(&ProbeRequest {
+        screen: screen.clone(),
+        gpu_compatibility,
+    })?;
+    // The background host's probe needs no SYSTEM rights: it captures through
+    // the service's agent like everything else.
+    if crate::platform::windows::host_service::resident::is_owner() {
+        use crate::platform::windows::host_service::process;
+        match process::session(std::process::id()).and_then(|session| {
+            process::run_as_local_service(session, false, "encoder-probe", &request, PROBE_TIMEOUT, active)
+        }) {
+            Ok(bytes) => {
+                tracing::info!("encoder probe ran as LocalService");
+                return serde_json::from_slice(&bytes).context("检查进程的结果无效");
+            }
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "encoder probe as LocalService failed; probing as SYSTEM")
+            }
+        }
+    }
     let mut command = Command::new(std::env::current_exe()?);
     command
         .arg("encoder-probe")
@@ -299,10 +319,6 @@ fn probe_in_child(
     crate::diagnostics::logging::configure_child(&mut command);
     let mut child = command.spawn().context("无法启动编码能力检查进程")?;
     let _job = crate::plugins::process::Job::attach(&child);
-    let request = serde_json::to_vec(&ProbeRequest {
-        screen: screen.clone(),
-        gpu_compatibility,
-    })?;
     let mut input = child.stdin.take().context("检查进程没有输入")?;
     let mut output = child.stdout.take().context("检查进程没有输出")?;
     let reader = std::thread::spawn(move || {

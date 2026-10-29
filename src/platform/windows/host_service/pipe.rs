@@ -13,6 +13,14 @@ use windows::{
 };
 
 pub(crate) struct Handle(pub HANDLE);
+impl Handle {
+    /// The handle, no longer closed on drop.
+    pub(crate) fn into_raw(self) -> HANDLE {
+        let handle = self.0;
+        std::mem::forget(self);
+        handle
+    }
+}
 impl Drop for Handle {
     fn drop(&mut self) {
         unsafe {
@@ -63,7 +71,8 @@ impl Pipe {
             let mut descriptor = PSECURITY_DESCRIPTOR::default();
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 if interactive {
-                    w!("D:P(A;;GA;;;SY)(A;;GRGW;;;IU)")
+                    // LocalService: the background host's network-facing work.
+                    w!("D:P(A;;GA;;;SY)(A;;GRGW;;;IU)(A;;GRGW;;;LS)")
                 } else {
                     w!("D:P(A;;GA;;;SY)")
                 },
