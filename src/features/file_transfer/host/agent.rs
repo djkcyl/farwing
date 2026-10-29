@@ -236,6 +236,8 @@ struct Remote {
     session: u32,
     /// Signalled by the agent when it has frames.
     wake: Option<Wake>,
+    /// No request is half written or unanswered: another may follow.
+    whole: bool,
 }
 impl Remote {
     fn new(stop: &CancellationToken) -> Result<Self> {
@@ -259,18 +261,25 @@ impl Remote {
             agent,
             session,
             wake: None,
+            whole: true,
         })
     }
     fn exchange(&mut self, request: &Request, stop: &CancellationToken) -> Result<Reply> {
-        let allowed = || {
-            !stop.is_cancelled() && self.agent.alive() && process::active_session() == self.session
-        };
+        let alive = || self.agent.alive() && process::active_session() == self.session;
+        let allowed = || !stop.is_cancelled() && alive();
+        // Ending before anything is written leaves the stream whole.
+        anyhow::ensure!(allowed(), "{}", t().features.transfer_connection_ended_paused);
+        self.whole = false;
         self.pipe.send_raw(request.encode_to_vec(), allowed)?;
+        // Once sent, the answer is read even as the session ends: the stream
+        // stays whole for the closing exchange and its last notices (a
+        // transfer completed just before the controller left).
         let reply = Reply::decode(
             self.pipe
-                .receive_raw(Duration::from_secs(10), allowed)?
+                .receive_raw(Duration::from_secs(10), alive)?
                 .as_slice(),
         )?;
+        self.whole = true;
         if self.wake.is_none()
             && let Some(name) = &reply.wake
         {
@@ -414,7 +423,7 @@ fn worker(
         // only part of a reply. Never append another request to that stream.
         // It would become the missing payload of the previous frame and leave
         // the user backend waiting for its ten-second receive timeout.
-        if result.is_ok() {
+        if remote.whole {
             if let Ok(reply) = remote.exchange(&close, &CancellationToken::new()) {
                 for notice in reply.notices {
                     updates.publish(notice);

@@ -615,8 +615,15 @@ impl Lease {
             return;
         }
         let mut state = lock(&self.handle.ownership);
-        // Permit this owner's final cancellation report, but never resurrect an old account/session.
-        if !self.current_owner(&state) {
+        // A transfer's last report can come after its participant left (the
+        // session ended as it completed): it still settles the notices shown
+        // for the same account, but never resurrects an old account/session.
+        let present = self.participant.is_none_or(|key| state.participants.contains_key(&key));
+        if present {
+            if !self.current_owner(&state) {
+                return;
+            }
+        } else if !(state.active && self.permission == state.permission) {
             return;
         }
         if let Some(p) = self.participant.and_then(|key| state.participants.get_mut(&key)) {
@@ -630,7 +637,7 @@ impl Lease {
         for value in updates {
             if let Some(old) = notices.iter_mut().find(|n| n.id == value.id) {
                 *old = value;
-            } else {
+            } else if present {
                 if notices.len() >= 24 {
                     let index = notices.iter().position(|n| n.state != 0).unwrap_or(0);
                     notices.remove(index);
