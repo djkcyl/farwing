@@ -5,63 +5,18 @@ use super::{
     wire::Event,
 };
 use crate::i18n::t;
-use crate::platform::windows::host_service::{process, resident};
 use anyhow::Result;
 
-pub(super) struct Native {
-    engine: Engine,
-    // Present only in the already verified service-owned resident. The GUI
-    // cannot select this authority by filename, configuration or elevation.
-    session: Option<NativeSession>,
-}
-#[derive(Clone, Copy)]
-struct NativeSession {
-    id: u32,
-    hardware: bool,
-}
-impl NativeSession {
-    fn current(self) -> bool {
-        process::active_session() == self.id
-            && (!self.hardware
-                || self.id
-                    == unsafe {
-                        windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId()
-                    })
-    }
-}
-impl Native {
-    fn check(&self) -> Result<()> {
-        anyhow::ensure!(
-            self.session.is_none_or(NativeSession::current),
-            "{}",
-            t().features.input_windows_session_ended
-        );
-        Ok(())
-    }
-}
+/// The service's input agent (`broker`), or this process's own unprivileged
+/// engine when no service runs (no secure desktop, no Ctrl+Alt+Del).
 pub(super) enum Backend {
-    Local(Native),
+    Local(Engine),
     Service(Remote),
 }
 impl Backend {
+    /// The background host, like the portable host, injects through the
+    /// service's input agent.
     pub fn new(require_service: bool, permitted: impl Fn() -> bool) -> Result<Self> {
-        if resident::is_owner() {
-            let session = process::session(std::process::id())?;
-            let hardware = session
-                == unsafe { windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId() };
-            anyhow::ensure!(
-                permitted() && session == process::active_session(),
-                "{}",
-                t().features.input_session_ended
-            );
-            return Ok(Self::Local(Native {
-                engine: Engine::new(hardware, std::process::id(), true)?,
-                session: Some(NativeSession {
-                    id: session,
-                    hardware,
-                }),
-            }));
-        }
         Ok(match Remote::connect(permitted)? {
             Some(remote) => Self::Service(remote),
             None => {
@@ -70,32 +25,22 @@ impl Backend {
                     "{}",
                     t().features.input_service_not_restored
                 );
-                Self::Local(Native {
-                    engine: Engine::new(false, std::process::id(), false)?,
-                    session: None,
-                })
+                Self::Local(Engine::new(false, std::process::id(), false)?)
             }
         })
     }
     pub fn service(&self) -> bool {
-        matches!(
-            self,
-            Self::Service(_)
-                | Self::Local(Native {
-                    session: Some(_),
-                    ..
-                })
-        )
+        matches!(self, Self::Service(_))
     }
     pub fn healthy(&self) -> bool {
         match self {
-            Self::Local(native) => native.session.is_none_or(NativeSession::current),
+            Self::Local(_) => true,
             Self::Service(remote) => remote.healthy(),
         }
     }
     pub fn backend(&self) -> &str {
         match self {
-            Self::Local(e) => e.engine.backend(),
+            Self::Local(e) => e.backend(),
             Self::Service(e) => e.backend(),
         }
     }
@@ -109,20 +54,10 @@ impl Backend {
     ) -> Result<()> {
         match self {
             Self::Local(e) => {
-                e.check()?;
-                let session = e.session;
-                let allowed = || permitted() && session.is_none_or(NativeSession::current);
-                e.engine.hold_timeout(hold);
+                e.hold_timeout(hold);
                 for event in events {
-                    e.engine.apply(event, geometry.clone(), &allowed)?;
-                    if e.engine.take_sas() {
-                        anyhow::ensure!(
-                            session.is_some(),
-                            "{}",
-                            t().features.input_sas_needs_service
-                        );
-                        super::broker::secure_attention(&allowed)?;
-                    }
+                    e.apply(event, geometry.clone(), &permitted)?;
+                    anyhow::ensure!(!e.take_sas(), "{}", t().features.input_sas_needs_service);
                 }
                 Ok(())
             }
@@ -131,25 +66,19 @@ impl Backend {
     }
     pub fn release(&mut self) -> Result<()> {
         match self {
-            Self::Local(e) => e.engine.release(),
+            Self::Local(e) => e.release(),
             Self::Service(e) => e.release(),
         }
     }
     pub fn synchronize(&mut self, geometry: Geometry) -> Result<()> {
         match self {
-            Self::Local(e) => {
-                e.check()?;
-                e.engine.synchronize(geometry)
-            }
+            Self::Local(e) => e.synchronize(geometry),
             Self::Service(e) => e.synchronize(geometry),
         }
     }
     pub fn tick(&mut self) -> Result<()> {
         match self {
-            Self::Local(e) => {
-                e.check()?;
-                e.engine.tick()
-            }
+            Self::Local(e) => e.tick(),
             Self::Service(e) => e.tick(),
         }
     }

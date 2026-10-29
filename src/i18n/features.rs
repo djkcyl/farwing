@@ -214,7 +214,6 @@ pub(crate) struct Features {
     pub screen_replacement_identity_missing: &'static str,
     pub screen_recovery_check_interrupted: &'static str,
     // host input (src/features/host/input)
-    pub input_windows_session_ended: &'static str,
     pub input_session_ended: &'static str,
     pub input_service_not_restored: &'static str,
     pub input_sas_needs_service: &'static str,
@@ -1564,7 +1563,6 @@ pub(crate) const ZH_CN: Features = Features {
     screen_replacement_identity_missing: "替代显示器缺少标识",
     screen_recovery_check_interrupted: "屏幕恢复检查中断",
     // host input (src/features/host/input)
-    input_windows_session_ended: "输入所属的 Windows 会话已结束",
     input_session_ended: "输入会话已结束",
     input_service_not_restored: "被控服务未恢复运行",
     input_sas_needs_service: "Ctrl+Alt+Del 需要安装并启用被控服务",
@@ -2841,7 +2839,6 @@ pub(crate) const EN: Features = Features {
     screen_replacement_identity_missing: "The replacement display has no identity",
     screen_recovery_check_interrupted: "Display recovery check interrupted",
     // host input (src/features/host/input)
-    input_windows_session_ended: "The Windows session for input has ended",
     input_session_ended: "The input session has ended",
     input_service_not_restored: "The host service hasn't resumed",
     input_sas_needs_service: "Ctrl+Alt+Del requires the host service to be installed and enabled",

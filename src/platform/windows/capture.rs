@@ -23,7 +23,6 @@ mod duplication;
 mod inventory;
 mod power;
 mod recovery;
-mod session;
 mod warmup;
 pub(crate) use warmup::{keep_for_reconnect, warm_up};
 
@@ -361,7 +360,6 @@ pub(crate) struct Frame {
 }
 
 enum Backend {
-    Session(Box<session::Session>),
     Dxgi(Duplication),
     Gdi(super::gdi::Capture),
     Remote(Box<super::capture_service::Client>),
@@ -384,25 +382,9 @@ pub(crate) struct Desktop {
     _gpu_scheduling: Option<super::gpu_scheduling::Lease>,
 }
 impl Desktop {
+    /// The background host, like the portable host, captures through the
+    /// service's capture agent: only the agent runs on the secure desktop.
     pub fn open_selected(selected: &Screen) -> Result<Self> {
-        if super::host_service::resident::is_owner() {
-            let local = session::Session::new(selected)?;
-            return Ok(Self {
-                device: local.current().device.clone(),
-                screen: local.current().screen.clone(),
-                generation: 0,
-                available: true,
-                backend: Backend::Session(Box::new(local)),
-                recovery: recovery::Recovery::new(true, std::time::Instant::now()),
-                recovery_probe: None,
-                refreshed: std::time::Instant::now(),
-                inventory: None,
-                sampler: Default::default(),
-                cursor: None,
-                _power: None,
-                _gpu_scheduling: None,
-            });
-        }
         if let Some(remote) = super::capture_service::Client::connect(selected)? {
             return Ok(Self {
                 device: remote.device.clone(),
@@ -442,7 +424,6 @@ impl Desktop {
             }
         };
         let device = match &backend {
-            Backend::Session(s) => s.current().device.clone(),
             Backend::Dxgi(d) => d.device.clone(),
             Backend::Gdi(g) => g.device.clone(),
             Backend::Remote(_) => unreachable!(),
@@ -469,7 +450,6 @@ impl Desktop {
     }
     pub fn backend_name(&self) -> &'static str {
         match &self.backend {
-            Backend::Session(s) => s.backend,
             Backend::Dxgi(_) => "DXGI",
             Backend::Gdi(_) => "GDI",
             Backend::Remote(r) => r.backend_name(),
@@ -477,7 +457,6 @@ impl Desktop {
     }
     pub fn hdr_available(&self) -> bool {
         match &self.backend {
-            Backend::Session(s) => s.hdr,
             Backend::Dxgi(d) => d.source_hdr.is_some(),
             Backend::Gdi(_) => false,
             Backend::Remote(r) => r.hdr,
@@ -486,7 +465,6 @@ impl Desktop {
     fn replace(&mut self, backend: Backend) {
         self.recovery_probe = None;
         self.device = match &backend {
-            Backend::Session(s) => s.current().device.clone(),
             Backend::Dxgi(d) => d.device.clone(),
             Backend::Gdi(g) => g.device.clone(),
             Backend::Remote(r) => r.device.clone(),
@@ -502,15 +480,6 @@ impl Desktop {
         hdr: bool,
         maximum: (u32, u32),
     ) -> Result<Option<Frame>> {
-        if let Backend::Session(local) = &mut self.backend {
-            let frame = local.next(timeout, tier, cursor, hdr, maximum)?;
-            self.device = local.device.clone();
-            self.screen = local.screen.clone();
-            self.available = local.available;
-            self.cursor = local.cursor.clone();
-            self.generation = local.generation();
-            return Ok(frame);
-        }
         if let Backend::Remote(remote) = &mut self.backend {
             let result = remote.next(timeout, tier, cursor, hdr, maximum);
             self.device = remote.device.clone();
@@ -600,7 +569,7 @@ impl Desktop {
         let frame = match &mut self.backend {
             Backend::Dxgi(d) => d.next(timeout, tier, cursor, hdr, maximum),
             Backend::Gdi(g) => g.next(request, cursor).map(Some),
-            Backend::Remote(_) | Backend::Session(_) => unreachable!(),
+            Backend::Remote(_) => unreachable!(),
         };
         match frame {
             Ok(frame) => {
