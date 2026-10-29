@@ -406,6 +406,7 @@ impl Handle {
             stop: None,
             assistance: None,
             grants: None,
+            control_limited: false,
             participant: None,
         }
     }
@@ -428,6 +429,9 @@ pub(crate) struct Lease {
     assistance: Option<tokio_util::sync::CancellationToken>,
     /// `None` before a session binds its participant's grants.
     grants: Option<SessionGrants>,
+    /// The server does not let this controller (a browser) control: the
+    /// host's user cannot allow it for the session either.
+    control_limited: bool,
     /// The participant this lease belongs to (`peer_lease`).
     participant: Option<u64>,
 }
@@ -499,5 +503,18 @@ mod tests {
         handle.set_max_participants(99).unwrap();
         assert_eq!(handle.max_participants(), farwing_protocol::limits::MAX_PARTICIPANTS);
         assert!(lease.peer_lease().is_ok());
+    }
+
+    #[test]
+    fn control_allowed_for_the_session_stays_within_the_server_limit() {
+        let (handle, lease) = allowed();
+        let limit = ["view".to_owned(), "audio".to_owned()];
+        for (limit, controls) in [(None, true), (Some(&limit[..]), false)] {
+            let peer = lease.with_grants(vec!["view".into()]).with_limit(limit).peer_lease().unwrap();
+            let key = peer.participant().unwrap();
+            lock(&handle.ownership).participants.get_mut(&key).unwrap().temporary_control = true;
+            assert_eq!(peer.granted(CONTROL), controls);
+            assert_eq!(peer.grants().iter().any(|cap| cap == CONTROL), controls);
+        }
     }
 }

@@ -1042,8 +1042,10 @@ export class Viewer {
   /// Ask for the control token; input is forwarded only once it is held.
   /// `ask`: without the grant, ask the host's user for this connection.
   async takeControl(automatic = false, ask = false): Promise<ControlState> {
-    if (!ask && !this.grants.includes('control')) {
-      return { held: false, pending: false, message: t().viewer.control.noPermission, canAsk: !automatic };
+    // Without the grant, the host says whether its user may be asked (a
+    // server may not let browsers control at all).
+    if (automatic && !this.grants.includes('control')) {
+      return { held: false, pending: false, message: t().viewer.control.noPermission, canAsk: false };
     }
     this.turnPending = true;
     this.turnAsking = ask;

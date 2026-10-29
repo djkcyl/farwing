@@ -278,7 +278,7 @@ TurnRequest {
 
 | reason | code | 含义 |
 |--------|------|------|
-| `unavailable` | unavailable | 本次连接无法控制 |
+| `unavailable` | unavailable | 本次连接无法控制（含服务器不允许网页端控制；不能“请求本次控制”） |
 | `not_allowed` | forbidden | 没有 `control` 能力 |
 | `held` | busy | 他人持有（持有者见 `PARTICIPANTS.controlling`） |
 | `shared` | busy | 多人会话中不自动获取 |

@@ -741,7 +741,9 @@ impl Session {
                 .any(|cap| cap == incoming.purpose.required_cap()),
             "主控没有本次会话所需的权限"
         );
-        let authorization = authorization.with_grants(grants);
+        let authorization = authorization
+            .with_grants(grants)
+            .with_limit(incoming.controller.effective_caps_limit().as_deref());
         let direct_ports = signal
             .router()
             .and_then(|router| router.session_ports(&session_id));

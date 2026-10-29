@@ -419,6 +419,7 @@ impl Business {
                     if turn.take
                         && turn.ask
                         && lease.requested()
+                        && !lease.control_limited()
                         && !lease.granted(farwing_protocol::caps::CONTROL)
                     {
                         // The host's user answers within a minute; the
@@ -756,6 +757,10 @@ fn control_turn(
     if !take {
         participants::release_control(key);
         return Ok(());
+    }
+    // Not even the host's user can allow it: nothing to ask.
+    if lease.control_limited() {
+        return Err(refusal::UNAVAILABLE);
     }
     if !lease.requested() || !lease.granted(farwing_protocol::caps::CONTROL) {
         return Err(refusal::NOT_ALLOWED);

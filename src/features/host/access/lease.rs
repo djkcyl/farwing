@@ -137,6 +137,16 @@ impl Lease {
         )));
         lease
     }
+    /// Apply the server's limit on this controller (browsers).
+    pub(crate) fn with_limit(&self, limit: Option<&[String]>) -> Self {
+        let mut lease = self.clone();
+        lease.control_limited = limit.is_some_and(|limit| !limit.iter().any(|c| c == farwing_protocol::caps::CONTROL));
+        lease
+    }
+    /// The server does not let this controller control at all.
+    pub(crate) fn control_limited(&self) -> bool {
+        self.control_limited
+    }
     /// Replace the participant's capabilities (`session.permissions`).
     pub(crate) fn set_grants(&self, grants: Vec<String>) {
         if let Some(shared) = &self.grants {
@@ -166,6 +176,9 @@ impl Lease {
     }
     /// The host's user let this participant control for this session.
     pub(super) fn temporary_control(&self) -> bool {
+        if self.control_limited {
+            return false;
+        }
         let state = lock(&self.handle.ownership);
         self.participant
             .and_then(|key| state.participants.get(&key))
@@ -193,7 +206,7 @@ impl Lease {
     /// Ask the host's user to let this participant control for this
     /// session only. True once allowed.
     pub(crate) async fn ask_control(&self) -> bool {
-        let Some(key) = self.participant else {
+        let Some(key) = self.participant.filter(|_| !self.control_limited) else {
             return false;
         };
         let profile = self.profile();
@@ -443,6 +456,7 @@ impl Lease {
             stop: None,
             assistance: self.assistance.clone(),
             grants: self.grants.clone(),
+            control_limited: self.control_limited,
             participant: Some(key),
         }))
     }
