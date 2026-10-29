@@ -585,7 +585,11 @@ pub async fn dev_files(
         let handle = service::start(Arc::clone(&client), device, options);
         handle.send(Command::Connect)?;
         let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
-        wait_files(&handle, deadline, &|s| s.connected).await?;
+        // A refused connection (no permission, device offline) is final.
+        let connected = wait_files(&handle, deadline, &|s| s.connected || (!s.connecting && s.error.is_some())).await?;
+        if !connected.connected {
+            anyhow::bail!("连接失败：{}", connected.error.as_deref().unwrap_or("-"));
+        }
         println!("文件服务已连接");
         let before = handle.snapshot().remote.revision;
         handle.send(Command::Browse(true, list.to_owned()))?;
