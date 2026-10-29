@@ -1079,6 +1079,19 @@ fn clipboard_checks(
         );
     };
 
+    // The host announces an offer on the system clipboard (rendered on
+    // demand); under load that can take longer than usual.
+    let wait_format = |id: u32| -> Result<()> {
+        let started = std::time::Instant::now();
+        while unsafe { windows::Win32::System::DataExchange::IsClipboardFormatAvailable(id) }.is_err() {
+            anyhow::ensure!(started.elapsed() < Duration::from_secs(15), "被控剪贴板 15 秒内没有出现格式 {id}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if started.elapsed() > Duration::from_millis(500) {
+            println!("  被控剪贴板就绪：{:.1} 秒", started.elapsed().as_secs_f64());
+        }
+        Ok(())
+    };
     println!("1. 主控 → 被控：文本、HTML、图像（DIB）与 24 MiB 自定义格式");
     let text = utf16("Farwing 剪贴板 v2 测试 ✓ 0123456789");
     let html_id = system::register("HTML Format");
@@ -1102,7 +1115,7 @@ fn clipboard_checks(
         ],
         Vec::new(),
     )?;
-    std::thread::sleep(Duration::from_millis(1500));
+    wait_format(blob_id)?;
     same("文本", &system::data(13)?, &text)?;
     same("HTML", &system::data(html_id)?, &html)?;
     same("图像", &system::data(8)?, &dib)?;
@@ -1119,7 +1132,7 @@ fn clipboard_checks(
         (FileItem { path: "Farwing剪贴板\\大文件.bin".into(), attributes: 0x20, mtime: 133_700_000_000_000_000, size: 40 * 1024 * 1024 + 5 }, pattern(40 * 1024 * 1024 + 5, 9)),
     ];
     exchange.memory_offer(Vec::new(), files.clone())?;
-    std::thread::sleep(Duration::from_millis(1500));
+    wait_format(system::register("FileGroupDescriptorW"))?;
     let started = std::time::Instant::now();
     let rendered = system::files()?;
     timed("文件读取", files.iter().map(|(_, data)| data.len()).sum(), started);
