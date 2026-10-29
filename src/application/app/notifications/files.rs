@@ -21,9 +21,9 @@ pub(super) fn cards(notices: Vec<Notice>, now: i64) -> Vec<(String, Card)> {
                 clean(&n.error)
             } else {
                 match n.state {
-                    RUNNING => format!("{} / {}", bytes(n.done), bytes(n.total)),
+                    RUNNING => format!("{} / {}{}", bytes(n.done), bytes(n.total), rate(n.rate)),
                     COMPLETE if n.saved == 0 => text.no_new_files.into(),
-                    COMPLETE => (text.files_saved)(&bytes(n.done), n.saved),
+                    COMPLETE => format!("{}{}", (text.files_saved)(&bytes(n.done), n.saved), rate(n.rate)),
                     PAUSED => String::new(),
                     CANCELLED => text.transfer_cancelled.into(),
                     _ => text.transfer_access_lost.into(),
@@ -64,6 +64,9 @@ pub(super) fn cards(notices: Vec<Notice>, now: i64) -> Vec<(String, Card)> {
         })
         .collect()
 }
+fn rate(n: u64) -> String {
+    if n == 0 { String::new() } else { format!(" · {}/s", bytes(n)) }
+}
 fn bytes(n: u64) -> String {
     if n >= 1024 * 1024 * 1024 {
         format!("{:.1} GiB", n as f64 / (1024. * 1024. * 1024.))
@@ -73,5 +76,32 @@ fn bytes(n: u64) -> String {
         format!("{:.1} KiB", n as f64 / 1024.)
     } else {
         format!("{n} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn running_and_finished_transfers_show_their_speed() {
+        let notice = |state, done, rate| Notice {
+            id: "a".into(),
+            receiving: true,
+            name: "x.bin".into(),
+            total: 4 << 30,
+            done,
+            state,
+            updated: 100,
+            saved: 1,
+            rate,
+            ..Default::default()
+        };
+        let running = cards(vec![notice(RUNNING, 1 << 30, 34 << 20)], 100);
+        assert!(running[0].1.detail.ends_with("1.0 GiB / 4.0 GiB · 34.0 MiB/s"), "{}", running[0].1.detail);
+        let done = cards(vec![notice(COMPLETE, 4 << 30, 30 << 20)], 100);
+        assert!(done[0].1.detail.ends_with(" · 30.0 MiB/s"), "{}", done[0].1.detail);
+        let unknown = cards(vec![notice(RUNNING, 0, 0)], 100);
+        assert!(!unknown[0].1.detail.contains("/s"), "{}", unknown[0].1.detail);
     }
 }

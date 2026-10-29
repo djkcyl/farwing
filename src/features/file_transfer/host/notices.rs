@@ -32,6 +32,9 @@ pub(crate) struct Notice {
     pub updated: i64,
     #[prost(uint32, tag = "10")]
     pub saved: u32,
+    /// Bytes per second: recent while running, the average once it ended.
+    #[prost(uint64, tag = "11")]
+    pub rate: u64,
 }
 impl Notice {
     pub fn interrupt(&mut self) {
@@ -71,6 +74,8 @@ impl Journal {
             journal: self.clone(),
             notice,
             last: Instant::now(),
+            first: None,
+            sample: None,
         }
     }
 }
@@ -78,6 +83,10 @@ pub(crate) struct Progress {
     journal: Journal,
     notice: Notice,
     last: Instant,
+    /// When the first bytes moved.
+    first: Option<Instant>,
+    /// The last speed sample: when, and how much was done then.
+    sample: Option<(Instant, u64)>,
 }
 impl Progress {
     pub fn describe(&mut self, items: &[FileInfo], folder: &std::path::Path) {
@@ -100,6 +109,11 @@ impl Progress {
         self.emit();
     }
     pub fn advance(&mut self, bytes: u64) {
+        if self.first.is_none() {
+            let now = Instant::now();
+            self.first = Some(now);
+            self.sample = Some((now, self.notice.done));
+        }
         self.notice.done = self
             .notice
             .done
@@ -122,8 +136,23 @@ impl Progress {
         self.emit();
     }
     fn emit(&mut self) {
+        let now = Instant::now();
+        if self.notice.state == RUNNING {
+            if let Some((at, done)) = self.sample
+                && now.duration_since(at) >= Duration::from_millis(900)
+            {
+                let current = (self.notice.done.saturating_sub(done) as f64
+                    / now.duration_since(at).as_secs_f64()) as u64;
+                // Smoothed over the last few seconds.
+                self.notice.rate = if self.notice.rate == 0 { current } else { (self.notice.rate + current) / 2 };
+                self.sample = Some((now, self.notice.done));
+            }
+        } else if let Some(first) = self.first {
+            let seconds = now.duration_since(first).as_secs_f64();
+            self.notice.rate = if seconds > 0.05 { (self.notice.done as f64 / seconds) as u64 } else { 0 };
+        }
         self.notice.updated = chrono::Utc::now().timestamp();
-        self.last = Instant::now();
+        self.last = now;
         self.journal.publish(self.notice.clone());
     }
 }
