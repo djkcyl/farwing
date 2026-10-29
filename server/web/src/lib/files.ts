@@ -567,12 +567,16 @@ interface Writable {
 
 interface FileHandle {
   createWritable(): Promise<Writable>;
+  getFile(): Promise<File>;
+  /// Chromium only.
+  remove?(): Promise<void>;
 }
 
 interface DirectoryHandle {
   name: string;
   getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<DirectoryHandle>;
   getFileHandle(name: string, options?: { create?: boolean }): Promise<FileHandle>;
+  removeEntry(name: string, options?: { recursive?: boolean }): Promise<void>;
 }
 
 interface FilePickers {
@@ -617,7 +621,12 @@ export async function saveTarget(name: string, size: number): Promise<DownloadSi
       return {
         write: (data) => writable.write(data as Uint8Array<ArrayBuffer>),
         close: () => writable.close(),
-        abort: () => writable.abort(),
+        abort: async () => {
+          await writable.abort();
+          // The picker made the file: an unfinished download leaves none
+          // (only an empty file goes, never what was there before).
+          if ((await handle.getFile()).size === 0) await handle.remove?.().catch(() => undefined);
+        },
       };
     } catch (error) {
       if ((error as DOMException).name === 'AbortError') return undefined;
@@ -637,8 +646,9 @@ export async function saveTarget(name: string, size: number): Promise<DownloadSi
   };
 }
 
-/// A folder written into a local directory (File System Access API).
-export function directoryTarget(root: DirectoryHandle): DownloadTarget {
+/// A folder written into a local directory (File System Access API);
+/// `discard` removes it when the download does not finish.
+export function directoryTarget(root: DirectoryHandle, discard?: () => Promise<void>): DownloadTarget {
   let writable: Writable | undefined;
   const dirOf = async (segments: string[]) => {
     let dir = root;
@@ -667,6 +677,7 @@ export function directoryTarget(root: DirectoryHandle): DownloadTarget {
     abort: async () => {
       await writable?.abort().catch(() => undefined);
       writable = undefined;
+      await discard?.().catch(() => undefined);
     },
   };
 }
@@ -704,9 +715,9 @@ export async function saveFolderTarget(folder: string, size: number): Promise<Do
   if (picker) {
     try {
       const parent = await picker.call(window, { mode: 'readwrite', id: 'farwing-downloads' });
-      // A free name: "folder", "folder (2)", …
+      // A free name: "folder", "folder (1)", … (as the host names them).
       let name = safeName(folder);
-      for (let n = 2; ; n++) {
+      for (let n = 1; ; n++) {
         try {
           await parent.getDirectoryHandle(name);
           name = `${safeName(folder)} (${n})`;
@@ -714,7 +725,8 @@ export async function saveFolderTarget(folder: string, size: number): Promise<Do
           break;
         }
       }
-      return directoryTarget(await parent.getDirectoryHandle(name, { create: true }));
+      const created = await parent.getDirectoryHandle(name, { create: true });
+      return directoryTarget(created, () => parent.removeEntry(name, { recursive: true }));
     } catch (error) {
       if ((error as DOMException).name === 'AbortError') return undefined;
       // Not allowed here: fall back to a ZIP.
