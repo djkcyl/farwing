@@ -21,10 +21,23 @@ struct Seen {
 // Kernel process handles may be waited on from any thread; the mutex owns close.
 unsafe impl Send for Seen {}
 static LAST_PROCESS: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
-fn remember(pid: u32) -> Result<()> {
-    use windows::Win32::System::Threading::*;
-    let process = Handle(unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid)? });
+fn remember(pid: u32, process: Handle) {
     *LAST_PROCESS.lock().unwrap_or_else(|e| e.into_inner()) = Some(Seen { pid, process });
+}
+/// `pid` is the signed-in user's backend in `session`: this image, that
+/// session, the user's own logon (needs the service's privileges).
+pub(super) fn verify(pid: u32, session: u32) -> Result<()> {
+    ensure!(
+        process::session(pid)? == session,
+        "{}",
+        t().system.service_user_backend_session_mismatch
+    );
+    process::verify_image(pid)?;
+    ensure!(
+        process_identity(pid)? == user_identity(session)?,
+        "{}",
+        t().system.service_user_backend_identity_mismatch
+    );
     Ok(())
 }
 pub(crate) struct Observer(Handle);
@@ -326,12 +339,9 @@ impl Lease {
             "{}",
             t().system.service_user_backend_session_mismatch
         );
-        process::verify_image(pid)?;
-        ensure!(
-            process_identity(pid)? == user_identity(session)?,
-            "{}",
-            t().system.service_user_backend_identity_mismatch
-        );
+        // The service checks the user's identity and hands over a handle
+        // to wait on the backend.
+        let process = super::requests::user_backend(session, pid)?;
         control.send(
             &Request::Open {
                 role,
@@ -344,7 +354,7 @@ impl Lease {
             "{}",
             t().system.service_user_backend_refused
         );
-        remember(pid)?;
+        remember(pid, process);
         Ok(Self { control, pid })
     }
     pub fn alive(&self) -> bool {
@@ -435,14 +445,9 @@ pub(crate) fn idle() -> Result<bool> {
             "{}",
             t().system.service_user_backend_session_mismatch
         );
-        process::verify_image(pid)?;
-        ensure!(
-            process_identity(pid)? == user_identity(session)?,
-            "{}",
-            t().system.service_user_backend_identity_mismatch
-        );
         drop(seen);
-        remember(pid)?;
+        let process = super::requests::user_backend(session, pid)?;
+        remember(pid, process);
         seen = LAST_PROCESS.lock().unwrap_or_else(|e| e.into_inner());
     }
     pipe.send(&Request::Ping, || true)?;

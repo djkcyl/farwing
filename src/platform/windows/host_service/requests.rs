@@ -23,6 +23,17 @@ pub(crate) enum Request {
     WolConfigure(crate::platform::windows::wol::setup::AdapterKey),
     /// A handle to a device, duplicated into the caller.
     Device(Device),
+    /// Check that `pid` is the signed-in user's backend in `session`; a
+    /// handle to wait for it ends.
+    UserBackend { session: u32, pid: u32 },
+    /// Where the signed-in user's wallpaper is.
+    WallpaperSource,
+    /// The user's wallpaper, prepared for the device card (JPEG).
+    WallpaperImage(crate::platform::windows::device_profile::WallpaperSource),
+    /// Make the Farwing devices the user's default speakers and microphone
+    /// (`None`: give the user's own back); kept until changed or the
+    /// resident leaves.
+    AudioRouting(Option<(bool, bool)>),
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -39,6 +50,9 @@ enum Reply {
     Adapters(Vec<crate::platform::windows::wol::setup::Adapter>),
     /// A handle value valid in the caller's process.
     Handle(u64),
+    Wallpaper(crate::platform::windows::device_profile::WallpaperSource),
+    /// Base64: JSON carries bytes as numbers otherwise.
+    Bytes(String),
     Error(String),
 }
 
@@ -66,15 +80,37 @@ fn connection(pipe: &Pipe, running: &impl Fn() -> bool, child: &AtomicU32) -> Re
         t().system.service_resident_identity_mismatch
     );
     let current = || running() && child.load(Ordering::Acquire) == pid;
+    // The resident's default-device routing; dropped (restored) when it leaves.
+    let mut routing: Option<crate::platform::windows::virtual_audio::Routing> = None;
     while current() {
         if !pipe.available_within(super::resident::IDLE_WAIT)? {
+            if let Some(routing) = &mut routing
+                && let Err(error) = routing.maintain()
+            {
+                tracing::debug!(%error, "default audio devices not maintained");
+            }
             continue;
         }
         let request: Request = pipe.receive_timeout(Duration::from_secs(5), current)?;
-        let reply = handle(request, pid).unwrap_or_else(|error| Reply::Error(format!("{error:#}")));
+        let reply = match request {
+            Request::AudioRouting(wanted) => route_audio(&mut routing, wanted),
+            request => handle(request, pid),
+        }
+        .unwrap_or_else(|error| Reply::Error(format!("{error:#}")));
         pipe.send(&reply, current)?;
     }
     Ok(())
+}
+
+fn route_audio(
+    routing: &mut Option<crate::platform::windows::virtual_audio::Routing>,
+    wanted: Option<(bool, bool)>,
+) -> Result<Reply> {
+    match wanted {
+        Some((speakers, microphone)) => routing.get_or_insert_with(Default::default).apply(speakers, microphone)?,
+        None => *routing = None,
+    }
+    Ok(Reply::Done)
 }
 
 fn handle(request: Request, pid: u32) -> Result<Reply> {
@@ -88,6 +124,20 @@ fn handle(request: Request, pid: u32) -> Result<Reply> {
             &tokio_util::sync::CancellationToken::new(),
         )?),
         Request::Device(device) => Reply::Handle(duplicate_into(open(device)?, pid)?),
+        Request::UserBackend { session, pid: backend } => {
+            super::user_backend::verify(backend, session)?;
+            use windows::Win32::System::Threading::*;
+            let process = Handle(unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, backend)? });
+            Reply::Handle(duplicate_into(process, pid)?)
+        }
+        Request::WallpaperSource => Reply::Wallpaper(crate::platform::windows::device_profile::wallpaper_source()?),
+        Request::WallpaperImage(source) => {
+            use base64::Engine;
+            Reply::Bytes(base64::engine::general_purpose::STANDARD.encode(
+                crate::platform::windows::device_profile::wallpaper_image(&source)?,
+            ))
+        }
+        Request::AudioRouting(_) => unreachable!("handled with the connection's routing"),
     })
 }
 
@@ -159,6 +209,34 @@ pub(crate) fn wol_configure(
         Reply::Adapters(adapters) => Ok(adapters),
         _ => anyhow::bail!("{}", t().system.service_message_invalid),
     }
+}
+
+/// Verify the user backend `pid` of `session`; a handle to wait on it.
+pub(crate) fn user_backend(session: u32, pid: u32) -> Result<Handle> {
+    match ask(Request::UserBackend { session, pid })? {
+        Reply::Handle(value) => Ok(Handle(windows::Win32::Foundation::HANDLE(value as *mut _))),
+        _ => anyhow::bail!("{}", t().system.service_message_invalid),
+    }
+}
+
+pub(crate) fn wallpaper_source() -> Result<crate::platform::windows::device_profile::WallpaperSource> {
+    match ask(Request::WallpaperSource)? {
+        Reply::Wallpaper(source) => Ok(source),
+        _ => anyhow::bail!("{}", t().system.service_message_invalid),
+    }
+}
+
+pub(crate) fn wallpaper_image(source: &crate::platform::windows::device_profile::WallpaperSource) -> Result<Vec<u8>> {
+    use base64::Engine;
+    match ask(Request::WallpaperImage(source.clone()))? {
+        Reply::Bytes(bytes) => Ok(base64::engine::general_purpose::STANDARD.decode(bytes)?),
+        _ => anyhow::bail!("{}", t().system.service_message_invalid),
+    }
+}
+
+/// Route the default audio devices to Farwing's (`None`: back to the user's).
+pub(crate) fn audio_routing(wanted: Option<(bool, bool)>) -> Result<()> {
+    ask(Request::AudioRouting(wanted)).map(drop)
 }
 
 /// `device`, opened by the service for this process.

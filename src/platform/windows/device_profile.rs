@@ -344,7 +344,7 @@ pub(crate) fn lan_ipv4_addresses() -> Vec<std::net::Ipv4Addr> {
     Vec::new()
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct WallpaperSource {
     pub path: PathBuf,
     configured_path: PathBuf,
@@ -357,6 +357,10 @@ impl WallpaperSource {
     }
 }
 pub(crate) fn wallpaper_source() -> Result<WallpaperSource> {
+    // The background host reads the user's wallpaper through the service.
+    if super::host_service::resident::is_owner() {
+        return super::host_service::requests::wallpaper_source();
+    }
     let user = WallpaperUser::enter()?;
     wallpaper_source_inner(&user)
 }
@@ -544,6 +548,9 @@ fn transcoded_source(bytes: &[u8]) -> Option<PathBuf> {
 }
 
 pub(crate) fn wallpaper_image(source: &WallpaperSource) -> Result<Vec<u8>> {
+    if super::host_service::resident::is_owner() {
+        return super::host_service::requests::wallpaper_image(source);
+    }
     let user = WallpaperUser::enter()?;
     let mut bytes = Vec::new();
     std::fs::File::open(&source.path)?
