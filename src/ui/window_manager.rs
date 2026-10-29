@@ -21,6 +21,9 @@ pub(crate) enum Event {
 pub(crate) enum Request {
     ShowMain,
     Exit,
+    /// Close the main window and its tray icon; the process keeps working
+    /// in the background until it is opened again.
+    Leave,
     Open {
         key: String,
         config: WindowConfig,

@@ -25,6 +25,9 @@ pub(crate) enum TrayState {
     Disabled = 2,
 }
 static STATE: AtomicU8 = AtomicU8::new(TrayState::Idle as u8);
+/// Exiting would also stop a background host: the menu offers leaving the
+/// device center (the host keeps running) and quitting completely.
+static FULL_EXIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The taskbar is light (Windows' "default app mode" applies to apps only).
 fn light_taskbar() -> bool {
@@ -132,7 +135,8 @@ impl Tray {
             Ok(tray)
         }
     }
-    pub fn set_state(&self, state: TrayState) {
+    pub fn set_state(&self, state: TrayState, full_exit: bool) {
+        FULL_EXIT.store(full_exit, Ordering::Relaxed);
         if STATE.swap(state as u8, Ordering::Relaxed) != state as u8 {
             show(self.window, NIM_MODIFY);
         }
@@ -169,10 +173,17 @@ unsafe extern "system" fn procedure(
                 if let Ok(menu) = CreatePopupMenu() {
                     // In the language at the time the menu opens.
                     let open = HSTRING::from(t().controls.tray_open);
-                    let exit = HSTRING::from(t().controls.tray_exit);
                     let _ = AppendMenuW(menu, MF_STRING, 1, &open);
                     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
-                    let _ = AppendMenuW(menu, MF_STRING, 2, &exit);
+                    if FULL_EXIT.load(Ordering::Relaxed) {
+                        let leave = HSTRING::from(t().controls.tray_leave);
+                        let quit = HSTRING::from(t().controls.tray_quit);
+                        let _ = AppendMenuW(menu, MF_STRING, 3, &leave);
+                        let _ = AppendMenuW(menu, MF_STRING, 2, &quit);
+                    } else {
+                        let exit = HSTRING::from(t().controls.tray_exit);
+                        let _ = AppendMenuW(menu, MF_STRING, 2, &exit);
+                    }
                     let mut point = POINT::default();
                     let _ = GetCursorPos(&mut point);
                     let _ = SetForegroundWindow(window);
@@ -191,6 +202,7 @@ unsafe extern "system" fn procedure(
                     let request = match selected {
                         1 => Some(super::window_manager::Request::ShowMain),
                         2 => Some(super::window_manager::Request::Exit),
+                        3 => Some(super::window_manager::Request::Leave),
                         _ => None,
                     };
                     if let Some(request) = request {

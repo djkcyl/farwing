@@ -115,6 +115,8 @@ pub(crate) struct Controls {
     pub tray_create_failed: &'static str,
     pub tray_open: &'static str,
     pub tray_exit: &'static str,
+    pub tray_leave: &'static str,
+    pub tray_quit: &'static str,
 
     // Window manager
     pub viewer_already_open: &'static str,
@@ -223,6 +225,8 @@ pub(crate) const ZH_CN: Controls = Controls {
     tray_create_failed: "无法创建托盘图标",
     tray_open: "打开 Farwing",
     tray_exit: "退出",
+    tray_leave: "退出设备中心",
+    tray_quit: "完全退出",
 
     viewer_already_open: "观看窗口已打开",
     window_manager_closed: "窗口管理器已关闭",
@@ -330,6 +334,8 @@ pub(crate) const EN: Controls = Controls {
     tray_create_failed: "Can't create the tray icon",
     tray_open: "Open Farwing",
     tray_exit: "Exit",
+    tray_leave: "Exit device center",
+    tray_quit: "Quit completely",
 
     viewer_already_open: "Viewer window already open",
     window_manager_closed: "Window manager closed",

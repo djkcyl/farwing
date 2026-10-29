@@ -149,6 +149,8 @@ struct DeviceCenterApp {
     notices: notices::NoticesUi,
     direct: direct::DirectUi,
     worker: GuiWorker,
+    /// Whether a background host is managed, and when that was checked.
+    full_exit: std::cell::Cell<(Option<std::time::Instant>, bool)>,
     devices: Option<DeviceList>,
     catalog: Option<catalog::Catalog>,
     catalog_error: Option<String>,
@@ -211,6 +213,7 @@ impl DeviceCenterApp {
             notices: Default::default(),
             direct: Default::default(),
             worker: GuiWorker::spawn(),
+            full_exit: std::cell::Cell::new((None, false)),
             devices: None,
             catalog: None,
             catalog_error: None,
@@ -1137,6 +1140,16 @@ impl crate::ui::App for DeviceCenterApp {
         self.exit_requested = true;
         self.prepare_exit();
         self.exit_ready
+    }
+
+    fn full_exit(&self) -> bool {
+        let (at, managed) = self.full_exit.get();
+        if at.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(5)) {
+            return managed;
+        }
+        let managed = crate::platform::windows::host_service::resident::managed();
+        self.full_exit.set((Some(std::time::Instant::now()), managed));
+        managed
     }
 
     fn tray_state(&self) -> crate::ui::tray::TrayState {

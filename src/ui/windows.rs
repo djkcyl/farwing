@@ -313,7 +313,7 @@ impl DesktopWindow {
         let (drawing, platform, mut viewports) = egui_directx11::split_output(output);
         self.input.handle_platform_output(&self.window, platform);
         if let Some(tray) = &self.tray {
-            tray.set_state(self.app.0.tray_state());
+            tray.set_state(self.app.0.tray_state(), self.app.0.full_exit());
         }
         if let Some(root) = viewports.remove(&egui::ViewportId::ROOT) {
             for command in &root.commands {
@@ -613,10 +613,25 @@ impl ApplicationHandler<Event> for Windows {
             }
             Event::Request(Request::ShowMain) => {
                 if let Some(state) = &mut self.main.state {
+                    if state.tray.is_none() && state.app.0.uses_tray() {
+                        match super::tray::Tray::new() {
+                            Ok(tray) => state.tray = Some(tray),
+                            Err(error) => tracing::warn!(%error, "tray icon not restored"),
+                        }
+                    }
                     state.window.set_visible(true);
                     state.window.set_minimized(false);
                     state.window.focus_window();
                     state.context.request_repaint();
+                }
+            }
+            Event::Request(Request::Leave) => {
+                if let Some(state) = &mut self.main.state {
+                    state.show_after_present = false;
+                    state.window.set_visible(false);
+                    state.app.0.on_focus_changed(false);
+                    // Opening Farwing again brings the tray icon back.
+                    state.tray = None;
                 }
             }
             Event::Request(Request::Exit) => {

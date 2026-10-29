@@ -9,6 +9,11 @@ pub(crate) trait App {
     fn tray_state(&self) -> super::tray::TrayState {
         super::tray::TrayState::Idle
     }
+    /// Exiting stops more than this window (a background host): the tray
+    /// offers leaving the window and quitting completely.
+    fn full_exit(&self) -> bool {
+        false
+    }
     fn ui(&mut self, ui: &mut egui::Ui);
     fn on_focus_changed(&mut self, _focused: bool) {}
     /// Return false to keep the window alive (for example, while confirming exit).
