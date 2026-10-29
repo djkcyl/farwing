@@ -143,7 +143,10 @@ export class ForwardReceiver {
     else if (this.leave()) this.context.media(undefined, undefined, '');
     try {
       if (!wanted) throw new Error('no forwarded track for this picture');
-      const { video, audio } = await this.join(instruction, wanted, !!replaced);
+      // The old connection, or the host's own picture, plays on until the
+      // new one's is steady.
+      const replacing = !!replaced || (await this.context.directDecoded()) > 0;
+      const { video, audio } = await this.join(instruction, wanted, replacing);
       if (this.closed || this.active?.room !== instruction.room) return;
       this.context.media(video, audio, instruction.mode);
       if (replaced) this.drop(replaced);
