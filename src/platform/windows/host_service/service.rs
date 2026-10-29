@@ -97,6 +97,10 @@ unsafe extern "system" fn main(_argc: u32, _argv: *mut PWSTR) {
     }
 }
 fn serve() -> Result<()> {
+    // The background host runs as LocalService with the service's own SID.
+    if let Err(error) = super::vault::admit_host() {
+        tracing::warn!(error = %format!("{error:#}"), "vault access for the background host not set");
+    }
     std::thread::scope(|scope| {
         let users =
             scope.spawn(|| super::user_backend::supervise(|| !STOP.load(Ordering::Acquire)));

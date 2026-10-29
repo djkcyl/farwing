@@ -65,7 +65,8 @@ fn ensure_image_unused(image: &Path) -> Result<()> {
             && crate::platform::windows::host_service::process::image(pid)
                 .and_then(|p| Ok(std::fs::canonicalize(p)?))
                 .is_ok_and(|p| p == image)
-            && crate::platform::windows::host_service::vault::sid(pid).is_ok_and(|sid| sid != "S-1-5-18")
+            && crate::platform::windows::host_service::vault::sid(pid)
+                .is_ok_and(|sid| sid != "S-1-5-18" && sid != "S-1-5-19")
         {
             busy.push(pid.to_string());
         }

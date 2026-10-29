@@ -292,7 +292,8 @@ fn worker(
     updates: notices::Journal,
     wake: Arc<Wake>,
 ) -> Result<()> {
-    let system = vault::sid(std::process::id())? == "S-1-5-18";
+    // The background host works through the user's agent.
+    let system = crate::platform::windows::host_service::resident::is_owner();
     let mut local = if system {
         None
     } else {

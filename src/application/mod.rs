@@ -85,8 +85,8 @@ pub fn purge_machine_data() -> anyhow::Result<()> {
 pub fn encoder_probe() -> anyhow::Result<()> {
     crate::features::host::desktop::probe_process()
 }
-pub fn identity_check() -> anyhow::Result<()> {
-    crate::platform::windows::host_service::identity_check::run()
+pub fn desktop_access(parent: u32) -> anyhow::Result<()> {
+    crate::platform::windows::host_service::process::desktop_access(parent)
 }
 pub fn display_recovery(token: &str) -> anyhow::Result<()> {
     crate::features::host::displays::recovery::watch(token)

@@ -90,7 +90,80 @@ pub(crate) fn applies() -> Result<bool> {
         return Ok(false);
     };
     let own = sid(std::process::id())?;
-    Ok((own == owner || own == "S-1-5-18") && root()?.join("enabled").is_file())
+    Ok((own == owner || is_host_identity()?) && root()?.join("enabled").is_file())
+}
+/// The background host's own SID: a resource-manager SID (S-1-9) derived
+/// from the service name, a group in its LocalService token, admitted to the
+/// vault and the service's pipes. Only a process holding the TCB privilege
+/// (the service) can put it in a token; Windows refuses `NT SERVICE` SIDs
+/// as extra logon groups.
+pub(crate) fn host_sid() -> Result<String> {
+    let digest = Sha256::digest(format!("{}.Host", crate::product::SERVICE_NAME));
+    let parts: Vec<String> = digest
+        .chunks_exact(4)
+        .take(4)
+        .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]).to_string())
+        .collect();
+    Ok(format!("S-1-9-{}", parts.join("-")))
+}
+/// This process is the background host: SYSTEM, or LocalService with the
+/// host SID.
+pub(crate) fn is_host_identity() -> Result<bool> {
+    let own = sid(std::process::id())?;
+    Ok(own == "S-1-5-18" || (own == "S-1-5-19" && has_host_sid(None)?))
+}
+/// An impersonation `token` (a pipe client's) is the background host's.
+pub(crate) fn is_host_token(token: HANDLE) -> Result<bool> {
+    let own = token_sid(token)?;
+    Ok(own == "S-1-5-18" || (own == "S-1-5-19" && has_host_sid(Some(token))?))
+}
+fn has_host_sid(token: Option<HANDLE>) -> Result<bool> {
+    let host: Vec<u16> = host_sid()?.encode_utf16().chain(Some(0)).collect();
+    let mut psid = PSID::default();
+    unsafe { ConvertStringSidToSidW(PCWSTR(host.as_ptr()), &mut psid)? };
+    let mut member = windows::core::BOOL::default();
+    let checked = unsafe { CheckTokenMembership(token, psid, &mut member) };
+    unsafe {
+        LocalFree(Some(HLOCAL(psid.0)));
+    }
+    checked?;
+    Ok(member.as_bool())
+}
+/// The vault's access list: SYSTEM, administrators, the owner and the
+/// background host's own SID. Applied at every service start.
+pub(crate) fn admit_host() -> Result<()> {
+    let (Some(owner), root) = (owner()?, root()?) else {
+        return Ok(());
+    };
+    if !root.is_dir() {
+        return Ok(());
+    }
+    set_acl(&root, &acl(&owner)?)
+}
+/// The background host's own data directory (its `%LOCALAPPDATA%`), beside
+/// the vault: SYSTEM, administrators and the host SID only.
+pub(crate) fn host_data() -> Result<PathBuf> {
+    use super::super::components::files::{reject_reparse, secure_directory};
+    let parent = root()?.parent().context(t().system.vault_invalid_directory)?.to_path_buf();
+    let path = parent.join("resident");
+    reject_reparse(&parent)?;
+    reject_reparse(&path)?;
+    if !parent.is_dir() {
+        std::fs::create_dir_all(&parent)?;
+        secure_directory(&parent)?;
+    }
+    std::fs::create_dir_all(&path)?;
+    set_acl(
+        &path,
+        &format!("O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{})", host_sid()?),
+    )?;
+    Ok(path)
+}
+fn acl(owner: &str) -> Result<String> {
+    Ok(format!(
+        "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{owner})(A;OICI;FA;;;{})",
+        host_sid()?
+    ))
 }
 pub(crate) fn create(owner: &str) -> Result<()> {
     // Parse, do not interpolate an unchecked SID into SDDL.
@@ -121,10 +194,7 @@ pub(crate) fn create(owner: &str) -> Result<()> {
     std::fs::create_dir_all(parent)?;
     super::super::components::files::secure_directory(parent)?;
     std::fs::create_dir_all(&root)?;
-    set_acl(
-        &root,
-        &format!("O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{owner})"),
-    )?;
+    set_acl(&root, &acl(owner)?)?;
     std::fs::write(root.join("owner.sid"), owner)?;
     Ok(())
 }

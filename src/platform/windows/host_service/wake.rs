@@ -23,11 +23,30 @@ impl Wake {
     pub fn new() -> Result<Self> {
         Ok(Self(Handle(unsafe { CreateEventW(None, false, false, None)? })))
     }
-    /// A named event the agent creates and tells its privileged parent about.
+    /// A named event the agent creates and tells its privileged parent about
+    /// (the background host may wait on it).
     pub fn named() -> Result<(Self, String)> {
+        use windows::Win32::Security::{Authorization::*, *};
         let name = format!("{}{}", *PREFIX, uuid::Uuid::new_v4().simple());
         let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
-        let handle = Handle(unsafe { CreateEventW(None, false, false, PCWSTR(wide.as_ptr()))? });
+        let sddl: Vec<u16> = format!("D:P(A;;GA;;;SY)(A;;GA;;;OW)(A;;0x00100000;;;{})", super::vault::host_sid()?)
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(sddl.as_ptr()), SDDL_REVISION_1, &mut descriptor, None)?;
+        }
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: false.into(),
+        };
+        let event = unsafe { CreateEventW(Some(&attributes), false, false, PCWSTR(wide.as_ptr())) };
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+        }
+        let handle = Handle(event?);
         ensure!(
             unsafe { GetLastError() } != ERROR_ALREADY_EXISTS,
             "{}",

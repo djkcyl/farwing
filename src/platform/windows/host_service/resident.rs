@@ -302,17 +302,34 @@ pub(crate) fn supervise(running: impl Fn() -> bool + Sync) -> Result<()> {
                 tracing::warn!(%error, "resident request service stopped");
             }
         });
-        let mut child: Option<(u32, process::Agent)> = None;
+        let mut child: Option<(u32, process::Agent, std::time::Instant)> = None;
         let mut next_start = std::time::Instant::now();
+        // The background host runs as LocalService with the service's own
+        // SID; SYSTEM only when an administrator asks for it or that fails
+        // to start or keep running.
+        let mut as_service = !super::install::directory()?.join("resident-system").exists();
+        let mut failures = 0;
+        let failed = |failures: &mut u32, as_service: &mut bool| {
+            *failures += 1;
+            if *as_service && *failures >= 3 {
+                tracing::warn!("background host falls back to SYSTEM");
+                *as_service = false;
+            }
+        };
         let result = (|| -> Result<()> {
             while alive() {
                 let session = process::active_session();
                 let enabled = session != u32::MAX;
                 if child
                     .as_ref()
-                    .is_some_and(|(id, agent)| !enabled || *id != session || !agent.alive())
+                    .is_some_and(|(id, agent, _)| !enabled || *id != session || !agent.alive())
                 {
-                    if let Some((_, agent)) = child.take() {
+                    if let Some((id, agent, started)) = child.take() {
+                        if started.elapsed() >= Duration::from_secs(30) {
+                            failures = 0;
+                        } else if enabled && id == session && !agent.alive() {
+                            failed(&mut failures, &mut as_service);
+                        }
                         agent.stop_gracefully();
                     }
                     child_pid.store(0, Ordering::Release);
@@ -320,14 +337,20 @@ pub(crate) fn supervise(running: impl Fn() -> bool + Sync) -> Result<()> {
                     next_start = std::time::Instant::now() + Duration::from_secs(1);
                 }
                 if enabled && child.is_none() && std::time::Instant::now() >= next_start {
-                    match process::Agent::start_resident(session) {
+                    // A previous resident's default audio devices go back to the user.
+                    if let Err(error) = super::super::virtual_audio::Defaults::recover_defaults() {
+                        tracing::debug!(%error, "previous virtual microphone defaults not yet restored");
+                    }
+                    match process::Agent::start_resident(session, as_service) {
                         Ok(agent) => {
+                            tracing::info!(pid = agent.pid, as_service, "background host started");
                             std::fs::write(&pid_file, agent.pid.to_string())?;
                             child_pid.store(agent.pid, Ordering::Release);
-                            child = Some((session, agent));
+                            child = Some((session, agent, std::time::Instant::now()));
                         }
                         Err(error) => {
-                            tracing::warn!(%error, "unattended session could not start");
+                            tracing::warn!(error = %format!("{error:#}"), as_service, "unattended session could not start");
+                            failed(&mut failures, &mut as_service);
                             next_start = std::time::Instant::now() + Duration::from_secs(3);
                         }
                     }
@@ -337,7 +360,7 @@ pub(crate) fn supervise(running: impl Fn() -> bool + Sync) -> Result<()> {
             Ok(())
         })();
         stopped.store(true, Ordering::Release);
-        if let Some((_, agent)) = child {
+        if let Some((_, agent, _)) = child {
             agent.stop_gracefully();
         }
         child_pid.store(0, Ordering::Release);
@@ -600,19 +623,23 @@ fn boot_pause(value: Option<bool>) -> Result<bool> {
     result
 }
 pub(crate) fn run(parent: u32) -> Result<()> {
-    ensure!(
-        vault::sid(std::process::id())? == "S-1-5-18",
-        "无人值守进程只能由系统服务启动"
-    );
+    ensure!(vault::is_host_identity()?, "无人值守进程只能由系统服务启动");
     super::install::verify_running(parent)?;
-    process::verify_image(parent)?;
-    let parent_handle = super::pipe::Handle(unsafe {
-        windows::Win32::System::Threading::OpenProcess(
-            windows::Win32::System::Threading::PROCESS_SYNCHRONIZE,
-            false,
-            parent,
-        )?
-    });
+    // As LocalService the service process cannot be opened; its job ends this
+    // process with it.
+    let system = vault::sid(std::process::id())? == "S-1-5-18";
+    let parent_handle = if system {
+        process::verify_image(parent)?;
+        Some(super::pipe::Handle(unsafe {
+            windows::Win32::System::Threading::OpenProcess(
+                windows::Win32::System::Threading::PROCESS_SYNCHRONIZE,
+                false,
+                parent,
+            )?
+        }))
+    } else {
+        None
+    };
     let session = process::session(std::process::id())?;
     let event: Vec<u16> = crate::product::global_object(&format!("Resident.Stop.{parent}.{session}"))
         .encode_utf16()
@@ -627,41 +654,16 @@ pub(crate) fn run(parent: u32) -> Result<()> {
     });
     // Handles stay owned until all scoped threads have joined. Only wait operations are shared.
     let stop_raw = stop_event.0.0 as usize;
-    let parent_raw = parent_handle.0.0 as usize;
-    let running = || unsafe { windows::Win32::System::Threading::WaitForSingleObject(windows::Win32::Foundation::HANDLE(stop_raw as *mut _), 0) == windows::Win32::Foundation::WAIT_TIMEOUT } && process::active_session() == session && unsafe { windows::Win32::System::Threading::WaitForSingleObject(windows::Win32::Foundation::HANDLE(parent_raw as *mut _), 0) == windows::Win32::Foundation::WAIT_TIMEOUT };
+    let parent_raw = parent_handle.as_ref().map(|handle| handle.0.0 as usize);
+    let signalled = |raw: usize| unsafe {
+        windows::Win32::System::Threading::WaitForSingleObject(windows::Win32::Foundation::HANDLE(raw as *mut _), 0)
+            != windows::Win32::Foundation::WAIT_TIMEOUT
+    };
+    let running = || !signalled(stop_raw) && process::active_session() == session && !parent_raw.is_some_and(signalled);
     SERVICE.store(parent, Ordering::Release);
     OWNER.store(true, Ordering::Release);
-    if vault::root().is_ok_and(|root| root.join("identity-check").is_file()) {
-        std::thread::spawn(move || {
-            for device in [super::requests::Device::Display, super::requests::Device::AudioBridge] {
-                match super::requests::device(device) {
-                    Ok(_) => tracing::info!(?device, "device handle from the service"),
-                    Err(error) => tracing::info!(?device, error = %format!("{error:#}"), "no device handle from the service"),
-                }
-            }
-            match process::run_as_local_service(
-                session,
-                true,
-                "identity-check",
-                &[],
-                Duration::from_secs(120),
-                &|| true,
-            ) {
-                Ok(output) => {
-                    for line in String::from_utf8_lossy(&output).lines() {
-                        tracing::info!(check = line, "LocalService identity check");
-                    }
-                }
-                Err(error) => tracing::warn!(error = %format!("{error:#}"), "LocalService identity check failed"),
-            }
-        });
-    }
+    tracing::info!(identity = %vault::sid(std::process::id())?, "background host identity");
     crate::features::host::displays::recovery::recover_abandoned()?;
-    if let Err(error) = super::super::virtual_audio::Defaults::recover_defaults() {
-        // Before Windows logon there is no user's default microphone to touch.
-        // A later authorized request retries recovery before selecting ours.
-        tracing::debug!(%error, "previous virtual microphone defaults not yet restored");
-    }
     let runtime = tokio::runtime::Runtime::new()?;
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     let stop = tokio_util::sync::CancellationToken::new();
@@ -687,7 +689,9 @@ pub(crate) fn run(parent: u32) -> Result<()> {
             let result = std::thread::scope(|workers_scope| -> Result<()> {
                 let _cancel = stop.clone().drop_guard();
                 let mut workers = Vec::new();
-                let mut listener = Pipe::listener(&SESSION, false, 8, true)?;
+                // The service connects; this process creates every instance.
+                let access = format!("D:P(A;;GA;;;SY)(A;;GA;;;{})", vault::host_sid()?);
+                let mut listener = Pipe::listener_with(&SESSION, &access, 8, true)?;
                 while alive() {
                     workers.retain(|w: &std::thread::ScopedJoinHandle<'_, ()>| !w.is_finished());
                     if workers.len() >= 7 {
@@ -697,7 +701,7 @@ pub(crate) fn run(parent: u32) -> Result<()> {
                     if listener.accept(&alive).is_err() {
                         continue;
                     }
-                    let next = Pipe::listener(&SESSION, false, 8, false)?;
+                    let next = Pipe::listener_with(&SESSION, &access, 8, false)?;
                     let pipe = std::mem::replace(&mut listener, next);
                     let tx = tx.clone();
                     let alive = &alive;

@@ -4,11 +4,12 @@ use super::pipe::Handle;
 use crate::i18n::t;
 use anyhow::{Result, ensure};
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 use windows::{
     Win32::{
         Foundation::*,
         Security::*,
-        System::{JobObjects::*, RemoteDesktop::*, Threading::*},
+        System::{JobObjects::*, RemoteDesktop::*, SystemServices::*, Threading::*},
     },
     core::{PCWSTR, PWSTR, w},
 };
@@ -191,8 +192,14 @@ impl Agent {
     pub fn start_capture(session: u32, pipe: &str) -> Result<Self> {
         Self::start_role(session, pipe, "capture-agent")
     }
-    pub fn start_resident(session: u32) -> Result<Self> {
-        Self::start_role(session, "", "host-resident")
+    /// The background host: LocalService with the service's own SID
+    /// (`as_service`), or SYSTEM.
+    pub fn start_resident(session: u32, as_service: bool) -> Result<Self> {
+        if as_service {
+            Self::start_host(session)
+        } else {
+            Self::start_role(session, "", "host-resident")
+        }
     }
     pub fn stop_gracefully(self) {
         if let Some(stop) = &self.stop {
@@ -301,7 +308,7 @@ impl Agent {
         } else {
             None
         };
-        let arguments = if matches!(role, "host-resident" | "display-agent") {
+        let arguments = if matches!(role, "host-resident" | "display-agent" | "desktop-access") {
             String::new()
         } else {
             format!(" --pipe \"{pipe}\"")
@@ -379,8 +386,141 @@ impl Agent {
             stop,
         })
     }
+    /// The resident as LocalService with the host SID, on the interactive
+    /// desktop (displays, overlays).
+    fn start_host(session: u32) -> Result<Self> {
+        privilege(w!("SeTcbPrivilege"))?;
+        privilege(w!("SeAssignPrimaryTokenPrivilege"))?;
+        privilege(w!("SeIncreaseQuotaPrivilege"))?;
+        let token = host_token(session)?;
+        unsafe {
+            // Overlays draw above other windows.
+            let enabled = 1u32;
+            if let Err(error) = SetTokenInformation(token.0, TokenUIAccess, (&enabled as *const u32).cast(), 4) {
+                tracing::warn!(%error, "host overlay UIAccess unavailable; fullscreen annotations may be occluded");
+            }
+        }
+        Self::start_role(session, "", "desktop-access")?.finish(Duration::from_secs(10))?;
+        let job = Handle(unsafe { CreateJobObjectW(None, None)? });
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        unsafe {
+            SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )?;
+        }
+        let exe = std::env::current_exe()?;
+        let exe = exe
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("{}", t().system.service_invalid_path))?;
+        ensure!(!exe.contains('"'), "{}", t().system.service_invalid_arguments);
+        // The service sets the stop event; the host may only wait on it.
+        let stop = {
+            use windows::Win32::Security::Authorization::*;
+            let name: Vec<u16> = crate::product::global_object(&format!("Resident.Stop.{}.{session}", std::process::id()))
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let sddl: Vec<u16> = format!("D:P(A;;GA;;;SY)(A;;0x00100000;;;{})", super::vault::host_sid()?)
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let mut descriptor = PSECURITY_DESCRIPTOR::default();
+            unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(sddl.as_ptr()), SDDL_REVISION_1, &mut descriptor, None)?;
+            }
+            let attributes = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor.0,
+                bInheritHandle: false.into(),
+            };
+            let event = unsafe { CreateEventW(Some(&attributes), true, false, PCWSTR(name.as_ptr())) };
+            unsafe {
+                let _ = windows::Win32::Foundation::LocalFree(Some(HLOCAL(descriptor.0)));
+            }
+            Handle(event?)
+        };
+        let mut command: Vec<u16> = format!("\"{exe}\" host-resident --parent {}", std::process::id())
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let path: Vec<u16> = exe.encode_utf16().chain(Some(0)).collect();
+        let mut desktop: Vec<u16> = r"winsta0\default".encode_utf16().chain(Some(0)).collect();
+        let startup = STARTUPINFOW {
+            cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+            lpDesktop: PWSTR(desktop.as_mut_ptr()),
+            ..Default::default()
+        };
+        let mut environment = std::ptr::null_mut();
+        unsafe {
+            windows::Win32::System::Environment::CreateEnvironmentBlock(&mut environment, Some(token.0), false)?;
+        }
+        // Its data lives beside the vault, not in LocalService's profile.
+        let data = super::vault::host_data()?;
+        let block = environment_with(
+            environment,
+            &[
+                ("FARWING_SERVICE_PID", std::process::id().to_string()),
+                ("LOCALAPPDATA", data.display().to_string()),
+            ],
+        );
+        unsafe {
+            let _ = windows::Win32::System::Environment::DestroyEnvironmentBlock(environment);
+        }
+        let mut info = PROCESS_INFORMATION::default();
+        unsafe {
+            CreateProcessAsUserW(
+                Some(token.0),
+                PCWSTR(path.as_ptr()),
+                Some(PWSTR(command.as_mut_ptr())),
+                None,
+                None,
+                false,
+                CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                Some(block.as_ptr().cast()),
+                None,
+                &startup,
+                &mut info,
+            )?;
+        }
+        let process = Handle(info.hProcess);
+        let thread = Handle(info.hThread);
+        if let Err(error) = unsafe { AssignProcessToJobObject(job.0, process.0) } {
+            unsafe {
+                let _ = TerminateProcess(process.0, 1);
+            }
+            return Err(error.into());
+        }
+        if unsafe { ResumeThread(thread.0) } == u32::MAX {
+            anyhow::bail!("{}", t().system.service_input_session_start_failed)
+        }
+        Ok(Self {
+            process,
+            pid: info.dwProcessId,
+            _job: job,
+            stop: Some(stop),
+        })
+    }
     pub fn alive(&self) -> bool {
         unsafe { WaitForSingleObject(self.process.0, 0) == WAIT_TIMEOUT }
+    }
+    /// Wait for a one-shot role to succeed.
+    fn finish(self, timeout: Duration) -> Result<()> {
+        let millis = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
+        ensure!(
+            unsafe { WaitForSingleObject(self.process.0, millis) } == WAIT_OBJECT_0,
+            "{}",
+            t().system.service_child_stopped
+        );
+        let mut code = 0u32;
+        unsafe {
+            GetExitCodeProcess(self.process.0, &mut code)?;
+        }
+        ensure!(code == 0, "{}: {code:#x}", t().system.service_child_failed);
+        Ok(())
     }
 }
 
@@ -401,33 +541,186 @@ mod tests {
     }
 }
 
-/// A primary token of `NT AUTHORITY\LocalService` for `session`: the
-/// identity of the background host's work that faces the network. Needs
-/// the SYSTEM caller's TCB privilege.
-pub(crate) fn local_service_token(session: u32) -> Result<Handle> {
-    privilege(w!("SeTcbPrivilege"))?;
-    let mut logon = HANDLE::default();
+/// `desktop-access`, run as SYSTEM in the session by the service: opens the
+/// session's interactive window station and desktop, and its named-object
+/// directory, to the background host's SID (`vault::host_sid`). The service
+/// cannot: its own window station is session 0's. Only the service can put
+/// that SID in a token.
+pub(crate) fn desktop_access(parent: u32) -> Result<()> {
+    use windows::Win32::Security::Authorization::SE_WINDOW_OBJECT;
+    use windows::Win32::System::StationsAndDesktops::*;
+    ensure!(
+        super::vault::sid(std::process::id())? == "S-1-5-18",
+        "{}",
+        t().system.service_invalid_identity
+    );
+    super::install::verify_running(parent)?;
+    let host = super::vault::host_sid()?;
+    const READ_CONTROL_WRITE_DAC: u32 = 0x0002_0000 | 0x0004_0000;
+    const GENERIC_ALL: u32 = 0x1000_0000;
+    let station = unsafe { OpenWindowStationW(w!("WinSta0"), false, READ_CONTROL_WRITE_DAC)? };
+    let granted = grant(HANDLE(station.0), SE_WINDOW_OBJECT, &host, GENERIC_ALL);
     unsafe {
-        LogonUserW(
+        let _ = CloseWindowStation(station);
+    }
+    granted?;
+    let desktop = unsafe { OpenDesktopW(w!("Default"), DESKTOP_CONTROL_FLAGS(0), false, READ_CONTROL_WRITE_DAC)? };
+    let granted = grant(HANDLE(desktop.0), SE_WINDOW_OBJECT, &host, GENERIC_ALL);
+    unsafe {
+        let _ = CloseDesktop(desktop);
+    }
+    granted?;
+    // Named objects (`Local\`, and `Global\` through it) resolve in the
+    // session's directory, which admits only its logon SID: query, traverse,
+    // create objects and read control, without the logon SID's inherited
+    // access to the user's own objects.
+    let directory = named_objects(session(std::process::id())?, READ_CONTROL_WRITE_DAC)?;
+    grant(directory.0, windows::Win32::Security::Authorization::SE_KERNEL_OBJECT, &host, 0x0002_000F)
+}
+
+#[link(name = "ntdll", kind = "raw-dylib")]
+unsafe extern "system" {
+    fn NtOpenDirectoryObject(handle: *mut HANDLE, access: u32, attributes: *const ObjectAttributes) -> i32;
+}
+#[repr(C)]
+struct ObjectAttributes {
+    length: u32,
+    root: HANDLE,
+    name: *const UNICODE_STRING,
+    attributes: u32,
+    descriptor: *const std::ffi::c_void,
+    quality: *const std::ffi::c_void,
+}
+
+/// The named-object directory of `session`.
+fn named_objects(session: u32, access: u32) -> Result<Handle> {
+    let path: Vec<u16> = if session == 0 {
+        r"\BaseNamedObjects".to_owned()
+    } else {
+        format!(r"\Sessions\{session}\BaseNamedObjects")
+    }
+    .encode_utf16()
+    .collect();
+    let name = UNICODE_STRING {
+        Length: (path.len() * 2) as u16,
+        MaximumLength: (path.len() * 2) as u16,
+        Buffer: PWSTR(path.as_ptr().cast_mut()),
+    };
+    let attributes = ObjectAttributes {
+        length: size_of::<ObjectAttributes>() as u32,
+        root: HANDLE::default(),
+        name: &name,
+        attributes: 0x40, // OBJ_CASE_INSENSITIVE
+        descriptor: std::ptr::null(),
+        quality: std::ptr::null(),
+    };
+    let mut handle = HANDLE::default();
+    let status = unsafe { NtOpenDirectoryObject(&mut handle, access, &attributes) };
+    ensure!(status >= 0, "{}: {status:#x}", t().system.service_invalid_identity);
+    Ok(Handle(handle))
+}
+
+/// Add an access-allowed entry for `sid` to the object's access list.
+fn grant(
+    handle: HANDLE,
+    kind: windows::Win32::Security::Authorization::SE_OBJECT_TYPE,
+    sid: &str,
+    mask: u32,
+) -> Result<()> {
+    use windows::Win32::Security::Authorization::*;
+    let wide: Vec<u16> = sid.encode_utf16().chain(Some(0)).collect();
+    let mut sid = PSID::default();
+    unsafe { ConvertStringSidToSidW(PCWSTR(wide.as_ptr()), &mut sid)? };
+    let mut dacl = std::ptr::null_mut();
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    let result = (|| -> Result<()> {
+        unsafe {
+            GetSecurityInfo(handle, kind, DACL_SECURITY_INFORMATION, None, None, Some(&mut dacl), None, Some(&mut descriptor)).ok()?;
+        }
+        let entry = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: mask,
+            grfAccessMode: GRANT_ACCESS,
+            grfInheritance: NO_INHERITANCE,
+            Trustee: TRUSTEE_W {
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_UNKNOWN,
+                ptstrName: PWSTR(sid.0.cast()),
+                ..Default::default()
+            },
+        };
+        let mut updated = std::ptr::null_mut();
+        unsafe { SetEntriesInAclW(Some(&[entry]), Some(dacl), &mut updated).ok()? };
+        let applied = unsafe { SetSecurityInfo(handle, kind, DACL_SECURITY_INFORMATION, None, None, Some(updated), None) }.ok();
+        unsafe {
+            let _ = windows::Win32::Foundation::LocalFree(Some(HLOCAL(updated.cast())));
+        }
+        Ok(applied?)
+    })();
+    unsafe {
+        let _ = windows::Win32::Foundation::LocalFree(Some(HLOCAL(descriptor.0)));
+        let _ = windows::Win32::Foundation::LocalFree(Some(HLOCAL(sid.0)));
+    }
+    result
+}
+
+#[link(name = "advapi32", kind = "raw-dylib")]
+unsafe extern "system" {
+    /// `LogonUserExW` with extra token groups (TCB privilege required).
+    fn LogonUserExExW(
+        username: PCWSTR,
+        domain: PCWSTR,
+        password: PCWSTR,
+        logon_type: u32,
+        provider: u32,
+        groups: *const TOKEN_GROUPS,
+        token: *mut HANDLE,
+        logon_sid: *mut PSID,
+        profile: *mut *mut std::ffi::c_void,
+        profile_length: *mut u32,
+        quotas: *mut QUOTA_LIMITS,
+    ) -> windows::core::BOOL;
+}
+
+/// The background host's token: LocalService with the service's own SID
+/// (`vault::host_sid`) as an extra group, for `session`.
+pub(crate) fn host_token(session: u32) -> Result<Handle> {
+    use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
+    privilege(w!("SeTcbPrivilege"))?;
+    let host: Vec<u16> = super::vault::host_sid()?.encode_utf16().chain(Some(0)).collect();
+    let mut sid = PSID::default();
+    unsafe { ConvertStringSidToSidW(PCWSTR(host.as_ptr()), &mut sid)? };
+    let groups = TOKEN_GROUPS {
+        GroupCount: 1,
+        Groups: [SID_AND_ATTRIBUTES {
+            Sid: sid,
+            Attributes: (SE_GROUP_MANDATORY | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_ENABLED) as u32,
+        }],
+    };
+    let mut logon = HANDLE::default();
+    let result = unsafe {
+        LogonUserExExW(
             w!("LocalService"),
             w!("NT AUTHORITY"),
             PCWSTR::null(),
-            LOGON32_LOGON_SERVICE,
-            LOGON32_PROVIDER_DEFAULT,
+            LOGON32_LOGON_SERVICE.0,
+            LOGON32_PROVIDER_DEFAULT.0,
+            &groups,
             &mut logon,
-        )?;
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
     }
+    .ok();
+    unsafe {
+        let _ = windows::Win32::Foundation::LocalFree(Some(HLOCAL(sid.0)));
+    }
+    result?;
     let logon = Handle(logon);
     let mut primary = HANDLE::default();
     unsafe {
-        DuplicateTokenEx(
-            logon.0,
-            TOKEN_ALL_ACCESS,
-            None,
-            SecurityImpersonation,
-            TokenPrimary,
-            &mut primary,
-        )?;
+        DuplicateTokenEx(logon.0, TOKEN_ALL_ACCESS, None, SecurityImpersonation, TokenPrimary, &mut primary)?;
     }
     let primary = Handle(primary);
     unsafe {
@@ -436,313 +729,10 @@ pub(crate) fn local_service_token(session: u32) -> Result<Handle> {
     Ok(primary)
 }
 
-/// `token`'s logon SID (`S-1-5-5-…`): unique to this logon of the account.
-fn logon_sid(token: HANDLE) -> Result<String> {
-    let mut needed = 0;
-    unsafe {
-        let _ = GetTokenInformation(token, TokenLogonSid, None, 0, &mut needed);
-    }
-    ensure!(needed > 0 && needed < 4096, "{}", t().system.vault_invalid_identity_length);
-    let mut buffer = vec![0usize; (needed as usize).div_ceil(size_of::<usize>())];
-    unsafe {
-        GetTokenInformation(token, TokenLogonSid, Some(buffer.as_mut_ptr().cast()), needed, &mut needed)?;
-    }
-    let groups = unsafe { &*buffer.as_ptr().cast::<TOKEN_GROUPS>() };
-    ensure!(groups.GroupCount == 1, "{}", t().system.vault_invalid_identity_length);
-    let mut text = PWSTR::null();
-    unsafe {
-        windows::Win32::Security::Authorization::ConvertSidToStringSidW(groups.Groups[0].Sid, &mut text)?;
-    }
-    let logon = unsafe { text.to_string() };
-    unsafe {
-        let _ = windows::Win32::Foundation::LocalFree(Some(HLOCAL(text.0.cast())));
-    }
-    Ok(logon?)
-}
-
-/// Access to the session's interactive window station and its default
-/// desktop for a logon SID, withdrawn on drop: a LocalService child needs
-/// it to change the display configuration and draw overlays.
-pub(crate) struct InteractiveAccess {
-    sid: String,
-}
-impl InteractiveAccess {
-    pub(crate) fn grant(token: HANDLE) -> Result<Self> {
-        let access = Self { sid: logon_sid(token)? };
-        access.apply(true)?;
-        Ok(access)
-    }
-    fn apply(&self, grant: bool) -> Result<()> {
-        use windows::Win32::Security::Authorization::*;
-        use windows::Win32::System::StationsAndDesktops::*;
-        let wide: Vec<u16> = self.sid.encode_utf16().chain(Some(0)).collect();
-        let mut sid = PSID::default();
-        unsafe { ConvertStringSidToSidW(PCWSTR(wide.as_ptr()), &mut sid)? };
-        let result = (|| -> Result<()> {
-            // READ_CONTROL | WRITE_DAC
-            let station = unsafe { OpenWindowStationW(w!("WinSta0"), false, 0x0002_0000 | 0x0004_0000)? };
-            let desktop = unsafe { OpenDesktopW(w!("Default"), DESKTOP_CONTROL_FLAGS(0), false, 0x0002_0000 | 0x0004_0000) };
-            let desktop = match desktop {
-                Ok(desktop) => desktop,
-                Err(error) => {
-                    unsafe {
-                        let _ = CloseWindowStation(station);
-                    }
-                    return Err(error.into());
-                }
-            };
-            let outcome = (|| -> Result<()> {
-                for handle in [HANDLE(station.0), HANDLE(desktop.0)] {
-                    let mut dacl = std::ptr::null_mut();
-                    let mut descriptor = PSECURITY_DESCRIPTOR::default();
-                    unsafe {
-                        GetSecurityInfo(handle, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION, None, None, Some(&mut dacl), None, Some(&mut descriptor)).ok()?;
-                    }
-                    let entry = EXPLICIT_ACCESS_W {
-                        grfAccessPermissions: 0x1000_0000, // GENERIC_ALL
-                        grfAccessMode: if grant { GRANT_ACCESS } else { REVOKE_ACCESS },
-                        grfInheritance: NO_INHERITANCE,
-                        Trustee: TRUSTEE_W {
-                            TrusteeForm: TRUSTEE_IS_SID,
-                            TrusteeType: TRUSTEE_IS_UNKNOWN,
-                            ptstrName: PWSTR(sid.0.cast()),
-                            ..Default::default()
-                        },
-                    };
-                    let mut updated = std::ptr::null_mut();
-                    let set = unsafe { SetEntriesInAclW(Some(&[entry]), Some(dacl), &mut updated) };
-                    let applied = if set.is_ok() {
-                        unsafe { SetSecurityInfo(handle, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION, None, None, Some(updated), None) }.ok()
-                    } else {
-                        set.ok()
-                    };
-                    unsafe {
-                        let _ = windows::Win32::Foundation::LocalFree(Some(HLOCAL(updated.cast())));
-                        let _ = windows::Win32::Foundation::LocalFree(Some(HLOCAL(descriptor.0)));
-                    }
-                    applied?;
-                }
-                Ok(())
-            })();
-            unsafe {
-                let _ = CloseDesktop(desktop);
-                let _ = CloseWindowStation(station);
-            }
-            outcome
-        })();
-        unsafe {
-            let _ = windows::Win32::Foundation::LocalFree(Some(HLOCAL(sid.0)));
-        }
-        result
-    }
-}
-impl Drop for InteractiveAccess {
-    fn drop(&mut self) {
-        if let Err(error) = self.apply(false) {
-            tracing::warn!(%error, "interactive desktop access not withdrawn");
-        }
-    }
-}
-
-/// A window station and desktop of their own for a child running as
-/// `token`'s logon session: user32 needs one, and the user's desktop stays
-/// out of its reach. Open while the child runs.
-pub(crate) struct PrivateDesktop {
-    station: windows::Win32::System::StationsAndDesktops::HWINSTA,
-    desktop: windows::Win32::System::StationsAndDesktops::HDESK,
-    /// `station\desktop`, for `STARTUPINFOW::lpDesktop`.
-    pub name: Vec<u16>,
-}
-impl PrivateDesktop {
-    pub(crate) fn new(token: HANDLE) -> Result<Self> {
-        use windows::Win32::Security::Authorization::*;
-        use windows::Win32::System::StationsAndDesktops::*;
-        let logon = logon_sid(token)?;
-        let sddl: Vec<u16> = format!("D:P(A;;GA;;;SY)(A;;GA;;;{logon})").encode_utf16().chain(Some(0)).collect();
-        let mut descriptor = PSECURITY_DESCRIPTOR::default();
-        unsafe {
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                PCWSTR(sddl.as_ptr()),
-                SDDL_REVISION_1,
-                &mut descriptor,
-                None,
-            )?;
-        }
-        let attributes = SECURITY_ATTRIBUTES {
-            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: descriptor.0,
-            bInheritHandle: false.into(),
-        };
-        let station_name = format!("{}.{}", crate::product::object_name("Host"), uuid::Uuid::new_v4().simple());
-        let wide: Vec<u16> = station_name.encode_utf16().chain(Some(0)).collect();
-        let result = (|| -> Result<Self> {
-            let station = unsafe { CreateWindowStationW(PCWSTR(wide.as_ptr()), 0, 0x037F | 0x000F_0000, Some(&attributes))? };
-            // A desktop is created on the calling process's window station.
-            let previous = unsafe { GetProcessWindowStation()? };
-            unsafe { SetProcessWindowStation(station)? };
-            let desktop = unsafe {
-                CreateDesktopW(w!("Default"), PCWSTR::null(), None, DESKTOP_CONTROL_FLAGS(0), 0x01FF | 0x000F_0000, Some(&attributes))
-            };
-            unsafe {
-                let _ = SetProcessWindowStation(previous);
-            }
-            let desktop = match desktop {
-                Ok(desktop) => desktop,
-                Err(error) => {
-                    unsafe {
-                        let _ = CloseWindowStation(station);
-                    }
-                    return Err(error.into());
-                }
-            };
-            Ok(Self {
-                station,
-                desktop,
-                name: format!(r"{station_name}\Default").encode_utf16().chain(Some(0)).collect(),
-            })
-        })();
-        unsafe {
-            let _ = windows::Win32::Foundation::LocalFree(Some(HLOCAL(descriptor.0)));
-        }
-        result
-    }
-}
-impl Drop for PrivateDesktop {
-    fn drop(&mut self) {
-        use windows::Win32::System::StationsAndDesktops::*;
-        unsafe {
-            let _ = CloseDesktop(self.desktop);
-            let _ = CloseWindowStation(self.station);
-        }
-    }
-}
-
-/// Run `Farwing.exe <arguments>` as LocalService in `session`, on a
-/// window station of its own (it shows nothing): `input` goes to its
-/// standard input, its standard output comes back. Ends it after
-/// `timeout` or once `active` turns false.
-pub(crate) fn run_as_local_service(
-    session: u32,
-    interactive: bool,
-    arguments: &str,
-    input: &[u8],
-    timeout: std::time::Duration,
-    active: &dyn Fn() -> bool,
-) -> Result<Vec<u8>> {
-    use std::io::{Read, Write};
-    use std::os::windows::io::FromRawHandle;
-    use windows::Win32::System::Pipes::CreatePipe;
-    let token = local_service_token(session)?;
-    privilege(w!("SeAssignPrimaryTokenPrivilege"))?;
-    privilege(w!("SeIncreaseQuotaPrivilege"))?;
-    let inherit = SECURITY_ATTRIBUTES {
-        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-        bInheritHandle: true.into(),
-        ..Default::default()
-    };
-    let (mut child_in, mut parent_in) = (HANDLE::default(), HANDLE::default());
-    let (mut parent_out, mut child_out) = (HANDLE::default(), HANDLE::default());
-    unsafe {
-        CreatePipe(&mut child_in, &mut parent_in, Some(&inherit), 0)?;
-        CreatePipe(&mut parent_out, &mut child_out, Some(&inherit), 0)?;
-    }
-    let (child_in, child_out) = (Handle(child_in), Handle(child_out));
-    // Only the child's ends are inherited.
-    unsafe {
-        SetHandleInformation(parent_in, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0))?;
-        SetHandleInformation(parent_out, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0))?;
-    }
-    let mut writer = unsafe { std::fs::File::from_raw_handle(parent_in.0) };
-    let mut reader = unsafe { std::fs::File::from_raw_handle(parent_out.0) };
-    let exe = std::env::current_exe()?;
-    let exe = exe
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("{}", t().system.service_invalid_path))?;
-    ensure!(!exe.contains('"'), "{}", t().system.service_invalid_arguments);
-    let mut command: Vec<u16> = format!("\"{exe}\" {arguments}").encode_utf16().chain(Some(0)).collect();
-    let path: Vec<u16> = exe.encode_utf16().chain(Some(0)).collect();
-    // The interactive desktop when the child changes displays or draws;
-    // otherwise one of its own.
-    let (_access, _private, mut desktop) = if interactive {
-        let access = InteractiveAccess::grant(token.0)?;
-        (Some(access), None, r"winsta0\default".encode_utf16().chain(Some(0)).collect::<Vec<u16>>())
-    } else {
-        let private = PrivateDesktop::new(token.0)?;
-        let name = private.name.clone();
-        (None, Some(private), name)
-    };
-    let startup = STARTUPINFOW {
-        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
-        lpDesktop: PWSTR(desktop.as_mut_ptr()),
-        dwFlags: STARTF_USESTDHANDLES,
-        hStdInput: child_in.0,
-        hStdOutput: child_out.0,
-        hStdError: child_out.0,
-        ..Default::default()
-    };
-    let mut environment = std::ptr::null_mut();
-    unsafe {
-        windows::Win32::System::Environment::CreateEnvironmentBlock(&mut environment, Some(token.0), false)?;
-    }
-    let environment_block = with_service_pid(environment);
-    let mut info = PROCESS_INFORMATION::default();
-    let created = unsafe {
-        CreateProcessAsUserW(
-            Some(token.0),
-            PCWSTR(path.as_ptr()),
-            Some(PWSTR(command.as_mut_ptr())),
-            None,
-            None,
-            true,
-            CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
-            Some(environment_block.as_ptr().cast()),
-            None,
-            &startup,
-            &mut info,
-        )
-    };
-    unsafe {
-        let _ = windows::Win32::System::Environment::DestroyEnvironmentBlock(environment);
-    }
-    created?;
-    let process = Handle(info.hProcess);
-    drop(Handle(info.hThread));
-    drop(child_in);
-    drop(child_out);
-    let collected = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let written = writer.write_all(input);
-    drop(writer);
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if unsafe { WaitForSingleObject(process.0, 50) } == WAIT_OBJECT_0 {
-            break;
-        }
-        if !active() || std::time::Instant::now() >= deadline {
-            unsafe {
-                let _ = TerminateProcess(process.0, 1);
-                let _ = WaitForSingleObject(process.0, 5000);
-            }
-            anyhow::bail!("{}", t().system.service_child_stopped);
-        }
-    }
-    written?;
-    let mut code = 0u32;
-    unsafe {
-        GetExitCodeProcess(process.0, &mut code)?;
-    }
-    let bytes = collected
-        .join()
-        .map_err(|_| anyhow::anyhow!("{}", t().system.service_child_stopped))??;
-    ensure!(code == 0, "{}: {code:#x}", t().system.service_child_failed);
-    Ok(bytes)
-}
-
 /// A copy of an environment block (`CreateEnvironmentBlock`) with
-/// `FARWING_SERVICE_PID` added: the child verifies the service by it.
-fn with_service_pid(block: *mut std::ffi::c_void) -> Vec<u16> {
+/// `variables` set (replaced when present): e.g. `FARWING_SERVICE_PID`, by
+/// which the child verifies the service.
+fn environment_with(block: *mut std::ffi::c_void, variables: &[(&str, String)]) -> Vec<u16> {
     let mut copy = Vec::new();
     let mut at = block.cast::<u16>();
     // Variables end with an empty string.
@@ -755,12 +745,21 @@ fn with_service_pid(block: *mut std::ffi::c_void) -> Vec<u16> {
             if length == 0 {
                 break;
             }
-            copy.extend_from_slice(std::slice::from_raw_parts(at, length + 1));
+            let entry = std::slice::from_raw_parts(at, length + 1);
+            let text = String::from_utf16_lossy(&entry[..length]);
+            let replaced = variables.iter().any(|(name, _)| {
+                text.len() > name.len()
+                    && text[..name.len()].eq_ignore_ascii_case(name)
+                    && text.as_bytes()[name.len()] == b'='
+            });
+            if !replaced {
+                copy.extend_from_slice(entry);
+            }
             at = at.add(length + 1);
         }
     }
-    if let Some(pid) = super::resident::service_pid() {
-        copy.extend(format!("FARWING_SERVICE_PID={pid}").encode_utf16().chain(Some(0)));
+    for (name, value) in variables {
+        copy.extend(format!("{name}={value}").encode_utf16().chain(Some(0)));
     }
     copy.push(0);
     copy

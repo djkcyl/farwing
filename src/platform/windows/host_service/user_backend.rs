@@ -146,10 +146,7 @@ fn authorize(pipe: &Pipe, _session: u32) -> Result<u32> {
         OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, true, &mut token)?;
     }
     let token = Handle(token);
-    ensure!(
-        vault::token_sid(token.0)? == "S-1-5-18",
-        "用户后台仅接受系统执行进程"
-    );
+    ensure!(vault::is_host_token(token.0)?, "用户后台仅接受系统执行进程");
     Ok(pid)
 }
 

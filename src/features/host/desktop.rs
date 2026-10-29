@@ -293,22 +293,6 @@ fn probe_in_child(
         screen: screen.clone(),
         gpu_compatibility,
     })?;
-    // The background host's probe needs no SYSTEM rights: it captures through
-    // the service's agent like everything else.
-    if crate::platform::windows::host_service::resident::is_owner() {
-        use crate::platform::windows::host_service::process;
-        match process::session(std::process::id()).and_then(|session| {
-            process::run_as_local_service(session, false, "encoder-probe", &request, PROBE_TIMEOUT, active)
-        }) {
-            Ok(bytes) => {
-                tracing::info!("encoder probe ran as LocalService");
-                return serde_json::from_slice(&bytes).context("检查进程的结果无效");
-            }
-            Err(error) => {
-                tracing::warn!(error = %format!("{error:#}"), "encoder probe as LocalService failed; probing as SYSTEM")
-            }
-        }
-    }
     let mut command = Command::new(std::env::current_exe()?);
     command
         .arg("encoder-probe")

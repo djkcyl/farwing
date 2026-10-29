@@ -17,10 +17,11 @@ struct Record {
 }
 
 fn path() -> Result<PathBuf> {
-    // Display recovery is independent from account login/authorization. SYSTEM
-    // keeps using the machine directory even after the account vault is disabled.
+    // Display recovery is independent from account login/authorization. The
+    // background host keeps using the machine directory even after the account
+    // vault is disabled.
     let root =
-        if crate::platform::windows::host_service::vault::sid(std::process::id())? == "S-1-5-18" {
+        if crate::platform::windows::host_service::vault::is_host_identity()? {
             crate::platform::windows::host_service::vault::root()?.join("displays")
         } else {
             store::root()?

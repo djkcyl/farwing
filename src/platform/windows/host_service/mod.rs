@@ -1,5 +1,4 @@
 //! Optional privileged host service; independent from either driver package.
-pub(crate) mod identity_check;
 pub(crate) mod install;
 pub(crate) mod pipe;
 pub(crate) mod process;

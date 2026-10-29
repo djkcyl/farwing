@@ -9,7 +9,7 @@ use windows::{
         Storage::FileSystem::*,
         System::{IO::*, Pipes::*, Threading::*},
     },
-    core::{PCWSTR, w},
+    core::PCWSTR,
 };
 
 pub(crate) struct Handle(pub HANDLE);
@@ -67,15 +67,25 @@ impl Pipe {
         Self::listener(name, interactive, 1, true)
     }
     pub fn listener(name: &str, interactive: bool, instances: u32, first: bool) -> Result<Self> {
+        Self::listener_with(
+            name,
+            if interactive {
+                // LocalService: the background host's network-facing work.
+                "D:P(A;;GA;;;SY)(A;;GRGW;;;IU)(A;;GRGW;;;LS)"
+            } else {
+                "D:P(A;;GA;;;SY)"
+            },
+            instances,
+            first,
+        )
+    }
+    /// A pipe instance with access list `sddl`.
+    pub fn listener_with(name: &str, sddl: &str, instances: u32, first: bool) -> Result<Self> {
+        let sddl = wide(sddl);
         unsafe {
             let mut descriptor = PSECURITY_DESCRIPTOR::default();
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                if interactive {
-                    // LocalService: the background host's network-facing work.
-                    w!("D:P(A;;GA;;;SY)(A;;GRGW;;;IU)(A;;GRGW;;;LS)")
-                } else {
-                    w!("D:P(A;;GA;;;SY)")
-                },
+                PCWSTR(sddl.as_ptr()),
                 SDDL_REVISION_1,
                 &mut descriptor,
                 None,

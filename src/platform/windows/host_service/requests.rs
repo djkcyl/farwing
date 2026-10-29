@@ -61,7 +61,8 @@ enum Reply {
 /// Serve the resident `child` (its PID, 0 while there is none).
 pub(super) fn serve(running: &impl Fn() -> bool, child: &AtomicU32) -> Result<()> {
     while running() {
-        let pipe = Pipe::server(&NAME, false)?;
+        let sddl = format!("D:P(A;;GA;;;SY)(A;;GRGW;;;{})", super::vault::host_sid()?);
+        let pipe = Pipe::listener_with(&NAME, &sddl, 1, true)?;
         if pipe.accept(running).is_err() {
             continue;
         }
