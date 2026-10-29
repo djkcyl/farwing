@@ -419,6 +419,11 @@ pub(crate) fn validate_holder() {
 /// Whether participant `key` watches the shared stream: others watch the
 /// picture too (those listening only do not count) and it does not hold the
 /// control token.
+/// Participants shown as such (data-only sessions are not).
+pub(crate) fn members() -> usize {
+    state().members.len()
+}
+
 pub(crate) fn shared_viewer(key: Option<u64>) -> bool {
     let state = state();
     state.members.values().filter(|m| m.watching).count() > 1

@@ -526,7 +526,9 @@ impl Lease {
     /// (`docs/protocol/v2-design.md` §4.2).
     pub(crate) fn clipboard_settings(&self) -> super::super::clipboard::Settings {
         let settings = self.handle.clipboard_settings();
-        let shared = lock(&self.handle.ownership).participants.len() > 1;
+        // A file transfer or port forwarding beside the viewer is not a
+        // second participant.
+        let shared = super::super::participants::members() > 1;
         if self.granted(farwing_protocol::caps::CLIPBOARD)
             && self.granted(farwing_protocol::caps::CONTROL)
             && (!shared || super::super::participants::holds_control(self.participant))
