@@ -508,7 +508,7 @@ impl Center {
                     Card {
                         disconnect: None,
                         ticket: String::new(),
-                at: 0,
+                        at: 0,
                         title: if pairing.is_some() {
                             text.pairing_request
                         } else if p.control {
@@ -555,7 +555,7 @@ impl Center {
                     Card {
                         disconnect: None,
                         ticket: String::new(),
-                at: 0,
+                        at: 0,
                         title: text.connection_attempt.into(),
                         body: text.incoming_connection.into(),
                         detail: if a.verifying {
@@ -593,7 +593,7 @@ impl Center {
                     Card {
                         disconnect: active.disconnect,
                         ticket: String::new(),
-                at: 0,
+                        at: 0,
                         title: title.into(),
                         body: clean(&active.caption.source),
                         detail: active.caption.duration,
@@ -631,7 +631,7 @@ impl Center {
                 Card {
                     disconnect: None,
                     ticket: String::new(),
-                at: 0,
+                    at: 0,
                     title: text.connection_notice.into(),
                     body: clean(error),
                     detail: String::new(),
@@ -859,7 +859,7 @@ impl DeviceCenterApp {
                     card: Card {
                         disconnect: None,
                         ticket: String::new(),
-                at: 0,
+                        at: 0,
                         title: t().app.remote_connection_ended.into(),
                         body: clean(&source),
                         detail: (t().app.session_length)(&super::controlled_caption::duration(
