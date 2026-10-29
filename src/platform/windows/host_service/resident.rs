@@ -965,7 +965,14 @@ async fn run_authorized_account(
                     online = PresenceState::Offline;
                 }
             }
-            if paused()? || !vault::applies()? { continue; }
+            if paused()? || !vault::applies()? {
+                // Nothing changes while paused: waiting snapshot requests
+                // (the device center's watch) are answered at once.
+                for watcher in watchers.drain(..) {
+                    let _ = watcher.reply.send(Reply::Error(t().system.service_resident_paused.into()));
+                }
+                continue;
+            }
             if client.is_none()
                 && let Err(error) = crate::transport::direct::managed::take_over()
             {

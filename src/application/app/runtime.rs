@@ -42,6 +42,10 @@ impl GuiWorker {
                 }
             };
             runtime.block_on(gui_worker_loop(command_receiver, event_sender, foreground));
+            // What must finish was awaited on the way out; a blocking call
+            // still waiting (a request to the service) must not hold the
+            // window open.
+            runtime.shutdown_timeout(std::time::Duration::from_secs(2));
         });
         Self {
             commands,
