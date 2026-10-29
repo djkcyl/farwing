@@ -45,6 +45,7 @@ pub(super) fn cards(notices: Vec<Notice>, now: i64) -> Vec<(String, Card)> {
                 Card {
                     disconnect: None,
                     ticket: String::new(),
+                    at: 0,
                     title: title.into(),
                     body: clean(&n.name),
                     detail,

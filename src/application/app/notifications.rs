@@ -47,6 +47,8 @@ pub(crate) struct Card {
     pub disconnect: Option<String>,
     pub transfer: Option<TransferCard>,
     pub ticket: String,
+    /// When the notification first appeared (Unix seconds).
+    pub at: i64,
     pub title: String,
     pub body: String,
     pub detail: String,
@@ -309,7 +311,8 @@ pub(super) struct Center {
     worker: worker::Worker,
     targets: HashMap<String, Target>,
     cards: Vec<Card>,
-    keys: HashMap<String, String>,
+    /// Each card's ticket and when it first appeared.
+    keys: HashMap<String, (String, i64)>,
     dismissed: HashSet<String>,
     view: Arc<Mutex<Vec<Card>>>,
     alive: Arc<AtomicBool>,
@@ -382,6 +385,7 @@ impl Center {
             Card {
                 disconnect: None,
                 ticket: String::new(),
+                at: 0,
                 title: clean(&title),
                 body: clean(&body),
                 detail: String::new(),
@@ -504,6 +508,7 @@ impl Center {
                     Card {
                         disconnect: None,
                         ticket: String::new(),
+                at: 0,
                         title: if pairing.is_some() {
                             text.pairing_request
                         } else if p.control {
@@ -550,6 +555,7 @@ impl Center {
                     Card {
                         disconnect: None,
                         ticket: String::new(),
+                at: 0,
                         title: text.connection_attempt.into(),
                         body: text.incoming_connection.into(),
                         detail: if a.verifying {
@@ -587,6 +593,7 @@ impl Center {
                     Card {
                         disconnect: active.disconnect,
                         ticket: String::new(),
+                at: 0,
                         title: title.into(),
                         body: clean(&active.caption.source),
                         detail: active.caption.duration,
@@ -624,6 +631,7 @@ impl Center {
                 Card {
                     disconnect: None,
                     ticket: String::new(),
+                at: 0,
                     title: text.connection_notice.into(),
                     body: clean(error),
                     detail: String::new(),
@@ -647,12 +655,13 @@ impl Center {
         let mut cards = Vec::new();
         let mut targets = HashMap::new();
         for (key, mut card, request) in items {
-            let ticket = self
+            let (ticket, at) = self
                 .keys
                 .entry(key)
-                .or_insert_with(|| uuid::Uuid::new_v4().simple().to_string())
+                .or_insert_with(|| (uuid::Uuid::new_v4().simple().to_string(), now))
                 .clone();
             card.ticket = ticket.clone();
+            card.at = at;
             card.busy |= self.claimed.contains(&ticket);
             if card.confirmation && card.busy {
                 card.detail = text.submitting_ellipsis.into();
@@ -850,6 +859,7 @@ impl DeviceCenterApp {
                     card: Card {
                         disconnect: None,
                         ticket: String::new(),
+                at: 0,
                         title: t().app.remote_connection_ended.into(),
                         body: clean(&source),
                         detail: (t().app.session_length)(&super::controlled_caption::duration(

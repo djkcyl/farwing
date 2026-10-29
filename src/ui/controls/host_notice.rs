@@ -91,7 +91,11 @@ fn header(ui: &mut Ui, card: &Card) -> bool {
     )));
     crate::ui::chrome::paint_brand_logo(&mut logo);
     let left = rect.left() + theme::WINDOW_LOGO_SIZE + theme::NOTIFICATION_ACTION_GAP;
-    let galley = text(ui, &card.title, theme::SMALL, theme::MUTED, end - left, 1);
+    let title = match chrono::DateTime::from_timestamp(card.at, 0).filter(|_| card.at > 0) {
+        Some(at) => format!("{} · {}", card.title, at.with_timezone(&chrono::Local).format("%H:%M")),
+        None => card.title.clone(),
+    };
+    let galley = text(ui, &title, theme::SMALL, theme::MUTED, end - left, 1);
     label(
         ui,
         Rect::from_min_size(
