@@ -405,6 +405,9 @@ pub mod reason {
     pub const PERMISSION_REVOKED: &str = "permission_revoked";
     /// A peer's DTLS fingerprint was not signed by its device key.
     pub const IDENTITY_MISMATCH: &str = "identity_mismatch";
+    /// The host lost the participant's connection (it crashed or the
+    /// network went away); the controller may connect again.
+    pub const CONNECTION_LOST: &str = "connection_lost";
 }
 
 /// `session.permissions` (server → host and controller, `sid` set).

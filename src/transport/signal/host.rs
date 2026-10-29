@@ -445,9 +445,11 @@ impl Session {
                 if status.error.is_some() {
                     self.client.host.invalidate_media().await;
                 }
-                // A media failure is not a user kick. Preserve the remote
-                // controller's normal reconnect/rejoin classification.
-                self.remove(&sid, signal, None).await;
+                // A lost connection or a media failure is not a user kick:
+                // the server frees the participant at once (instead of
+                // after its resume window) and a controller that is still
+                // there connects again.
+                self.remove(&sid, signal, Some(farwing_protocol::realtime::reason::CONNECTION_LOST)).await;
                 continue;
             }
         }

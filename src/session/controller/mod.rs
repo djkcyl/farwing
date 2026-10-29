@@ -109,6 +109,12 @@ fn recovery(error: &anyhow::Error) -> Recovery {
                 {
                     Recovery::WaitDevice
                 }
+                // The host lost this connection: build a new one.
+                SignalFailure::Kicked(reason)
+                    if reason == farwing_protocol::realtime::reason::CONNECTION_LOST =>
+                {
+                    Recovery::Retry
+                }
                 SignalFailure::Kicked(_) => Recovery::Fatal,
                 SignalFailure::PublisherDisconnected => Recovery::WaitDevice,
                 _ => Recovery::Retry,

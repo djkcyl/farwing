@@ -1707,6 +1707,7 @@ impl Hub {
             reason::KICKED,
             reason::IDENTITY_MISMATCH,
             reason::MEDIA_FAILED,
+            reason::CONNECTION_LOST,
         ]
         .into_iter()
         .find(|r| *r == requested)
