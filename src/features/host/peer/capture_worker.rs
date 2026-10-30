@@ -369,16 +369,25 @@ pub(super) fn capture_loop(
             feedback.take_keyframe_requests(),
             membership.has_others(),
         );
-        // A repair the transport refused will not arrive: recover now
-        // rather than when the viewer gives up on it.
-        let refused = if transport.take_repair_refused() {
-            viewer.refused(Instant::now(), held.as_ref(), feedback.browser())
+        // A repair the transport (or the forwarder's uplink) refused will
+        // not arrive: recover now rather than when the viewer gives up on it.
+        let forwarded_refused = feedback.take_refused();
+        let refused = if transport.take_repair_refused() || forwarded_refused {
+            // A browser acknowledges the frames of its own track only.
+            let usable = !(forwarded_refused && feedback.browser());
+            viewer.refused(Instant::now(), held.as_ref().filter(|_| usable), feedback.browser())
         } else {
             crate::features::host::recovery::Refused::Nothing
         };
         if refused == crate::features::host::recovery::Refused::Keyframe {
             tracing::debug!(target: "farwing::recovery", "repair refused; keyframe for the browser");
-            keyframe.store(true, Ordering::Release);
+            // The forwarder's track carries the group's frames whether or
+            // not this viewer's own track is sending.
+            if forwarded_refused {
+                membership.request_keyframe();
+            } else {
+                keyframe.store(true, Ordering::Release);
+            }
         }
         let request = request.or(match refused {
             crate::features::host::recovery::Refused::Recover(request) => Some(request),

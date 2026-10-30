@@ -617,6 +617,7 @@ fn start(
         frames,
     );
     let low = group.group.key().low;
+    let ssrc = slot.ssrc;
     let mut membership = REGISTRY.observe(&group.group, frames_tx, timeline.started);
     let transport = slot.transport.clone();
     let observer_cancel = cancel.clone();
@@ -655,6 +656,10 @@ fn start(
                 // The pipeline sends the frames; a forwarder PLI starts over.
                 if ready && keyframe.swap(false, Ordering::AcqRel) {
                     membership.request_keyframe();
+                }
+                // Its receivers recover as if their own repair were refused.
+                if transport.take_repair_refused() {
+                    crate::features::host::forwarding::repair_refused(ssrc);
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }

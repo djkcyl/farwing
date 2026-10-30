@@ -174,6 +174,14 @@ pub(crate) fn wake() {
     WAKE.notify_one();
 }
 
+/// The uplink refused a repair on its track `ssrc`: the participants who
+/// receive it lost the frame as well.
+pub(crate) fn repair_refused(ssrc: u32) {
+    for entry in state().entries.values() {
+        entry.recovery.refused(ssrc);
+    }
+}
+
 /// The server connection rooms are opened with.
 pub(crate) fn set_client(client: HostClient) {
     state().client = Some(client);

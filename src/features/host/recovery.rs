@@ -117,6 +117,9 @@ pub(crate) struct TrackFeedback {
     /// A browser (no `frame-meta`): it gives up on an unrepairable loss only
     /// after seconds, so the host answers a refused repair itself.
     browser: std::sync::atomic::AtomicBool,
+    /// The forwarder's uplink refused a repair on the track this viewer
+    /// receives instead (the frame is lost for it too).
+    refused: std::sync::atomic::AtomicBool,
 }
 
 impl TrackFeedback {
@@ -133,6 +136,11 @@ impl TrackFeedback {
 
     pub(crate) fn browser(&self) -> bool {
         self.browser.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether the forwarder's uplink refused a repair since the last call.
+    pub(crate) fn take_refused(&self) -> bool {
+        self.refused.swap(false, std::sync::atomic::Ordering::AcqRel)
     }
 
     /// A frame went out on this track at `rtp_timestamp`.
@@ -245,6 +253,18 @@ impl Inbox {
     /// index)` (none: its own again).
     pub(crate) fn forward(&self, tracks: &[(u32, usize)]) {
         *lock(&self.forwarded) = tracks.iter().copied().collect();
+    }
+
+    /// The forwarder's uplink refused a repair on its track `ssrc`.
+    pub(crate) fn refused(&self, ssrc: u32) {
+        let Some(index) = lock(&self.forwarded).get(&ssrc).copied() else {
+            return;
+        };
+        for (i, track) in lock(&self.tracks).values() {
+            if *i == index {
+                track.refused.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
     }
 
     pub(crate) fn deliver(&self, feedback: &VideoFeedback) {
@@ -1001,6 +1021,21 @@ mod tests {
         inbox.deliver(&feedback(99));
         assert!(first.take().0.is_none());
         assert_eq!(second.take().0.unwrap().held, vec![32]);
+    }
+
+    #[test]
+    fn a_refusal_on_the_uplink_reaches_its_receivers() {
+        let inbox = Inbox::default();
+        let (first, second) = (Arc::new(TrackFeedback::default()), Arc::new(TrackFeedback::default()));
+        inbox.register(11, 0, &first);
+        inbox.register(22, 1, &second);
+        inbox.refused(99);
+        assert!(!second.take_refused());
+        inbox.forward(&[(99, 1)]);
+        inbox.refused(99);
+        assert!(!first.take_refused());
+        assert!(second.take_refused());
+        assert!(!second.take_refused());
     }
 
     #[test]
