@@ -734,7 +734,7 @@ last_served: Option<{request, frame_id, at}>
 | DPB 变大 | 解码表面和内存增加（DXVA 表面数由 SPS 推出，`avc.rs:185-200`） | LTR 数取 2，DPB 只增加 2 张 |
 | 解码器输出延迟 | DPB 大于 1 时，个别解码器可能推断出重排延迟 | NVENC 已写 `bitstreamRestrictionFlag`（`nvenc.rs:395-397`）；用主控的统计面板确认延迟不变 |
 | 收益被高估 | 冻结时长的主要部分是判定门限 `2.5×RTT` | 提前判定（§6.5 第 4 点）单独做 A/B；以实测数据决定默认值 |
-| 单机测试失真 | 本机回环的 RTT≈0；同一台机器上的 CPU 竞争（`round2-status.md` §4） | 用注入器加延迟；最终结论在双机上复核（`dual-machine-runsheet.md`） |
+| 单机测试失真 | 本机回环的 RTT≈0；同一台机器上的 CPU 竞争（`round2-status.md` §4） | 用注入器加延迟；最终结论在双机上复核（`manual-test-checklist.md` 中环境为双机的项目） |
 
 ---
 
@@ -749,7 +749,7 @@ last_served: Option<{request, frame_id, at}>
 | `improvement-proposals.md` F2“收益：冻结从约 1 s 降到约 1 个 RTT” | 快速关键帧已经把冻结压到约“2.5×RTT + IDR 发送”。LTR 省掉的是 IDR 的发送和解码器重置，判定门限仍是 2.5×RTT；要接近 1 个 RTT，必须提前判定（§0.5、§6.5） |
 | `v2-design.md` §5.4：HELLO 在 session 通道；初始特性包含 `video.10bit` | HELLO 在 control 通道交换（`channels.rs:429`，`ingress.rs:72-79`）；代码中没有 `video.10bit`（`crates/protocol/src/peer/mod.rs:43-83`） |
 | `farwing-protocol.md` §5.3：control 通道承载 HELLO、INPUT、POINTER、CURSOR、POINTER_POLICY 与 H→C `Screens` | 本方案新增 C→H 的 SESSION `VideoFeedback`。实现后，§5.3、§5.4、§5.5、§6.3、§6.5 都要同步更新 |
-| `manual-test-checklist.md` 16.6、`dual-machine-runsheet.md` 16.6：一位观看者丢包时“所有人都收到关键帧” | 这是现状下的预期。实现后改为：原生观看者丢包时整组收到恢复帧，浏览器观看者丢包时仍收到关键帧 |
+| `manual-test-checklist.md` 16.6：一位观看者丢包时“所有人都收到关键帧” | 这是现状下的预期。实现后改为：原生观看者丢包时整组收到恢复帧，浏览器观看者丢包时仍收到关键帧 |
 
 ---
 

@@ -33,7 +33,7 @@
 - 配对、错误配对码与锁定、已配对直连、本账号设备直连、直连协助码、局域网发现、直连与服务端参与者同会话、身份变化拒绝。
 - 会话信令复用在线连接（与独立 WSS 的回退路径）。
 - 客户端 lib 测试 157 项、服务端测试 78 项全部通过。
-- 其余单机自测（恢复、文件、端口、诊断、直连、虚拟屏与超级屏、多人、输入注入等）的逐项结果与本轮修复见 [selftest-results.md](selftest-results.md)；剩余双机项目按环境分批整理在 [dual-machine-runsheet.md](dual-machine-runsheet.md)。
+- 其余单机自测（恢复、文件、端口、诊断、直连、虚拟屏与超级屏、多人、输入注入等）的逐项结果与本轮修复见 [selftest-results.md](selftest-results.md)；剩余项目在 [manual-test-checklist.md](manual-test-checklist.md) 中注明环境。
 
 ## 3. 只能在双机 / 真实网络上验证
 

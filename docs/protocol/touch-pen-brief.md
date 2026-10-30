@@ -818,7 +818,7 @@ enum PenPhase { PEN_PHASE_UNSPECIFIED = 0; HOVER = 1; DOWN = 2; MOVE = 3; UP = 4
    - 手机或平板浏览器控制本机，只需要一台 Windows。**[两端]** 验证：
      - 触摸；
      - 锁屏；
-     - UAC 安全桌面：被控以服务模式运行。开发机此前只在关闭安全桌面时验证过 UAC（`docs/dual-machine-runsheet.md:62`）；
+     - UAC 安全桌面：被控以服务模式运行。开发机此前只在关闭安全桌面时验证过 UAC（`docs/manual-test-checklist.md` 7.9）；
      - 管理员窗口（UIPI）。
    - 坐标原点：主屏左侧或上方有副屏。可以接一块显示器，或者把 Farwing 虚拟显示器放到主屏左侧，但该驱动尚未装机实测。**[两端]**
    - 被控端的边缘手势、触摸键盘，Wintab 与 Windows Ink 两种模式的绘图软件。**[单机]**（用注入器）/ **[笔]**

@@ -33,7 +33,7 @@
 | 项目 | 状态 |
 | --- | --- |
 | 安装交接卡住（pid 19320） | 第二次更新、卸载服务、卸载程序、重新安装时都没有复现，旧设备中心均按步骤正常退出。另：从安装目录启动的非默认 profile 设备中心不会被更新关闭，会继续运行旧映像（卸载时由上面的新检查拦下）。 |
-| （无） | 本机能做的项目已全部完成；其余见第 10 节与 [dual-machine-runsheet.md](dual-machine-runsheet.md)。 |
+| （无） | 本机能做的项目已全部完成；其余见第 10 节与 [manual-test-checklist.md](manual-test-checklist.md)。 |
 
 ## 3. 逐项结果
 
@@ -1617,14 +1617,7 @@ webrtc-rs 默认把每个收到的 UDP 包读进 1460 字节的缓冲区（`RECE
 
 服务端为临时的 `temp/pb`（`https://127.0.0.1:18743`）。被控为安装版后台服务（LocalService）与便携被控 pbh；主控为 pbuser 的几个 profile、好友、未登录访客与无服务器 profile；网页端为两个 Chrome 与 Edge InPrivate。弱网用 `FARWING_HOST_LINK`、`FARWING_HOST_VIDEO_LOSS` 与 `dev video --loss` 模拟。
 
-清单 290 项（新增 18.6）按能否在本机完成分为四类：
-
-| 类别 | 项数 | 结果 |
-| --- | --- | --- |
-| 本机可测（命令行、网页端、模拟链路） | 111 | 全部 PASS |
-| 本机界面操作 | 53 | 18.6 已由你操作通过，其余 52 项见 [local-manual-runsheet.md](local-manual-runsheet.md) |
-| 本机但会打断使用（锁屏、睡眠、注销、重启等） | 29 | 同上 |
-| 需要两台机器、真实局域网或公网 | 97 | 见 [dual-machine-runsheet.md](dual-machine-runsheet.md)（第二十二版） |
+清单与原双机清单合并为一份 [manual-test-checklist.md](manual-test-checklist.md)（328 项，每项注明环境，结果与备注直接填在清单里）。本轮在本机完成 116 项：112 项通过（含你操作的 18.6），2.1、2.4、4.4、21.3 部分通过（剩下的部分要操作界面或开测试签名）；其余要人操作界面、会打断使用或需要两台机器的项目留空。
 
 ### 发现并已修复
 
@@ -1718,7 +1711,4 @@ webrtc-rs 默认把每个收到的 UDP 包读进 1460 字节的缓冲区（`RECE
 
 ## 47. 仍需你来测
 
-本机能用命令行、网页端和模拟链路做的已在 §75 全部完成。剩下的分两份：
-
-- [local-manual-runsheet.md](local-manual-runsheet.md)：一台电脑上要人操作界面（52 项）或会打断使用（29 项，锁屏、睡眠、注销、重启、拔显示器等）的项目。
-- [dual-machine-runsheet.md](dual-machine-runsheet.md)：需要两台机器、真实局域网或公网的项目（第二十二版）。
+本机能用命令行、网页端和模拟链路做的已在 §75 完成，结果填在 [manual-test-checklist.md](manual-test-checklist.md) 中。“结果”为空的项目要人操作界面（本机·界面）、会打断使用（本机·打断）或需要两台机器（双机）。
