@@ -121,7 +121,7 @@ curl "${H[@]}" -X PUT -H "content-type: application/json" $S/api/v2/admin/settin
 
 | 设置 | 生效方式 |
 | --- | --- |
-| `instance_name`、`registration`、`guest`、`bitrate_limit_mbps`、`web`、`trusted_proxies` | 立即 |
+| `instance_name`、`registration`、`guest`、`egress`、`web`、`trusted_proxies` | 立即 |
 | `limits` | 立即（已建立的实时连接保持原来的限额，新连接用新值） |
 | `log` | 立即 |
 | `tls`（自签名称、上传证书、自动申请） | 新连接使用新证书，已有连接不受影响 |
@@ -167,13 +167,15 @@ curl "${H[@]}" -X POST $S/api/v2/admin/settings/relay-secret
 | `public_url` | `https://<本机地址>:8443` | 客户端与浏览器访问的地址；实时端点由它生成。带路径前缀时，反向代理可剥掉前缀 |
 | `instance_name` | `farwing` | 实例名称 |
 | `trusted_proxies` | `[]`（初始化时选反向代理模式则为本机 `127.0.0.1/32`、`::1/128`） | 受信任的反向代理（CIDR），只对它们采用 `X-Forwarded-For`；从右往左，遇到不是地址的条目即止于最后一个受信任的一跳 |
-| `bitrate_limit_mbps` | 空 | 下发给客户端的会话码率上限（1–10000） |
 | `log` | `info` | 日志过滤（`tracing` 语法） |
 | `registration` | `false` | 邀请码注册 |
 | `guest.enabled` | `true` | 游客与网页访客 |
 | `tls.mode` | `self_signed` | `self_signed`、`provided`（上传的证书）、`acme`（自动申请）、`proxy`（明文 HTTP，由反向代理提供 TLS） |
 | `tls.hostnames` | 本机名称与地址 | 自签证书包含的名称（另加 `public_url` 的主机名）；名称变化时重新生成证书 |
 | `tls.acme` | | `domains`（空 = `public_url` 的主机名）、`contact`、`directory`（`letsencrypt`、`letsencrypt-staging` 或目录 URL）、`challenge`（`auto`、`tls-alpn-01`、`http-01`）、`http_listen`（HTTP-01 与跳转）、`ca_root`（私有 CA 根证书路径）、`agree_tos`（必须为 `true`） |
+| `egress.limit_mbps` | 空（不限） | 本服务器为会话转发媒体的出口上限，1–100000 Mbit/s（[egress-policy.md](protocol/egress-policy.md)） |
+| `egress.users` | 全部允许、不限 | 账号的默认策略：`relay`、`forward`（布尔），`rate_mbps`（1–10000）、`quota_gb`（每月，1–1000000），空为不限 |
+| `egress.guests` | 同上 | 两边都没有账号的会话合用的策略 |
 | `turn.mode` | `builtin` | `builtin`（内置 STUN/TURN）、`external`（coturn 等，`use-auth-secret`） |
 | `turn.relay` | `true` | 内置模式提供中转；关闭时只运行 NAT 探测端点 |
 | `turn.urls` | `[]` | 发给客户端的 `stun:`/`turn:` 地址；内置模式留空时自动生成 |
@@ -230,11 +232,11 @@ curl "${H[@]}" $S/api/v2/admin/sfu    # 转发房间：被控、所在节点、�
 
 | 接口 | 说明 |
 | --- | --- |
-| `GET /api/v2/admin/overview` | 服务器概览 |
-| `GET`/`POST /api/v2/admin/users`，`GET`/`PATCH`/`DELETE …/users/{id}`，`POST …/{id}/password`，`POST …/{id}/totp/reset` | 账号：创建、修改（`{"admin": bool, "disabled": bool, "nickname": …}`）、删除、重置密码、重置二次验证；详情含设备、近期登录与好友（`friends`） |
+| `GET /api/v2/admin/overview` | 服务器概览；`egress`：本服务器与各节点的当前出口、本月（UTC）起止与流量最多的付费方 |
+| `GET`/`POST /api/v2/admin/users`，`GET`/`PATCH`/`DELETE …/users/{id}`，`POST …/{id}/password`，`POST …/{id}/totp/reset` | 账号：创建、修改（`{"admin": bool, "disabled": bool, "nickname": …, "egress": {relay, forward, rate_mbps, quota_gb}}`，`egress` 整体替换账号自己的流量策略，各项空为用默认，`rate_mbps` / `quota_gb` 为 0 表示不限，审计记为 `user.policy`）、删除、重置密码、重置二次验证；详情含设备、近期登录、好友（`friends`）、本月流量（`egress`）与流量策略（`policy`、默认 `policy_default`、生效的 `policy_effective`）；列表每项含 `egress` |
 | `GET`/`POST /api/v2/admin/invites`，`DELETE …/{id}`，`GET …/{id}/uses` | 邀请码 |
 | `GET /api/v2/admin/devices`，`DELETE …/{id}`，`POST …/{id}/disconnect` | 设备：解绑、断开 |
-| `GET /api/v2/admin/sessions`，`DELETE …/{id}` | 会话：结束 |
+| `GET /api/v2/admin/sessions`，`DELETE …/{id}` | 会话：结束；每项含当前出口 `egress_bps` |
 | `GET`/`POST /api/v2/admin/updates`，`PUT`/`DELETE …/{id}` | 客户端更新公告 |
 | `GET /api/v2/admin/audit?kind=&actor=&before=&limit=` | 审计日志 |
 

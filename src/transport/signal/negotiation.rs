@@ -18,6 +18,8 @@ pub struct ControlSessionInfo {
     pub session_id: String,
     pub ice_servers: Vec<IceServer>,
     pub force_relay: bool,
+    /// Whether the session may use the server's relays (and why not).
+    pub relay: farwing_protocol::realtime::RelayAccess,
     /// This controller's attempt ID (`session.start`).
     pub attempt_id: String,
     /// What this controller offered: its decoders and starting stream.

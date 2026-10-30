@@ -274,6 +274,9 @@ export interface AdminFriend {
 export interface UserDetail {
   account: AccountSummary;
   egress: AccountEgress;
+  policy: UserPolicy;
+  policy_default: EgressPolicy;
+  policy_effective: EffectivePolicy;
   devices: AdminDevice[];
   logins: AdminLogin[];
   friends: AdminFriend[];
@@ -446,6 +449,37 @@ export interface StunEndpoint {
   public: string | null;
 }
 
+/// A payer's egress policy (`docs/protocol/egress-policy.md` §3.1).
+export interface EgressPolicy {
+  relay: boolean;
+  forward: boolean;
+  rate_mbps: number | null;
+  quota_gb: number | null;
+}
+
+/// An account's own policy: `null` takes the default; `rate_mbps` and
+/// `quota_gb` 0: unlimited.
+export interface UserPolicy {
+  relay: boolean | null;
+  forward: boolean | null;
+  rate_mbps: number | null;
+  quota_gb: number | null;
+}
+
+/// The policy in force.
+export interface EffectivePolicy {
+  relay: boolean;
+  forward: boolean;
+  rate_bps: number | null;
+  quota_bytes: number | null;
+}
+
+export interface EgressSettings {
+  limit_mbps: number | null;
+  users: EgressPolicy;
+  guests: EgressPolicy;
+}
+
 /// The server's settings (`docs/server-admin-api.md`); secrets are empty
 /// when read.
 export interface ServerSettings {
@@ -453,7 +487,6 @@ export interface ServerSettings {
   public_url: string;
   instance_name: string;
   trusted_proxies: string[];
-  bitrate_limit_mbps: number | null;
   log: string;
   registration: boolean;
   tls: {
@@ -498,6 +531,7 @@ export interface ServerSettings {
     audit_days: number;
     caps: string[];
   };
+  egress: EgressSettings;
 }
 
 export interface SfuSettings {

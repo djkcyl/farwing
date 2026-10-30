@@ -78,6 +78,9 @@ struct Entry {
     forwarded: Arc<Flags>,
     /// A native controller watching the desktop.
     eligible: bool,
+    /// The server lets the participant receive through a forwarder
+    /// (`docs/protocol/egress-policy.md` §3.3).
+    allowed: bool,
     excluded_until: Option<Instant>,
     instruction: watch::Sender<Option<MediaForward>>,
     /// Whether the participant may hear the host.
@@ -96,7 +99,7 @@ struct Entry {
 
 impl Entry {
     fn candidate(&self, now: Instant) -> bool {
-        self.eligible && self.excluded_until.is_none_or(|until| now >= until)
+        self.eligible && self.allowed && self.excluded_until.is_none_or(|until| now >= until)
     }
 }
 
@@ -208,6 +211,22 @@ pub(crate) fn set_eligible(key: u64, eligible: bool) {
     WAKE.notify_one();
 }
 
+/// The server lets participant `key` receive through a forwarder, or no
+/// longer (it goes back to receiving directly).
+pub(crate) fn set_allowed(key: u64, allowed: bool) {
+    let mut state = state();
+    let Some(entry) = state.entries.get_mut(&key) else {
+        return;
+    };
+    if entry.allowed == allowed {
+        return;
+    }
+    entry.allowed = allowed;
+    drop(state);
+    tracing::info!(participant = key, allowed, "forwarding allowed for the participant changed");
+    WAKE.notify_one();
+}
+
 /// Registers participant `key` of server session `session_id`; `forwarded`
 /// are the flags its tracks read.
 pub(crate) fn register(
@@ -215,6 +234,7 @@ pub(crate) fn register(
     session_id: String,
     forwarded: Arc<Flags>,
     eligible: bool,
+    allowed: bool,
     ice: Vec<RTCIceServer>,
     host: crate::features::host::access::Handle,
     audio: Arc<dyn Fn() -> bool + Send + Sync>,
@@ -232,6 +252,7 @@ pub(crate) fn register(
             session_id,
             forwarded,
             eligible,
+            allowed,
             excluded_until: None,
             instruction,
             audio,

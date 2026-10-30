@@ -26,6 +26,49 @@ pub fn set_role(c: &Connection, user_id: &str, role: &str) -> R<usize> {
     )
 }
 
+/// Every account's egress policy and whether it administers the server.
+pub fn user_policies(c: &Connection) -> R<Vec<(String, bool, crate::egress::UserPolicy)>> {
+    let mut st = c.prepare("SELECT id, role, relay, forward, rate_mbps, quota_gb FROM users")?;
+    st.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)? == ROLE_ADMIN,
+            crate::egress::UserPolicy {
+                relay: r.get(2)?,
+                forward: r.get(3)?,
+                rate_mbps: r.get(4)?,
+                quota_gb: r.get(5)?,
+            },
+        ))
+    })?
+    .collect()
+}
+
+pub fn user_policy(c: &Connection, user_id: &str) -> R<crate::egress::UserPolicy> {
+    c.query_row(
+        "SELECT relay, forward, rate_mbps, quota_gb FROM users WHERE id = ?1",
+        [user_id],
+        |r| {
+            Ok(crate::egress::UserPolicy {
+                relay: r.get(0)?,
+                forward: r.get(1)?,
+                rate_mbps: r.get(2)?,
+                quota_gb: r.get(3)?,
+            })
+        },
+    )
+    .optional()
+    .map(Option::unwrap_or_default)
+}
+
+pub fn set_user_policy(c: &Connection, user_id: &str, p: &crate::egress::UserPolicy) -> R<usize> {
+    c.execute(
+        "UPDATE users SET relay = ?2, forward = ?3, rate_mbps = ?4, quota_gb = ?5, updated_at = ?6
+         WHERE id = ?1",
+        params![user_id, p.relay, p.forward, p.rate_mbps, p.quota_gb, now_s()],
+    )
+}
+
 /// Enabled administrators.
 pub fn admin_count(c: &Connection) -> R<i64> {
     c.query_row(

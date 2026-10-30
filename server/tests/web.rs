@@ -394,26 +394,26 @@ async fn settings_and_announcements_apply_at_once() {
     srv.put(
         "/api/v2/admin/settings",
         &root,
-        json!({"instance_name": "Lab", "bitrate_limit_mbps": 40}),
+        json!({"instance_name": "Lab", "egress": {"limit_mbps": 40}}),
     )
     .await
     .ok();
     let info = srv.get("/api/v2/server", &root).await;
     assert_eq!(info.ok()["server"]["instance_name"], "Lab");
-    assert_eq!(srv.app().cfg().bitrate_limit_mbps, Some(40));
+    assert_eq!(srv.app().cfg().egress.limit_mbps, Some(40));
     let r = srv
-        .put("/api/v2/admin/settings", &root, json!({"bitrate_limit_mbps": 0}))
+        .put("/api/v2/admin/settings", &root, json!({"egress": {"limit_mbps": 0}}))
         .await;
     r.err_reason(400, "bad_request", "setting_invalid");
-    assert_eq!(r.body["error"]["details"]["field"], "bitrate_limit_mbps");
+    assert_eq!(r.body["error"]["details"]["field"], "egress.limit_mbps");
     assert_eq!(r.body["error"]["details"]["problem"], "out_of_range");
     // The refused change left the settings as they were, secret included.
-    assert_eq!(srv.app().cfg().bitrate_limit_mbps, Some(40));
+    assert_eq!(srv.app().cfg().egress.limit_mbps, Some(40));
     assert_eq!(srv.app().cfg().turn.shared_secret, "test-shared-secret");
     let audit = srv.get("/api/v2/admin/audit?kind=settings.update", &root).await;
     let detail: serde_json::Value =
         serde_json::from_str(audit.ok()[0]["detail"].as_str().unwrap()).unwrap();
-    assert_eq!(detail, json!({"groups": ["bitrate_limit_mbps", "instance_name"]}));
+    assert_eq!(detail, json!({"groups": ["egress", "instance_name"]}));
 
     srv.post(
         "/api/v2/admin/updates",

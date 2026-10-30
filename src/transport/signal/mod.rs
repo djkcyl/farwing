@@ -150,6 +150,15 @@ fn report_negotiation(reporter: Option<NegotiationReporter<'_>>, event: Negotiat
     }
 }
 
+/// The media connection failed; without the server's relays (the
+/// session may not use them) that is the reason given.
+fn peer_failure(info: Option<&ControlSessionInfo>, detail: String) -> SignalFailure {
+    match info.map(|info| &info.relay).filter(|relay| !relay.allowed) {
+        Some(relay) => SignalFailure::NoRelay(relay.reason.clone().unwrap_or_default()),
+        None => SignalFailure::Peer(detail),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SignalRole {
     Host,
@@ -439,6 +448,7 @@ impl SignalSession {
             session_id: started.session_id,
             ice_servers: started.ice_servers,
             force_relay: started.force_relay,
+            relay: started.relay,
             attempt_id,
             offer: start.options.clone(),
         };
@@ -537,15 +547,18 @@ impl SignalSession {
                     diagnostics = %ice,
                     "WebRTC connection timed out"
                 );
-                Err(SignalFailure::Peer(format!(
-                    "WebRTC did not connect in time (peer: {}, ICE: {}, local candidates sent: {}, remote rtc events: {}, answer installed: {}; {})",
-                    peer.connection_state(),
-                    peer.ice_connection_state(),
-                    progress.local_candidates_sent,
-                    progress.remote_rtc_events,
-                    progress.answer_installed,
-                    ice
-                ))
+                Err(peer_failure(
+                    Some(info),
+                    format!(
+                        "WebRTC did not connect in time (peer: {}, ICE: {}, local candidates sent: {}, remote rtc events: {}, answer installed: {}; {})",
+                        peer.connection_state(),
+                        peer.ice_connection_state(),
+                        progress.local_candidates_sent,
+                        progress.remote_rtc_events,
+                        progress.answer_installed,
+                        ice
+                    ),
+                )
                 .into())
             }
         }
@@ -791,7 +804,7 @@ impl SignalSession {
         mut self,
         mut shutdown: oneshot::Receiver<()>,
         peer: Option<std::sync::Arc<NativePeer>>,
-        control: Option<ControlSessionInfo>,
+        mut control: Option<ControlSessionInfo>,
     ) -> Result<()> {
         let mut local_candidates = peer.as_ref().map(|peer| peer.local_ice_candidates());
         let mut local_candidate_stream_open = local_candidates.is_some();
@@ -943,12 +956,16 @@ impl SignalSession {
                                         None => {}
                                     }
                                 }
-                                types::SESSION_RELAY_LOST => {
-                                    let Ok(lost) = envelope.body::<farwing_protocol::realtime::SessionRelayLost>() else {
-                                        tracing::warn!("discarded invalid session.relay_lost");
+                                types::SESSION_RELAYS => {
+                                    let Ok(relays) = envelope.body::<farwing_protocol::realtime::SessionRelays>() else {
+                                        tracing::warn!("discarded invalid session.relays");
                                         continue;
                                     };
-                                    let servers = lost
+                                    if let Some(info) = control.as_mut() {
+                                        info.relay = relays.relay.clone();
+                                    }
+                                    let denied = crate::features::network_control::relay_denied(&relays.relay);
+                                    let servers = relays
                                         .ice_servers
                                         .into_iter()
                                         .map(|s| crate::transport::rtc::IceServer {
@@ -957,13 +974,13 @@ impl SignalSession {
                                             credential: s.credential,
                                         })
                                         .collect();
-                                    if let Err(error) = peer.renew_ice_servers(servers).await {
+                                    if let Err(error) = peer.renew_ice_servers(servers, denied).await {
                                         tracing::warn!(%error, "renewed relays not applied");
                                     }
                                     // The relayed path is gone: a new one now rather than
                                     // once ICE notices.
                                     if peer.selected_is_relay().await {
-                                        tracing::info!("the server's relay restarted; restarting ICE");
+                                        tracing::info!(relay = relays.relay.allowed, "the session's relays changed; restarting ICE");
                                         forced_restart = true;
                                         ice_restart_at = Some(tokio::time::Instant::now());
                                     }
@@ -1046,7 +1063,7 @@ impl SignalSession {
                             );
                         }
                         Some(RTCPeerConnectionState::Failed) => {
-                            break Err(SignalFailure::Peer("native WebRTC ICE connection failed".into()).into());
+                            break Err(peer_failure(control.as_ref(), "native WebRTC ICE connection failed".into()).into());
                         }
                         Some(RTCPeerConnectionState::Closed) => {
                             break Err(anyhow!("native WebRTC peer connection closed"));

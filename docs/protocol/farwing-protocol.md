@@ -342,8 +342,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 
 ```json
 {"session_id": "uuid", "ticket": "fwt_…", "endpoints": ["wss://…"], "connect_timeout_ms": 10000, "retry_delay_ms": 1000,
- "target": {"device_id", "alias", "platform", "version", "capabilities", "relation": "own|friend", "granted": [..], "public_key"},
- "bitrate_limit_mbps": null}
+ "target": {"device_id", "alias", "platform", "version", "capabilities", "relation": "own|friend", "granted": [..], "public_key"}}
 ```
 
 - 目标须为本账号设备，或持有 `purpose` 所需能力的好友设备（看得到但缺能力 `403 forbidden`；看不到 `404 device_not_found`；不能控制自己 `400`）。所需能力：`desktop`、`audio` 需 `view`，`files` 需 `files`，`ports` 需 `ports`。
@@ -481,7 +480,8 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `rtc.answer` | H→S→C | 带 `sid`、`gen` | `{attempt_id, restart, network, sdp}` |
 | `rtc.candidate` | 双向 | 带 `sid` | `{attempt_id, candidate: {candidate, sdpMid, sdpMLineIndex, usernameFragment}}` |
 | `session.permissions` | S→H、S→C | 带 `sid` | `{grants: [caps]}` |
-| `session.relay_lost` | S→H、S→C | 带 `sid` | `{ice_servers}`：服务器的内置中继重启时会话在它上面有分配；双方换用这些中继（换密钥时为新凭据），经中继的主控立即重启 ICE |
+| `session.relays` | S→H、S→C | 带 `sid` | `{ice_servers, relay: RelayAccess, forward?}`：会话的中继变了——服务器的内置中继重启时会话在它上面有分配，或会话能否用中继、能否经转发变了（[egress-policy.md](egress-policy.md) §3.4）；双方换用这些中继（换密钥时为新凭据，不能用中继时只有 STUN），经中继的主控立即重启 ICE；`forward`（只发被控）为 `false` 时被控让这位参与者回到直连 |
+| `session.budget` | S→H | 带 `sid` | `{budget_kbps}`：经中转或转发时这个会话最多发送多少（0 为不限，egress-policy.md §4.2） |
 | `session.end` | H→S | 被控在线连接，带 `sid` | `{reason}` |
 | `session.leave` | C→S | 承载该会话的在线连接，带 `sid` | `{}` |
 | `session.ended` | S→C、S→H | 带 `sid` | `{reason}` |
@@ -494,7 +494,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `wol.wake` | S→协助设备 | 在线连接 | `{request_id, target: {mac, inner_ip, subnet_mask}}` |
 | `server.changed` | S→所有在线连接 | | `{url, previous, sha256?}`：公开地址或服务器自己的证书变了。保存的地址是 `previous`（或 `url`）的客户端确认 `url` 可以连上后改用它；固定了证书指纹的改为 `sha256`（反向代理时没有）。账号与设备登记不变 |
 
-- `SessionStarted`（`session.start` 的 `ack`）：`{participant_id, session_id, ice_servers, force_relay, host: {device_id, public_key}, relation, grants}`。
+- `SessionStarted`（`session.start` 的 `ack`）：`{participant_id, session_id, ice_servers, force_relay, relay: RelayAccess, host: {device_id, public_key}, relation, grants}`。`RelayAccess = {allowed, reason?}`：会话能否用服务器的中继，不能时 `ice_servers` 只有 STUN，`reason` 为 `relay_not_allowed`、`relay_quota` 或 `relay_busy`（egress-policy.md §3.2）；服务器强制中转而会话不能用中继时 `session.start` 回 `error{relay_unavailable, details.reason}`，会话进行中变为不能用时服务器以同样的原因结束会话（`session.ended.reason`）。`SessionIncoming` 另有 `relay`、`forward`（能否进转发房间）与 `budget_kbps`。
 - `SessionIncoming`：`{participant_id, attempt_id, purpose, relation: "own"|"friend"|"trusted"|"assist", grants, controller: ControllerInfo, options, ice_servers, force_relay}`。目的、关系、授予的能力与主控身份以服务端为准；`options` 中的同类信息不作授权依据。被控只按关系与能力处理会话，不区分会话从哪个接口建立；访客（`assist`）不能建立只传文件或只做端口转发的会话。`grants`：本账号设备为全部能力，好友为生效授权，受信任设备与访客为空：被控对 `trusted` 重新核对本机受信任设备记录（设备 ID 与公钥都须匹配，否则拒绝）并套用为它记录的能力，对 `assist` 套用访客默认权限。
 - `ControllerInfo`：`{device_id, alias, user_id, username, nickname, platform, version, public_key, caps_limit?}`；无账号的主控 `user_id`、`username`、`nickname` 为空。`caps_limit` 是服务端规定的能力上限：网页主控（`platform: "web"`）总是带（服务器设置“网页端可以使用的功能”），被控对所有关系的授权都按它裁剪；原生主控不带，不受此限制。
 - `IceServer`：`{urls, username, credential}`。TURN 凭据为 TURN REST 临时凭据：`username = "<过期 Unix 秒>:<session_id>"`，`credential = base64(HMAC-SHA1(shared_secret, username))`，默认 12 小时。NAT 探测端点以无凭据的 `stun:` 地址附加在列表中。

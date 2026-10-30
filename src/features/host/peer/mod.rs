@@ -107,6 +107,11 @@ mod upgrade;
 pub(crate) use upgrade::UpdateNotice;
 
 impl Peer {
+    /// The participant this peer serves.
+    pub(crate) fn participant(&self) -> Option<u64> {
+        self.handle.participant()
+    }
+
     pub(crate) async fn new(
         screen: Option<capture::Screen>,
         owner: super::SessionLease,
@@ -121,7 +126,7 @@ impl Peer {
         clipboard_level: i32,
         file_capabilities: crate::features::file_transfer::host::Capabilities,
         data_only: bool,
-        forwarding_session: Option<String>,
+        forwarding: Option<(String, bool)>,
     ) -> Result<Self> {
         let audio_only = deferred.is_some() && !data_only;
         let handle = owner.with_cancellation(cancel.clone());
@@ -628,8 +633,8 @@ impl Peer {
         // Multi-viewer forwarding (`docs/protocol/deployment-design.md` §5.4).
         let forwarding = handle
             .participant()
-            .zip(forwarding_session)
-            .map(|(key, session)| {
+            .zip(forwarding)
+            .map(|(key, (session, allowed))| {
                 // The forwarder carries the sound too.
                 audio.follow_forwarding(reports.forwarded.clone());
                 let lease = handle.clone();
@@ -638,6 +643,7 @@ impl Peer {
                     session,
                     reports.forwarded.clone(),
                     !audio_only,
+                    allowed,
                     ice_servers.clone(),
                     handle.host(),
                     Arc::new(move || lease.granted(farwing_protocol::caps::AUDIO)),

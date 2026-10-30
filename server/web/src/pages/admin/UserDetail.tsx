@@ -18,7 +18,7 @@ import {
   platformText,
 } from '../../lib/format';
 import { Link, navigate } from '../../lib/router';
-import type { AdminFriend, Grants, UserDetail as Detail } from '../../lib/types';
+import type { AdminFriend, Grants, UserDetail as Detail, UserPolicy } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
 import { Icon } from '../../ui/icons';
 import {
@@ -35,6 +35,7 @@ import {
   PageState,
   Row,
   Rows,
+  Select,
 } from '../../ui/kit';
 import { Dialog, useOverlay } from '../../ui/overlay';
 import { RecordList } from '../../ui/Records';
@@ -66,6 +67,111 @@ function FriendRow({ f, devices }: { f: AdminFriend; devices: Map<string, string
       <td className="small">{grantsText(f.grants_received, new Map(), m)}</td>
       <td className="nowrap muted">{dateTime(f.since)}</td>
     </tr>
+  );
+}
+
+type Limit = 'default' | 'unlimited' | 'custom';
+
+/// The account's traffic this month and its own egress policy
+/// (`docs/protocol/egress-policy.md` §3.1).
+function Traffic({ data, onSave }: { data: Detail; onSave(policy: UserPolicy): Promise<boolean> }) {
+  const t = useT();
+  const m = t.admin.userDetail;
+  const [draft, setDraft] = useState(data.policy);
+  const [busy, setBusy] = useState(false);
+  const d = data.policy_default;
+  const set = (p: Partial<UserPolicy>) => setDraft({ ...draft, ...p });
+  const allowedText = (v: boolean) => (v ? m.allowed : m.denied);
+  const toggle = (value: boolean | null, fallback: boolean, onChange: (v: boolean | null) => void) => (
+    <Select<string>
+      width={200}
+      value={value === null ? 'default' : value ? 'on' : 'off'}
+      onChange={(v) => onChange(v === 'default' ? null : v === 'on')}
+      options={[
+        { value: 'default', label: m.byDefault(allowedText(fallback)) },
+        { value: 'on', label: m.allowed },
+        { value: 'off', label: m.denied },
+      ]}
+    />
+  );
+  const limit = (
+    value: number | null,
+    fallback: number | null,
+    unit: (n: number) => string,
+    unitName: string,
+    onChange: (v: number | null) => void,
+  ) => {
+    const choice: Limit = value === null ? 'default' : value === 0 ? 'unlimited' : 'custom';
+    return (
+      <div className="row gap-sm">
+        <Select<Limit>
+          width={200}
+          value={choice}
+          onChange={(c) => onChange(c === 'default' ? null : c === 'unlimited' ? 0 : value || fallback || 10)}
+          options={[
+            { value: 'default', label: m.byDefault(fallback === null ? t.common.unlimited : unit(fallback)) },
+            { value: 'unlimited', label: t.common.unlimited },
+            { value: 'custom', label: m.custom },
+          ]}
+        />
+        {choice === 'custom' && (
+          <>
+            <Input
+              className="limit-input"
+              type="number"
+              min={1}
+              value={value ?? ''}
+              onChange={(e) => onChange(Math.max(1, Math.round(Number(e.target.value) || 1)))}
+            />
+            <span className="muted">{unitName}</span>
+          </>
+        )}
+      </div>
+    );
+  };
+  const admin = data.account.role === 'admin';
+  const changed = JSON.stringify(draft) !== JSON.stringify(data.policy);
+  return (
+    <Card
+      title={m.traffic}
+      actions={
+        !admin && (
+          <Button
+            variant="primary"
+            disabled={!changed}
+            loading={busy}
+            onClick={async () => {
+              setBusy(true);
+              await onSave(draft);
+              setBusy(false);
+            }}
+          >
+            {t.common.save}
+          </Button>
+        )
+      }
+    >
+      <Rows>
+        <Row label={t.admin.users.monthTraffic}>
+          {bytes(data.egress.month_bytes)}
+          {data.egress.bps > 0 && <span className="muted"> · {bitrate(data.egress.bps)}</span>}
+        </Row>
+        {admin ? (
+          <Row label={m.relay}>
+            <span className="muted">{m.adminUnlimited}</span>
+          </Row>
+        ) : (
+          <>
+            <Row label={m.relay}>{toggle(draft.relay, d.relay, (relay) => set({ relay }))}</Row>
+            <Row label={m.forward}>{toggle(draft.forward, d.forward, (forward) => set({ forward }))}</Row>
+            <Row label={m.rate}>
+              {limit(draft.rate_mbps, d.rate_mbps, m.mbps, 'Mbit/s', (rate_mbps) => set({ rate_mbps }))}
+            </Row>
+            <Row label={m.quota}>{limit(draft.quota_gb, d.quota_gb, m.gb, 'GB', (quota_gb) => set({ quota_gb }))}</Row>
+          </>
+        )}
+      </Rows>
+    </Card>
   );
 }
 
@@ -214,10 +320,6 @@ export default function UserDetail({ params }: { params: Record<string, string> 
             </Row>
             <Row label={m.createdAt}>{dateTime(a.created_at)}</Row>
             <Row label={t.admin.col.lastSeen}>{a.last_seen_at ? ago(a.last_seen_at) : t.format.never}</Row>
-            <Row label={t.admin.users.monthTraffic}>
-              {bytes(data.egress.month_bytes)}
-              {data.egress.bps > 0 && <span className="muted"> · {bitrate(data.egress.bps)}</span>}
-            </Row>
             <Row label={m.totp}>
               {a.totp ? (
                 <span className="row gap-sm">
@@ -266,6 +368,21 @@ export default function UserDetail({ params }: { params: Record<string, string> 
         </Card>
       </div>
 
+      <Traffic
+        key={JSON.stringify(data.policy)}
+        data={data}
+        onSave={async (policy) => {
+          try {
+            await patch({ egress: policy });
+            toast(m.policySaved);
+            await reload();
+            return true;
+          } catch (err) {
+            toast(errorText(err), 'red');
+            return false;
+          }
+        }}
+      />
       <Card title={m.devices} count={data.devices.length} pad={false}>
         {data.devices.length === 0 ? (
           <Empty icon="monitor" title={m.noDevices} />

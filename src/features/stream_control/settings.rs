@@ -21,7 +21,6 @@ const STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 pub(crate) struct Wanted {
     pub settings: StreamControlSettings,
     pub display: LocalDisplayInfo,
-    pub custom_bitrate_limit: u32,
     pub codec: Option<session::Codec>,
     pub cursor: bool,
     pub weak_network: crate::features::viewing_settings::WeakNetwork,
@@ -41,7 +40,7 @@ impl Wanted {
                 StreamQuality::Custom => session::Quality::Custom,
             },
             bitrate_kbps: if settings.quality == StreamQuality::Custom {
-                settings.custom_bitrate_mbps.min(self.custom_bitrate_limit) * 1_000
+                settings.custom_bitrate_mbps * 1_000
             } else {
                 0
             },
@@ -72,7 +71,6 @@ fn wanted(state: &StreamControlState) -> StreamSettings {
     Wanted {
         settings: state.settings,
         display: state.local_display,
-        custom_bitrate_limit: state.custom_bitrate_limit,
         codec: state.codec_preference,
         cursor: state.cursor_capture,
         weak_network: state.device_preferences.weak_network,
@@ -139,9 +137,6 @@ impl StreamControlHandle {
                 (t().features.stream_custom_bitrate_range)(MAX_CUSTOM_BITRATE_MBPS)
             );
         }
-        state.custom_bitrate_limit = preferences
-            .custom_bitrate_limit
-            .unwrap_or(MAX_CUSTOM_BITRATE_MBPS);
         state.settings = preferences.settings;
         state.confirmed_preferences = preferences;
         if let Some(audio) = preferences.audio {
@@ -158,12 +153,6 @@ impl StreamControlHandle {
 
     pub fn apply(&self, settings: StreamControlSettings) -> Result<i64> {
         self.apply_settings_locked(&mut lock(&self.shared), settings)
-    }
-
-    pub(crate) fn set_custom_bitrate_limit(&self, limit: Option<u32>) {
-        lock(&self.shared).custom_bitrate_limit = limit
-            .filter(|v| (1..=MAX_CUSTOM_BITRATE_MBPS).contains(v))
-            .unwrap_or(MAX_CUSTOM_BITRATE_MBPS);
     }
 
     pub(crate) fn propose_format(
@@ -199,13 +188,6 @@ impl StreamControlHandle {
                 (1..=MAX_CUSTOM_BITRATE_MBPS).contains(&settings.custom_bitrate_mbps),
                 "{}",
                 (t().features.stream_custom_bitrate_range)(MAX_CUSTOM_BITRATE_MBPS)
-            );
-            anyhow::ensure!(
-                settings.custom_bitrate_mbps <= state.custom_bitrate_limit
-                    || (state.settings.quality == StreamQuality::Custom
-                        && settings.custom_bitrate_mbps == state.settings.custom_bitrate_mbps),
-                "{}",
-                (t().features.stream_custom_bitrate_limit)(state.custom_bitrate_limit)
             );
         }
         if settings.hdr && !state.settings.hdr {
@@ -527,13 +509,7 @@ pub(super) fn viewing_quality_label(state: &StreamControlState) -> String {
         StreamQuality::Auto => (t().features.stream_quality_auto_with)(quality_name(
             automatic_tier(state).unwrap_or(wire::Quality::Standard),
         )),
-        StreamQuality::Custom => format!(
-            "{} Mbps",
-            state
-                .settings
-                .custom_bitrate_mbps
-                .min(state.custom_bitrate_limit)
-        ),
+        StreamQuality::Custom => format!("{} Mbps", state.settings.custom_bitrate_mbps),
         quality => quality.label().to_owned(),
     }
 }

@@ -62,7 +62,6 @@ pub fn session_ticket(
             granted,
             public_key: target.public_key.clone(),
         },
-        bitrate_limit_mbps: app.cfg().bitrate_limit_mbps,
     }
 }
 

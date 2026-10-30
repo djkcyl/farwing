@@ -7,6 +7,7 @@ import { useAuth } from '../../lib/auth';
 import { capText, dateTime, listText, WEB_CAPS } from '../../lib/format';
 import type {
   Applied,
+  EgressPolicy,
   LimitsSettings,
   ListenPending,
   Preview,
@@ -42,7 +43,7 @@ import {
 import { useOverlay } from '../../ui/overlay';
 import { settingErrorText as saveError } from '../../lib/settingError';
 
-type Tab = 'basic' | 'certificate' | 'relay' | 'forwarding' | 'access' | 'limits' | 'backup';
+type Tab = 'basic' | 'certificate' | 'relay' | 'forwarding' | 'egress' | 'access' | 'limits' | 'backup';
 
 /// Save a partial settings document; the toast says what restarted.
 function useSave(onApplied: (view: Applied) => void) {
@@ -140,7 +141,6 @@ function Basic({ view, onApplied }: { view: SettingsView; onApplied(v: Applied):
     instance_name: s.instance_name,
     public_url: s.public_url,
     trusted_proxies: s.trusted_proxies,
-    bitrate_limit_mbps: s.bitrate_limit_mbps,
     log: s.log,
   };
   const [draft, setDraft] = useState(initial);
@@ -169,22 +169,6 @@ function Basic({ view, onApplied }: { view: SettingsView; onApplied(v: Applied):
                 onChange={(e) => set({ instance_name: e.target.value })}
               />
             </Field>
-            <Field label={m.publicUrl}>
-              <Input
-                className="mono-input"
-                value={draft.public_url}
-                onChange={(e) => set({ public_url: e.target.value.trim() })}
-              />
-            </Field>
-            <Field label={m.bitrateLimit}>
-              <NumberInput
-                value={draft.bitrate_limit_mbps}
-                min={1}
-                max={10000}
-                placeholder={t.common.unlimited}
-                onChange={(v) => set({ bitrate_limit_mbps: v })}
-              />
-            </Field>
             <Field label={m.log} group>
               <Select
                 value={draft.log}
@@ -193,6 +177,13 @@ function Basic({ view, onApplied }: { view: SettingsView; onApplied(v: Applied):
               />
             </Field>
           </div>
+          <Field label={m.publicUrl}>
+            <Input
+              className="mono-input"
+              value={draft.public_url}
+              onChange={(e) => set({ public_url: e.target.value.trim() })}
+            />
+          </Field>
           <Field label={m.trustedProxies}>
             <LinesInput value={draft.trusted_proxies} onChange={(trusted_proxies) => set({ trusted_proxies })} />
           </Field>
@@ -847,6 +838,78 @@ function Forwarding({ view, onApplied }: { view: SettingsView; onApplied(v: Appl
   );
 }
 
+// -------------------------------------------------------------- egress
+
+/// One payer's policy: relay, forwarding, rate and monthly traffic.
+function PolicyFields({ value, onChange }: { value: EgressPolicy; onChange(v: EgressPolicy): void }) {
+  const t = useT();
+  const m = t.admin.settings;
+  const set = (p: Partial<EgressPolicy>) => onChange({ ...value, ...p });
+  return (
+    <div className="stack-sm">
+      <div className="row gap">
+        <Switch checked={value.relay} onChange={(relay) => set({ relay })} label={m.egressRelay} />
+        <Switch checked={value.forward} onChange={(forward) => set({ forward })} label={m.egressForward} />
+      </div>
+      <div className="grid grid-cols-3">
+        <Field label={m.egressRate}>
+          <NumberInput
+            value={value.rate_mbps}
+            min={1}
+            max={10000}
+            placeholder={t.common.unlimited}
+            onChange={(rate_mbps) => set({ rate_mbps })}
+          />
+        </Field>
+        <Field label={m.egressQuota}>
+          <NumberInput
+            value={value.quota_gb}
+            min={1}
+            max={1000000}
+            placeholder={t.common.unlimited}
+            onChange={(quota_gb) => set({ quota_gb })}
+          />
+        </Field>
+      </div>
+    </div>
+  );
+}
+
+function Egress({ view, onApplied }: { view: SettingsView; onApplied(v: Applied): void }) {
+  const t = useT();
+  const m = t.admin.settings;
+  const initial = view.settings.egress;
+  const [draft, setDraft] = useState(initial);
+  const { save, busy, error } = useSave(onApplied);
+  return (
+    <Card
+      title={m.tabs.egress}
+      actions={<SaveButton busy={busy} changed={!same(draft, initial)} onClick={() => void save({ egress: draft })} />}
+    >
+      <div className="stack">
+        {error && <Alert>{error}</Alert>}
+        <div className="grid grid-cols-3">
+          <Field label={m.egressLimit}>
+            <NumberInput
+              value={draft.limit_mbps}
+              min={1}
+              max={100000}
+              placeholder={t.common.unlimited}
+              onChange={(limit_mbps) => setDraft({ ...draft, limit_mbps })}
+            />
+          </Field>
+        </div>
+        <Field label={m.egressUsers} group>
+          <PolicyFields value={draft.users} onChange={(users) => setDraft({ ...draft, users })} />
+        </Field>
+        <Field label={m.egressGuests} group>
+          <PolicyFields value={draft.guests} onChange={(guests) => setDraft({ ...draft, guests })} />
+        </Field>
+      </div>
+    </Card>
+  );
+}
+
 // -------------------------------------------------------------- limits
 
 function Limits({ view, onApplied }: { view: SettingsView; onApplied(v: Applied): void }) {
@@ -963,6 +1026,7 @@ export default function Settings() {
     ['certificate', <Certificate key={generation} view={current} onApplied={applied} />],
     ['relay', <Relay key={generation} view={current} onApplied={applied} />],
     ['forwarding', <Forwarding key={generation} view={current} onApplied={applied} />],
+    ['egress', <Egress key={generation} view={current} onApplied={applied} />],
     ['access', <Access key={generation} view={current} onApplied={applied} />],
     ['limits', <Limits key={generation} view={current} onApplied={applied} />],
     ['backup', <Backup key={generation} onApplied={applied} />],

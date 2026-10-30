@@ -51,10 +51,10 @@ async fn setup_opens_the_server_once() {
         .await
         .err_reason(400, "bad_request", "password_too_short");
     let mut bad = request(&code, PASSWORD);
-    bad["settings"]["bitrate_limit_mbps"] = json!(0);
+    bad["settings"]["egress"] = json!({"limit_mbps": 0});
     let r = srv.send(srv.raw(Method::POST, "/api/v2/setup").json(&bad)).await;
     r.err_reason(400, "bad_request", "setting_invalid");
-    assert_eq!(r.body["error"]["details"]["field"], "bitrate_limit_mbps");
+    assert_eq!(r.body["error"]["details"]["field"], "egress.limit_mbps");
 
     let mut last = request(&code, PASSWORD);
     last["token"] = json!({"name": "provision", "scope": "admin"});

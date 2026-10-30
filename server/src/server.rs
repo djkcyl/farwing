@@ -75,7 +75,7 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
     let edges = Arc::new(crate::edge::EdgeHub::new());
     edges.load(db.with(|c| crate::webdb::edge_nodes(c))?);
     edges.reconfigure(&cfg.turn, &cfg.sfu);
-    let egress = crate::egress::Egress::load(&db)?;
+    let egress = crate::egress::Egress::load(&db, &cfg.egress, Arc::clone(&edges))?;
     let (hub, channels) = Hub::new(
         runtime::hub_config(&cfg),
         IceProvider::new(&cfg.turn, None),
@@ -113,6 +113,17 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
 
     let mut tasks = Vec::new();
     tasks.push(tokio::spawn(Arc::clone(&egress).run(db.clone())));
+    // Sessions follow policy and monthly-total changes.
+    {
+        let hub = Arc::clone(&hub);
+        tasks.push(tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                ticks.tick().await;
+                hub.refresh_access();
+            }
+        }));
+    }
     // Rooms lose the sessions that ended.
     {
         let app = Arc::clone(&app);

@@ -36,6 +36,7 @@ const zhCodes = {
   internal: '服务器内部错误',
   unavailable: '服务不可用',
   setup_required: '服务器尚未初始化',
+  relay_unavailable: '无法经服务器中转',
   network: '无法连接服务器',
   unknown: '未知错误',
 };
@@ -69,6 +70,7 @@ const enCodes: Codes = {
   internal: 'Internal server error',
   unavailable: 'Service unavailable',
   setup_required: 'This server has not been set up',
+  relay_unavailable: "Can't go through the server's relay",
   network: "Can't connect to the server",
   unknown: 'Unknown error',
 };
@@ -143,6 +145,10 @@ const zhReasons = {
   // Reaching the server
   timed_out: '连接服务器超时',
   connection_lost: '与服务器的连接已中断',
+  // The server's relays
+  relay_not_allowed: '你的账号不能使用中转',
+  relay_quota: '本月中转流量已用完',
+  relay_busy: '服务器中转繁忙',
 };
 
 type Reasons = typeof zhReasons;
@@ -216,6 +222,10 @@ const enReasons: Reasons = {
       : `Too many incorrect access codes, locked for ${minutes} min`,
   timed_out: 'Connection to the server timed out',
   connection_lost: 'Connection to the server was lost',
+  // The server's relays
+  relay_not_allowed: "Your account can't use the relay",
+  relay_quota: "This month's relay traffic is used up",
+  relay_busy: "The server's relay is busy",
 };
 
 const CODES: Record<Lang, Codes> = { 'zh-CN': zhCodes, en: enCodes };

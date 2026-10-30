@@ -480,6 +480,11 @@ pub async fn run(data_dir: PathBuf, join: Option<String>) -> Result<()> {
                                 let _ = tx.send(FromNode::SfuResult { id, answer, error });
                             });
                         }
+                        Ok(ToNode::Rules { rules }) => {
+                            for rule in &rules {
+                                meters.rule(rule);
+                            }
+                        }
                         Err(e) => tracing::debug!(error = %e, "unreadable message from the control node"),
                     }
                 }

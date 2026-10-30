@@ -709,8 +709,6 @@ pub struct RealtimeTicket {
     pub max_reconnect_delay_s: u32,
     /// Controller sessions: the server session this ticket enters.
     pub session_id: Option<String>,
-    /// Server policy for this session's video bitrate ceiling.
-    pub bitrate_limit_mbps: Option<u32>,
     /// The session is signalled over this process's presence connection;
     /// there is no ticket (`docs/protocol/v2-design.md` §11).
     pub via_presence: bool,
@@ -749,7 +747,6 @@ impl From<wire::PresenceTicket> for RealtimeTicket {
             retry_delay_ms: value.retry_delay_ms,
             max_reconnect_delay_s: value.max_reconnect_delay_s,
             session_id: None,
-            bitrate_limit_mbps: None,
             via_presence: false,
         }
     }
@@ -765,7 +762,6 @@ impl From<wire::SessionTicket> for RealtimeTicket {
             retry_delay_ms: value.retry_delay_ms,
             max_reconnect_delay_s: 0,
             session_id: Some(value.session_id),
-            bitrate_limit_mbps: value.bitrate_limit_mbps,
         }
     }
 }

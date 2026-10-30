@@ -535,14 +535,20 @@ impl Session {
                     self.rtc(&sid, envelope, signal).await?;
                 }
             }
-            types::SESSION_RELAY_LOST => {
-                let Some(peer) = self.participants.get(&sid).and_then(|p| p.peer.as_ref()) else {
+            types::SESSION_RELAYS => {
+                let Some(participant) = self.participants.get(&sid) else {
                     return Ok(());
                 };
-                let lost: farwing_protocol::realtime::SessionRelayLost =
-                    envelope.body().context("中转重启通知格式无效")?;
+                let relays: farwing_protocol::realtime::SessionRelays =
+                    envelope.body().context("中转更新格式无效")?;
+                let Some(peer) = participant.peer.as_ref() else {
+                    return Ok(());
+                };
+                if let (Some(forward), Some(key)) = (relays.forward, peer.participant()) {
+                    crate::features::host::forwarding::set_allowed(key, forward);
+                }
                 peer.renew_ice_servers(
-                    lost.ice_servers
+                    relays.ice_servers
                         .into_iter()
                         .map(|s| webrtc::ice_transport::ice_server::RTCIceServer {
                             urls: s.urls,
@@ -552,7 +558,7 @@ impl Session {
                         })
                         .collect(),
                 );
-                tracing::info!("the server's relay restarted; relays renewed");
+                tracing::info!(relay = relays.relay.allowed, "the session's relays renewed");
             }
             types::SESSION_PERMISSIONS => {
                 let Some(participant) = self.participants.get(&sid) else {
@@ -817,8 +823,8 @@ impl Session {
         // Multi-viewer forwarding: controllers of server sessions; those
         // only listening join it once they watch the desktop
         // (`docs/protocol/deployment-design.md` §5.4).
-        let forwarding_session =
-            (direct_ports.is_none() && !data_only).then(|| session_id.clone());
+        let forwarding_session = (direct_ports.is_none() && !data_only)
+            .then(|| (session_id.clone(), incoming.forward));
         // A direct session's ICE binds the endpoint's UDP ports (§12.3).
         self.preparations.spawn(crate::transport::direct::with_session_ports(direct_ports, async move {
             let preparation_started = std::time::Instant::now();

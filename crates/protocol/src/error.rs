@@ -35,6 +35,9 @@ pub enum ErrorCode {
     Unavailable,
     /// The server has not been set up: only its setup page answers.
     SetupRequired,
+    /// The server requires its relays and this session may not use them
+    /// (`details.reason`: [`crate::realtime::relay_denied`]).
+    RelayUnavailable,
     /// Client-local: the request did not reach the server or no response was
     /// received. Never sent on the wire by a server.
     Network,
@@ -72,6 +75,7 @@ impl ErrorCode {
             Self::Internal => "internal",
             Self::Unavailable => "unavailable",
             Self::SetupRequired => "setup_required",
+            Self::RelayUnavailable => "relay_unavailable",
             Self::Network => "network",
             Self::Unknown => "unknown",
         }
@@ -97,7 +101,8 @@ impl ErrorCode {
             | Self::Conflict
             | Self::AssistUnavailable
             | Self::AssistCodeRequired
-            | Self::AlreadyFriends => 409,
+            | Self::AlreadyFriends
+            | Self::RelayUnavailable => 409,
             Self::PayloadTooLarge => 413,
             Self::ProtocolUnsupported => 426,
             Self::RateLimited => 429,

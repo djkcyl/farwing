@@ -15,7 +15,7 @@ use farwing_protocol::ids;
 use farwing_protocol::realtime::{
     ControllerInfo, Envelope, Hello, Limits, PeerIdentity, Ping, ResumeRefreshAck, Role,
     RtcCandidate, RtcDescription, SessionEnd, SessionIncoming, SessionPermissions,
-    SessionRelayLost, SessionStart, SessionStarted, close, reason, types,
+    SessionRelays, SessionStart, SessionStarted, close, reason, relay_denied, types,
 };
 use farwing_protocol::{ErrorBody, ErrorCode};
 use parking_lot::Mutex;
@@ -125,6 +125,8 @@ struct Session {
     cand_to_host: usize,
     cand_to_controller: usize,
     host_notified: bool,
+    /// What it may use, as last told to both sides.
+    access: crate::egress::Access,
 }
 
 /// Why a session ends; determines who is told what.
@@ -139,6 +141,9 @@ enum End {
     PermissionRevoked,
     Expired,
     Shutdown,
+    /// The server requires its relays and the session may no longer use
+    /// them (`farwing_protocol::realtime::relay_denied`).
+    RelayDenied(&'static str),
 }
 
 impl End {
@@ -152,6 +157,7 @@ impl End {
             End::PermissionRevoked => reason::PERMISSION_REVOKED,
             End::Expired => reason::EXPIRED,
             End::Shutdown => reason::SERVER_SHUTDOWN,
+            End::RelayDenied(r) => r,
         }
     }
 }
@@ -371,11 +377,97 @@ impl Hub {
 
 
     /// The relays one side of session `sid` gets: this server's, then the
-    /// edge nodes nearest to `device_id`.
-    fn servers_for(&self, sid: &str, device_id: &str) -> Vec<farwing_protocol::realtime::IceServer> {
+    /// edge nodes nearest to `device_id`; discovery only when the session
+    /// may not use relays.
+    fn servers_for(
+        &self,
+        sid: &str,
+        device_id: &str,
+        access: &crate::egress::Access,
+    ) -> Vec<farwing_protocol::realtime::IceServer> {
         let mut servers = self.ice.read().servers(sid);
         servers.extend(self.edges.servers_for(sid, device_id));
+        if !access.relay.allowed {
+            servers.retain_mut(|server| {
+                server
+                    .urls
+                    .retain(|url| url.starts_with("stun:") || url.starts_with("stuns:"));
+                server.username.clear();
+                server.credential.clear();
+                !server.urls.is_empty()
+            });
+        }
         servers
+    }
+
+    /// Tells both sides of session `sid` its relays and what it may use.
+    fn send_relays(&self, st: &HubState, sid: &str, s: &Session) {
+        let host_current = st
+            .presence
+            .get(&s.host_device_id)
+            .and_then(|id| st.links.get(id))
+            .is_some_and(|l| l.epoch == s.host_epoch);
+        if s.host_notified
+            && host_current
+            && let Some(h) = Self::host_conn(st, &s.host_device_id)
+        {
+            let relays = SessionRelays {
+                ice_servers: self.servers_for(sid, &s.host_device_id, &s.access),
+                relay: s.access.relay.clone(),
+                forward: Some(s.access.forward),
+            };
+            h.send(&Envelope::new(types::SESSION_RELAYS, relays).with_sid(sid));
+        }
+        if let Some(c) = s
+            .controller_link
+            .as_deref()
+            .and_then(|id| st.links.get(id))
+            .and_then(|l| l.conn.as_ref())
+        {
+            let relays = SessionRelays {
+                ice_servers: self.servers_for(sid, &s.controller_device_id, &s.access),
+                relay: s.access.relay.clone(),
+                forward: None,
+            };
+            c.send(&Envelope::new(types::SESSION_RELAYS, relays).with_sid(sid));
+        }
+    }
+
+    /// What each started session may use, decided again (policies, monthly
+    /// totals); sessions whose access changed are told and their gauges
+    /// follow. Called every second.
+    pub fn refresh_access(&self) {
+        let forced = self.cfg.read().force_relay;
+        let mut st = self.state.lock();
+        let changed: Vec<String> = st
+            .sessions
+            .iter_mut()
+            .filter(|(_, s)| s.state != SessState::Ticketed)
+            .filter_map(|(sid, s)| {
+                let access = self.egress.access(sid);
+                (access != s.access).then(|| {
+                    s.access = access;
+                    sid.clone()
+                })
+            })
+            .collect();
+        for sid in changed {
+            let s = &st.sessions[&sid];
+            tracing::info!(session_id = %sid, relay = s.access.relay.allowed,
+                reason = ?s.access.relay.reason, forward = s.access.forward, "session access changed");
+            self.egress.apply(&sid, &s.access);
+            // Relays are required and this session may not use them.
+            if forced && !s.access.relay.allowed {
+                let why = match s.access.relay.reason.as_deref() {
+                    Some(relay_denied::QUOTA) => relay_denied::QUOTA,
+                    Some(relay_denied::BUSY) => relay_denied::BUSY,
+                    _ => relay_denied::NOT_ALLOWED,
+                };
+                self.end_session_locked(&mut st, &sid, End::RelayDenied(why));
+                continue;
+            }
+            self.send_relays(&st, &sid, s);
+        }
     }
 
     fn persist(&self, job: PersistJob) {
@@ -414,38 +506,14 @@ impl Hub {
     }
 
     /// The builtin relay restarted: sessions `sids` had allocations on it.
-    /// Both sides get the relays anew (`session.relay_lost`); how many
+    /// Both sides get the relays anew (`session.relays`); how many
     /// sessions were told.
     pub fn relay_lost(&self, sids: &[String]) -> usize {
         let st = self.state.lock();
         let mut told = 0;
         for sid in sids {
             let Some(s) = st.sessions.get(sid) else { continue };
-            let host_current = st
-                .presence
-                .get(&s.host_device_id)
-                .and_then(|id| st.links.get(id))
-                .is_some_and(|l| l.epoch == s.host_epoch);
-            if s.host_notified
-                && host_current
-                && let Some(h) = Self::host_conn(&st, &s.host_device_id)
-            {
-                let lost = SessionRelayLost {
-                    ice_servers: self.servers_for(sid, &s.host_device_id),
-                };
-                h.send(&Envelope::new(types::SESSION_RELAY_LOST, lost).with_sid(sid));
-            }
-            if let Some(c) = s
-                .controller_link
-                .as_deref()
-                .and_then(|id| st.links.get(id))
-                .and_then(|l| l.conn.as_ref())
-            {
-                let lost = SessionRelayLost {
-                    ice_servers: self.servers_for(sid, &s.controller_device_id),
-                };
-                c.send(&Envelope::new(types::SESSION_RELAY_LOST, lost).with_sid(sid));
-            }
+            self.send_relays(&st, sid, s);
             told += 1;
         }
         told
@@ -819,6 +887,7 @@ impl Hub {
             cand_to_host: 0,
             cand_to_controller: 0,
             host_notified: false,
+            access: crate::egress::Access::default(),
         };
         self.persist(PersistJob::SessionCreated(db::SessionRecord {
             id: sid.clone(),
@@ -901,6 +970,7 @@ impl Hub {
             return;
         };
         self.egress.ledger.close(sid);
+        self.egress.ended(sid);
         // A controller link exists for this session only; a presence link
         // that carries it stays (and is not closed).
         let (ctrl_conn, carried) = match s
@@ -955,6 +1025,7 @@ impl Hub {
                     (1001, "server shutting down"),
                     None,
                 ),
+                End::RelayDenied(r) => (Some(r), (close::SESSION_ENDED, "relay unavailable"), Some(r)),
             };
         if let Some(c) = ctrl_conn {
             if let Some(r) = ctrl_reason {
@@ -1438,6 +1509,18 @@ impl Hub {
             ));
             return;
         }
+        let access = self.egress.access(&sid);
+        if self.cfg.read().force_relay && !access.relay.allowed {
+            conn.send(&Envelope::error(
+                re,
+                ErrorBody::new(
+                    ErrorCode::RelayUnavailable,
+                    "this server requires its relays and this session may not use them",
+                )
+                .with_details(json!({ "reason": access.relay.reason })),
+            ));
+            return;
+        }
         // Signalled on this presence connection from now on; a per-session
         // controller link it had before is superseded.
         let carrier = (st.links[link_id].role == Role::Host).then(|| link_id.to_owned());
@@ -1464,6 +1547,8 @@ impl Hub {
         s.cand_to_host = 0;
         s.cand_to_controller = 0;
         s.host_notified = true;
+        s.access = access.clone();
+        self.egress.apply(&sid, &access);
         let first_start = s.state == SessState::Ticketed;
         if first_start {
             s.state = SessState::Started;
@@ -1479,8 +1564,11 @@ impl Hub {
             grants: s.grants.clone(),
             controller: s.controller.clone(),
             options: start.options,
-            ice_servers: self.servers_for(&sid, &s.host_device_id),
+            ice_servers: self.servers_for(&sid, &s.host_device_id, &access),
             force_relay: self.cfg.read().force_relay,
+            relay: access.relay.clone(),
+            forward: access.forward,
+            budget_kbps: 0,
         };
         host_conn.send(&Envelope::new(types::SESSION_INCOMING, incoming).with_sid(&sid));
         conn.send(&Envelope::ack(
@@ -1488,8 +1576,9 @@ impl Hub {
             SessionStarted {
                 participant_id: s.participant_id.clone(),
                 session_id: sid.clone(),
-                ice_servers: self.servers_for(&sid, &s.controller_device_id),
+                ice_servers: self.servers_for(&sid, &s.controller_device_id, &access),
                 force_relay: self.cfg.read().force_relay,
+                relay: access.relay.clone(),
                 host: PeerIdentity {
                     device_id: s.host_device_id.clone(),
                     public_key: s.host_public_key.clone(),

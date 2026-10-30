@@ -5,9 +5,10 @@
 // play. Within the granted capabilities (the server limits browsers to its
 // web setting): the control token and input, the text clipboard, files and
 // the microphone.
-import { t } from '../i18n';
+import { currentLang, t } from '../i18n';
 import { Annotation, type AnnotationState } from './annotation';
 import { call, errorText } from './api';
+import { errorMessage } from '../i18n/errors';
 import { ClipboardSync } from './clipboard';
 import { deviceKey, verify } from './device';
 import { deviceIdOf, unb64 } from './encoding';
@@ -44,7 +45,12 @@ export interface SessionTicket {
   connect_timeout_ms: number;
   retry_delay_ms: number;
   target: { device_id: string; public_key?: string; alias?: string; granted?: string[] };
-  bitrate_limit_mbps?: number | null;
+}
+
+/// Whether the session may use the server's relays, and why not.
+interface RelayAccess {
+  allowed: boolean;
+  reason?: string;
 }
 
 interface IceServer {
@@ -58,6 +64,7 @@ export interface SessionStarted {
   session_id: string;
   ice_servers: IceServer[];
   force_relay: boolean;
+  relay?: RelayAccess;
   host: { device_id: string; public_key: string };
   relation: string;
   grants: string[];
@@ -521,14 +528,24 @@ export class Viewer {
   private armNegotiation(pc: RTCPeerConnection, ms: number) {
     window.clearTimeout(this.negotiateTimer);
     this.negotiateTimer = window.setTimeout(() => {
-      if (pc.connectionState !== 'connected') {
-        this.finish({
-          reason: 'network',
-          message: () => t().viewer.ended.noConnection,
-          recoverable: true,
-        });
-      }
+      if (pc.connectionState !== 'connected') this.noPath(() => t().viewer.ended.noConnection);
     }, ms);
+  }
+
+  /// The connection failed: without the server's relays (the session may
+  /// not use them) that is the reason, and only a busy relay may free up.
+  private noPath(otherwise: () => string) {
+    const relay = this.started?.relay;
+    if (relay && !relay.allowed) {
+      const reason = relay.reason ?? 'relay_not_allowed';
+      this.finish({
+        reason: 'network',
+        message: () => t().viewer.ended.noDirect(errorMessage(currentLang(), 'relay_unavailable', reason)),
+        recoverable: reason === 'relay_busy',
+      });
+      return;
+    }
+    this.finish({ reason: 'network', message: otherwise, recoverable: true });
   }
 
   private async onAnswer(envelope: Envelope<RtcDescription>) {
@@ -691,7 +708,7 @@ export class Viewer {
   private async restartIce() {
     if (this.stopped || !this.pc || this.pc.connectionState === 'connected') return;
     if (this.iceRestarts >= 3 || !this.rt?.connected) {
-      this.finish({ reason: 'network', message: () => t().viewer.ended.connectionLost, recoverable: true });
+      this.noPath(() => t().viewer.ended.connectionLost);
       return;
     }
     this.iceRestarts += 1;
@@ -1218,9 +1235,11 @@ export class Viewer {
       case 'session.permissions':
         this.setGrants((envelope.data as { grants: string[] }).grants ?? this.grants);
         break;
-      case 'session.relay_lost':
-        void this.onRelayLost((envelope.data as { ice_servers?: IceServer[] }).ice_servers ?? []);
+      case 'session.relays': {
+        const data = envelope.data as { ice_servers?: IceServer[]; relay?: RelayAccess };
+        void this.onRelays(data.ice_servers ?? [], data.relay);
         break;
+      }
       case 'session.ended': {
         const reason = (envelope.data as { reason?: string })?.reason ?? '';
         this.end(reason);
@@ -1232,16 +1251,18 @@ export class Viewer {
     }
   }
 
-  /// The server's relay restarted: its relays anew, and a new path now if
-  /// this one went through it.
-  private async onRelayLost(servers: IceServer[]) {
+  /// The session's relays changed (the server's relay restarted, or the
+  /// session may no longer use relays): a new path now if this one went
+  /// through a relay.
+  private async onRelays(servers: IceServer[], relay?: RelayAccess) {
     const started = this.started;
     const pc = this.pc;
     if (!started || !pc) return;
     started.ice_servers = servers;
+    started.relay = relay;
     pc.setConfiguration({ ...pc.getConfiguration(), iceServers: iceServers(started) });
     if (await relayed(pc)) {
-      this.log('the server relay restarted; restarting ICE');
+      this.log('the session relays changed; restarting ICE');
       await this.negotiate(true).catch((error: Error) => this.log(`restart failed: ${error.message}`));
     }
   }

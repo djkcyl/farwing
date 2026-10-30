@@ -522,6 +522,7 @@ impl Components {
             .collect();
         self.app.hub.reconfigure(hub_config(cfg), ice);
         self.app.edges.reconfigure(&cfg.turn, &cfg.sfu);
+        self.app.egress.configure(&cfg.egress);
         *self.app.relay.write() = bound;
     }
 

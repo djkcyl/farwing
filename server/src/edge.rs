@@ -109,6 +109,9 @@ pub enum ToNode {
     ControlFingerprint { fingerprint: String },
     /// A forwarder operation; answered with `FromNode::SfuResult`.
     Sfu { id: u64, request: SfuRequest },
+    /// What sessions may send through the node
+    /// (`docs/protocol/egress-policy.md` §3.4).
+    Rules { rules: Vec<crate::egress::RuleUpdate> },
 }
 
 /// Node → control.
@@ -290,6 +293,20 @@ impl EdgeHub {
                 turn: Box::new(turn),
                 sfu_port,
             });
+        }
+    }
+
+    /// `message` to every connected node.
+    pub fn broadcast(&self, message: ToNode) {
+        for live in self.live.read().values() {
+            let _ = live.tx.send(message.clone());
+        }
+    }
+
+    /// `message` to node `id` (when connected).
+    pub fn send(&self, id: &str, message: ToNode) {
+        if let Some(live) = self.live.read().get(id) {
+            let _ = live.tx.send(message);
         }
     }
 

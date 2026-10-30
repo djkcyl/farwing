@@ -117,6 +117,12 @@ fn recovery(error: &anyhow::Error) -> Recovery {
                 }
                 SignalFailure::Kicked(_) => Recovery::Fatal,
                 SignalFailure::PublisherDisconnected => Recovery::WaitDevice,
+                // Only the server's busy relay may free up.
+                SignalFailure::NoRelay(reason)
+                    if reason != farwing_protocol::realtime::relay_denied::BUSY =>
+                {
+                    Recovery::Fatal
+                }
                 _ => Recovery::Retry,
             };
         }
@@ -537,6 +543,9 @@ impl ControllerConnection {
         );
         let transport = if control.force_relay {
             crate::media::TransportChoice::Relay
+        } else if transport == crate::media::TransportChoice::Relay && !control.relay.allowed {
+            // This viewer prefers the relay but the session may not use it.
+            crate::media::TransportChoice::Auto
         } else {
             transport
         };
@@ -579,7 +588,11 @@ impl ControllerConnection {
         peer.stream_control_handle()
             .audio()
             .set_settings(audio_settings);
-        peer.configure_network_control(transport, control.force_relay);
+        peer.configure_network_control(
+            transport,
+            control.force_relay,
+            crate::features::network_control::relay_denied(&control.relay),
+        );
         let forward_config = RtpForwardConfig {
             video_track_id: None,
         };

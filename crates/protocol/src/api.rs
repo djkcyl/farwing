@@ -638,8 +638,6 @@ pub struct SessionTicket {
     pub retry_delay_ms: u32,
     #[serde(default)]
     pub target: SessionTarget,
-    #[serde(default)]
-    pub bitrate_limit_mbps: Option<u32>,
 }
 
 impl std::fmt::Debug for SessionTicket {

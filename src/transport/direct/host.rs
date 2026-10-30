@@ -835,6 +835,9 @@ impl Shared {
             options: start.options,
             ice_servers: Vec::new(),
             force_relay: false,
+            relay: Default::default(),
+            forward: false,
+            budget_kbps: 0,
         };
         let (sender, mut outgoing) = mpsc::unbounded_channel();
         self.router.register(&sid, sender);
@@ -848,6 +851,7 @@ impl Shared {
             session_id: sid.clone(),
             ice_servers: Vec::new(),
             force_relay: false,
+            relay: Default::default(),
             host: PeerIdentity {
                 device_id: self.local.identity.device_id.clone(),
                 public_key: self.local.identity.public_key(),

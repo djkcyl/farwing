@@ -161,6 +161,8 @@ pub(crate) struct Session {
     pub host_went_offline: &'static str,
     /// Reason
     pub media_connection_failed: fn(&str) -> String,
+    /// No direct path, and the session may not use the server's relays.
+    pub no_direct_path: fn(&str) -> String,
     pub online_connection_closed: &'static str,
     pub online_connection_not_ready: &'static str,
     pub online_connection_unavailable: &'static str,
@@ -815,6 +817,7 @@ pub(crate) const ZH_CN: Session = Session {
     ended_session: "会话已结束",
     host_went_offline: "被控端已离线",
     media_connection_failed: |reason| format!("媒体连接失败：{reason}"),
+    no_direct_path: |reason| format!("无法直连对方，{reason}"),
     online_connection_closed: "在线连接已关闭",
     online_connection_not_ready: "在线连接未就绪",
     online_connection_unavailable: "在线连接不可用",
@@ -1425,6 +1428,7 @@ pub(crate) const EN: Session = Session {
     ended_session: "Session ended",
     host_went_offline: "The remote device went offline",
     media_connection_failed: |reason| format!("Media connection failed: {reason}"),
+    no_direct_path: |reason| format!("Can't connect directly: {reason}"),
     online_connection_closed: "Online connection closed",
     online_connection_not_ready: "Online connection not ready",
     online_connection_unavailable: "Online connection unavailable",

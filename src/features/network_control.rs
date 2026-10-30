@@ -16,6 +16,24 @@ pub struct NetworkControlSnapshot {
     pub notice: Option<&'static str>,
 }
 
+/// Why a session may not use the server's relays, as the user reads it.
+pub(crate) fn relay_denied_text(reason: &str) -> &'static str {
+    use farwing_protocol::realtime::relay_denied;
+    let errors = &t().errors;
+    match reason {
+        relay_denied::QUOTA => errors.relay_quota,
+        relay_denied::BUSY => errors.relay_busy,
+        _ => errors.relay_not_allowed,
+    }
+}
+
+/// The reason the session may not use relays (none: it may).
+pub(crate) fn relay_denied(
+    access: &farwing_protocol::realtime::RelayAccess,
+) -> Option<&'static str> {
+    (!access.allowed).then(|| relay_denied_text(access.reason.as_deref().unwrap_or_default()))
+}
+
 #[derive(Default)]
 struct State {
     view: NetworkControlSnapshot,
@@ -23,6 +41,8 @@ struct State {
     round_trip: Option<(Duration, Instant)>,
     forced: bool,
     has_relay: bool,
+    /// Why the session may not use the server's relays.
+    denied: Option<&'static str>,
     last_request: Option<Instant>,
     waiting_since: Option<Instant>,
     notice_until: Option<Instant>,
@@ -42,11 +62,32 @@ impl NetworkControl {
         }
     }
 
-    pub(crate) fn configure(&self, relay: bool, forced: bool, has_relay: bool) {
+    pub(crate) fn configure(
+        &self,
+        relay: bool,
+        forced: bool,
+        has_relay: bool,
+        denied: Option<&'static str>,
+    ) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.view.relay_enabled = relay;
         state.forced = forced;
         state.has_relay = has_relay;
+        state.denied = denied;
+    }
+
+    /// The session's relays changed; without any, it no longer relays.
+    pub(crate) fn relays_changed(&self, has_relay: bool, denied: Option<&'static str>) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.has_relay = has_relay;
+        state.denied = denied;
+        if !has_relay && !state.forced {
+            state.view.relay_enabled = false;
+        }
+    }
+
+    pub(crate) fn forced(&self) -> bool {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).forced
     }
 
     pub(crate) fn connected(&self, connected: bool) {
@@ -79,7 +120,7 @@ impl NetworkControl {
         } else if state.forced {
             Some(t().features.network_relay_required)
         } else if !state.has_relay && !state.view.relay_enabled {
-            Some(t().features.network_no_relay)
+            Some(state.denied.unwrap_or(t().features.network_no_relay))
         } else {
             None
         };
@@ -103,7 +144,7 @@ impl NetworkControl {
             bail!("{}", t().features.network_relay_required);
         }
         if relay && !state.has_relay {
-            bail!("{}", t().features.network_no_relay);
+            bail!("{}", state.denied.unwrap_or(t().features.network_no_relay));
         }
         if state
             .last_request

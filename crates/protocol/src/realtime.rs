@@ -97,9 +97,12 @@ pub mod types {
     pub const RTC_CANDIDATE: &str = "rtc.candidate";
     /// Server → host and controller: the participant's capabilities changed.
     pub const SESSION_PERMISSIONS: &str = "session.permissions";
-    /// Server → host and controller: the server's relay restarted while the
-    /// session had allocations on it ([`SessionRelayLost`]).
-    pub const SESSION_RELAY_LOST: &str = "session.relay_lost";
+    /// Server → host and controller: the session's relays changed
+    /// ([`SessionRelays`]).
+    pub const SESSION_RELAYS: &str = "session.relays";
+    /// Server → host: how fast this relayed session may send
+    /// ([`SessionBudget`]).
+    pub const SESSION_BUDGET: &str = "session.budget";
     // pushes
     pub const DEVICE_CHANGED: &str = "device.changed";
     pub const FRIEND_CHANGED: &str = "friend.changed";
@@ -259,6 +262,50 @@ impl std::fmt::Debug for IceServer {
     }
 }
 
+/// Why a session may not use the server's relays
+/// (`docs/protocol/egress-policy.md` §3.2).
+pub mod relay_denied {
+    /// The account's policy does not allow relaying.
+    pub const NOT_ALLOWED: &str = "relay_not_allowed";
+    /// The account's monthly traffic is used up.
+    pub const QUOTA: &str = "relay_quota";
+    /// The server's egress (or the account's rate) is taken.
+    pub const BUSY: &str = "relay_busy";
+}
+
+/// Whether a session may use the server's relays; without them its ICE
+/// servers are STUN only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayAccess {
+    #[serde(default = "allowed")]
+    pub allowed: bool,
+    /// Why not ([`relay_denied`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+fn allowed() -> bool {
+    true
+}
+
+impl Default for RelayAccess {
+    fn default() -> Self {
+        Self {
+            allowed: true,
+            reason: None,
+        }
+    }
+}
+
+impl RelayAccess {
+    pub fn denied(reason: &str) -> Self {
+        Self {
+            allowed: false,
+            reason: Some(reason.to_owned()),
+        }
+    }
+}
+
 /// `ack` body of `session.start`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionStarted {
@@ -267,6 +314,8 @@ pub struct SessionStarted {
     pub ice_servers: Vec<IceServer>,
     #[serde(default)]
     pub force_relay: bool,
+    #[serde(default)]
+    pub relay: RelayAccess,
     #[serde(default)]
     pub host: PeerIdentity,
     #[serde(default)]
@@ -342,6 +391,14 @@ pub struct SessionIncoming {
     pub ice_servers: Vec<IceServer>,
     #[serde(default)]
     pub force_relay: bool,
+    #[serde(default)]
+    pub relay: RelayAccess,
+    /// The participant may receive through a forwarding room.
+    #[serde(default = "allowed")]
+    pub forward: bool,
+    /// How fast the host may send to it while relayed (0: no limit).
+    #[serde(default)]
+    pub budget_kbps: u32,
 }
 
 /// ICE network selection carried by `rtc.offer` / `rtc.answer`.
@@ -417,14 +474,28 @@ pub struct SessionPermissions {
     pub grants: Vec<String>,
 }
 
-/// `session.relay_lost` (server → host and controller, `sid` set): the
-/// relayed path is gone; these relays (new credentials when the secret
-/// changed) replace the session's, and a controller on a relayed path
-/// restarts ICE at once.
+/// `session.relays` (server → host and controller, `sid` set): the
+/// session's relays changed — the server's relay restarted, or the session
+/// may (no longer) use relays. These replace the session's, and a
+/// controller on a relayed path restarts ICE at once.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct SessionRelayLost {
+pub struct SessionRelays {
     #[serde(default)]
     pub ice_servers: Vec<IceServer>,
+    #[serde(default)]
+    pub relay: RelayAccess,
+    /// To the host: whether the participant may receive through a
+    /// forwarding room now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward: Option<bool>,
+}
+
+/// `session.budget` (server → host, `sid` set): the most this session may
+/// send while relayed or forwarded (`docs/protocol/egress-policy.md` §4.2).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct SessionBudget {
+    /// 0: no limit.
+    pub budget_kbps: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

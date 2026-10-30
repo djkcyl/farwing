@@ -3,13 +3,16 @@
 
 pub mod ledger;
 pub mod meter;
+pub mod policy;
 
 use crate::db::Db;
+use farwing_protocol::realtime::{RelayAccess, relay_denied};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub use ledger::{LOCAL, Ledger};
-pub use meter::{Meters, SessionGauge, Usage};
+pub use meter::{Meters, Rule, RuleUpdate, SessionGauge, Usage};
+pub use policy::{Effective, Policies, UserPolicy};
 
 /// Whose egress a session's is (§2): an account, or the guests' common one.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -92,22 +95,55 @@ impl Month {
     }
 }
 
-/// The control node's egress service: this server's gauges and the
-/// account of every node's.
+/// What a session may use now (§3.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Access {
+    pub relay: RelayAccess,
+    pub forward: bool,
+}
+
+impl Default for Access {
+    fn default() -> Self {
+        Self {
+            relay: RelayAccess::default(),
+            forward: true,
+        }
+    }
+}
+
+impl Access {
+    fn rule(&self) -> Rule {
+        Rule {
+            relay: self.relay.allowed,
+            forward: self.forward,
+        }
+    }
+}
+
+/// The control node's egress service: this server's gauges, the account
+/// of every node's and the payers' policies.
 pub struct Egress {
     meters: Arc<Meters>,
     pub ledger: Ledger,
+    policies: parking_lot::RwLock<Policies>,
+    edges: Arc<crate::edge::EdgeHub>,
 }
 
 /// How often stored monthly totals are brought up to date.
 const STORE_EVERY: Duration = Duration::from_secs(60);
 
 impl Egress {
-    /// The service, with this month's totals from `db`.
-    pub fn load(db: &Db) -> anyhow::Result<Arc<Self>> {
+    /// The service, with this month's totals and the accounts' policies
+    /// from `db`.
+    pub fn load(
+        db: &Db,
+        config: &crate::config::EgressConfig,
+        edges: Arc<crate::edge::EdgeHub>,
+    ) -> anyhow::Result<Arc<Self>> {
         let month = Month::now();
         let key = month.key.clone();
         let stored = db.with(move |c| crate::db::egress_month(c, &key))?;
+        let users = db.with(|c| crate::webdb::user_policies(c))?;
         Ok(Arc::new(Self {
             meters: Meters::new(),
             ledger: Ledger::new(
@@ -117,7 +153,99 @@ impl Egress {
                     .map(|(payer, bytes)| (Payer::from_key(payer), bytes))
                     .collect(),
             ),
+            policies: parking_lot::RwLock::new(Policies::new(config.clone(), users)),
+            edges,
         }))
+    }
+
+    /// The settings changed.
+    pub fn configure(&self, config: &crate::config::EgressConfig) {
+        self.policies.write().configure(config.clone());
+    }
+
+    /// Account `id` changed (whether it administers the server, its own
+    /// policy); `None`: deleted.
+    pub fn set_user(&self, id: &str, user: Option<(bool, UserPolicy)>) {
+        self.policies.write().set_user(id, user);
+    }
+
+    /// Account `id` as stored now (created, its role or policy changed,
+    /// or deleted).
+    pub async fn reload_user(&self, db: &Db, id: &str) {
+        let uid = id.to_owned();
+        let user = db
+            .call(move |c| {
+                let Some(account) = crate::webdb::account(c, &uid)? else {
+                    return Ok(None);
+                };
+                Ok(Some((
+                    account.role == crate::webdb::ROLE_ADMIN,
+                    crate::webdb::user_policy(c, &uid)?,
+                )))
+            })
+            .await;
+        match user {
+            Ok(user) => self.set_user(id, user),
+            Err(error) => tracing::warn!(error = %format!("{error:#}"), "account policy not reloaded"),
+        }
+    }
+
+    /// `payer`'s policy in force.
+    pub fn effective(&self, payer: &Payer) -> Effective {
+        self.policies.read().resolve(payer)
+    }
+
+    /// What session `id` may use now (an unknown session: everything; the
+    /// hub knows every session it admits).
+    pub fn access(&self, id: &str) -> Access {
+        let Some(payer) = self.ledger.payer(id) else {
+            return Access::default();
+        };
+        let effective = self.effective(&payer);
+        let used_up = effective
+            .quota_bytes
+            .is_some_and(|quota| self.ledger.month_bytes(&payer) >= quota);
+        Access {
+            relay: if !effective.relay {
+                RelayAccess::denied(relay_denied::NOT_ALLOWED)
+            } else if used_up {
+                RelayAccess::denied(relay_denied::QUOTA)
+            } else {
+                RelayAccess::default()
+            },
+            forward: effective.forward && !used_up,
+        }
+    }
+
+    /// Session `id` may use `access` from now on: the gauges here and on
+    /// the edge nodes follow.
+    pub fn apply(&self, id: &str, access: &Access) {
+        self.rule(RuleUpdate {
+            session: id.to_owned(),
+            rule: access.rule(),
+            ended: false,
+        });
+    }
+
+    /// Session `id` ended: what its relay credentials still carry is refused.
+    pub fn ended(&self, id: &str) {
+        self.rule(RuleUpdate {
+            session: id.to_owned(),
+            rule: Rule::NOTHING,
+            ended: true,
+        });
+    }
+
+    fn rule(&self, update: RuleUpdate) {
+        self.meters.rule(&update);
+        self.edges.broadcast(crate::edge::ToNode::Rules {
+            rules: vec![update],
+        });
+    }
+
+    /// The rules for an edge node that just connected.
+    pub fn rules(&self) -> Vec<RuleUpdate> {
+        self.meters.rules()
     }
 
     /// This server's gauges (its relay and forwarder count into them).

@@ -73,9 +73,6 @@ fn connect_options(
     let mut stream = crate::features::stream_control::Wanted {
         settings: settings.settings,
         display: profile.local_display,
-        custom_bitrate_limit: settings
-            .custom_bitrate_limit
-            .unwrap_or(crate::features::stream_control::MAX_CUSTOM_BITRATE_MBPS),
         codec: profile.codec.preferred(),
         // The host draws the cursor into the picture unless this viewer
         // draws it (controlling with the local or smart pointer); the

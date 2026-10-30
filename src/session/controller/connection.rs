@@ -221,8 +221,6 @@ impl ResolvedConnection {
             anyhow::ensure!(device.platform == farwing_protocol::Platform::Windows, "{}", t().session.error_updated_platform_changed);
             self.refresh_after_upgrade = false;
         }
-        // Server policy may cap the video bitrate of this session.
-        let bitrate_limit = room.bitrate_limit_mbps;
         let mut persistence_error = None;
         let store = match self.client.viewing_settings_store(&self.target_device_id) {
             Ok(store) => Some(store),
@@ -275,9 +273,6 @@ impl ResolvedConnection {
                 )
             });
             preferences.device.get_or_insert(device);
-        }
-        if let Some(preferences) = self.preferences.as_mut() {
-            preferences.custom_bitrate_limit = bitrate_limit;
         }
         let mut audio_persistence_error = None;
         if self.audio_preferences.is_none() {
@@ -349,7 +344,6 @@ impl ResolvedConnection {
         if self.assist.is_none() && self.target_platform == farwing_protocol::Platform::Windows {
             handle.set_remote_upgrade(crate::features::remote_upgrade::RemoteUpgrade::new(cancel));
         }
-        handle.set_custom_bitrate_limit(bitrate_limit);
         handle.mouse().set_keyboard_platform(self.target_platform);
         handle.set_persistence_error(persistence_error);
         handle.set_audio_persistence_error(audio_persistence_error);

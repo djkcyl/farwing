@@ -14,7 +14,7 @@
 ### 1.1 前置条件（本文不展开，假定已完成）
 
 1. 浏览器拥有 Ed25519 设备密钥，设备 ID = `local_device_id(公钥)`（`crates/protocol/src/crypto.rs:219-241`，见 §2.9.4），且该公钥已在服务端登记为本设备。服务端把它作为 `ControllerInfo.public_key` 下发给被控，被控用它校验 offer 签名（`src/transport/signal/host.rs:681-692`）。
-2. 已通过 HTTPS 为目标被控创建会话（`POST /api/v2/sessions`，`purpose: "desktop"`，不带 `presence`），拿到 `SessionTicket{session_id, ticket:"fwt_…", endpoints:[wss://…/api/v2/ws], connect_timeout_ms, retry_delay_ms, target{device_id, public_key, …}, bitrate_limit_mbps}`（`crates/protocol/src/api.rs` `SessionTicket`）。
+2. 已通过 HTTPS 为目标被控创建会话（`POST /api/v2/sessions`，`purpose: "desktop"`，不带 `presence`），拿到 `SessionTicket{session_id, ticket:"fwt_…", endpoints:[wss://…/api/v2/ws], connect_timeout_ms, retry_delay_ms, target{device_id, public_key, …}}`（`crates/protocol/src/api.rs` `SessionTicket`）。
    - 会话必须在入场券有效期（60 s，`crates/protocol/src/lib.rs:82` `TICKET_TTL_SECONDS`）内连上 WS，否则服务端以 `expired` 结束会话（`server/src/hub.rs:1028-1036` `sweep`）。
    - 服务端对 `platform = web` 的主控把授权裁剪为 `view` + `audio`（`server/src/http/sessions.rs:123-130`，`crates/protocol/src/lib.rs:158-163` `controller_caps_limit`）。被控收到 `session.incoming` 后按 `controller.platform` 再裁剪一次（`src/transport/signal/host.rs:759-766`）。（这是调研时的代码；后来改为服务端按“网页端可以使用的功能”下发 `ControllerInfo.caps_limit`，被控只按它裁剪，`controller_caps_limit` 已删除，见 [web-control-brief.md](web-control-brief.md) §7 与 `docs/web-console.md` §7.1。）
 

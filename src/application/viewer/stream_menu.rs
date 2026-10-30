@@ -792,12 +792,7 @@ pub(super) fn show_stream_control_window(
                                         (
                                             StreamQuality::Custom,
                                             t().viewer.custom_bitrate,
-                                            format!(
-                                                "{} Mbps",
-                                                settings
-                                                    .custom_bitrate_mbps
-                                                    .min(snapshot.custom_bitrate_limit)
-                                            ),
+                                            format!("{} Mbps", settings.custom_bitrate_mbps),
                                         ),
                                     ]
                                 };
@@ -822,9 +817,6 @@ pub(super) fn show_stream_control_window(
                                         if more {
                                             state.page = Page::Custom;
                                             settings.quality = StreamQuality::Custom;
-                                            settings.custom_bitrate_mbps = settings
-                                                .custom_bitrate_mbps
-                                                .min(snapshot.custom_bitrate_limit);
                                             state.dirty = settings != snapshot.settings;
                                         }
                                         if !more
@@ -1367,7 +1359,7 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", t().viewer.clip
                                 ui,
                                 &mut settings.custom_bitrate_mbps,
                                 multi_screen,
-                                snapshot.custom_bitrate_limit,
+                                crate::features::stream_control::MAX_CUSTOM_BITRATE_MBPS,
                             );
                             ui.add_space(16.0);
                             let can_apply = state.dirty

@@ -514,7 +514,7 @@ HostEvent { kind: UPDATING|RESTARTING|SLEEPING|SHUTTING_DOWN|SESSION_SWITCH|DISP
 ## 11. 连接（P6）
 
 - **信令复用（已实现）：** 主控进程已有本设备、本账号的在线连接（presence）且处于连接状态时，会话信令复用它（`sid` 区分），不再为该会话新开 WSS；否则沿用按会话签发票据、单独建立主控连接的方式（独立主控进程尚未上线、服务模式下界面进程没有自己的在线连接、在线连接正在重连等）。
-  - `POST /api/v2/sessions` 请求带 `"presence": true` 时服务端不签发票据，响应中 `ticket` 为空字符串，其余字段（`session_id`、`target`、`bitrate_limit_mbps` 等）不变。会话仍须在票据有效期内开始，否则按过期结束。
+  - `POST /api/v2/sessions` 请求带 `"presence": true` 时服务端不签发票据，响应中 `ticket` 为空字符串，其余字段（`session_id`、`target` 等）不变。会话仍须在票据有效期内开始，否则按过期结束。
   - 主控在在线连接上发送带 `sid` 的 `session.start`；服务端只接受会话主控设备自己的在线连接、且该连接的账号与创建会话的账号相同（其他设备、被控设备本身发送均回 `forbidden`）。此后该会话的 `rtc.offer`/`rtc.candidate`（主控 → 被控）从这条连接接受，`rtc.answer`/`rtc.candidate`/`session.setting`/`session.permissions`/`session.ended`（→ 主控）发往这条连接。一个以票据建立了主控连接的会话改由在线连接开始时，原主控连接以 4001 关闭。
   - 主控离开会话发送 `session.leave{sid}`（代替主控连接上的 `bye`）；会话结束时只发 `session.ended`，不关闭在线连接。在线连接 `bye`、被新的在线连接取代、恢复窗口过期或凭据被撤销时，它承载的主控会话以 `controller_left` 结束；连接只是暂时断开（可恢复）时会话保留，与主控连接相同。
   - 客户端：在线连接的套接字工作线程按 `sid` 与请求 ID 把这些会话的消息交给对应的主控会话，其余仍交给被控会话；主控会话的请求 ID 带各自前缀，避免同一连接上互相冲突。在线连接中断且无法恢复时，承载的主控会话按“实时连接中断”进入第 2 级恢复，重建时若在线连接不可用则自动改用单独连接。ICE 重启、身份校验（§1.4）与恢复逻辑两种方式相同；直连会话（§12）不受影响。

@@ -167,6 +167,7 @@ pub async fn complete(
         .await?;
     app.setup_pending
         .store(false, std::sync::atomic::Ordering::Release);
+    app.egress.reload_user(&app.db, &user_id).await;
     super::me::audit(
         &app,
         Some((&user_id, &name)),
@@ -249,6 +250,7 @@ pub async fn recover(
         })
         .await?;
     app.hub.revoke_user(&user_id);
+    app.egress.reload_user(&app.db, &user_id).await;
     super::me::audit(
         &app,
         Some((&user_id, &name)),

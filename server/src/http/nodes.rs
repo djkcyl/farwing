@@ -325,6 +325,7 @@ async fn run(app: App, socket: WebSocket, id: String, ip: IpAddr, joined: bool) 
         });
     }
     app.edges.attach(&id, &conn_id, ip, tx);
+    app.edges.send(&id, crate::edge::ToNode::Rules { rules: app.egress.rules() });
     tracing::info!(node = %id, %ip, "edge node connected");
     let touch = |app: &App, id: &str| {
         let (app, id, ip) = (app.clone(), id.to_owned(), ip.to_string());

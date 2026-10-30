@@ -864,7 +864,7 @@ async fn rate_limits_for_login_and_registration() {
 #[tokio::test(flavor = "multi_thread")]
 async fn updates_and_config() {
     let srv = start_with(|c| {
-        c.bitrate_limit_mbps = Some(40);
+        c.egress.limit_mbps = Some(40);
     })
     .await;
     // Announcements are managed in the web console; written to the database here.
@@ -909,7 +909,7 @@ async fn updates_and_config() {
         .await;
     assert_eq!(v.ok(), &json!({"latest": null}));
     // The configured limit is in effect.
-    assert_eq!(srv.app().cfg().bitrate_limit_mbps, Some(40));
+    assert_eq!(srv.app().cfg().egress.limit_mbps, Some(40));
     tokio::time::sleep(Duration::from_millis(10)).await;
     srv.shutdown().await;
 }

@@ -67,8 +67,6 @@ pub struct Config {
     pub instance_name: String,
     /// Peers (CIDRs) whose `X-Forwarded-For` header is honored.
     pub trusted_proxies: Vec<IpNet>,
-    /// Session bitrate cap handed to clients.
-    pub bitrate_limit_mbps: Option<u32>,
     /// `tracing` filter directive, e.g. `info` or `farwing_server=debug`.
     /// `RUST_LOG` overrides it.
     pub log: String,
@@ -78,6 +76,7 @@ pub struct Config {
     pub guest: GuestConfig,
     pub turn: TurnConfig,
     pub sfu: SfuSettings,
+    pub egress: EgressConfig,
     pub limits: LimitsConfig,
     pub web: WebConfig,
 }
@@ -91,13 +90,13 @@ impl Default for Config {
             public_url: "https://localhost:8443".to_owned(),
             instance_name: "farwing".to_owned(),
             trusted_proxies: Vec::new(),
-            bitrate_limit_mbps: None,
             log: "info".to_owned(),
             registration: false,
             tls: TlsConfig::default(),
             guest: GuestConfig::default(),
             turn: TurnConfig::default(),
             sfu: SfuSettings::default(),
+            egress: EgressConfig::default(),
             limits: LimitsConfig::default(),
             web: WebConfig::default(),
         }
@@ -131,6 +130,49 @@ impl Default for SfuSettings {
         }
     }
 }
+
+/// What this server may send for sessions, and who may use its relays and
+/// forwarding (`docs/protocol/egress-policy.md` §3.1).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EgressConfig {
+    /// This server's egress cap (Mbit/s); none: unlimited.
+    pub limit_mbps: Option<u32>,
+    /// Accounts without their own setting.
+    pub users: EgressPolicy,
+    /// Sessions with no account on either side, together.
+    pub guests: EgressPolicy,
+}
+
+/// One payer's policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EgressPolicy {
+    /// May use the relays.
+    pub relay: bool,
+    /// May receive through forwarding rooms.
+    pub forward: bool,
+    /// Mbit/s over all its relayed and forwarded sessions; none: unlimited.
+    pub rate_mbps: Option<u32>,
+    /// GB per month; none: unlimited.
+    pub quota_gb: Option<u32>,
+}
+
+impl Default for EgressPolicy {
+    fn default() -> Self {
+        Self {
+            relay: true,
+            forward: true,
+            rate_mbps: None,
+            quota_gb: None,
+        }
+    }
+}
+
+/// Ranges of the egress settings.
+pub const EGRESS_LIMIT_MBPS: std::ops::RangeInclusive<u32> = 1..=100_000;
+pub const EGRESS_RATE_MBPS: std::ops::RangeInclusive<u32> = 1..=10_000;
+pub const EGRESS_QUOTA_GB: std::ops::RangeInclusive<u32> = 1..=1_000_000;
 
 /// Viewers from which a host forwards.
 pub const SFU_THRESHOLD: std::ops::RangeInclusive<u32> = 2..=16;
@@ -511,7 +553,6 @@ impl Default for TurnConfig {
 }
 
 const INSTANCE_NAME_MAX: usize = 64;
-const BITRATE: std::ops::RangeInclusive<u32> = 1..=10_000;
 
 impl Config {
     /// The settings of a server that has not been set up yet: listen on
@@ -563,11 +604,26 @@ impl Config {
                 format!("instance_name must be 1-{INSTANCE_NAME_MAX} characters"),
             ));
         }
-        if self.bitrate_limit_mbps.is_some_and(|n| !BITRATE.contains(&n)) {
+        let egress = &self.egress;
+        if egress.limit_mbps.is_some_and(|n| !EGRESS_LIMIT_MBPS.contains(&n)) {
             return Err(SettingError::range(
-                "bitrate_limit_mbps",
-                "bitrate_limit_mbps must be 1-10000",
+                "egress.limit_mbps",
+                "egress.limit_mbps must be 1-100000",
             ));
+        }
+        for (who, policy) in [("users", &egress.users), ("guests", &egress.guests)] {
+            if policy.rate_mbps.is_some_and(|n| !EGRESS_RATE_MBPS.contains(&n)) {
+                return Err(SettingError::range(
+                    &format!("egress.{who}.rate_mbps"),
+                    format!("egress.{who}.rate_mbps must be 1-10000"),
+                ));
+            }
+            if policy.quota_gb.is_some_and(|n| !EGRESS_QUOTA_GB.contains(&n)) {
+                return Err(SettingError::range(
+                    &format!("egress.{who}.quota_gb"),
+                    format!("egress.{who}.quota_gb must be 1-1000000"),
+                ));
+            }
         }
         if tracing_subscriber::EnvFilter::try_new(&self.log).is_err() {
             return Err(SettingError::invalid("log", "log is not a valid filter"));
@@ -1016,8 +1072,8 @@ mod tests {
             Err(("instance_name".into(), "out_of_range"))
         );
         assert_eq!(
-            field(&|c| c.bitrate_limit_mbps = Some(0)),
-            Err(("bitrate_limit_mbps".into(), "out_of_range"))
+            field(&|c| c.egress.limit_mbps = Some(0)),
+            Err(("egress.limit_mbps".into(), "out_of_range"))
         );
         assert_eq!(
             field(&|c| c.web.caps = vec!["audio".into()]),

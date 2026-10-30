@@ -33,6 +33,11 @@ pub(crate) struct Errors {
     pub internal: &'static str,
     pub unavailable: &'static str,
     pub setup_required: &'static str,
+    pub relay_unavailable: &'static str,
+    /// Why this session may not use the server's relays.
+    pub relay_not_allowed: &'static str,
+    pub relay_quota: &'static str,
+    pub relay_busy: &'static str,
     pub network: &'static str,
     pub unknown: &'static str,
 
@@ -145,6 +150,7 @@ impl Errors {
             ErrorCode::Internal => self.internal,
             ErrorCode::Unavailable => self.unavailable,
             ErrorCode::SetupRequired => self.setup_required,
+            ErrorCode::RelayUnavailable => self.relay_unavailable,
             ErrorCode::Network => self.network,
             ErrorCode::Unknown => self.unknown,
         }
@@ -165,6 +171,9 @@ impl Errors {
             reason::TOTP_ALREADY_ENABLED => text(self.totp_already_enabled),
             reason::TOTP_SETUP_REQUIRED => text(self.totp_setup_required),
             reason::ADMIN_REQUIRED => text(self.admin_required),
+            farwing_protocol::realtime::relay_denied::NOT_ALLOWED => text(self.relay_not_allowed),
+            farwing_protocol::realtime::relay_denied::QUOTA => text(self.relay_quota),
+            farwing_protocol::realtime::relay_denied::BUSY => text(self.relay_busy),
             reason::ADMIN_NETWORK_DENIED => text(self.admin_network_denied),
             reason::GUESTS_DISABLED => text(self.guests_disabled),
             reason::CLOCK_SKEW => text(self.clock_skew),
@@ -258,6 +267,10 @@ pub(crate) const ZH_CN: Errors = Errors {
     internal: "服务器内部错误",
     unavailable: "服务不可用",
     setup_required: "服务器尚未初始化",
+    relay_unavailable: "无法经服务器中转",
+    relay_not_allowed: "你的账号不能使用中转",
+    relay_quota: "本月中转流量已用完",
+    relay_busy: "服务器中转繁忙",
     network: "无法连接服务器",
     unknown: "未知错误",
 
@@ -356,6 +369,10 @@ pub(crate) const EN: Errors = Errors {
     internal: "Internal server error",
     unavailable: "Service unavailable",
     setup_required: "This server has not been set up",
+    relay_unavailable: "Can't go through the server's relay",
+    relay_not_allowed: "Your account can't use the relay",
+    relay_quota: "This month's relay traffic is used up",
+    relay_busy: "The server's relay is busy",
     network: "Can't connect to the server",
     unknown: "Unknown error",
 

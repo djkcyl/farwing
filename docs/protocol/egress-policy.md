@@ -55,7 +55,7 @@
 
 对一个会话的付费方：
 
-- **中转可用**：策略允许中转，且本月流量未用完，且至少有一个中转节点还能接纳（§4.5）。否则给出原因：`not_allowed`（策略不允许）、`quota`（本月已用完）、`busy`（出口已满或付费方的速率上限已占满）。
+- **中转可用**：策略允许中转，且本月流量未用完，且至少有一个中转节点还能接纳（§4.5）。否则给出原因：`relay_not_allowed`（策略不允许）、`relay_quota`（本月已用完）、`relay_busy`（出口已满或付费方的速率上限已占满）。
 - **转发可用**：策略允许多人转发，且本月流量未用完。
 
 ### 3.3 会话开始
@@ -111,7 +111,7 @@
 ## 5. 协议改动
 
 - 删除 `SessionTicket.bitrate_limit_mbps`。
-- `SessionIncoming`：新增 `relay: RelayAccess`、`forward: bool`、`budget_kbps: u32`。`SessionStarted`：新增 `relay: RelayAccess`。`RelayAccess = {allowed: bool, reason?: "not_allowed" | "quota" | "busy"}`。
+- `SessionIncoming`：新增 `relay: RelayAccess`、`forward: bool`、`budget_kbps: u32`。`SessionStarted`：新增 `relay: RelayAccess`。`RelayAccess = {allowed: bool, reason?: "relay_not_allowed" | "relay_quota" | "relay_busy"}`。
 - 新消息 `session.relays`（服务器 → 两端，取代 `session.relay_lost`）：`{ice_servers, relay: RelayAccess, forward?: bool}`；`session.budget`（服务器 → 被控）：`{budget_kbps}`。
 - 新错误码 `relay_unavailable`（强制中转而中转不可用）。
 - 边缘节点：`FromNode::Usage`（每秒）、`ToNode::Budgets`（各会话与房间的预算、节点上限）、`ToNode::Revoke`（撤销会话的分配、退订其下行）。
@@ -119,9 +119,9 @@
 ## 6. 客户端
 
 - 连接失败且中转不可用时说明原因，不再只显示“连接超时”：
-  - `not_allowed`：“无法直连对方，你的账号不能使用中转”
-  - `quota`：“无法直连对方，本月中转流量已用完”
-  - `busy`：“无法直连对方，服务器中转繁忙”
+  - `relay_not_allowed`：“无法直连对方，你的账号不能使用中转”
+  - `relay_quota`：“无法直连对方，本月中转流量已用完”
+  - `relay_busy`：“无法直连对方，服务器中转繁忙”
 - 观看窗口的“使用中转”在中转不可用时变灰，悬停显示同样的原因。
 - 被控收到 `forward: false` 的参与者保持直连；收到 `session.budget` 后限速。
 
@@ -153,3 +153,11 @@
 - 管理端：概览“出口”与“本月流量”（前 5 位），会话页“出口”列，用户列表“本月流量”列，用户详情“本月流量”。
 - 验收：本机临时服务端，强制中转时会话 578–614 kbps，与观看端收到的码率（约 0.56 Mbps 视频加声音）相符；阈值 2 的转发房间两位观看者各约 1.1 Mbps，分别计入两个账号；月流量按分钟落库。
 
+### 阶段 B（2026-10-30，已完成）
+
+- 设置“流量”一组（`egress.limit_mbps`、`egress.users`、`egress.guests`）取代 `bitrate_limit_mbps`；会话票据与客户端的自定义码率上限一并去掉。账号详情“流量”卡片逐项覆盖（默认 / 允许 / 禁止；默认 / 不限 / 自定义），管理员不受限。
+- 判定在 `session.start` 时与之后每秒进行；会话的计量器按判定拒绝不允许的中转或转发流量（边缘节点经 `ToNode::Rules`）。结束的会话在中转凭据有效期（12 小时）内都被拒绝，凭据不能再拿来中转。
+- 不能用中转：两端只拿到 STUN；进行中改为不能用时推送 `session.relays`，客户端改走 P2P（原生观看端优先中转时退回自动）。服务器强制中转时改为以原因结束会话（`session.ended.reason` 为 `relay_not_allowed` / `relay_quota` / `relay_busy`）。
+- 不能用转发：`SessionIncoming.forward` 为 `false` 的参与者被控不放进房间；进行中改变时被控随 `session.relays.forward` 让他加入或回到直连（先关房间、两人都直连），转发器也拒绝他订阅。
+- 提示：原生与网页端连不上且不能用中转时显示“无法直连对方，{原因}”，原因为“你的账号不能使用中转”“本月中转流量已用完”“服务器中转繁忙”；只有“繁忙”会自动重试。观看窗口的“使用中转”不可用时悬停显示同样的原因。
+- 验收（本机临时服务端）：强制中转时关掉某账号的中转，新会话立即被拒（“你的账号不能使用中转”），进行中的会话 1 秒内被结束；不强制时同样的账号直连观看正常、会话页无中转；转发阈值 2、一人不能转发时不开房间，放开后随即开房间、两人经转发，再关掉时房间关闭、两人回到直连且画面不停；把本月流量写到超过配额后，新会话提示“本月中转流量已用完”。

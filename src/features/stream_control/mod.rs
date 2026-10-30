@@ -134,7 +134,6 @@ pub(crate) fn normalize_custom_bitrate(value: u32) -> u32 {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct StreamControlPreferences {
     pub(crate) settings: StreamControlSettings,
-    pub(crate) custom_bitrate_limit: Option<u32>,
     audio: Option<crate::media::audio::AudioSettings>,
     pub(crate) device: Option<crate::features::viewing_settings::DevicePreferences>,
 }
@@ -149,7 +148,6 @@ impl StreamControlPreferences {
         Self {
             settings,
             device: None,
-            custom_bitrate_limit: None,
             audio: None,
         }
     }
@@ -204,7 +202,6 @@ impl RemoteScreen {
 pub struct StreamControlSnapshot {
     pub hdr_supported: bool,
     pub hdr_unavailable: Option<String>,
-    pub custom_bitrate_limit: u32,
     pub auto_quality_label: String,
     pub true_color_supported: bool,
     pub mouse_preference: MouseMode,
@@ -306,7 +303,6 @@ struct StreamControlState {
     clipboard_files_allowed: bool,
     remote_upgrade: Option<crate::features::remote_upgrade::RemoteUpgrade>,
     annotation: annotation::Annotation,
-    custom_bitrate_limit: u32,
     features: Option<crate::account::feature_ability::FeaturePolicy>,
     remote_notice: Option<(Instant, u64, String, bool)>,
     remote_notices: u64,
@@ -411,7 +407,6 @@ impl StreamControlHandle {
             clipboard_files_allowed: true,
             remote_upgrade: None,
             annotation: Default::default(),
-            custom_bitrate_limit: MAX_CUSTOM_BITRATE_MBPS,
             features: None,
             device_preferences: crate::features::viewing_settings::DevicePreferences {
                 cinema: dev_cinema().unwrap_or(false),
@@ -472,7 +467,6 @@ impl StreamControlHandle {
             preference_updates: tokio::sync::watch::channel(None).0,
             confirmed_preferences: StreamControlPreferences {
                 device: None,
-                custom_bitrate_limit: None,
                 settings: StreamControlSettings {
                     true_color: false,
                     hdr: false,
@@ -639,7 +633,6 @@ impl StreamControlHandle {
             hdr_unavailable: format_proposal(&state, None, Some(true))
                 .err()
                 .map(|e| e.to_string()),
-            custom_bitrate_limit: state.custom_bitrate_limit,
             auto_quality_label: (t().features.stream_quality_auto_with)(settings::quality_name(
                 settings::automatic_tier(&state).unwrap_or(wire::Quality::Standard),
             )),
@@ -726,8 +719,6 @@ impl StreamControlHandle {
         StreamControlPreferences {
             device: Some(state.device_preferences),
             settings: state.confirmed_preferences.settings,
-            custom_bitrate_limit: (state.custom_bitrate_limit < MAX_CUSTOM_BITRATE_MBPS)
-                .then_some(state.custom_bitrate_limit),
             audio: Some(self.audio.settings()),
         }
     }

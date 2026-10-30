@@ -59,6 +59,9 @@ pub(crate) enum SignalFailure {
     PublisherDisconnected,
     /// The media peer failed.
     Peer(String),
+    /// The media peer could not connect directly and the session may not
+    /// use the server's relays: why (`farwing_protocol::realtime::relay_denied`).
+    NoRelay(String),
 }
 
 impl std::fmt::Display for SignalFailure {
@@ -75,10 +78,16 @@ impl std::fmt::Display for SignalFailure {
                 realtime::reason::IDENTITY_MISMATCH => text.ended_identity_mismatch,
                 realtime::reason::REVOKED => text.ended_access_turned_off,
                 realtime::reason::HOST_CLOSED => text.ended_by_host,
+                realtime::relay_denied::NOT_ALLOWED
+                | realtime::relay_denied::QUOTA
+                | realtime::relay_denied::BUSY => crate::features::network_control::relay_denied_text(reason),
                 _ => text.ended_session,
             }),
             Self::PublisherDisconnected => f.write_str(text.host_went_offline),
             Self::Peer(reason) => f.write_str(&(text.media_connection_failed)(reason)),
+            Self::NoRelay(reason) => f.write_str(&(text.no_direct_path)(
+                crate::features::network_control::relay_denied_text(reason),
+            )),
         }
     }
 }

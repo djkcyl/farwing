@@ -392,15 +392,14 @@ impl NativePeer {
         &self,
         transport: TransportChoice,
         server_forced: bool,
+        denied: Option<&'static str>,
     ) {
-        let has_relay = std_mutex_lock(&self.ice_servers)
-            .iter()
-            .flat_map(|server| &server.urls)
-            .any(|url| url.to_ascii_lowercase().starts_with("turn"));
+        let has_relay = has_turn(&std_mutex_lock(&self.ice_servers));
         self.stream_control_handle().network_control().configure(
             transport == TransportChoice::Relay,
             server_forced,
             has_relay,
+            denied,
         );
     }
 
@@ -480,13 +479,24 @@ impl NativePeer {
     /// all candidates.
     /// The server's relays anew (its relay restarted): ICE gathers with them
     /// from the next restart on, under the policy in force.
-    pub(crate) async fn renew_ice_servers(&self, servers: Vec<IceServer>) -> Result<()> {
+    /// The session's relays changed (`session.relays`); `denied`: why it
+    /// may not use the server's relays now. A relayed path without relays
+    /// turns to all candidates, unless the server requires its relays.
+    pub(crate) async fn renew_ice_servers(
+        &self,
+        servers: Vec<IceServer>,
+        denied: Option<&'static str>,
+    ) -> Result<()> {
+        let has_relay = has_turn(&servers);
         *std_mutex_lock(&self.ice_servers) = servers;
+        let network = self.stream_control_handle().network_control();
+        network.relays_changed(has_relay, denied);
         if self.p2p_only.load(Ordering::Acquire) {
             return Ok(());
         }
         let relay = self.core.connection.get_configuration().await.ice_transport_policy
-            == RTCIceTransportPolicy::Relay;
+            == RTCIceTransportPolicy::Relay
+            && (has_relay || network.forced());
         self.switch_ice_network(relay).await
     }
 
@@ -944,4 +954,12 @@ impl ReceiveParameters {
             rtx_payload_apt,
         }
     }
+}
+
+/// Whether `servers` include a relay.
+fn has_turn(servers: &[IceServer]) -> bool {
+    servers
+        .iter()
+        .flat_map(|server| &server.urls)
+        .any(|url| url.to_ascii_lowercase().starts_with("turn"))
 }

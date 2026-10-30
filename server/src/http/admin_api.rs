@@ -334,6 +334,7 @@ pub async fn create_user(
     if !created {
         return Err(super::me::username_taken());
     }
+    app.egress.reload_user(&app.db, &id).await;
     let detail = if req.admin { json!({ "admin": true }) } else { Value::Null };
     log(&app, &admin, "user.create", &username, detail).await;
     Ok(Json(CreatedUser {
@@ -409,6 +410,11 @@ pub struct Friend {
 pub struct UserDetail {
     pub account: AccountSummary,
     pub egress: AccountEgress,
+    /// The account's own policy, the accounts' default and what is in
+    /// force (`docs/protocol/egress-policy.md` §3.1).
+    pub policy: crate::egress::UserPolicy,
+    pub policy_default: crate::config::EgressPolicy,
+    pub policy_effective: crate::egress::Effective,
     pub devices: Vec<DeviceEntry>,
     pub logins: Vec<Login>,
     pub friends: Vec<Friend>,
@@ -463,8 +469,16 @@ pub async fn user(
                     .iter()
                     .map(|d| device_entry(d, &owners, &HashSet::new(), &ips))
                     .collect(),
+                policy: webdb::user_policy(c, &account.id)?,
                 account,
                 egress: AccountEgress::default(),
+                policy_default: crate::config::EgressPolicy::default(),
+                policy_effective: crate::egress::Effective {
+                    relay: true,
+                    forward: true,
+                    rate_bps: None,
+                    quota_bytes: None,
+                },
                 logins,
                 friends,
             }))
@@ -472,6 +486,10 @@ pub async fn user(
         .await?;
     let mut detail = detail.ok_or_else(ApiError::not_found)?;
     detail.egress = account_egress(&app.egress.ledger.view(), &detail.account.id);
+    detail.policy_default = app.cfg().egress.users;
+    detail.policy_effective = app
+        .egress
+        .effective(&crate::egress::Payer::User(detail.account.id.clone()));
     for d in &mut detail.devices {
         d.online = online.contains(&d.device_id);
     }
@@ -483,9 +501,13 @@ pub struct UpdateUser {
     pub nickname: Option<String>,
     pub admin: Option<bool>,
     pub disabled: Option<bool>,
+    /// The account's own egress policy, replacing the stored one
+    /// (`docs/protocol/egress-policy.md` §3.1).
+    pub egress: Option<crate::egress::UserPolicy>,
 }
 
-/// `PATCH /api/v2/admin/users/{id}`: nickname, role, disabled.
+/// `PATCH /api/v2/admin/users/{id}`: nickname, role, disabled, egress
+/// policy.
 pub async fn update_user(
     State(app): State<App>,
     admin: AdminAuth,
@@ -494,6 +516,10 @@ pub async fn update_user(
 ) -> ApiResult<Json<Empty>> {
     let me = admin.user().id.clone();
     let uid = id.clone();
+    if req.egress.is_some_and(|p| !p.valid()) {
+        return Err(ApiError::new(ErrorCode::BadRequest, "egress limits out of range"));
+    }
+    let egress = req.egress;
     let outcome = app
         .db
         .call(move |c| {
@@ -529,12 +555,22 @@ pub async fn update_user(
                     db::revoke_tokens_for_user(c, &uid, "user_disabled")?;
                 }
             }
+            if let Some(policy) = &req.egress {
+                webdb::set_user_policy(c, &uid, policy)?;
+            }
             Ok(Ok((account.username, req.admin, req.disabled)))
         })
         .await?;
     let (username, role, disabled) = outcome?;
     if disabled == Some(true) {
         app.hub.revoke_user(&id);
+    }
+    if role.is_some() || egress.is_some() {
+        app.egress.reload_user(&app.db, &id).await;
+    }
+    if let Some(policy) = egress {
+        let detail = serde_json::to_value(policy).unwrap_or(Value::Null);
+        log(&app, &admin, "user.policy", &username, detail).await;
     }
     let mut changes = Map::new();
     if let Some(r) = role {
@@ -648,6 +684,7 @@ pub async fn delete_user(
         .await?;
     let username = outcome?;
     app.hub.revoke_user(&id);
+    app.egress.set_user(&id, None);
     log(&app, &admin, "user.delete", &username, Value::Null).await;
     Ok(Json(Empty {}))
 }

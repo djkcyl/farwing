@@ -157,6 +157,20 @@ code,
 .grid-3 {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
+/* Three columns however many fields a row holds, so rows line up. */
+.grid-cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+@media (max-width: 860px) {
+  .grid-cols-3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* A short number beside a select. */
+.input.limit-input {
+  width: 120px;
+  flex: none;
+}
 .grid-stats {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 }

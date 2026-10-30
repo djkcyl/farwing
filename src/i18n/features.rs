@@ -1009,7 +1009,6 @@ pub(crate) struct Features {
     pub stream_color_unsupported: &'static str,
     pub stream_custom_bitrate_unsupported: &'static str,
     /// highest bitrate in Mbps
-    pub stream_custom_bitrate_limit: fn(u32) -> String,
     /// highest bitrate in Mbps
     pub stream_custom_bitrate_range: fn(u32) -> String,
     pub stream_hdr_unsupported: &'static str,
@@ -2307,7 +2306,6 @@ pub(crate) const ZH_CN: Features = Features {
     stream_host_updating_settings_locked: "被控端正在更新，无法修改画面设置",
     stream_color_unsupported: "当前会话不支持色彩切换",
     stream_custom_bitrate_unsupported: "被控端不支持自定义码率",
-    stream_custom_bitrate_limit: |limit| format!("当前连接自定义码率最高为 {limit} Mbps"),
     stream_custom_bitrate_range: |max| format!("自定义码率须在 1–{max} Mbps 之间"),
     stream_hdr_unsupported: "当前会话不支持 HDR",
     stream_waiting_hdr_capability: "正在等待 HDR 能力",
@@ -3583,7 +3581,6 @@ pub(crate) const EN: Features = Features {
     stream_host_updating_settings_locked: "The host is updating, can't change video settings",
     stream_color_unsupported: "This session doesn't support changing the color format",
     stream_custom_bitrate_unsupported: "The host doesn't support custom bitrate",
-    stream_custom_bitrate_limit: |limit| format!("Custom bitrate on this connection is at most {limit} Mbps"),
     stream_custom_bitrate_range: |max| format!("Custom bitrate must be between 1 and {max} Mbps"),
     stream_hdr_unsupported: "This session doesn't support HDR",
     stream_waiting_hdr_capability: "Waiting for HDR capability",
