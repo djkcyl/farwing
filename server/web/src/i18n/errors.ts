@@ -145,6 +145,7 @@ const zhReasons = {
   // Reaching the server
   timed_out: '连接服务器超时',
   connection_lost: '与服务器的连接已中断',
+  server_certificate_changed: '服务器证书与固定的指纹不一致',
   // The server's relays
   relay_not_allowed: '你的账号不能使用中转',
   relay_quota: '本月中转流量已用完',
@@ -222,6 +223,7 @@ const enReasons: Reasons = {
       : `Too many incorrect access codes, locked for ${minutes} min`,
   timed_out: 'Connection to the server timed out',
   connection_lost: 'Connection to the server was lost',
+  server_certificate_changed: "The server's certificate doesn't match the pinned fingerprint",
   // The server's relays
   relay_not_allowed: "Your account can't use the relay",
   relay_quota: "This month's relay traffic is used up",

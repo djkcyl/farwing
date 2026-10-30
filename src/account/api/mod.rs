@@ -229,9 +229,30 @@ impl ApiFailure {
     }
 
     pub(crate) fn network(error: &reqwest::Error) -> Self {
+        /// The TLS handshake failed on a certificate other than the pinned
+        /// one (`crate::account::server::PinMismatch`, inside the I/O error).
+        fn pin_mismatch(error: &reqwest::Error) -> bool {
+            let mut next: Option<&(dyn std::error::Error + 'static)> = Some(error);
+            while let Some(e) = next {
+                let tls = e
+                    .downcast_ref::<std::io::Error>()
+                    .and_then(|io| io.get_ref())
+                    .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+                    .or_else(|| e.downcast_ref::<rustls::Error>());
+                if let Some(rustls::Error::InvalidCertificate(rustls::CertificateError::Other(other))) = tls
+                    && other.0.downcast_ref::<crate::account::server::PinMismatch>().is_some()
+                {
+                    return true;
+                }
+                next = e.source();
+            }
+            false
+        }
         use farwing_protocol::error::reason;
         let (message, reason) = if error.is_timeout() {
             ("timed out", Some(reason::TIMED_OUT))
+        } else if pin_mismatch(error) {
+            ("server certificate changed", Some(reason::SERVER_CERTIFICATE_CHANGED))
         } else if error.is_connect() {
             ("cannot connect", None)
         } else {

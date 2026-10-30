@@ -118,6 +118,7 @@ pub(crate) struct Errors {
     // ------------------------------------------- reaching the server
     pub timed_out: &'static str,
     pub connection_lost: &'static str,
+    pub server_certificate_changed: &'static str,
 }
 
 impl Errors {
@@ -227,6 +228,7 @@ impl Errors {
             reason::CODE_LOCKED => text(self.code_locked),
             reason::TIMED_OUT => text(self.timed_out),
             reason::CONNECTION_LOST => text(self.connection_lost),
+            reason::SERVER_CERTIFICATE_CHANGED => text(self.server_certificate_changed),
             _ => None,
         }
     }
@@ -340,6 +342,7 @@ pub(crate) const ZH_CN: Errors = Errors {
 
     timed_out: "连接服务器超时",
     connection_lost: "与服务器的连接已中断",
+    server_certificate_changed: "服务器证书与固定的指纹不一致",
 };
 
 pub(crate) const EN: Errors = Errors {
@@ -442,6 +445,7 @@ pub(crate) const EN: Errors = Errors {
 
     timed_out: "Connection to the server timed out",
     connection_lost: "Connection to the server was lost",
+    server_certificate_changed: "The server's certificate doesn't match the pinned fingerprint",
 };
 
 #[cfg(test)]

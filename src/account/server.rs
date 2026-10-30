@@ -331,6 +331,19 @@ impl std::fmt::Display for NoServer {
 
 impl std::error::Error for NoServer {}
 
+/// The server's certificate is not the pinned one (and nothing else
+/// vouches for it).
+#[derive(Debug)]
+pub(crate) struct PinMismatch;
+
+impl std::fmt::Display for PinMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the server's certificate is not the pinned one")
+    }
+}
+
+impl std::error::Error for PinMismatch {}
+
 #[derive(Debug)]
 struct Verifier {
     webpki: Option<Arc<WebPkiServerVerifier>>,
@@ -349,18 +362,32 @@ impl ServerCertVerifier for Verifier {
     ) -> std::result::Result<ServerCertVerified, rustls::Error> {
         // A pin is an explicit user decision about this exact certificate.
         // It replaces chain and name validation for that certificate only.
-        if let Some(pinned) = self.pinned {
-            let actual: [u8; 32] = Sha256::digest(leaf.as_ref()).into();
-            if constant_time_eq(&actual, &pinned) {
-                return Ok(ServerCertVerified::assertion());
+        let mismatch = match self.pinned {
+            Some(pinned) => {
+                let actual: [u8; 32] = Sha256::digest(leaf.as_ref()).into();
+                if constant_time_eq(&actual, &pinned) {
+                    return Ok(ServerCertVerified::assertion());
+                }
+                true
             }
-        }
-        match &self.webpki {
+            None => false,
+        };
+        let verified = match &self.webpki {
             Some(verifier) => verifier.verify_server_cert(leaf, chain, name, ocsp, now),
             None => Err(rustls::Error::InvalidCertificate(
                 rustls::CertificateError::UnknownIssuer,
             )),
-        }
+        };
+        // Another certificate where one was pinned: say so.
+        verified.map_err(|error| {
+            if mismatch {
+                rustls::Error::InvalidCertificate(rustls::CertificateError::Other(
+                    rustls::OtherError(Arc::new(PinMismatch)),
+                ))
+            } else {
+                error
+            }
+        })
     }
 
     fn verify_tls12_signature(

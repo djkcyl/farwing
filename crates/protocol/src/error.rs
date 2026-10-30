@@ -305,6 +305,8 @@ pub mod reason {
     // ---- client-local (`network`), never sent by a server
     pub const TIMED_OUT: &str = "timed_out";
     pub const CONNECTION_LOST: &str = "connection_lost";
+    /// The server presents a certificate other than the pinned one.
+    pub const SERVER_CERTIFICATE_CHANGED: &str = "server_certificate_changed";
 
     /// Every reason, for checking that translations are complete.
     pub const ALL: &[&str] = &[
@@ -370,6 +372,7 @@ pub mod reason {
         CODE_LOCKED,
         TIMED_OUT,
         CONNECTION_LOST,
+        SERVER_CERTIFICATE_CHANGED,
     ];
 }
 
