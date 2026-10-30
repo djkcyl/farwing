@@ -1,6 +1,6 @@
 //! Account-scoped assistance codes. No plaintext or third-party client imports.
 use super::*;
-use crate::account::assist::{SavedDevice, normalize_connect_id, validate_connect_code};
+use crate::account::assist::{SavedDevice, normalize_target, validate_connect_code};
 use sha2::{Digest, Sha256};
 
 pub(crate) struct AssistCodeStore {
@@ -26,8 +26,9 @@ impl AssistCodeStore {
         })
     }
 
+    /// Codes are kept per target: a short number or a device ID.
     fn entry(&self, id: &str) -> Result<Entry> {
-        let id = normalize_connect_id(id)?;
+        let id = normalize_target(id)?;
         Entry::new(&self.service, &id).map_err(|_| anyhow::anyhow!("{}", crate::i18n::t().session.credential_store_unavailable))
     }
 

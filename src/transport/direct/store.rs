@@ -189,18 +189,10 @@ pub(crate) fn trusted() -> Vec<TrustedDevice> {
     devices
 }
 
-/// Whether this device trusts any other (read at most every few seconds).
+/// Whether this device trusts any other. A change shows at once: the read
+/// is kept for a moment and dropped by every write.
 pub(crate) fn has_trusted() -> bool {
-    static CACHE: Mutex<Option<(std::time::Instant, bool)>> = Mutex::new(None);
-    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((at, value)) = *cache
-        && at.elapsed() < std::time::Duration::from_secs(3)
-    {
-        return value;
-    }
-    let value = !trusted().is_empty();
-    *cache = Some((std::time::Instant::now(), value));
-    value
+    !trusted().is_empty()
 }
 
 /// The trusted device holding `public_key`.
