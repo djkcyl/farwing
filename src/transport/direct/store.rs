@@ -195,6 +195,21 @@ pub(crate) fn has_trusted() -> bool {
     !trusted().is_empty()
 }
 
+/// Whether the device holding `public_key` is no longer trusted. A failed
+/// read (which lists nobody) does not count.
+pub(crate) fn no_longer_trusted(public_key: &str) -> bool {
+    let Some(id) = device_id_of(public_key) else {
+        return false;
+    };
+    if trusted().iter().any(|d| d.device_id == id) {
+        return false;
+    }
+    let _guard = guard();
+    dir()
+        .and_then(|dir| load_trusted_in(&dir))
+        .is_ok_and(|(_, t)| !t.devices.iter().any(|d| d.device_id == id))
+}
+
 /// The trusted device holding `public_key`.
 pub(crate) fn find_trusted(public_key: &str) -> Option<TrustedDevice> {
     let id = device_id_of(public_key)?;

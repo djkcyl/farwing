@@ -429,6 +429,14 @@ impl Session {
             let Some(participant) = self.participants.get_mut(&sid) else {
                 continue;
             };
+            // A trusted device removed by another process on this profile
+            // (`Farwing trusted remove`) leaves as if removed here.
+            if participant.relation == farwing_protocol::api::Relation::Trusted
+                && crate::transport::direct::store::no_longer_trusted(&participant.binding.peer_key)
+            {
+                self.remove(&sid, signal, Some(reason::KICKED)).await;
+                continue;
+            }
             let Some(peer) = participant.peer.as_ref() else {
                 continue;
             };
