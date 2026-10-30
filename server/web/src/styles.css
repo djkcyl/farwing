@@ -1284,6 +1284,15 @@ table.table {
 }
 .device-link {
   display: block;
+  position: relative;
+}
+/* Who is connected, on the wallpaper: the card keeps its height. */
+.device-watching {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  background: rgba(8, 10, 14, 0.78);
+  color: var(--amber);
 }
 .device-shot {
   aspect-ratio: 16 / 9;

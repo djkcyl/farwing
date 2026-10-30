@@ -53,6 +53,11 @@ export function DeviceCard({ device: d, shared }: { device: Device; shared?: boo
     <article className="device-card">
       <Link to={`/devices/${d.device_id}`} className="device-link" aria-label={d.alias}>
         <DeviceShot device={d} />
+        {watching > 0 && (
+          <span className="badge device-watching">
+            <Icon name="eye" size={12} /> {t.devices.watching(watching)}
+          </span>
+        )}
       </Link>
       <div className="device-info">
         <div className="row gap-sm">
@@ -68,11 +73,6 @@ export function DeviceCard({ device: d, shared }: { device: Device; shared?: boo
         {shared && d.owner && (
           <div className="small muted ellipsis">
             {t.devices.sharedBy(displayName(d.owner))} · {shareSummary(d.granted)}
-          </div>
-        )}
-        {watching > 0 && (
-          <div className="small amber">
-            <Icon name="eye" size={12} /> {t.devices.watching(watching)}
           </div>
         )}
         <div className="row gap-sm device-actions">
