@@ -17,6 +17,10 @@ pub struct State {
     rooms: HashMap<String, Option<f64>>,
     /// What each host was told (kbit/s; 0: no limit).
     told: HashMap<String, u32>,
+    /// The node of each relayed session.
+    relay_nodes: HashMap<String, String>,
+    /// Sessions that kept their budget last round without a rate.
+    carried: HashSet<String>,
     /// Payers' units now (a relayed session or a forwarded viewer each).
     pub(super) units: HashMap<Payer, f64>,
     /// This server's egress is taken.
@@ -59,8 +63,30 @@ pub fn tick(app: &crate::http::App) {
     let mut flows = Vec::new();
     let mut fixed: HashMap<String, f64> = HashMap::new();
     let mut rooms: HashMap<(String, String), (Vec<Payer>, Vec<String>, f64)> = HashMap::new();
-    for flow in egress.ledger.flows() {
-        let payer = egress.ledger.payer(&flow.session);
+    let ledger_flows = egress.ledger.flows();
+    // A limited session without a rate this round (its meter started over,
+    // or it was not reported) keeps its budget for a round instead of
+    // having its limit lifted.
+    let relaying: HashSet<&str> = ledger_flows
+        .iter()
+        .filter(|f| f.relay_bps > 0.0)
+        .map(|f| f.session.as_str())
+        .collect();
+    let mut carried: Vec<(String, String, Payer, f64)> = Vec::new();
+    for (sid, budget) in &state.sessions {
+        if let Some(budget) = budget
+            && !relaying.contains(sid.as_str())
+            && !state.carried.contains(sid)
+            && let (Some(payer), Some(node)) = (egress.ledger.open_payer(sid), state.relay_nodes.get(sid))
+        {
+            *fixed.entry(node.clone()).or_default() += budget;
+            carried.push((sid.clone(), node.clone(), payer, *budget));
+        }
+    }
+    for flow in ledger_flows {
+        // An ended session's last packets need no share (its allocation
+        // may linger): they count as fixed sending.
+        let payer = egress.ledger.open_payer(&flow.session);
         if flow.relay_bps > 0.0 {
             match &payer {
                 Some(payer) => flows.push(Flow {
@@ -107,6 +133,9 @@ pub fn tick(app: &crate::http::App) {
             *units.entry(payer.clone()).or_default() += 1.0;
         }
     }
+    for (_, _, payer, _) in &carried {
+        *units.entry(payer.clone()).or_default() += 1.0;
+    }
     let input = Input {
         flows,
         nodes: limits.clone(),
@@ -120,10 +149,16 @@ pub fn tick(app: &crate::http::App) {
     for flow in &input.flows {
         *node_units.entry(flow.node.as_str()).or_default() += flow.payers.len() as f64;
     }
+    // Carried sessions count as flows, not as fixed sending.
+    let mut carried_bps: HashMap<&str, f64> = HashMap::new();
+    for (_, node, _, budget) in &carried {
+        *node_units.entry(node.as_str()).or_default() += 1.0;
+        *carried_bps.entry(node.as_str()).or_default() += budget;
+    }
     let full = |node: &str| {
         allocator::full(
             limits.get(node).copied().flatten(),
-            fixed.get(node).copied().unwrap_or(0.0),
+            fixed.get(node).copied().unwrap_or(0.0) - carried_bps.get(node).copied().unwrap_or(0.0),
             node_units.get(node).copied().unwrap_or(0.0),
             1.0,
         )
@@ -141,12 +176,23 @@ pub fn tick(app: &crate::http::App) {
     let mut per_node: HashMap<String, Vec<SessionBudget>> = HashMap::new();
     let mut room_budgets: HashMap<String, Vec<(String, Option<u64>)>> = HashMap::new();
     let mut sessions = HashMap::new();
+    let mut relay_nodes = HashMap::new();
     let mut rooms_now = HashMap::new();
+    for (sid, node, _, budget) in &carried {
+        sessions.insert(sid.clone(), Some(*budget));
+        relay_nodes.insert(sid.clone(), node.clone());
+        per_node.entry(node.clone()).or_default().push(SessionBudget {
+            session: sid.clone(),
+            relay: Some(*budget as u64),
+            forward: None,
+        });
+    }
     for flow in &input.flows {
         let budget = budgets.get(&flow.id).copied().flatten();
         match &flow.id {
             FlowId::Session(sid) => {
                 sessions.insert(sid.clone(), budget);
+                relay_nodes.insert(sid.clone(), flow.node.clone());
                 per_node.entry(flow.node.clone()).or_default().push(SessionBudget {
                     session: sid.clone(),
                     relay: budget.map(|b| b as u64),
@@ -238,6 +284,8 @@ pub fn tick(app: &crate::http::App) {
         false
     });
     state.told = told;
+    state.carried = carried.into_iter().map(|(sid, ..)| sid).collect();
+    state.relay_nodes = relay_nodes;
     state.sessions = sessions;
     state.rooms = rooms_now.into_iter().filter(|(_, b)| b.is_some()).collect();
 }

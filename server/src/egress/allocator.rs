@@ -150,11 +150,23 @@ pub fn allocate(input: &Input) -> HashMap<FlowId, Option<f64>> {
             }
         }
     }
+    // A flow satisfied under a full limit keeps a budget of what it got (its
+    // use and room to grow): unlimited, a dip in its rate would let it
+    // jump past the others' share.
+    let mut bound = vec![false; flows.len()];
+    for c in &constraints {
+        let used: f64 = c.members.iter().map(|(i, w)| alloc[*i] * w).sum();
+        if used >= c.capacity - 1.0 {
+            for (i, _) in &c.members {
+                bound[*i] = true;
+            }
+        }
+    }
     flows
         .iter()
         .enumerate()
         .map(|(i, f)| {
-            let budget = (frozen[i] == Some(true)).then(|| alloc[i].max(FLOOR_BPS));
+            let budget = (frozen[i] == Some(true) || bound[i]).then(|| alloc[i].max(FLOOR_BPS));
             (f.id.clone(), budget)
         })
         .collect()
@@ -218,7 +230,8 @@ mod tests {
             ..Input::default()
         };
         let budgets = allocate(&input);
-        assert_eq!(budgets[&FlowId::Session("small".into())], None);
+        // It keeps a budget of what it wants: the node is full.
+        assert_eq!(budgets[&FlowId::Session("small".into())], Some(2.5 * M));
         assert_eq!(budgets[&FlowId::Session("big".into())], Some(7.5 * M));
     }
 
@@ -256,5 +269,20 @@ mod tests {
         assert!(allocate(&input).values().all(|b| *b == Some(FLOOR_BPS)));
         assert!(!full(Some(10.0 * M), 0.0, 9.0, 1.0));
         assert!(full(Some(10.0 * M), 0.5 * M, 9.0, 1.0));
+    }
+
+    #[test]
+    fn room_under_the_limit_leaves_flows_unlimited() {
+        let input = Input {
+            flows: vec![
+                session("a", "", "u", 1.0 * M, Some(2.0 * M)),
+                session("b", "", "v", 1.0 * M, None),
+            ],
+            nodes: HashMap::from([(String::new(), Some(10.0 * M))]),
+            ..Input::default()
+        };
+        let budgets = allocate(&input);
+        assert_eq!(budgets[&FlowId::Session("a".into())], None);
+        assert_eq!(budgets[&FlowId::Session("b".into())], None);
     }
 }

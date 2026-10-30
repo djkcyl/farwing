@@ -129,6 +129,16 @@ impl Ledger {
         self.inner.lock().sessions.get(id).map(|s| s.payer.clone())
     }
 
+    /// The payer of session `id` while it runs (not after it ended).
+    pub fn open_payer(&self, id: &str) -> Option<Payer> {
+        self.inner
+            .lock()
+            .sessions
+            .get(id)
+            .filter(|s| s.ended.is_none())
+            .map(|s| s.payer.clone())
+    }
+
     /// Node `node` (`LOCAL`: this server) sent `usage` so far, at `now`.
     pub fn report(&self, node: &str, usage: &Usage, now: Instant, month: &Month) {
         let mut inner = self.inner.lock();
@@ -159,13 +169,15 @@ impl Ledger {
                     };
                     (relay + forward, flow)
                 }
-                // A new flow: what it sent counts, its rate from the next.
-                (_, _) => (
+                // A new flow: what it sent counts, and its rate as if it
+                // started with the interval (it is shared out at once).
+                (_, dt) => (
                     s.relay + s.forward,
                     Flow {
                         relay: s.relay,
                         forward: s.forward,
-                        ..Flow::default()
+                        relay_bps: dt.and_then(|dt| smooth(None, s.relay, dt)),
+                        forward_bps: dt.and_then(|dt| smooth(None, s.forward, dt)),
                     },
                 ),
             };

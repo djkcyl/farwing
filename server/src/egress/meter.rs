@@ -25,28 +25,35 @@ const BUCKET_SLACK: f64 = 1.3;
 const BUCKET_MARGIN_BPS: f64 = 1_000_000.0;
 /// The node's bucket lets this much more through than its limit.
 const NODE_SLACK: f64 = 1.1;
-/// A bucket holds this long a burst.
+/// A session's bucket holds this long a burst.
 const BURST: f64 = 0.3;
+/// The node's bucket holds a second: a session that joins sends before the
+/// next round of budgets lowers the others (`docs/protocol/egress-policy.md`
+/// §4.3).
+const NODE_BURST: f64 = 1.0;
 
 /// A token bucket in bytes.
 struct Bucket {
     rate: f64,
+    /// Seconds of `rate` it holds.
+    burst: f64,
     tokens: f64,
     at: Instant,
 }
 
 impl Bucket {
-    fn new(bytes_per_second: f64) -> Self {
+    fn new(bytes_per_second: f64, burst: f64) -> Self {
         Self {
             rate: bytes_per_second,
-            tokens: bytes_per_second * BURST,
+            burst,
+            tokens: bytes_per_second * burst,
             at: Instant::now(),
         }
     }
 
     fn take(&mut self, bytes: u64) -> bool {
         let now = Instant::now();
-        let burst = self.rate * BURST;
+        let burst = self.rate * self.burst;
         self.tokens = (self.tokens + now.duration_since(self.at).as_secs_f64() * self.rate).min(burst);
         self.at = now;
         if self.tokens < bytes as f64 {
@@ -56,12 +63,12 @@ impl Bucket {
         true
     }
 
-    fn set(slot: &parking_lot::Mutex<Option<Bucket>>, bytes_per_second: Option<f64>) {
+    fn set(slot: &parking_lot::Mutex<Option<Bucket>>, bytes_per_second: Option<f64>, burst: f64) {
         let mut slot = slot.lock();
         match (bytes_per_second, slot.as_mut()) {
             (None, _) => *slot = None,
             (Some(rate), Some(bucket)) => bucket.rate = rate,
-            (Some(rate), None) => *slot = Some(Bucket::new(rate)),
+            (Some(rate), None) => *slot = Some(Bucket::new(rate, burst)),
         }
     }
 
@@ -168,8 +175,8 @@ impl SessionGauge {
     }
 
     fn budget(&self, relay: Option<u64>, forward: Option<u64>) {
-        Bucket::set(&self.relay_bucket, relay.map(|b| bucket_rate(b as f64)));
-        Bucket::set(&self.forward_bucket, forward.map(|b| bucket_rate(b as f64)));
+        Bucket::set(&self.relay_bucket, relay.map(|b| bucket_rate(b as f64)), BURST);
+        Bucket::set(&self.forward_bucket, forward.map(|b| bucket_rate(b as f64)), BURST);
     }
 }
 
@@ -231,7 +238,7 @@ impl Meters {
     /// The sessions' budgets from now on (the others: unlimited) and this
     /// node's limit (bits per second).
     pub fn budgets(&self, budgets: &[SessionBudget], limit: Option<u64>) {
-        Bucket::set(&self.shared.bucket, limit.map(|l| l as f64 * NODE_SLACK / 8.0));
+        Bucket::set(&self.shared.bucket, limit.map(|l| l as f64 * NODE_SLACK / 8.0), NODE_BURST);
         let map: HashMap<String, (Option<u64>, Option<u64>)> = budgets
             .iter()
             .map(|b| (b.session.clone(), (b.relay, b.forward)))
