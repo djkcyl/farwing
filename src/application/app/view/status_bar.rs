@@ -69,8 +69,12 @@ impl DeviceCenterApp {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     self.server_status(ui);
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                        let (rect, _) =
-                            ui.allocate_exact_size(vec2(140.0, HEIGHT), Sense::hover());
+                        // The row's own height: a taller rect would start at the
+                        // top and put the version below the left side's centre.
+                        let (rect, _) = ui.allocate_exact_size(
+                            vec2(140.0, ui.available_height()),
+                            Sense::hover(),
+                        );
                         self.draw_version(ui, rect);
                         if self.host.as_ref().is_some_and(|h| h.status().connected) {
                             ui.label(

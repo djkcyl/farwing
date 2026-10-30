@@ -631,9 +631,13 @@ impl DeviceCenterApp {
             .resizable(false)
             .exact_size(theme::SIDEBAR_WIDTH)
             .frame(
-                egui::Frame::new()
-                    .fill(SIDEBAR)
-                    .inner_margin(egui::Margin::symmetric(12, 20)),
+                egui::Frame::new().fill(SIDEBAR).inner_margin(egui::Margin {
+                    left: 12,
+                    right: 12,
+                    top: 20,
+                    // The account footer keeps its own space above the status bar.
+                    bottom: 0,
+                }),
             )
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
@@ -766,7 +770,8 @@ impl DeviceCenterApp {
     }
 
     fn draw_account_footer(&mut self, ui: &mut egui::Ui) {
-        let (bounds, _) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::hover());
+        // The row (16..44) sits in the middle: as much space below as above.
+        let (bounds, _) = ui.allocate_exact_size(vec2(ui.available_width(), 60.0), Sense::hover());
         let left = bounds.left() + 6.0;
         let right = bounds.right() - 6.0;
         ui.painter()
