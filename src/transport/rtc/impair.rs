@@ -18,10 +18,11 @@
 //!   FEC) arriving in that window (counted from the first packet) before
 //!   repair, as when the network drops out: what was lost can be
 //!   retransmitted once it is back;
-//! - `rate:MBPS[,queue=MS]` passes every video packet (media, RTX, FEC)
-//!   through a bottleneck of that rate with a drop-tail queue holding at most
-//!   MS of data (default 200 ms), so large frames take their real
-//!   transmission time.
+//! - `rate:MBPS[,queue=MS][,for=SECONDS]` passes every video packet (media,
+//!   RTX, FEC) through a bottleneck of that rate with a drop-tail queue
+//!   holding at most MS of data (default 200 ms), so large frames take their
+//!   real transmission time; with `for`, only that long after the first
+//!   packet (the link then recovers).
 //!
 //! Losses are applied after RTX, RED and FEC recovery, by original sequence
 //! number and RTP timestamp, so a dropped packet is never repaired. Queue
@@ -45,6 +46,8 @@ enum Rule {
 pub(crate) struct Link {
     bits_per_second: f64,
     queue: Duration,
+    /// The bottleneck applies this long after the first packet.
+    lasts: Option<Duration>,
 }
 
 /// Random loss in front of the receiver (repairable).
@@ -138,15 +141,18 @@ impl Config {
                     let mbps: f64 = text.parse().with_context(|| format!("不是数字：{text}"))?;
                     anyhow::ensure!(mbps > 0.0 && mbps.is_finite(), "带宽要大于 0：{text}");
                     let mut queue = Duration::from_millis(200);
+                    let mut lasts = None;
                     for field in fields {
                         match field.trim().split_once('=') {
                             Some(("queue", ms)) => queue = Duration::from_millis(number(ms)?),
-                            _ => bail!("rate 只接受 queue=MS：{field}"),
+                            Some(("for", secs)) => lasts = Some(Duration::from_secs(number(secs)?)),
+                            _ => bail!("rate 只接受 queue=MS 与 for=SECONDS：{field}"),
                         }
                     }
                     config.link = Some(Link {
                         bits_per_second: mbps * 1e6,
                         queue,
+                        lasts,
                     });
                 }
                 other => bail!("未知规则：{other}"),
@@ -275,17 +281,31 @@ const PACKET_OVERHEAD: usize = 28 + 10;
 pub(crate) struct Bottleneck {
     link: Link,
     free_at: Option<Instant>,
+    first: Option<Instant>,
 }
 
 impl Bottleneck {
     pub(crate) fn new(link: Link) -> Self {
-        Self { link, free_at: None }
+        Self {
+            link,
+            free_at: None,
+            first: None,
+        }
     }
 
     /// When a packet of `bytes` arriving at `arrival` has left the link, or
     /// `None` when the queue is full and it is lost.
     pub(crate) fn admit(&mut self, arrival: Instant, bytes: usize) -> Option<Instant> {
+        let first = *self.first.get_or_insert(arrival);
         let start = self.free_at.map_or(arrival, |free| free.max(arrival));
+        // The limit is over: what is queued drains, then packets pass.
+        if self
+            .link
+            .lasts
+            .is_some_and(|lasts| arrival.saturating_duration_since(first) >= lasts)
+        {
+            return Some(start);
+        }
         let waiting = start.saturating_duration_since(arrival);
         if waiting > self.link.queue {
             QUEUE_DROPS.fetch_add(1, Ordering::Relaxed);
@@ -513,7 +533,8 @@ mod tests {
             Config::parse("rate:8.5,queue=50").unwrap().link(),
             Some(Link {
                 bits_per_second: 8.5e6,
-                queue: Duration::from_millis(50)
+                queue: Duration::from_millis(50),
+                lasts: None,
             })
         );
         assert_eq!(
@@ -576,6 +597,7 @@ mod tests {
         let mut link = Bottleneck::new(Link {
             bits_per_second: 1e6,
             queue: Duration::from_millis(20),
+            lasts: None,
         });
         let now = Instant::now();
         let departures: Vec<_> = (0..5)
@@ -586,6 +608,15 @@ mod tests {
         // Once drained, a packet passes straight through.
         let later = now + Duration::from_millis(100);
         assert_eq!(link.admit(later, 1250 - PACKET_OVERHEAD), Some(later + Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn a_limited_bottleneck_lifts_after_its_time() {
+        let mut link = Bottleneck::new(Config::parse("rate:1,queue=20,for=2").unwrap().link().unwrap());
+        let now = Instant::now();
+        assert_eq!(link.admit(now, 1250 - PACKET_OVERHEAD), Some(now + Duration::from_millis(10)));
+        let later = now + Duration::from_secs(3);
+        assert_eq!(link.admit(later, 1250 - PACKET_OVERHEAD), Some(later));
     }
 
     #[test]
