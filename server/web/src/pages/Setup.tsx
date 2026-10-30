@@ -4,6 +4,7 @@
 import { useState, type FormEvent } from 'react';
 import { useT } from '../i18n/react';
 import { call, errorText } from '../lib/api';
+import { settingErrorText } from '../lib/settingError';
 import { useAuth } from '../lib/auth';
 import { navigate } from '../lib/router';
 import type { Applied, SetupInfo, TlsMode, TurnMode } from '../lib/types';
@@ -180,7 +181,7 @@ function SetupForm({ info }: { info: SetupInfo }) {
         setDone({ url: publicUrl.trim() });
         return;
       }
-      setError(errorText(err));
+      setError(settingErrorText(t.admin.settings, err));
     } finally {
       setBusy(false);
     }
