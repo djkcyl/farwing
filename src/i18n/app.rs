@@ -467,7 +467,7 @@ pub(crate) const ZH_CN: App = App {
     cap_annotation: "批注",
     cap_unknown: "未知权限",
 
-    assist_unavailable: "对方未开启访问码，且未信任本设备",
+    assist_unavailable: "对方未开启访问码，也未信任本设备",
     favorite_updated: "收藏已更新",
     record_removed: "记录已移除",
     recent_cleared: "最近连接已清空",

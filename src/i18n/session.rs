@@ -769,7 +769,7 @@ pub(crate) const ZH_CN: Session = Session {
     error_code_required: "对方要求输入访问码",
     error_code_invalid: "访问码不正确",
     error_connection_declined: "对方已拒绝连接",
-    error_assist_unavailable: "对方未开启访问码，也未信任本机",
+    error_assist_unavailable: "对方未开启访问码，也未信任本设备",
     error_confirmation_timeout: "等待对方确认超时",
     error_host_not_back: |minutes| format!("被控端 {minutes} 分钟内未恢复"),
     error_device_not_back: |minutes| format!("设备 {minutes} 分钟内未重新上线"),
