@@ -72,6 +72,7 @@ impl Panel {
         minimum_scale: f64,
         decimals: usize,
         current: Option<f64>,
+        limit: Option<f64>,
         current_color: egui::Color32,
         now: f64,
     ) {
@@ -88,6 +89,7 @@ impl Panel {
                 label,
                 unit,
                 current,
+                limit,
                 minimum_scale,
                 decimals,
                 points: &points,
@@ -134,19 +136,12 @@ pub(super) fn show(
                     );
                 });
             });
-            let budget = (s.server_budget_kbps > 0).then(|| {
-                format!(
-                    "   ·   {}",
-                    (t().viewer.server_budget)(s.server_budget_kbps as f64 / 1000.0)
-                )
-            });
             ui.label(
                 RichText::new(format!(
-                    "{}   ·   {}   ·   {}{}",
+                    "{}   ·   {}   ·   {}",
                     s.connection,
                     format_resolution(s.decoded_resolution),
                     s.video_codec,
-                    budget.unwrap_or_default()
                 ))
                 .size(theme::SMALL)
                 .color(theme::MUTED),
@@ -168,6 +163,7 @@ pub(super) fn show(
                         30.0,
                         1,
                         Some(s.actual_fps),
+                        None,
                         super::hud::frame_rate_color(s),
                         now,
                     );
@@ -179,6 +175,7 @@ pub(super) fn show(
                         5.0,
                         2,
                         s.health.value(Metric::Rtt),
+                        None,
                         health_color(s.health.level(Metric::Rtt)),
                         now,
                     );
@@ -190,6 +187,8 @@ pub(super) fn show(
                         1.0,
                         2,
                         Some(s.bitrate_mbps),
+                        // The server's egress budget while relayed.
+                        (s.server_budget_kbps > 0).then(|| s.server_budget_kbps as f64 / 1000.0),
                         theme::TEXT,
                         now,
                     );

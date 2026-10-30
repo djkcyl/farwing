@@ -1696,6 +1696,12 @@ html[lang='en'] .caps-group {
   stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
 }
+.perf-spark .perf-limit {
+  stroke: var(--amber);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
 .perf-grid {
   display: grid;
   grid-template-columns: auto 1fr;

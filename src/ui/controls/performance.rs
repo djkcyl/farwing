@@ -92,6 +92,9 @@ pub(crate) struct PerformanceTrace<'a> {
     pub label: &'a str,
     pub unit: &'a str,
     pub current: Option<f64>,
+    /// A ceiling on the value (the server's budget): shown as `current/limit`
+    /// and as a dashed line on the trend.
+    pub limit: Option<f64>,
     pub minimum_scale: f64,
     pub decimals: usize,
     pub points: &'a [(f64, Option<f64>)],
@@ -134,15 +137,20 @@ pub(crate) fn performance_trace(ui: &mut egui::Ui, now: f64, trace: PerformanceT
         v.filter(|v| valid(*v))
             .map_or_else(|| "—".into(), |v| format!("{:.*}", trace.decimals, v))
     };
+    let limit = trace.limit.filter(|v| valid(*v) && *v > 0.0);
     for (index, (x, value)) in columns
         .into_iter()
         .zip([trace.current, mean, peak])
         .enumerate()
     {
+        let text = match limit {
+            Some(limit) if index == 0 => format!("{}/{limit:.1}", format_value(value)),
+            _ => format_value(value),
+        };
         painter.text(
             pos2(x, rect.center().y),
             Align2::RIGHT_CENTER,
-            format_value(value),
+            text,
             FontId::monospace(theme::SMALL),
             if index == 0 {
                 trace.current_color
@@ -151,7 +159,11 @@ pub(crate) fn performance_trace(ui: &mut egui::Ui, now: f64, trace: PerformanceT
             },
         );
     }
-    let maximum = peak.unwrap_or_default().max(trace.minimum_scale).max(0.001);
+    let maximum = peak
+        .unwrap_or_default()
+        .max(limit.unwrap_or_default())
+        .max(trace.minimum_scale)
+        .max(0.001);
     let exponent = 10.0f64.powf(maximum.log10().floor());
     let top = (maximum / exponent).ceil() * exponent;
     painter.rect_filled(plot, 2.0, theme::SIDEBAR);
@@ -166,6 +178,15 @@ pub(crate) fn performance_trace(ui: &mut egui::Ui, now: f64, trace: PerformanceT
         [plot.left_bottom(), plot.right_bottom()],
         Stroke::new(0.5, LINE),
     );
+    if let Some(limit) = limit {
+        let y = plot.bottom() - (limit / top).clamp(0.0, 1.0) as f32 * plot.height();
+        painter.extend(egui::Shape::dashed_line(
+            &[pos2(plot.left(), y), pos2(plot.right(), y)],
+            Stroke::new(1.0, theme::AMBER),
+            4.0,
+            3.0,
+        ));
+    }
     let mut previous = None;
     for &(at, value) in trace.points {
         let Some(value) = value.filter(|v| valid(*v)) else {
@@ -210,6 +231,9 @@ pub(crate) fn performance_trace(ui: &mut egui::Ui, now: f64, trace: PerformanceT
                 format_value(value),
                 trace.unit
             ));
+        }
+        if let Some(limit) = limit {
+            ui.label((t().controls.limit)(limit, trace.unit));
         }
         ui.label((t().controls.y_axis)(top, trace.unit));
     });

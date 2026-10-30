@@ -225,7 +225,6 @@ export const zh = {
   },
   /** The statistics panel. */
   stats: {
-    serverBudget: (mbps: number) => `服务器限速 ${mbps.toFixed(1)} Mbps`,
     frameRate: '帧率',
     bitrate: '码率',
     loss: '丢包',
@@ -547,7 +546,6 @@ export const en: typeof zh = {
     stallingTry: (tier) => `Frequent stalls · try quality ${tier}`,
   },
   stats: {
-    serverBudget: (mbps) => `Server limit ${mbps.toFixed(1)} Mbps`,
     frameRate: 'Frame rate',
     bitrate: 'Bitrate',
     loss: 'Packet loss',

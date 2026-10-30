@@ -225,7 +225,6 @@ pub(crate) struct Viewer {
     pub page_weak_network: &'static str,
     pub custom_bitrate: &'static str,
     /// The server's egress budget for this session (Mbit/s).
-    pub server_budget: fn(f64) -> String,
     pub advanced_settings: &'static str,
     pub audio: &'static str,
     pub microphone: &'static str,
@@ -635,7 +634,6 @@ pub(crate) const ZH_CN: Viewer = Viewer {
     page_codec: "此设备编码偏好",
     page_weak_network: "网络不佳时",
     custom_bitrate: "自定义码率",
-    server_budget: |mbps| format!("服务器限速 {mbps:.1} Mbps"),
     advanced_settings: "高级设置",
     audio: "音频",
     microphone: "麦克风",
@@ -1019,7 +1017,6 @@ pub(crate) const EN: Viewer = Viewer {
     page_codec: "Codec for this device",
     page_weak_network: "On a poor network",
     custom_bitrate: "Custom bitrate",
-    server_budget: |mbps| format!("Server limit {mbps:.1} Mbps"),
     advanced_settings: "Advanced settings",
     audio: "Audio",
     microphone: "Microphone",

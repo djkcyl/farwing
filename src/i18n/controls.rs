@@ -108,6 +108,8 @@ pub(crate) struct Controls {
     pub seconds_ago: fn(f64) -> String,
     /// Top of the scale, unit
     pub y_axis: fn(f64, &str) -> String,
+    /// A trace's ceiling (the server's budget).
+    pub limit: fn(f64, &str) -> String,
 
     // Tray
     pub tray_controlled: &'static str,
@@ -219,6 +221,7 @@ pub(crate) const ZH_CN: Controls = Controls {
     trend_30s: "30 秒趋势",
     seconds_ago: |seconds| format!("{seconds:.1} 秒前"),
     y_axis: |top, unit| format!("纵轴 0–{top:.2} {unit}"),
+    limit: |limit, unit| format!("服务器限速 {limit:.1} {unit}"),
 
     tray_controlled: "正在被控",
     tray_connections_off: "不允许连接本机",
@@ -328,6 +331,7 @@ pub(crate) const EN: Controls = Controls {
     trend_30s: "30 s trend",
     seconds_ago: |seconds| format!("{seconds:.1} s ago"),
     y_axis: |top, unit| format!("Scale 0–{top:.2} {unit}"),
+    limit: |limit, unit| format!("Server limit {limit:.1} {unit}"),
 
     tray_controlled: "Being controlled",
     tray_connections_off: "Connections to this device are off",

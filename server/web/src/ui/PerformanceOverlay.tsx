@@ -44,6 +44,7 @@ function Trace({
   values,
   floor,
   tone,
+  limit,
 }: {
   label: string;
   value: string;
@@ -51,20 +52,25 @@ function Trace({
   values: number[];
   floor: number;
   tone?: Tone;
+  /// A ceiling (the server's budget): `value / limit` and a dashed line.
+  limit?: number;
 }) {
-  const top = Math.max(floor, ...values) * 1.15;
+  const top = Math.max(floor, limit ?? 0, ...values) * 1.15;
   const step = 100 / (PERF_HISTORY - 1);
   const start = PERF_HISTORY - values.length;
-  const points = values.map((v, i) => `${((start + i) * step).toFixed(2)},${(32 - (v / top) * 30).toFixed(2)}`);
+  const y = (v: number) => (32 - (v / top) * 30).toFixed(2);
+  const points = values.map((v, i) => `${((start + i) * step).toFixed(2)},${y(v)}`);
   return (
     <div className="perf-trace">
       <div className="perf-trace-head">
         <span className="muted">{label}</span>
         <span className={`perf-value ${tone ? `perf-${tone}` : ''}`}>
-          {value} <span className="muted">{unit}</span>
+          {value}
+          {limit ? ` / ${num(limit, 1)}` : ''} <span className="muted">{unit}</span>
         </span>
       </div>
       <svg viewBox="0 0 100 34" preserveAspectRatio="none" className="perf-spark">
+        {limit ? <line className="perf-limit" x1="0" x2="100" y1={y(limit)} y2={y(limit)} /> : null}
         {points.length > 1 && <polyline points={points.join(' ')} />}
       </svg>
     </div>
@@ -143,14 +149,7 @@ export function PerformanceOverlay({
           <Icon name="close" size={14} />
         </button>
       </div>
-      <div className="perf-line muted">
-        {[
-          pathLabel(stats, forwarding),
-          size,
-          stats?.codec || '—',
-          ...(budgetKbps > 0 ? [m.serverBudget(budgetKbps / 1000)] : []),
-        ].join('  ·  ')}
-      </div>
+      <div className="perf-line muted">{[pathLabel(stats, forwarding), size, stats?.codec || '—'].join('  ·  ')}</div>
       <Trace
         label={m.frameRate}
         value={stats ? num(stats.fps, 1) : '—'}
@@ -172,6 +171,7 @@ export function PerformanceOverlay({
         unit="Mbps"
         values={history.map((s) => s.mbps)}
         floor={1}
+        limit={budgetKbps > 0 ? budgetKbps / 1000 : undefined}
       />
       <dl className="perf-grid">
         <Pair label={m.loss}>
