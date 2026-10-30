@@ -239,6 +239,12 @@ async fn friend_requests_lifecycle_and_pushes() {
         .recv_matching("removed", is_friend_change("removed"))
         .await;
     assert_eq!(ev["data"]["user"]["username"], "alice");
+    // Alice's own devices hear it too (they drop bob from their caches).
+    let ev = t
+        .aw
+        .recv_matching("removed (own devices)", is_friend_change("removed"))
+        .await;
+    assert_eq!(ev["data"]["user"]["username"], "bob");
     t.bw
         .recv_matching("alice's device removed", is_shared_change("removed", t.alice.id.clone()))
         .await;
@@ -298,6 +304,13 @@ async fn grants_gate_sessions_and_follow_changes() {
         .ok();
     t.bw.recv_matching("grants_changed", is_friend_change("grants_changed"))
         .await;
+    // The granting account's own devices refresh their direct-connection
+    // cache on the same push.
+    let ev = t
+        .aw
+        .recv_matching("grants_changed (own devices)", is_friend_change("grants_changed"))
+        .await;
+    assert_eq!(ev["data"]["user"]["username"], "bob");
     srv.post(
         "/api/v2/sessions",
         &t.bob,

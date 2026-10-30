@@ -383,7 +383,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 - `Grants = {default: [caps], devices: {device_id: [caps]}}`：某好友在某设备上的能力 = 该设备的条目，否则 `default`。`PUT` 整体替换；设备键必须是本账号设备；只对好友有效（否则 `404 not_found`）。
 - 授权变化时：好友在相关设备上的活动会话收到 `session.permissions{grants}`（被控与主控都收到）；不再具备会话目的所需能力时会话以 `permission_revoked` 结束。解除好友删除双向授权并同样结束会话。
 - `GET /devices/self/friend-access`（`path::SELF_FRIEND_ACCESS`）：调用设备可以被哪些好友设备控制，`FriendAccessList = {devices: [FriendAccess]}`，`FriendAccess = {device_id, public_key, alias, user_id, nickname, grants}`，列出在调用设备上持有非空授权的每位好友（未禁用账号）的全部设备，`grants` 为该好友在调用设备上的能力。被控缓存它，在直连时按 `friend` 方法授权（§8.3）。
-- 推送：`friend.changed{kind, user}`，`kind ∈ request_received | request_accepted | request_rejected | request_cancelled | removed | grants_changed`；可见性变化以 `device.changed`（`shared: true`）告知。
+- 推送：`friend.changed{kind, user}`，`kind ∈ request_received | request_accepted | request_rejected | request_cancelled | removed | grants_changed`；可见性变化以 `device.changed`（`shared: true`）告知。`grants_changed` 与 `removed` 也推给操作者本人的设备（`user` 为对方），被控据此与收到 `device.changed` 时一样刷新本账号设备与好友授权的缓存（服务端不可达时直连按此缓存授权）。
 
 ### 3.14 多人转发
 

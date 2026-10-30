@@ -281,6 +281,21 @@ async fn serve_presence(
             if crate::account::server_changed::push(push) {
                 return;
             }
+            // Friends' grants and the account's devices decide who may
+            // connect directly while the server is out of reach: refresh
+            // that cache when they change, not only when it is used.
+            if !push_client.is_guest()
+                && (push.kind == farwing_protocol::realtime::types::FRIEND_CHANGED
+                    || push.kind == farwing_protocol::realtime::types::DEVICE_CHANGED)
+                && let Ok(runtime) = tokio::runtime::Handle::try_current()
+            {
+                let client = push_client.clone();
+                runtime.spawn(async move {
+                    if let Err(error) = client.refresh_account_cache().await {
+                        tracing::debug!(error = %format!("{error:#}"), "account device cache not refreshed");
+                    }
+                });
+            }
             // Notices, and friends or requests changing: the device centre
             // reads them again.
             if push.kind == farwing_protocol::realtime::types::NOTICE

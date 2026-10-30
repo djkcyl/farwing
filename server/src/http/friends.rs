@@ -399,6 +399,7 @@ pub async fn remove(
     let data = serde_json::json!({ "who": display(&auth.user) });
     crate::notify::send(&app, &other.id, farwing_protocol::api::notice::FRIEND_REMOVED, data, &[]);
     push_friend_changed(&app, &other.id, FriendChangeKind::Removed, &auth.user).await;
+    push_friend_changed(&app, &auth.user.id, FriendChangeKind::Removed, &other).await;
     let gone = |seen: &[(DeviceRow, Vec<String>)]| -> Vec<(DeviceRow, Vec<String>)> {
         seen.iter()
             .map(|(row, _)| (row.clone(), Vec::new()))
@@ -492,6 +493,9 @@ pub async fn put_grants(
     }
     app.hub.regrant(&other.id, &as_map(&after));
     push_friend_changed(&app, &other.id, FriendChangeKind::GrantsChanged, &auth.user).await;
+    // The granting account's own hosts keep these grants for direct
+    // connections while the server is unreachable: they refresh them now.
+    push_friend_changed(&app, &auth.user.id, FriendChangeKind::GrantsChanged, &other).await;
     push_visibility(&app, &auth.user, &other.id, &as_map(&before), &after).await;
     Ok(Json(stored))
 }
