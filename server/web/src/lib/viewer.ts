@@ -122,6 +122,9 @@ export interface ViewerEvents {
   /// The picture comes through the server's forwarder in this mode
   /// (`e2ee`, `compatible`); '' when it comes from the host.
   forwarding?(mode: string): void;
+  /// The server limits this session to this while relayed (kbit/s; 0: no
+  /// limit).
+  budget?(kbps: number): void;
   log?(line: string): void;
 }
 
@@ -1234,6 +1237,9 @@ export class Viewer {
         break;
       case 'session.permissions':
         this.setGrants((envelope.data as { grants: string[] }).grants ?? this.grants);
+        break;
+      case 'session.budget':
+        this.events.budget?.((envelope.data as { budget_kbps?: number }).budget_kbps ?? 0);
         break;
       case 'session.relays': {
         const data = envelope.data as { ice_servers?: IceServer[]; relay?: RelayAccess };

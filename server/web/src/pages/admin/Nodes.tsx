@@ -93,7 +93,7 @@ function EditNode({ node, onClose, onSaved }: { node?: EdgeNode; onClose(): void
           region: node.region,
           enabled: node.enabled,
           public_ip: node.settings.public_ip ?? '',
-          bandwidth: node.settings.bandwidth_limit_mbps ? String(node.settings.bandwidth_limit_mbps) : '',
+          bandwidth: node.settings.egress_limit_mbps ? String(node.settings.egress_limit_mbps) : '',
           listen_udp: node.settings.listen_udp ?? '',
           listen_tcp: node.settings.listen_tcp ?? '',
           listen_tls: node.settings.listen_tls ?? '',
@@ -121,7 +121,7 @@ function EditNode({ node, onClose, onSaved }: { node?: EdgeNode; onClose(): void
         enabled: draft.enabled,
         settings: {
           public_ip: address(draft.public_ip),
-          bandwidth_limit_mbps: number(draft.bandwidth),
+          egress_limit_mbps: number(draft.bandwidth),
           listen_udp: address(draft.listen_udp),
           listen_tcp: address(draft.listen_tcp),
           listen_tls: address(draft.listen_tls),

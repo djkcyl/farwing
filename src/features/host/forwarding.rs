@@ -71,6 +71,9 @@ pub(crate) struct Flags {
     pub(crate) receiving: AtomicBool,
     /// The forwarder gives the participant the low layer (§5.5).
     pub(crate) low: AtomicBool,
+    /// The server's egress budget for this participant while relayed
+    /// (kbit/s; 0: none; `docs/protocol/egress-policy.md` §4.2).
+    pub(crate) server_budget_kbps: std::sync::atomic::AtomicU32,
 }
 
 struct Entry {

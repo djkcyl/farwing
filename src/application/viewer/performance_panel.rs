@@ -134,12 +134,19 @@ pub(super) fn show(
                     );
                 });
             });
+            let budget = (s.server_budget_kbps > 0).then(|| {
+                format!(
+                    "   ·   {}",
+                    (t().viewer.server_budget)(s.server_budget_kbps as f64 / 1000.0)
+                )
+            });
             ui.label(
                 RichText::new(format!(
-                    "{}   ·   {}   ·   {}",
+                    "{}   ·   {}   ·   {}{}",
                     s.connection,
                     format_resolution(s.decoded_resolution),
-                    s.video_codec
+                    s.video_codec,
+                    budget.unwrap_or_default()
                 ))
                 .size(theme::SMALL)
                 .color(theme::MUTED),

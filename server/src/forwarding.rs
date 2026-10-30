@@ -378,6 +378,11 @@ impl Forwarding {
         out
     }
 
+    /// The rooms open now.
+    pub fn records(&self) -> Vec<RoomRecord> {
+        self.rooms.lock().values().cloned().collect()
+    }
+
     pub fn status(&self) -> Vec<RoomStatus> {
         let mut stats: HashMap<String, RoomStats> = self
             .local

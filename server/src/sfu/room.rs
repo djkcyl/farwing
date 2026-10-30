@@ -488,6 +488,9 @@ pub(super) struct Room {
     pub emulators: Mutex<HashMap<String, Option<Arc<Mutex<super::emulate::Emulator>>>>>,
     /// The forwarded stream's limit, and when the host was last told.
     limit: Mutex<Option<u64>>,
+    /// The server's egress budget per viewer (`docs/protocol/egress-policy.md`
+    /// §4.2); 0: none.
+    pub budget: AtomicU64,
     /// Each viewer's layer, by session.
     layers: Mutex<HashMap<String, Layer>>,
     limit_at: Mutex<Instant>,
@@ -508,6 +511,7 @@ impl Room {
             keyframes: AtomicU64::new(0),
             emulators: Mutex::default(),
             limit: Mutex::default(),
+            budget: AtomicU64::new(0),
             layers: Mutex::default(),
             limit_at: Mutex::new(Instant::now()),
             impaired_keyframe_at: Mutex::default(),
@@ -921,6 +925,11 @@ impl Room {
                 leg.superseded.store(superseded, Ordering::Relaxed);
             }
             (limit, low)
+        };
+        // The server's budget per viewer binds the stream too.
+        let limit = match self.budget.load(Ordering::Relaxed) {
+            0 => limit,
+            budget => Some(limit.map_or(budget, |l| l.min(budget))),
         };
         let previous = std::mem::replace(&mut *self.limit.lock(), limit);
         if previous.is_some() != limit.is_some() {

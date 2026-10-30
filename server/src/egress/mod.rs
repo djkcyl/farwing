@@ -1,6 +1,8 @@
 //! Server egress: what the relay and the forwarder send for sessions, who
 //! pays for it, and (later) its limits (`docs/protocol/egress-policy.md`).
 
+pub mod allocator;
+pub mod budget;
 pub mod ledger;
 pub mod meter;
 pub mod policy;
@@ -127,6 +129,8 @@ pub struct Egress {
     pub ledger: Ledger,
     policies: parking_lot::RwLock<Policies>,
     edges: Arc<crate::edge::EdgeHub>,
+    /// The last round of budgets (§4).
+    budget: parking_lot::Mutex<budget::State>,
 }
 
 /// How often stored monthly totals are brought up to date.
@@ -155,6 +159,7 @@ impl Egress {
             ),
             policies: parking_lot::RwLock::new(Policies::new(config.clone(), users)),
             edges,
+            budget: parking_lot::Mutex::default(),
         }))
     }
 
@@ -196,8 +201,10 @@ impl Egress {
     }
 
     /// What session `id` may use now (an unknown session: everything; the
-    /// hub knows every session it admits).
-    pub fn access(&self, id: &str) -> Access {
+    /// hub knows every session it admits). `admitting`: a session starting,
+    /// which also needs room for one more relayed flow (§4.5); a running
+    /// one keeps its place.
+    pub fn access(&self, id: &str, admitting: bool) -> Access {
         let Some(payer) = self.ledger.payer(id) else {
             return Access::default();
         };
@@ -205,16 +212,31 @@ impl Egress {
         let used_up = effective
             .quota_bytes
             .is_some_and(|quota| self.ledger.month_bytes(&payer) >= quota);
+        let busy = admitting && {
+            let state = self.budget.lock();
+            let units = state.units.get(&payer).copied().unwrap_or(0.0);
+            let payer_full = effective
+                .rate_bps
+                .is_some_and(|rate| (units + 1.0) * allocator::FLOOR_BPS > rate as f64);
+            payer_full || (state.local_full && !self.edges.any_open())
+        };
         Access {
             relay: if !effective.relay {
                 RelayAccess::denied(relay_denied::NOT_ALLOWED)
             } else if used_up {
                 RelayAccess::denied(relay_denied::QUOTA)
+            } else if busy {
+                RelayAccess::denied(relay_denied::BUSY)
             } else {
                 RelayAccess::default()
             },
             forward: effective.forward && !used_up,
         }
+    }
+
+    /// This server's egress is taken: new sessions get no relay here.
+    pub fn local_full(&self) -> bool {
+        self.budget.lock().local_full
     }
 
     /// Session `id` may use `access` from now on: the gauges here and on

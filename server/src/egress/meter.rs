@@ -18,6 +18,74 @@ const IDLE: u32 = 60;
 /// credential lifetime): its traffic is refused as long.
 const ENDED: Duration = Duration::from_secs(12 * 3600);
 
+/// A budget's bucket lets this much more through, at least this much more
+/// (`docs/protocol/egress-policy.md` §4.3): the host sends to the budget
+/// itself; the bucket only stops one that does not.
+const BUCKET_SLACK: f64 = 1.3;
+const BUCKET_MARGIN_BPS: f64 = 1_000_000.0;
+/// The node's bucket lets this much more through than its limit.
+const NODE_SLACK: f64 = 1.1;
+/// A bucket holds this long a burst.
+const BURST: f64 = 0.3;
+
+/// A token bucket in bytes.
+struct Bucket {
+    rate: f64,
+    tokens: f64,
+    at: Instant,
+}
+
+impl Bucket {
+    fn new(bytes_per_second: f64) -> Self {
+        Self {
+            rate: bytes_per_second,
+            tokens: bytes_per_second * BURST,
+            at: Instant::now(),
+        }
+    }
+
+    fn take(&mut self, bytes: u64) -> bool {
+        let now = Instant::now();
+        let burst = self.rate * BURST;
+        self.tokens = (self.tokens + now.duration_since(self.at).as_secs_f64() * self.rate).min(burst);
+        self.at = now;
+        if self.tokens < bytes as f64 {
+            return false;
+        }
+        self.tokens -= bytes as f64;
+        true
+    }
+
+    fn set(slot: &parking_lot::Mutex<Option<Bucket>>, bytes_per_second: Option<f64>) {
+        let mut slot = slot.lock();
+        match (bytes_per_second, slot.as_mut()) {
+            (None, _) => *slot = None,
+            (Some(rate), Some(bucket)) => bucket.rate = rate,
+            (Some(rate), None) => *slot = Some(Bucket::new(rate)),
+        }
+    }
+
+    fn admit(slot: &parking_lot::Mutex<Option<Bucket>>, bytes: u64) -> bool {
+        slot.lock().as_mut().is_none_or(|bucket| bucket.take(bytes))
+    }
+}
+
+/// The bucket rate (bytes per second) for a budget in bits per second.
+fn bucket_rate(budget_bps: f64) -> f64 {
+    (budget_bps * BUCKET_SLACK).max(budget_bps + BUCKET_MARGIN_BPS) / 8.0
+}
+
+/// A session's budgets on a node (bits per second; none: unlimited), as
+/// the control node sends them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SessionBudget {
+    pub session: String,
+    #[serde(default)]
+    pub relay: Option<u64>,
+    #[serde(default)]
+    pub forward: Option<u64>,
+}
+
 /// What a session may send through this server
 /// (`docs/protocol/egress-policy.md` §3.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +121,8 @@ pub struct SessionGauge {
     forward: AtomicU64,
     relay_allowed: AtomicBool,
     forward_allowed: AtomicBool,
+    relay_bucket: parking_lot::Mutex<Option<Bucket>>,
+    forward_bucket: parking_lot::Mutex<Option<Bucket>>,
     /// The snapshot this gauge last sent something in.
     active: AtomicU32,
     meters: Arc<Shared>,
@@ -63,11 +133,16 @@ struct Shared {
     total: AtomicU64,
     /// Snapshots taken so far.
     tick: AtomicU32,
+    /// The node's limit.
+    bucket: parking_lot::Mutex<Option<Bucket>>,
 }
 
 impl SessionGauge {
-    fn count(&self, counter: &AtomicU64, bytes: usize) -> bool {
+    fn count(&self, counter: &AtomicU64, bucket: &parking_lot::Mutex<Option<Bucket>>, bytes: usize) -> bool {
         let bytes = bytes as u64 + OVERHEAD;
+        if !Bucket::admit(bucket, bytes) || !Bucket::admit(&self.meters.bucket, bytes) {
+            return false;
+        }
         counter.fetch_add(bytes, Ordering::Relaxed);
         self.meters.total.fetch_add(bytes, Ordering::Relaxed);
         self.active
@@ -77,18 +152,24 @@ impl SessionGauge {
 
     /// The relay sends `bytes` of payload for this session; false: drop.
     pub fn relayed(&self, bytes: usize) -> bool {
-        self.relay_allowed.load(Ordering::Relaxed) && self.count(&self.relay, bytes)
+        self.relay_allowed.load(Ordering::Relaxed) && self.count(&self.relay, &self.relay_bucket, bytes)
     }
 
     /// The forwarder sends `bytes` (a packet) to this session's viewer;
     /// false: drop.
     pub fn forwarded(&self, bytes: usize) -> bool {
-        self.forward_allowed.load(Ordering::Relaxed) && self.count(&self.forward, bytes)
+        self.forward_allowed.load(Ordering::Relaxed)
+            && self.count(&self.forward, &self.forward_bucket, bytes)
     }
 
     fn apply(&self, rule: Rule) {
         self.relay_allowed.store(rule.relay, Ordering::Relaxed);
         self.forward_allowed.store(rule.forward, Ordering::Relaxed);
+    }
+
+    fn budget(&self, relay: Option<u64>, forward: Option<u64>) {
+        Bucket::set(&self.relay_bucket, relay.map(|b| bucket_rate(b as f64)));
+        Bucket::set(&self.forward_bucket, forward.map(|b| bucket_rate(b as f64)));
     }
 }
 
@@ -114,6 +195,8 @@ pub struct Meters {
     sessions: parking_lot::Mutex<HashMap<String, Arc<SessionGauge>>>,
     /// Sessions that may not send everything, and when ended ones lapse.
     rules: parking_lot::Mutex<HashMap<String, (Rule, Option<Instant>)>>,
+    /// Sessions' budgets (`relay`, `forward`; bits per second).
+    budgets: parking_lot::Mutex<HashMap<String, (Option<u64>, Option<u64>)>>,
 }
 
 impl Meters {
@@ -133,11 +216,31 @@ impl Meters {
             forward: AtomicU64::new(0),
             relay_allowed: AtomicBool::new(rule.relay),
             forward_allowed: AtomicBool::new(rule.forward),
+            relay_bucket: parking_lot::Mutex::new(None),
+            forward_bucket: parking_lot::Mutex::new(None),
             active: AtomicU32::new(self.shared.tick.load(Ordering::Relaxed)),
             meters: Arc::clone(&self.shared),
         });
+        if let Some((relay, forward)) = self.budgets.lock().get(id) {
+            gauge.budget(*relay, *forward);
+        }
         sessions.insert(id.to_owned(), Arc::clone(&gauge));
         gauge
+    }
+
+    /// The sessions' budgets from now on (the others: unlimited) and this
+    /// node's limit (bits per second).
+    pub fn budgets(&self, budgets: &[SessionBudget], limit: Option<u64>) {
+        Bucket::set(&self.shared.bucket, limit.map(|l| l as f64 * NODE_SLACK / 8.0));
+        let map: HashMap<String, (Option<u64>, Option<u64>)> = budgets
+            .iter()
+            .map(|b| (b.session.clone(), (b.relay, b.forward)))
+            .collect();
+        for (id, gauge) in self.sessions.lock().iter() {
+            let (relay, forward) = map.get(id).copied().unwrap_or_default();
+            gauge.budget(relay, forward);
+        }
+        *self.budgets.lock() = map;
     }
 
     /// What session `update.session` may send from now on.
@@ -234,6 +337,26 @@ mod tests {
         });
         assert!(early.relayed(100));
         assert_eq!(meters.rules().len(), 1);
+    }
+
+    #[test]
+    fn a_budget_stops_a_session_far_above_it() {
+        let meters = Meters::new();
+        let gauge = meters.session("s");
+        // 8 Mbit/s: its bucket lets 1.3 MB/s through, 0.39 MB at once.
+        meters.budgets(
+            &[SessionBudget {
+                session: "s".into(),
+                relay: Some(8_000_000),
+                forward: None,
+            }],
+            None,
+        );
+        let sent = (0..1000).filter(|_| gauge.relayed(1200)).count();
+        assert!((300..340).contains(&sent), "{sent}");
+        assert!(gauge.forwarded(1200));
+        meters.budgets(&[], None);
+        assert!(gauge.relayed(1200));
     }
 
     #[test]

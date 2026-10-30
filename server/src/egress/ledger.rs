@@ -12,11 +12,29 @@ pub const LOCAL: &str = "";
 /// A session's payer is kept this long after it ends (its last packets).
 const ENDED_KEEP: Duration = Duration::from_secs(120);
 
-/// One session's flow through one node.
+/// One session's flow through one node: what the relay and the forwarder
+/// sent, and their rates (none until a second sample).
+#[derive(Default)]
 struct Flow {
-    bytes: u64,
-    /// None until a second sample.
-    bps: Option<f64>,
+    relay: u64,
+    forward: u64,
+    relay_bps: Option<f64>,
+    forward_bps: Option<f64>,
+}
+
+impl Flow {
+    fn bps(&self) -> f64 {
+        self.relay_bps.unwrap_or(0.0) + self.forward_bps.unwrap_or(0.0)
+    }
+}
+
+/// A session's rates through a node, for the budgets.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeFlow {
+    pub node: String,
+    pub session: String,
+    pub relay_bps: f64,
+    pub forward_bps: f64,
 }
 
 #[derive(Default)]
@@ -130,15 +148,28 @@ impl Ledger {
         n.total = usage.total;
         let mut flows = HashMap::with_capacity(usage.sessions.len());
         for s in &usage.sessions {
-            let bytes = s.relay + s.forward;
-            let (sent, bps) = match (n.flows.remove(&s.session), dt) {
+            let flow = match (n.flows.remove(&s.session), dt) {
                 (Some(old), Some(dt)) => {
-                    let sent = grew(old.bytes, bytes);
-                    (sent, smooth(old.bps, sent, dt))
+                    let (relay, forward) = (grew(old.relay, s.relay), grew(old.forward, s.forward));
+                    let flow = Flow {
+                        relay: s.relay,
+                        forward: s.forward,
+                        relay_bps: smooth(old.relay_bps, relay, dt),
+                        forward_bps: smooth(old.forward_bps, forward, dt),
+                    };
+                    (relay + forward, flow)
                 }
                 // A new flow: what it sent counts, its rate from the next.
-                (_, _) => (bytes, None),
+                (_, _) => (
+                    s.relay + s.forward,
+                    Flow {
+                        relay: s.relay,
+                        forward: s.forward,
+                        ..Flow::default()
+                    },
+                ),
             };
+            let (sent, flow) = flow;
             if sent > 0
                 && let Some(session) = inner.sessions.get(&s.session)
             {
@@ -148,13 +179,40 @@ impl Ledger {
                     .entry((inner.month.key.clone(), session.payer.clone()))
                     .or_default() += sent;
             }
-            flows.insert(s.session.clone(), Flow { bytes, bps });
+            flows.insert(s.session.clone(), flow);
         }
         n.flows = flows;
         inner.sessions.retain(|id, s| {
             s.ended.is_none_or(|at| now.duration_since(at) < ENDED_KEEP)
                 || inner_flows(&inner.nodes, id)
         });
+    }
+
+    /// Every session's rates through every node.
+    pub fn flows(&self) -> Vec<NodeFlow> {
+        let inner = self.inner.lock();
+        inner
+            .nodes
+            .iter()
+            .flat_map(|(node, n)| {
+                n.flows.iter().map(|(session, f)| NodeFlow {
+                    node: node.clone(),
+                    session: session.clone(),
+                    relay_bps: f.relay_bps.unwrap_or(0.0),
+                    forward_bps: f.forward_bps.unwrap_or(0.0),
+                })
+            })
+            .collect()
+    }
+
+    /// Each node's rate now (bits per second).
+    pub fn node_rates(&self) -> HashMap<String, f64> {
+        let inner = self.inner.lock();
+        inner
+            .nodes
+            .iter()
+            .map(|(node, n)| (node.clone(), n.bps.unwrap_or(0.0)))
+            .collect()
     }
 
     /// A node left (its flows end).
@@ -190,7 +248,7 @@ impl Ledger {
         let mut sessions: HashMap<String, f64> = HashMap::new();
         for node in inner.nodes.values() {
             for (id, flow) in &node.flows {
-                *sessions.entry(id.clone()).or_default() += flow.bps.unwrap_or(0.0);
+                *sessions.entry(id.clone()).or_default() += flow.bps();
             }
         }
         let mut rates: HashMap<Payer, f64> = HashMap::new();

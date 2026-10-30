@@ -15,7 +15,7 @@ use farwing_protocol::ids;
 use farwing_protocol::realtime::{
     ControllerInfo, Envelope, Hello, Limits, PeerIdentity, Ping, ResumeRefreshAck, Role,
     RtcCandidate, RtcDescription, SessionEnd, SessionIncoming, SessionPermissions,
-    SessionRelays, SessionStart, SessionStarted, close, reason, relay_denied, types,
+    SessionBudget, SessionRelays, SessionStart, SessionStarted, close, reason, relay_denied, types,
 };
 use farwing_protocol::{ErrorBody, ErrorCode};
 use parking_lot::Mutex;
@@ -293,6 +293,18 @@ impl Session {
     }
 }
 
+/// Keeps only the discovery (STUN) addresses of `servers`.
+fn discovery_only(servers: &mut Vec<farwing_protocol::realtime::IceServer>) {
+    servers.retain_mut(|server| {
+        server
+            .urls
+            .retain(|url| url.starts_with("stun:") || url.starts_with("stuns:"));
+        server.username.clear();
+        server.credential.clear();
+        !server.urls.is_empty()
+    });
+}
+
 fn err_env(re: Option<&str>, code: ErrorCode, msg: &str) -> Envelope {
     Envelope::error(re, ErrorBody::new(code, msg))
 }
@@ -384,20 +396,39 @@ impl Hub {
         sid: &str,
         device_id: &str,
         access: &crate::egress::Access,
+        admitting: bool,
     ) -> Vec<farwing_protocol::realtime::IceServer> {
         let mut servers = self.ice.read().servers(sid);
+        // This server's egress is taken: a starting session relays elsewhere.
+        if admitting && self.egress.local_full() {
+            discovery_only(&mut servers);
+        }
         servers.extend(self.edges.servers_for(sid, device_id));
         if !access.relay.allowed {
-            servers.retain_mut(|server| {
-                server
-                    .urls
-                    .retain(|url| url.starts_with("stun:") || url.starts_with("stuns:"));
-                server.username.clear();
-                server.credential.clear();
-                !server.urls.is_empty()
-            });
+            discovery_only(&mut servers);
         }
         servers
+    }
+
+    /// Session `sid`'s budget while relayed (kbit/s; 0: none) to its host,
+    /// and to its controller to show.
+    pub fn push_budget(&self, sid: &str, budget_kbps: u32) {
+        let st = self.state.lock();
+        let Some(s) = st.sessions.get(sid) else { return };
+        let envelope = Envelope::new(types::SESSION_BUDGET, SessionBudget { budget_kbps }).with_sid(sid);
+        if s.host_notified
+            && let Some(h) = Self::host_conn(&st, &s.host_device_id)
+        {
+            h.send(&envelope);
+        }
+        if let Some(c) = s
+            .controller_link
+            .as_deref()
+            .and_then(|id| st.links.get(id))
+            .and_then(|l| l.conn.as_ref())
+        {
+            c.send(&envelope);
+        }
     }
 
     /// Tells both sides of session `sid` its relays and what it may use.
@@ -412,7 +443,7 @@ impl Hub {
             && let Some(h) = Self::host_conn(st, &s.host_device_id)
         {
             let relays = SessionRelays {
-                ice_servers: self.servers_for(sid, &s.host_device_id, &s.access),
+                ice_servers: self.servers_for(sid, &s.host_device_id, &s.access, false),
                 relay: s.access.relay.clone(),
                 forward: Some(s.access.forward),
             };
@@ -425,7 +456,7 @@ impl Hub {
             .and_then(|l| l.conn.as_ref())
         {
             let relays = SessionRelays {
-                ice_servers: self.servers_for(sid, &s.controller_device_id, &s.access),
+                ice_servers: self.servers_for(sid, &s.controller_device_id, &s.access, false),
                 relay: s.access.relay.clone(),
                 forward: None,
             };
@@ -444,7 +475,7 @@ impl Hub {
             .iter_mut()
             .filter(|(_, s)| s.state != SessState::Ticketed)
             .filter_map(|(sid, s)| {
-                let access = self.egress.access(sid);
+                let access = self.egress.access(sid, false);
                 (access != s.access).then(|| {
                     s.access = access;
                     sid.clone()
@@ -1509,7 +1540,7 @@ impl Hub {
             ));
             return;
         }
-        let access = self.egress.access(&sid);
+        let access = self.egress.access(&sid, true);
         if self.cfg.read().force_relay && !access.relay.allowed {
             conn.send(&Envelope::error(
                 re,
@@ -1564,7 +1595,7 @@ impl Hub {
             grants: s.grants.clone(),
             controller: s.controller.clone(),
             options: start.options,
-            ice_servers: self.servers_for(&sid, &s.host_device_id, &access),
+            ice_servers: self.servers_for(&sid, &s.host_device_id, &access, true),
             force_relay: self.cfg.read().force_relay,
             relay: access.relay.clone(),
             forward: access.forward,
@@ -1576,7 +1607,7 @@ impl Hub {
             SessionStarted {
                 participant_id: s.participant_id.clone(),
                 session_id: sid.clone(),
-                ice_servers: self.servers_for(&sid, &s.controller_device_id, &access),
+                ice_servers: self.servers_for(&sid, &s.controller_device_id, &access, true),
                 force_relay: self.cfg.read().force_relay,
                 relay: access.relay.clone(),
                 host: PeerIdentity {

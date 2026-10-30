@@ -69,6 +69,16 @@ impl Bounds {
     pub fn network_maximum(self) -> u32 {
         self.maximum.max(self.probe)
     }
+    /// Sending at most `bps` (the server's egress budget).
+    pub(crate) fn capped(self, bps: u32) -> Self {
+        let maximum = self.maximum.min(bps);
+        Self {
+            reservation: self.reservation.min(maximum),
+            maximum,
+            initial: self.initial.min(maximum),
+            probe: self.probe.min(maximum),
+        }
+    }
 }
 
 pub(crate) const NETWORK_FLOOR: u32 = 300_000;

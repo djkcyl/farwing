@@ -52,8 +52,8 @@ pub struct NodeSettings {
     /// Local address relay sockets bind to.
     pub relay_bind: IpAddr,
     pub stun: Vec<StunEndpoint>,
-    /// No new sessions above this relayed bandwidth.
-    pub bandwidth_limit_mbps: Option<u32>,
+    /// The node's egress limit (`docs/protocol/egress-policy.md` §4).
+    pub egress_limit_mbps: Option<u32>,
     /// UDP port of the node's forwarder; empty: the server's.
     pub sfu_port: Option<u16>,
 }
@@ -70,7 +70,7 @@ impl Default for NodeSettings {
             relay_port_max: t.relay_port_max,
             relay_bind: t.relay_bind,
             stun: t.stun,
-            bandwidth_limit_mbps: None,
+            egress_limit_mbps: None,
             sfu_port: None,
         }
     }
@@ -112,6 +112,13 @@ pub enum ToNode {
     /// What sessions may send through the node
     /// (`docs/protocol/egress-policy.md` §3.4).
     Rules { rules: Vec<crate::egress::RuleUpdate> },
+    /// The node's limit, its sessions' and rooms' budgets (bits per second;
+    /// none: unlimited), every second (§4).
+    Budgets {
+        limit: Option<u64>,
+        sessions: Vec<crate::egress::meter::SessionBudget>,
+        rooms: Vec<(String, Option<u64>)>,
+    },
 }
 
 /// Node → control.
@@ -187,6 +194,8 @@ pub struct EdgeHub {
     /// Forwarder requests waiting for a node's answer.
     pending: Mutex<HashMap<u64, SfuReply>>,
     next_request: AtomicU64,
+    /// Nodes whose egress is taken: no new relayed sessions or rooms.
+    full: RwLock<std::collections::HashSet<String>>,
 }
 
 #[derive(Default, Clone, PartialEq)]
@@ -351,9 +360,10 @@ impl EdgeHub {
             .get(device_id)
             .filter(|(_, at)| at.elapsed() < RTT_FRESH)
             .map(|(m, _)| m.clone())?;
+        let full = self.full.read().clone();
         self.usable()
             .into_iter()
-            .filter(|(_, _, health)| health.sfu_port.is_some())
+            .filter(|(row, _, health)| health.sfu_port.is_some() && !full.contains(&row.id))
             .filter_map(|(row, _, _)| Some(((*measured.get(&row.id)?)?, row)))
             .min_by_key(|(rtt, row)| (*rtt, row.name.clone()))
             .map(|(_, row)| (row.id, row.name))
@@ -421,13 +431,32 @@ impl EdgeHub {
         let Some((health, at)) = live.and_then(|l| l.health.as_ref()) else {
             return false;
         };
-        row.enabled
-            && at.elapsed() < HEALTH_FRESH
-            && health.turn_udp.is_some()
-            && row
-                .settings
-                .bandwidth_limit_mbps
-                .is_none_or(|limit| health.egress_bps < u64::from(limit) * 1_000_000)
+        row.enabled && at.elapsed() < HEALTH_FRESH && health.turn_udp.is_some()
+    }
+
+    /// Each node's egress limit (bits per second; none: unlimited).
+    pub fn egress_limits(&self) -> HashMap<String, Option<u64>> {
+        self.rows
+            .read()
+            .values()
+            .map(|row| {
+                (
+                    row.id.clone(),
+                    row.settings.egress_limit_mbps.map(|m| u64::from(m) * 1_000_000),
+                )
+            })
+            .collect()
+    }
+
+    /// The nodes whose egress is taken now.
+    pub fn set_full(&self, full: std::collections::HashSet<String>) {
+        *self.full.write() = full;
+    }
+
+    /// A node can take a new relayed session.
+    pub fn any_open(&self) -> bool {
+        let full = self.full.read();
+        self.usable().iter().any(|(row, _, _)| !full.contains(&row.id))
     }
 
     /// Public address of a usable node and its health.
@@ -492,6 +521,10 @@ impl EdgeHub {
     /// measurement, in name order), each with credentials it accepts.
     pub fn servers_for(&self, sid: &str, device_id: &str) -> Vec<IceServer> {
         let mut usable = self.usable();
+        {
+            let full = self.full.read();
+            usable.retain(|(row, _, _)| !full.contains(&row.id));
+        }
         if usable.is_empty() {
             return Vec::new();
         }

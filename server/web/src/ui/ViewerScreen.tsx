@@ -327,6 +327,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
   const [people, setPeople] = useState<{ participants: Participant[]; controlling: string }>();
   /// The picture comes through the server's forwarder in this mode.
   const [forwarding, setForwarding] = useState('');
+  const [budgetKbps, setBudgetKbps] = useState(0);
   const [pointers, setPointers] = useState<ParticipantPointer[]>([]);
   const [banner, setBanner] = useState<string>();
   const [audioKbps, setAudioKbps] = useState<number>();
@@ -430,6 +431,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
           permissions: (g) => setGrants([...g]),
           participants: setPeople,
           forwarding: setForwarding,
+          budget: setBudgetKbps,
           stalled: (long) => {
             if (!long) summary.current.stalls += 1;
             const at = Date.now();
@@ -1445,6 +1447,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
             stats={stats}
             history={perfHistory}
             forwarding={forwarding}
+            budgetKbps={budgetKbps}
             uptime={uptime}
             encoder={encoderText}
             audioAllowed={audioAllowed}

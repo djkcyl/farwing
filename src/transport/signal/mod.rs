@@ -956,6 +956,11 @@ impl SignalSession {
                                         None => {}
                                     }
                                 }
+                                types::SESSION_BUDGET => {
+                                    if let Ok(budget) = envelope.body::<farwing_protocol::realtime::SessionBudget>() {
+                                        peer.performance_monitor().set_server_budget(budget.budget_kbps);
+                                    }
+                                }
                                 types::SESSION_RELAYS => {
                                     let Ok(relays) = envelope.body::<farwing_protocol::realtime::SessionRelays>() else {
                                         tracing::warn!("discarded invalid session.relays");

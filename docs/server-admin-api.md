@@ -211,12 +211,12 @@ curl "${H[@]}" -X POST -H "content-type: application/json" $S/api/v2/admin/nodes
 
 curl "${H[@]}" $S/api/v2/admin/nodes                       # 列表：连接、健康与统计
 curl "${H[@]}" -X PATCH -H "content-type: application/json" $S/api/v2/admin/nodes/<id> \
-  -d '{"enabled": false, "settings": {"public_ip": "203.0.113.20", "bandwidth_limit_mbps": 500}}'
+  -d '{"enabled": false, "settings": {"public_ip": "203.0.113.20", "egress_limit_mbps": 500}}'
 curl "${H[@]}" -X POST $S/api/v2/admin/nodes/<id>/rejoin    # 新的加入命令（节点丢失了身份）
 curl "${H[@]}" -X DELETE $S/api/v2/admin/nodes/<id>         # 移除，节点的身份失效
 ```
 
-节点设置（`settings`，部分修改，对象逐键合并）：`public_ip`（空 = 节点连接本服务器的地址）、`listen_udp`、`listen_tcp`、`listen_tls`、`relay_port_min`、`relay_port_max`、`relay_bind`、`stun`（同 4.4 的 `turn.*`）、`bandwidth_limit_mbps`（超过后不再分配给新会话）、`sfu_port`（节点转发器的 UDP 端口，空 = 与本服务器的 `sfu.port` 相同）。列表中每个节点另有 `online`、`usable`（在线、启用、30 秒内报告过健康且中转在运行、未超带宽）、`address`、`health`（实际监听地址、`allocations`、有分配的会话 `sessions`、`relayed_bps`、`error`、`version`）。
+节点设置（`settings`，部分修改，对象逐键合并）：`public_ip`（空 = 节点连接本服务器的地址）、`listen_udp`、`listen_tcp`、`listen_tls`、`relay_port_min`、`relay_port_max`、`relay_bind`、`stun`（同 4.4 的 `turn.*`）、`egress_limit_mbps`（节点的出口上限，见 [egress-policy.md](protocol/egress-policy.md) §4）、`sfu_port`（节点转发器的 UDP 端口，空 = 与本服务器的 `sfu.port` 相同）。列表中每个节点另有 `online`、`usable`（在线、启用、30 秒内报告过健康且中转在运行、）、`address`、`health`（实际监听地址、`allocations`、有分配的会话 `sessions`、`egress_bps`（中转与转发合计）、`error`、`version`）。
 
 节点的连接（`GET /api/v2/edge/ws`）：加入时带 `X-Farwing-Join: <令牌>`、`X-Farwing-Node-Key: <新公钥>`，之后带 `X-Farwing-Node: <节点 ID>`；都带 `X-Farwing-Timestamp`（Unix 毫秒）与 `X-Farwing-Signature`（Ed25519 对 `FWEDGE1\n<公钥或节点 ID>\n<时间戳>` 的签名）。本服务器下发 `{"type": "joined"}`、`{"type": "config", "turn": {...}}`（节点的中转设置，`shared_secret` 为节点密钥）、`{"type": "control_fingerprint"}`（证书更换），节点每 10 秒发 `{"type": "health", ...}`。
 

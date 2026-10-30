@@ -112,6 +112,19 @@ impl Peer {
         self.handle.participant()
     }
 
+    /// The server's egress budget for this participant while relayed
+    /// (kbit/s; 0: none).
+    pub(crate) fn set_server_budget(&self, kbps: u32) {
+        let old = self
+            .reports
+            .forwarded
+            .server_budget_kbps
+            .swap(kbps, std::sync::atomic::Ordering::Relaxed);
+        if old != kbps {
+            tracing::info!(budget_kbps = kbps, "the server's egress budget for this participant");
+        }
+    }
+
     pub(crate) async fn new(
         screen: Option<capture::Screen>,
         owner: super::SessionLease,

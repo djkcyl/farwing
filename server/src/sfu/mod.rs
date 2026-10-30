@@ -210,6 +210,14 @@ impl Sfu {
         self.rooms.lock().get(id).cloned()
     }
 
+    /// The server's egress budget per viewer of room `id` (none: no limit).
+    pub fn set_budget(&self, id: &str, bps: Option<u64>) {
+        if let Some(room) = self.room(id) {
+            room.budget
+                .store(bps.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     /// Publishes (or republishes) the host's tracks in `room`; returns the
     /// answer. Republishing replaces the uplink and ends every leg: viewers
     /// subscribe again to the new tracks.

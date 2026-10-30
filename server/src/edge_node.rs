@@ -485,6 +485,14 @@ pub async fn run(data_dir: PathBuf, join: Option<String>) -> Result<()> {
                                 meters.rule(rule);
                             }
                         }
+                        Ok(ToNode::Budgets { limit, sessions, rooms }) => {
+                            meters.budgets(&sessions, limit);
+                            if let Some(sfu) = &sfu {
+                                for (room, bps) in rooms {
+                                    sfu.set_budget(&room, bps);
+                                }
+                            }
+                        }
                         Err(e) => tracing::debug!(error = %e, "unreadable message from the control node"),
                     }
                 }

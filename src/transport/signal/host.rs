@@ -535,6 +535,14 @@ impl Session {
                     self.rtc(&sid, envelope, signal).await?;
                 }
             }
+            types::SESSION_BUDGET => {
+                let Some(peer) = self.participants.get(&sid).and_then(|p| p.peer.as_ref()) else {
+                    return Ok(());
+                };
+                let budget: farwing_protocol::realtime::SessionBudget =
+                    envelope.body().context("出口预算格式无效")?;
+                peer.set_server_budget(budget.budget_kbps);
+            }
             types::SESSION_RELAYS => {
                 let Some(participant) = self.participants.get(&sid) else {
                     return Ok(());

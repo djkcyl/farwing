@@ -113,14 +113,15 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
 
     let mut tasks = Vec::new();
     tasks.push(tokio::spawn(Arc::clone(&egress).run(db.clone())));
-    // Sessions follow policy and monthly-total changes.
+    // Sessions follow policy and monthly-total changes; budgets each second.
     {
-        let hub = Arc::clone(&hub);
+        let app = Arc::clone(&app);
         tasks.push(tokio::spawn(async move {
             let mut ticks = tokio::time::interval(Duration::from_secs(1));
             loop {
                 ticks.tick().await;
-                hub.refresh_access();
+                app.hub.refresh_access();
+                crate::egress::budget::tick(&app);
             }
         }));
     }

@@ -11,6 +11,8 @@ pub(crate) mod health;
 pub struct PerformanceSnapshot {
     pub(crate) health: health::Assessment,
     pub connection: String,
+    /// The server's egress budget while relayed (kbit/s; 0: none).
+    pub server_budget_kbps: u64,
     pub decoder: String,
     pub video_codec: String,
     pub video_format: String,
@@ -228,6 +230,7 @@ struct PerformanceInner {
     presentation_queue_frames: AtomicU64,
     presentation_queue_peak_frames: AtomicU64,
     connection: RwLock<String>,
+    server_budget_kbps: AtomicU64,
     decoder: RwLock<String>,
     video_codec: RwLock<String>,
     video_format: RwLock<String>,
@@ -660,6 +663,7 @@ impl PerformanceMonitor {
                 presentation_queue_frames: AtomicU64::new(0),
                 presentation_queue_peak_frames: AtomicU64::new(0),
                 connection: RwLock::new(crate::i18n::t().session.perf_connecting.to_owned()),
+                server_budget_kbps: AtomicU64::new(0),
                 decoder: RwLock::new(crate::i18n::t().session.perf_waiting_video.to_owned()),
                 video_codec: RwLock::new(crate::i18n::t().session.perf_waiting_negotiation.to_owned()),
                 video_format: RwLock::new(crate::i18n::t().session.perf_waiting_parameter_sets.to_owned()),
@@ -1156,6 +1160,13 @@ impl PerformanceMonitor {
         *write_lock(&self.inner.connection) = connection.into();
     }
 
+    /// The server limits this session to `kbps` while relayed (0: no limit).
+    pub(crate) fn set_server_budget(&self, kbps: u32) {
+        self.inner
+            .server_budget_kbps
+            .store(u64::from(kbps), Ordering::Relaxed);
+    }
+
     pub(crate) fn set_decoder(&self, decoder: impl Into<String>) {
         *write_lock(&self.inner.decoder) = decoder.into();
     }
@@ -1486,6 +1497,7 @@ impl PerformanceMonitor {
         let mut snapshot = PerformanceSnapshot {
             health: health::Assessment::default(),
             connection: read_lock(&common.connection).clone(),
+            server_budget_kbps: common.server_budget_kbps.load(Ordering::Relaxed),
             decoder: read_lock(&self.inner.decoder).clone(),
             video_codec: read_lock(&self.inner.video_codec).clone(),
             video_format: read_lock(&self.inner.video_format).clone(),

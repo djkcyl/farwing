@@ -620,7 +620,7 @@ export interface EdgeNode {
     relay_port_max: number | null;
     relay_bind: string;
     stun: StunEndpoint[];
-    bandwidth_limit_mbps: number | null;
+    egress_limit_mbps: number | null;
     sfu_port: number | null;
   };
   created_at: number;

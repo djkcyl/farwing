@@ -138,7 +138,7 @@ pub async fn subscribe(
         return Err(ApiError::new(ErrorCode::BadRequest, "invalid tracks"));
     }
     // The payer's policy may keep this viewer off forwarding.
-    if !app.egress.access(&req.session).forward {
+    if !app.egress.access(&req.session, false).forward {
         return Err(ApiError::new(ErrorCode::Forbidden, "this session may not receive through a forwarder"));
     }
     let (answer, mode) = app

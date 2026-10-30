@@ -92,6 +92,7 @@ export function PerformanceOverlay({
   stats,
   history,
   forwarding,
+  budgetKbps,
   uptime,
   encoder,
   audioAllowed,
@@ -102,6 +103,8 @@ export function PerformanceOverlay({
   stats?: ViewStats;
   history: PerfSample[];
   forwarding: string;
+  /// The server's limit for this session while relayed (kbit/s; 0: none).
+  budgetKbps: number;
   /// Seconds since the picture started.
   uptime: number;
   /// The host's encoder and capture.
@@ -140,7 +143,14 @@ export function PerformanceOverlay({
           <Icon name="close" size={14} />
         </button>
       </div>
-      <div className="perf-line muted">{[pathLabel(stats, forwarding), size, stats?.codec || '—'].join('  ·  ')}</div>
+      <div className="perf-line muted">
+        {[
+          pathLabel(stats, forwarding),
+          size,
+          stats?.codec || '—',
+          ...(budgetKbps > 0 ? [m.serverBudget(budgetKbps / 1000)] : []),
+        ].join('  ·  ')}
+      </div>
       <Trace
         label={m.frameRate}
         value={stats ? num(stats.fps, 1) : '—'}

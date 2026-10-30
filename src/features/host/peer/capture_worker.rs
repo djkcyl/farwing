@@ -264,13 +264,19 @@ pub(super) fn capture_loop(
         // The stream this track gets: its own, or the closest one at the
         // encoder limit (or the forwarded one); the transport is sized for it.
         let stream = membership.group_key();
-        let bounds = control.bounds(
+        let mut bounds = control.bounds(
             wanted.format,
             stream.target,
             budget_size,
             wanted.fps.min(stream.fps),
             start,
         );
+        // The server's egress budget while this participant is relayed
+        // (`docs/protocol/egress-policy.md` §4.2).
+        let server_budget = forwarded.server_budget_kbps.load(Ordering::Relaxed);
+        if server_budget > 0 && transport.route_class() == Some("relay") {
+            bounds = bounds.capped(server_budget.saturating_mul(1000));
+        }
         if let Some(rate) = membership.delivered_rate() {
             sent = rate;
         }

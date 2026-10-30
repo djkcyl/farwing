@@ -481,7 +481,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 | `rtc.candidate` | 双向 | 带 `sid` | `{attempt_id, candidate: {candidate, sdpMid, sdpMLineIndex, usernameFragment}}` |
 | `session.permissions` | S→H、S→C | 带 `sid` | `{grants: [caps]}` |
 | `session.relays` | S→H、S→C | 带 `sid` | `{ice_servers, relay: RelayAccess, forward?}`：会话的中继变了——服务器的内置中继重启时会话在它上面有分配，或会话能否用中继、能否经转发变了（[egress-policy.md](egress-policy.md) §3.4）；双方换用这些中继（换密钥时为新凭据，不能用中继时只有 STUN），经中继的主控立即重启 ICE；`forward`（只发被控）为 `false` 时被控让这位参与者回到直连 |
-| `session.budget` | S→H | 带 `sid` | `{budget_kbps}`：经中转或转发时这个会话最多发送多少（0 为不限，egress-policy.md §4.2） |
+| `session.budget` | S→H、S→C | 带 `sid` | `{budget_kbps}`：经中转时这个会话最多发送多少（0 为不限，egress-policy.md §4.2）；被控只在这条连接走中转时按它限速，主控显示 |
 | `session.end` | H→S | 被控在线连接，带 `sid` | `{reason}` |
 | `session.leave` | C→S | 承载该会话的在线连接，带 `sid` | `{}` |
 | `session.ended` | S→C、S→H | 带 `sid` | `{reason}` |
