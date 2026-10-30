@@ -497,6 +497,12 @@ impl AuthenticatedClient {
         *self.unreachable.borrow()
     }
 
+    /// The session (or a guest's device registration and token) is in
+    /// place, as before a first request.
+    pub(crate) async fn ready(&self) -> Result<()> {
+        self.validate_saved_session(false).await
+    }
+
     async fn request_with<T, F>(
         &self,
         wait: bool,

@@ -115,7 +115,11 @@ pub(super) async fn resolve(
 ) -> Result<ResolvedConnection> {
     request.validate()?;
     report_progress(reporter, 1, t().session.progress_reading_local, "");
-    if !client.is_guest() {
+    if client.is_guest() {
+        // A device that never met this server registers on its first
+        // request; its device ID is read only after that.
+        client.ready().await?;
+    } else {
         client.account_info().await?;
     }
     let controller_device_id = client.device_id();
