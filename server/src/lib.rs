@@ -10,6 +10,7 @@ pub mod crypto;
 pub mod db;
 pub mod edge;
 pub mod edge_node;
+pub mod egress;
 pub mod error;
 pub mod forwarding;
 pub mod http;

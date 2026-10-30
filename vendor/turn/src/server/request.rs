@@ -824,6 +824,9 @@ impl Request {
         if !has_perm {
             return Err(Error::ErrNoPermission);
         }
+        if !a.admit_to_peer(&msg_dst, data_attr.0.len()) {
+            return Ok(());
+        }
 
         let l = a.relay_socket.send_to(&data_attr.0, msg_dst).await?;
         if l != data_attr.0.len() {
@@ -951,6 +954,9 @@ impl Request {
 
         let channel = a.get_channel_addr(&c.number).await;
         if let Some(peer) = channel {
+            if !a.admit_to_peer(&peer, c.data.len()) {
+                return Ok(());
+            }
             let l = a.relay_socket.send_to(&c.data, peer).await?;
             if l != c.data.len() {
                 Err(Error::ErrShortWrite)

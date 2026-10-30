@@ -96,7 +96,7 @@ async fn a_published_stream_reaches_every_viewer() {
         bind: "127.0.0.1".parse().unwrap(),
         public_ip: None,
         loopback: true,
-    });
+    }, farwing_server::egress::Meters::new());
     let mut host = rtc::host().await;
     let offer = host.offer().await;
     let tracks = sdp::tracks(&offer);
@@ -279,7 +279,7 @@ async fn subscribing_needs_a_published_room() {
         bind: "127.0.0.1".parse().unwrap(),
         public_ip: None,
         loopback: true,
-    });
+    }, farwing_server::egress::Meters::new());
     let (viewer, _, _) = rtc::viewer(0, 1).await;
     let offer = viewer.offer().await;
     assert!(matches!(

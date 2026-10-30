@@ -232,6 +232,49 @@ fn peer_allowed(
     !loopback(ip) && !private(ip)
 }
 
+/// Meters each allocation into its session's gauge
+/// (`docs/protocol/egress-policy.md` §2). A hop to another allocation on
+/// this relay stays here.
+struct Metered {
+    meters: Arc<crate::egress::Meters>,
+    own: Option<IpAddr>,
+    ports: Option<(u16, u16)>,
+}
+
+struct RelayGauge(Arc<crate::egress::SessionGauge>);
+
+impl turn::server::config::Gauge for RelayGauge {
+    fn admit(&self, bytes: usize) -> bool {
+        self.0.relayed(bytes)
+    }
+}
+
+impl turn::server::config::Egress for Metered {
+    fn gauge(&self, username: &str) -> Option<Arc<dyn turn::server::config::Gauge>> {
+        let session = username.split(':').nth(1).filter(|s| !s.is_empty())?;
+        Some(Arc::new(RelayGauge(self.meters.session(session))))
+    }
+
+    fn is_local(&self, peer: SocketAddr) -> bool {
+        Some(canonical(peer.ip())) == self.own
+            && self
+                .ports
+                .is_none_or(|(min, max)| (min..=max).contains(&peer.port()))
+    }
+}
+
+fn egress(cfg: &TurnConfig, meters: &Arc<crate::egress::Meters>) -> Arc<dyn turn::server::config::Egress> {
+    Arc::new(Metered {
+        meters: Arc::clone(meters),
+        own: Some(canonical(
+            cfg.relay_ip
+                .or(cfg.public_ip)
+                .unwrap_or(IpAddr::from([127, 0, 0, 1])),
+        )),
+        ports: cfg.relay_port_min.zip(cfg.relay_port_max),
+    })
+}
+
 fn canonical(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
@@ -273,6 +316,7 @@ async fn new_server(
     cfg: &TurnConfig,
     conn: Arc<dyn Conn + Send + Sync>,
     auth: Arc<RestAuthHandler>,
+    meters: &Arc<crate::egress::Meters>,
 ) -> Result<Server> {
     Server::new(ServerConfig {
         conn_configs: vec![ConnConfig {
@@ -284,6 +328,7 @@ async fn new_server(
         channel_bind_timeout: Duration::from_secs(0),
         alloc_close_notify: None,
         peer_filter: Some(peer_filter(cfg)),
+        egress: Some(egress(cfg, meters)),
     })
     .await
     .map_err(|e| anyhow::anyhow!("starting TURN server: {e}"))
@@ -294,8 +339,9 @@ async fn new_server(
 pub async fn start(
     cfg: &TurnConfig,
     tls: Option<Arc<rustls::ServerConfig>>,
+    meters: Arc<crate::egress::Meters>,
 ) -> Result<BuiltinTurn> {
-    start_with(cfg, tls, RestAuthHandler::new(cfg.shared_secret.clone())).await
+    start_with(cfg, tls, RestAuthHandler::new(cfg.shared_secret.clone()), meters).await
 }
 
 /// [`start`] with another credential check (an edge node's).
@@ -303,6 +349,7 @@ pub async fn start_with(
     cfg: &TurnConfig,
     tls: Option<Arc<rustls::ServerConfig>>,
     auth: RestAuthHandler,
+    meters: Arc<crate::egress::Meters>,
 ) -> Result<BuiltinTurn> {
     let auth = Arc::new(auth);
     let listen_udp = cfg.listen_udp.context("turn.listen_udp missing")?;
@@ -310,7 +357,7 @@ pub async fn start_with(
         .await
         .with_context(|| format!("binding TURN UDP {listen_udp}"))?;
     let udp_addr = udp.local_addr()?;
-    let server = new_server(cfg, Arc::new(udp), Arc::clone(&auth)).await?;
+    let server = new_server(cfg, Arc::new(udp), Arc::clone(&auth), &meters).await?;
     tracing::info!(%udp_addr, "builtin TURN listening (UDP)");
 
     let stream_stop = Arc::new(Notify::new());
@@ -321,6 +368,7 @@ pub async fn start_with(
         let auth = Arc::clone(&auth);
         let stop = Arc::clone(&stream_stop);
         let streams = Arc::clone(&streams);
+        let meters = Arc::clone(&meters);
         async move {
             let what = if tls.is_some() { "TLS" } else { "TCP" };
             let listener = bind_again(|| TcpListener::bind(addr))
@@ -340,9 +388,11 @@ pub async fn start_with(
                         continue;
                     };
                     let (cfg, auth, acceptor) = (cfg.clone(), Arc::clone(&auth), acceptor.clone());
-                    let streams = Arc::clone(&streams);
+                    let (streams, meters) = (Arc::clone(&streams), Arc::clone(&meters));
                     tokio::spawn(async move {
-                        if let Err(e) = serve_stream(stream, peer, acceptor, &cfg, auth, &streams).await {
+                        if let Err(e) =
+                            serve_stream(stream, peer, acceptor, &cfg, auth, &streams, &meters).await
+                        {
                             tracing::debug!(%peer, error = %format!("{e:#}"), "TURN {what} connection ended");
                         }
                     });
@@ -397,6 +447,7 @@ async fn serve_stream(
     cfg: &TurnConfig,
     auth: Arc<RestAuthHandler>,
     streams: &StreamServers,
+    meters: &Arc<crate::egress::Meters>,
 ) -> Result<()> {
     stream.set_nodelay(true).ok();
     let local = stream.local_addr()?;
@@ -411,7 +462,7 @@ async fn serve_stream(
         None => StreamTurnConn::new(stream, local, peer),
     };
     let server = Arc::new(
-        new_server(cfg, Arc::clone(&conn) as Arc<dyn Conn + Send + Sync>, auth).await?,
+        new_server(cfg, Arc::clone(&conn) as Arc<dyn Conn + Send + Sync>, auth, meters).await?,
     );
     let key = rand::random::<u64>();
     streams.lock().insert(key, Arc::clone(&server));

@@ -3,9 +3,9 @@ import { useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
-import { ago, date } from '../../lib/format';
+import { ago, bytes, date } from '../../lib/format';
 import { navigate } from '../../lib/router';
-import type { AccountSummary } from '../../lib/types';
+import type { UserEntry } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
 import {
   Alert,
@@ -136,7 +136,7 @@ export default function Users() {
   const m = t.admin.users;
   const { me } = useAuth();
   const { toast } = useOverlay();
-  const { data, error, reload } = useApi<AccountSummary[]>('/api/v2/admin/users');
+  const { data, error, reload } = useApi<UserEntry[]>('/api/v2/admin/users');
   const [query, setQuery] = useState('');
   const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<{ username: string; password: string }>();
@@ -176,6 +176,7 @@ export default function Users() {
                   <th>{m.role}</th>
                   <th>{t.admin.col.status}</th>
                   <th>{m.devices}</th>
+                  <th>{m.monthTraffic}</th>
                   <th>{t.admin.col.lastSeen}</th>
                   <th>{t.admin.col.created}</th>
                 </tr>
@@ -202,6 +203,9 @@ export default function Users() {
                       {u.disabled ? <Badge tone="red">{m.disabled}</Badge> : <Badge tone="green">{m.active}</Badge>}
                     </td>
                     <td>{u.devices}</td>
+                    <td className="nowrap">
+                      {u.egress.month_bytes > 0 ? bytes(u.egress.month_bytes) : <span className="muted">—</span>}
+                    </td>
                     <td className="nowrap">
                       {u.last_seen_at ? ago(u.last_seen_at) : <span className="muted">—</span>}
                     </td>

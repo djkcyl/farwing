@@ -68,6 +68,8 @@ pub struct AppState {
     pub edges: Arc<crate::edge::EdgeHub>,
     /// Multi-viewer forwarding rooms.
     pub forwarding: Arc<crate::forwarding::Forwarding>,
+    /// What the relays and forwarders send for sessions, and who pays.
+    pub egress: Arc<crate::egress::Egress>,
     /// What this server's own relay carries (refreshed every ten seconds).
     pub local_relay: parking_lot::RwLock<crate::turn_server::RelayStats>,
     /// The task that applies settings (`crate::runtime`).

@@ -116,6 +116,8 @@ pub enum ToNode {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromNode {
     Health(Health),
+    /// What the node's relay and forwarder sent so far (every second).
+    Usage(crate::egress::Usage),
     SfuResult {
         id: u64,
         #[serde(default)]
@@ -137,8 +139,8 @@ pub struct Health {
     pub allocations: u32,
     /// Sessions with an allocation on the node.
     pub sessions: Vec<String>,
-    /// Relayed bytes per second, both ways.
-    pub relayed_bps: u64,
+    /// Bits per second the node sends for sessions (relay and forwarder).
+    pub egress_bps: u64,
     pub cpu_percent: Option<f32>,
     pub memory_mb: Option<u64>,
     /// Why the relay does not run.
@@ -408,7 +410,7 @@ impl EdgeHub {
             && row
                 .settings
                 .bandwidth_limit_mbps
-                .is_none_or(|limit| health.relayed_bps * 8 < u64::from(limit) * 1_000_000)
+                .is_none_or(|limit| health.egress_bps < u64::from(limit) * 1_000_000)
     }
 
     /// Public address of a usable node and its health.

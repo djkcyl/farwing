@@ -75,12 +75,15 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
     let edges = Arc::new(crate::edge::EdgeHub::new());
     edges.load(db.with(|c| crate::webdb::edge_nodes(c))?);
     edges.reconfigure(&cfg.turn, &cfg.sfu);
+    let egress = crate::egress::Egress::load(&db)?;
     let (hub, channels) = Hub::new(
         runtime::hub_config(&cfg),
         IceProvider::new(&cfg.turn, None),
         Arc::clone(&edges),
+        Arc::clone(&egress),
     );
-    let forwarding = crate::forwarding::Forwarding::new(&cfg, Arc::clone(&edges));
+    let forwarding =
+        crate::forwarding::Forwarding::new(&cfg, Arc::clone(&edges), egress.meters());
     let app: App = Arc::new(AppState {
         settings: crate::settings::Settings::new(cfg),
         db: db.clone(),
@@ -99,6 +102,7 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
         listen_pending: parking_lot::RwLock::new(None),
         edges,
         forwarding,
+        egress: Arc::clone(&egress),
         local_relay: Default::default(),
         control: OnceLock::new(),
         watch: Default::default(),
@@ -108,6 +112,7 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
     let _ = app.control.set(started.control.clone());
 
     let mut tasks = Vec::new();
+    tasks.push(tokio::spawn(Arc::clone(&egress).run(db.clone())));
     // Rooms lose the sessions that ended.
     {
         let app = Arc::clone(&app);
@@ -277,6 +282,10 @@ impl RunningServer {
         for t in self.tasks {
             t.abort();
         }
+        // The last minute's egress counts toward the monthly totals.
+        let app = &self.app;
+        app.egress.report(crate::egress::LOCAL, &app.egress.meters().usage());
+        app.egress.store(&app.db).await;
         tracing::info!("stopped");
     }
 }

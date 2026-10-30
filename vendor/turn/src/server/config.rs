@@ -28,6 +28,21 @@ impl ConnConfig {
 /// the server's own and private networks).
 pub type PeerFilter = Arc<dyn Fn(std::net::SocketAddr) -> bool + Send + Sync>;
 
+/// Farwing: what leaves the relay. Every packet an allocation sends — to
+/// its client, or to a peer elsewhere — passes the allocation's gauge.
+pub trait Egress: Send + Sync {
+    /// The gauge of allocations made with `username` (`None`: unmetered).
+    fn gauge(&self, username: &str) -> Option<Arc<dyn Gauge>>;
+    /// `peer` is one of this relay's own addresses: the hop stays here.
+    fn is_local(&self, peer: std::net::SocketAddr) -> bool;
+}
+
+/// One allocation's share of the relay's egress.
+pub trait Gauge: Send + Sync {
+    /// `bytes` of payload are about to leave; false drops them.
+    fn admit(&self, bytes: usize) -> bool;
+}
+
 /// ServerConfig configures the TURN Server
 pub struct ServerConfig {
     /// `conn_configs` are a list of all the turn listeners.
@@ -50,6 +65,9 @@ pub struct ServerConfig {
     /// Peers that CreatePermission and ChannelBind may name; `None` allows
     /// every peer.
     pub peer_filter: Option<PeerFilter>,
+
+    /// Meters (and may limit) what the allocations send; `None`: nothing.
+    pub egress: Option<Arc<dyn Egress>>,
 }
 
 impl ServerConfig {

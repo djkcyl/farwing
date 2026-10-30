@@ -180,6 +180,33 @@ export interface Overview {
   forwarding: boolean;
   forwarding_rooms: number;
   forwarding_viewers: number;
+  egress: EgressSummary;
+}
+
+/// What the relays and forwarders send for sessions.
+export interface EgressSummary {
+  /// Bits per second this server sends now.
+  local_bps: number;
+  /// The edge nodes', together.
+  nodes_bps: number;
+  /// This month (UTC), Unix seconds.
+  month_start: number;
+  month_end: number;
+  top: EgressAccount[];
+}
+
+export interface EgressAccount {
+  /// User ID; empty for guests (sessions with no account).
+  payer: string;
+  username: string;
+  nickname: string;
+  bps: number;
+  month_bytes: number;
+}
+
+export interface AccountEgress {
+  bps: number;
+  month_bytes: number;
 }
 
 export interface AcmeStatus {
@@ -204,6 +231,10 @@ export interface AccountSummary {
   created_at: number;
   devices: number;
   last_seen_at: number;
+}
+
+export interface UserEntry extends AccountSummary {
+  egress: AccountEgress;
 }
 
 export interface AdminDevice {
@@ -242,6 +273,7 @@ export interface AdminFriend {
 
 export interface UserDetail {
   account: AccountSummary;
+  egress: AccountEgress;
   devices: AdminDevice[];
   logins: AdminLogin[];
   friends: AdminFriend[];
@@ -380,6 +412,8 @@ export interface LiveSession {
   relay_nodes: string[];
   /// Forwarded: the edge node's name, empty for this server.
   forwarded_by: string | null;
+  /// Bits per second the relays and forwarders send for it now.
+  egress_bps: number;
 }
 
 export type TlsMode = 'self_signed' | 'provided' | 'acme' | 'proxy';
@@ -526,7 +560,7 @@ export interface NodeHealth {
   stun: string[];
   allocations: number;
   sessions: string[];
-  relayed_bps: number;
+  egress_bps: number;
   cpu_percent: number | null;
   memory_mb: number | null;
   error: string | null;

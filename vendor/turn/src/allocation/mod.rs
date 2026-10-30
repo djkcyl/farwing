@@ -89,6 +89,9 @@ pub struct Allocation {
     pub(crate) relayed_bytes: AtomicUsize,
     drop_tx: Option<Sender<u32>>,
     alloc_close_notify: Option<mpsc::Sender<AllocationInfo>>,
+    /// Farwing: this allocation's share of the relay's egress.
+    gauge: Option<Arc<dyn crate::server::config::Gauge>>,
+    egress: Option<Arc<dyn crate::server::config::Egress>>,
 }
 
 fn addr2ipfingerprint(addr: &SocketAddr) -> String {
@@ -122,6 +125,23 @@ impl Allocation {
             relayed_bytes: Default::default(),
             drop_tx: None,
             alloc_close_notify,
+            gauge: None,
+            egress: None,
+        }
+    }
+
+    /// Meter what this allocation sends with `egress` (before it starts).
+    pub(crate) fn meter(&mut self, egress: Option<Arc<dyn crate::server::config::Egress>>) {
+        self.gauge = egress.as_ref().and_then(|e| e.gauge(&self.username.text));
+        self.egress = egress;
+    }
+
+    /// Whether `bytes` for `peer` may leave the relay; a hop to another of
+    /// this relay's addresses stays here and is not metered.
+    pub(crate) fn admit_to_peer(&self, peer: &SocketAddr, bytes: usize) -> bool {
+        match (&self.gauge, &self.egress) {
+            (Some(gauge), Some(egress)) if !egress.is_local(*peer) => gauge.admit(bytes),
+            _ => true,
         }
     }
 
@@ -348,6 +368,7 @@ impl Allocation {
         let allocations = self.allocations.clone();
         let channel_bindings = Arc::clone(&self.channel_bindings);
         let permissions = Arc::clone(&self.permissions);
+        let gauge = self.gauge.clone();
         let (drop_tx, drop_rx) = oneshot::channel::<u32>();
         self.drop_tx = Some(drop_tx);
 
@@ -382,6 +403,13 @@ impl Allocation {
                     n,
                     src_addr
                 );
+
+                // Farwing: to the client, out of this relay.
+                if let Some(gauge) = &gauge {
+                    if !gauge.admit(n) {
+                        continue;
+                    }
+                }
 
                 let cb_number = {
                     let mut cb_number = None;

@@ -1,7 +1,7 @@
 // Sessions now on the server; end one.
 import { useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
-import { ago, displayName, platformText, purposeText, relationText } from '../../lib/format';
+import { ago, bitrate, displayName, platformText, purposeText, relationText } from '../../lib/format';
 import type { LiveSession } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
 import { Alert, Badge, Card, Empty, IconButton, Loading, PageHeader } from '../../ui/kit';
@@ -33,6 +33,7 @@ export default function Sessions() {
                   <th>{m.purpose}</th>
                   <th>{m.relay}</th>
                   <th>{m.forwarding}</th>
+                  <th>{m.egress}</th>
                   <th>{t.admin.col.status}</th>
                   <th>{m.started}</th>
                   <th />
@@ -64,6 +65,9 @@ export default function Sessions() {
                       </td>
                       <td className="small">
                         {s.forwarded_by === null ? <span className="muted">—</span> : s.forwarded_by || m.thisServer}
+                      </td>
+                      <td className="small nowrap">
+                        {s.egress_bps > 0 ? bitrate(s.egress_bps) : <span className="muted">—</span>}
                       </td>
                       <td className="nowrap">
                         {s.connected ? (

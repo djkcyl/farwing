@@ -25,6 +25,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 const HEALTH_INTERVAL: Duration = Duration::from_secs(10);
+/// How often the node reports what it sent (`docs/protocol/egress-policy.md` §2).
+const USAGE_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// What a node keeps in its data directory (`edge.json`, private).
@@ -238,7 +240,6 @@ struct Relay {
     turn: Option<turn_server::BuiltinTurn>,
     stun: Option<stun_server::StunEndpoints>,
     error: Option<String>,
-    last_bytes: u64,
 }
 
 impl Relay {
@@ -251,13 +252,17 @@ impl Relay {
         }
     }
 
-    async fn start(data_dir: &Path, node_id: &str, cfg: TurnConfig) -> Self {
+    async fn start(
+        data_dir: &Path,
+        node_id: &str,
+        cfg: TurnConfig,
+        meters: Arc<crate::egress::Meters>,
+    ) -> Self {
         let mut relay = Relay {
             cfg: cfg.clone(),
             turn: None,
             stun: None,
             error: None,
-            last_bytes: 0,
         };
         let names: Vec<String> = cfg
             .builtin_public_ip()
@@ -271,7 +276,7 @@ impl Relay {
             }
         };
         let auth = turn_server::RestAuthHandler::for_node(cfg.shared_secret.clone(), node_id);
-        match turn_server::start_with(&cfg, tls, auth).await {
+        match turn_server::start_with(&cfg, tls, auth, meters).await {
             Ok(turn) => relay.turn = Some(turn),
             Err(e) => relay.error = Some(format!("{e:#}")),
         }
@@ -289,7 +294,7 @@ impl Relay {
         relay
     }
 
-    async fn health(&mut self, interval: Duration) -> Health {
+    async fn health(&mut self, egress_bps: u64) -> Health {
         let mut health = Health {
             error: self.error.clone(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -302,10 +307,8 @@ impl Relay {
             health.turn_tls = turn.tls_addr();
             health.allocations = stats.allocations;
             health.sessions = stats.sessions;
-            health.relayed_bps =
-                stats.relayed_bytes.saturating_sub(self.last_bytes) / interval.as_secs().max(1);
-            self.last_bytes = stats.relayed_bytes;
         }
+        health.egress_bps = egress_bps;
         if let Some(stun) = &self.stun {
             health.stun = stun.local_addrs().to_vec();
         }
@@ -334,6 +337,8 @@ pub async fn run(data_dir: PathBuf, join: Option<String>) -> Result<()> {
     let key = identity.key()?;
     let mut relay: Option<Relay> = None;
     let mut sfu: Option<Arc<Sfu>> = None;
+    // What this node's relay and forwarder send, per session.
+    let meters = crate::egress::Meters::new();
     // Forwarder answers, written by the connection loop.
     let (results_tx, mut results) = tokio::sync::mpsc::unbounded_channel::<FromNode>();
     let mut backoff = Duration::from_secs(1);
@@ -361,12 +366,28 @@ pub async fn run(data_dir: PathBuf, join: Option<String>) -> Result<()> {
         tracing::info!(node = %identity.node_id, "connected to the control node");
         let (mut sink, mut stream) = socket.split();
         let mut ticks = tokio::time::interval(HEALTH_INTERVAL);
+        let mut seconds = tokio::time::interval(USAGE_INTERVAL);
+        let mut egress_bps = 0;
+        let mut last: Option<(u64, std::time::Instant)> = None;
         let stopped = loop {
             tokio::select! {
                 _ = crate::server::shutdown_signal() => break true,
+                _ = seconds.tick() => {
+                    let usage = meters.usage();
+                    let now = std::time::Instant::now();
+                    if let Some((total, at)) = last {
+                        let dt = now.duration_since(at).as_secs_f64().max(0.2);
+                        egress_bps = (usage.total.saturating_sub(total) as f64 * 8.0 / dt) as u64;
+                    }
+                    last = Some((usage.total, now));
+                    let text = serde_json::to_string(&FromNode::Usage(usage))?;
+                    if sink.send(Message::Text(text.into())).await.is_err() {
+                        break false;
+                    }
+                }
                 _ = ticks.tick() => {
                     let Some(relay) = relay.as_mut() else { continue };
-                    let mut health = relay.health(HEALTH_INTERVAL).await;
+                    let mut health = relay.health(egress_bps).await;
                     if let Some(sfu) = &sfu {
                         health.sfu_port = Some(sfu.config().port);
                         health.rooms = sfu.rooms();
@@ -411,11 +432,10 @@ pub async fn run(data_dir: PathBuf, join: Option<String>) -> Result<()> {
                                     turn.public_ip,
                                 )),
                                 (Some(port), None) => {
-                                    sfu = Some(Sfu::new(SfuConfig::new(
-                                        port,
-                                        turn.relay_bind,
-                                        turn.public_ip,
-                                    )));
+                                    sfu = Some(Sfu::new(
+                                        SfuConfig::new(port, turn.relay_bind, turn.public_ip),
+                                        Arc::clone(&meters),
+                                    ));
                                 }
                                 (None, Some(_)) => {
                                     if let Some(old) = sfu.take() {
@@ -431,7 +451,10 @@ pub async fn run(data_dir: PathBuf, join: Option<String>) -> Result<()> {
                                 old.stop().await;
                             }
                             tracing::info!(public_ip = ?turn.public_ip, "relay settings received");
-                            relay = Some(Relay::start(&data_dir, &identity.node_id, *turn).await);
+                            relay = Some(
+                                Relay::start(&data_dir, &identity.node_id, *turn, Arc::clone(&meters))
+                                    .await,
+                            );
                             ticks.reset_immediately();
                         }
                         Ok(ToNode::ControlFingerprint { fingerprint }) => {

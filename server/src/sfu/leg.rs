@@ -348,6 +348,8 @@ pub(super) struct Leg {
     pub created: Instant,
     /// When this leg's last rationed keyframe request went on.
     pub rationed_keyframe_at: Mutex<Option<Instant>>,
+    /// The session's egress on this server.
+    gauge: Arc<crate::egress::SessionGauge>,
 }
 
 impl Leg {
@@ -359,6 +361,7 @@ impl Leg {
         tcc: Option<u8>,
         emulator: Option<Arc<Mutex<super::emulate::Emulator>>>,
         video: Vec<u32>,
+        gauge: Arc<crate::egress::SessionGauge>,
     ) -> (Arc<Self>, mpsc::Receiver<Packet>) {
         let (queue, packets) = mpsc::channel(QUEUE);
         let leg = Arc::new(Self {
@@ -381,6 +384,7 @@ impl Leg {
             tasks: Mutex::default(),
             created: Instant::now(),
             rationed_keyframe_at: Mutex::default(),
+            gauge,
         });
         (leg, packets)
     }
@@ -447,6 +451,11 @@ impl Leg {
     }
 
     async fn write(&self, bound: &Bound, packet: &Packet) {
+        let size = webrtc::util::MarshalSize::marshal_size(packet);
+        if !self.gauge.forwarded(size) {
+            self.stats.dropped.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
         match bound.writer.write(packet, &Attributes::new()).await {
             Ok(n) => {
                 self.stats.packets.fetch_add(1, Ordering::Relaxed);

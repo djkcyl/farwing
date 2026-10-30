@@ -33,7 +33,7 @@ pub fn now_ms() -> i64 {
 
 /// Schema version of [`SCHEMA`]. A database of any other version is refused;
 /// there is no migration (see [`open_connection`]).
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (
@@ -51,7 +51,13 @@ CREATE TABLE IF NOT EXISTS users (
     role          TEXT NOT NULL DEFAULT 'user',
     totp_secret   TEXT,
     totp_enabled_at INTEGER,
-    totp_recovery TEXT NOT NULL DEFAULT '[]'
+    totp_recovery TEXT NOT NULL DEFAULT '[]',
+    -- Egress policy (`docs/protocol/egress-policy.md` §3.1); NULL: the
+    -- server's default. `rate_mbps` and `quota_gb` 0: unlimited.
+    relay         INTEGER,
+    forward       INTEGER,
+    rate_mbps     INTEGER,
+    quota_gb      INTEGER
 );
 CREATE TABLE IF NOT EXISTS devices (
     id              TEXT PRIMARY KEY,
@@ -273,6 +279,12 @@ CREATE INDEX IF NOT EXISTS notices_user ON notices(user_id, id);
 CREATE TABLE IF NOT EXISTS notice_prefs (
     user_id TEXT PRIMARY KEY,
     prefs   TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS egress_usage (
+    payer TEXT NOT NULL,
+    month TEXT NOT NULL,
+    bytes INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (payer, month)
 );
 "#;
 
@@ -1397,6 +1409,28 @@ pub fn end_session(c: &Connection, id: &str, reason: &str) -> R<()> {
         params![id, now_s(), reason],
     )?;
     Ok(())
+}
+
+/// Each payer's bytes in `month` (`YYYY-MM`); the guests' payer is empty.
+pub fn egress_month(c: &Connection, month: &str) -> R<Vec<(String, u64)>> {
+    let mut st = c.prepare("SELECT payer, bytes FROM egress_usage WHERE month = ?1")?;
+    st.query_map([month], |r| Ok((r.get(0)?, r.get::<_, i64>(1)?.max(0) as u64)))?
+        .collect()
+}
+
+/// Adds `(month, payer, bytes)` to the stored totals.
+pub fn egress_add(c: &mut Connection, rows: &[(String, String, u64)]) -> R<()> {
+    let tx = c.transaction()?;
+    {
+        let mut st = tx.prepare(
+            "INSERT INTO egress_usage (payer, month, bytes) VALUES (?1, ?2, ?3)
+             ON CONFLICT (payer, month) DO UPDATE SET bytes = bytes + excluded.bytes",
+        )?;
+        for (month, payer, bytes) in rows {
+            st.execute(params![payer, month, i64::try_from(*bytes).unwrap_or(i64::MAX)])?;
+        }
+    }
+    tx.commit()
 }
 
 pub fn end_open_sessions(c: &Connection, reason: &str) -> R<usize> {

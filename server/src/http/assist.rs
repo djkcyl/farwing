@@ -455,6 +455,7 @@ async fn start_assist_session(
         controller_device_id: auth.device.id.clone(),
         controller_auth: auth.auth.clone(),
         controller: device_controller_info(&app, &auth.device, auth.user.as_ref()),
+        host_owner: host.user_id.clone(),
         purpose: Purpose::Desktop,
         connect_type: ConnectType::Assist,
         relation,

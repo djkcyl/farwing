@@ -6,7 +6,17 @@ import { useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
 import { byName } from '../../lib/devices';
 import { useAuth } from '../../lib/auth';
-import { ago, capText, connectIdText, dateTime, deviceIdText, listText, platformText } from '../../lib/format';
+import {
+  ago,
+  bitrate,
+  bytes,
+  capText,
+  connectIdText,
+  dateTime,
+  deviceIdText,
+  listText,
+  platformText,
+} from '../../lib/format';
 import { Link, navigate } from '../../lib/router';
 import type { AdminFriend, Grants, UserDetail as Detail } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
@@ -204,6 +214,10 @@ export default function UserDetail({ params }: { params: Record<string, string> 
             </Row>
             <Row label={m.createdAt}>{dateTime(a.created_at)}</Row>
             <Row label={t.admin.col.lastSeen}>{a.last_seen_at ? ago(a.last_seen_at) : t.format.never}</Row>
+            <Row label={t.admin.users.monthTraffic}>
+              {bytes(data.egress.month_bytes)}
+              {data.egress.bps > 0 && <span className="muted"> · {bitrate(data.egress.bps)}</span>}
+            </Row>
             <Row label={m.totp}>
               {a.totp ? (
                 <span className="row gap-sm">

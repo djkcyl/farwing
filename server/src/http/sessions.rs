@@ -168,6 +168,7 @@ pub async fn create(
         controller_device_id: auth.device.id.clone(),
         controller_auth: auth.link_auth(),
         controller,
+        host_owner: target.row.user_id.clone(),
         purpose: req.purpose,
         connect_type: ConnectType::Account,
         relation: target.relation,

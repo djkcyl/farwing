@@ -98,20 +98,83 @@ pub struct Overview {
     /// Rooms forwarding a host's picture, and the viewers subscribed.
     pub forwarding_rooms: usize,
     pub forwarding_viewers: usize,
+    pub egress: EgressSummary,
+}
+
+/// What the relays and forwarders send for sessions
+/// (`docs/protocol/egress-policy.md` §7).
+#[derive(Serialize)]
+pub struct EgressSummary {
+    /// Bits per second this server sends now.
+    pub local_bps: u64,
+    /// The edge nodes', together.
+    pub nodes_bps: u64,
+    /// This month (UTC) in Unix seconds.
+    pub month_start: i64,
+    pub month_end: i64,
+    /// Who sent the most this month.
+    pub top: Vec<EgressAccount>,
+}
+
+#[derive(Serialize)]
+pub struct EgressAccount {
+    /// The user ID; empty for the guests (sessions with no account).
+    pub payer: String,
+    pub username: String,
+    pub nickname: String,
+    pub bps: u64,
+    pub month_bytes: u64,
+}
+
+/// An account's egress now and this month.
+#[derive(Clone, Copy, Default, Serialize)]
+pub struct AccountEgress {
+    pub bps: u64,
+    pub month_bytes: u64,
+}
+
+fn account_egress(view: &crate::egress::ledger::View, user_id: &str) -> AccountEgress {
+    view.accounts
+        .iter()
+        .find(|a| a.payer == user_id)
+        .map_or_else(AccountEgress::default, |a| AccountEgress {
+            bps: a.bps,
+            month_bytes: a.month_bytes,
+        })
 }
 
 /// `GET /api/v2/admin/overview`
 pub async fn overview(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Json<Overview>> {
-    let (accounts, admins, devices, recent) = app
+    let view = app.egress.ledger.view();
+    let top: Vec<(String, u64, u64)> = view
+        .accounts
+        .iter()
+        .filter(|a| a.month_bytes > 0 || a.bps > 0)
+        .take(5)
+        .map(|a| (a.payer.clone(), a.bps, a.month_bytes))
+        .collect();
+    let (accounts, admins, devices, recent, top) = app
         .db
-        .call(|c| {
+        .call(move |c| {
             let accounts: i64 = c.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
             let devices: i64 = c.query_row("SELECT COUNT(*) FROM devices", [], |r| r.get(0))?;
+            let mut named = Vec::with_capacity(top.len());
+            for (payer, bps, month_bytes) in top {
+                let user = if payer.is_empty() { None } else { db::get_user(c, &payer)? };
+                named.push(EgressAccount {
+                    username: user.as_ref().map(|u| u.username.clone()).unwrap_or_default(),
+                    nickname: user.map(|u| u.nickname).unwrap_or_default(),
+                    payer,
+                    bps,
+                    month_bytes,
+                });
+            }
             Ok((
                 accounts,
                 webdb::admin_count(c)?,
                 devices,
                 webdb::audit_entries(c, None, None, None, 8)?,
+                named,
             ))
         })
         .await?;
@@ -178,14 +241,43 @@ pub async fn overview(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Js
         guests: settings.guest.enabled,
         registration: settings.registration,
         recent,
+        egress: EgressSummary {
+            local_bps: view.nodes.get(crate::egress::LOCAL).copied().unwrap_or(0),
+            nodes_bps: view
+                .nodes
+                .iter()
+                .filter(|(id, _)| id.as_str() != crate::egress::LOCAL)
+                .map(|(_, bps)| bps)
+                .sum(),
+            month_start: view.month.start,
+            month_end: view.month.end,
+            top,
+        },
     }))
 }
 
 // ================================================================ accounts
 
+#[derive(Serialize)]
+pub struct UserEntry {
+    #[serde(flatten)]
+    pub account: AccountSummary,
+    pub egress: AccountEgress,
+}
+
 /// `GET /api/v2/admin/users`
-pub async fn users(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Json<Vec<AccountSummary>>> {
-    Ok(Json(app.db.call(|c| webdb::list_accounts(c)).await?))
+pub async fn users(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Json<Vec<UserEntry>>> {
+    let view = app.egress.ledger.view();
+    let accounts = app.db.call(|c| webdb::list_accounts(c)).await?;
+    Ok(Json(
+        accounts
+            .into_iter()
+            .map(|account| UserEntry {
+                egress: account_egress(&view, &account.id),
+                account,
+            })
+            .collect(),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -316,6 +408,7 @@ pub struct Friend {
 #[derive(Serialize)]
 pub struct UserDetail {
     pub account: AccountSummary,
+    pub egress: AccountEgress,
     pub devices: Vec<DeviceEntry>,
     pub logins: Vec<Login>,
     pub friends: Vec<Friend>,
@@ -371,12 +464,14 @@ pub async fn user(
                     .map(|d| device_entry(d, &owners, &HashSet::new(), &ips))
                     .collect(),
                 account,
+                egress: AccountEgress::default(),
                 logins,
                 friends,
             }))
         })
         .await?;
     let mut detail = detail.ok_or_else(ApiError::not_found)?;
+    detail.egress = account_egress(&app.egress.ledger.view(), &detail.account.id);
     for d in &mut detail.devices {
         d.online = online.contains(&d.device_id);
     }
@@ -770,6 +865,8 @@ pub struct SessionEntry {
     /// The controller may receive through a forwarder: the edge node's
     /// name, empty for this server.
     pub forwarded_by: Option<String>,
+    /// Bits per second the relays and forwarders send for it now.
+    pub egress_bps: u64,
 }
 
 /// `GET /api/v2/admin/sfu`: forwarding rooms with their statistics.
@@ -786,6 +883,7 @@ pub async fn sessions(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Js
     let local = app.local_relay.read().sessions.clone();
     let mut edges = app.edges.relayed_sessions();
     let mut forwarded = app.forwarding.forwarded_sessions();
+    let egress = app.egress.ledger.view().sessions;
     let entries = app
         .db
         .call(move |c| {
@@ -807,6 +905,7 @@ pub async fn sessions(State(app): State<App>, _admin: AdminAuth) -> ApiResult<Js
                     local_relay: local.contains(&session.id),
                     relay_nodes: edges.remove(&session.id).unwrap_or_default(),
                     forwarded_by: forwarded.remove(&session.id),
+                    egress_bps: egress.get(&session.id).copied().unwrap_or(0),
                     session,
                 });
             }

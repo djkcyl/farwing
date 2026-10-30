@@ -64,9 +64,9 @@ pub fn sfu_config(cfg: &Config) -> SfuConfig {
 }
 
 impl Forwarding {
-    pub fn new(cfg: &Config, edges: Arc<EdgeHub>) -> Arc<Self> {
+    pub fn new(cfg: &Config, edges: Arc<EdgeHub>, meters: Arc<crate::egress::Meters>) -> Arc<Self> {
         Arc::new(Self {
-            local: Sfu::new(sfu_config(cfg)),
+            local: Sfu::new(sfu_config(cfg), meters),
             edges,
             rooms: Mutex::default(),
         })

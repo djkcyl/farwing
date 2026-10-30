@@ -323,7 +323,7 @@ export default function Nodes() {
                       </td>
                       <td>{health ? health.allocations : <span className="muted">—</span>}</td>
                       <td className="nowrap">
-                        {health ? bitrate(health.relayed_bps * 8) : <span className="muted">—</span>}
+                        {health ? bitrate(health.egress_bps) : <span className="muted">—</span>}
                       </td>
                       <td className="nowrap">
                         {health?.sfu_port ? (

@@ -1,7 +1,7 @@
 // Server overview: live counts, server facts and the latest audit events.
 import { auditDetail } from '../../i18n/audit';
 import { useLang, useT } from '../../i18n/react';
-import { auditKindText, bytes, dateTime, duration, listText } from '../../lib/format';
+import { auditKindText, bitrate, bytes, dateTime, displayName, duration, listText } from '../../lib/format';
 import { Link } from '../../lib/router';
 import type { Overview } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
@@ -37,8 +37,14 @@ export default function AdminOverview() {
           }
         />
         <Stat label={m.accounts} value={data.accounts} hint={m.admins(data.admins)} />
+        <Stat
+          label={m.egress}
+          value={bitrate(data.egress.local_bps + data.egress.nodes_bps)}
+          hint={
+            data.nodes > 0 ? m.egressSplit(bitrate(data.egress.local_bps), bitrate(data.egress.nodes_bps)) : undefined
+          }
+        />
         <Stat label={m.uptime} value={duration(data.uptime_s)} />
-        <Stat label={m.database} value={bytes(data.db_bytes)} />
       </div>
       <div className="grid grid-2">
         <Card title={m.server}>
@@ -84,34 +90,62 @@ export default function AdminOverview() {
                 <span className="muted">{t.common.notConfigured}</span>
               )}
             </Row>
+            <Row label={m.database}>{bytes(data.db_bytes)}</Row>
             <Row label={t.admin.guests}>{onOff(data.guests)}</Row>
             <Row label={t.admin.registration}>{onOff(data.registration)}</Row>
           </Rows>
         </Card>
-        <Card title={m.recentEvents} actions={<Link to="/admin/audit">{m.viewAll}</Link>} pad={false}>
-          {data.recent.length === 0 ? (
-            <Empty icon="log" title={m.noEvents} />
-          ) : (
-            <div className="list">
-              {data.recent.map((e) => (
-                <div className="list-item" key={e.id}>
-                  <div className="grow">
-                    <div className="row gap-sm">
-                      <span>{auditKindText(e.kind)}</span>
-                      {!e.ok && <Badge tone="red">{t.common.failed}</Badge>}
-                      <span className="muted ellipsis">{e.target}</span>
+        <div className="stack">
+          <Card
+            title={m.monthTraffic}
+            actions={<span className="small muted">{m.monthResets(dateTime(data.egress.month_end))}</span>}
+            pad={false}
+          >
+            {data.egress.top.length === 0 ? (
+              <Empty icon="activity" title={m.noTraffic} />
+            ) : (
+              <div className="list">
+                {data.egress.top.map((a) => (
+                  <div className="list-item" key={a.payer}>
+                    <div className="grow ellipsis">
+                      {a.payer ? (
+                        <Link to={`/admin/users/${a.payer}`}>{displayName(a) || a.payer}</Link>
+                      ) : (
+                        t.common.guest
+                      )}
                     </div>
-                    <div className="small muted ellipsis">
-                      {e.actor_name || t.admin.anonymous} · {e.ip}{' '}
-                      {e.detail && `· ${auditDetail(lang, e.kind, e.detail)}`}
-                    </div>
+                    {a.bps > 0 && <span className="small muted nowrap">{bitrate(a.bps)}</span>}
+                    <span className="nowrap">{bytes(a.month_bytes)}</span>
                   </div>
-                  <span className="small faint nowrap">{dateTime(e.at)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
+                ))}
+              </div>
+            )}
+          </Card>
+          <Card title={m.recentEvents} actions={<Link to="/admin/audit">{m.viewAll}</Link>} pad={false}>
+            {data.recent.length === 0 ? (
+              <Empty icon="log" title={m.noEvents} />
+            ) : (
+              <div className="list">
+                {data.recent.map((e) => (
+                  <div className="list-item" key={e.id}>
+                    <div className="grow">
+                      <div className="row gap-sm">
+                        <span>{auditKindText(e.kind)}</span>
+                        {!e.ok && <Badge tone="red">{t.common.failed}</Badge>}
+                        <span className="muted ellipsis">{e.target}</span>
+                      </div>
+                      <div className="small muted ellipsis">
+                        {e.actor_name || t.admin.anonymous} · {e.ip}{' '}
+                        {e.detail && `· ${auditDetail(lang, e.kind, e.detail)}`}
+                      </div>
+                    </div>
+                    <span className="small faint nowrap">{dateTime(e.at)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
       </div>
     </div>
   );

@@ -197,6 +197,8 @@ pub struct SessionSpec {
     pub controller_device_id: String,
     pub controller_auth: LinkAuth,
     pub controller: ControllerInfo,
+    /// The account the host device belongs to (none: a guest host).
+    pub host_owner: Option<String>,
     pub purpose: Purpose,
     pub connect_type: ConnectType,
     pub relation: Relation,
@@ -232,6 +234,8 @@ pub struct Hub {
     ice: parking_lot::RwLock<IceProvider>,
     /// Edge relay nodes: per-side relays and the devices' round trips.
     edges: Arc<crate::edge::EdgeHub>,
+    /// Whose egress each session's is.
+    egress: Arc<crate::egress::Egress>,
     state: Mutex<HubState>,
     events: UnboundedSender<HubEvent>,
     persist: UnboundedSender<PersistJob>,
@@ -333,6 +337,7 @@ impl Hub {
         cfg: HubConfig,
         ice: IceProvider,
         edges: Arc<crate::edge::EdgeHub>,
+        egress: Arc<crate::egress::Egress>,
     ) -> (Arc<Hub>, HubChannels) {
         let (events, events_rx) = unbounded_channel();
         let (persist, persist_rx) = unbounded_channel();
@@ -341,6 +346,7 @@ impl Hub {
                 cfg: parking_lot::RwLock::new(cfg),
                 ice: parking_lot::RwLock::new(ice),
                 edges,
+                egress,
                 state: Mutex::new(HubState::default()),
                 events,
                 persist,
@@ -831,6 +837,10 @@ impl Hub {
             at: session.created_at_s,
             ..spec.record
         })));
+        self.egress.ledger.open(
+            &sid,
+            crate::egress::Payer::of(&spec.controller.user_id, spec.host_owner.as_deref()),
+        );
         st.sessions.insert(sid.clone(), session);
         let ticket = if spec.presence {
             String::new()
@@ -890,6 +900,7 @@ impl Hub {
         let Some(s) = st.sessions.remove(sid) else {
             return;
         };
+        self.egress.ledger.close(sid);
         // A controller link exists for this session only; a presence link
         // that carries it stays (and is not closed).
         let (ctrl_conn, carried) = match s

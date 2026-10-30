@@ -481,7 +481,7 @@ impl Components {
             .then(|| tls::turns_config(Arc::clone(&self.slot)))
             .transpose()
             .map_err(|e| unavailable("turn.listen_tls", format!("{e:#}")))?;
-        match turn_server::start(t, tls).await {
+        match turn_server::start(t, tls, self.app.egress.meters()).await {
             Ok(turn) => self.turn = Some(turn),
             Err(e) => {
                 if let Some(stun) = self.stun.take() {

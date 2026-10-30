@@ -142,6 +142,8 @@ pub enum SfuRequest {
 pub struct Sfu {
     config: RwLock<SfuConfig>,
     rooms: Mutex<HashMap<String, Arc<Room>>>,
+    /// What the viewers' connections send, per session.
+    meters: Arc<crate::egress::Meters>,
 }
 
 fn media_engine() -> Result<MediaEngine, SfuError> {
@@ -155,10 +157,11 @@ fn media_engine() -> Result<MediaEngine, SfuError> {
 }
 
 impl Sfu {
-    pub fn new(config: SfuConfig) -> Arc<Self> {
+    pub fn new(config: SfuConfig, meters: Arc<crate::egress::Meters>) -> Arc<Self> {
         Arc::new(Self {
             config: RwLock::new(config),
             rooms: Mutex::default(),
+            meters,
         })
     }
 
@@ -443,6 +446,7 @@ impl Sfu {
             tcc,
             emulator,
             video.to_vec(),
+            self.meters.session(session_of(leg_id)),
         );
         let senders = pc.get_senders().await;
         {

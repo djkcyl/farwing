@@ -16,6 +16,8 @@ use crate::relay::*;
 pub struct ManagerConfig {
     pub relay_addr_generator: Box<dyn RelayAddressGenerator + Send + Sync>,
     pub alloc_close_notify: Option<mpsc::Sender<AllocationInfo>>,
+    /// Farwing: meters what the allocations send.
+    pub egress: Option<Arc<dyn crate::server::config::Egress>>,
 }
 
 /// `Manager` is used to hold active allocations.
@@ -24,6 +26,7 @@ pub struct Manager {
     reservations: Arc<Mutex<HashMap<String, u16>>>,
     relay_addr_generator: Box<dyn RelayAddressGenerator + Send + Sync>,
     alloc_close_notify: Option<mpsc::Sender<AllocationInfo>>,
+    egress: Option<Arc<dyn crate::server::config::Egress>>,
 }
 
 impl Manager {
@@ -34,6 +37,7 @@ impl Manager {
             reservations: Arc::new(Mutex::new(HashMap::new())),
             relay_addr_generator: config.relay_addr_generator,
             alloc_close_notify: config.alloc_close_notify,
+            egress: config.egress,
         }
     }
 
@@ -111,6 +115,7 @@ impl Manager {
             Arc::downgrade(&self.allocations),
             self.alloc_close_notify.clone(),
         );
+        a.meter(self.egress.clone());
 
         log::debug!("listening on relay addr: {:?}", a.relay_addr);
         a.start(lifetime).await;

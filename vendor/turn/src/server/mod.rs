@@ -63,6 +63,7 @@ impl Server {
             let allocation_manager = Arc::new(Manager::new(ManagerConfig {
                 relay_addr_generator: p.relay_addr_generator,
                 alloc_close_notify: config.alloc_close_notify.clone(),
+                egress: config.egress.clone(),
             }));
 
             tokio::spawn(Server::read_loop(

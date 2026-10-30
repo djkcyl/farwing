@@ -357,6 +357,7 @@ async fn run(app: App, socket: WebSocket, id: String, ip: IpAddr, joined: bool) 
             incoming = stream.next() => match incoming {
                 Some(Ok(Message::Text(text))) => match serde_json::from_str::<FromNode>(&text) {
                     Ok(FromNode::Health(health)) => app.edges.report(&id, &conn_id, health),
+                    Ok(FromNode::Usage(usage)) => app.egress.report(&id, &usage),
                     Ok(FromNode::SfuResult { id: request, answer, error }) => app
                         .edges
                         .sfu_result(request, error.map_or_else(|| Ok(answer.unwrap_or_default()), Err)),
@@ -369,6 +370,7 @@ async fn run(app: App, socket: WebSocket, id: String, ip: IpAddr, joined: bool) 
         }
     }
     app.edges.detach(&id, &conn_id);
+    app.egress.ledger.forget_node(&id);
     touch(&app, &id).await;
     tracing::info!(node = %id, "edge node disconnected");
 }
