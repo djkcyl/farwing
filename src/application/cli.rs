@@ -750,7 +750,7 @@ pub async fn assist(
                     anyhow::bail!("对方要求访问码，请使用 --code 提供")
                 }
                 Some(ErrorCode::AssistUnavailable) => {
-                    anyhow::bail!("对方没有开启访问码，也没有信任这台设备")
+                    anyhow::bail!(crate::i18n::t().app.assist_unavailable)
                 }
                 _ => return Err(error),
             },
