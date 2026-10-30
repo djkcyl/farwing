@@ -1267,16 +1267,27 @@ pub async fn lan(seconds: u64) -> Result<()> {
             "本账号设备"
         } else if store::known_host(&announce.device_id).is_some_and(|h| h.trusted) {
             "对方信任本机"
+        } else if announce
+            .methods
+            .iter()
+            .any(|m| m == farwing_protocol::direct::method::ASSIST)
+        {
+            // As the device centre's "附近" says it.
+            "需要访问码或确认"
         } else {
-            "需要访问码"
+            "未开启访问码"
+        };
+        let accepts = if announce.methods.is_empty() {
+            String::new()
+        } else {
+            format!("，接受：{}", announce.methods.join(","))
         };
         println!(
-            "{} [{}] {} — {}，接受：{}",
+            "{} [{}] {} — {}{accepts}",
             announce.name,
             announce.device_id,
             host.target(),
             relation,
-            announce.methods.join(",")
         );
     }
     Ok(())
