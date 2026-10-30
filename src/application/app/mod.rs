@@ -160,6 +160,8 @@ struct DeviceCenterApp {
     >,
     detail_pending: Option<String>,
     account_name: String,
+    /// The signed-in server's name (empty until it answers).
+    server_name: String,
     /// The server was out of reach at the account's last attempt.
     server_unreachable: bool,
     diagnostics: diagnostics::LocalDiagnostics,
@@ -220,6 +222,7 @@ impl DeviceCenterApp {
             extra_details: Default::default(),
             detail_pending: None,
             account_name: String::new(),
+            server_name: String::new(),
             server_unreachable: false,
             diagnostics: diagnostics::LocalDiagnostics::start(),
             mutation_pending: false,
@@ -599,6 +602,11 @@ impl DeviceCenterApp {
                         String::new()
                     };
                 }
+                GuiEvent::ServerName(generation, name) => {
+                    if generation == self.login_generation {
+                        self.server_name = name;
+                    }
+                }
                 GuiEvent::Reachability(generation, away) => {
                     if generation != self.login_generation {
                         continue;
@@ -840,6 +848,7 @@ impl DeviceCenterApp {
         self.catalog = None;
         self.catalog_error = None;
         self.account_name.clear();
+        self.server_name.clear();
         self.center_ui.close_details();
     }
 

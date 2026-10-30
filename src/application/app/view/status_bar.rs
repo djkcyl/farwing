@@ -96,6 +96,15 @@ impl DeviceCenterApp {
         let (dot, _) = ui.allocate_exact_size(vec2(6.0, 6.0), Sense::hover());
         ui.painter().circle_filled(dot.center(), 3.0, state.color());
         ui.label(RichText::new(state.label()).size(theme::TINY).color(TEXT));
+        if matches!(state, ServerState::Connecting | ServerState::Online | ServerState::Unreachable)
+            && !self.server_name.trim().is_empty()
+        {
+            ui.label(
+                RichText::new(self.server_name.trim())
+                    .size(theme::TINY)
+                    .color(TEXT),
+            );
+        }
         if let Some(origin) = self.saved_server() {
             ui.label(
                 RichText::new(origin.trim_start_matches("https://"))

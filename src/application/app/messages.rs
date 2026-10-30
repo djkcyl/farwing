@@ -143,6 +143,8 @@ pub(super) enum GuiEvent {
     CachedDevices(u64, DeviceList, String),
     /// Whether the server was out of reach at the last attempt.
     Reachability(u64, bool),
+    /// The server's name, for the status bar.
+    ServerName(u64, String),
     Catalog(u64, std::result::Result<catalog::Catalog, String>, String),
     MutationFinished(u64, std::result::Result<MutationOutcome, String>),
     Detail(

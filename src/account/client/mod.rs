@@ -480,6 +480,13 @@ impl AuthenticatedClient {
         self.request_with(false, request).await
     }
 
+    /// The name the server's administrator gave it.
+    pub(crate) async fn server_name(&self) -> Result<String> {
+        self.request(|api| async move { api.server_info().await })
+            .await
+            .map(|info| info.server.instance_name)
+    }
+
     /// The same, waiting for an unreachable server: for the host and the
     /// device list, which carry on by themselves once it returns.
     pub(crate) async fn request_waiting<T, F>(

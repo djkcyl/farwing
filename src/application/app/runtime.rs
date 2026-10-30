@@ -150,6 +150,10 @@ pub(super) async fn gui_worker_loop(
     let mut assist_operation_context = (0_u64, 0_u64);
     let mut assist_lists_generation = 0_u64;
     let mut next_assist_refresh = Some(Instant::now());
+    // The server's name, once per account session (again after a failure).
+    let mut server_name_task: Option<JoinHandle<(u64, Result<String>)>> = None;
+    let mut server_name_for: Option<u64> = None;
+    let mut next_server_name = Instant::now();
     let mut tick = tokio::time::interval(WORKER_TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut host_signal: Option<ActivePresence> = None;
@@ -818,9 +822,23 @@ pub(super) async fn gui_worker_loop(
                 }
             }
         }
+        if server_name_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            match server_name_task.take().expect("finished server name").await {
+                Ok((generation, Ok(name))) => {
+                    server_name_for = Some(generation);
+                    let _ = events.send(GuiEvent::ServerName(generation, name));
+                }
+                _ => next_server_name = Instant::now() + std::time::Duration::from_secs(30),
+            }
+        }
         if client.as_ref().is_some_and(|client| !client.is_active()) {
             cancel_operation(&mut assist_lists_task).await;
             cancel_operation(&mut assist_operation_task).await;
+            cancel_operation(&mut server_name_task).await;
+            server_name_for = None;
             cancel_login_task(&mut login_task).await;
             commit_gate = login::LoginCommitGate::default();
 
@@ -965,6 +983,17 @@ pub(super) async fn gui_worker_loop(
                         active_client.account_name(),
                     ));
                 }
+            }
+            if server_name_for != Some(catalog_generation)
+                && server_name_task.is_none()
+                && Instant::now() >= next_server_name
+                && !active_client.server_unreachable()
+            {
+                let client = Arc::clone(active_client);
+                let generation = catalog_generation;
+                server_name_task = Some(tokio::spawn(async move {
+                    (generation, client.server_name().await)
+                }));
             }
             let refresh_active = *foreground.borrow();
             if refresh_active
