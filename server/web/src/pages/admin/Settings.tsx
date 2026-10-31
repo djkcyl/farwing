@@ -7,6 +7,7 @@ import { useAuth } from '../../lib/auth';
 import { capText, dateTime, listText, WEB_CAPS } from '../../lib/format';
 import type {
   Applied,
+  E2eeLevel,
   EgressPolicy,
   LimitsSettings,
   ListenPending,
@@ -807,32 +808,51 @@ function Forwarding({ view, onApplied }: { view: SettingsView; onApplied(v: Appl
   const { save, busy, error } = useSave(onApplied);
   const set = (p: Partial<SfuSettings>) => setDraft({ ...draft, ...p });
   return (
+    <div className="stack">
+      <Card
+        title={m.tabs.forwarding}
+        actions={<SaveButton busy={busy} changed={!same(draft, initial)} onClick={() => void save({ sfu: draft })} />}
+      >
+        <div className="stack">
+          {error && <Alert>{error}</Alert>}
+          <Switch checked={draft.enabled} onChange={(enabled) => set({ enabled })} label={m.sfuEnabled} />
+          {draft.enabled && (
+            <div className="grid grid-3">
+              <Field label={m.sfuThreshold}>
+                <NumberInput value={draft.threshold} min={2} max={16} onChange={(v) => set({ threshold: v ?? 0 })} />
+              </Field>
+              <Field label={m.sfuPort}>
+                <NumberInput value={draft.port} min={1} max={65535} onChange={(v) => set({ port: v ?? 0 })} />
+              </Field>
+            </div>
+          )}
+        </div>
+      </Card>
+      <Encryption view={view} onApplied={onApplied} />
+    </div>
+  );
+}
+
+/// End-to-end encryption of everything the server forwards.
+function Encryption({ view, onApplied }: { view: SettingsView; onApplied(v: Applied): void }) {
+  const t = useT();
+  const m = t.admin.settings;
+  const initial = view.settings.e2ee;
+  const [draft, setDraft] = useState<E2eeLevel>(initial);
+  const { save, busy, error } = useSave(onApplied);
+  const levels: E2eeLevel[] = ['required', 'allowed', 'off'];
+  return (
     <Card
-      title={m.tabs.forwarding}
-      actions={<SaveButton busy={busy} changed={!same(draft, initial)} onClick={() => void save({ sfu: draft })} />}
+      title={m.e2ee}
+      actions={<SaveButton busy={busy} changed={draft !== initial} onClick={() => void save({ e2ee: draft })} />}
     >
       <div className="stack">
         {error && <Alert>{error}</Alert>}
-        <div className="stack-sm">
-          <Switch checked={draft.enabled} onChange={(enabled) => set({ enabled })} label={m.sfuEnabled} />
-          {draft.enabled && (
-            <Switch
-              checked={draft.allow_compatible}
-              onChange={(allow_compatible) => set({ allow_compatible })}
-              label={m.sfuCompatible}
-            />
-          )}
-        </div>
-        {draft.enabled && (
-          <div className="grid grid-3">
-            <Field label={m.sfuThreshold}>
-              <NumberInput value={draft.threshold} min={2} max={16} onChange={(v) => set({ threshold: v ?? 0 })} />
-            </Field>
-            <Field label={m.sfuPort}>
-              <NumberInput value={draft.port} min={1} max={65535} onChange={(v) => set({ port: v ?? 0 })} />
-            </Field>
-          </div>
-        )}
+        <Segmented<E2eeLevel>
+          value={draft}
+          onChange={setDraft}
+          options={levels.map((l) => ({ value: l, label: m.e2eeLevels[l] }))}
+        />
       </div>
     </Card>
   );

@@ -24,6 +24,9 @@ pub(crate) struct Settings {
     pub lan_discovery: bool,
     /// Host without the server: direct connections only (§12.7).
     pub serverless: bool,
+    /// Media through the server's forwarder only end-to-end encrypted, as
+    /// host and as viewer (`docs/protocol/camera-design.md` §8.2).
+    pub e2ee_only: bool,
 }
 
 impl Default for Settings {
@@ -35,6 +38,7 @@ impl Default for Settings {
             direct_port: farwing_protocol::direct::DEFAULT_PORT,
             lan_discovery: true,
             serverless: false,
+            e2ee_only: false,
         }
     }
 }

@@ -191,8 +191,8 @@ curl "${H[@]}" -X POST $S/api/v2/admin/settings/relay-secret
 | `turn.stun` | 3479、3480 | NAT 探测端点 `[{"listen": "0.0.0.0:3479", "public": null}]`，说明见 `server/README.md`“NAT 类型探测” |
 | `sfu.enabled` | `true` | 多人转发：观看人数达到阈值时被控只发一份，由转发器分发 |
 | `sfu.threshold` | 3 | 开始转发的观看人数（2–16） |
-| `sfu.allow_compatible` | `true` | 允许被控选择兼容模式（转发器能看到画面） |
 | `sfu.port` | 3481 | 转发器的 UDP 端口（所有转发连接共用；绑定 `turn.relay_bind`，候选地址为 `turn.public_ip`）；不能与中转端口相同 |
+| `e2ee` | `allowed` | 经服务器转发的媒体的端到端加密：`required`（强制，只能端到端）、`allowed`（默认端到端，主人可选兼容模式）、`off`（都用兼容模式，服务器能读到媒体） |
 | `web.enabled` | `true` | 网页端（关闭后页面返回 404，接口不受影响） |
 | `web.admin_allow` | `[]` | 允许管理的网络（CIDR），空 = 不限 |
 | `web.session_idle_minutes`、`web.session_max_hours` | 10080（7 天）、720（30 天） | 网页登录的空闲与最长期限 |

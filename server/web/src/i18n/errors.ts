@@ -117,7 +117,7 @@ const zhReasons = {
   self_friend: '不能添加自己为好友',
   self_connect: '不能连接本机',
   forwarding_disabled: '服务器未开启多人转发',
-  forwarding_mode_not_allowed: '服务器不允许兼容模式转发',
+  forwarding_mode_not_allowed: '服务器的加密设置不允许这种转发模式',
   forwarding_unavailable: '多人转发暂不可用',
   // Devices, permissions and sessions
   not_own_device: '只能管理自己账号的设备',
@@ -196,7 +196,7 @@ const enReasons: Reasons = {
   self_friend: "Can't add yourself as a friend",
   self_connect: "Can't connect a device to itself",
   forwarding_disabled: "This server doesn't forward to multiple viewers",
-  forwarding_mode_not_allowed: "This server doesn't allow compatible forwarding",
+  forwarding_mode_not_allowed: "This server's encryption setting doesn't allow this forwarding mode",
   forwarding_unavailable: 'Forwarding is unavailable right now',
   not_own_device: 'Only your own devices can be managed',
   not_granted: 'No permission for this on the device',

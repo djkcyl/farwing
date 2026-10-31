@@ -129,7 +129,7 @@ impl Forwarding {
         if !cfg.sfu.enabled {
             return Err(ForwardError::Disabled);
         }
-        if mode == ForwardMode::Compatible && !cfg.sfu.allow_compatible {
+        if !cfg.e2ee.permits(mode) {
             return Err(ForwardError::ModeNotAllowed);
         }
         let sessions = Self::hosted(hub, host, sessions)?;

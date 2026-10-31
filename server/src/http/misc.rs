@@ -42,14 +42,10 @@ pub async fn server_info(State(app): State<App>) -> Json<ServerInfo> {
                 let sfu = &app.cfg().sfu;
                 farwing_protocol::api::Forwarding {
                     threshold: sfu.threshold,
-                    modes: std::iter::once(farwing_protocol::api::ForwardMode::E2ee)
-                        .chain(
-                            sfu.allow_compatible
-                                .then_some(farwing_protocol::api::ForwardMode::Compatible),
-                        )
-                        .collect(),
+                    modes: app.cfg().e2ee.modes(),
                 }
             }),
+            e2ee: app.cfg().e2ee,
         },
         time_ms: crate::db::now_ms(),
     })

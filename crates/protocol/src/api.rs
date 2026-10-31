@@ -152,6 +152,37 @@ pub struct ServerFeatures {
     /// Hosts may forward through the server; absent when it does not.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forwarding: Option<Forwarding>,
+    /// End-to-end encryption of the media the server forwards.
+    pub e2ee: E2ee,
+}
+
+/// The server's end-to-end encryption setting for the media it forwards
+/// (`docs/protocol/camera-design.md` §8).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum E2ee {
+    /// Forwarded media is always end-to-end encrypted.
+    Required,
+    /// End-to-end by default; the owner of a stream may choose compatible
+    /// mode.
+    #[default]
+    Allowed,
+    /// Forwarded media always uses compatible mode.
+    Off,
+}
+
+impl E2ee {
+    /// The forwarding modes it permits, the default first.
+    pub fn modes(self) -> Vec<ForwardMode> {
+        match self {
+            Self::Required => vec![ForwardMode::E2ee],
+            Self::Allowed => vec![ForwardMode::E2ee, ForwardMode::Compatible],
+            Self::Off => vec![ForwardMode::Compatible],
+        }
+    }
+    pub fn permits(self, mode: ForwardMode) -> bool {
+        self.modes().contains(&mode)
+    }
 }
 
 /// The server's multi-viewer forwarding.
@@ -159,7 +190,7 @@ pub struct ServerFeatures {
 pub struct Forwarding {
     /// Viewers of one host from which it forwards.
     pub threshold: u32,
-    /// Modes hosts may choose.
+    /// Modes hosts may choose, the default first ([`E2ee::modes`]).
     pub modes: Vec<ForwardMode>,
 }
 

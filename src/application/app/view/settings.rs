@@ -464,6 +464,8 @@ impl DeviceCenterApp {
     fn network_settings(&mut self, ui: &mut egui::Ui) {
         section(ui, t().settings.section_traversal);
         self.edit_network(ui, Self::traversal_rows);
+        section(ui, t().settings.section_encryption);
+        self.edit_network(ui, Self::encryption_rows);
     }
 
     /// How others reach this device directly (Settings → Host settings).
@@ -537,6 +539,12 @@ impl DeviceCenterApp {
                 crate::ui::controls::switch(ui, &mut edited.port_mapping);
             },
         );
+    }
+
+    fn encryption_rows(&mut self, ui: &mut egui::Ui, edited: &mut crate::transport::nat::settings::Settings) {
+        form_row(ui, t().settings.e2ee_only, "", |ui| {
+            crate::ui::controls::switch(ui, &mut edited.e2ee_only);
+        });
     }
 
     fn direct_rows(&mut self, ui: &mut egui::Ui, edited: &mut crate::transport::nat::settings::Settings) {

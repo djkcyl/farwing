@@ -240,9 +240,10 @@ async fn a_host_forwards_to_the_sessions_it_hosts() {
 async fn settings_decide_whether_and_how_hosts_forward() {
     let Room {
         srv, host, viewers, ..
-    } = room_setup(|c| c.sfu.allow_compatible = false).await;
+    } = room_setup(|c| c.e2ee = farwing_protocol::api::E2ee::Required).await;
     let info = srv.send(srv.raw(Method::GET, "/api/v2/server")).await;
     assert_eq!(info.ok()["features"]["forwarding"]["modes"], json!(["e2ee"]));
+    assert_eq!(info.ok()["features"]["e2ee"], "required");
     let offer = rtc::host().await.offer().await;
     let sid = &viewers[0].1;
     srv.post(
@@ -261,8 +262,41 @@ async fn settings_decide_whether_and_how_hosts_forward() {
         )
         .await;
     assert_eq!(r.ok()["mode"], "e2ee");
-    // Turning forwarding off closes the rooms.
     let token = srv.admin_token("admin");
+    // End-to-end encryption off: compatible mode only.
+    srv.admin_call(
+        Method::PUT,
+        "/api/v2/admin/settings",
+        &token,
+        Some(json!({"e2ee": "off"})),
+    )
+    .await
+    .ok();
+    let info = srv.send(srv.raw(Method::GET, "/api/v2/server")).await;
+    assert_eq!(info.ok()["features"]["forwarding"]["modes"], json!(["compatible"]));
+    let offer = rtc::host().await.offer().await;
+    srv.post(
+        "/api/v2/sfu/rooms",
+        &host,
+        json!({"sessions": [sid], "mode": "e2ee", "offer": offer}),
+    )
+    .await
+    .err_reason(403, "forbidden", "forwarding_mode_not_allowed");
+    // Allowed: both, end-to-end first.
+    srv.admin_call(
+        Method::PUT,
+        "/api/v2/admin/settings",
+        &token,
+        Some(json!({"e2ee": "allowed"})),
+    )
+    .await
+    .ok();
+    let info = srv.send(srv.raw(Method::GET, "/api/v2/server")).await;
+    assert_eq!(
+        info.ok()["features"]["forwarding"]["modes"],
+        json!(["e2ee", "compatible"])
+    );
+    // Turning forwarding off closes the rooms.
     srv.admin_call(
         Method::PUT,
         "/api/v2/admin/settings",

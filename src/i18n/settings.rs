@@ -64,6 +64,8 @@ pub(crate) struct Settings {
     // Network
     pub section_traversal: &'static str,
     pub section_direct: &'static str,
+    pub section_encryption: &'static str,
+    pub e2ee_only: &'static str,
     pub applied: &'static str,
     pub aggressive_punching: &'static str,
     pub allow_port_mapping: &'static str,
@@ -428,6 +430,8 @@ pub(crate) const ZH_CN: Settings = Settings {
 
     section_traversal: "打洞与端口映射",
     section_direct: "直连与局域网",
+    section_encryption: "加密",
+    e2ee_only: "只接受端到端加密",
     applied: "已生效",
     aggressive_punching: "激进打洞（对称型 NAT）",
     allow_port_mapping: "允许 UPnP / NAT-PMP / PCP 端口映射",
@@ -781,6 +785,8 @@ pub(crate) const EN: Settings = Settings {
 
     section_traversal: "NAT traversal and port mapping",
     section_direct: "Direct connection and LAN",
+    section_encryption: "Encryption",
+    e2ee_only: "End-to-end encryption only",
     applied: "Applied",
     aggressive_punching: "Aggressive hole punching (symmetric NAT)",
     allow_port_mapping: "Allow UPnP / NAT-PMP / PCP port mapping",

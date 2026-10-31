@@ -386,7 +386,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 
 ### 3.14 多人转发
 
-服务器开启多人转发时，`ServerInfo.features.forwarding = {threshold, modes}`：观看人数达到 `threshold` 时被控可以改为经转发器发送（`deployment-design.md` §5），`modes` 为允许的模式（`e2ee` 总在其中，`compatible` 由管理员决定）。
+服务器开启多人转发时，`ServerInfo.features.forwarding = {threshold, modes}`：观看人数达到 `threshold` 时被控可以改为经转发器发送（`deployment-design.md` §5），`modes` 为允许的模式，默认的在前，由服务器设置 `e2ee` 决定：`required` 只有 `e2ee`，`allowed` 为 `e2ee`、`compatible`，`off` 只有 `compatible`；`features.e2ee` 给出该档位（`camera-design.md` §8）。主控在 `session.start` 的 `options.e2ee_only` 声明只接受端到端加密时，被控不把它放进兼容模式的房间。
 
 - 被控 `POST /sfu/rooms {sessions, mode, offer}`：`sessions` 为它当前承载的会话（任一不是则 `404`），`offer` 只含发送的媒体（每路编码一个视频轨、共享的系统声音一个音频轨，候选收集完毕），扩展与负载类型取自共享表（`crates/rtc-wire`）。回执 `answer` 与房间 ID；`node` 为转发所在的边缘节点名称（缺省为本服务器）。拒绝：`403 forwarding_disabled`、`403 forwarding_mode_not_allowed`、`503 forwarding_unavailable`。
 - `PUT /sfu/rooms/{room} {sessions?, offer?}`：`sessions` 替换可订阅的会话（被移出的会话随即退订）；`offer` 重新发布（轨道变化），所有订阅结束，观看者需重新订阅。`DELETE` 关闭房间。会话结束后自动移出房间，最后一个会话结束时房间关闭。

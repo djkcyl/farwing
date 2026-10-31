@@ -93,5 +93,6 @@ fn connect_options(
             scale: 0,
         }),
         stream: Some(stream),
+        e2ee_only: crate::transport::nat::settings::current().e2ee_only,
     }
 }

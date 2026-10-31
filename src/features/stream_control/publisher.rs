@@ -93,6 +93,8 @@ pub(crate) struct ConnectOptions {
     pub stream: farwing_protocol::session::StreamSettings,
     /// The controller's device ID.
     pub device_id: String,
+    /// The controller accepts forwarded media only end-to-end encrypted.
+    pub e2ee_only: bool,
     features: std::collections::BTreeMap<String, u32>,
 }
 impl ConnectOptions {
@@ -108,6 +110,7 @@ impl ConnectOptions {
             // Set by the host from the server's `session.incoming`.
             kind: 0,
             device_id: String::new(),
+            e2ee_only: wire.e2ee_only,
             // Every v2 controller is this build; its HELLO confirms the set.
             features: crate::protocol::peer::controller_features(),
         }

@@ -95,4 +95,6 @@ pub struct ConnectOptions {
     pub display: Option<LocalDisplay>,
     /// The stream to start with; the host's defaults when absent.
     pub stream: Option<StreamSettings>,
+    /// The controller accepts forwarded media only end-to-end encrypted.
+    pub e2ee_only: bool,
 }

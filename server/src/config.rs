@@ -76,6 +76,8 @@ pub struct Config {
     pub guest: GuestConfig,
     pub turn: TurnConfig,
     pub sfu: SfuSettings,
+    /// End-to-end encryption of the media this server forwards.
+    pub e2ee: farwing_protocol::api::E2ee,
     pub egress: EgressConfig,
     pub limits: LimitsConfig,
     pub web: WebConfig,
@@ -96,6 +98,7 @@ impl Default for Config {
             guest: GuestConfig::default(),
             turn: TurnConfig::default(),
             sfu: SfuSettings::default(),
+            e2ee: farwing_protocol::api::E2ee::default(),
             egress: EgressConfig::default(),
             limits: LimitsConfig::default(),
             web: WebConfig::default(),
@@ -112,9 +115,6 @@ pub struct SfuSettings {
     pub enabled: bool,
     /// Viewers of one host from which it forwards.
     pub threshold: u32,
-    /// Hosts may choose compatible mode, in which the forwarder can see the
-    /// picture (browsers without encoded transforms need it).
-    pub allow_compatible: bool,
     /// UDP port of the forwarder (all its connections share it); edge nodes
     /// use it unless set otherwise.
     pub port: u16,
@@ -125,7 +125,6 @@ impl Default for SfuSettings {
         Self {
             enabled: true,
             threshold: 3,
-            allow_compatible: true,
             port: 3481,
         }
     }

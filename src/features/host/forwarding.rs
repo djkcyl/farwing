@@ -84,6 +84,8 @@ struct Entry {
     /// The server lets the participant receive through a forwarder
     /// (`docs/protocol/egress-policy.md` §3.3).
     allowed: bool,
+    /// The participant takes forwarded media only end-to-end encrypted.
+    e2ee_only: bool,
     excluded_until: Option<Instant>,
     instruction: watch::Sender<Option<MediaForward>>,
     /// Whether the participant may hear the host.
@@ -101,8 +103,12 @@ struct Entry {
 }
 
 impl Entry {
-    fn candidate(&self, now: Instant) -> bool {
-        self.eligible && self.allowed && self.excluded_until.is_none_or(|until| now >= until)
+    /// A participant for a room in `mode`.
+    fn candidate(&self, now: Instant, mode: ForwardMode) -> bool {
+        self.eligible
+            && self.allowed
+            && !(self.e2ee_only && mode == ForwardMode::Compatible)
+            && self.excluded_until.is_none_or(|until| now >= until)
     }
 }
 
@@ -238,6 +244,7 @@ pub(crate) fn register(
     forwarded: Arc<Flags>,
     eligible: bool,
     allowed: bool,
+    e2ee_only: bool,
     ice: Vec<RTCIceServer>,
     host: crate::features::host::access::Handle,
     audio: Arc<dyn Fn() -> bool + Send + Sync>,
@@ -256,6 +263,7 @@ pub(crate) fn register(
             forwarded,
             eligible,
             allowed,
+            e2ee_only,
             excluded_until: None,
             instruction,
             audio,
@@ -375,38 +383,46 @@ async fn step() -> bool {
         state().features = Some((forwarding, Instant::now()));
     }
 
-    let (forwarding, candidates, room) = {
+    let forwarding = state().features.as_ref().and_then(|(f, _)| f.clone());
+    // The owner's mode when the server allows it, else the server's; none
+    // when this host takes end-to-end only and the server does not offer it.
+    let e2ee_only = crate::transport::nat::settings::current().e2ee_only;
+    let mode = forwarding.as_ref().and_then(|f| {
+        let preferred = if e2ee_only { ForwardMode::E2ee } else { preferred() };
+        if f.modes.contains(&preferred) {
+            Some(preferred)
+        } else if e2ee_only {
+            None
+        } else {
+            f.modes.first().copied()
+        }
+    });
+    let (candidates, room) = {
         let state = state();
-        let forwarding = state.features.as_ref().and_then(|(f, _)| f.clone());
         let candidates: BTreeMap<u64, String> = state
             .entries
             .iter()
-            .filter(|(_, e)| e.candidate(now))
+            .filter(|(_, e)| mode.is_some_and(|mode| e.candidate(now, mode)))
             .map(|(key, e)| (*key, e.session_id.clone()))
             .collect();
-        (forwarding, candidates, state.room.as_ref().map(|r| r.id.clone()))
+        (candidates, state.room.as_ref().map(|r| (r.id.clone(), r.mode)))
     };
-    // The owner's mode when the server allows it; end-to-end otherwise.
-    let mode = forwarding.as_ref().map(|f| {
-        let preferred = preferred();
-        if f.modes.contains(&preferred) {
-            preferred
-        } else {
-            ForwardMode::E2ee
-        }
-    });
     let wanted = forwarding
         .as_ref()
         .is_some_and(|f| candidates.len() >= f.threshold as usize);
 
     let failed = state().room.as_ref().is_some_and(|r| r.uplink.failed());
-    if room.is_some() && (!wanted || failed) {
+    // A room in a mode no longer chosen closes; the next one opens in it.
+    let stale = room.as_ref().is_some_and(|(_, current)| Some(*current) != mode);
+    if room.is_some() && (!wanted || failed || stale) {
         close(&client, failed).await;
         return true;
     }
     if room.is_none() {
-        if wanted && state().retry_at.is_none_or(|at| now >= at) {
-            open(&client, mode.unwrap_or_default(), &candidates).await;
+        if let Some(mode) = mode.filter(|_| wanted)
+            && state().retry_at.is_none_or(|at| now >= at)
+        {
+            open(&client, mode, &candidates).await;
         }
         return true;
     }
@@ -448,7 +464,7 @@ async fn step() -> bool {
     let mapping = uplink.reconcile();
     let mut generation = state.generation;
     for (key, entry) in state.entries.iter_mut() {
-        if !entry.candidate(now) || !room_sessions.contains(&entry.session_id) {
+        if !entry.candidate(now, mode) || !room_sessions.contains(&entry.session_id) {
             direct(entry, &mut generation);
             continue;
         }

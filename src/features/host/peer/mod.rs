@@ -142,7 +142,7 @@ impl Peer {
         clipboard_level: i32,
         file_capabilities: crate::features::file_transfer::host::Capabilities,
         data_only: bool,
-        forwarding: Option<(String, bool)>,
+        forwarding: Option<(String, bool, bool)>,
     ) -> Result<Self> {
         let audio_only = deferred.is_some() && !data_only;
         let handle = owner.with_cancellation(cancel.clone());
@@ -511,7 +511,7 @@ impl Peer {
         let forwarding = handle
             .participant()
             .zip(forwarding)
-            .map(|(key, (session, allowed))| {
+            .map(|(key, (session, allowed, e2ee_only))| {
                 // The forwarder carries the sound too.
                 audio.follow_forwarding(reports.forwarded.clone());
                 let lease = handle.clone();
@@ -521,6 +521,7 @@ impl Peer {
                     reports.forwarded.clone(),
                     !audio_only,
                     allowed,
+                    e2ee_only,
                     ice_servers.clone(),
                     handle.host(),
                     Arc::new(move || lease.granted(farwing_protocol::caps::AUDIO)),

@@ -522,6 +522,7 @@ export interface ServerSettings {
     stun: StunEndpoint[];
   };
   sfu: SfuSettings;
+  e2ee: E2eeLevel;
   limits: LimitsSettings;
   web: {
     enabled: boolean;
@@ -537,9 +538,10 @@ export interface ServerSettings {
 export interface SfuSettings {
   enabled: boolean;
   threshold: number;
-  allow_compatible: boolean;
   port: number;
 }
+
+export type E2eeLevel = 'required' | 'allowed' | 'off';
 
 export interface ListenPending {
   url: string;

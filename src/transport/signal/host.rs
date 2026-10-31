@@ -840,7 +840,7 @@ impl Session {
         // only listening join it once they watch the desktop
         // (`docs/protocol/deployment-design.md` §5.4).
         let forwarding_session = (direct_ports.is_none() && !data_only)
-            .then(|| (session_id.clone(), incoming.forward));
+            .then(|| (session_id.clone(), incoming.forward, options.e2ee_only));
         // A direct session's ICE binds the endpoint's UDP ports (§12.3).
         self.preparations.spawn(crate::transport::direct::with_session_ports(direct_ports, async move {
             let preparation_started = std::time::Instant::now();
