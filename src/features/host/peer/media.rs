@@ -576,7 +576,7 @@ impl Worker {
         connection: Arc<RTCPeerConnection>,
         track: Arc<crate::features::host::track::VideoTrack>,
         sender: Arc<RTCRtpSender>,
-        screen: capture::Screen,
+        source: capture::Source,
         handle: Lease,
         cancel: CancellationToken,
         connected: Arc<AtomicBool>,
@@ -624,10 +624,10 @@ impl Worker {
         let source_missing = Arc::new(AtomicBool::new(false));
         let missing = source_missing.clone();
         let capture = std::thread::Builder::new()
-            .name("host-screen".into())
+            .name("host-video".into())
             .spawn(move || {
                 let result = capture_loop(
-                    screen,
+                    source,
                     owner_handle.clone(),
                     owner_cancel.clone(),
                     connected,

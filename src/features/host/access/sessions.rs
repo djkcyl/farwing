@@ -231,7 +231,7 @@ pub(super) fn clear_session(state: &mut Ownership) {
     state.status.assistance = false;
     state.status.encoder = None;
     state.status.capture = None;
-    state.status.screen = None;
+    state.status.source = None;
     state.status.video = None;
     state.status.input_backend = None;
     state.status.input_error = None;

@@ -64,6 +64,12 @@ impl Source {
             Self::Screen(screen) => Some(screen),
         }
     }
+    /// For diagnostics.
+    pub(crate) fn label(&self) -> String {
+        match self {
+            Self::Screen(screen) => screen.label(),
+        }
+    }
 }
 
 #[derive(Debug)]

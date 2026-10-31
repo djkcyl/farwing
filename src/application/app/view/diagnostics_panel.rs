@@ -650,8 +650,8 @@ impl DeviceCenterApp {
                     continue;
                 };
                 ui.add_space(theme::DIAGNOSTICS_GAP);
-                if let Some(screen) = stream.screen {
-                    ui.strong((text.video_track)(&screen.label(), index + 1));
+                if let Some(source) = stream.source {
+                    ui.strong((text.video_track)(&source.label(), index + 1));
                 }
                 diagnostics_row(ui, text.encoder, active.backend.name())
                     .on_hover_text((text.adapter_id)(active.adapter));

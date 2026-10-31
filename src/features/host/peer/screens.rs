@@ -182,7 +182,9 @@ impl Reports {
 }
 
 pub(crate) struct Slot {
-    pub screen: Option<capture::Screen>,
+    /// What the track shows now.
+    pub source: Option<capture::Source>,
+    /// The screen a stopped screen track keeps, to resume.
     pub suspended: Option<capture::Screen>,
     pub config: Arc<Mutex<VideoConfig>>,
     pub negotiated: Arc<Negotiated>,
@@ -194,6 +196,12 @@ pub(crate) struct Slot {
     observer: Option<tokio::task::JoinHandle<()>>,
     lease: Option<Lease>,
     awaiting_source: bool,
+}
+impl Slot {
+    /// The screen the track shows, if it shows one.
+    pub fn screen(&self) -> Option<&capture::Screen> {
+        self.source.as_ref().and_then(capture::Source::screen)
+    }
 }
 pub(crate) struct Screens {
     /// When the inventory applied last was read.
@@ -276,7 +284,7 @@ impl Screens {
         let ids: Vec<_> = self
             .slots
             .iter()
-            .filter_map(|s| s.screen.as_ref().or(s.suspended.as_ref()))
+            .filter_map(|s| s.screen().or(s.suspended.as_ref()))
             .filter(|s| {
                 self.info(s.id)
                     .is_ok_and(|v| v.screen.identity == s.identity)
@@ -305,7 +313,7 @@ impl Screens {
         self.slots[index].awaiting_source = true;
         self.maintain_headless().await?;
         ensure!(
-            self.slots.iter().any(|s| s.screen.is_some()),
+            self.slots.iter().any(|s| s.screen().is_some()),
             "{}",
             t().features.screen_none_not_restored
         );
@@ -371,7 +379,7 @@ impl Screens {
             self.base,
         );
         for slot in &self.slots {
-            let Some(screen) = slot.screen.as_ref().or(slot.suspended.as_ref()) else {
+            let Some(screen) = slot.screen().or(slot.suspended.as_ref()) else {
                 continue;
             };
             let mut config = lock(&slot.config);
@@ -398,7 +406,7 @@ impl Screens {
             .filter(|(_, state)| state.capturing)
             .map(|(index, state)| wire::TrackState {
                 track: index as u32,
-                screen: state.screen.id,
+                screen: state.screen_id(),
                 codec: wire::Codec::of(Some(state.format.codec.session())) as i32,
                 chroma444: state.format.chroma == 3,
                 hdr: state.hdr,
@@ -481,7 +489,7 @@ impl Screens {
                 transport.register_ssrc(encoding.ssrc);
             }
             slots.push(Slot {
-                screen: None,
+                source: None,
                 suspended: None,
                 config: Arc::new(Mutex::new(initial)),
                 negotiated,
@@ -589,19 +597,19 @@ impl Screens {
             .media()
             .into_iter()
             .filter(|(_, state)| state.capturing)
-            .map(|(index, state)| (state.screen.id, index))
+            .filter_map(|(index, state)| state.source.screen().map(|s| (s.id, index)))
             .collect();
         crate::features::stream_control::publisher::display_list(&catalog, &tracks, active, revision)
     }
     pub(crate) fn active_slot(&self, id: i32) -> Option<usize> {
         self.slots
             .iter()
-            .position(|slot| slot.screen.as_ref().is_some_and(|s| s.id == id))
+            .position(|slot| slot.screen().is_some_and(|s| s.id == id))
     }
     /// A track that shows nothing: preferably one not keeping a stopped
     /// display either.
     pub(crate) fn available_slot(&self) -> Option<usize> {
-        let free = |index: &usize| self.slots[*index].screen.is_none();
+        let free = |index: &usize| self.slots[*index].source.is_none();
         (0..self.slots.len())
             .filter(free)
             .find(|&index| self.slots[index].suspended.is_none())
@@ -667,6 +675,15 @@ impl Screens {
         &mut self,
         index: usize,
         screen: capture::Screen,
+        config: VideoConfig,
+    ) -> Result<()> {
+        self.show_at(index, capture::Source::Screen(screen), config).await
+    }
+    /// Show `source` on track `index`, in place of what it shows.
+    async fn show_at(
+        &mut self,
+        index: usize,
+        source: capture::Source,
         mut config: VideoConfig,
     ) -> Result<()> {
         ensure!(
@@ -676,12 +693,12 @@ impl Screens {
         );
         self.slots[index]
             .negotiated
-            .source_gpu(screen.render_adapter.unwrap_or(screen.adapter));
+            .source_gpu(source.render_adapter());
         self.slots[index].negotiated.apply_requested(
             &mut config,
             if self.stream.chroma444 { 3 } else { 1 },
             self.stream.hdr,
-            (screen.width, screen.height),
+            source.size(),
         )?;
         self.stop_at(index).await;
         ensure!(
@@ -699,7 +716,7 @@ impl Screens {
         let (tx, mut rx) = watch::channel(Published {
             automatic: config.quality == crate::features::host::parameters::Quality::Auto,
             hdr: config.color.is_hdr(),
-            screen: screen.clone(),
+            source: source.clone(),
             // The slot already owns this source. Native preparation is not a
             // stopped stream: publishing track=-1/CaptureChange=99 here races
             // the controller's initial setting restoration.
@@ -708,7 +725,7 @@ impl Screens {
             target: crate::features::host::parameters::Target::Tier(config.auto_tier),
             fps: config.fps,
             format: config.format,
-            budget_size: (screen.width, screen.height),
+            budget_size: source.size(),
             encoder: None,
             capture: String::new(),
         });
@@ -723,7 +740,7 @@ impl Screens {
                 .context(t().features.peer_media_connection_closed)?,
             slot.track.clone(),
             slot.sender.clone(),
-            screen.clone(),
+            source.clone(),
             lease.clone(),
             cancel.clone(),
             self.connected.clone(),
@@ -747,8 +764,10 @@ impl Screens {
         }));
         slot.lease = Some(lease);
         slot.worker = Some(worker);
-        slot.screen = Some(screen.clone());
-        self.reports.current.store(screen.id, Ordering::Release);
+        if let Some(screen) = source.screen() {
+            self.reports.current.store(screen.id, Ordering::Release);
+        }
+        slot.source = Some(source);
         self.reports.notify();
         Ok(())
     }
@@ -764,7 +783,7 @@ impl Screens {
             let _ = observer.await;
         }
         slot.transport.pause();
-        slot.screen = None;
+        slot.source = None;
         *lock(&self.reports.publications[index]) = None;
         *lock(&self.reports.pointers[index]) = None;
         self.reports.notify();
@@ -793,14 +812,14 @@ impl Screens {
                 slot.awaiting_source = false;
             }
             for index in 0..self.slots.len() {
-                if self.slots[index].screen.is_some() {
-                    self.slots[index].suspended = self.slots[index].screen.clone();
+                if self.slots[index].screen().is_some() {
+                    self.slots[index].suspended = self.slots[index].screen().cloned();
                 }
                 self.stop_at(index).await;
             }
         } else if let Some(index) = self.active_slot(screen) {
             self.slots[index].awaiting_source = false;
-            self.slots[index].suspended = self.slots[index].screen.clone();
+            self.slots[index].suspended = self.slots[index].screen().cloned();
             self.stop_at(index).await;
         } else {
             let mut known = self.headless.knows_screen(screen);
@@ -827,7 +846,7 @@ impl Screens {
         let selected = self.reports.current.load(Ordering::Acquire);
         let mut fatal = false;
         for index in 0..self.slots.len() {
-            let disappeared = self.slots[index].screen.as_ref().is_some_and(|screen| {
+            let disappeared = self.slots[index].screen().is_some_and(|screen| {
                 !lock(&self.reports.catalog).iter().any(|info| {
                     info.screen.id == screen.id
                         && (screen.identity.is_none() || info.screen.identity == screen.identity)
@@ -835,7 +854,7 @@ impl Screens {
             });
             if disappeared {
                 self.slots[index].awaiting_source = true;
-                self.slots[index].suspended = self.slots[index].screen.clone();
+                self.slots[index].suspended = self.slots[index].screen().cloned();
                 self.stop_at(index).await;
             }
             if self.slots[index]
@@ -849,7 +868,7 @@ impl Screens {
                     .is_some_and(|w| w.source_missing())
                 {
                     self.slots[index].awaiting_source = true;
-                    self.slots[index].suspended = self.slots[index].screen.clone();
+                    self.slots[index].suspended = self.slots[index].screen().cloned();
                 } else {
                     fatal |= !self.headless.owns_slot(index);
                 }

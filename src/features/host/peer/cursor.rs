@@ -43,7 +43,7 @@ pub(super) async fn run(
         let Some(pointer) = media
             .iter()
             .filter(|(_, m)| m.capturing && m.visible)
-            .max_by_key(|(_, m)| m.screen.id == current)
+            .max_by_key(|(_, m)| m.screen_id() == current)
             .and_then(|(index, _)| lock(&reports.pointers[*index]).clone())
         else {
             continue;
@@ -55,7 +55,7 @@ pub(super) async fn run(
                 let s = &info.screen;
                 media
                     .iter()
-                    .any(|(_, m)| m.capturing && m.visible && m.screen.id == s.id)
+                    .any(|(_, m)| m.capturing && m.visible && m.screen_id() == s.id)
                     && i64::from(p.x) >= i64::from(s.left)
                     && i64::from(p.x) < i64::from(s.left) + i64::from(s.width)
                     && i64::from(p.y) >= i64::from(s.top)

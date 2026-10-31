@@ -202,10 +202,9 @@
 
 **改造**：
 
-- `Slot.source: Option<Source { Screen | Camera }>`；状态与租约用源描述而不是 `capture::Screen`。
-- 把 `Peer` 拆成两层：“媒体发布者”（连接、轨道、传输、声音），与可选的“桌面功能”（显示器、键鼠、剪贴板、文件、批注、光标）。
-- `Purpose::Camera` 只用前者；以后聊天的上行也复用前者的发送部分。
-- 媒体引擎的编解码注册统一到 `farwing_rtc_wire::register_codecs`（现在 `peer/mod.rs` 里有一份重复）。
+- `Slot.source: Option<Source>`，`Published.source`、`StreamStatus.source`、`Lease::encoder` 与采集线程都用源描述；只与屏幕有关的逻辑（显示器拓扑、无头屏、恢复）经 `Slot::screen()` 只看屏幕源。`show_at` 在任一轨上显示任一种源。
+- 只看摄像头的参与者沿用现有“只听声音”参与者的做法：同一个 `Peer`，不准备显示器，不开键鼠、剪贴板、文件与批注（§4.1），而不是另拆一层。
+- 媒体引擎的编解码注册统一到 `farwing_rtc_wire::register_codecs_where`（被控只注册能编码的格式）。
 
 ### 9.3 可复用的发送轨
 
@@ -261,7 +260,8 @@
 
 | 步 | 状态 |
 | --- | --- |
-| R1–R3 | 进行中（R1） |
+| R1–R2 | 完成 |
+| R3 | 进行中 |
 | E1 | 未开始 |
 | C1–C5 | 未开始 |
 | A1 | 未开始 |

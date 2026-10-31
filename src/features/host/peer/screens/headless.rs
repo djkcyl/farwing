@@ -227,8 +227,7 @@ impl Screens {
                                 && (idle
                                     || self.slots.iter().enumerate().any(|(n, s)| {
                                         self.delivered(n)
-                                            && s.screen
-                                                .as_ref()
+                                            && s.screen()
                                                 .is_some_and(|s| same_source(s, &i.screen))
                                     }))
                         })
@@ -275,7 +274,7 @@ impl Screens {
                 .filter_map(|(index, slot)| {
                     slot.suspended
                         .clone()
-                        .or_else(|| slot.screen.clone())
+                        .or_else(|| slot.screen().cloned())
                         .map(|s| (index, s))
                 })
                 .min_by_key(|(_, s)| s.id != current);
@@ -412,8 +411,7 @@ impl Screens {
             }
             if original.is_some()
                 && self.slots[r.slot]
-                    .screen
-                    .as_ref()
+                    .screen()
                     .is_some_and(|s| same_source(s, &r.original))
                 && self.delivered(r.slot)
             {
@@ -491,7 +489,7 @@ impl Screens {
             .iter()
             .enumerate()
             .filter(|(i, _)| self.delivered(*i))
-            .filter_map(|(_, slot)| slot.screen.as_ref())
+            .filter_map(|(_, slot)| slot.screen())
             .filter(|s| s.id != id)
             .find_map(|s| s.identity.clone());
         let replacement = replacement.or_else(|| {

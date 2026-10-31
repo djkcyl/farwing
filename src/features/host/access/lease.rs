@@ -476,23 +476,18 @@ impl Lease {
             }
         }
     }
-    pub(crate) fn source(&self, screen: &capture::Screen, backend: &str) {
-        self.modify_stream(|stream| {
-            stream.capture = Some(backend.into());
-            stream.screen = Some(screen.clone());
-        });
-    }
+    /// The encoder and the source a stream of this participant uses now.
     pub(crate) fn encoder(
         &self,
         implementation: i32,
         maximum: (u32, u32),
-        screen: &capture::Screen,
+        source: &capture::Source,
         capture: &str,
     ) {
         self.modify_stream(|stream| {
             stream.encoder = Some((implementation, maximum));
             stream.capture = Some(capture.into());
-            stream.screen = Some(screen.clone());
+            stream.source = Some(source.clone());
         });
     }
     pub(crate) fn requested(&self) -> bool {

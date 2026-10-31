@@ -21,10 +21,7 @@ use webrtc::{
         policy::ice_transport_policy::RTCIceTransportPolicy,
         sdp::session_description::RTCSessionDescription,
     },
-    rtp_transceiver::{
-        RTCPFeedback,
-        rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
-    },
+    rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType},
     track::track_local::{TrackLocal, track_local_static_rtp::TrackLocalStaticRTP},
 };
 
@@ -66,7 +63,7 @@ struct Published {
     /// Automatic quality: `target` is the tier it settled at.
     automatic: bool,
     hdr: bool,
-    screen: capture::Screen,
+    source: capture::Source,
     capturing: bool,
     visible: bool,
     target: super::parameters::Target,
@@ -100,6 +97,12 @@ impl ReportRoutes {
             self.revision = self.revision.wrapping_add(1);
         }
         changed
+    }
+}
+impl Published {
+    /// The screen it shows (-1: not a screen).
+    fn screen_id(&self) -> i32 {
+        self.source.screen().map_or(-1, |s| s.id)
     }
 }
 type ReportTarget = tokio::sync::watch::Sender<ReportRoutes>;
@@ -188,149 +191,23 @@ impl Peer {
         registry.add(Box::new(transport.clone()));
         registry.add(Box::new(crate::transport::rtcp_timing::RtcpTiming::new()));
         let mut media = MediaEngine::default();
-        media.register_codec(
-            RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
-                    mime_type: "audio/opus".into(),
-                    clock_rate: 48_000,
-                    channels: 2,
-                    sdp_fmtp_line: "minptime=10;stereo=1;useinbandfec=1".into(),
-                    rtcp_feedback: vec![RTCPFeedback {
-                        typ: "transport-cc".into(),
-                        parameter: String::new(),
-                    }],
-                    ..Default::default()
-                },
-                payload_type: 111,
-                ..Default::default()
-            },
-            RTPCodecType::Audio,
-        )?;
-        media.register_codec(
-            RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
-                    mime_type: "video/H264".into(),
-                    clock_rate: 90_000,
-                    sdp_fmtp_line:
-                        "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
-                            .into(),
-                    rtcp_feedback: vec![
-                        RTCPFeedback {
-                            typ: "rrtr".into(),
-                            parameter: String::new(),
-                        },
-                        RTCPFeedback {
-                            typ: "transport-cc".into(),
-                            parameter: String::new(),
-                        },
-                        RTCPFeedback {
-                            typ: "nack".into(),
-                            parameter: String::new(),
-                        },
-                        RTCPFeedback {
-                            typ: "nack".into(),
-                            parameter: "pli".into(),
-                        },
-                        RTCPFeedback {
-                            typ: "ccm".into(),
-                            parameter: "fir".into(),
-                        },
-                    ],
-                    ..Default::default()
-                },
-                payload_type: 98,
-                ..Default::default()
-            },
-            RTPCodecType::Video,
-        )?;
-        for (kind, mime, pt, fmtp, rtx) in [
-            (super::format::Codec::H265, "video/H265", 96, "", "apt=96"),
-            (
-                super::format::Codec::Av1,
-                "video/AV1",
-                104,
-                "profile=0;level-idx=17;tier=0",
-                "apt=104",
-            ),
-            (
-                super::format::Codec::Av1,
-                "video/AV1",
-                106,
-                "profile=1;level-idx=17;tier=0",
-                "apt=106",
-            ),
-        ] {
-            if screen.is_none()
-                || (negotiated.supports_codec(kind)
-                    && (pt != 106
-                        || negotiated.choices.iter().any(|c| {
-                            c.capability.format.codec == super::format::Codec::Av1
-                                && c.capability.format.chroma == 3
-                        })))
-            {
-                media.register_codec(
-                    RTCRtpCodecParameters {
-                        capability: RTCRtpCodecCapability {
-                            mime_type: mime.into(),
-                            clock_rate: 90_000,
-                            sdp_fmtp_line: fmtp.into(),
-                            rtcp_feedback: vec![
-                                RTCPFeedback {
-                                    typ: "rrtr".into(),
-                                    parameter: String::new(),
-                                },
-                                RTCPFeedback {
-                                    typ: "transport-cc".into(),
-                                    parameter: String::new(),
-                                },
-                                RTCPFeedback {
-                                    typ: "nack".into(),
-                                    parameter: String::new(),
-                                },
-                                RTCPFeedback {
-                                    typ: "nack".into(),
-                                    parameter: "pli".into(),
-                                },
-                                RTCPFeedback {
-                                    typ: "ccm".into(),
-                                    parameter: "fir".into(),
-                                },
-                            ],
-                            ..Default::default()
-                        },
-                        payload_type: pt,
-                        ..Default::default()
-                    },
-                    RTPCodecType::Video,
-                )?;
-                media.register_codec(
-                    RTCRtpCodecParameters {
-                        capability: RTCRtpCodecCapability {
-                            mime_type: "video/rtx".into(),
-                            clock_rate: 90_000,
-                            sdp_fmtp_line: rtx.into(),
-                            ..Default::default()
-                        },
-                        payload_type: pt + 1,
-                        ..Default::default()
-                    },
-                    RTPCodecType::Video,
-                )?;
-            }
-        }
-        media.register_codec(
-            RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
-                    mime_type: "video/rtx".into(),
-                    clock_rate: 90_000,
-                    sdp_fmtp_line: "apt=98".into(),
-                    ..Default::default()
-                },
-                payload_type: 99,
-                ..Default::default()
-            },
-            RTPCodecType::Video,
-        )?;
+        // Only the codecs this host can encode, so the viewer picks one of
+        // them; a session without a picture yet takes every one.
+        let av1_444 = negotiated.choices.iter().any(|c| {
+            c.capability.format.codec == super::format::Codec::Av1
+                && c.capability.format.chroma == 3
+        });
+        farwing_rtc_wire::register_codecs_where(&mut media, |codec| {
+            screen.is_none()
+                || match codec.mime_type {
+                    "video/H265" => negotiated.supports_codec(super::format::Codec::H265),
+                    "video/AV1" => {
+                        negotiated.supports_codec(super::format::Codec::Av1)
+                            && (av1_444 || !codec.fmtp.starts_with("profile=1"))
+                    }
+                    _ => true,
+                }
+        })?;
         // Send time is covered by transport-cc; the viewer decides its own
         // playout buffer (`docs/protocol/v2-design.md` §6.3.1). The shared
         // order gives every party the same extension IDs, which the media
@@ -339,19 +216,6 @@ impl Peer {
         farwing_rtc_wire::register_header_extensions(
             &mut media,
             &[farwing_rtc_wire::DEPENDENCY_DESCRIPTOR_URI],
-        )?;
-        media.register_codec(
-            RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
-                    mime_type: crate::transport::rsfec::MIME_TYPE.into(),
-                    clock_rate: 90_000,
-                    sdp_fmtp_line: "max-k=109;repair-window=10000000;rtx-as-source=1".into(),
-                    ..Default::default()
-                },
-                payload_type: 36,
-                ..Default::default()
-            },
-            RTPCodecType::Video,
         )?;
         let mut settings = ConnectionCore::settings();
         // Direct sessions bind the direct endpoint's UDP ports (§12.3).

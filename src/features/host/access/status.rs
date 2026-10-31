@@ -40,7 +40,7 @@ pub(crate) struct Status {
     pub saving: bool,
     pub encoder: Option<(i32, (u32, u32))>,
     pub capture: Option<String>,
-    pub screen: Option<capture::Screen>,
+    pub source: Option<capture::Source>,
     pub video: Option<ActiveEncoding>,
     pub streams: std::collections::BTreeMap<usize, StreamStatus>,
 }
@@ -95,7 +95,7 @@ pub(crate) struct EndedConnection {
 pub(crate) struct StreamStatus {
     pub encoder: Option<(i32, (u32, u32))>,
     pub capture: Option<String>,
-    pub screen: Option<capture::Screen>,
+    pub source: Option<capture::Source>,
     pub video: Option<ActiveEncoding>,
 }
 
@@ -107,7 +107,7 @@ pub(super) fn update_media_summary(status: &mut Status) {
         .or_else(|| status.streams.values().next());
     status.encoder = current.and_then(|s| s.encoder);
     status.capture = current.and_then(|s| s.capture.clone());
-    status.screen = current.and_then(|s| s.screen.clone());
+    status.source = current.and_then(|s| s.source.clone());
     status.video = current.and_then(|s| s.video);
 }
 

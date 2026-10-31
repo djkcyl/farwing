@@ -17,8 +17,7 @@ impl Screens {
             .iter()
             .enumerate()
             .filter_map(|(index, slot)| {
-                slot.screen
-                    .as_ref()
+                slot.screen()
                     .map(|s| (index, s.id, *lock(&slot.config)))
             })
             .collect();
@@ -44,7 +43,7 @@ impl Screens {
     }
     async fn fallback(&mut self) -> Result<()> {
         self.refresh()?;
-        if self.slots.iter().any(|s| s.screen.is_some()) {
+        if self.slots.iter().any(|s| s.screen().is_some()) {
             if self
                 .active_slot(self.reports.current.load(Ordering::Acquire))
                 .is_none()
@@ -52,7 +51,7 @@ impl Screens {
                 if let Some(screen) = self
                     .slots
                     .iter()
-                    .filter_map(|s| s.screen.as_ref())
+                    .filter_map(|s| s.screen())
                     .min_by_key(|s| !s.primary)
                 {
                     self.reports.current.store(screen.id, Ordering::Release);

@@ -29,7 +29,7 @@ const LOW_TIER: Tier = Tier::P720;
 const LOW_FPS: u32 = 60;
 
 pub(super) fn capture_loop(
-    mut screen: capture::Screen,
+    mut source: capture::Source,
     handle: Lease,
     cancel: CancellationToken,
     connected: Arc<AtomicBool>,
@@ -72,7 +72,7 @@ pub(super) fn capture_loop(
     );
     let mut was_shared = None::<bool>;
     // The pipeline's encoder and source last reported for this participant.
-    let mut followed = None::<(i32, (u32, u32), String, capture::Screen)>;
+    let mut followed = None::<(i32, (u32, u32), String, capture::Source)>;
     let mut last_diagnostics = None;
 
     while !cancel.is_cancelled() && handle.requested() {
@@ -92,7 +92,6 @@ pub(super) fn capture_loop(
                 End::Stopped => {}
             }
         }
-        let source = capture::Source::Screen(screen.clone());
         let source_size = source.size();
         let mut wanted = *lock(&config);
         if !negotiated.permits_format(wanted.format) {
@@ -237,7 +236,7 @@ pub(super) fn capture_loop(
                 frames: sender.clone(),
                 clock: started,
                 start: super::pipeline::Start {
-                    source,
+                    source: source.clone(),
                     gpu_compatibility: negotiated.gpu_compatibility,
                 },
             };
@@ -318,26 +317,22 @@ pub(super) fn capture_loop(
             membership.request_keyframe();
         }
         if let Some(output) = membership.output_changed() {
-            // A screen slot's pipeline captures a screen.
-            let Some(output_screen) = output.source.screen().cloned() else {
-                anyhow::bail!("{}", t().features.peer_capture_source_missing);
-            };
-            screen = output_screen.clone();
-            let source = (
+            // The source as the pipeline found it (a display mode change).
+            source = output.source.clone();
+            let reported = (
                 output.implementation,
                 output.maximum_size,
                 output.capture.clone(),
-                output_screen.clone(),
+                output.source.clone(),
             );
-            if followed.as_ref() != Some(&source) {
+            if followed.as_ref() != Some(&reported) {
                 handle.encoder(
                     output.implementation,
                     output.maximum_size,
-                    &output_screen,
+                    &output.source,
                     &output.capture,
                 );
-                handle.source(&output_screen, &output.capture);
-                followed = Some(source);
+                followed = Some(reported);
             }
             let (preferred_gpu, preferred_codec) = negotiated.preference();
             let video = crate::features::host::ActiveEncoding {
@@ -353,7 +348,7 @@ pub(super) fn capture_loop(
             let state = Published {
                 automatic: automatic_requested,
                 hdr: requested_hdr && output.format.depth == 10,
-                screen: output_screen,
+                source: output.source,
                 capturing: true,
                 visible: output.visible,
                 target: output.target,

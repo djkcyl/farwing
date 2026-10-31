@@ -130,6 +130,15 @@ pub fn rtx_payload_type(payload_type: u8) -> Option<u8> {
 
 /// Opus and every video codec of [`VIDEO_CODECS`].
 pub fn register_codecs(media: &mut MediaEngine) -> webrtc::error::Result<()> {
+    register_codecs_where(media, |_| true)
+}
+
+/// Opus and the video codecs of [`VIDEO_CODECS`] that `keep` accepts; an RTX
+/// codec goes with the codec it repairs.
+pub fn register_codecs_where(
+    media: &mut MediaEngine,
+    keep: impl Fn(&VideoCodec) -> bool,
+) -> webrtc::error::Result<()> {
     media.register_codec(
         RTCRtpCodecParameters {
             capability: RTCRtpCodecCapability {
@@ -148,6 +157,14 @@ pub fn register_codecs(media: &mut MediaEngine) -> webrtc::error::Result<()> {
         RTPCodecType::Audio,
     )?;
     for codec in VIDEO_CODECS {
+        let repaired = codec.fmtp.strip_prefix("apt=").and_then(|apt| {
+            VIDEO_CODECS
+                .iter()
+                .find(|c| c.mime_type != "video/rtx" && c.payload_type.to_string() == apt)
+        });
+        if !keep(repaired.unwrap_or(&codec)) {
+            continue;
+        }
         media.register_codec(
             RTCRtpCodecParameters {
                 capability: RTCRtpCodecCapability {
