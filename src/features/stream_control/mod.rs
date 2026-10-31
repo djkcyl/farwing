@@ -8,6 +8,7 @@
 //! known from `ScreenSources`.
 
 mod audio_quality;
+pub(crate) mod camera;
 pub(crate) mod control_turn;
 use crate::diagnostics::performance::PerformanceMonitor;
 use crate::i18n::t;

@@ -593,6 +593,7 @@ pub(super) async fn publish_state(
     let mut changed = reports.changed.subscribe();
     let mut last_screen = None;
     let mut last_capture = None;
+    let mut last_cameras = None::<crate::features::stream_control::camera::Cameras>;
     let mut last_quality = None;
     let mut last_microphone = None;
     let mut last_audio_quality = None;
@@ -628,6 +629,7 @@ pub(super) async fn publish_state(
             revision = Some(routes.revision);
             last_screen = None;
             last_capture = None;
+            last_cameras = None;
             last_quality = None;
             last_microphone = None;
             last_audio_quality = None;
@@ -690,12 +692,12 @@ pub(super) async fn publish_state(
         }
         // Native layout changes and capture restart form one screen transition.
         // Do not publish a half-restored catalog while that owner is awaiting I/O.
-        let (list, stream, media) = {
+        let (list, stream, media, cameras) = {
             let state = tokio::select! {
                 _ = cancel.cancelled() => break,
                 state = screens.lock() => state,
             };
-            (state.display_list(), state.stream_state(), reports.media())
+            (state.display_list(), state.stream_state(), reports.media(), state.camera_list())
         };
         let current = list.active;
         // The revision alone changes with every publication; the list is sent
@@ -726,6 +728,18 @@ pub(super) async fn publish_state(
         // first video frame.
         if last_screen.is_some() && last_capture.is_some() {
             reports.media_ready.set(true);
+        }
+        // The cameras in detail, when they change.
+        if last_cameras.as_ref() != Some(&cameras)
+            && send(
+                false,
+                crate::features::stream_control::wire::push(
+                    crate::features::stream_control::wire::SessionBody::Cameras(cameras.clone()),
+                ),
+            )
+            .await
+        {
+            last_cameras = Some(cameras);
         }
         // Likewise the stream state, when what it says changes.
         let said = (stream.settings, stream.limits.clone(), stream.tracks.clone());

@@ -12,14 +12,13 @@ pub fn list() -> Result<()> {
     let described: Vec<_> = cameras
         .iter()
         .map(|c| {
-            let (default, controls) = camera::describe(c);
             serde_json::json!({
                 "id": c.id,
                 "name": c.name,
-                "default": default,
+                "default": crate::media::camera::default_mode(&c.modes),
                 "modes": c.modes,
                 "unavailable": c.unavailable,
-                "controls": controls,
+                "controls": c.controls,
             })
         })
         .collect();

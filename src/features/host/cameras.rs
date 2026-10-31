@@ -81,6 +81,14 @@ pub(crate) fn cameras() -> Vec<Camera> {
     state.cameras.clone()
 }
 
+/// `camera`'s adjustments changed (read them again from its source).
+pub(crate) fn controls_changed(camera: &str) {
+    let controls = crate::platform::camera::controls(camera).unwrap_or_default();
+    if let Some(known) = inventory().cameras.iter_mut().find(|c| c.id == camera) {
+        known.controls = controls;
+    }
+}
+
 /// A running camera: the parameters everyone watching it uses, and whose
 /// they are.
 struct Running {

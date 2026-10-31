@@ -101,6 +101,9 @@ pub(crate) struct Camera {
     /// then unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unavailable: Option<String>,
+    /// The picture adjustments it supports, as last read.
+    #[serde(default)]
+    pub controls: Vec<ControlState>,
 }
 
 /// The default mode (§3.4): 1080p30, else 720p30, else the largest at up

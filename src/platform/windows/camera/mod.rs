@@ -179,21 +179,21 @@ pub(crate) fn list() -> Result<Vec<Camera>> {
     let _apartment = Apartment::enter()?;
     let mut cameras = Vec::new();
     for (activate, id, name) in devices()? {
-        let modes = (|| -> windows::core::Result<Vec<Mode>> {
+        let read = (|| -> windows::core::Result<(Vec<Mode>, Vec<ControlState>)> {
             let source: IMFMediaSource = unsafe { activate.ActivateObject() }?;
             let reader = unsafe { MFCreateSourceReaderFromMediaSource(&source, None) };
-            let modes = reader.map(|reader| modes_of(&native_types(&reader)));
+            let read = reader.map(|reader| (modes_of(&native_types(&reader)), controls::read_all(&source)));
             unsafe {
                 let _ = source.Shutdown();
                 let _ = activate.ShutdownObject();
             }
-            modes
+            read
         })();
-        let (modes, unavailable) = match modes {
-            Ok(modes) => (modes, None),
+        let (modes, controls, unavailable) = match read {
+            Ok((modes, controls)) => (modes, controls, None),
             Err(error) => {
                 tracing::info!(camera = %name, %error, "camera modes not read");
-                (Vec::new(), Some(explain(&error)))
+                (Vec::new(), Vec::new(), Some(explain(&error)))
             }
         };
         cameras.push(Camera {
@@ -201,6 +201,7 @@ pub(crate) fn list() -> Result<Vec<Camera>> {
             name,
             modes,
             unavailable,
+            controls,
         });
     }
     if synthetic_enabled() {
@@ -441,13 +442,6 @@ pub(super) fn failure(error: windows::core::Error) -> anyhow::Error {
     anyhow::Error::msg(explain(&error))
 }
 
-/// The modes and adjustments of one camera, for its owner and viewers.
-pub(crate) fn describe(camera: &Camera) -> (Option<Mode>, Vec<ControlState>) {
-    (
-        crate::media::camera::default_mode(&camera.modes),
-        controls(&camera.id).unwrap_or_default(),
-    )
-}
 
 /// Open `camera` in its default mode on the default adapter.
 pub(crate) fn default_spec(camera: &Camera) -> Result<Spec> {

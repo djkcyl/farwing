@@ -23,6 +23,7 @@ pub(super) fn camera() -> Camera {
             mode(640, 480, 30),
         ],
         unavailable: None,
+        controls: Vec::new(),
     }
 }
 

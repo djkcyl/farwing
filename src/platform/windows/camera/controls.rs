@@ -127,19 +127,22 @@ fn read(
     })
 }
 
+/// The adjustments of an open source, with their current values.
+pub(super) fn read_all(source: &IMFMediaSource) -> Vec<ControlState> {
+    let amp = source.cast::<IAMVideoProcAmp>().ok();
+    let control = source.cast::<IAMCameraControl>().ok();
+    Control::ALL
+        .into_iter()
+        .filter_map(|c| read(c, amp.as_ref(), control.as_ref()))
+        .collect()
+}
+
 /// The adjustments `camera` supports, with their current values.
 pub(crate) fn controls(camera: &str) -> Result<Vec<ControlState>> {
     if camera == SYNTHETIC {
         return Ok(Vec::new());
     }
-    with_source(camera, |source| {
-        let amp = source.cast::<IAMVideoProcAmp>().ok();
-        let control = source.cast::<IAMCameraControl>().ok();
-        Ok(Control::ALL
-            .into_iter()
-            .filter_map(|c| read(c, amp.as_ref(), control.as_ref()))
-            .collect())
-    })
+    with_source(camera, |source| Ok(read_all(source)))
 }
 
 /// Set an adjustment of `camera`; `auto` hands it to the camera.

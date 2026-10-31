@@ -151,6 +151,29 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
             tracing::info!(?request, "host stream request");
             Ok(vec![stream_request(session, id, request)].into())
         }
+        SessionBody::CameraRequest(request) => {
+            tracing::info!(?request, "host camera request");
+            let result = match request.op {
+                Some(op) => session.camera_request(op).await,
+                None => Err(refuse(error_code::BAD_REQUEST, display_reason::INVALID)),
+            };
+            let message = match &result {
+                Ok(()) => wire::response(id, SessionBody::Cameras(session.camera_list())),
+                Err(error) => {
+                    let Refused(code, reason) = error
+                        .downcast_ref::<Refused>()
+                        .copied()
+                        .unwrap_or(Refused(error_code::INTERNAL, display_reason::FAILED));
+                    tracing::warn!(error = %format!("{error:#}"), "host camera request refused or failed");
+                    wire::error_response(id, code, reason)
+                }
+            };
+            Ok(Received {
+                messages: vec![message],
+                refresh_state: true,
+                ..Default::default()
+            })
+        }
         SessionBody::MicrophonePolicy(_) => Ok(Received::default()),
         SessionBody::ReceiverStats(stats) => {
             session.receiver_stats(&stats);

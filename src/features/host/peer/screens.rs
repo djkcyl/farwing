@@ -671,6 +671,87 @@ impl Screens {
             })
             .collect()
     }
+    /// The cameras in detail, for this participant (`Cameras`).
+    pub(crate) fn camera_list(&self) -> crate::features::stream_control::camera::Cameras {
+        use crate::features::host::cameras;
+        use crate::features::stream_control::camera::{CameraInfo, CameraParams, Cameras};
+        if !self.lease.camera_access() {
+            return Cameras::default();
+        }
+        let nickname = self.lease.profile().nickname;
+        let cameras = cameras::cameras()
+            .into_iter()
+            .map(|camera| {
+                let mut owner = self.lease.camera_defaults(&camera.id).unwrap_or_default();
+                if owner.mode.is_none_or(|m| !camera.modes.contains(&m)) {
+                    owner.mode = crate::media::camera::default_mode(&camera.modes);
+                }
+                let running = self.slots.iter().find_map(|s| {
+                    s.source.as_ref().and_then(capture::Source::camera).filter(|c| c.camera == camera.id)
+                });
+                let params = self.params(&camera.id);
+                CameraInfo {
+                    id: cameras::display_id(&camera.id),
+                    name: camera.name.clone(),
+                    unavailable: camera.unavailable.clone().unwrap_or_default(),
+                    modes: camera.modes.iter().copied().map(Into::into).collect(),
+                    owner: Some(owner.into()),
+                    custom: self.camera_params.get(&camera.id).copied().map(Into::into),
+                    running: running.map(|spec| {
+                        CameraParams::from(crate::media::camera::Params {
+                            mode: Some(spec.mode),
+                            color: spec.color,
+                            bitrate_kbps: Some(spec.bitrate_kbps()),
+                            orientation: params.orientation,
+                        })
+                    }),
+                    chosen_by: running
+                        .and_then(|_| cameras::chosen_by(&camera.id))
+                        .filter(|name| *name != nickname)
+                        .unwrap_or_default(),
+                    controls: camera.controls.iter().copied().map(Into::into).collect(),
+                }
+            })
+            .collect();
+        Cameras { cameras }
+    }
+    /// A participant's camera request: its parameters, back to the owner's,
+    /// or a picture adjustment.
+    pub(crate) async fn camera_request(&mut self, op: crate::features::stream_control::camera::CameraOp) -> Result<()> {
+        use crate::features::host::cameras;
+        use crate::features::stream_control::camera::{CameraControlKind, CameraOp};
+        use crate::features::stream_control::{publisher::refuse, wire::display_reason};
+        use farwing_protocol::peer::error_code;
+        if !self.lease.camera_access() {
+            return Err(refuse(error_code::FORBIDDEN, display_reason::CAMERA_NOT_ALLOWED));
+        }
+        match op {
+            CameraOp::Params(set) => {
+                let params = set
+                    .params
+                    .ok_or_else(|| refuse(error_code::BAD_REQUEST, display_reason::INVALID))?;
+                self.set_camera_params(set.camera, Some(params.params())).await
+            }
+            CameraOp::Reset(camera) => self.set_camera_params(camera, None).await,
+            CameraOp::Adjust(adjust) => {
+                let camera = cameras::cameras()
+                    .into_iter()
+                    .find(|c| cameras::display_id(&c.id) == adjust.camera)
+                    .ok_or_else(|| refuse(error_code::NOT_FOUND, display_reason::NOT_FOUND))?;
+                let control = CameraControlKind::try_from(adjust.control)
+                    .map_err(|_| refuse(error_code::BAD_REQUEST, display_reason::INVALID))?
+                    .into();
+                tokio::task::spawn_blocking(move || {
+                    crate::platform::camera::set_control(&camera.id, control, adjust.value, adjust.auto)?;
+                    cameras::controls_changed(&camera.id);
+                    anyhow::Ok(())
+                })
+                .await??;
+                self.reports.notify();
+                Ok(())
+            }
+        }
+    }
     /// The parameters for `camera`: this participant's, else the owner's.
     fn params(&self, camera: &str) -> crate::media::camera::Params {
         self.camera_params

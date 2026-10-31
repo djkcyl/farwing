@@ -4,7 +4,7 @@
 //! Requests carry a non-zero FPP request ID and are answered with the same ID
 //! and the `RESPONSE` flag; pushes carry request ID 0 and are never answered.
 //! See `docs/protocol/v2-design.md` §6 for every message.
-use super::{control_turn, microphone};
+use super::{camera, control_turn, microphone};
 use crate::protocol::peer::{self, FrameType, flags};
 use anyhow::{Context as _, Result};
 use prost::Message as _;
@@ -69,7 +69,7 @@ pub(crate) fn request_id(sequence: i64) -> u32 {
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct SessionMessage {
-    #[prost(oneof = "SessionBody", tags = "1,2,3,4,5,7,8,10,11,16,17,22,23,24,25")]
+    #[prost(oneof = "SessionBody", tags = "1,2,3,4,5,7,8,10,11,16,17,22,23,24,25,26,27")]
     pub(crate) body: Option<SessionBody>,
 }
 
@@ -120,6 +120,12 @@ pub(crate) enum SessionBody {
     /// Controller → host: whether it receives through the forwarder.
     #[prost(message, tag = "25")]
     ForwardStatus(ForwardStatus),
+    /// The host's cameras in detail (H→C push).
+    #[prost(message, tag = "26")]
+    Cameras(camera::Cameras),
+    /// A participant's camera parameters or adjustment → an empty answer.
+    #[prost(message, tag = "27")]
+    CameraRequest(camera::CameraRequest),
 }
 
 impl SessionBody {
@@ -135,6 +141,8 @@ impl SessionBody {
             Self::VideoFeedback(_) => "VideoFeedback",
             Self::Forward(_) => "Forward",
             Self::ForwardStatus(_) => "ForwardStatus",
+            Self::Cameras(_) => "Cameras",
+            Self::CameraRequest(_) => "CameraRequest",
             Self::Display(_) => "Display",
             Self::MicrophonePolicy(_) => "MicrophonePolicy",
             Self::ControlTurn(_) => "ControlTurn",
