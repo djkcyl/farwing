@@ -24,6 +24,22 @@ impl StreamControlHandle {
     pub(crate) fn presentation_size(&self, track: i32, size: (u32, u32)) -> (u32, u32) {
         self.display_aspect(track).unwrap_or(size)
     }
+    /// How track `track`'s picture is turned for display.
+    pub(crate) fn orientation(&self, track: i32) -> crate::media::geometry::Orientation {
+        lock(&self.shared)
+            .screens
+            .iter()
+            .find(|s| s.video_track_index == track)
+            .map(|s| s.display.orientation)
+            .unwrap_or_default()
+    }
+    /// Track `track` shows a camera: no input, menus or drops go to it.
+    pub(crate) fn shows_camera(&self, track: i32) -> bool {
+        lock(&self.shared)
+            .screens
+            .iter()
+            .any(|s| s.video_track_index == track && s.display.is_camera())
+    }
 
     /// Remember this device's codec preference and switch the running
     /// stream to it when both sides support it (`None` follows the global

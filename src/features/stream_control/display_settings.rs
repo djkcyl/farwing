@@ -36,9 +36,14 @@ pub struct RemoteDisplayInfo {
     pub recommended_dpi: u32,
     pub dpis: Vec<u32>,
     pub hdr: bool,
+    /// How the viewer turns the picture (a camera's mirror and rotation).
+    pub orientation: crate::media::geometry::Orientation,
 }
 
 impl RemoteDisplayInfo {
+    pub fn is_camera(&self) -> bool {
+        self.kind == DisplayKind::Camera
+    }
     fn of(display: &wire::Display) -> Option<Self> {
         let current = RemoteDisplayMode::of(&wire::Size {
             width: display.width,
@@ -64,6 +69,10 @@ impl RemoteDisplayInfo {
             recommended_dpi: display.recommended_scale,
             dpis,
             hdr: display.hdr,
+            orientation: crate::media::geometry::Orientation {
+                mirror: display.mirror,
+                quarter_turns: (display.quarter_turns % 4) as u8,
+            },
         })
     }
     /// Any size can be asked of it (a virtual display); others take their
@@ -393,6 +402,7 @@ mod tests {
             recommended_dpi: 150,
             dpis: vec![100, 150],
             hdr: false,
+            orientation: Default::default(),
         }
     }
 

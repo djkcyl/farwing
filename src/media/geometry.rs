@@ -51,6 +51,35 @@ impl DisplayAspect {
     }
 }
 
+/// How a picture is turned: mirrored left to right, then rotated clockwise
+/// by `quarter_turns` × 90° (a camera's mirror and rotation, a self view).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct Orientation {
+    pub mirror: bool,
+    pub quarter_turns: u8,
+}
+
+impl Orientation {
+    /// Width and height trade places.
+    pub fn swaps_axes(self) -> bool {
+        self.quarter_turns % 2 == 1
+    }
+    /// The size of a `size` picture once turned.
+    pub fn turned(self, size: (u32, u32)) -> (u32, u32) {
+        if self.swaps_axes() { (size.1, size.0) } else { size }
+    }
+    /// Which corner of the source each corner of the turned picture shows.
+    /// Corners go clockwise from the top left: 0 top left, 1 top right,
+    /// 2 bottom right, 3 bottom left.
+    pub fn source_corners(self) -> [usize; 4] {
+        let turns = usize::from(self.quarter_turns % 4);
+        std::array::from_fn(|corner| {
+            let source = (corner + 4 - turns) % 4;
+            if self.mirror { [1, 0, 3, 2][source] } else { source }
+        })
+    }
+}
+
 /// A picture size class: the box a source is fitted into.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,

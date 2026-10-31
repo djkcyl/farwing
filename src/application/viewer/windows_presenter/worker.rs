@@ -17,6 +17,8 @@ use winit::dpi::PhysicalSize;
 
 pub(in crate::application::viewer) enum RenderCommand {
     DisplayAspect(Option<(u32, u32)>),
+    /// Turn the picture (mirror, rotation) for display.
+    Orientation(crate::media::geometry::Orientation),
     Resize(PhysicalSize<u32>),
     Occluded(bool),
     /// Redraw the current frame and return a copy of it.
@@ -118,6 +120,7 @@ impl RenderWorker {
                 let mut redraw = false;
                 let mut occluded = false;
                 let mut display_aspect = initial_display_aspect;
+                let mut orientation = crate::media::geometry::Orientation::default();
                 let mut snapshot_reply = None::<std_mpsc::Sender<Option<egui::ColorImage>>>;
                 // The playback mode and the window's display (it can move)
                 // are looked at again now and then.
@@ -155,6 +158,10 @@ impl RenderWorker {
                         match command {
                             RenderCommand::DisplayAspect(value) => {
                                 display_aspect = value;
+                                redraw = true;
+                            }
+                            RenderCommand::Orientation(value) => {
+                                orientation = value;
                                 redraw = true;
                             }
                             RenderCommand::Resize(new_size) => {
@@ -287,6 +294,7 @@ impl RenderWorker {
                                 p.nominal_fps = if fps >= 15.0 { fps } else { 60.0 };
                             }
                             p.video_renderer.set_display_aspect(display_aspect);
+                            p.video_renderer.set_orientation(orientation);
                             p.analysis_at = frame.received_at;
                             p.analysis_new = is_new_submission || chain_changed;
                             p.resize(size).map_err(VideoRenderError::prepare)?;
@@ -334,7 +342,7 @@ impl RenderWorker {
                                         not_ready = 0;
                                     }
                                     *mutex_lock(&worker_video_size) =
-                                        Some((frame.width, frame.height));
+                                        Some(orientation.turned((frame.width, frame.height)));
                                     current_frame = Some(frame);
                                 }
                             }

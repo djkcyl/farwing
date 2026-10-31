@@ -637,6 +637,9 @@ pub enum DisplayKind {
     Foreign = 3,
     /// The super screen: the only active display while it lasts.
     Exclusive = 4,
+    /// A camera: a video source without desktop, input or display modes
+    /// (`docs/protocol/camera-design.md` §4).
+    Camera = 5,
 }
 
 /// The host's displays (push).
@@ -692,6 +695,12 @@ pub(crate) struct Display {
     /// This participant's video track of the display; -1 none.
     #[prost(int32, tag = "15")]
     pub(crate) track: i32,
+    /// Show the picture mirrored left to right (cameras).
+    #[prost(bool, tag = "16")]
+    pub(crate) mirror: bool,
+    /// Then rotated clockwise by this many quarter turns (cameras).
+    #[prost(uint32, tag = "17")]
+    pub(crate) quarter_turns: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, prost::Message)]

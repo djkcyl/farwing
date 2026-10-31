@@ -14,6 +14,7 @@ use winit::dpi::PhysicalSize;
 
 pub(crate) struct VideoShaderRenderer {
     display_aspect: Option<(u32, u32)>,
+    orientation: crate::media::geometry::Orientation,
     input_layout: ID3D11InputLayout,
     vertex_shader: ID3D11VertexShader,
     yuv_pixel_shader: ID3D11PixelShader,
@@ -39,6 +40,7 @@ struct VideoShaderGeometry {
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct VideoGeometryKey {
     display_aspect: Option<(u32, u32)>,
+    orientation: crate::media::geometry::Orientation,
     visible_x: u32,
     visible_y: u32,
     coded_width: u32,
@@ -90,6 +92,9 @@ pub(crate) struct VideoTextureView {
 impl VideoShaderRenderer {
     pub(crate) fn set_display_aspect(&mut self, aspect: Option<(u32, u32)>) {
         self.display_aspect = aspect;
+    }
+    pub(crate) fn set_orientation(&mut self, orientation: crate::media::geometry::Orientation) {
+        self.orientation = orientation;
     }
     pub(crate) fn set_rgba_shader(&mut self, shader: ID3D11PixelShader) {
         self.rgba_pixel_shader = shader;
@@ -219,6 +224,7 @@ impl VideoShaderRenderer {
             rasterizer: rasterizer.context("D3D11 did not return the video rasterizer")?,
             color_buffer: None,
             display_aspect: None,
+            orientation: Default::default(),
             geometry: None,
             views: VecDeque::with_capacity(SHARED_TEXTURE_CACHE_SIZE),
         })
@@ -242,6 +248,7 @@ impl VideoShaderRenderer {
         let (plane_0, plane_1) = self.shader_views(device, texture, &view)?;
         let geometry_key = VideoGeometryKey {
             display_aspect: self.display_aspect,
+            orientation: self.orientation,
             visible_x: view.visible_x,
             visible_y: view.visible_y,
             coded_width: view.coded_width,
@@ -529,8 +536,8 @@ fn create_video_shader_resource_view(
 fn video_vertices(key: VideoGeometryKey) -> [VideoVertex; 4] {
     let (display_width, display_height) = (key.width, key.height);
     let (display_width, display_height) = key
-        .display_aspect
-        .unwrap_or((display_width, display_height));
+        .orientation
+        .turned(key.display_aspect.unwrap_or((display_width, display_height)));
     let mut destination = fit_rect(
         display_width,
         display_height,
@@ -547,23 +554,70 @@ fn video_vertices(key: VideoGeometryKey) -> [VideoVertex; 4] {
     let v0 = key.visible_y as f32 / key.coded_height.max(1) as f32;
     let u1 = key.visible_x.saturating_add(key.width) as f32 / key.coded_width.max(1) as f32;
     let v1 = key.visible_y.saturating_add(key.height) as f32 / key.coded_height.max(1) as f32;
-    let texcoords = [[u0, v0], [u1, v0], [u0, v1], [u1, v1]];
+    // Clockwise from the top left, as `Orientation::source_corners` counts.
+    let corners = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+    let source = key.orientation.source_corners();
+    let texcoord = |corner: usize| corners[source[corner]];
     [
         VideoVertex {
             position: [left, top],
-            texcoord: texcoords[0],
+            texcoord: texcoord(0),
         },
         VideoVertex {
             position: [right, top],
-            texcoord: texcoords[1],
+            texcoord: texcoord(1),
         },
         VideoVertex {
             position: [left, bottom],
-            texcoord: texcoords[2],
+            texcoord: texcoord(3),
         },
         VideoVertex {
             position: [right, bottom],
-            texcoord: texcoords[3],
+            texcoord: texcoord(2),
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::media::geometry::Orientation;
+
+    fn key(orientation: Orientation) -> VideoGeometryKey {
+        VideoGeometryKey {
+            display_aspect: None,
+            orientation,
+            visible_x: 0,
+            visible_y: 0,
+            coded_width: 200,
+            coded_height: 100,
+            width: 200,
+            height: 100,
+            output_width: 400,
+            output_height: 400,
+            content_top: 0,
+        }
+    }
+
+    #[test]
+    fn turned_pictures_map_their_corners() {
+        // Vertex order: top left, top right, bottom left, bottom right.
+        let uv = |o| video_vertices(key(o)).map(|v| v.texcoord);
+        assert_eq!(uv(Orientation::default()), [[0., 0.], [1., 0.], [0., 1.], [1., 1.]]);
+        let mirror = Orientation { mirror: true, quarter_turns: 0 };
+        assert_eq!(uv(mirror), [[1., 0.], [0., 0.], [1., 1.], [0., 1.]]);
+        // A quarter turn clockwise: the top left shows the source's bottom left.
+        let quarter = Orientation { mirror: false, quarter_turns: 1 };
+        assert_eq!(uv(quarter), [[0., 1.], [0., 0.], [1., 1.], [1., 0.]]);
+        let half = Orientation { mirror: false, quarter_turns: 2 };
+        assert_eq!(uv(half), [[1., 1.], [0., 1.], [1., 0.], [0., 0.]]);
+    }
+
+    #[test]
+    fn a_quarter_turn_fits_the_turned_size() {
+        // 200×100 turned is 100×200: in a 400×400 output it is 200 wide.
+        let v = video_vertices(key(Orientation { mirror: false, quarter_turns: 3 }));
+        assert_eq!((v[0].position[0], v[1].position[0]), (-0.5, 0.5));
+        assert_eq!((v[0].position[1], v[2].position[1]), (1.0, -1.0));
+    }
 }

@@ -73,6 +73,7 @@ pub(in crate::application::viewer) struct ThreadedWindowsApp {
     pub(in crate::application::viewer) pending_aspect_size: Option<PhysicalSize<u32>>,
     pub(in crate::application::viewer) last_aspect_video_size: Option<(u32, u32)>,
     display_aspect: Option<(u32, u32)>,
+    orientation: crate::media::geometry::Orientation,
     pub(in crate::application::viewer) window_move: WindowMoveState,
     pub(in crate::application::viewer) window_resize: WindowResizeState,
     pub(in crate::application::viewer) timing_audit: Option<UiTimingAudit>,
@@ -128,6 +129,7 @@ impl ThreadedWindowsApp {
         self.bound_screen = session.screen_binding();
         self._session = session;
         self.last_aspect_video_size = None;
+        self.orientation = Default::default();
         Ok(())
     }
 
@@ -200,6 +202,7 @@ impl ThreadedWindowsApp {
             pending_aspect_size: None,
             last_aspect_video_size: None,
             display_aspect: None,
+            orientation: Default::default(),
             window_move: WindowMoveState::default(),
             window_resize: WindowResizeState::default(),
             timing_audit: connecting.timing_audit,
@@ -362,6 +365,13 @@ impl ThreadedWindowsApp {
             self.renderer
                 .send(RenderCommand::DisplayAspect(display_aspect));
         }
+        let orientation = self.stream_control.orientation(self._session.track_index);
+        if self.orientation != orientation {
+            self.orientation = orientation;
+            self.renderer.send(RenderCommand::Orientation(orientation));
+        }
+        // A camera takes no input: the picture is never the desktop's.
+        let camera = self.stream_control.shows_camera(self._session.track_index);
         if let Ok(hwnd) = window_hwnd(window) {
             crate::application::viewer::windows_keyboard::finish_lock_releases(hwnd.0 as u64);
         }
@@ -415,6 +425,7 @@ impl ThreadedWindowsApp {
                 .stream_control
                 .pending_display_resolution(self._session.screen_id())
                 .is_some();
+        let display_transition = display_transition || camera;
         // Nothing covers the picture: no menu, pending tab or display change.
         let unobstructed = !display_transition
             && !self.stream_control_ui.open
@@ -491,6 +502,7 @@ impl ThreadedWindowsApp {
         let mut resize = None;
         let resize_aspect = self.current_presentation_size();
         let plugin_video_size = self.current_presentation_size();
+        let camera = self.stream_control.shows_camera(self._session.track_index);
         let output = self.egui_context.run_ui(input, |ui| {
             let ctx = ui.ctx().clone();
             if fullscreen {
@@ -505,6 +517,7 @@ impl ThreadedWindowsApp {
                         stream_control_ui: &mut self.stream_control_ui,
                         plugin_menu_open: &mut self.plugin_menu_open,
                         move_state: None,
+                        camera,
                     },
                 );
             } else {
@@ -526,6 +539,7 @@ impl ThreadedWindowsApp {
                                 stream_control_ui: &mut self.stream_control_ui,
                                 plugin_menu_open: &mut self.plugin_menu_open,
                                 move_state: Some(&mut self.window_move),
+                                camera,
                             },
                         );
                     },

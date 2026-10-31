@@ -92,20 +92,26 @@ impl ScreenTabBar {
                         } else if response.clicked() {
                             self.command = Some(TabCommand::Select(*id));
                         }
+                        let camera = snapshot
+                            .screens
+                            .iter()
+                            .any(|s| s.id == *id && s.display.is_camera());
                         response.context_menu(|ui| {
                             super::super::stream_menu::menu_style(ui);
                             ui.set_width(crate::ui::theme::CONTEXT_MENU_WIDTH);
-                            if let Some(error) = super::super::stream_menu::tab_display_menu(
-                                ui,
-                                control,
-                                *id,
-                                window
-                                    .current_monitor()
-                                    .map(|m| (m.size().width, m.size().height)),
-                            ) {
-                                self.error = Some(error);
+                            if !camera {
+                                if let Some(error) = super::super::stream_menu::tab_display_menu(
+                                    ui,
+                                    control,
+                                    *id,
+                                    window
+                                        .current_monitor()
+                                        .map(|m| (m.size().width, m.size().height)),
+                                ) {
+                                    self.error = Some(error);
+                                }
+                                ui.separator();
                             }
-                            ui.separator();
                             if crate::ui::controls::menu_row(
                                 ui,
                                 t().viewer.open_in_window,

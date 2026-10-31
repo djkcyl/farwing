@@ -56,6 +56,8 @@ pub(crate) fn display_list(
                 recommended_scale: dpi.map_or(0, |d| d.recommended),
                 scales: dpi.map(|d| d.supported.clone()).unwrap_or_default(),
                 track: tracks.get(&screen.id).map_or(-1, |i| *i as i32),
+                mirror: false,
+                quarter_turns: 0,
             }
         })
         .collect();

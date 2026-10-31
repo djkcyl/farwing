@@ -30,6 +30,8 @@ pub(in crate::application::viewer) struct PlayerTitleBar<'a> {
     pub(in crate::application::viewer) stream_control_ui: &'a mut StreamControlUi,
     pub(in crate::application::viewer) plugin_menu_open: &'a mut bool,
     pub(in crate::application::viewer) move_state: Option<&'a mut WindowMoveState>,
+    /// The window shows a camera: no control or annotation.
+    pub(in crate::application::viewer) camera: bool,
 }
 
 pub(in crate::application::viewer) fn player_title_bar(
@@ -251,6 +253,7 @@ pub(in crate::application::viewer) fn player_title_bar(
     action.toggle_annotation = actions
         .add_enabled_ui(
             !annotation.toggling
+                && !bar.camera
                 && (annotation.enabled || (annotation.supported && annotation_granted)),
             |ui| {
                 title_icon_button(
@@ -329,7 +332,7 @@ pub(in crate::application::viewer) fn player_title_bar(
         .then(|| bar.stream_control.participants().controlled_by_other())
         .flatten();
     let mouse_button = actions
-        .add_enabled_ui((enabled || control.ready) && holder.is_none(), |ui| {
+        .add_enabled_ui((enabled || control.ready) && holder.is_none() && !bar.camera, |ui| {
             let hint = if control.control_asking {
                 t().viewer.control_asking.into()
             } else if bar.stream_control.mouse().transport_recovering() {
