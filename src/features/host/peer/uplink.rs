@@ -127,8 +127,8 @@ struct Running {
     serial: u64,
     /// The forwarder's low layer: its own budget, not a share of the limit.
     low: bool,
-    /// The screen the group encodes.
-    screen: String,
+    /// The source the group encodes (`encode_group::Key::source`).
+    source: String,
     cancel: CancellationToken,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     observer: Option<std::thread::JoinHandle<()>>,
@@ -460,7 +460,7 @@ impl Uplink {
         let main = slots.iter().position(|s| {
             s.running
                 .as_ref()
-                .is_some_and(|r| !r.low && !r.cancel.is_cancelled() && r.screen == low.screen)
+                .is_some_and(|r| !r.low && !r.cancel.is_cancelled() && r.source == low.source)
         })?;
         Some(format!("video_{main}"))
     }
@@ -668,7 +668,7 @@ fn start(
     Running {
         serial: group.group.serial(),
         low,
-        screen: group.group.key().screen.clone(),
+        source: group.group.key().source.clone(),
         cancel,
         tasks: vec![reports, feedback, sending],
         observer,

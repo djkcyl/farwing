@@ -31,8 +31,8 @@ const KEYFRAME_RETRY: Duration = Duration::from_secs(1);
 /// What makes two participants' video identical.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Key {
-    /// Output device name.
-    pub screen: String,
+    /// The source (`capture::Source::key`: a screen's output device name).
+    pub source: String,
     pub adapter: u64,
     pub backend: Backend,
     pub format: Format,
@@ -115,7 +115,7 @@ pub(super) fn choose(groups: &[(Key, (u32, u32))], wanted: &Key, size: (u32, u32
         .iter()
         .enumerate()
         .filter(|(_, (key, _))| {
-            key.screen == wanted.screen && key.format == wanted.format && key.low == wanted.low
+            key.source == wanted.source && key.format == wanted.format && key.low == wanted.low
         })
         .min_by_key(|(_, (key, group_size))| {
             let same_encoder = key.adapter == wanted.adapter && key.backend == wanted.backend;
@@ -151,7 +151,7 @@ pub(super) struct Output {
     pub implementation: i32,
     pub maximum_size: (u32, u32),
     pub capture: String,
-    pub screen: crate::features::host::capture::Screen,
+    pub source: crate::features::host::capture::Source,
     pub target: crate::features::host::parameters::Target,
     pub fps: u32,
     pub format: Format,
@@ -494,20 +494,20 @@ impl Registry {
                 group.lock().members.insert(id, member);
                 if matches!(choice, Choice::Exact(_)) {
                     tracing::info!(
-                        screen = %key.screen,
+                        source = %key.source,
                         target = ?key.target,
                         fps = key.fps,
                         "participant joined a shared encoder"
                     );
                 } else if any {
                     tracing::info!(
-                        screen = %key.screen,
+                        source = %key.source,
                         sharing = ?group.key(),
                         "forwarded participant shares the stream of its screen"
                     );
                 } else {
                     tracing::info!(
-                        screen = %key.screen,
+                        source = %key.source,
                         wanted = ?key,
                         sharing = ?group.key(),
                         "encoder limit reached; participant shares the closest encoder"
@@ -518,7 +518,7 @@ impl Registry {
             Choice::Create | Choice::OverLimit => {
                 if choice == Choice::OverLimit {
                     tracing::warn!(
-                        screen = %key.screen,
+                        source = %key.source,
                         encoders = groups.len(),
                         "encoder limit reached but no encoder can be shared; opening another"
                     );
@@ -597,7 +597,7 @@ impl Registry {
         let groups = self.groups();
         let group = &membership.group;
         let current = group.key();
-        let same_encoder = current.screen == key.screen
+        let same_encoder = current.source == key.source
             && current.adapter == key.adapter
             && current.backend == key.backend
             && current.format == key.format
@@ -777,9 +777,9 @@ mod tests {
             _ => Target::Custom { bps: quality as u32 * 1_000_000 },
         }
     }
-    fn key(screen: &str, quality: i32) -> Key {
+    fn key(source: &str, quality: i32) -> Key {
         Key {
-            screen: screen.into(),
+            source: source.into(),
             adapter: 1,
             backend: Backend::Nvidia,
             format: Format::AVC,
@@ -895,7 +895,7 @@ mod tests {
         assert_eq!(extra.group_key().target, target(3));
         // Another screen cannot share: over the limit.
         let (other, _) = join(&registry, key("D2", 2), (1920, 1080));
-        assert_eq!(other.group_key().screen, "D2");
+        assert_eq!(other.group_key().source, "D2");
         assert_eq!(registry.len(), 5);
         drop(held);
     }

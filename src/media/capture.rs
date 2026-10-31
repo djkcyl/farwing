@@ -16,6 +16,56 @@ pub(crate) struct Screen {
     pub render_adapter: Option<u64>,
     pub identity: Option<String>,
 }
+/// What an encoder pipeline captures. Only screens so far; cameras and
+/// windows join as further kinds (`docs/protocol/camera-design.md` §9.1).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum Source {
+    Screen(Screen),
+}
+
+impl Source {
+    /// Identifies the source among the process's encoder pipelines: two
+    /// members share a pipeline only if their sources have the same key.
+    pub(crate) fn key(&self) -> &str {
+        match self {
+            Self::Screen(screen) => &screen.device_name,
+        }
+    }
+    pub(crate) fn size(&self) -> (u32, u32) {
+        match self {
+            Self::Screen(screen) => (screen.width, screen.height),
+        }
+    }
+    /// The highest frame rate it produces.
+    pub(crate) fn fps(&self) -> u32 {
+        match self {
+            Self::Screen(screen) => screen.fps,
+        }
+    }
+    pub(crate) fn hdr(&self) -> bool {
+        match self {
+            Self::Screen(screen) => screen.hdr,
+        }
+    }
+    /// The adapter its frames are on.
+    pub(crate) fn adapter(&self) -> u64 {
+        match self {
+            Self::Screen(screen) => screen.adapter,
+        }
+    }
+    /// The adapter that renders it (an encoder there avoids a copy).
+    pub(crate) fn render_adapter(&self) -> u64 {
+        match self {
+            Self::Screen(screen) => screen.render_adapter.unwrap_or(screen.adapter),
+        }
+    }
+    pub(crate) fn screen(&self) -> Option<&Screen> {
+        match self {
+            Self::Screen(screen) => Some(screen),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct SourceGone;
 impl std::fmt::Display for SourceGone {

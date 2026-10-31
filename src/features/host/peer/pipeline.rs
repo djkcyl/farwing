@@ -1,8 +1,9 @@
 //! The encoder pipeline of one stream ([`super::encode_group`]): a thread
-//! that captures a screen, encodes it at its members' allowance and hands
-//! every frame to them. Driver objects stay on this thread; it ends when
-//! its last member leaves, or reports why it cannot go on.
+//! that captures a source (a screen), encodes it at its members' allowance
+//! and hands every frame to them. Driver objects stay on this thread; it
+//! ends when its last member leaves, or reports why it cannot go on.
 use super::super::{capture, encoder, output_size};
+use crate::platform::source::{self, FrameSource};
 use super::encode_group::{End, Group, Output};
 use crate::features::host::format::{Backend, Color, QualityTarget, Rate};
 use crate::features::host::parameters::{self, MIN_ENCODER_RATE};
@@ -17,11 +18,11 @@ mod metrics;
 /// How long one slow member among several holds the stream back.
 const PATIENCE: Duration = Duration::from_millis(100);
 
-/// How a pipeline starts: the screen and the GPU scheduling of the member
+/// How a pipeline starts: the source and the GPU scheduling of the member
 /// that opened it.
 #[derive(Clone)]
 pub(super) struct Start {
-    pub screen: capture::Screen,
+    pub source: capture::Source,
     pub gpu_compatibility: bool,
 }
 
@@ -29,7 +30,7 @@ pub(super) struct Start {
 impl Start {
     pub(super) fn test() -> Self {
         Self {
-            screen: capture::Screen {
+            source: capture::Source::Screen(capture::Screen {
                 id: 0,
                 device_name: String::new(),
                 display_name: String::new(),
@@ -44,7 +45,7 @@ impl Start {
                 adapter: 0,
                 render_adapter: None,
                 identity: None,
-            },
+            }),
             gpu_compatibility: false,
         }
     }
@@ -63,7 +64,7 @@ pub(super) fn spawn(group: Arc<Group>, start: Start) {
                 Err(error) => End::Failed(format!("{error:#}")),
             };
             if !running.stopped() {
-                tracing::warn!(screen = %running.key().screen, ?end, "encoder pipeline ended");
+                tracing::warn!(source = %running.key().source, ?end, "encoder pipeline ended");
             }
             running.end(end);
         });
@@ -92,14 +93,14 @@ fn run(group: &Group, start: Start) -> Result<Option<End>> {
     // the device.
     let mut reconnect = Reconnect(None);
     let _activity = crate::platform::windows::host_service::activity::Work::new();
-    // Screen, encoder and format stay; the rest may be retuned.
+    // Source, encoder and format stay; the rest may be retuned.
     let initial = group.key();
     let stop = group.stop_flag();
     let format = initial.format;
     let hardware = initial.backend != Backend::Software;
     let mut runtime = encoder::Runtime::new()?;
-    let mut screen = start.screen;
-    let mut desktop = None::<capture::Desktop>;
+    let mut described = start.source;
+    let mut frames = None::<Box<dyn FrameSource>>;
     let mut encoder = None::<encoder::Encoder>;
     // `frame-meta` numbering and the long-term reference decisions.
     let mut frame_ids = crate::media::frame_meta::Counter::default();
@@ -142,8 +143,9 @@ fn run(group: &Group, start: Start) -> Result<Option<End>> {
             .filter(|fps| *fps > 0)
             .map_or(key.fps, |fps| fps.min(key.fps))
             .max(1);
-        metrics.report(fps, screen.adapter, key.adapter);
-        let budget_size = crate::media::geometry::fit_size(screen.width, screen.height, key.maximum);
+        metrics.report(fps, described.adapter(), key.adapter);
+        let (source_width, source_height) = described.size();
+        let budget_size = crate::media::geometry::fit_size(source_width, source_height, key.maximum);
         let bounds = parameters::fixed(format, key.target, budget_size, fps);
         let quality_target = QualityTarget {
             bitrate: bounds.maximum,
@@ -155,13 +157,14 @@ fn run(group: &Group, start: Start) -> Result<Option<End>> {
             next = Instant::now();
         }
 
-        if desktop.is_none() {
+        if frames.is_none() {
             // Prepared while the members' connections are still being made;
             // nothing is encoded or sent before one of them takes frames.
             let opened_at = Instant::now();
             runtime.begin_gpu_work(start.gpu_compatibility);
-            desktop = Some(capture::Desktop::open_selected(&screen)?);
-            generation = desktop.as_ref().unwrap().generation;
+            let opened = source::open(&described)?;
+            generation = opened.generation();
+            frames = Some(opened);
             quick_retries = 3;
             tracing::info!(
                 elapsed_ms = opened_at.elapsed().as_millis(),
@@ -209,7 +212,7 @@ fn run(group: &Group, start: Start) -> Result<Option<End>> {
         }
         let hdr = key.hdr
             && format.depth == 10
-            && desktop.as_ref().is_some_and(capture::Desktop::hdr_available);
+            && frames.as_ref().is_some_and(|f| f.hdr_available());
         let wait_ms = ((1000.0 / f64::from(fps)).round() as u32).max(1);
         let capture_started = Instant::now();
         // Advance the planned deadline, not the (usually late) wake-up time.
@@ -220,18 +223,18 @@ fn run(group: &Group, start: Start) -> Result<Option<End>> {
         } else {
             next + period
         };
-        let captured = desktop
+        let captured = frames
             .as_mut()
             .context(t().features.peer_capture_source_missing)?
             .next(wait_ms, tier, key.cursor, hdr, key.maximum);
         metrics.capture.record(capture_started.elapsed());
         let captured = captured?;
-        let capture_state = desktop
+        let capture_state = frames
             .as_ref()
             .context(t().features.peer_capture_source_missing)?;
-        group.set_cursor(capture_state.cursor.clone());
-        if generation != capture_state.generation {
-            generation = capture_state.generation;
+        group.set_cursor(capture_state.cursor());
+        if generation != capture_state.generation() {
+            generation = capture_state.generation();
             encoder = None;
             encoder_info = None;
             cached = None;
@@ -240,14 +243,14 @@ fn run(group: &Group, start: Start) -> Result<Option<End>> {
             transfer = None;
             keyframe = true;
         }
-        screen = capture_state.screen.clone();
+        described = capture_state.descriptor();
         if hdr != (key.hdr && capture_state.hdr_available() && format.depth == 10) {
             // Capture recovery or source refresh changed the effective
             // format: rebuild preprocessing and encoder before this frame.
             cached = None;
             continue;
         }
-        if !capture_state.available {
+        if !capture_state.available() {
             cached = None;
             group.set_visible(false);
             std::thread::sleep(Duration::from_millis(20));
@@ -295,15 +298,15 @@ fn run(group: &Group, start: Start) -> Result<Option<End>> {
         }
         let size = output_size(frame.width, frame.height, tier);
         let color = if hdr { Color::Hdr } else { Color::Sdr };
-        let source_device = &desktop
+        let source_device = frames
             .as_ref()
             .context(t().features.peer_capture_source_missing)?
-            .device;
+            .device();
         // NVENC owns a separate D3D11 context even on the capture adapter.
         // Transfer explicitly orders capture/preprocessing before encoding,
         // instead of relying on NVENC's handling of the capture context.
         let isolated_nvenc = hardware && key.backend == Backend::Nvidia;
-        let device = if !hardware || (!isolated_nvenc && key.adapter == screen.adapter) {
+        let device = if !hardware || (!isolated_nvenc && key.adapter == described.adapter()) {
             source_device.clone()
         } else {
             if encoding_device
@@ -313,7 +316,7 @@ fn run(group: &Group, start: Start) -> Result<Option<End>> {
                 match capture::create_device(key.adapter) {
                     Ok((device, _)) => {
                         tracing::info!(
-                            source_adapter = screen.adapter,
+                            source_adapter = described.adapter(),
                             encoder_adapter = key.adapter,
                             isolated_nvenc,
                             "host encoding device created independently of capture"
@@ -519,7 +522,7 @@ fn run(group: &Group, start: Start) -> Result<Option<End>> {
                     encoder_info = None;
                     current = None;
                     cached = None;
-                    desktop = None;
+                    frames = None;
                     transfer = None;
                     encoding_device = None;
                     last_frame = None;
@@ -548,12 +551,12 @@ fn run(group: &Group, start: Start) -> Result<Option<End>> {
         if !encoded.is_empty()
             && let Some((implementation, maximum_size)) = encoder_info
         {
-            let capture = desktop.as_ref().map_or("DXGI", |d| d.backend_name()).to_owned();
+            let capture = frames.as_ref().map_or("DXGI", |f| f.backend_name()).to_owned();
             group.set_output(Output {
                 implementation,
                 maximum_size,
                 capture,
-                screen: screen.clone(),
+                source: described.clone(),
                 target: key.target,
                 fps,
                 format,

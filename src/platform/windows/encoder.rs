@@ -6,14 +6,15 @@ use windows::{
     core::Interface,
 };
 
+/// Which encoders work, checked with real frames from `source`.
 pub(crate) fn probe(
-    desktop: &mut super::capture::Desktop,
+    source: &mut dyn super::source::FrameSource,
     is_active: impl Fn() -> bool,
 ) -> Result<Vec<super::format::Capability>> {
     use super::format::{Backend, Capability, Codec, Format, Rate};
     let desc = unsafe {
-        desktop
-            .device
+        source
+            .device()
             .cast::<windows::Win32::Graphics::Dxgi::IDXGIDevice>()?
             .GetAdapter()?
             .GetDesc()?
@@ -32,7 +33,7 @@ pub(crate) fn probe(
             _ => continue,
         };
         let device = if luid == adapter {
-            desktop.device.clone()
+            source.device().clone()
         } else {
             match super::capture::create_device(luid) {
                 Ok((device, _)) => device,
@@ -59,11 +60,11 @@ pub(crate) fn probe(
     }
     candidates.push((
         adapter,
-        desktop.device.clone(),
+        source.device().clone(),
         Backend::Software,
         Format::AVC,
     ));
-    // Capability verification needs an input sample, not a new desktop present
+    // Capability verification needs an input sample, not a new source picture
     // for every candidate. Keep one owned converted sample per input format.
     let mut samples = [None::<super::capture::Frame>, None];
     let mut result = Vec::new();
@@ -79,7 +80,7 @@ pub(crate) fn probe(
                 if !is_active() {
                     anyhow::bail!("{}", t().system.encode_preparation_cancelled);
                 }
-                if let Some(frame) = desktop.next(50, crate::media::geometry::Tier::P720, false, format.depth == 10, (1280, 720))? {
+                if let Some(frame) = source.next(50, crate::media::geometry::Tier::P720, false, format.depth == 10, (1280, 720))? {
                     acquired_frame = true;
                     *cached = Some(frame);
                     break;

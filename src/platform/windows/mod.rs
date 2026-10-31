@@ -29,6 +29,7 @@ pub(crate) mod preprocess;
 pub(crate) mod qsv;
 pub(crate) mod qsv_allocator;
 mod software_encoder;
+pub(crate) mod source;
 pub(crate) mod surface;
 pub(crate) mod system_power;
 pub(crate) mod transfer;

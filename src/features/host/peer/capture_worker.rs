@@ -92,12 +92,14 @@ pub(super) fn capture_loop(
                 End::Stopped => {}
             }
         }
+        let source = capture::Source::Screen(screen.clone());
+        let source_size = source.size();
         let mut wanted = *lock(&config);
         if !negotiated.permits_format(wanted.format) {
             let previous = wanted.revision;
             let chroma = wanted.format.chroma;
             let hdr = wanted.color.is_hdr();
-            negotiated.apply_requested(&mut wanted, chroma, hdr, (screen.width, screen.height))?;
+            negotiated.apply_requested(&mut wanted, chroma, hdr, source_size)?;
             let mut active = lock(&config);
             if active.revision != previous {
                 continue;
@@ -121,16 +123,16 @@ pub(super) fn capture_loop(
         let automatic_requested = wanted.quality == Quality::Auto;
         // Gate HDR on the screen's reported state, so the keys of members
         // agree; the pipeline checks its source again.
-        negotiated.apply_source(&mut wanted, (screen.width, screen.height), screen.hdr)?;
+        negotiated.apply_source(&mut wanted, source_size, source.hdr())?;
         control.settings(&wanted);
-        let source_gpu = screen.render_adapter.unwrap_or(screen.adapter);
+        let source_gpu = source.render_adapter();
         let candidate = shared
             .then(|| {
-                negotiated.candidate(&wanted, (screen.width, screen.height), source_gpu, &failed, true)
+                negotiated.candidate(&wanted, source_size, source_gpu, &failed, true)
             })
             .flatten()
             .or_else(|| {
-                negotiated.candidate(&wanted, (screen.width, screen.height), source_gpu, &failed, false)
+                negotiated.candidate(&wanted, source_size, source_gpu, &failed, false)
             })
             .context(t().features.peer_no_negotiated_encoder)?;
         wanted.format = candidate.capability.format;
@@ -140,16 +142,16 @@ pub(super) fn capture_loop(
         wanted.maximum = wanted.requested_maximum.map_or(candidate.maximum, |cap| {
             (candidate.maximum.0.min(cap.0), candidate.maximum.1.min(cap.1))
         });
-        wanted.fps = wanted.fps.min(candidate.fps).min(screen.fps).max(1);
+        wanted.fps = wanted.fps.min(candidate.fps).min(source.fps()).max(1);
         // The key uses the tier before this viewer's decoder cap and
         // weak-network strategy; those only lower the pipeline's frame rate.
         let tier_fps = wanted.fps;
         if wanted.receiver_fps > 0 {
             wanted.fps = wanted.fps.min(wanted.receiver_fps);
         }
-        let maximum_tier = negotiated.maximum_tier((screen.width, screen.height), wanted.maximum);
+        let maximum_tier = negotiated.maximum_tier(source_size, wanted.maximum);
         let budget_size =
-            crate::media::geometry::fit_size(screen.width, screen.height, wanted.maximum);
+            crate::media::geometry::fit_size(source_size.0, source_size.1, wanted.maximum);
         // Automatic quality judges the link only while frames flow.
         let flowing = wanted.sending
             && wanted.capturing
@@ -200,7 +202,7 @@ pub(super) fn capture_loop(
 
         // Which pipeline this participant watches.
         let key = encode_group::Key {
-            screen: screen.device_name.clone(),
+            source: source.key().to_owned(),
             adapter: candidate.capability.adapter,
             backend: candidate.capability.backend,
             format: candidate.capability.format,
@@ -219,7 +221,7 @@ pub(super) fn capture_loop(
                 // and format there is (one per layer): one stream goes to
                 // the forwarder.
                 let stream = m.group_key();
-                stream.screen != key.screen || stream.format != key.format || stream.low != key.low
+                stream.source != key.source || stream.format != key.format || stream.low != key.low
             } else {
                 // Alone in its pipeline, a member changes it in place.
                 forwarded_before
@@ -235,7 +237,7 @@ pub(super) fn capture_loop(
                 frames: sender.clone(),
                 clock: started,
                 start: super::pipeline::Start {
-                    screen: screen.clone(),
+                    source,
                     gpu_compatibility: negotiated.gpu_compatibility,
                 },
             };
@@ -316,21 +318,25 @@ pub(super) fn capture_loop(
             membership.request_keyframe();
         }
         if let Some(output) = membership.output_changed() {
-            screen = output.screen.clone();
+            // A screen slot's pipeline captures a screen.
+            let Some(output_screen) = output.source.screen().cloned() else {
+                anyhow::bail!("{}", t().features.peer_capture_source_missing);
+            };
+            screen = output_screen.clone();
             let source = (
                 output.implementation,
                 output.maximum_size,
                 output.capture.clone(),
-                output.screen.clone(),
+                output_screen.clone(),
             );
             if followed.as_ref() != Some(&source) {
                 handle.encoder(
                     output.implementation,
                     output.maximum_size,
-                    &output.screen,
+                    &output_screen,
                     &output.capture,
                 );
-                handle.source(&output.screen, &output.capture);
+                handle.source(&output_screen, &output.capture);
                 followed = Some(source);
             }
             let (preferred_gpu, preferred_codec) = negotiated.preference();
@@ -347,7 +353,7 @@ pub(super) fn capture_loop(
             let state = Published {
                 automatic: automatic_requested,
                 hdr: requested_hdr && output.format.depth == 10,
-                screen: output.screen,
+                screen: output_screen,
                 capturing: true,
                 visible: output.visible,
                 target: output.target,

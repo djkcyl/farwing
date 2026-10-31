@@ -17,7 +17,7 @@ use windows::{
     core::{Interface, PCWSTR},
 };
 
-pub(crate) use crate::media::capture::{Screen, SourceGone};
+pub(crate) use crate::media::capture::{Screen, Source, SourceGone};
 use duplication::Duplication;
 mod duplication;
 mod inventory;
