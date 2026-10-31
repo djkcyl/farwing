@@ -283,6 +283,24 @@ impl ControllerConnection {
             .set_keyboard_platform(device.platform);
         Ok(connection)
     }
+    /// A session for the host's cameras only, without a window.
+    pub(crate) async fn connect_headless_camera(
+        client: &AuthenticatedClient,
+        device: &crate::account::api::DeviceInfo,
+        policy: crate::account::feature_ability::FeaturePolicy,
+        options: ConnectionMediaOptions,
+        cancel: &CancellationToken,
+    ) -> Result<Self> {
+        Self::connect_business(
+            client,
+            device,
+            policy,
+            options,
+            cancel,
+            crate::session::negotiation::ControlPurpose::Camera,
+        )
+        .await
+    }
     async fn connect_business(
         client: &AuthenticatedClient,
         device: &crate::account::api::DeviceInfo,
@@ -574,7 +592,11 @@ impl ControllerConnection {
         peer.stream_control_handle().set_feature_policy(features);
         peer.stream_control_handle().set_offer(&control.offer);
         peer.stream_control_handle()
-            .set_viewing_enabled(purpose == crate::session::negotiation::ControlPurpose::Viewing);
+            .set_viewing_enabled(matches!(
+                purpose,
+                crate::session::negotiation::ControlPurpose::Viewing
+                    | crate::session::negotiation::ControlPurpose::Camera
+            ));
         if let Some(preferences) = preferences
             && let Err(error) = peer
                 .stream_control_handle()
@@ -669,6 +691,7 @@ impl ControllerConnection {
                 purpose,
                 crate::session::negotiation::ControlPurpose::Viewing
                     | crate::session::negotiation::ControlPurpose::Audio
+                    | crate::session::negotiation::ControlPurpose::Camera
             ),
         )
     }

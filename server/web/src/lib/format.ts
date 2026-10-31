@@ -31,16 +31,28 @@ export const CAPS = [
   'display',
   'diagnostics',
   'annotation',
+  'camera',
+  'listen',
 ];
 
 /// Capabilities a browser can use (`caps::WEB`), in display order.
-export const WEB_CAPS = ['view', 'control', 'clipboard', 'files', 'audio', 'microphone', 'annotation'];
+export const WEB_CAPS = [
+  'view',
+  'control',
+  'clipboard',
+  'files',
+  'audio',
+  'microphone',
+  'annotation',
+  'camera',
+  'listen',
+];
 
 /// Capability groups: label and members.
 export function capGroups(): [string, string[]][] {
   const g = t().format.capGroups;
   return [
-    [g.view, ['view', 'audio', 'annotation']],
+    [g.view, ['view', 'audio', 'annotation', 'camera', 'listen']],
     [g.operate, ['control', 'clipboard', 'microphone', 'files']],
     [g.manage, ['display', 'ports', 'power', 'diagnostics']],
   ];

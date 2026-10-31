@@ -63,6 +63,33 @@ pub(crate) struct Color {
     pub full_range: Option<bool>,
 }
 
+/// How to capture a camera: its mode, color, bitrate ceiling and how
+/// viewers turn the picture. `None` and the defaults mean automatic.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct Params {
+    pub mode: Option<Mode>,
+    pub color: Color,
+    /// The bitrate ceiling; `None` by resolution and rate (§7).
+    pub bitrate_kbps: Option<u32>,
+    pub orientation: crate::media::geometry::Orientation,
+}
+
+/// The bitrate ceiling of a camera stream by default (§7).
+pub(crate) fn default_bitrate_kbps(width: u32, height: u32, fps: u32) -> u32 {
+    let lines = width.min(height);
+    let high = fps > 30;
+    match lines {
+        0..=480 => if high { 2_500 } else { 1_500 },
+        481..=720 => if high { 4_500 } else { 3_000 },
+        721..=1080 => if high { 8_000 } else { 5_000 },
+        _ => if high { 12_000 } else { 8_000 },
+    }
+}
+
+/// The range a custom bitrate ceiling may take (kbit/s).
+pub(crate) const BITRATE_RANGE_KBPS: std::ops::RangeInclusive<u32> = 300..=20_000;
+
 /// A camera this machine has.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Camera {
@@ -117,6 +144,8 @@ pub(crate) struct Spec {
     pub mode: Mode,
     pub color: Color,
     pub adapter: u64,
+    /// A chosen bitrate ceiling.
+    pub bitrate_kbps: Option<u32>,
     /// Identifies the capture among the encoder pipelines: the same camera
     /// in the same mode and color.
     key: String,
@@ -141,11 +170,18 @@ impl Spec {
             mode,
             color,
             adapter,
+            bitrate_kbps: None,
             key,
         }
     }
     pub(crate) fn key(&self) -> &str {
         &self.key
+    }
+    /// The bitrate ceiling: chosen, or by resolution and rate (§7).
+    pub(crate) fn bitrate_kbps(&self) -> u32 {
+        self.bitrate_kbps
+            .map(|kbps| kbps.clamp(*BITRATE_RANGE_KBPS.start(), *BITRATE_RANGE_KBPS.end()))
+            .unwrap_or_else(|| default_bitrate_kbps(self.mode.width, self.mode.height, self.mode.fps()))
     }
 }
 

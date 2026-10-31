@@ -95,6 +95,7 @@ pub fn policy_allows(target: &DeviceRow, purpose: Purpose) -> bool {
             Purpose::Desktop | Purpose::Audio | Purpose::Diagnostics => true,
             Purpose::Files => p.files,
             Purpose::Ports => p.ports,
+            Purpose::Camera => p.camera,
         }
 }
 
@@ -137,6 +138,9 @@ pub async fn create(
             }
             Purpose::Ports if target.row.host_supported() && p.control => {
                 ApiError::reason(e.code, reason::PORTS_DISABLED, "host does not allow port forwarding")
+            }
+            Purpose::Camera if target.row.host_supported() && p.control => {
+                ApiError::reason(e.code, reason::CAMERA_DISABLED, "host does not allow its cameras to be seen")
             }
             _ => e,
         });

@@ -651,9 +651,9 @@ impl Session {
         use crate::features::stream_control::publisher::kind;
         use farwing_protocol::api::Relation;
         options.kind = match incoming.purpose {
-            farwing_protocol::api::Purpose::Desktop | farwing_protocol::api::Purpose::Audio => {
-                kind::DESKTOP
-            }
+            farwing_protocol::api::Purpose::Desktop
+            | farwing_protocol::api::Purpose::Audio
+            | farwing_protocol::api::Purpose::Camera => kind::DESKTOP,
             farwing_protocol::api::Purpose::Files | farwing_protocol::api::Purpose::Diagnostics => kind::FILES,
             farwing_protocol::api::Purpose::Ports => kind::PORTS,
         };
@@ -707,6 +707,8 @@ impl Session {
         let data_only = file_only || ports_only;
         // The peer HELLO negotiates the in-session feature set.
         let audio_only = incoming.purpose == farwing_protocol::api::Purpose::Audio;
+        // Cameras only: prepared like a listening session, the displays untouched.
+        let camera_only = incoming.purpose == farwing_protocol::api::Purpose::Camera;
         tracing::info!(kind=options.kind, relation=?incoming.relation,
             decoders=?options.decoders, stream=?options.stream,
             "host incoming media capabilities");
@@ -755,17 +757,44 @@ impl Session {
             Relation::Assist => authorization.assist_grants(),
         };
         // No more than the server allows this controller (browsers), whatever
-        // the relation grants.
+        // the relation grants; a camera session no more than the cameras
+        // and the microphone.
         let grants = incoming.controller.limit_grants(grants);
+        let grants = if camera_only {
+            grants
+                .into_iter()
+                .filter(|c| c == farwing_protocol::caps::CAMERA || c == farwing_protocol::caps::LISTEN)
+                .collect()
+        } else {
+            grants
+        };
+        anyhow::ensure!(
+            !camera_only || authorization.host().camera_settings().allowed,
+            "本机未允许远程查看摄像头"
+        );
         anyhow::ensure!(
             grants
                 .iter()
                 .any(|cap| cap == incoming.purpose.required_cap()),
             "主控没有本次会话所需的权限"
         );
+        // What later grant changes may give it (a camera session: the
+        // cameras and the microphone at most).
+        let caps_limit = if camera_only {
+            let limit = incoming.controller.effective_caps_limit();
+            Some(
+                [farwing_protocol::caps::CAMERA, farwing_protocol::caps::LISTEN]
+                    .into_iter()
+                    .filter(|c| limit.as_ref().is_none_or(|l| l.iter().any(|x| x == c)))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            incoming.controller.effective_caps_limit()
+        };
         let authorization = authorization
             .with_grants(grants)
-            .with_limit(incoming.controller.effective_caps_limit().as_deref());
+            .with_limit(caps_limit.as_deref());
         let direct_ports = signal
             .router()
             .and_then(|router| router.session_ports(&session_id));
@@ -847,7 +876,7 @@ impl Session {
             let result = async {
                 let mut display_ms = 0;
                 let mut media_ms = 0;
-                let (screen, config, negotiated, deferred) = if audio_only || data_only
+                let (screen, config, negotiated, deferred) = if audio_only || data_only || camera_only
                 {
                     (
                         None,
@@ -918,6 +947,7 @@ impl Session {
                     options.file_capabilities(),
                     data_only,
                     forwarding_session,
+                    camera_only,
                 )
                 .await?;
                 tracing::info!(display_ms, media_ms,
@@ -944,7 +974,7 @@ impl Session {
                 granted: authorization.clone(),
                 relation: incoming.relation,
                 purpose: incoming.purpose,
-                caps_limit: incoming.controller.effective_caps_limit(),
+                caps_limit,
                 peer: None,
                 preparing: Some(cancel),
                 early_rtc: VecDeque::new(),

@@ -71,6 +71,12 @@ impl Source {
             Self::Camera(_) => None,
         }
     }
+    pub(crate) fn camera(&self) -> Option<&crate::media::camera::Spec> {
+        match self {
+            Self::Camera(camera) => Some(camera),
+            Self::Screen(_) => None,
+        }
+    }
     /// For diagnostics.
     pub(crate) fn label(&self) -> String {
         match self {

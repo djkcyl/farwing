@@ -36,6 +36,7 @@ struct Ownership {
     max_participants: u32,
     /// How this host's picture passes the server's forwarder.
     forwarding: super::forwarding::Mode,
+    camera: settings::CameraSettings,
     power_executing: bool,
     port_revision: u64,
     audio_device: watch::Sender<Option<super::audio::Device>>,
@@ -80,6 +81,7 @@ impl Ownership {
             wol: self.wol,
             max_participants: self.max_participants,
             forwarding: self.forwarding,
+            camera: self.camera.clone(),
         }
     }
     /// Take stored or observed settings as they are (no session effects).
@@ -97,6 +99,7 @@ impl Ownership {
         self.max_participants = settings.max_participants;
         self.forwarding = settings.forwarding;
         super::forwarding::set_mode(settings.forwarding);
+        self.camera = settings.camera;
     }
 }
 
@@ -174,6 +177,7 @@ impl Default for Handle {
                 wol: false,
                 max_participants: farwing_protocol::limits::DEFAULT_MAX_PARTICIPANTS,
                 forwarding: Default::default(),
+                camera: Default::default(),
                 power_executing: false,
                 port_revision: 0,
                 audio_device: watch::channel(None).0,

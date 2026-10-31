@@ -184,6 +184,8 @@ impl Reports {
 pub(crate) struct Slot {
     /// What the track shows now.
     pub source: Option<capture::Source>,
+    /// The camera it shows, among the host's viewers of it.
+    camera: Option<std::sync::Arc<crate::features::host::cameras::Use>>,
     /// The screen a stopped screen track keeps, to resume.
     pub suspended: Option<capture::Screen>,
     pub config: Arc<Mutex<VideoConfig>>,
@@ -201,6 +203,13 @@ impl Slot {
     /// The screen the track shows, if it shows one.
     pub fn screen(&self) -> Option<&capture::Screen> {
         self.source.as_ref().and_then(capture::Source::screen)
+    }
+    /// The display it shows: a screen's ID or a camera's display ID.
+    pub fn display_id(&self) -> Option<i32> {
+        match self.source.as_ref()? {
+            capture::Source::Screen(screen) => Some(screen.id),
+            capture::Source::Camera(camera) => Some(crate::features::host::cameras::display_id(&camera.camera)),
+        }
     }
 }
 pub(crate) struct Screens {
@@ -223,6 +232,10 @@ pub(crate) struct Screens {
     receiver: crate::features::host::parameters::ReceiverCap,
     /// When the controller's receive statistics were last logged.
     stats_logged: Option<std::time::Instant>,
+    /// This participant's parameters by camera ID (its `CameraParams`).
+    camera_params: std::collections::HashMap<String, crate::media::camera::Params>,
+    /// A session for the cameras only: the displays stay as they are.
+    camera_only: bool,
 }
 pub(crate) struct Deferred {
     pub options: crate::features::stream_control::publisher::ConnectOptions,
@@ -277,6 +290,10 @@ impl Screens {
     }
     pub(crate) async fn resume_capture(&mut self) -> Result<()> {
         self.watching(true);
+        // A camera session shows what its viewer opens.
+        if self.camera_only {
+            return Ok(());
+        }
         if let Some(id) = self.prepare_video().await? {
             return self.start(id).await;
         }
@@ -323,8 +340,18 @@ impl Screens {
         let Some(deferred) = self.deferred.as_ref() else {
             return Ok(None);
         };
+        let camera_only = self.camera_only;
         let preparation = async {
-            let screen = self.displays.prepare(deferred.options.clone()).await?;
+            // A camera session leaves the displays as they are: the primary
+            // screen only stands in for the encoder check.
+            let screen = if camera_only {
+                capture::screens()?
+                    .into_iter()
+                    .min_by_key(|s| !s.primary)
+                    .context(t().features.screen_none_not_restored)?
+            } else {
+                self.displays.prepare(deferred.options.clone()).await?
+            };
             let media = self
                 .lease
                 .prepare_media(screen.clone(), deferred.encoding.gpu_compatibility)
@@ -344,7 +371,9 @@ impl Screens {
         let prepared = match preparation {
             Ok(prepared) => prepared,
             Err(error) => {
-                if let Err(restore) = self.displays.rollback_preparation().await {
+                if !camera_only
+                    && let Err(restore) = self.displays.rollback_preparation().await
+                {
                     tracing::error!(%restore,"failed video preparation layout recovery");
                 }
                 return Err(error);
@@ -406,7 +435,7 @@ impl Screens {
             .filter(|(_, state)| state.capturing)
             .map(|(index, state)| wire::TrackState {
                 track: index as u32,
-                screen: state.screen_id(),
+                screen: state.display_id(),
                 codec: wire::Codec::of(Some(state.format.codec.session())) as i32,
                 chroma444: state.format.chroma == 3,
                 hdr: state.hdr,
@@ -457,6 +486,7 @@ impl Screens {
         selected: Option<capture::Screen>,
         displays: Arc<crate::features::host::displays::Session>,
         deferred: Option<Deferred>,
+        camera_only: bool,
     ) -> Result<Self> {
         let reports = Arc::new(Reports {
             media_ready: Arc::new(Ready::default()),
@@ -490,6 +520,7 @@ impl Screens {
             }
             slots.push(Slot {
                 source: None,
+                camera: None,
                 suspended: None,
                 config: Arc::new(Mutex::new(initial)),
                 negotiated,
@@ -520,6 +551,8 @@ impl Screens {
             headless: Default::default(),
             receiver: Default::default(),
             stats_logged: None,
+            camera_params: Default::default(),
+            camera_only,
         };
         state.apply_inventory(&Inventory::read_initial()?)?;
         if let Some(selected) = selected {
@@ -597,14 +630,132 @@ impl Screens {
             .media()
             .into_iter()
             .filter(|(_, state)| state.capturing)
-            .filter_map(|(index, state)| state.source.screen().map(|s| (s.id, index)))
+            .map(|(index, state)| (state.display_id(), index))
             .collect();
-        crate::features::stream_control::publisher::display_list(&catalog, &tracks, active, revision)
+        let catalog: &[ScreenInfo] = if self.camera_only { &[] } else { &catalog };
+        let mut list =
+            crate::features::stream_control::publisher::display_list(catalog, &tracks, active, revision);
+        list.displays.extend(self.camera_displays(&tracks));
+        list
+    }
+    /// The cameras this participant may see, as display list entries.
+    fn camera_displays(&self, tracks: &BTreeMap<i32, usize>) -> Vec<crate::features::stream_control::wire::Display> {
+        use crate::features::host::cameras;
+        if !self.lease.camera_access() {
+            return Vec::new();
+        }
+        cameras::cameras()
+            .into_iter()
+            .map(|camera| {
+                let id = cameras::display_id(&camera.id);
+                let running = self.slots.iter().find_map(|s| {
+                    s.source.as_ref().and_then(capture::Source::camera).filter(|c| c.camera == camera.id)
+                });
+                let params = self.params(&camera.id);
+                let mode = running
+                    .map(|spec| spec.mode)
+                    .or(params.mode)
+                    .or_else(|| crate::media::camera::default_mode(&camera.modes));
+                crate::features::stream_control::wire::Display {
+                    id,
+                    kind: crate::features::stream_control::wire::DisplayKind::Camera as i32,
+                    name: camera.name.clone(),
+                    width: mode.map_or(0, |m| m.width),
+                    height: mode.map_or(0, |m| m.height),
+                    refresh_hz: mode.map_or(0, |m| m.fps()),
+                    track: tracks.get(&id).map_or(-1, |i| *i as i32),
+                    mirror: params.orientation.mirror,
+                    quarter_turns: u32::from(params.orientation.quarter_turns),
+                    ..Default::default()
+                }
+            })
+            .collect()
+    }
+    /// The parameters for `camera`: this participant's, else the owner's.
+    fn params(&self, camera: &str) -> crate::media::camera::Params {
+        self.camera_params
+            .get(camera)
+            .copied()
+            .or_else(|| self.lease.camera_defaults(camera))
+            .unwrap_or_default()
+    }
+    /// Show camera display `id` on `track` (or a free one).
+    async fn start_camera(&mut self, id: i32, track: Option<usize>) -> Result<()> {
+        use crate::features::host::cameras;
+        use crate::features::stream_control::{publisher::refuse, wire::display_reason};
+        use farwing_protocol::peer::error_code;
+        if !self.lease.camera_access() {
+            return Err(refuse(error_code::FORBIDDEN, display_reason::CAMERA_NOT_ALLOWED));
+        }
+        let find = |list: Vec<crate::media::camera::Camera>| {
+            list.into_iter().find(|c| cameras::display_id(&c.id) == id)
+        };
+        let camera = match find(cameras::cameras()) {
+            Some(camera) => camera,
+            None => find(tokio::task::spawn_blocking(cameras::read).await?)
+                .ok_or_else(|| refuse(error_code::NOT_FOUND, display_reason::NOT_FOUND))?,
+        };
+        if let Some(reason) = &camera.unavailable {
+            anyhow::bail!("{reason}");
+        }
+        if let Some(index) = self.active_slot(id) {
+            let mut config = lock(&self.slots[index].config);
+            config.capturing = true;
+            config.sending = true;
+            return Ok(());
+        }
+        let index = track
+            .or_else(|| self.available_slot())
+            .ok_or_else(|| refuse(error_code::BUSY, display_reason::NO_FREE_TRACK))?;
+        let params = self.params(&camera.id);
+        let mode = params
+            .mode
+            .filter(|m| camera.modes.contains(m))
+            .or_else(|| crate::media::camera::default_mode(&camera.modes))
+            .context(t().camera.no_mode)?;
+        let adapter = self
+            .initial
+            .as_ref()
+            .map(|s| s.render_adapter.unwrap_or(s.adapter))
+            .map_or_else(crate::platform::camera::default_adapter, Ok)?;
+        let mut wanted = crate::media::camera::Spec::new(&camera, mode, params.color, adapter);
+        wanted.bitrate_kbps = params.bitrate_kbps;
+        // Stopped first: its old use of the camera ends before joining.
+        self.stop_at(index).await;
+        let (spec, chosen_by, using) = cameras::join(wanted, &self.lease.profile().nickname);
+        tracing::info!(camera = %camera.name, width = spec.mode.width, height = spec.mode.height,
+            fps = spec.mode.fps(), %chosen_by, track = index, "participant camera starts");
+        let config = self.base;
+        self.watching(true);
+        self.show_at(index, capture::Source::Camera(spec), config).await?;
+        self.slots[index].camera = Some(using);
+        Ok(())
+    }
+    /// This participant's parameters for `camera` (`None`: the owner's);
+    /// a camera it alone watches restarts with them.
+    pub(crate) async fn set_camera_params(&mut self, id: i32, params: Option<crate::media::camera::Params>) -> Result<()> {
+        use crate::features::host::cameras;
+        let Some(camera) = cameras::cameras().into_iter().find(|c| cameras::display_id(&c.id) == id) else {
+            return Err(crate::features::stream_control::publisher::refuse(
+                farwing_protocol::peer::error_code::NOT_FOUND,
+                crate::features::stream_control::wire::display_reason::NOT_FOUND,
+            ));
+        };
+        match params {
+            Some(params) => self.camera_params.insert(camera.id.clone(), params),
+            None => self.camera_params.remove(&camera.id),
+        };
+        if let Some(index) = self.active_slot(id)
+            && cameras::viewers(&camera.id) == 1
+        {
+            self.stop_at(index).await;
+            self.start_camera(id, Some(index)).await?;
+        }
+        self.reports.notify();
+        Ok(())
     }
     pub(crate) fn active_slot(&self, id: i32) -> Option<usize> {
-        self.slots
-            .iter()
-            .position(|slot| slot.screen().is_some_and(|s| s.id == id))
+        self.slots.iter().position(|slot| slot.display_id() == Some(id))
     }
     /// A track that shows nothing: preferably one not keeping a stopped
     /// display either.
@@ -626,6 +777,10 @@ impl Screens {
             "{}",
             t().features.peer_lease_expired
         );
+        if crate::features::host::cameras::is_camera(id) {
+            self.prepare_video().await?;
+            return self.start_camera(id, track).await;
+        }
         let id = self.prepare_video().await?.unwrap_or(id);
         self.refresh()?;
         let screen = self.info(id)?.screen;
@@ -784,6 +939,7 @@ impl Screens {
         }
         slot.transport.pause();
         slot.source = None;
+        slot.camera = None;
         *lock(&self.reports.publications[index]) = None;
         *lock(&self.reports.pointers[index]) = None;
         self.reports.notify();
@@ -821,6 +977,8 @@ impl Screens {
             self.slots[index].awaiting_source = false;
             self.slots[index].suspended = self.slots[index].screen().cloned();
             self.stop_at(index).await;
+        } else if crate::features::host::cameras::is_camera(screen) {
+            // A camera not shown: nothing to stop.
         } else {
             let mut known = self.headless.knows_screen(screen);
             for slot in &mut self.slots {

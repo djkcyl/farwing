@@ -56,7 +56,26 @@ impl Handle {
             assist: self.assistance.settings().enabled
                 || crate::transport::direct::store::has_trusted(),
             max_participants: state.max_participants,
+            camera: state.camera.allowed,
+            listen: state.camera.listen,
         }
+    }
+    pub(crate) fn camera_settings(&self) -> super::settings::CameraSettings {
+        lock(&self.ownership).camera.clone()
+    }
+    /// Whether others may see the cameras and hear the microphone, which
+    /// microphone, and the owner's camera parameters.
+    pub(crate) fn set_camera_settings(&self, camera: super::settings::CameraSettings) -> anyhow::Result<()> {
+        let mut state = lock(&self.ownership);
+        anyhow::ensure!(state.active, "{}", t().features.host_account_session_ended);
+        if state.camera != camera {
+            state.camera = camera;
+            state.settings_revision = state.settings_revision.wrapping_add(1);
+            state.dirty = true;
+            state.status.saving = true;
+            state.status.settings_error = None;
+        }
+        Ok(())
     }
     pub(crate) fn max_participants(&self) -> u32 {
         lock(&self.ownership).max_participants
@@ -452,6 +471,7 @@ impl Handle {
         self.set_wol_allowed(settings.wol)?;
         self.set_max_participants(settings.max_participants)?;
         self.set_forwarding_mode(settings.forwarding)?;
+        self.set_camera_settings(settings.camera)?;
         self.set_allowed(settings.allow_control);
         Ok(())
     }

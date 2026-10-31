@@ -7,7 +7,7 @@ use farwing_protocol::caps;
 
 /// Capabilities by what they let the other side do, in display order.
 const GROUPS: [&[&str]; 3] = [
-    &[caps::VIEW, caps::AUDIO, caps::ANNOTATION],
+    &[caps::VIEW, caps::AUDIO, caps::ANNOTATION, caps::CAMERA, caps::LISTEN],
     &[caps::CONTROL, caps::CLIPBOARD, caps::MICROPHONE, caps::FILES],
     &[caps::DISPLAY, caps::PORTS, caps::POWER, caps::DIAGNOSTICS],
 ];
@@ -546,6 +546,21 @@ fn paint_cap(p: &egui::Painter, rect: egui::Rect, cap: &str, color: Color32) {
         }
         caps::DIAGNOSTICS => {
             line(&[(-7.0, 0.5), (-3.5, 0.5), (-1.5, -5.0), (1.5, 5.5), (3.5, 0.5), (7.0, 0.5)]);
+        }
+        caps::CAMERA => {
+            boxed(-1.5, 0.5, 10.0, 9.0, 1.5);
+            line(&[(3.5, -1.0), (7.0, -3.5), (7.0, 4.5), (3.5, 2.0)]);
+        }
+        caps::LISTEN => {
+            let arc = (0..=12)
+                .map(|i| {
+                    let a = std::f32::consts::PI + std::f32::consts::PI * i as f32 / 12.0;
+                    (6.0 * a.cos(), 1.0 + 6.0 * a.sin())
+                })
+                .collect::<Vec<_>>();
+            line(&arc);
+            boxed(-5.5, 3.0, 3.0, 5.0, 1.0);
+            boxed(5.5, 3.0, 3.0, 5.0, 1.0);
         }
         _ => {
             p.circle_stroke(c, 5.0 * s, stroke);

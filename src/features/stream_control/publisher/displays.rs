@@ -168,10 +168,11 @@ async fn capture_request(session: &mut Screens, capture: &CaptureControl) -> Res
         return session.stop(capture.screen_id).await;
     }
     // A files or ports session, or one whose `view` was withdrawn, never
-    // gets the picture.
-    if !session
-        .authorization()
-        .granted(farwing_protocol::caps::VIEW)
+    // gets the picture; a camera needs `camera` instead (checked there).
+    if !crate::features::host::cameras::is_camera(capture.screen_id)
+        && !session
+            .authorization()
+            .granted(farwing_protocol::caps::VIEW)
     {
         return Err(refuse(error_code::FORBIDDEN, display_reason::NOT_ALLOWED));
     }

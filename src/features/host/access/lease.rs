@@ -599,6 +599,17 @@ impl Lease {
             && !self.handle.guest
             && self.handle.file_transfer_allowed()
     }
+    /// The participant may see this host's cameras now: granted, and the
+    /// owner allows it.
+    pub(crate) fn camera_access(&self) -> bool {
+        self.requested()
+            && self.granted(farwing_protocol::caps::CAMERA)
+            && lock(&self.handle.ownership).camera.allowed
+    }
+    /// The owner's parameters for `camera`, if set.
+    pub(crate) fn camera_defaults(&self, camera: &str) -> Option<crate::media::camera::Params> {
+        lock(&self.handle.ownership).camera.defaults.get(camera).copied()
+    }
     pub(crate) fn diagnostics_access(&self) -> bool {
         self.requested()
             && self.granted(farwing_protocol::caps::DIAGNOSTICS)

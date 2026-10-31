@@ -918,6 +918,7 @@ pub async fn dev_video(
     device_id: &str,
     seconds: u64,
     loss: Option<&str>,
+    camera: bool,
     options: crate::media::ConnectionMediaOptions,
 ) -> Result<()> {
     use crate::transport::rtc::impair;
@@ -928,10 +929,17 @@ pub async fn dev_video(
         let device = account_device(&client, device_id).await?;
         let policy = client.feature_catalog().policy_for(&device);
         let cancel = tokio_util::sync::CancellationToken::new();
-        let mut connection = crate::session::controller::ControllerConnection::connect_headless(
-            &client, &device, policy, options, &cancel,
-        )
-        .await
+        let mut connection = if camera {
+            crate::session::controller::ControllerConnection::connect_headless_camera(
+                &client, &device, policy, options, &cancel,
+            )
+            .await
+        } else {
+            crate::session::controller::ControllerConnection::connect_headless(
+                &client, &device, policy, options, &cancel,
+            )
+            .await
+        }
         .context("连接设备失败")?;
         let (observer, observations) = std::sync::mpsc::channel();
         let started = std::time::Instant::now();

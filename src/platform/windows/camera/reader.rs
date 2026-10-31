@@ -1,6 +1,8 @@
-//! The device side of a camera capture: a thread that reads pictures with a
-//! Media Foundation source reader (decoded and converted to NV12 by it) into
-//! system memory; the capture takes the newest.
+//! The device side of a camera capture: a Media Foundation source reader in
+//! asynchronous mode (it decodes and converts to NV12) that keeps the newest
+//! picture in system memory. Nothing blocks on the device: closing flushes
+//! the reader and shuts the source down even when the camera stopped
+//! delivering.
 use super::{Apartment, Picture, attributes, failure, mode_of, native_types, split, startup};
 use crate::i18n::t;
 use crate::media::camera::{Matrix, PixelFormat, Spec};
@@ -9,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use windows::Win32::Media::MediaFoundation::*;
-use windows::core::{HSTRING, Interface};
+use windows::core::{HSTRING, Interface, implement};
 
 const STREAM: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
 
@@ -25,118 +27,199 @@ struct State {
     picture: Option<Arc<Picture>>,
     sequence: u64,
     error: Option<String>,
+    flushed: bool,
 }
 
-#[derive(Default)]
-struct Shared {
-    state: Mutex<State>,
-    changed: Condvar,
-    stop: AtomicBool,
-}
-
-fn lock(shared: &Shared) -> std::sync::MutexGuard<'_, State> {
-    shared.state.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-pub(super) struct Reader {
-    shared: Arc<Shared>,
-    source: Arc<SharedSource>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Reader {
-    pub(super) fn open(spec: &Spec) -> Result<Self> {
-        let shared = Arc::new(Shared::default());
-        let (opened, result) = std::sync::mpsc::sync_channel(1);
-        let thread = {
-            let shared = shared.clone();
-            let spec = spec.clone();
-            std::thread::Builder::new()
-                .name("camera-reader".into())
-                .spawn(move || run(&spec, &shared, opened))?
-        };
-        match result.recv() {
-            Ok(Ok(source)) => Ok(Self {
-                shared,
-                source: Arc::new(source),
-                thread: Some(thread),
-            }),
-            Ok(Err(error)) => {
-                let _ = thread.join();
-                Err(error)
-            }
-            Err(_) => {
-                let _ = thread.join();
-                anyhow::bail!("{}", t().camera.open_failed)
-            }
-        }
-    }
-
-    pub(super) fn media_source(&self) -> Arc<SharedSource> {
-        self.source.clone()
-    }
-
-    /// The newest picture after `seen`, waiting at most `timeout` ms.
-    pub(super) fn next(&mut self, seen: u64, timeout: u32) -> Result<Option<(u64, Arc<Picture>)>> {
-        let state = lock(&self.shared);
-        let (state, _) = self
-            .shared
-            .changed
-            .wait_timeout_while(state, Duration::from_millis(timeout.into()), |s| {
-                s.sequence == seen && s.error.is_none()
-            })
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(error) = &state.error {
-            anyhow::bail!("{error}");
-        }
-        Ok((state.sequence != seen)
-            .then(|| state.picture.clone().map(|p| (state.sequence, p)))
-            .flatten())
-    }
-}
-
-impl Drop for Reader {
-    fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::Release);
-        // Ends a read waiting for the next picture.
-        unsafe {
-            let _ = self.source.0.Shutdown();
-        }
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
-struct Opened {
-    source: IMFMediaSource,
-    reader: IMFSourceReader,
+/// How the reader's pictures are laid out (changes with the media type).
+#[derive(Clone, Copy)]
+struct Layout {
     width: u32,
     height: u32,
     matrix: Matrix,
     full_range: bool,
 }
 
-fn open_device(spec: &Spec) -> Result<Opened> {
-    startup()?;
-    let device = attributes(2)?;
-    let source = unsafe {
-        device.SetGUID(
-            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
-            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
-        )?;
-        device.SetString(
-            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
-            &HSTRING::from(spec.camera.as_str()),
-        )?;
-        MFCreateDeviceSource(&device).map_err(failure)?
-    };
-    let opened = (|| {
-        let options = attributes(2)?;
+struct Shared {
+    state: Mutex<State>,
+    changed: Condvar,
+    stop: AtomicBool,
+    layout: Mutex<Layout>,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl Shared {
+    fn fail(&self, error: String) {
+        let mut state = lock(&self.state);
+        state.error.get_or_insert(error);
+        self.changed.notify_all();
+    }
+}
+
+/// The reader's callback: stores each picture and asks for the next.
+#[implement(IMFSourceReaderCallback)]
+struct Callback {
+    shared: Arc<Shared>,
+    /// Cleared on close (the reader holds this callback).
+    reader: Arc<Mutex<Option<IMFSourceReader>>>,
+}
+
+impl IMFSourceReaderCallback_Impl for Callback_Impl {
+    fn OnReadSample(
+        &self,
+        status: windows::core::HRESULT,
+        _stream: u32,
+        flags: u32,
+        _timestamp: i64,
+        sample: windows::core::Ref<IMFSample>,
+    ) -> windows::core::Result<()> {
+        let shared = &self.shared;
+        if shared.stop.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if status.is_err() {
+            shared.fail(format!("{:#}", failure(windows::core::Error::from_hresult(status))));
+            return Ok(());
+        }
+        if flags & (MF_SOURCE_READERF_ERROR.0 | MF_SOURCE_READERF_ENDOFSTREAM.0) as u32 != 0 {
+            shared.fail(t().camera.removed.to_owned());
+            return Ok(());
+        }
+        let reader = lock(&self.reader).clone();
+        if flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED.0 as u32 != 0
+            && let Some(size) = reader.as_ref().and_then(|r| unsafe {
+                r.GetCurrentMediaType(STREAM)
+                    .and_then(|t| t.GetUINT64(&MF_MT_FRAME_SIZE))
+                    .ok()
+            })
+        {
+            let mut layout = lock(&shared.layout);
+            (layout.width, layout.height) = split(size);
+        }
+        if let Some(sample) = sample.as_ref() {
+            let layout = *lock(&shared.layout);
+            match copy(sample, layout.width, layout.height) {
+                Ok(data) => {
+                    let picture = Arc::new(Picture {
+                        data,
+                        width: layout.width,
+                        height: layout.height,
+                        captured: Instant::now(),
+                        matrix: layout.matrix,
+                        full_range: layout.full_range,
+                    });
+                    let mut state = lock(&shared.state);
+                    state.picture = Some(picture);
+                    state.sequence = state.sequence.wrapping_add(1).max(1);
+                    shared.changed.notify_all();
+                }
+                Err(error) => {
+                    shared.fail(format!("{}: {error:#}", t().camera.read_failed));
+                    return Ok(());
+                }
+            }
+        }
+        if let Some(reader) = reader
+            && let Err(error) = unsafe { reader.ReadSample(STREAM, 0, None, None, None, None) }
+        {
+            shared.fail(format!("{:#}", failure(error)));
+        }
+        Ok(())
+    }
+
+    fn OnFlush(&self, _stream: u32) -> windows::core::Result<()> {
+        let mut state = lock(&self.shared.state);
+        state.flushed = true;
+        self.shared.changed.notify_all();
+        Ok(())
+    }
+
+    fn OnEvent(&self, _stream: u32, _event: windows::core::Ref<IMFMediaEvent>) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
+pub(super) struct Reader {
+    shared: Arc<Shared>,
+    /// What the callback reads from; emptied on close to break the cycle.
+    pending: Arc<Mutex<Option<IMFSourceReader>>>,
+    reader: IMFSourceReader,
+    source: Arc<SharedSource>,
+}
+
+// SAFETY: the source reader and its callback are free-threaded; the
+// capture only moves between threads, never shares them.
+unsafe impl Send for Reader {}
+
+impl Reader {
+    pub(super) fn open(spec: &Spec) -> Result<Self> {
+        let _apartment = Apartment::enter()?;
+        startup()?;
+        let device = attributes(2)?;
+        let source = unsafe {
+            device.SetGUID(
+                &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+                &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
+            )?;
+            device.SetString(
+                &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
+                &HSTRING::from(spec.camera.as_str()),
+            )?;
+            MFCreateDeviceSource(&device).map_err(failure)?
+        };
+        let shared = Arc::new(Shared {
+            state: Mutex::default(),
+            changed: Condvar::new(),
+            stop: AtomicBool::new(false),
+            layout: Mutex::new(Layout {
+                width: spec.mode.width,
+                height: spec.mode.height,
+                matrix: Matrix::Bt601,
+                full_range: false,
+            }),
+        });
+        let pending = Arc::new(Mutex::new(None));
+        let callback: IMFSourceReaderCallback = Callback {
+            shared: shared.clone(),
+            reader: pending.clone(),
+        }
+        .into();
+        let opened = Self::configure(spec, &source, &callback, &shared, &pending);
+        match opened {
+            Ok(reader) => {
+                tracing::info!(camera = %spec.name, width = spec.mode.width, height = spec.mode.height,
+                    fps = spec.mode.fps(), format = spec.mode.format.label(), "camera capture started");
+                Ok(Self {
+                    shared,
+                    pending,
+                    reader,
+                    source: Arc::new(SharedSource(source)),
+                })
+            }
+            Err(error) => {
+                unsafe {
+                    let _ = source.Shutdown();
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn configure(
+        spec: &Spec,
+        source: &IMFMediaSource,
+        callback: &IMFSourceReaderCallback,
+        shared: &Shared,
+        pending: &Mutex<Option<IMFSourceReader>>,
+    ) -> Result<IMFSourceReader> {
+        let options = attributes(3)?;
         let reader = unsafe {
             options.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1)?;
             options.SetUINT32(&MF_LOW_LATENCY, 1)?;
-            MFCreateSourceReaderFromMediaSource(&source, &options).map_err(failure)?
+            options.SetUnknown(&MF_SOURCE_READER_ASYNC_CALLBACK, callback)?;
+            MFCreateSourceReaderFromMediaSource(source, &options).map_err(failure)?
         };
         // The device's format first, then NV12 out of the reader (its
         // decoder and converter) at the same size and rate.
@@ -158,117 +241,68 @@ fn open_device(spec: &Spec) -> Result<Opened> {
             reader.SetCurrentMediaType(STREAM, None, &output).map_err(failure)?;
             let current = reader.GetCurrentMediaType(STREAM)?;
             let (width, height) = split(current.GetUINT64(&MF_MT_FRAME_SIZE)?);
-            let matrix = match current.GetUINT32(&MF_MT_YUV_MATRIX) {
-                Ok(value) if value == MFVideoTransferMatrix_BT709.0 as u32 => Matrix::Bt709,
-                _ => Matrix::Bt601,
-            };
-            // JPEG pictures are full range unless the decoder says otherwise.
-            let full_range = current
-                .GetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE)
-                .map(|value| value == MFNominalRange_0_255.0 as u32)
-                .unwrap_or(mode.format == PixelFormat::Mjpeg);
             anyhow::ensure!(
                 width >= 2 && height >= 2 && width % 2 == 0 && height % 2 == 0,
                 "{}",
                 t().camera.no_mode
             );
-            Ok::<_, anyhow::Error>(Opened {
-                source: source.clone(),
-                reader,
+            *lock(&shared.layout) = Layout {
                 width,
                 height,
-                matrix,
-                full_range,
-            })
+                matrix: match current.GetUINT32(&MF_MT_YUV_MATRIX) {
+                    Ok(value) if value == MFVideoTransferMatrix_BT709.0 as u32 => Matrix::Bt709,
+                    _ => Matrix::Bt601,
+                },
+                // JPEG pictures are full range unless the decoder says otherwise.
+                full_range: current
+                    .GetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE)
+                    .map(|value| value == MFNominalRange_0_255.0 as u32)
+                    .unwrap_or(mode.format == PixelFormat::Mjpeg),
+            };
         }
-    })();
-    if opened.is_err() {
-        unsafe {
-            let _ = source.Shutdown();
-        }
+        *lock(pending) = Some(reader.clone());
+        unsafe { reader.ReadSample(STREAM, 0, None, None, None, None) }.map_err(failure)?;
+        Ok(reader)
     }
-    opened
+
+    pub(super) fn media_source(&self) -> Arc<SharedSource> {
+        self.source.clone()
+    }
+
+    /// The newest picture after `seen`, waiting at most `timeout` ms.
+    pub(super) fn next(&mut self, seen: u64, timeout: u32) -> Result<Option<(u64, Arc<Picture>)>> {
+        let state = lock(&self.shared.state);
+        let (state, _) = self
+            .shared
+            .changed
+            .wait_timeout_while(state, Duration::from_millis(timeout.into()), |s| {
+                s.sequence == seen && s.error.is_none()
+            })
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(error) = &state.error {
+            anyhow::bail!("{error}");
+        }
+        Ok((state.sequence != seen)
+            .then(|| state.picture.clone().map(|p| (state.sequence, p)))
+            .flatten())
+    }
 }
 
-fn run(spec: &Spec, shared: &Shared, opened: std::sync::mpsc::SyncSender<Result<SharedSource>>) {
-    let _apartment = match Apartment::enter() {
-        Ok(apartment) => apartment,
-        Err(error) => {
-            let _ = opened.send(Err(error));
-            return;
+impl Drop for Reader {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::Release);
+        lock(&self.pending).take();
+        // A pending read ends with the flush; wait for it briefly.
+        if unsafe { self.reader.Flush(STREAM) }.is_ok() {
+            let state = lock(&self.shared.state);
+            let _ = self
+                .shared
+                .changed
+                .wait_timeout_while(state, Duration::from_millis(500), |s| !s.flushed);
         }
-    };
-    let device = match open_device(spec) {
-        Ok(device) => device,
-        Err(error) => {
-            let _ = opened.send(Err(error));
-            return;
+        unsafe {
+            let _ = self.source.0.Shutdown();
         }
-    };
-    let _ = opened.send(Ok(SharedSource(device.source.clone())));
-    tracing::info!(camera = %spec.name, width = device.width, height = device.height,
-        fps = spec.mode.fps(), format = spec.mode.format.label(), "camera capture started");
-    let (mut width, mut height) = (device.width, device.height);
-    let fail = |error: String| {
-        let mut state = lock(shared);
-        state.error = Some(error);
-        shared.changed.notify_all();
-    };
-    while !shared.stop.load(Ordering::Acquire) {
-        let mut flags = 0u32;
-        let mut sample = None;
-        let read = unsafe {
-            device
-                .reader
-                .ReadSample(STREAM, 0, None, Some(&mut flags), None, Some(&mut sample))
-        };
-        if shared.stop.load(Ordering::Acquire) {
-            break;
-        }
-        if let Err(error) = read {
-            fail(format!("{:#}", failure(error)));
-            break;
-        }
-        if flags & (MF_SOURCE_READERF_ERROR.0 | MF_SOURCE_READERF_ENDOFSTREAM.0) as u32 != 0 {
-            fail(t().camera.removed.to_owned());
-            break;
-        }
-        if flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED.0 as u32 != 0
-            && let Ok(size) = unsafe {
-                device
-                    .reader
-                    .GetCurrentMediaType(STREAM)
-                    .and_then(|t| t.GetUINT64(&MF_MT_FRAME_SIZE))
-            }
-        {
-            (width, height) = split(size);
-        }
-        let Some(sample) = sample else {
-            continue;
-        };
-        match copy(&sample, width, height) {
-            Ok(data) => {
-                let picture = Arc::new(Picture {
-                    data,
-                    width,
-                    height,
-                    captured: Instant::now(),
-                    matrix: device.matrix,
-                    full_range: device.full_range,
-                });
-                let mut state = lock(shared);
-                state.picture = Some(picture);
-                state.sequence = state.sequence.wrapping_add(1).max(1);
-                shared.changed.notify_all();
-            }
-            Err(error) => {
-                fail(format!("{}: {error:#}", t().camera.read_failed));
-                break;
-            }
-        }
-    }
-    unsafe {
-        let _ = device.source.Shutdown();
     }
 }
 

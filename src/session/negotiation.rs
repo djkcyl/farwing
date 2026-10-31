@@ -18,6 +18,8 @@ pub(crate) enum ControlPurpose {
     PortMapping,
     FileTransfer,
     Diagnostics,
+    /// The host's cameras only.
+    Camera,
 }
 
 impl ControlPurpose {
@@ -28,6 +30,7 @@ impl ControlPurpose {
             Self::PortMapping => Purpose::Ports,
             Self::FileTransfer => Purpose::Files,
             Self::Diagnostics => Purpose::Diagnostics,
+            Self::Camera => Purpose::Camera,
         }
     }
 }

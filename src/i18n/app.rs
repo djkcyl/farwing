@@ -151,6 +151,8 @@ pub(crate) struct App {
     pub cap_display: &'static str,
     pub cap_diagnostics: &'static str,
     pub cap_annotation: &'static str,
+    pub cap_camera: &'static str,
+    pub cap_listen: &'static str,
     pub cap_unknown: &'static str,
 
     // Assist and direct connections
@@ -465,6 +467,8 @@ pub(crate) const ZH_CN: App = App {
     cap_display: "显示设置",
     cap_diagnostics: "诊断包",
     cap_annotation: "批注",
+    cap_camera: "查看摄像头",
+    cap_listen: "收听麦克风",
     cap_unknown: "未知权限",
 
     assist_unavailable: "对方未开启访问码，也未信任本设备",
@@ -762,6 +766,8 @@ pub(crate) const EN: App = App {
     cap_display: "Display settings",
     cap_diagnostics: "Diagnostics",
     cap_annotation: "Annotation",
+    cap_camera: "View cameras",
+    cap_listen: "Hear the microphone",
     cap_unknown: "Unknown permission",
 
     assist_unavailable: "The other device has no access code and doesn't trust this device",

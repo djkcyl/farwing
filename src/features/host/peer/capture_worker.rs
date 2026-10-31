@@ -109,17 +109,19 @@ pub(super) fn capture_loop(
 
         // Several participants: everyone without the control token watches
         // the one shared stream (the stored settings stay for later).
-        let shared = crate::features::host::shared_view::apply(
-            handle.participant(),
-            &mut wanted,
-            forwarded.in_room.load(Ordering::Acquire),
-        );
+        // (Screens only: a camera keeps the parameters it was opened with.)
+        let shared = source.screen().is_some()
+            && crate::features::host::shared_view::apply(
+                handle.participant(),
+                &mut wanted,
+                forwarded.in_room.load(Ordering::Acquire),
+            );
         if was_shared != Some(shared) {
             was_shared = Some(shared);
             tracing::info!(shared, format = ?wanted.format, "participant stream policy");
         }
         let requested_hdr = wanted.color.is_hdr();
-        let automatic_requested = wanted.quality == Quality::Auto;
+        let automatic_requested = wanted.quality == Quality::Auto && source.camera().is_none();
         // Gate HDR on the screen's reported state, so the keys of members
         // agree; the pipeline checks its source again.
         negotiated.apply_source(&mut wanted, source_size, source.hdr())?;
@@ -166,6 +168,13 @@ pub(super) fn capture_loop(
             budget_size,
             flowing.then(|| transport.automatic_rates()),
         );
+        // A camera keeps its size and rate; only the bitrate adapts, up to
+        // its ceiling (`camera-design.md` §7).
+        if let Some(camera) = source.camera() {
+            target = Target::Custom {
+                bps: camera.bitrate_kbps().saturating_mul(1000),
+            };
+        }
 
         // In a forwarding room: the uplink takes this stream's frames too;
         // once the participant shows them, instead.

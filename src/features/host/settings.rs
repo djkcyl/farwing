@@ -26,6 +26,23 @@ pub(crate) struct HostSettings {
     pub max_participants: u32,
     /// How this host's picture passes the server's forwarder.
     pub forwarding: super::forwarding::Mode,
+    pub camera: CameraSettings,
+}
+
+/// Remote camera and microphone (`docs/protocol/camera-design.md` §2, §5).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct CameraSettings {
+    /// Others may see this device's cameras.
+    pub allowed: bool,
+    /// Others may hear its microphone.
+    pub listen: bool,
+    /// The microphone they hear (endpoint ID); `None` follows the default
+    /// recording device.
+    pub microphone: Option<String>,
+    /// The owner's parameters by camera ID; a camera not listed uses the
+    /// defaults.
+    pub defaults: std::collections::BTreeMap<String, crate::media::camera::Params>,
 }
 
 impl Default for HostSettings {
@@ -43,6 +60,7 @@ impl Default for HostSettings {
             wol: false,
             max_participants: farwing_protocol::limits::DEFAULT_MAX_PARTICIPANTS,
             forwarding: Default::default(),
+            camera: Default::default(),
         }
     }
 }

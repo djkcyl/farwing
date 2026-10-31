@@ -397,6 +397,9 @@ enum DevAction {
         /// 码流帧率：auto、144、90、60 或 30（默认按本机设置）
         #[arg(long)]
         fps: Option<media::FrameRateChoice>,
+        /// 只看摄像头的会话：解码被控的第一个摄像头
+        #[arg(long)]
+        camera: bool,
     },
     /// 端到端检查剪贴板（主控为内存剪贴板；会改写本机 Windows 剪贴板）
     Clipboard {
@@ -860,6 +863,7 @@ fn main() -> Result<()> {
                     no_recovery,
                     recovery_late,
                     fps,
+                    camera,
                 } => {
                     if let Some(fps) = fps {
                         options.frame_rate = fps;
@@ -880,6 +884,7 @@ fn main() -> Result<()> {
                         &device_id,
                         seconds,
                         loss.as_deref(),
+                        camera,
                         options,
                     ))
                 }

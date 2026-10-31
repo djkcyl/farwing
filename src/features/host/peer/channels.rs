@@ -713,11 +713,12 @@ pub(super) async fn publish_state(
             tracing::debug!(current, "host display list published");
             last_screen = Some(shown);
         }
+        // The shown display, else any (a camera too).
         let selected = media
             .iter()
-            .find(|(_, s)| s.capturing && s.screen_id() == current)
-            .or_else(|| media.iter().find(|(_, s)| s.capturing && s.screen_id() >= 0));
-        let capture = selected.map(|(_, s)| s.screen_id());
+            .find(|(_, s)| s.capturing && s.display_id() == current)
+            .or_else(|| media.iter().find(|(_, s)| s.capturing));
+        let capture = selected.map(|(_, s)| s.display_id());
         if selected.is_some() || initial.is_some() {
             last_capture = Some(capture);
         }

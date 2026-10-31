@@ -267,6 +267,8 @@ pub mod reason {
     pub const FILES_DISABLED: &str = "files_disabled";
     /// `host_disabled`: the host does not allow port forwarding.
     pub const PORTS_DISABLED: &str = "ports_disabled";
+    /// `host_disabled`: the host does not allow its cameras to be seen.
+    pub const CAMERA_DISABLED: &str = "camera_disabled";
     /// `forbidden`: the target has no Wake-on-LAN set up.
     pub const WOL_UNAVAILABLE: &str = "wol_unavailable";
     /// `conflict`: waking a device that is online.
@@ -354,6 +356,7 @@ pub mod reason {
         POWER_DISABLED,
         FILES_DISABLED,
         PORTS_DISABLED,
+        CAMERA_DISABLED,
         WOL_UNAVAILABLE,
         DEVICE_ONLINE,
         NOT_FRIENDS,

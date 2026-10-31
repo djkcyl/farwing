@@ -100,6 +100,13 @@ impl ReportRoutes {
     }
 }
 impl Published {
+    /// The display it shows: a screen's ID or a camera's display ID.
+    fn display_id(&self) -> i32 {
+        match &self.source {
+            capture::Source::Screen(screen) => screen.id,
+            capture::Source::Camera(camera) => super::cameras::display_id(&camera.camera),
+        }
+    }
     /// The screen it shows (-1: not a screen).
     fn screen_id(&self) -> i32 {
         self.source.screen().map_or(-1, |s| s.id)
@@ -143,6 +150,7 @@ impl Peer {
         file_capabilities: crate::features::file_transfer::host::Capabilities,
         data_only: bool,
         forwarding: Option<(String, bool, bool)>,
+        camera_only: bool,
     ) -> Result<Self> {
         let audio_only = deferred.is_some() && !data_only;
         let handle = owner.with_cancellation(cancel.clone());
@@ -290,6 +298,7 @@ impl Peer {
             screen.clone(),
             displays,
             deferred,
+            camera_only,
         )
         .await?;
         let sender = screen_pool.slots[0].sender.clone();

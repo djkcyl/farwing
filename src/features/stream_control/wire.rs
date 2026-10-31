@@ -794,6 +794,9 @@ pub(crate) mod display_reason {
     pub const EXCLUSIVE: &str = "exclusive";
     pub const NOT_FOUND: &str = "not_found";
     pub const INVALID: &str = "invalid";
+    /// The participant may not see the host's cameras (not granted, or the
+    /// owner does not allow it).
+    pub const CAMERA_NOT_ALLOWED: &str = "camera_not_allowed";
     /// Anything else; the host logs why.
     pub const FAILED: &str = "failed";
 }

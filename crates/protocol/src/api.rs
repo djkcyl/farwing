@@ -242,6 +242,10 @@ pub struct DevicePolicy {
     pub assist: bool,
     /// Concurrent participants this host accepts.
     pub max_participants: u32,
+    /// Others may see its cameras.
+    pub camera: bool,
+    /// Others may hear its microphone.
+    pub listen: bool,
 }
 
 impl Default for DevicePolicy {
@@ -254,6 +258,8 @@ impl Default for DevicePolicy {
             wol: false,
             assist: false,
             max_participants: crate::limits::DEFAULT_MAX_PARTICIPANTS,
+            camera: false,
+            listen: false,
         }
     }
 }
@@ -604,6 +610,8 @@ pub enum Purpose {
     Ports,
     /// The host's diagnostic bundle (no picture, no files).
     Diagnostics,
+    /// The host's cameras only: no desktop, input, clipboard or files.
+    Camera,
 }
 
 impl Purpose {
@@ -614,6 +622,7 @@ impl Purpose {
             Self::Files => "files",
             Self::Ports => "ports",
             Self::Diagnostics => "diagnostics",
+            Self::Camera => "camera",
         }
     }
     /// Capability a participant needs to open a session of this purpose.
@@ -623,6 +632,7 @@ impl Purpose {
             Self::Files => crate::caps::FILES,
             Self::Ports => crate::caps::PORTS,
             Self::Diagnostics => crate::caps::DIAGNOSTICS,
+            Self::Camera => crate::caps::CAMERA,
         }
     }
 }

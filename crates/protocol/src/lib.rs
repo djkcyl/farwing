@@ -182,6 +182,10 @@ pub mod caps {
     pub const DISPLAY: &str = "display";
     pub const DIAGNOSTICS: &str = "diagnostics";
     pub const ANNOTATION: &str = "annotation";
+    /// See the host's cameras (`docs/protocol/camera-design.md` §2).
+    pub const CAMERA: &str = "camera";
+    /// Hear the host's microphone.
+    pub const LISTEN: &str = "listen";
 
     /// Every capability, in display order.
     pub const ALL: &[&str] = &[
@@ -196,6 +200,8 @@ pub mod caps {
         DISPLAY,
         DIAGNOSTICS,
         ANNOTATION,
+        CAMERA,
+        LISTEN,
     ];
     /// Offered to a new friend on all devices (the one accepting chooses).
     pub const DEFAULT_FRIEND: &[&str] = &[VIEW, AUDIO, ANNOTATION];
@@ -203,7 +209,9 @@ pub mod caps {
     pub const DEFAULT_ASSIST: &[&str] = &[VIEW, CONTROL, CLIPBOARD, AUDIO, ANNOTATION];
     /// What a browser controller can use: a server's web limit is a subset
     /// of these, and all of them by default.
-    pub const WEB: &[&str] = &[VIEW, CONTROL, CLIPBOARD, FILES, AUDIO, MICROPHONE, ANNOTATION];
+    pub const WEB: &[&str] = &[
+        VIEW, CONTROL, CLIPBOARD, FILES, AUDIO, MICROPHONE, ANNOTATION, CAMERA, LISTEN,
+    ];
 
     pub fn is_known(name: &str) -> bool {
         ALL.contains(&name)

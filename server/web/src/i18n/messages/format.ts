@@ -52,6 +52,8 @@ export const zh = {
     display: '显示设置',
     diagnostics: '诊断包',
     annotation: '批注',
+    camera: '查看摄像头',
+    listen: '收听麦克风',
   },
   capGroups: {
     view: '观看',
@@ -114,6 +116,8 @@ export const en: typeof zh = {
     display: 'Display settings',
     diagnostics: 'Diagnostics',
     annotation: 'Annotation',
+    camera: 'View cameras',
+    listen: 'Hear the microphone',
   },
   capGroups: {
     view: 'Viewing',

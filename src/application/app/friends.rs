@@ -131,6 +131,8 @@ pub(crate) fn cap_label(cap: &str) -> &'static str {
         caps::DISPLAY => text.cap_display,
         caps::DIAGNOSTICS => text.cap_diagnostics,
         caps::ANNOTATION => text.cap_annotation,
+        caps::CAMERA => text.cap_camera,
+        caps::LISTEN => text.cap_listen,
         _ => text.cap_unknown,
     }
 }
