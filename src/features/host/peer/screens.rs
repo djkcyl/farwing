@@ -821,6 +821,7 @@ impl Screens {
         self.watching(true);
         self.show_at(index, capture::Source::Camera(spec), config).await?;
         self.slots[index].camera = Some(using);
+        self.lease.record_camera();
         Ok(())
     }
     /// This participant's parameters for `camera` (`None`: the owner's);

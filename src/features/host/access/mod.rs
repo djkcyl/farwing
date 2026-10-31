@@ -113,6 +113,7 @@ struct Record {
     /// A connection without the server: what the record needs.
     direct: Option<farwing_protocol::api::DirectRecord>,
     controlled: bool,
+    camera: bool,
     /// File transfers in order, by notice ID, and whether each has ended.
     files: Vec<(String, farwing_protocol::api::FileRecord, bool)>,
     more_files: u32,

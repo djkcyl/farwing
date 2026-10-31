@@ -1046,6 +1046,8 @@ pub struct FileRecord {
 pub struct HostReport {
     /// It used the keyboard and mouse.
     pub controlled: bool,
+    /// It watched a camera.
+    pub camera: bool,
     /// File transfers, at most [`HostReport::MAX_FILES`].
     pub files: Vec<FileRecord>,
     /// Transfers beyond those listed.

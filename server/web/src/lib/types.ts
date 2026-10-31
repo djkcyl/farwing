@@ -325,6 +325,7 @@ export interface FileRecord {
 /// The host's summary of what a participant did.
 export interface HostReport {
   controlled: boolean;
+  camera: boolean;
   files: FileRecord[];
   more_files: number;
   ports: string[];

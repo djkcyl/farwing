@@ -75,6 +75,15 @@ impl Lease {
             }
         });
     }
+    /// The participant watched a camera.
+    pub(crate) fn record_camera(&self) {
+        let participant = self.participant;
+        self.modify(|state| {
+            if let Some(p) = participant.and_then(|key| state.participants.get_mut(&key)) {
+                p.record.camera = true;
+            }
+        });
+    }
     /// The participant forwarded a port to `target` (`tcp 127.0.0.1:3389`).
     pub(crate) fn record_port(&self, target: String) {
         let participant = self.participant;

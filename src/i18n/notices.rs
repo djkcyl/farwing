@@ -100,6 +100,10 @@ fn zh_text(kind: &str, d: &Value) -> (String, String) {
                 admin_line,
             )
         }
+        "connection.incoming" if s(d, "purpose") == "camera" => (
+            format!("{} 在查看 {} 的摄像头", or(s(d, "who"), "访客"), s(d, "host")),
+            s(d, "controller"),
+        ),
         "connection.incoming" => (
             format!("{} 连接了 {}", or(s(d, "who"), "访客"), s(d, "host")),
             s(d, "controller"),

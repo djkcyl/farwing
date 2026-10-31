@@ -45,6 +45,7 @@ impl Record {
             viewer: None,
             host: Some(farwing_protocol::api::HostReport {
                 controlled: self.controlled,
+                camera: self.camera,
                 // Unfinished transfers ended with the connection.
                 files: self.files.into_iter().map(|(_, f, _)| f).collect(),
                 more_files: self.more_files,

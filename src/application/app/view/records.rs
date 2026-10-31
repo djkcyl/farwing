@@ -122,6 +122,11 @@ fn record_details(ui: &mut egui::Ui, r: &ConnectionRecord) {
             row(ui, text.control, |ui| {
                 ui.label(if h.controlled { text.controlled } else { text.view_only });
             });
+            if h.camera {
+                row(ui, text.camera, |ui| {
+                    ui.label(text.camera_viewed);
+                });
+            }
         }
         if !h.files.is_empty() {
             row(ui, text.files, |ui| {

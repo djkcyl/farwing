@@ -130,6 +130,7 @@ function RecordItem({ r }: { r: ConnectionRecord }) {
               </Row>
             )}
             {h && r.purpose === 'desktop' && <Row label={m.control}>{h.controlled ? m.controlled : m.viewOnly}</Row>}
+            {h?.camera && r.purpose === 'desktop' && <Row label={m.camera}>{m.cameraViewed}</Row>}
             {h && h.files.length > 0 && (
               <Row label={m.files}>
                 <div className="stack-xs">

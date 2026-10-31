@@ -108,7 +108,13 @@ export const zh = {
               : `${s(d.device)} 已从账号移除`,
       body: d.by ? `管理员：${s(d.by)}` : '',
     }),
-    'connection.incoming': (d: Data) => ({ title: `${s(d.who) || '访客'} 连接了 ${s(d.host)}`, body: s(d.controller) }),
+    'connection.incoming': (d: Data) => ({
+      title:
+        s(d.purpose) === 'camera'
+          ? `${s(d.who) || '访客'} 在查看 ${s(d.host)} 的摄像头`
+          : `${s(d.who) || '访客'} 连接了 ${s(d.host)}`,
+      body: s(d.controller),
+    }),
     'connection.own': (d: Data) => ({ title: `${s(d.controller)} 连接了 ${s(d.host)}`, body: '' }),
     'connection.refused': (d: Data) => ({
       title: `${s(d.who) || '访客'} 连接 ${s(d.host)} 未成功`,
