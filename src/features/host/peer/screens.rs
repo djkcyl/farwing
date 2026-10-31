@@ -679,6 +679,7 @@ impl Screens {
             return Cameras::default();
         }
         let nickname = self.lease.profile().nickname;
+        let stopped = self.lease.participant().is_some_and(cameras::stopped);
         let cameras = cameras::cameras()
             .into_iter()
             .map(|camera| {
@@ -693,7 +694,11 @@ impl Screens {
                 CameraInfo {
                     id: cameras::display_id(&camera.id),
                     name: camera.name.clone(),
-                    unavailable: camera.unavailable.clone().unwrap_or_default(),
+                    unavailable: if stopped {
+                        t().camera.stopped_by_owner.to_owned()
+                    } else {
+                        camera.unavailable.clone().unwrap_or_default()
+                    },
                     modes: camera.modes.iter().copied().map(Into::into).collect(),
                     owner: Some(owner.into()),
                     custom: self.camera_params.get(&camera.id).copied().map(Into::into),
@@ -765,7 +770,9 @@ impl Screens {
         use crate::features::host::cameras;
         use crate::features::stream_control::{publisher::refuse, wire::display_reason};
         use farwing_protocol::peer::error_code;
-        if !self.lease.camera_access() {
+        if !self.lease.camera_access()
+            || self.lease.participant().is_some_and(cameras::stopped)
+        {
             return Err(refuse(error_code::FORBIDDEN, display_reason::CAMERA_NOT_ALLOWED));
         }
         let find = |list: Vec<crate::media::camera::Camera>| {
@@ -803,7 +810,11 @@ impl Screens {
         wanted.bitrate_kbps = params.bitrate_kbps;
         // Stopped first: its old use of the camera ends before joining.
         self.stop_at(index).await;
-        let (spec, chosen_by, using) = cameras::join(wanted, &self.lease.profile().nickname);
+        let (spec, chosen_by, using) = cameras::join(
+            wanted,
+            self.lease.participant().unwrap_or_default(),
+            &self.lease.profile().nickname,
+        );
         tracing::info!(camera = %camera.name, width = spec.mode.width, height = spec.mode.height,
             fps = spec.mode.fps(), %chosen_by, track = index, "participant camera starts");
         let config = self.base;
@@ -1083,6 +1094,19 @@ impl Screens {
             self.apply_inventory(inventory)?;
         }
         let selected = self.reports.current.load(Ordering::Acquire);
+        // Cameras the owner stopped, or no longer allows, end.
+        let camera_ended = !self.lease.camera_access()
+            || self
+                .lease
+                .participant()
+                .is_some_and(crate::features::host::cameras::stopped);
+        if camera_ended {
+            for index in 0..self.slots.len() {
+                if self.slots[index].camera.is_some() {
+                    self.stop_at(index).await;
+                }
+            }
+        }
         let mut fatal = false;
         for index in 0..self.slots.len() {
             let disappeared = self.slots[index].screen().is_some_and(|screen| {

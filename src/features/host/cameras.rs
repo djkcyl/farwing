@@ -2,7 +2,7 @@
 //! §4): the inventory, the display IDs cameras take in the display list, and
 //! which parameters a running camera uses (the first viewer's).
 use crate::media::camera::{Camera, Spec};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -89,12 +89,12 @@ pub(crate) fn controls_changed(camera: &str) {
     }
 }
 
-/// A running camera: the parameters everyone watching it uses, and whose
-/// they are.
+/// A running camera: the parameters everyone watching it uses, whose they
+/// are, and who watches (participant key, name).
 struct Running {
     spec: Spec,
     chosen_by: String,
-    viewers: usize,
+    viewers: Vec<(u64, String)>,
 }
 
 static RUNNING: LazyLock<Mutex<HashMap<String, Running>>> = LazyLock::new(Mutex::default);
@@ -106,38 +106,82 @@ fn running() -> std::sync::MutexGuard<'static, HashMap<String, Running>> {
 /// A participant watching a camera; leaves on drop.
 pub(crate) struct Use {
     camera: String,
+    participant: u64,
 }
 
 impl Drop for Use {
     fn drop(&mut self) {
         let mut running = running();
         if let Some(entry) = running.get_mut(&self.camera) {
-            entry.viewers = entry.viewers.saturating_sub(1);
-            if entry.viewers == 0 {
+            if let Some(at) = entry.viewers.iter().position(|(key, _)| *key == self.participant) {
+                entry.viewers.remove(at);
+            }
+            if entry.viewers.is_empty() {
                 running.remove(&self.camera);
             }
         }
+        drop(running);
+        notice();
     }
 }
 
-/// Watch `wanted.camera`: with `wanted` when nobody watches it yet, else
-/// with the parameters of the one who started it. Returns them and who
-/// chose them.
-pub(crate) fn join(wanted: Spec, nickname: &str) -> (Spec, String, Arc<Use>) {
+/// Participants the owner stopped: they may not open a camera again in
+/// their session.
+static STOPPED: LazyLock<Mutex<HashSet<u64>>> = LazyLock::new(Mutex::default);
+
+/// Whether the owner stopped `participant`'s cameras.
+pub(crate) fn stopped(participant: u64) -> bool {
+    STOPPED.lock().unwrap_or_else(|e| e.into_inner()).contains(&participant)
+}
+
+/// The owner pressed "stop": everyone watching stops, for their session.
+fn stop_all() {
+    let watching: Vec<u64> = running()
+        .values()
+        .flat_map(|r| r.viewers.iter().map(|(key, _)| *key))
+        .collect();
+    tracing::info!(participants = watching.len(), "owner stopped camera viewing");
+    STOPPED.lock().unwrap_or_else(|e| e.into_inner()).extend(watching);
+}
+
+/// The corner notice on this computer: who watches a camera now.
+fn notice() {
+    if cfg!(test) || !crate::platform::windows::participant_overlay::capture_exclusion() {
+        return;
+    }
+    let mut names: Vec<String> = running()
+        .values()
+        .flat_map(|r| r.viewers.iter().map(|(_, name)| name.clone()))
+        .collect();
+    names.sort();
+    names.dedup();
+    let text = (!names.is_empty()).then(|| {
+        (crate::i18n::t().camera.notice_watching)(&names)
+    });
+    crate::platform::windows::camera_notice::set(text, crate::i18n::t().camera.stop, stop_all);
+}
+
+/// `participant` watches `wanted.camera`: with `wanted` when nobody watches
+/// it yet, else with the parameters of the one who started it. Returns them
+/// and who chose them.
+pub(crate) fn join(wanted: Spec, participant: u64, nickname: &str) -> (Spec, String, Arc<Use>) {
     let mut running = running();
     let camera = wanted.camera.clone();
     let entry = running.entry(camera.clone()).or_insert_with(|| Running {
         spec: wanted.clone(),
         chosen_by: nickname.to_owned(),
-        viewers: 0,
+        viewers: Vec::new(),
     });
-    entry.viewers += 1;
-    (entry.spec.clone(), entry.chosen_by.clone(), Arc::new(Use { camera }))
+    entry.viewers.push((participant, nickname.to_owned()));
+    let joined = (entry.spec.clone(), entry.chosen_by.clone());
+    drop(running);
+    notice();
+    (joined.0, joined.1, Arc::new(Use { camera, participant }))
 }
 
 /// How many participants watch `camera`.
 pub(crate) fn viewers(camera: &str) -> usize {
-    running().get(camera).map_or(0, |r| r.viewers)
+    running().get(camera).map_or(0, |r| r.viewers.len())
 }
 
 /// Who chose the parameters `camera` runs with, if it runs.
