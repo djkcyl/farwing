@@ -16,11 +16,11 @@ pub(crate) struct Screen {
     pub render_adapter: Option<u64>,
     pub identity: Option<String>,
 }
-/// What an encoder pipeline captures. Only screens so far; cameras and
-/// windows join as further kinds (`docs/protocol/camera-design.md` §9.1).
+/// What an encoder pipeline captures (`docs/protocol/camera-design.md` §9.1).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Source {
     Screen(Screen),
+    Camera(crate::media::camera::Spec),
 }
 
 impl Source {
@@ -29,45 +29,53 @@ impl Source {
     pub(crate) fn key(&self) -> &str {
         match self {
             Self::Screen(screen) => &screen.device_name,
+            Self::Camera(camera) => camera.key(),
         }
     }
     pub(crate) fn size(&self) -> (u32, u32) {
         match self {
             Self::Screen(screen) => (screen.width, screen.height),
+            Self::Camera(camera) => (camera.mode.width, camera.mode.height),
         }
     }
     /// The highest frame rate it produces.
     pub(crate) fn fps(&self) -> u32 {
         match self {
             Self::Screen(screen) => screen.fps,
+            Self::Camera(camera) => camera.mode.fps(),
         }
     }
     pub(crate) fn hdr(&self) -> bool {
         match self {
             Self::Screen(screen) => screen.hdr,
+            Self::Camera(_) => false,
         }
     }
     /// The adapter its frames are on.
     pub(crate) fn adapter(&self) -> u64 {
         match self {
             Self::Screen(screen) => screen.adapter,
+            Self::Camera(camera) => camera.adapter,
         }
     }
     /// The adapter that renders it (an encoder there avoids a copy).
     pub(crate) fn render_adapter(&self) -> u64 {
         match self {
             Self::Screen(screen) => screen.render_adapter.unwrap_or(screen.adapter),
+            Self::Camera(camera) => camera.adapter,
         }
     }
     pub(crate) fn screen(&self) -> Option<&Screen> {
         match self {
             Self::Screen(screen) => Some(screen),
+            Self::Camera(_) => None,
         }
     }
     /// For diagnostics.
     pub(crate) fn label(&self) -> String {
         match self {
             Self::Screen(screen) => screen.label(),
+            Self::Camera(camera) => camera.name.clone(),
         }
     }
 }

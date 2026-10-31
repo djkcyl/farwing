@@ -3,6 +3,7 @@
 pub mod app;
 pub mod cli;
 pub(crate) mod dev_input;
+pub(crate) mod dev_camera;
 pub(crate) mod dev_plugins;
 pub(crate) mod dev_video;
 pub mod bootstrap;

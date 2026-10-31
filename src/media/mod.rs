@@ -18,6 +18,7 @@ pub use profile::*;
 pub mod preferences;
 pub mod selection;
 
+pub(crate) mod camera;
 pub(crate) mod capture;
 pub(crate) mod encoding;
 pub(crate) mod geometry;

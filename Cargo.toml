@@ -99,6 +99,8 @@ windows = { version = "0.62.2", default-features = false, features = [
     "Win32_System_IO",
     "Win32_Foundation",
     "Win32_Media_Audio",
+    "Win32_Media_DirectShow",
+    "Win32_Media_MediaFoundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",

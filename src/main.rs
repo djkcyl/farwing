@@ -277,6 +277,39 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum DevCameraAction {
+    /// 列出摄像头、支持的格式、默认格式与画面调整项（JSON）
+    List,
+    /// 打开摄像头采集若干秒，输出帧数、帧率与间隔（JSON）
+    Probe {
+        /// 摄像头：list 中的序号，或 ID / 名称的一部分；默认第一个
+        #[arg(long)]
+        camera: Option<String>,
+        /// 格式：宽x高@帧率，可加 :nv12、:yuy2、:mjpeg 或 :h264；默认按默认参数
+        #[arg(long)]
+        mode: Option<String>,
+        #[arg(long, default_value_t = 5)]
+        seconds: u64,
+        /// 把第一帧保存为 PNG
+        #[arg(long)]
+        snapshot: Option<std::path::PathBuf>,
+    },
+    /// 设置一项画面调整，然后列出全部调整项（JSON）
+    Adjust {
+        #[arg(long)]
+        camera: Option<String>,
+        /// brightness、contrast、hue、saturation、sharpness、gamma、white_balance、backlight_compensation、gain、power_line_frequency、exposure、focus、zoom
+        #[arg(long)]
+        control: String,
+        #[arg(long, allow_hyphen_values = true)]
+        value: i32,
+        /// 交给摄像头自动调节
+        #[arg(long)]
+        auto: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum DevAction {
     /// 通过端口转发服务运行一条规则并输出状态
     Ports {
@@ -335,6 +368,11 @@ enum DevAction {
     },
     /// 加载已安装的插件（独立宿主进程、ABI、程序描述），并在显卡上运行画面滤镜示例做检查
     Plugins,
+    /// 本机摄像头：列出摄像头、格式与画面调整，或打开一个检查采集
+    Camera {
+        #[command(subcommand)]
+        action: DevCameraAction,
+    },
     /// 无窗口解码被控主屏，可注入丢包与延迟，输出恢复时长等 JSON 指标
     Video {
         #[arg(long)]
@@ -846,6 +884,31 @@ fn main() -> Result<()> {
                     ))
                 }
                 DevAction::Plugins => farwing::application::cli::dev_plugins(),
+                DevAction::Camera { action } => match action {
+                    DevCameraAction::List => farwing::application::cli::dev_camera_list(),
+                    DevCameraAction::Probe {
+                        camera,
+                        mode,
+                        seconds,
+                        snapshot,
+                    } => farwing::application::cli::dev_camera_probe(
+                        camera.as_deref(),
+                        mode.as_deref(),
+                        seconds,
+                        snapshot.as_deref(),
+                    ),
+                    DevCameraAction::Adjust {
+                        camera,
+                        control,
+                        value,
+                        auto,
+                    } => farwing::application::cli::dev_camera_adjust(
+                        camera.as_deref(),
+                        &control,
+                        value,
+                        auto,
+                    ),
+                },
                 DevAction::Power {
                     device_id,
                     shutdown,

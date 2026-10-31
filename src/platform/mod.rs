@@ -4,6 +4,6 @@
 pub(crate) mod windows;
 #[cfg(windows)]
 pub(crate) use windows::{
-    capture, decoder, display, display_hdr, encoder, graphics, source, surface, swapchain,
+    camera, capture, decoder, display, display_hdr, encoder, graphics, source, surface, swapchain,
     transfer, video_shader,
 };

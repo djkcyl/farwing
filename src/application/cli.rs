@@ -892,6 +892,23 @@ pub fn dev_plugins() -> Result<()> {
     crate::application::dev_plugins::run()
 }
 
+pub fn dev_camera_list() -> Result<()> {
+    crate::application::dev_camera::list()
+}
+
+pub fn dev_camera_probe(
+    camera: Option<&str>,
+    mode: Option<&str>,
+    seconds: u64,
+    snapshot: Option<&std::path::Path>,
+) -> Result<()> {
+    crate::application::dev_camera::probe(camera, mode, seconds, snapshot)
+}
+
+pub fn dev_camera_adjust(camera: Option<&str>, control: &str, value: i32, auto: bool) -> Result<()> {
+    crate::application::dev_camera::adjust(camera, control, value, auto)
+}
+
 /// `dev video --recovery-late`: no early judgment, for A/B runs.
 pub fn dev_video_late_recovery() {
     crate::transport::rtc::recovery::disable_early();

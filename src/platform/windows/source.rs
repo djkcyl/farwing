@@ -41,6 +41,7 @@ pub(crate) trait FrameSource {
 pub(crate) fn open(source: &Source) -> Result<Box<dyn FrameSource>> {
     match source {
         Source::Screen(screen) => Ok(Box::new(Desktop::open_selected(screen)?)),
+        Source::Camera(camera) => Ok(Box::new(super::camera::Capture::open(camera)?)),
     }
 }
 
