@@ -9,6 +9,7 @@
 
 mod audio_quality;
 pub(crate) mod camera;
+mod cameras;
 pub(crate) mod control_turn;
 use crate::diagnostics::performance::PerformanceMonitor;
 use crate::i18n::t;
@@ -189,6 +190,7 @@ impl RemoteScreen {
             .unwrap_or(0)
             + 1;
         match kind {
+            wire::DisplayKind::Camera => self.name.clone(),
             wire::DisplayKind::Exclusive => t().features.stream_super_screen.into(),
             wire::DisplayKind::Virtual => (t().features.stream_virtual_screen_numbered)(number),
             _ => match crate::media::capture::monitor_name(&self.name) {
@@ -376,6 +378,7 @@ struct StreamControlState {
     performance: PerformanceMonitor,
     /// Dropped frames already reported in `ReceiverStats`.
     reported_drops: u64,
+    cameras: cameras::Cameras,
 }
 
 impl StreamControlState {
@@ -482,6 +485,7 @@ impl StreamControlHandle {
             audio_persistence_error: None,
             performance,
             reported_drops: 0,
+            cameras: Default::default(),
         };
         state.performance.set_quality(viewing_quality_label(&state));
         let audio = crate::media::audio::AudioPlayback::new();

@@ -12,7 +12,13 @@ use winit::platform::windows::WindowAttributesExtWindows;
 enum TabCommand {
     Select(i32),
     Detach(i32, PhysicalPosition<i32>),
+    /// Open the tab in a small window kept above the others.
+    PictureInPicture(i32),
 }
+
+/// A picture-in-picture window's size and the least it may be resized to.
+const PIP_SIZE: (f64, f64) = (400.0, 268.0);
+const PIP_MINIMUM: (f64, f64) = (240.0, 168.0);
 
 #[derive(Default)]
 pub(super) struct ScreenTabBar {
@@ -67,6 +73,10 @@ impl ScreenTabBar {
                                 .screens
                                 .iter()
                                 .any(|s| s.id == *id && s.display.kind == crate::features::stream_control::wire::DisplayKind::Virtual);
+                        let camera = snapshot
+                            .screens
+                            .iter()
+                            .any(|s| s.id == *id && s.display.is_camera());
                         let (response, close_clicked) = ui
                             .push_id(("screen-tab", *id), |ui| {
                                 crate::ui::controls::screen_tab(
@@ -76,6 +86,7 @@ impl ScreenTabBar {
                                     pending,
                                     !self.software_only,
                                     closable,
+                                    camera,
                                 )
                             })
                             .inner;
@@ -92,10 +103,6 @@ impl ScreenTabBar {
                         } else if response.clicked() {
                             self.command = Some(TabCommand::Select(*id));
                         }
-                        let camera = snapshot
-                            .screens
-                            .iter()
-                            .any(|s| s.id == *id && s.display.is_camera());
                         response.context_menu(|ui| {
                             super::super::stream_menu::menu_style(ui);
                             ui.set_width(crate::ui::theme::CONTEXT_MENU_WIDTH);
@@ -111,6 +118,21 @@ impl ScreenTabBar {
                                     self.error = Some(error);
                                 }
                                 ui.separator();
+                            }
+                            if camera
+                                && crate::ui::controls::menu_row(
+                                    ui,
+                                    t().camera.picture_in_picture,
+                                    "",
+                                    None,
+                                    !self.software_only,
+                                    false,
+                                )
+                                .on_disabled_hover_text(t().viewer.software_single_window)
+                                .clicked()
+                            {
+                                self.command = Some(TabCommand::PictureInPicture(*id));
+                                ui.close();
                             }
                             if crate::ui::controls::menu_row(
                                 ui,
@@ -562,6 +584,33 @@ impl ScreenWindows {
         screen: i32,
         at: PhysicalPosition<i32>,
     ) -> Result<()> {
+        self.open_tab_window(event_loop, from, screen, at, false)
+    }
+
+    /// Picture in picture: the tab in a small window above the others, in
+    /// the source window's bottom-right corner.
+    fn picture_in_picture(&mut self, event_loop: &ActiveEventLoop, from: WindowId, screen: i32) -> Result<()> {
+        let source = self.windows.get(&from).context(t().viewer.source_window_closed)?;
+        let origin = source.window.inner_position().unwrap_or_default();
+        let size = source.window.inner_size();
+        let scale = source.window.scale_factor();
+        let pip = LogicalSize::new(PIP_SIZE.0, PIP_SIZE.1).to_physical::<i32>(scale);
+        let margin = (16.0 * scale) as i32;
+        let at = PhysicalPosition::new(
+            origin.x + size.width as i32 - pip.width - margin,
+            origin.y + size.height as i32 - pip.height - margin,
+        );
+        self.open_tab_window(event_loop, from, screen, at, true)
+    }
+
+    fn open_tab_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        from: WindowId,
+        screen: i32,
+        at: PhysicalPosition<i32>,
+        pip: bool,
+    ) -> Result<()> {
         let source = self
             .windows
             .get(&from)
@@ -569,7 +618,8 @@ impl ScreenWindows {
         if !source.tabs.contains(&screen) {
             return Ok(());
         }
-        if let Ok(origin) = source.window.inner_position()
+        if !pip
+            && let Ok(origin) = source.window.inner_position()
             && at.x >= origin.x
             && at.x < origin.x + source.window.inner_size().width as i32
             && at.y >= origin.y
@@ -577,11 +627,15 @@ impl ScreenWindows {
         {
             return Ok(());
         }
-        let position = crate::ui::chrome::constrain_drag_position(
-            PhysicalPosition::new(at.x - 100, at.y - 18),
-            windows::Win32::Foundation::POINT { x: at.x, y: at.y },
-        );
-        if source.tabs.len() == 1 {
+        let position = if pip {
+            at
+        } else {
+            crate::ui::chrome::constrain_drag_position(
+                PhysicalPosition::new(at.x - 100, at.y - 18),
+                windows::Win32::Foundation::POINT { x: at.x, y: at.y },
+            )
+        };
+        if source.tabs.len() == 1 && !pip {
             source.window.set_outer_position(position);
             return Ok(());
         }
@@ -600,8 +654,22 @@ impl ScreenWindows {
                     .with_title(source.window.title())
                     .with_window_icon(Some(crate::ui::branding::window_icon()))
                     .with_decorations(false)
-                    .with_inner_size(source.window.inner_size())
-                    .with_min_inner_size(LogicalSize::new(760.0, 520.0))
+                    .with_inner_size(if pip {
+                        LogicalSize::new(PIP_SIZE.0, PIP_SIZE.1)
+                            .to_physical::<u32>(source.window.scale_factor())
+                    } else {
+                        source.window.inner_size()
+                    })
+                    .with_min_inner_size(if pip {
+                        LogicalSize::new(PIP_MINIMUM.0, PIP_MINIMUM.1)
+                    } else {
+                        LogicalSize::new(760.0, 520.0)
+                    })
+                    .with_window_level(if pip {
+                        winit::window::WindowLevel::AlwaysOnTop
+                    } else {
+                        winit::window::WindowLevel::Normal
+                    })
                     .with_position(position),
             )?;
             crate::ui::branding::set_taskbar_icon(&window);
@@ -968,6 +1036,7 @@ impl ScreenWindows {
             let result = match command {
                 TabCommand::Select(screen) => self.begin_screen(window, screen),
                 TabCommand::Detach(screen, at) => self.detach_tab(event_loop, window, screen, at),
+                TabCommand::PictureInPicture(screen) => self.picture_in_picture(event_loop, window, screen),
             };
             if let Err(error) = result
                 && let Some(app) = self

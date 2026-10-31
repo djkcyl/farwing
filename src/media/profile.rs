@@ -197,6 +197,9 @@ pub struct ConnectionMediaOptions {
     /// This connection only (never saved).
     #[serde(skip)]
     pub audio_only: bool,
+    /// The host's cameras only (never saved).
+    #[serde(skip)]
+    pub camera_only: bool,
     /// This connection only (never saved).
     #[serde(skip)]
     pub muted: bool,
@@ -213,6 +216,7 @@ impl Default for ConnectionMediaOptions {
     fn default() -> Self {
         Self {
             audio_only: false,
+            camera_only: false,
             muted: false,
             frame_rate: FrameRateChoice::Auto,
             codec: CodecPreference::Auto,
@@ -226,6 +230,7 @@ impl Default for ConnectionMediaOptions {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) struct ConnectionMediaProfile {
     pub audio_only: bool,
+    pub camera_only: bool,
     pub muted: bool,
     pub local_display: LocalDisplayInfo,
     pub stream_fps: u32,
@@ -240,6 +245,7 @@ impl ConnectionMediaOptions {
         let stream_fps = self.frame_rate.value(display);
         Ok(ConnectionMediaProfile {
             audio_only: self.audio_only,
+            camera_only: self.camera_only,
             muted: self.muted,
             local_display: display,
             stream_fps,

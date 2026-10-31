@@ -1026,6 +1026,7 @@ pub fn screen_tab(
     pending: bool,
     draggable: bool,
     closable: bool,
+    camera: bool,
 ) -> (egui::Response, bool) {
     let font = egui::FontId::proportional(theme::SMALL);
     let color = if selected { TEXT } else { MUTED };
@@ -1077,6 +1078,21 @@ pub fn screen_tab(
             close_rect,
             if close.hovered() { TEXT } else { MUTED },
         );
+    } else if camera {
+        let center = rect.left_center() + vec2(15.0, 0.0);
+        let stroke = Stroke::new(1.1, if selected { ACCENT } else { MUTED });
+        let body = egui::Rect::from_center_size(center - vec2(1.5, 0.0), vec2(10.0, 8.0));
+        ui.painter()
+            .rect_stroke(body, 2.0, stroke, egui::StrokeKind::Inside);
+        ui.painter().add(egui::Shape::line(
+            vec![
+                center + vec2(3.5, -1.5),
+                center + vec2(7.0, -3.5),
+                center + vec2(7.0, 3.5),
+                center + vec2(3.5, 1.5),
+            ],
+            stroke,
+        ));
     } else {
         let center = rect.left_center() + vec2(16.0, -1.0);
         let icon = egui::Rect::from_center_size(center, vec2(13.0, 9.0));

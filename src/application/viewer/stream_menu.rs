@@ -7,6 +7,7 @@ use crate::features::stream_control::{
 };
 use crate::media::FrameRateChoice;
 
+mod camera_menu;
 mod display_menu;
 pub(super) mod topology_menu;
 
@@ -38,6 +39,8 @@ enum Page {
     Mouse,
     DisplayAspect,
     Display,
+    /// A camera tab's parameters and adjustments.
+    Camera(camera_menu::CameraPage),
 }
 
 impl Page {
@@ -54,6 +57,7 @@ impl Page {
             Self::Mouse => t.mouse_mode,
             Self::DisplayAspect => t.local_aspect,
             Self::Display => t.display_settings,
+            Self::Camera(page) => page.title(),
         }
     }
 }
@@ -642,6 +646,14 @@ pub(super) fn show_stream_control_window(
         handle.mouse().fail(error.to_string());
     }
     let multi_screen = snapshot.screens.len() > 1;
+    // A camera tab's menu is its camera's; a screen's is the stream's.
+    let camera = crate::features::host::cameras::is_camera(screen_id);
+    match state.page {
+        Page::Camera(_) if !camera => state.page = Page::Quality,
+        Page::Camera(_) => {}
+        _ if camera => state.page = Page::Camera(Default::default()),
+        _ => {}
+    }
     if !state.open {
         state.page = Page::Quality;
         state.settings = None;
@@ -686,7 +698,7 @@ pub(super) fn show_stream_control_window(
             menu_style(ui);
             ui.set_width(menu_width);
             ui.horizontal(|ui| {
-                if state.page != Page::Quality {
+                if !matches!(state.page, Page::Quality | Page::Camera(camera_menu::CameraPage::Root)) {
                     back = icon_button(ui, Icon::Back, t().common.back).clicked();
                 }
                 let title = if state.page == Page::Display {
@@ -709,6 +721,13 @@ pub(super) fn show_stream_control_window(
             ui.scope(|ui| {
                 ui.set_width(menu_width);
                 match state.page {
+                    Page::Camera(page) => {
+                        if let Some(next) =
+                            camera_menu::draw(ui, handle, screen_id, page, &mut state.local_error)
+                        {
+                            state.page = Page::Camera(next);
+                        }
+                    }
                     Page::Display => {
                         egui::ScrollArea::vertical()
                             .max_height((ctx.content_rect().height() - 150.0).max(140.0))
@@ -1446,6 +1465,8 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", t().viewer.clip
             Page::Mouse | Page::Microphone | Page::DisplayAspect
         ) {
             Page::Advanced
+        } else if matches!(state.page, Page::Camera(_)) {
+            Page::Camera(camera_menu::CameraPage::Root)
         } else {
             Page::Quality
         };

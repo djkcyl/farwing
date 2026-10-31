@@ -23,6 +23,7 @@ mod devices;
 mod diagnostic_export;
 mod diagnostics_panel;
 mod host_assist;
+mod host_cameras;
 mod host_settings;
 mod logs;
 mod port_mapping;
@@ -91,6 +92,7 @@ pub(super) struct CenterUi {
     host_assist_password: Option<host_assist::PasswordEditor>,
     host_assist_settings_open: bool,
     host_assist_show_code: bool,
+    host_cameras: host_cameras::CameraSettingsUi,
     /// Using the device center without signing in (see `access`).
     pub(super) browsing: bool,
     /// The saved server's address and when it was read.

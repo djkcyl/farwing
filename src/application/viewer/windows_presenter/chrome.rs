@@ -55,6 +55,11 @@ pub(in crate::application::viewer) fn player_title_bar(
             0.0
         } else {
             crate::ui::theme::VIEWER_CAPTION_BUTTON + 4.0
+        }
+        - if bar.camera {
+            2.0 * (crate::ui::theme::VIEWER_CAPTION_BUTTON + 4.0)
+        } else {
+            0.0
         };
     let title = bar.title.trim_start_matches(crate::VIEWER_TITLE_PREFIX);
     let title_width = if bar.screens.device_switch.is_some() {
@@ -250,10 +255,11 @@ pub(in crate::application::viewer) fn player_title_bar(
         &bar.stream_control,
         farwing_protocol::caps::ANNOTATION,
     );
-    action.toggle_annotation = actions
+    // A camera has nothing to annotate or control: no buttons for it.
+    action.toggle_annotation = !bar.camera
+        && actions
         .add_enabled_ui(
             !annotation.toggling
-                && !bar.camera
                 && (annotation.enabled || (annotation.supported && annotation_granted)),
             |ui| {
                 title_icon_button(
@@ -331,8 +337,11 @@ pub(in crate::application::viewer) fn player_title_bar(
     let holder = (!enabled)
         .then(|| bar.stream_control.participants().controlled_by_other())
         .flatten();
+    if bar.camera {
+        // (see above)
+    } else {
     let mouse_button = actions
-        .add_enabled_ui((enabled || control.ready) && holder.is_none() && !bar.camera, |ui| {
+        .add_enabled_ui((enabled || control.ready) && holder.is_none(), |ui| {
             let hint = if control.control_asking {
                 t().viewer.control_asking.into()
             } else if bar.stream_control.mouse().transport_recovering() {
@@ -361,6 +370,7 @@ pub(in crate::application::viewer) fn player_title_bar(
         None => mouse_button,
     }
     .clicked();
+    }
     if !participants.is_empty() {
         let response = crate::ui::controls::viewer_participants_button(
             &mut actions,

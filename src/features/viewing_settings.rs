@@ -122,6 +122,8 @@ struct Saved {
     audio: Option<crate::media::audio::AudioSettings>,
     microphone: Option<crate::media::audio::encoder::Quality>,
     device: Option<DevicePreferences>,
+    /// The parameters chosen for the device's cameras, by display ID.
+    cameras: std::collections::BTreeMap<String, crate::media::camera::Params>,
 }
 
 /// The parts are saved separately: each save reads, changes and writes the
@@ -227,7 +229,25 @@ impl ViewingSettingsStore {
             .validate()
     }
 
+    pub(crate) async fn save_camera(&self, id: i32, params: Option<crate::media::camera::Params>) -> Result<()> {
+        self.update(move |saved| {
+            match params {
+                Some(params) => saved.cameras.insert(id.to_string(), params),
+                None => saved.cameras.remove(&id.to_string()),
+            };
+        })
+        .await
+    }
+
     pub(crate) async fn restore_device(&self, handle: &StreamControlHandle) {
+        if let Ok(saved) = self.read(t().features.viewing_device_read_failed).await {
+            let chosen = saved
+                .cameras
+                .into_iter()
+                .filter_map(|(id, params)| Some((id.parse().ok()?, params)))
+                .collect();
+            handle.attach_camera_store(self.clone(), chosen);
+        }
         // A shared session or an in-memory room replacement already owns newer
         // intent; a stale read must not overwrite it.
         if handle.device_preferences_loaded() {

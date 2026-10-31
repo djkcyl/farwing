@@ -210,6 +210,9 @@ enum Commands {
         /// 仅接收远端声音，不显示或控制画面
         #[arg(long)]
         audio_only: bool,
+        /// 只看被控的摄像头
+        #[arg(long, conflicts_with = "audio_only")]
+        camera: bool,
         /// 码流帧率：auto、144、90、60 或 30
         #[arg(long)]
         fps: Option<media::FrameRateChoice>,
@@ -977,6 +980,7 @@ fn main() -> Result<()> {
             ask,
             mute,
             audio_only,
+            camera,
             fps,
             codec,
             hardware_decode,
@@ -1008,6 +1012,7 @@ fn main() -> Result<()> {
             }
             let mut options = media::preferences::load()?;
             options.audio_only = audio_only;
+            options.camera_only = camera;
             options.muted = mute;
             if let Some(fps) = fps {
                 options.frame_rate = fps;

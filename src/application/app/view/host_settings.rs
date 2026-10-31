@@ -252,6 +252,7 @@ impl DeviceCenterApp {
             if !host.is_guest() {
                 self.wol_setup_entry(ui);
             }
+            self.host_camera_settings(ui, host);
             section(ui, text.section_video_audio);
             let inventory = host.audio_devices();
             let mut quality = host.audio_quality();

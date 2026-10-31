@@ -27,6 +27,8 @@ pub(super) enum Waiting {
     Microphone,
     /// A take (`true`) or release of the control token.
     Turn { take: bool },
+    /// A camera's parameters or adjustment.
+    Camera,
 }
 
 /// Why a request failed: the host's reason (empty when it did not answer)
@@ -54,6 +56,9 @@ impl StreamControlHandle {
             Waiting::Stream { .. } => super::settings::refusal_text(reason),
             Waiting::Microphone => crate::protocol::microphone::failure_message(reason),
             Waiting::Turn { .. } => self.turn_refusal_text(reason),
+            Waiting::Camera if reason == super::wire::display_reason::CAMERA_NOT_ALLOWED => {
+                crate::i18n::t().camera.not_allowed.to_owned()
+            }
             _ => super::display_settings::refusal_text(reason),
         };
         Refused {
@@ -150,6 +155,7 @@ impl StreamControlHandle {
                     self.turn_settled(state, sequence, result);
                 }
             }
+            Waiting::Camera => state.cameras.error = text().err(),
         }
     }
 

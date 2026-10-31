@@ -173,7 +173,9 @@ impl ResolvedConnection {
                     cancel,
                     self.client.join_device(
                         &self.target_device_id,
-                        if self.profile.audio_only {
+                        if self.profile.camera_only {
+                            crate::account::api::Purpose::Camera
+                        } else if self.profile.audio_only {
                             crate::account::api::Purpose::Audio
                         } else {
                             crate::account::api::Purpose::Desktop
@@ -329,7 +331,9 @@ impl ResolvedConnection {
             self.audio_preferences.expect("resolved audio settings"),
             reporter,
             cancel,
-            if self.profile.audio_only {
+            if self.profile.camera_only {
+                crate::session::negotiation::ControlPurpose::Camera
+            } else if self.profile.audio_only {
                 crate::session::negotiation::ControlPurpose::Audio
             } else {
                 crate::session::negotiation::ControlPurpose::Viewing

@@ -1,8 +1,8 @@
 //! Cameras through Media Foundation (`docs/protocol/camera-design.md` §3):
 //! the list with each camera's modes, a capture that hands the encoder
 //! pipeline BGRA textures ([`super::source::FrameSource`]), and the picture
-//! adjustments. `FARWING_DEV_CAMERA=synthetic` adds a generated test camera
-//! for machines without one.
+//! adjustments. `FARWING_DEV_CAMERA=synthetic` lists a generated test camera
+//! instead of the machine's (no camera needed, nobody filmed by tests).
 mod controls;
 mod reader;
 mod synthetic;
@@ -176,6 +176,9 @@ fn modes_of(types: &[IMFMediaType]) -> Vec<Mode> {
 /// The cameras of this machine with their modes. A camera that cannot be
 /// opened now (in use, not allowed) is still listed, without modes.
 pub(crate) fn list() -> Result<Vec<Camera>> {
+    if synthetic_enabled() {
+        return Ok(vec![synthetic::camera()]);
+    }
     let _apartment = Apartment::enter()?;
     let mut cameras = Vec::new();
     for (activate, id, name) in devices()? {
@@ -203,9 +206,6 @@ pub(crate) fn list() -> Result<Vec<Camera>> {
             unavailable,
             controls,
         });
-    }
-    if synthetic_enabled() {
-        cameras.push(synthetic::camera());
     }
     Ok(cameras)
 }

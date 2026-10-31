@@ -373,9 +373,29 @@ impl ControllerConnection {
             local_preference_writer: None,
         })
     }
+    /// A camera session shows the host's first camera that can be opened.
+    async fn open_first_camera(&self) -> Result<()> {
+        let handle = self.stream_control_handle();
+        handle.wait_media_control().await?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let cameras = handle.cameras();
+            if let Some(camera) = cameras.iter().find(|c| c.unavailable.is_empty()) {
+                return handle.open_camera(camera.id).await;
+            }
+            if let Some(camera) = cameras.first() {
+                anyhow::bail!("{}", camera.unavailable);
+            }
+            anyhow::ensure!(std::time::Instant::now() < deadline, "{}", t().camera.not_found);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
     async fn activate_viewing(&self) -> Result<()> {
         if self.profile.audio_only {
             return self.start_listening().await;
+        }
+        if self.profile.camera_only {
+            return self.open_first_camera().await;
         }
         self.wait_port_mapping_ready().await?;
         let handle = self.stream_control_handle();
@@ -704,6 +724,9 @@ impl ControllerConnection {
     ) -> Result<(NativeViewerSession, PlaybackSummary)> {
         let hardware_decode = self.profile.decoder.mode.hardware();
         report_progress(reporter, 9, t().session.progress_preparing_picture, "");
+        if self.profile.camera_only {
+            self.open_first_camera().await?;
+        }
         let (video, codec) = self.select_video_track().await?;
         report_progress(
             reporter,

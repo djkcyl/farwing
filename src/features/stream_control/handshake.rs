@@ -212,6 +212,7 @@ impl StreamControlHandle {
                     super::display_settings::apply_displays(&mut state, list)
                 }
                 Some(SessionBody::Stream(stream)) => apply_stream_state(&mut state, stream),
+                Some(SessionBody::Cameras(list)) => state.cameras.list = list.cameras,
                 _ => {}
             }
             self.settle(&mut state, received.request_id, waiting, Ok(()));
@@ -233,6 +234,7 @@ impl StreamControlHandle {
             }
             SessionBody::Stream(stream) => apply_stream_state(&mut state, stream),
             SessionBody::Displays(list) => super::display_settings::apply_displays(&mut state, list),
+            SessionBody::Cameras(list) => state.cameras.list = list.cameras,
             other if response => {
                 tracing::debug!(message = other.name(), "unmatched session response")
             }

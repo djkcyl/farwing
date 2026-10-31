@@ -234,7 +234,11 @@ impl ScreenPlayback {
                 // Keep restart required until the new mapping arrives, including cancellation.
                 // A local stop may already be sent while its ScreenSources is still in flight.
                 stopped.insert(screen_id);
-                self.control.set_screen_capture(screen_id, true).await?;
+                if crate::features::host::cameras::is_camera(screen_id) {
+                    self.control.open_camera(screen_id).await?;
+                } else {
+                    self.control.set_screen_capture(screen_id, true).await?;
+                }
                 Some(snapshot.screens_generation)
             } else {
                 None

@@ -947,6 +947,29 @@ impl DeviceCenterApp {
     fn start_viewer(&mut self) {
         self.start_viewer_mode(false);
     }
+    /// A window for the selected device's cameras only.
+    fn start_camera_viewer(&mut self) {
+        if self.logout_pending || self.mutation_pending {
+            return;
+        }
+        let Some(device) = self.selected_device().cloned() else {
+            self.status = StatusMessage::warning(t().app.no_device_selected);
+            return;
+        };
+        if let Err(message) = self.connection_issue(&device) {
+            self.status = StatusMessage::warning(message);
+            return;
+        }
+        self.spawn_viewer_with(
+            display_alias(&device).to_owned(),
+            Some(device.device_id.clone()),
+            None,
+            ConnectionMediaOptions {
+                camera_only: true,
+                ..self.media
+            },
+        );
+    }
     fn start_viewer_mode(&mut self, audio_only: bool) {
         if self.logout_pending || self.mutation_pending {
             return;
@@ -1023,14 +1046,37 @@ impl DeviceCenterApp {
         assist_request: Option<crate::account::assist::AssistRequest>,
         audio_only: bool,
     ) {
-        let Some(key) = viewing::Key::new(device_id.as_deref(), assist_request.as_ref()) else {
+        self.spawn_viewer_with(
+            alias,
+            device_id,
+            assist_request,
+            ConnectionMediaOptions {
+                audio_only,
+                ..self.media
+            },
+        );
+    }
+    fn spawn_viewer_with(
+        &mut self,
+        alias: String,
+        device_id: Option<String>,
+        assist_request: Option<crate::account::assist::AssistRequest>,
+        options: ConnectionMediaOptions,
+    ) {
+        let audio_only = options.audio_only;
+        let camera = options.camera_only;
+        let Some(key) = viewing::Key::new(device_id.as_deref(), assist_request.as_ref())
+            .map(|key| if camera { key.camera() } else { key })
+        else {
             return;
         };
         if let Some(session) = self.viewers.active.iter().find(|s| {
             s.key == key
-                || device_id
-                    .as_ref()
-                    .is_some_and(|id| s.device_id.as_ref() == Some(id))
+                || (!camera
+                    && !s.key.is_camera()
+                    && device_id
+                        .as_ref()
+                        .is_some_and(|id| s.device_id.as_ref() == Some(id)))
         }) {
             if !session.closing {
                 session.handle.request_audio_only(audio_only);
@@ -1062,10 +1108,7 @@ impl DeviceCenterApp {
                 device_id,
                 assist: assist_request,
                 direct: None,
-                options: ConnectionMediaOptions {
-                    audio_only,
-                    ..self.media
-                },
+                options,
                 background,
             })
             .is_err()

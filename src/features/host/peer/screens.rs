@@ -834,11 +834,17 @@ impl Screens {
                 crate::features::stream_control::wire::display_reason::NOT_FOUND,
             ));
         };
+        let before = self.params(&camera.id);
         match params {
             Some(params) => self.camera_params.insert(camera.id.clone(), params),
             None => self.camera_params.remove(&camera.id),
         };
-        if let Some(index) = self.active_slot(id)
+        let after = self.params(&camera.id);
+        // Mirror and rotation are the viewer's: only the capture's own
+        // parameters restart it.
+        let restart = (before.mode, before.color, before.bitrate_kbps) != (after.mode, after.color, after.bitrate_kbps);
+        if restart
+            && let Some(index) = self.active_slot(id)
             && cameras::viewers(&camera.id) == 1
         {
             self.stop_at(index).await;

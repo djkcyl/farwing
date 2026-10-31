@@ -4,6 +4,7 @@ use super::*;
 enum Glyph {
     Monitor,
     Headphones,
+    Camera,
     PortMapping,
     Files,
     Diagnostics,
@@ -322,6 +323,18 @@ fn paint_glyph(p: &egui::Painter, r: egui::Rect, g: Glyph, color: Color32) {
         }
         Glyph::Monitor => paint_icon(p, r, Icon::Monitor, color),
         Glyph::Headphones => crate::ui::controls::paint_headphones(p, r, color),
+        Glyph::Camera => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(q(-2.0, 0.0), vec2(13.0 * k, 10.0 * k)),
+                2.0 * k,
+                s,
+                egui::StrokeKind::Middle,
+            );
+            p.add(egui::Shape::line(
+                vec![q(4.5, -2.0), q(9.0, -5.0), q(9.0, 5.0), q(4.5, 2.0)],
+                s,
+            ));
+        }
         Glyph::PortMapping => crate::ui::controls::paint_port_mapping_icon(p, r, color),
         Glyph::Diagnostics => crate::ui::controls::paint_file_icon(p, r, color, false),
         Glyph::Files => crate::ui::controls::paint_file_icon(p, r, color, true),
@@ -498,6 +511,11 @@ impl DeviceCenterApp {
         let has_ports = holds(farwing_protocol::caps::PORTS);
         let has_diagnostics = holds(farwing_protocol::caps::DIAGNOSTICS)
             && device.platform == farwing_protocol::Platform::Windows;
+        // Its owner lets others see its cameras, and this account may.
+        let has_camera = holds(farwing_protocol::caps::CAMERA)
+            && device.policy.camera
+            && device.platform == farwing_protocol::Platform::Windows;
+        let mut camera = false;
         let (header, _) = ui.allocate_exact_size(vec2(viewport.x, 48.0), Sense::hover());
         let mut header_ui = ui.new_child(
             egui::UiBuilder::new()
@@ -641,7 +659,7 @@ impl DeviceCenterApp {
             // Own devices keep diagnostics with device management below.
             let row_diagnostics = has_diagnostics && !owned;
             let power_y = card_y + card_h + 16.0;
-            let info_y = if has_power || has_ports || has_files || row_diagnostics || viewing {
+            let info_y = if has_power || has_ports || has_files || row_diagnostics || viewing || has_camera {
                 power_y + theme::CONTROL_HEIGHT + 24.0
             } else {
                 card_y + card_h + 24.0
@@ -782,7 +800,8 @@ impl DeviceCenterApp {
             let files_at = ports_at + usize::from(has_ports);
             let diagnostics_at = files_at + usize::from(has_files);
             let viewing_at = diagnostics_at + usize::from(row_diagnostics);
-            let action_count = viewing_at + usize::from(viewing);
+            let camera_at = viewing_at + usize::from(viewing);
+            let action_count = camera_at + usize::from(has_camera);
             let gap = 16.0;
             let button_w = (card.width() - action_count.saturating_sub(1) as f32 * gap)
                 / action_count.max(1) as f32;
@@ -908,6 +927,26 @@ impl DeviceCenterApp {
                     ButtonTone::Normal,
                 );
                 audio_only = button.clicked();
+                if let Some(issue) = issue {
+                    button.on_disabled_hover_text(issue);
+                }
+            }
+            if has_camera {
+                let rect = egui::Rect::from_min_size(
+                    at(pad + camera_at as f32 * (button_w + gap), power_y),
+                    vec2(button_w, theme::CONTROL_HEIGHT),
+                );
+                let mut button_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                let issue = self.connection_issue(&device).err();
+                let button = detail_button(
+                    &mut button_ui,
+                    t().camera.menu_title,
+                    Glyph::Camera,
+                    !self.mutation_pending && !self.logout_pending && issue.is_none(),
+                    rect.size(),
+                    ButtonTone::Normal,
+                );
+                camera = button.clicked();
                 if let Some(issue) = issue {
                     button.on_disabled_hover_text(issue);
                 }
@@ -1082,6 +1121,9 @@ impl DeviceCenterApp {
         if connect || audio_only {
             self.selected_device_id = Some(id);
             self.start_viewer_mode(audio_only);
+        } else if camera {
+            self.selected_device_id = Some(id);
+            self.start_camera_viewer();
         }
         if let Some(action) = edit {
             self.center_ui.edit = Some(DeviceEdit {

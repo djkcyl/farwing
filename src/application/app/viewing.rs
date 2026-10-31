@@ -5,6 +5,8 @@ pub(super) enum Key {
     Assistance(String),
     /// A host reached directly, by address.
     Direct(String),
+    /// A device's cameras only (next to a window of its desktop).
+    Camera(String),
 }
 
 pub(super) struct Session {
@@ -32,9 +34,10 @@ impl Registry {
         if self.opening.contains_key(&key)
             || self.active.iter().any(|s| {
                 s.key == key
-                    || key
-                        .device()
-                        .is_some_and(|id| s.device_id.as_deref() == Some(id))
+                    || (!s.key.is_camera()
+                        && key
+                            .device()
+                            .is_some_and(|id| s.device_id.as_deref() == Some(id)))
             })
         {
             return false;
@@ -58,10 +61,11 @@ impl Registry {
         }
         !self.opening.remove(key).unwrap().cancelled
     }
+    /// The desktop (or listening) window of device `id`.
     pub fn for_device(&self, id: &str) -> Option<&Session> {
         self.active
             .iter()
-            .find(|s| s.device_id.as_deref() == Some(id))
+            .find(|s| !s.key.is_camera() && s.device_id.as_deref() == Some(id))
     }
     pub fn waits_for_device(&self, id: &str) -> bool {
         self.active
@@ -74,7 +78,7 @@ impl Registry {
     }
     pub fn stop_device(&mut self, id: &str) {
         for (key, pending) in &mut self.opening {
-            if key.device() == Some(id) {
+            if key.device() == Some(id) || key.camera_device() == Some(id) {
                 pending.cancelled = true;
             }
         }
@@ -129,7 +133,23 @@ impl Key {
     pub fn device(&self) -> Option<&str> {
         match self {
             Self::Device(id) => Some(id),
-            Self::Assistance(_) | Self::Direct(_) => None,
+            Self::Assistance(_) | Self::Direct(_) | Self::Camera(_) => None,
+        }
+    }
+    /// The same device's cameras-only window.
+    pub fn camera(self) -> Self {
+        match self {
+            Self::Device(id) => Self::Camera(id),
+            other => other,
+        }
+    }
+    pub fn is_camera(&self) -> bool {
+        matches!(self, Self::Camera(_))
+    }
+    fn camera_device(&self) -> Option<&str> {
+        match self {
+            Self::Camera(id) => Some(id),
+            _ => None,
         }
     }
 }
