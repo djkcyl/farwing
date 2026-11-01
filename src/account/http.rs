@@ -65,6 +65,29 @@ impl ServerHttp {
         &self.server
     }
 
+    /// Stream `path` into `dest` (a temporary file renamed when complete).
+    pub(crate) async fn download(&self, path: &str, headers: HeaderMap, dest: &std::path::Path) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+        let mut response = self
+            .client
+            .get(self.server.url(path))
+            .headers(headers)
+            .timeout(Duration::from_secs(60 * 60))
+            .send()
+            .await
+            .context("download")?;
+        anyhow::ensure!(response.status().is_success(), "HTTP {}", response.status().as_u16());
+        let part = dest.with_extension("part");
+        let mut file = tokio::fs::File::create(&part).await.context("download file")?;
+        while let Some(chunk) = response.chunk().await.context("download")? {
+            file.write_all(&chunk).await.context("download file")?;
+        }
+        file.flush().await?;
+        drop(file);
+        tokio::fs::rename(&part, dest).await.context("download file")?;
+        Ok(())
+    }
+
     pub(crate) async fn send(
         &self,
         method: Method,

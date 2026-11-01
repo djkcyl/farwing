@@ -1,0 +1,446 @@
+//! The chat page of the device center (`docs/protocol/chat-design.md`
+//! §12.1): groups on the left, then channels or direct messages, the
+//! messages with the composer, and the members or a panel on the right.
+use super::*;
+use crate::features::chat::ChatService;
+use crate::features::chat::list::Heights;
+use crate::features::chat::state::{ChatState, Connection};
+use farwing_protocol::chat::{Attachment, Id, Message};
+use std::collections::{HashMap, HashSet};
+
+mod composer;
+mod dialogs;
+mod messages;
+mod panels;
+pub(super) mod parts;
+mod settings;
+mod sidebar;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Panel {
+    Search,
+    Pins,
+}
+
+#[derive(Clone, PartialEq)]
+pub(super) enum Dialog {
+    Create { name: String, description: String },
+    Join { text: String },
+    Discover { query: String, sent: String },
+    Invite { group: Id, uses: u32, expires: usize },
+    Me,
+    GroupSettings,
+    Link { href: String, trust: bool },
+    Confirm { title: String, action: Confirmed },
+    StartDm,
+}
+
+/// What a confirmation does when accepted.
+#[derive(Clone, PartialEq)]
+pub(super) enum Confirmed {
+    Delete(Id),
+    Leave(Id),
+    Dissolve(Id),
+    Kick(Id, String),
+    DeleteRole(Id, Id),
+    DeleteChannel(Id),
+}
+
+/// Where the list of a channel is scrolled.
+#[derive(Default)]
+pub(super) struct Scroll {
+    pub channel: Option<Id>,
+    pub first: Option<i64>,
+    pub at_bottom: bool,
+    pub offset: Option<f32>,
+    /// The offset last drawn.
+    pub last: f32,
+    pub width: f32,
+    /// What was read when the channel opened (for the "new" line).
+    pub read_at_open: Option<Id>,
+}
+
+pub(crate) struct ChatUi {
+    pub(super) group: Option<Id>,
+    pub(super) channel: Option<Id>,
+    last: HashMap<Id, Id>,
+    drafts: HashMap<Id, String>,
+    reply: Option<Message>,
+    editing: Option<Message>,
+    mention_reply: bool,
+    panel: Option<Panel>,
+    members: bool,
+    heights: HashMap<Id, Heights>,
+    scroll: Scroll,
+    pub(super) dialog: Option<Dialog>,
+    spoilers: HashSet<(Id, usize)>,
+    image: Option<Attachment>,
+    zoom: f32,
+    card: Option<(String, egui::Pos2)>,
+    picker: bool,
+    picker_query: String,
+    picker_tone: usize,
+    suggest: Option<composer::Suggest>,
+    search_query: String,
+    search_files: bool,
+    search_scope: u8,
+    files: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
+    settings: settings::SettingsUi,
+    folded: HashSet<Id>,
+    trusted: HashSet<String>,
+    /// Open this channel once it is known (a new DM or group).
+    pub(super) open: Option<Id>,
+    picker_group: usize,
+    /// More search results, after the first page.
+    search_more: Vec<Message>,
+    search_more_left: bool,
+    search_sent: String,
+    /// A short note at the bottom (copied, request sent).
+    toast: Option<(String, std::time::Instant)>,
+}
+
+impl Default for ChatUi {
+    fn default() -> Self {
+        Self {
+            group: None,
+            channel: None,
+            last: HashMap::new(),
+            drafts: HashMap::new(),
+            reply: None,
+            editing: None,
+            mention_reply: true,
+            panel: None,
+            members: true,
+            heights: HashMap::new(),
+            scroll: Scroll::default(),
+            dialog: None,
+            spoilers: HashSet::new(),
+            image: None,
+            zoom: 1.0,
+            card: None,
+            picker: false,
+            picker_query: String::new(),
+            picker_tone: 0,
+            suggest: None,
+            search_query: String::new(),
+            search_files: false,
+            search_scope: 0,
+            files: None,
+            settings: settings::SettingsUi::default(),
+            folded: HashSet::new(),
+            trusted: HashSet::new(),
+            open: None,
+            picker_group: 0,
+            search_more: Vec::new(),
+            search_more_left: false,
+            search_sent: String::new(),
+            toast: None,
+        }
+    }
+}
+
+impl ChatUi {
+    pub(super) fn select_group(&mut self, group: Option<Id>, state: &ChatState) {
+        self.group = group;
+        self.channel = match group {
+            Some(g) => self.last.get(&g).copied().or_else(|| {
+                state.group(g).and_then(|gs| {
+                    let ordered = crate::features::chat::state::ordered(&gs.channels);
+                    ordered
+                        .iter()
+                        .find(|c| c.kind == farwing_protocol::chat::ChannelKind::Text)
+                        .or_else(|| ordered.iter().find(|c| c.kind.has_messages() && c.kind != farwing_protocol::chat::ChannelKind::Voice))
+                        .map(|c| c.id)
+                })
+            }),
+            None => None,
+        };
+        self.reply = None;
+        self.editing = None;
+    }
+
+    pub(super) fn select_channel(&mut self, channel: Id) {
+        if let Some(g) = self.group {
+            self.last.insert(g, channel);
+        }
+        self.channel = Some(channel);
+        self.reply = None;
+        self.editing = None;
+        self.suggest = None;
+    }
+
+}
+
+pub(super) const RAIL: f32 = 66.0;
+pub(super) const SIDE: f32 = 232.0;
+pub(super) const RIGHT: f32 = 232.0;
+pub(super) const PANEL: f32 = 340.0;
+pub(super) const SIDE_BG: Color32 = Color32::from_rgb(25, 30, 38);
+
+impl DeviceCenterApp {
+    /// Every frame: chat's notifications, and no focused channel while
+    /// another page is shown.
+    pub(crate) fn tick_chat(&mut self) {
+        let Some(chat) = &self.chat else { return };
+        if self.center_ui.page != super::Page::Chat {
+            chat.set_focus(None);
+        }
+        for notice in chat.take_notices() {
+            self.notifications.show_chat(notice.channel.0, notice.title, notice.body);
+        }
+    }
+
+    /// Show a channel (a chat notification's "view").
+    pub(crate) fn open_chat(&mut self, channel: Id) {
+        self.center_ui.page = super::Page::Chat;
+        self.chat_ui.open = Some(channel);
+    }
+
+    pub(super) fn chat_page(&mut self, ui: &mut egui::Ui) {
+        let Some(chat) = self.chat.clone() else {
+            ui.centered_and_justified(|ui| ui.label(parts::muted(t().chat.connecting)));
+            return;
+        };
+        if ui.input(|i| !i.events.is_empty() || i.pointer.is_moving()) {
+            chat.activity();
+        }
+        for error in chat.take_errors() {
+            self.status = StatusMessage::warning(error);
+        }
+        let state = chat.view();
+        let ui_state = &mut self.chat_ui;
+        if let Some(open) = ui_state.open
+            && let Some((_, group, _)) = state.channel(open)
+        {
+            ui_state.group = group.map(|g| g.group.id);
+            ui_state.select_channel(open);
+            ui_state.open = None;
+        }
+        // A channel that is gone (left the group, deleted) is not shown.
+        if let Some(c) = ui_state.channel
+            && state.snap.is_some()
+            && state.channel(c).is_none()
+            && ui_state.open.is_none()
+        {
+            ui_state.channel = None;
+        }
+        if let Some(g) = ui_state.group
+            && state.snap.is_some()
+            && state.group(g).is_none()
+        {
+            ui_state.group = None;
+            ui_state.channel = None;
+        }
+        if ui_state.group.is_some() && ui_state.channel.is_none() {
+            let g = ui_state.group;
+            ui_state.select_group(g, &state);
+        }
+        chat.set_focus(ui_state.channel);
+        chat.set_hidden(!ui.ctx().input(|i| i.viewport().focused.unwrap_or(true)));
+
+        let full = ui.max_rect();
+        ui.painter().rect_filled(full, 0.0, BG);
+        if state.snap.is_none() {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(full), |ui| {
+                ui.centered_and_justified(|ui| {
+                    if state.connection == Connection::Elsewhere {
+                        ui.vertical_centered(|ui| {
+                            ui.label(parts::muted(t().chat.elsewhere));
+                            if ui.button(t().chat.use_here).clicked() {
+                                chat.take_over();
+                            }
+                        });
+                    } else {
+                        ui.label(parts::muted(t().chat.connecting));
+                    }
+                });
+            });
+            return;
+        }
+        let rail = egui::Rect::from_min_max(full.min, egui::pos2(full.left() + RAIL, full.bottom()));
+        let side = egui::Rect::from_min_max(egui::pos2(rail.right(), full.top()), egui::pos2(rail.right() + SIDE, full.bottom()));
+        let show_members = self.chat_ui.panel.is_none() && self.chat_ui.members && self.chat_ui.group.is_some();
+        let right_w = if self.chat_ui.panel.is_some() {
+            PANEL
+        } else if show_members {
+            RIGHT
+        } else {
+            0.0
+        };
+        let main = egui::Rect::from_min_max(egui::pos2(side.right(), full.top()), egui::pos2(full.right() - right_w, full.bottom()));
+        let right = egui::Rect::from_min_max(egui::pos2(main.right(), full.top()), full.max);
+
+        ui.painter().rect_filled(rail, 0.0, SIDEBAR);
+        ui.painter().rect_filled(side, 0.0, SIDE_BG);
+        ui.painter().vline(rail.right(), rail.y_range(), Stroke::new(1.0, LINE));
+        ui.painter().vline(side.right(), side.y_range(), Stroke::new(1.0, LINE));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rail).id_salt("chat-rail"), |ui| {
+            sidebar::rail(ui, &chat, &state, &mut self.chat_ui);
+        });
+        ui.scope_builder(egui::UiBuilder::new().max_rect(side).id_salt("chat-side"), |ui| {
+            sidebar::side(ui, &chat, &state, &mut self.chat_ui);
+        });
+        ui.scope_builder(egui::UiBuilder::new().max_rect(main).id_salt("chat-main"), |ui| {
+            self.chat_main(ui, &chat, &state);
+        });
+        if right_w > 0.0 {
+            ui.painter().rect_filled(right, 0.0, SIDE_BG);
+            ui.painter().vline(right.left(), right.y_range(), Stroke::new(1.0, LINE));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(right).id_salt("chat-right"), |ui| match self.chat_ui.panel {
+                Some(Panel::Search) => panels::search(ui, &chat, &state, &mut self.chat_ui),
+                Some(Panel::Pins) => panels::pins(ui, &chat, &state, &mut self.chat_ui),
+                None => panels::members(ui, &chat, &state, &mut self.chat_ui),
+            });
+        }
+        panels::user_card(ui, &chat, &state, &mut self.chat_ui);
+        dialogs::show(ui.ctx(), &chat, &state, &mut self.chat_ui);
+        settings::show(ui.ctx(), &chat, &state, &mut self.chat_ui);
+        dialogs::image_viewer(ui.ctx(), &chat, &mut self.chat_ui);
+        composer::poll_files(&chat, &mut self.chat_ui);
+        // Files dropped on the window go to the open channel.
+        let dropped: Vec<std::path::PathBuf> = ui
+            .ctx()
+            .input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+        if !dropped.is_empty()
+            && let Some(channel) = self.chat_ui.channel
+        {
+            composer::attach_paths(&chat, channel, dropped);
+        }
+        if let Some((text, at)) = &self.chat_ui.toast {
+            if at.elapsed() > std::time::Duration::from_millis(2500) {
+                self.chat_ui.toast = None;
+            } else {
+                let galley = ui.painter().layout_no_wrap(text.clone(), egui::FontId::proportional(13.0), TEXT);
+                let size = galley.size() + vec2(28.0, 14.0);
+                let rect = egui::Rect::from_center_size(egui::pos2(full.center().x, full.bottom() - 90.0), size);
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("chat-toast")));
+                painter.rect(rect, 8.0, SURFACE, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
+                painter.galley(rect.center() - galley.size() / 2.0, galley, TEXT);
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+            }
+        }
+    }
+
+    fn chat_main(&mut self, ui: &mut egui::Ui, chat: &ChatService, state: &ChatState) {
+        let rect = ui.max_rect();
+        let Some(channel_id) = self.chat_ui.channel else {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                ui.centered_and_justified(|ui| {
+                    let empty = self.chat_ui.group.is_none() && state.snap.as_ref().is_some_and(|s| s.dms.is_empty());
+                    ui.label(parts::muted(if empty { t().chat.no_dms } else { t().chat.pick_channel }));
+                });
+            });
+            return;
+        };
+        let Some((channel, group, dm)) = state.channel(channel_id) else { return };
+        let (channel, group, dm) = (channel.clone(), group.cloned(), dm.cloned());
+        let head = egui::Rect::from_min_size(rect.min, vec2(rect.width(), 48.0));
+        let mut body = egui::Rect::from_min_max(egui::pos2(rect.left(), head.bottom()), rect.max);
+        ui.painter().hline(rect.x_range(), head.bottom(), Stroke::new(1.0, LINE));
+        if state.connection != Connection::Ready {
+            let banner = egui::Rect::from_min_size(body.min, vec2(body.width(), 26.0));
+            ui.painter().rect_filled(banner, 0.0, Color32::from_rgb(74, 58, 28));
+            ui.painter().text(
+                banner.left_center() + vec2(16.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                if state.connection == Connection::Elsewhere { t().chat.elsewhere } else { t().chat.offline },
+                egui::FontId::proportional(12.5),
+                AMBER,
+            );
+            body.min.y = banner.bottom();
+        }
+        ui.scope_builder(egui::UiBuilder::new().max_rect(head.shrink2(vec2(14.0, 0.0))).layout(egui::Layout::left_to_right(Align::Center)), |ui| {
+            self.chat_header(ui, chat, state, &channel, group.as_ref(), dm.as_ref());
+        });
+        let composer_h = composer::height(ui, &self.chat_ui, chat, channel_id);
+        let list = egui::Rect::from_min_max(body.min, egui::pos2(body.right(), body.bottom() - composer_h));
+        let input = egui::Rect::from_min_max(egui::pos2(body.left(), list.bottom()), body.max);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(list).id_salt(("chat-list", channel_id)), |ui| {
+            messages::list(ui, chat, state, &mut self.chat_ui, &channel, group.as_ref(), dm.as_ref());
+        });
+        ui.scope_builder(egui::UiBuilder::new().max_rect(input).id_salt("chat-composer"), |ui| {
+            composer::composer(ui, chat, state, &mut self.chat_ui, &channel, group.as_ref(), dm.as_ref());
+        });
+    }
+
+    /// Connect to a device a friend shares (from a direct message).
+    fn connect_shared_device(&mut self, device: DeviceInfo) {
+        self.selected_device_id = Some(device.device_id);
+        self.start_viewer();
+    }
+
+    fn chat_header(
+        &mut self,
+        ui: &mut egui::Ui,
+        chat: &ChatService,
+        state: &ChatState,
+        channel: &farwing_protocol::chat::Channel,
+        group: Option<&farwing_protocol::chat::GroupState>,
+        dm: Option<&farwing_protocol::chat::Dm>,
+    ) {
+        use farwing_protocol::chat::ChannelKind;
+        use parts::{Glyph, glyph_button};
+        if let Some(dm) = dm {
+            let status = state.presences.get(&dm.user.user_id).copied();
+            parts::avatar(ui, chat, &dm.user, 26.0, status);
+            ui.add_space(6.0);
+            ui.label(RichText::new(parts::display_name(&dm.user, "")).strong().color(TEXT));
+            let shared: Vec<DeviceInfo> = self
+                .devices
+                .as_ref()
+                .map(|l| {
+                    l.shared
+                        .iter()
+                        .filter(|d| d.owner.as_ref().is_some_and(|o| o.user_id == dm.user.user_id))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            for device in shared.iter().take(4) {
+                ui.add_space(6.0);
+                let label = if device.alias.is_empty() { device.device_id.clone() } else { device.alias.clone() };
+                let response = ui
+                    .add_enabled(device.status == "online", egui::Button::new(RichText::new(label).size(12.0)).small())
+                    .on_hover_text(t().chat.shared_devices);
+                if response.clicked() {
+                    self.connect_shared_device(device.clone());
+                }
+            }
+        } else {
+            let (rect, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
+            let glyph = match channel.kind {
+                ChannelKind::Voice => Glyph::Speaker,
+                ChannelKind::Announcement => Glyph::Megaphone,
+                _ => Glyph::Hash,
+            };
+            parts::paint_glyph(ui.painter(), rect, glyph, MUTED);
+            ui.add_space(4.0);
+            ui.label(RichText::new(&channel.name).strong().color(TEXT));
+            if !channel.topic.is_empty() {
+                ui.add_space(8.0);
+                ui.label(parts::muted(&channel.topic));
+            }
+        }
+        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+            let c = &t().chat;
+            if glyph_button(ui, Glyph::Search, c.search, self.chat_ui.panel == Some(Panel::Search)).clicked() {
+                self.chat_ui.panel = if self.chat_ui.panel == Some(Panel::Search) { None } else { Some(Panel::Search) };
+            }
+            if group.is_some() && glyph_button(ui, Glyph::People, c.members, self.chat_ui.members && self.chat_ui.panel.is_none()).clicked() {
+                if self.chat_ui.panel.is_some() {
+                    self.chat_ui.panel = None;
+                    self.chat_ui.members = true;
+                } else {
+                    self.chat_ui.members = !self.chat_ui.members;
+                }
+            }
+            let notify = glyph_button(ui, Glyph::Bell, c.notify, false);
+            egui::Popup::menu(&notify).show(|ui| {
+                panels::notify_menu(ui, chat, state, channel, group);
+            });
+            if glyph_button(ui, Glyph::Pin, c.pins, self.chat_ui.panel == Some(Panel::Pins)).clicked() {
+                self.chat_ui.panel = if self.chat_ui.panel == Some(Panel::Pins) { None } else { Some(Panel::Pins) };
+            }
+        });
+    }
+}

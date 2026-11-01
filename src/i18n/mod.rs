@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 pub(crate) mod app;
 pub(crate) mod camera;
+pub(crate) mod chat;
 pub(crate) mod center;
 pub(crate) mod common;
 pub(crate) mod controls;
@@ -157,6 +158,7 @@ pub fn init() {
 pub(crate) struct Messages {
     pub app: app::App,
     pub camera: camera::Camera,
+    pub chat: chat::Chat,
     pub center: center::Center,
     pub common: common::Common,
     pub controls: controls::Controls,
@@ -173,6 +175,7 @@ pub(crate) struct Messages {
 static ZH_CN: Messages = Messages {
     app: app::ZH_CN,
     camera: camera::ZH_CN,
+    chat: chat::ZH_CN,
     center: center::ZH_CN,
     common: common::ZH_CN,
     controls: controls::ZH_CN,
@@ -189,6 +192,7 @@ static ZH_CN: Messages = Messages {
 static EN: Messages = Messages {
     app: app::EN,
     camera: camera::EN,
+    chat: chat::EN,
     center: center::EN,
     common: common::EN,
     controls: controls::EN,

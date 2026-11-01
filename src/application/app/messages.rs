@@ -161,6 +161,13 @@ pub(super) enum GuiEvent {
     LoginProgress(LoginMethod, u64, u64, LoginProgress),
     LoginFinished(LoginMethod, u64, u64, anyhow::Result<()>),
     LoggedOut(crate::account::client::LogoutOutcome),
+    /// The signed-in account for chat, or none (signed out).
+    Chat(
+        Option<(
+            std::sync::Arc<crate::account::client::AuthenticatedClient>,
+            tokio::runtime::Handle,
+        )>,
+    ),
 }
 
 impl DeviceMutation {

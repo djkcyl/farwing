@@ -311,6 +311,7 @@ impl DeviceCenterApp {
                 .collect();
             let mut edit = false;
             let mut remove = false;
+            let mut message = false;
             ui.push_id(&user.user_id, |ui| {
                 cards::card().show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -326,6 +327,13 @@ impl DeviceCenterApp {
                                 blocker,
                                 !busy,
                                 crate::ui::controls::secondary(t().common.delete),
+                            )
+                            .clicked();
+                            message = server_button(
+                                ui,
+                                blocker,
+                                self.chat.is_some(),
+                                crate::ui::controls::secondary(t().chat.send_dm),
                             )
                             .clicked();
                         },
@@ -358,6 +366,15 @@ impl DeviceCenterApp {
             }
             if remove {
                 self.friends.confirm_remove = Some(user.clone());
+            }
+            if message && let Some(chat) = &self.chat {
+                chat.ask(
+                    "open_dm",
+                    reqwest::Method::POST,
+                    "/api/v2/chat/dm".into(),
+                    Some(serde_json::json!({ "user": user.user_id })),
+                );
+                self.center_ui.page = Page::Chat;
             }
         }
         if shown == 0 {

@@ -216,6 +216,8 @@ struct Target {
     folder: Option<std::path::PathBuf>,
     generation: u64,
     request: Option<assist::Confirmation>,
+    /// A chat message's channel: "view" opens it.
+    chat: Option<i64>,
 }
 struct EndNotice {
     id: String,
@@ -328,6 +330,8 @@ pub(super) struct Center {
     last_source: HashMap<String, String>,
     /// The account's notifications (`docs/notifications.md`), by ID.
     account: Vec<(i64, Card)>,
+    /// Chat messages, by channel (a newer one replaces the card).
+    chat: Vec<(i64, Card)>,
 }
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -364,6 +368,7 @@ impl Center {
             ended: EndNotices::default(),
             last_source: HashMap::new(),
             account: Vec::new(),
+            chat: Vec::new(),
         }
     }
     pub fn set_mode(&mut self, mode: Mode) {
@@ -380,24 +385,29 @@ impl Center {
     /// One of the account's notifications, shown for a while.
     pub fn show_notice(&mut self, id: i64, title: String, body: String) {
         self.account.retain(|(other, _)| *other != id);
-        self.account.push((
-            id,
-            Card {
-                disconnect: None,
-                ticket: String::new(),
-                at: 0,
-                title: clean(&title),
-                body: clean(&body),
-                detail: String::new(),
-                expires_at: chrono::Utc::now().timestamp() + 12,
-                confirmation: false,
-                pairing: false,
-                no_trust: false,
-                busy: false,
-                connected: false,
-                transfer: None,
-            },
-        ));
+        self.account.push((id, Self::timed_card(title, body)));
+    }
+    /// A chat message, shown for a while; "view" opens its channel.
+    pub fn show_chat(&mut self, channel: i64, title: String, body: String) {
+        self.chat.retain(|(other, _)| *other != channel);
+        self.chat.push((channel, Self::timed_card(title, body)));
+    }
+    fn timed_card(title: String, body: String) -> Card {
+        Card {
+            disconnect: None,
+            ticket: String::new(),
+            at: 0,
+            title: clean(&title),
+            body: clean(&body),
+            detail: String::new(),
+            expires_at: chrono::Utc::now().timestamp() + 12,
+            confirmation: false,
+            pairing: false,
+            no_trust: false,
+            busy: false,
+            connected: false,
+            transfer: None,
+        }
     }
     pub fn report(&mut self, error: String) {
         self.feedback = Some((error, chrono::Utc::now().timestamp() + 10));
@@ -650,11 +660,16 @@ impl Center {
         for (id, card) in &self.account {
             items.push((format!("notice:{id}"), card.clone(), None));
         }
+        self.chat.retain(|(_, card)| card.expires_at > now);
+        for (id, card) in &self.chat {
+            items.push((format!("chat:{id}"), card.clone(), None));
+        }
         let valid: HashSet<_> = items.iter().map(|(key, _, _)| key.clone()).collect();
         self.keys.retain(|key, _| valid.contains(key));
         let mut cards = Vec::new();
         let mut targets = HashMap::new();
         for (key, mut card, request) in items {
+            let chat = key.strip_prefix("chat:").and_then(|id| id.parse().ok());
             let (ticket, at) = self
                 .keys
                 .entry(key)
@@ -673,6 +688,7 @@ impl Center {
                     folder: card.transfer.as_ref().and_then(|t| t.folder.clone()),
                     generation,
                     request,
+                    chat,
                 },
             );
             cards.push(card);
@@ -904,6 +920,9 @@ impl DeviceCenterApp {
                     }
                 }
                 Verb::Open => {
+                    if let Some(channel) = target.chat {
+                        self.open_chat(farwing_protocol::chat::Id(channel));
+                    }
                     let _ = crate::ui::window_manager::send(
                         crate::ui::window_manager::Request::ShowMain,
                     );

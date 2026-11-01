@@ -33,7 +33,7 @@ const MAX_RETRY_DELAY_MS: f64 = 25_000.0;
 const RESUME_CHECK_INTERVAL: Duration =
     Duration::from_secs(farwing_protocol::timing::RESUME_CHECK_INTERVAL_S);
 const RESUME_MAX_AGE: Duration = Duration::from_secs(farwing_protocol::timing::RESUME_MAX_AGE_S);
-type Socket = WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>;
+pub(crate) type Socket = WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>;
 type Reader = SplitStream<Socket>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1011,7 +1011,7 @@ async fn write_messages(
     Ok(())
 }
 
-fn realtime_request(endpoint: &str, resume: Option<&str>, ticket: &str) -> Result<Request<()>> {
+pub(crate) fn realtime_request(endpoint: &str, resume: Option<&str>, ticket: &str) -> Result<Request<()>> {
     let mut request = endpoint
         .into_client_request()
         .map_err(|_| anyhow!("failed to build realtime WebSocket request"))?;
@@ -1030,7 +1030,7 @@ fn realtime_request(endpoint: &str, resume: Option<&str>, ticket: &str) -> Resul
     Ok(request)
 }
 
-async fn connect_socket(request: Request<()>, tls: Arc<rustls::ClientConfig>) -> Result<Socket> {
+pub(crate) async fn connect_socket(request: Request<()>, tls: Arc<rustls::ClientConfig>) -> Result<Socket> {
     let host = request
         .uri()
         .host()

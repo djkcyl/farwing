@@ -26,7 +26,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 use transport::{Carrier, Incoming, SignalTransport};
-pub(crate) use transport::{SignalFailure, SocketState};
+pub(crate) use transport::{SignalFailure, SocketState, connect_socket, realtime_request};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
 const CONTROL_TIMEOUT: Duration =

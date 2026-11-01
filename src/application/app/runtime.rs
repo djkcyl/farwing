@@ -605,6 +605,7 @@ pub(super) async fn gui_worker_loop(
                     presence_online = false;
                     stop_active_signal(&mut host_signal).await;
                     client = None;
+                    let _ = events.send(GuiEvent::Chat(None));
                     allow_load = false;
                     let (progress, receiver) = std::sync::mpsc::channel();
                     let device = device_runtime.handle();
@@ -648,6 +649,7 @@ pub(super) async fn gui_worker_loop(
                     device_sync.reset().await;
                     presence_online = false;
                     allow_load = false;
+                    let _ = events.send(GuiEvent::Chat(None));
                     if let Some(client) = client.take() {
                         logout_task = Some(tokio::spawn(async move { client.logout().await }));
                     } else {
@@ -847,6 +849,7 @@ pub(super) async fn gui_worker_loop(
             device_sync.reset().await;
             presence_online = false;
             client = None;
+            let _ = events.send(GuiEvent::Chat(None));
             allow_load = false;
             let _ = events.send(GuiEvent::AccountEnded(
                 t().app.account_session_ended.into(),
@@ -908,7 +911,12 @@ pub(super) async fn gui_worker_loop(
                 Ok(loaded) => {
                     restoring = Some((catalog_generation, Instant::now()));
                     host_shown = None;
-                    client = Some(Arc::new(loaded));
+                    let loaded = Arc::new(loaded);
+                    let _ = events.send(GuiEvent::Chat(Some((
+                        Arc::clone(&loaded),
+                        tokio::runtime::Handle::current(),
+                    ))));
+                    client = Some(loaded);
                     presence_stopped = false;
                 }
                 Err(error) => {
@@ -1022,6 +1030,7 @@ pub(super) async fn gui_worker_loop(
                     )));
                     device_sync.reset().await;
                     client = None;
+                    let _ = events.send(GuiEvent::Chat(None));
                     stop_active_signal(&mut host_signal).await;
                     // The login page still lets others connect to this device.
                     guest_allowed = true;

@@ -619,6 +619,59 @@ impl AuthenticatedClient {
         Ok(DeviceGroups::from_list(&self.sync_devices().await?))
     }
 
+    // --------------------------------------------------------------- chat
+
+    pub(crate) async fn chat(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        self.request(|api| {
+            let (method, body) = (method.clone(), body.clone());
+            async move { api.chat(method, path, body.as_ref()).await }
+        })
+        .await
+    }
+
+    pub(crate) async fn chat_bytes(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        bytes: bytes::Bytes,
+    ) -> Result<serde_json::Value> {
+        self.request(|api| {
+            let (method, bytes) = (method.clone(), bytes.clone());
+            async move { api.chat_bytes(method, path, bytes).await }
+        })
+        .await
+    }
+
+    pub(crate) async fn media_get(&self, path: &str, max: usize) -> Result<bytes::Bytes> {
+        self.request(|api| async move { api.media_get(path, max).await }).await
+    }
+
+    pub(crate) async fn media_put(&self, path: &str, data: bytes::Bytes) -> Result<serde_json::Value> {
+        self.request(|api| {
+            let data = data.clone();
+            async move { api.media_put(path, data).await }
+        })
+        .await
+    }
+
+    pub(crate) async fn media_download(&self, path: &str, dest: &std::path::Path) -> Result<()> {
+        self.request(|api| async move { api.media_download(path, dest).await }).await
+    }
+
+    /// The server this account is on.
+    pub(crate) fn server_config(&self) -> Option<crate::account::server::ServerConfig> {
+        self.api
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .map(|api| api.server().clone())
+    }
+
     // ------------------------------------------------------------ friends
 
     pub async fn friends(&self) -> Result<wire::FriendList> {

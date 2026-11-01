@@ -1,5 +1,6 @@
 //! Features ownership and module boundaries.
 
+pub(crate) mod chat;
 pub(crate) mod clipboard;
 pub(crate) mod drag_drop;
 pub(crate) mod file_transfer;

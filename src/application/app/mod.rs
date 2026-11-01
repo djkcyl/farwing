@@ -145,6 +145,8 @@ struct DeviceCenterApp {
     center_ui: CenterUi,
     assist: AssistUi,
     friends: friends::FriendsUi,
+    chat: Option<crate::features::chat::ChatService>,
+    chat_ui: view::ChatUi,
     records: records::RecordsUi,
     notices: notices::NoticesUi,
     direct: direct::DirectUi,
@@ -211,6 +213,8 @@ impl DeviceCenterApp {
             viewers: Default::default(),
             assist: AssistUi::default(),
             friends: Default::default(),
+            chat: None,
+            chat_ui: Default::default(),
             records: Default::default(),
             notices: Default::default(),
             direct: Default::default(),
@@ -570,7 +574,19 @@ impl DeviceCenterApp {
                     self.refresh_pending = false;
                     self.login_status = t().app.sign_in_expired.into();
                 }
+                GuiEvent::Chat(account) => {
+                    if let Some(old) = self.chat.take() {
+                        old.stop();
+                    }
+                    self.chat_ui = Default::default();
+                    self.chat = account.map(|(client, runtime)| {
+                        crate::features::chat::ChatService::start(client, runtime, ctx.clone())
+                    });
+                }
                 GuiEvent::LoggedOut(outcome) => {
+                    if let Ok(dir) = crate::product::local_data_dir() {
+                        crate::features::chat::cache::Cache::clear_all(&dir);
+                    }
                     self.login_form.clear_private();
                     self.clear_catalog();
                     self.logout_pending = false;
@@ -1231,6 +1247,7 @@ impl crate::ui::App for DeviceCenterApp {
         let ctx = ui.ctx().clone();
         self.drain_events(&ctx);
         self.tick_notifications();
+        self.tick_chat();
         let signed_in = !self.needs_login();
         self.tick_notices(signed_in);
         self.tick_power();

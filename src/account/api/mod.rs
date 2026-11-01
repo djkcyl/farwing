@@ -1041,6 +1041,72 @@ impl ServerApi {
         Ok(info.latest)
     }
 
+    // -------------------------------------------------------------- chat
+
+    /// A chat request (`docs/protocol/chat-design.md` §6.2): any JSON call
+    /// under `/api/v2/chat` and `/api/v2/me`.
+    pub async fn chat(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let body = match body {
+            Some(value) => json(value)?,
+            None => Body::None,
+        };
+        self.call(method, path, body, REQUEST_TIMEOUT, Auth::Session).await
+    }
+
+    /// Raw bytes to a signed chat endpoint (an avatar, a group icon).
+    pub async fn chat_bytes(&self, method: Method, path: &str, bytes: Bytes) -> Result<serde_json::Value> {
+        self.call(
+            method,
+            path,
+            Body::Raw(bytes, "application/octet-stream"),
+            REQUEST_TIMEOUT,
+            Auth::Session,
+        )
+        .await
+    }
+
+    /// A file under `/media` or `/emoji` (the media token, if any, is in the
+    /// path), at most `max` bytes.
+    pub async fn media_get(&self, path: &str, max: usize) -> Result<Bytes> {
+        let headers = self.headers(Auth::None, &Method::GET, path, &[])?;
+        let response = self
+            .http
+            .send(Method::GET, path, headers, None, REQUEST_TIMEOUT)
+            .await
+            .map_err(|error| ApiFailure::network(&error))?;
+        anyhow::ensure!(response.status.is_success(), "HTTP {}", response.status.as_u16());
+        anyhow::ensure!(response.body.len() <= max, "{}", crate::i18n::t().session.api_response_too_large);
+        Ok(response.body)
+    }
+
+    /// The bytes of a new attachment to its one-time upload path.
+    pub async fn media_put(&self, path: &str, bytes: Bytes) -> Result<serde_json::Value> {
+        let headers = self.headers(Auth::None, &Method::PUT, path, &[])?;
+        let response = self
+            .http
+            .send(
+                Method::PUT,
+                path,
+                headers,
+                Some((bytes, "application/octet-stream")),
+                Duration::from_secs(30 * 60),
+            )
+            .await
+            .map_err(|error| ApiFailure::network(&error))?;
+        decode(path, response.status.as_u16(), &response.body)
+    }
+
+    /// A file under `/media` saved to `dest`, streamed.
+    pub async fn media_download(&self, path: &str, dest: &std::path::Path) -> Result<()> {
+        let headers = self.headers(Auth::None, &Method::GET, path, &[])?;
+        self.http.download(path, headers, dest).await
+    }
+
     // ----------------------------------------------------------- friends
 
     pub async fn friends(&self) -> Result<wire::FriendList> {

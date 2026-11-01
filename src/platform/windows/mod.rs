@@ -13,6 +13,7 @@ pub(crate) mod display;
 pub(crate) mod display_hdr;
 pub(crate) mod drag_drop;
 pub(crate) mod encoder;
+pub(crate) mod file_dialog;
 pub(crate) mod file_locations;
 pub(crate) mod gdi;
 pub(crate) mod gpu_conversion;

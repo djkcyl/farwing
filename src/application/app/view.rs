@@ -10,7 +10,9 @@ use egui::{Align, Color32, FontId, RichText, Sense, Stroke, vec2};
 mod about;
 mod access;
 use access::Access;
+pub(super) use chat::ChatUi;
 mod assist;
+mod chat;
 mod friends;
 mod assist_components;
 mod cards;
@@ -47,6 +49,8 @@ enum Page {
     #[default]
     Devices,
     Friends,
+    /// Groups and direct messages.
+    Chat,
     /// Who may connect to this device.
     ThisDevice,
     /// Connections and account events.
@@ -62,6 +66,7 @@ impl Page {
         match self {
             Self::Devices => text.center.page_devices,
             Self::Friends => text.center.page_friends,
+            Self::Chat => text.chat.page,
             Self::ThisDevice => text.center.page_this_device,
             Self::Records => text.records.page,
             Self::Notices => text.notices.page,
@@ -168,6 +173,8 @@ enum Icon {
     Records,
     /// Notifications: a bell.
     Notices,
+    /// Chat: a speech bubble.
+    Chat,
 }
 
 pub(super) fn configure_visuals(ctx: &egui::Context) {
@@ -209,6 +216,20 @@ fn paint_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: Color32) {
                 s,
             ));
             p.line_segment([q(-2.0, 8.0), q(2.0, 8.0)], s);
+        }
+        Icon::Chat => {
+            p.add(egui::Shape::closed_line(
+                vec![
+                    q(-9.0, -7.0),
+                    q(9.0, -7.0),
+                    q(9.0, 4.0),
+                    q(-1.0, 4.0),
+                    q(-6.0, 8.5),
+                    q(-6.0, 4.0),
+                    q(-9.0, 4.0),
+                ],
+                s,
+            ));
         }
         Icon::Records => {
             p.circle_stroke(c, 8.5, s);
@@ -593,7 +614,7 @@ impl DeviceCenterApp {
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BG).inner_margin(
-                if self.center_ui.page == Page::DeviceDetails && !locked {
+                if matches!(self.center_ui.page, Page::DeviceDetails | Page::Chat) && !locked {
                     egui::Margin::ZERO
                 } else {
                     egui::Margin {
@@ -613,6 +634,8 @@ impl DeviceCenterApp {
                     self.settings_page(ui);
                 } else if self.center_ui.page == Page::Friends {
                     self.friends_page(ui);
+                } else if self.center_ui.page == Page::Chat {
+                    self.chat_page(ui);
                 } else if self.center_ui.page == Page::ThisDevice {
                     self.this_device_page(ui);
                 } else if self.center_ui.page == Page::Records {
@@ -694,6 +717,21 @@ impl DeviceCenterApp {
                         self.request_friends(super::friends::FriendOperation::Refresh);
                     }
                     self.center_ui.page = Page::Friends;
+                }
+                let chat_unread = self
+                    .chat
+                    .as_ref()
+                    .map(|chat| chat.view().totals().0 as usize)
+                    .filter(|count| *count > 0 && access == Access::Account);
+                if nav_item(
+                    ui,
+                    Icon::Chat,
+                    Page::Chat.title(),
+                    chat_unread,
+                    locked(Page::Chat),
+                    self.center_ui.page == Page::Chat,
+                ) {
+                    self.center_ui.page = Page::Chat;
                 }
                 let connected = self
                     .host
