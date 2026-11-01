@@ -21,6 +21,8 @@ pub(super) struct Cameras {
     pub(super) store: Option<crate::features::viewing_settings::ViewingSettingsStore>,
     /// Why the last camera request failed.
     pub(super) error: Option<String>,
+    /// This viewer hears the host's microphone (as it asked).
+    pub(super) listening: bool,
 }
 
 impl StreamControlHandle {
@@ -91,6 +93,22 @@ impl StreamControlHandle {
             value,
             auto,
         }))
+    }
+    pub(crate) fn listening(&self) -> bool {
+        lock(&self.shared).cameras.listening
+    }
+    /// Hear the host's microphone, or stop.
+    pub(crate) fn set_listening(&self, start: bool) -> Result<()> {
+        let mut state = lock(&self.shared);
+        state.cameras.error = None;
+        state.cameras.listening = start;
+        self.send_request(
+            &mut state,
+            SessionBody::Listen(super::camera::ListenControl { start }),
+            Waiting::Listen,
+            Duration::from_secs(10),
+        )?;
+        Ok(())
     }
     fn send_camera(&self, op: CameraOp) -> Result<()> {
         let mut state = lock(&self.shared);

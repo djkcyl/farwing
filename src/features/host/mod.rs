@@ -4,6 +4,7 @@ pub(crate) mod shared_view;
 mod allocation;
 pub(crate) mod bandwidth;
 pub(crate) mod cameras;
+pub(crate) mod listen;
 pub(crate) mod annotation;
 pub(crate) mod assist;
 pub(crate) mod audio;

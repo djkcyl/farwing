@@ -69,7 +69,7 @@ pub(crate) fn request_id(sequence: i64) -> u32 {
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct SessionMessage {
-    #[prost(oneof = "SessionBody", tags = "1,2,3,4,5,7,8,10,11,16,17,22,23,24,25,26,27")]
+    #[prost(oneof = "SessionBody", tags = "1,2,3,4,5,7,8,10,11,16,17,22,23,24,25,26,27,28")]
     pub(crate) body: Option<SessionBody>,
 }
 
@@ -126,6 +126,9 @@ pub(crate) enum SessionBody {
     /// A participant's camera parameters or adjustment → an empty answer.
     #[prost(message, tag = "27")]
     CameraRequest(camera::CameraRequest),
+    /// Hear the host's microphone or stop → an empty answer.
+    #[prost(message, tag = "28")]
+    Listen(camera::ListenControl),
 }
 
 impl SessionBody {
@@ -143,6 +146,7 @@ impl SessionBody {
             Self::ForwardStatus(_) => "ForwardStatus",
             Self::Cameras(_) => "Cameras",
             Self::CameraRequest(_) => "CameraRequest",
+            Self::Listen(_) => "Listen",
             Self::Display(_) => "Display",
             Self::MicrophonePolicy(_) => "MicrophonePolicy",
             Self::ControlTurn(_) => "ControlTurn",
@@ -805,6 +809,8 @@ pub(crate) mod display_reason {
     /// The participant may not see the host's cameras (not granted, or the
     /// owner does not allow it).
     pub const CAMERA_NOT_ALLOWED: &str = "camera_not_allowed";
+    /// The participant may not hear the host's microphone.
+    pub const LISTEN_NOT_ALLOWED: &str = "listen_not_allowed";
     /// Anything else; the host logs why.
     pub const FAILED: &str = "failed";
 }

@@ -615,6 +615,15 @@ impl Lease {
             && self.granted(farwing_protocol::caps::CAMERA)
             && lock(&self.handle.ownership).camera.allowed
     }
+    /// The participant may hear the microphone now (granted, the owner
+    /// allows it), and which one.
+    pub(crate) fn listen_access(&self) -> Option<Option<String>> {
+        if !self.requested() || !self.granted(farwing_protocol::caps::LISTEN) {
+            return None;
+        }
+        let state = lock(&self.handle.ownership);
+        state.camera.listen.then(|| state.camera.microphone.clone())
+    }
     /// The owner's parameters for `camera`, if set.
     pub(crate) fn camera_defaults(&self, camera: &str) -> Option<crate::media::camera::Params> {
         lock(&self.handle.ownership).camera.defaults.get(camera).copied()

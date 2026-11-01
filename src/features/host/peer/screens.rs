@@ -236,6 +236,8 @@ pub(crate) struct Screens {
     camera_params: std::collections::HashMap<String, crate::media::camera::Params>,
     /// A session for the cameras only: the displays stay as they are.
     camera_only: bool,
+    /// Hearing the host's microphone (`audio_1`).
+    listen: Option<crate::features::host::listen::Listen>,
 }
 pub(crate) struct Deferred {
     pub options: crate::features::stream_control::publisher::ConnectOptions,
@@ -553,6 +555,7 @@ impl Screens {
             stats_logged: None,
             camera_params: Default::default(),
             camera_only,
+            listen: None,
         };
         state.apply_inventory(&Inventory::read_initial()?)?;
         if let Some(selected) = selected {
@@ -670,6 +673,40 @@ impl Screens {
                 }
             })
             .collect()
+    }
+    pub(super) fn set_listen(&mut self, listen: crate::features::host::listen::Listen) {
+        self.listen = Some(listen);
+    }
+    pub(crate) fn listening(&self) -> bool {
+        self.listen.as_ref().is_some_and(crate::features::host::listen::Listen::active)
+    }
+    /// Hear the host's microphone or stop.
+    pub(crate) async fn set_listening(&mut self, start: bool) -> Result<()> {
+        use crate::features::stream_control::{publisher::refuse, wire::display_reason};
+        let stopped = self
+            .lease
+            .participant()
+            .is_some_and(crate::features::host::cameras::stopped);
+        let access = self.lease.listen_access().filter(|_| !stopped);
+        if start && access.is_none() {
+            return Err(refuse(
+                farwing_protocol::peer::error_code::FORBIDDEN,
+                display_reason::LISTEN_NOT_ALLOWED,
+            ));
+        }
+        let using = start.then(|| {
+            crate::features::host::cameras::listen(
+                self.lease.participant().unwrap_or_default(),
+                &self.lease.profile().nickname,
+            )
+        });
+        let Some(listen) = self.listen.as_mut() else {
+            return Ok(());
+        };
+        let device = access.flatten();
+        listen.set(start, device.as_deref(), using).await?;
+        self.reports.notify();
+        Ok(())
     }
     /// The cameras in detail, for this participant (`Cameras`).
     pub(crate) fn camera_list(&self) -> crate::features::stream_control::camera::Cameras {
@@ -1114,6 +1151,13 @@ impl Screens {
                 }
             }
         }
+        let stopped = self
+            .lease
+            .participant()
+            .is_some_and(crate::features::host::cameras::stopped);
+        if self.listening() && (stopped || self.lease.listen_access().is_none()) {
+            self.set_listening(false).await?;
+        }
         let mut fatal = false;
         for index in 0..self.slots.len() {
             let disappeared = self.slots[index].screen().is_some_and(|screen| {
@@ -1183,6 +1227,9 @@ impl Screens {
         Ok(())
     }
     pub(super) async fn close(&mut self) {
+        if let Some(listen) = self.listen.as_mut() {
+            let _ = listen.set(false, None, None).await;
+        }
         self.headless.close().await;
         for index in 0..self.slots.len() {
             self.stop_at(index).await;

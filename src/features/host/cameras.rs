@@ -103,26 +103,53 @@ fn running() -> std::sync::MutexGuard<'static, HashMap<String, Running>> {
     RUNNING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A participant watching a camera; leaves on drop.
+/// Participants hearing the microphone (participant key, name).
+static LISTENERS: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
+
+fn listeners() -> std::sync::MutexGuard<'static, Vec<(u64, String)>> {
+    LISTENERS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A participant watching a camera (or hearing the microphone: `None`);
+/// leaves on drop.
 pub(crate) struct Use {
-    camera: String,
+    camera: Option<String>,
     participant: u64,
 }
 
 impl Drop for Use {
     fn drop(&mut self) {
-        let mut running = running();
-        if let Some(entry) = running.get_mut(&self.camera) {
-            if let Some(at) = entry.viewers.iter().position(|(key, _)| *key == self.participant) {
-                entry.viewers.remove(at);
+        match &self.camera {
+            Some(camera) => {
+                let mut running = running();
+                if let Some(entry) = running.get_mut(camera) {
+                    if let Some(at) = entry.viewers.iter().position(|(key, _)| *key == self.participant) {
+                        entry.viewers.remove(at);
+                    }
+                    if entry.viewers.is_empty() {
+                        running.remove(camera);
+                    }
+                }
             }
-            if entry.viewers.is_empty() {
-                running.remove(&self.camera);
+            None => {
+                let mut listeners = listeners();
+                if let Some(at) = listeners.iter().position(|(key, _)| *key == self.participant) {
+                    listeners.remove(at);
+                }
             }
         }
-        drop(running);
         notice();
     }
+}
+
+/// `participant` hears the microphone while the returned value lives.
+pub(crate) fn listen(participant: u64, nickname: &str) -> Arc<Use> {
+    listeners().push((participant, nickname.to_owned()));
+    notice();
+    Arc::new(Use {
+        camera: None,
+        participant,
+    })
 }
 
 /// Participants the owner stopped: they may not open a camera again in
@@ -136,10 +163,11 @@ pub(crate) fn stopped(participant: u64) -> bool {
 
 /// The owner pressed "stop": everyone watching stops, for their session.
 fn stop_all() {
-    let watching: Vec<u64> = running()
+    let mut watching: Vec<u64> = running()
         .values()
         .flat_map(|r| r.viewers.iter().map(|(key, _)| *key))
         .collect();
+    watching.extend(listeners().iter().map(|(key, _)| *key));
     tracing::info!(participants = watching.len(), "owner stopped camera viewing");
     STOPPED.lock().unwrap_or_else(|e| e.into_inner()).extend(watching);
 }
@@ -149,15 +177,21 @@ fn notice() {
     if cfg!(test) || !crate::platform::windows::participant_overlay::capture_exclusion() {
         return;
     }
-    let mut names: Vec<String> = running()
+    let watching: Vec<String> = running()
         .values()
         .flat_map(|r| r.viewers.iter().map(|(_, name)| name.clone()))
         .collect();
+    let listening: Vec<String> = listeners().iter().map(|(_, name)| name.clone()).collect();
+    let text = &crate::i18n::t().camera;
+    let mut names: Vec<String> = watching.iter().chain(&listening).cloned().collect();
     names.sort();
     names.dedup();
-    let text = (!names.is_empty()).then(|| {
-        (crate::i18n::t().camera.notice_watching)(&names)
-    });
+    let text = match (watching.is_empty(), listening.is_empty()) {
+        (true, true) => None,
+        (false, true) => Some((text.notice_watching)(&names)),
+        (true, false) => Some((text.notice_listening)(&names)),
+        (false, false) => Some((text.notice_both)(&names)),
+    };
     crate::platform::windows::camera_notice::set(text, crate::i18n::t().camera.stop, stop_all);
 }
 
@@ -176,7 +210,14 @@ pub(crate) fn join(wanted: Spec, participant: u64, nickname: &str) -> (Spec, Str
     let joined = (entry.spec.clone(), entry.chosen_by.clone());
     drop(running);
     notice();
-    (joined.0, joined.1, Arc::new(Use { camera, participant }))
+    (
+        joined.0,
+        joined.1,
+        Arc::new(Use {
+            camera: Some(camera),
+            participant,
+        }),
+    )
 }
 
 /// How many participants watch `camera`.

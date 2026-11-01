@@ -11,14 +11,13 @@ use super::{Lease, lock};
 use crate::protocol::microphone as errors;
 use crate::i18n::t;
 use crate::{
-    media::audio::neteq,
+    media::audio::mix,
     platform::windows::virtual_audio::{Bridge, State},
 };
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use crossbeam_queue::ArrayQueue;
 use std::{
-    collections::VecDeque,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -315,25 +314,7 @@ impl Shared {
 /// One participant's decoder in the mix.
 struct Voice {
     shared: Arc<Shared>,
-    decoder: Option<Decoder>,
-}
-struct Decoder {
-    neteq: neteq::Receiver,
-    generation: u64,
-    seen: VecDeque<(u16, u32)>,
-    started: bool,
-    stats: neteq::Statistics,
-}
-impl Decoder {
-    fn new(generation: u64) -> Result<Self> {
-        Ok(Self {
-            neteq: neteq::Receiver::new()?,
-            generation,
-            seen: VecDeque::with_capacity(128),
-            started: false,
-            stats: Default::default(),
-        })
-    }
+    decoder: Option<mix::Decoder>,
 }
 impl Voice {
     fn live(&self) -> bool {
@@ -342,40 +323,26 @@ impl Voice {
     /// Move queued packets into this participant's NetEq.
     fn insert(&mut self) -> Result<()> {
         let generation = self.shared.generation.load(Ordering::Acquire);
-        if self.decoder.as_ref().is_none_or(|d| d.generation != generation) {
-            self.decoder = Some(Decoder::new(generation)?);
+        if self.decoder.as_ref().is_none_or(|d| d.generation() != generation) {
+            self.decoder = Some(mix::Decoder::new(generation)?);
         }
         let decoder = self.decoder.as_mut().expect("created above");
         for _ in 0..32 {
             let Some(packet) = self.shared.packets.pop() else {
                 break;
             };
-            if packet.generation != decoder.generation
-                || decoder.seen.contains(&(packet.sequence, packet.timestamp))
-            {
-                continue;
+            if packet.generation == decoder.generation() {
+                decoder.insert(&packet.data, packet.timestamp, packet.sequence, packet.arrived);
             }
-            if decoder.seen.len() == 128 {
-                decoder.seen.pop_front();
-            }
-            decoder.seen.push_back((packet.sequence, packet.timestamp));
-            decoder.started |= decoder
-                .neteq
-                .insert(&packet.data, packet.timestamp, packet.sequence, packet.arrived);
         }
         Ok(())
     }
     /// Add this participant's next 10 ms to `mix`.
     fn mix_into(&mut self, mix: &mut [f32; 960], scratch: &mut [f32; 960]) -> Result<()> {
-        let Some(decoder) = self.decoder.as_mut().filter(|d| d.started) else {
-            return Ok(());
-        };
-        scratch.fill(0.0);
-        decoder.neteq.block(scratch, &mut decoder.stats)?;
-        for (out, sample) in mix.iter_mut().zip(scratch.iter()) {
-            *out += *sample;
+        match self.decoder.as_mut() {
+            Some(decoder) => decoder.add_to(mix, scratch),
+            None => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -412,18 +379,6 @@ impl Device {
     }
 }
 
-/// Keep the sum of several voices within range without hard clipping
-/// quiet ones.
-fn limit(sample: f32) -> f32 {
-    const KNEE: f32 = 0.8;
-    let magnitude = sample.abs();
-    if magnitude <= KNEE {
-        sample
-    } else {
-        let over = magnitude - KNEE;
-        sample.signum() * (KNEE + (1.0 - KNEE) * (over / (1.0 - KNEE + over)))
-    }
-}
 
 struct Mixer {
     voices: Vec<Voice>,
@@ -711,7 +666,7 @@ impl Mixer {
                             voice.mix_into(&mut device.pcm, &mut self.scratch)?;
                         }
                         for sample in &mut device.pcm {
-                            *sample = limit(*sample);
+                            *sample = mix::limit(*sample);
                         }
                         device.consumed = 0;
                     }
@@ -762,22 +717,5 @@ impl Mixer {
             self.host = Some(status.clone());
             lease.microphone_status(status);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::limit;
-
-    #[test]
-    fn limiter_keeps_quiet_samples_and_bounds_loud_sums() {
-        assert_eq!(limit(0.5), 0.5);
-        assert_eq!(limit(-0.8), -0.8);
-        for sum in [1.0f32, 1.6, 3.0, 50.0] {
-            let limited = limit(sum);
-            assert!(limited > 0.8 && limited < 1.0, "{sum} -> {limited}");
-            assert_eq!(limit(-sum), -limited);
-        }
-        assert!(limit(1.6) > limit(1.0));
     }
 }

@@ -271,6 +271,8 @@ export function ViewerScreen({
   const [cameras, setCameras] = useState<CameraInfo[]>([]);
   const [cameraPip, setCameraPip] = useState<{ camera: number; stream?: MediaStream }>();
   const pipVideo = useRef<HTMLVideoElement>(null);
+  const [listenStream, setListenStream] = useState<MediaStream>();
+  const [listening, setListening] = useState(false);
   const [streamState, setStreamState] = useState<StreamState>();
   const [grants, setGrants] = useState<string[]>([]);
   const [people, setPeople] = useState<{ participants: Participant[]; controlling: string }>();
@@ -378,6 +380,7 @@ export function ViewerScreen({
           },
           screens: setScreens,
           cameras: setCameras,
+          listen: setListenStream,
           pip: (stream) => setCameraPip((p) => (p && stream ? { ...p, stream } : undefined)),
           streamState: setStreamState,
           permissions: (g) => setGrants([...g]),
@@ -972,6 +975,15 @@ export function ViewerScreen({
             <CameraMenu
               viewer={viewer.current}
               cameras={cameras}
+              listening={listening}
+              listenAllowed={grants.includes('listen')}
+              onListen={(on) => {
+                setListening(on);
+                void viewer.current?.listen(on).catch((error: Error) => {
+                  setListening(false);
+                  toast(errorText(error), 'red');
+                });
+              }}
               shown={showsCamera ? shown?.id : undefined}
               pip={cameraPip?.camera}
               onPip={(id) => {
@@ -1329,6 +1341,18 @@ export function ViewerScreen({
               ...(showsCamera && shown ? orientationStyle(shown.mirror, shown.quarterTurns) : undefined),
             }}
           />
+          {listenStream && (
+            <audio
+              ref={(element) => {
+                if (element && element.srcObject !== listenStream) element.srcObject = listenStream;
+                if (element) {
+                  element.muted = muted;
+                  element.volume = volume;
+                }
+              }}
+              autoPlay
+            />
+          )}
           {cameraPip?.stream && (
             <div className="pip">
               <video

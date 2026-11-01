@@ -120,6 +120,13 @@ pub(crate) enum CameraControlKind {
     Zoom = 12,
 }
 
+/// Hear the host's microphone or stop (C→H) → an empty answer.
+#[derive(Clone, Copy, PartialEq, Eq, prost::Message)]
+pub(crate) struct ListenControl {
+    #[prost(bool, tag = "1")]
+    pub(crate) start: bool,
+}
+
 /// A participant's camera request (C→H) → an empty answer; the change
 /// shows in the next [`Cameras`].
 #[derive(Clone, PartialEq, prost::Message)]

@@ -213,6 +213,11 @@ impl NativePeer {
                 .await
                 .with_context(|| format!("add receive video transceiver {index}"))?;
         }
+        // The host's microphone while listening (`audio_1`).
+        connection
+            .add_transceiver_from_kind(RTPCodecType::Audio, Some(receive_only()))
+            .await
+            .context("add receive audio transceiver")?;
 
         let mut local_channels = Vec::with_capacity(DATA_CHANNEL_LABELS.len());
         for label in DATA_CHANNEL_LABELS {
@@ -698,6 +703,29 @@ impl NativePeer {
                     };
                     let kind = track.kind();
                     let id = track.id();
+                    if kind == RTPCodecType::Audio && id == crate::features::host::listen::TRACK {
+                        // Mixed into the playback with the host's sound.
+                        match audio.add_voice() {
+                            Ok(voice) => {
+                                let mut packets = 0u64;
+                                while let Ok((packet, _)) = track.read_rtp().await {
+                                    packets += 1;
+                                    if packets == 1 {
+                                        tracing::info!("host microphone heard");
+                                    }
+                                    voice.receive(
+                                        packet.payload,
+                                        packet.header.timestamp,
+                                        packet.header.sequence_number,
+                                    );
+                                }
+                                voice.end();
+                                tracing::info!(packets, "host microphone track ended");
+                            }
+                            Err(error) => tracing::warn!(%error, "host microphone not played"),
+                        }
+                        return;
+                    }
                     let selected = match kind {
                         RTPCodecType::Video => {
                             config

@@ -444,6 +444,11 @@ export function cameraParams(camera: number, params: CameraParams): Uint8Array {
     .finish();
 }
 
+/// Hear the host's microphone, or stop (SESSION `Listen`).
+export function listenControl(start: boolean): Uint8Array {
+  return new Writer().message(28, new Writer().int(1, start)).finish();
+}
+
 /// Back to the owner's parameters for a camera.
 export function cameraReset(camera: number): Uint8Array {
   return new Writer().message(27, new Writer().intAlways(2, camera)).finish();

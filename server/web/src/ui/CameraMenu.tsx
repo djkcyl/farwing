@@ -63,9 +63,15 @@ export function CameraMenu({
   shown,
   pip,
   onPip,
+  listening,
+  listenAllowed,
+  onListen,
 }: {
   viewer: Viewer | undefined;
   cameras: CameraInfo[];
+  listening: boolean;
+  listenAllowed: boolean;
+  onListen(on: boolean): void;
   /// The camera on the main picture, if it shows one.
   shown?: number;
   /// The picture-in-picture camera.
@@ -91,6 +97,11 @@ export function CameraMenu({
   const status = target?.unavailable || (target?.chosenBy ? m.chosenBy(target.chosenBy) : '');
   return (
     <Menu label={m.title} icon="webcam" active={pip !== undefined}>
+      {listenAllowed && (
+        <MenuItem selected={listening} onClick={() => onListen(!listening)}>
+          {m.listen}
+        </MenuItem>
+      )}
       {shown === undefined && (
         <>
           <div className="menu-label">{m.pictureInPicture}</div>

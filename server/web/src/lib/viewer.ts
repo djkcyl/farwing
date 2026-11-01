@@ -129,6 +129,8 @@ export interface ViewerEvents {
   cameras?(cameras: fpp.CameraInfo[]): void;
   /// The picture-in-picture camera (`video_1`); none when it ends.
   pip?(stream: MediaStream | undefined): void;
+  /// The host's microphone track (`audio_1`), sounding while listening.
+  listen?(stream: MediaStream): void;
   log?(line: string): void;
 }
 
@@ -291,6 +293,7 @@ export class Viewer {
   /// A camera session opened its first camera.
   private cameraOpened = false;
   private pipTrack?: MediaStreamTrack;
+  private listenTx?: RTCRtpTransceiver;
   private pipCamera?: number;
   private directAudio?: MediaStreamTrack;
   private forwardedAudio = false;
@@ -464,6 +467,8 @@ export class Viewer {
       if (codecs) tx.setCodecPreferences(codecs);
       offerDependencyDescriptor(tx);
     }
+    // The host's microphone while listening (`audio_1`).
+    this.listenTx = pc.addTransceiver('audio', { direction: 'recvonly' });
     for (const label of fpp.CHANNELS) {
       const dc = pc.createDataChannel(
         label,
@@ -629,6 +634,10 @@ export class Viewer {
 
   private onTrack(event: RTCTrackEvent) {
     const track = event.track;
+    if (track.kind === 'audio' && event.transceiver === this.listenTx) {
+      this.events.listen?.(new MediaStream([track]));
+      return;
+    }
     if (track.kind === 'audio') {
       this.directAudio = track;
       if (!this.forwardedAudio) this.addTrack(track);
@@ -1071,6 +1080,11 @@ export class Viewer {
     return this.request(fpp.Type.SESSION, params ? fpp.cameraParams(camera, params) : fpp.cameraReset(camera)).then(
       () => undefined,
     );
+  }
+
+  /// Hear the host's microphone, or stop.
+  listen(start: boolean): Promise<void> {
+    return this.request(fpp.Type.SESSION, fpp.listenControl(start)).then(() => undefined);
   }
 
   /// A camera's picture adjustment.

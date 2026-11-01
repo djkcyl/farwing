@@ -1,6 +1,7 @@
 //! One receive-only audio output per connection, shared by all its windows.
 pub(crate) mod dsp;
 pub(crate) mod encoder;
+pub(crate) mod mix;
 pub(crate) mod neteq;
 pub(crate) mod sender;
 pub(crate) mod waveform;
@@ -89,6 +90,8 @@ struct Shared {
     preference_updates: tokio::sync::watch::Sender<Option<AudioSettings>>,
     /// Cinema mode: audio and video keep a playout buffer and stay in step.
     cinema: AtomicBool,
+    /// Streams to mix in besides the source, not yet taken by the engine.
+    added_voices: Mutex<Vec<Arc<mix::Voice>>>,
 }
 
 /// Cinema-mode playout buffers. Video waits this long after its expected
@@ -205,6 +208,7 @@ impl AudioPlayback {
                 output_level: StereoLevel::new(),
                 preference_updates: tokio::sync::watch::channel(None).0,
                 cinema: AtomicBool::new(false),
+                added_voices: Mutex::default(),
             }),
             worker: Mutex::new(None),
         }))
@@ -400,6 +404,15 @@ impl AudioPlayback {
         self.ensure_worker()
     }
 
+    /// Another stream to play with the source (a host's microphone); it
+    /// leaves the mix when ended.
+    pub(crate) fn add_voice(&self) -> Result<Arc<mix::Voice>> {
+        let voice = mix::Voice::new();
+        lock(&self.0.shared.added_voices).push(voice.clone());
+        self.start()?;
+        Ok(voice)
+    }
+
     fn ensure_worker(&self) -> Result<()> {
         let mut worker = lock(&self.0.worker);
         if worker.is_some() || self.0.shared.stopped.load(Ordering::Acquire) {
@@ -456,6 +469,7 @@ struct Engine {
     stats: neteq::Statistics,
     blocks: u64,
     started: bool,
+    voices: mix::Voices,
 }
 
 impl Engine {
@@ -469,6 +483,7 @@ impl Engine {
             stats: neteq::Statistics::default(),
             blocks: 0,
             started: false,
+            voices: mix::Voices::default(),
         })
     }
 
@@ -487,6 +502,20 @@ impl Engine {
     }
 
     fn block(&mut self, output: &mut [f32; BLOCK * 2]) -> Result<()> {
+        self.source_block(output)?;
+        for voice in lock(&self.shared.added_voices).drain(..) {
+            self.voices.add(voice);
+        }
+        if !self.voices.is_empty() {
+            self.voices.mix_into(output)?;
+            for sample in output.iter_mut() {
+                *sample = mix::limit(*sample);
+            }
+        }
+        Ok(())
+    }
+
+    fn source_block(&mut self, output: &mut [f32; BLOCK * 2]) -> Result<()> {
         let generation = self.shared.generation.load(Ordering::Acquire);
         let waveform_epoch = self.shared.waveform.epoch();
         if generation != self.generation {

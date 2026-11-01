@@ -158,6 +158,17 @@ pub(super) fn draw(
             if menu_row(ui, t().camera.adjustments, "", None, !info.controls.is_empty(), true).clicked() {
                 next = Some(CameraPage::Adjust);
             }
+            let mut listening = handle.listening();
+            if ui
+                .add_enabled_ui(super::granted(handle, farwing_protocol::caps::LISTEN), |ui| {
+                    switch_row(ui, t().camera.listen, &mut listening)
+                })
+                .inner
+                .changed()
+                && let Err(e) = handle.set_listening(listening)
+            {
+                *error = Some(e.to_string());
+            }
             section_separator(ui);
             if menu_row(ui, t().camera.owner_settings, "", None, info.custom.is_some(), false).clicked()
                 && let Err(e) = handle.set_camera_params(id, None)

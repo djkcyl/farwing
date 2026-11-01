@@ -278,6 +278,21 @@ impl Peer {
         let audio_sender = connection
             .add_track(audio_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
             .await?;
+        // The host's microphone for a listening participant.
+        let listen_track = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".into(),
+                clock_rate: 48_000,
+                channels: 2,
+                sdp_fmtp_line: farwing_rtc_wire::OPUS_FMTP.into(),
+                ..Default::default()
+            },
+            super::listen::TRACK.into(),
+            super::listen::TRACK.into(),
+        ));
+        let listen_sender = connection
+            .add_track(listen_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+            .await?;
         let audio = super::audio::Audio::new(
             Arc::new(handle.clone()),
             cancel.clone(),
@@ -301,6 +316,12 @@ impl Peer {
             camera_only,
         )
         .await?;
+        let mut screen_pool = screen_pool;
+        screen_pool.set_listen(super::listen::Listen::new(
+            listen_track,
+            listen_sender,
+            Arc::downgrade(&connection),
+        ));
         let sender = screen_pool.slots[0].sender.clone();
         let reports = screen_pool.reports.clone();
         let input_reports = reports.clone();
@@ -946,7 +967,7 @@ impl Peer {
         drop(ice);
         let sdp = self
             .core
-            .answer("audio_0 video_0 video_1 video_2 video_3 video_4", mixed_kcp)
+            .answer("audio_0 audio_1 video_0 video_1 video_2 video_3 video_4", mixed_kcp)
             .await?;
         anyhow::ensure!(
             !self.ended() && self.handle.requested(),

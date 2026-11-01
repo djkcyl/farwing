@@ -919,6 +919,7 @@ pub async fn dev_video(
     seconds: u64,
     loss: Option<&str>,
     camera: bool,
+    listen: bool,
     options: crate::media::ConnectionMediaOptions,
 ) -> Result<()> {
     use crate::transport::rtc::impair;
@@ -945,6 +946,9 @@ pub async fn dev_video(
         let started = std::time::Instant::now();
         let result = async {
             let (decoder, codec, performance) = connection.start_headless_video(observer).await?;
+            if listen {
+                connection.stream_control_handle().set_listening(true)?;
+            }
             eprintln!("视频已开始，测量 {seconds} 秒");
             let deadline = started + Duration::from_secs(seconds);
             let mut frames = Vec::new();

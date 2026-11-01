@@ -278,6 +278,17 @@ impl Microphone {
         s.pending = None;
         self.0.refresh(&s);
     }
+    /// Capture at once, without a remote policy to wait for (the host's
+    /// own microphone sent to a listening participant).
+    pub(crate) fn capture_now(&self) {
+        let mut s = lock(&self.0.state);
+        s.enabled = true;
+        s.confirmed = true;
+        s.remote_active = true;
+        s.pending = None;
+        s.faulted = false;
+        self.0.refresh(&s);
+    }
     pub(crate) fn needs_cleanup(&self) -> bool {
         lock(&self.0.state).cleanup_on_connect
     }

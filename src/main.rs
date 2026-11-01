@@ -403,6 +403,9 @@ enum DevAction {
         /// 只看摄像头的会话：解码被控的第一个摄像头
         #[arg(long)]
         camera: bool,
+        /// 同时收听被控的麦克风
+        #[arg(long)]
+        listen: bool,
     },
     /// 端到端检查剪贴板（主控为内存剪贴板；会改写本机 Windows 剪贴板）
     Clipboard {
@@ -867,6 +870,7 @@ fn main() -> Result<()> {
                     recovery_late,
                     fps,
                     camera,
+                    listen,
                 } => {
                     if let Some(fps) = fps {
                         options.frame_rate = fps;
@@ -888,6 +892,7 @@ fn main() -> Result<()> {
                         seconds,
                         loss.as_deref(),
                         camera,
+                        listen,
                         options,
                     ))
                 }

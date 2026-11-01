@@ -14,6 +14,8 @@ const BITRATES: [u32; 10] = [500, 1_000, 1_500, 2_000, 3_000, 4_000, 5_000, 8_00
 #[derive(Default)]
 pub(super) struct CameraSettingsUi {
     cameras: Arc<Mutex<Option<Vec<Camera>>>>,
+    /// Recording devices: endpoint ID and name.
+    microphones: Arc<Mutex<Vec<(String, String)>>>,
     read_at: Option<Instant>,
     editing: Option<Editor>,
 }
@@ -67,15 +69,54 @@ impl DeviceCenterApp {
         form_row(ui, text.allow_camera, "", |ui| {
             crate::ui::controls::switch(ui, &mut settings.allowed);
         });
+        form_row(ui, text.allow_listen, "", |ui| {
+            crate::ui::controls::switch(ui, &mut settings.listen);
+        });
         let state = &mut self.center_ui.host_cameras;
         if state.read_at.is_none_or(|at| at.elapsed() >= REREAD) {
             state.read_at = Some(Instant::now());
             let cameras = state.cameras.clone();
+            let microphones = state.microphones.clone();
             let context = ui.ctx().clone();
             let _ = std::thread::Builder::new().name("camera-settings".into()).spawn(move || {
+                use cpal::traits::{DeviceTrait, HostTrait};
+                let found = cpal::default_host()
+                    .input_devices()
+                    .map(|devices| {
+                        devices
+                            .filter_map(|d| Some((d.id().ok()?.to_string(), d.description().ok()?.name().to_owned())))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                *microphones.lock().unwrap_or_else(|e| e.into_inner()) = found;
                 let read = crate::features::host::cameras::read();
                 *cameras.lock().unwrap_or_else(|e| e.into_inner()) = Some(read);
                 context.request_repaint();
+            });
+        }
+        if settings.listen {
+            let microphones = state.microphones.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let selected = settings
+                .microphone
+                .as_ref()
+                .map(|id| {
+                    microphones
+                        .iter()
+                        .find(|(m, _)| m == id)
+                        .map_or_else(|| id.clone(), |(_, name)| name.clone())
+                })
+                .unwrap_or_else(|| text.system_default_device.to_owned());
+            form_row(ui, text.listen_microphone, "", |ui| {
+                egui::ComboBox::from_id_salt("host-listen-microphone")
+                    .width(COMBO_WIDTH)
+                    .truncate()
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut settings.microphone, None, text.system_default_device);
+                        for (id, name) in &microphones {
+                            ui.selectable_value(&mut settings.microphone, Some(id.clone()), name);
+                        }
+                    });
             });
         }
         let cameras = state.cameras.lock().unwrap_or_else(|e| e.into_inner()).clone();

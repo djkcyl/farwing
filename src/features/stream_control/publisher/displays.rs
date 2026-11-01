@@ -174,6 +174,22 @@ pub(crate) async fn receive_session(session: &mut Screens, bytes: &[u8]) -> Resu
                 ..Default::default()
             })
         }
+        SessionBody::Listen(listen) => {
+            tracing::info!(start = listen.start, "host listen request");
+            let result = session.set_listening(listen.start).await;
+            let message = match &result {
+                Ok(()) => wire::response(id, SessionBody::Listen(listen)),
+                Err(error) => {
+                    let Refused(code, reason) = error
+                        .downcast_ref::<Refused>()
+                        .copied()
+                        .unwrap_or(Refused(error_code::INTERNAL, display_reason::FAILED));
+                    tracing::warn!(error = %format!("{error:#}"), "host listen request refused or failed");
+                    wire::error_response(id, code, reason)
+                }
+            };
+            Ok(vec![message].into())
+        }
         SessionBody::MicrophonePolicy(_) => Ok(Received::default()),
         SessionBody::ReceiverStats(stats) => {
             session.receiver_stats(&stats);

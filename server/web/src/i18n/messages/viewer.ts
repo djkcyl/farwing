@@ -139,6 +139,7 @@ export const zh = {
     ownerSettings: '恢复为主人的设置',
     chosenBy: (name: string) => `正在使用 ${name} 的设置`,
     closePip: '关闭画中画',
+    listen: '收听麦克风',
     controls: zhControls,
   },
   annotation: {
@@ -482,6 +483,7 @@ export const en: typeof zh = {
     ownerSettings: "Use the owner's settings",
     chosenBy: (name: string) => `Using ${name}'s settings`,
     closePip: 'Close picture in picture',
+    listen: 'Hear the microphone',
     controls: enControls,
   },
   annotation: {
