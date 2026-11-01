@@ -369,6 +369,7 @@ async fn send(inner: Arc<Inner>) {
     let mut timestamp: u32 = rand::random();
     let mut open_until: Option<Instant> = None;
     let mut was_open = false;
+    let mut silent_frames: u64 = 0;
     // The background noise, followed slowly upwards and quickly downwards.
     let mut floor_db = -60f32;
     let mut tick = tokio::time::interval(Duration::from_millis(10));
@@ -421,10 +422,16 @@ async fn send(inner: Arc<Inner>) {
             }
             let open = !silenced && open_until.is_some_and(|t| now < t);
             inner.speaking.store(open, Ordering::Relaxed);
-            if !open {
+            // Quiet: a silent packet every half second keeps the path and
+            // the forwarder's view of this device alive.
+            silent_frames = if open { 0 } else { silent_frames + 1 };
+            let keepalive = !open && silent_frames % 25 == 0;
+            if !open && !keepalive {
                 was_open = false;
                 continue;
             }
+            let pcm = if open { pcm } else { vec![0f32; FRAME] };
+            let level = if open { level } else { 127 };
             let Some(track) = lock(&inner.track).clone() else { continue };
             let bitrate = inner.bitrate.load(Ordering::Relaxed);
             if encoder.as_ref().is_none_or(|(b, _)| *b != bitrate) {
@@ -476,8 +483,8 @@ async fn send(inner: Arc<Inner>) {
                 payload,
             };
             sequence = sequence.wrapping_add(1);
-            was_open = true;
-            let extensions = [HeaderExtension::AudioLevel(AudioLevelExtension { level, voice: true })];
+            was_open = open;
+            let extensions = [HeaderExtension::AudioLevel(AudioLevelExtension { level, voice: open })];
             if let Err(e) = track.write_rtp_with_extensions(&packet, &extensions).await {
                 tracing::trace!(error = %e, "voice packet not written");
             }

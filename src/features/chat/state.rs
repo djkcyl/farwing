@@ -491,6 +491,10 @@ pub(crate) fn quiet(prefs: &Prefs, now: chrono::NaiveTime) -> bool {
 
 /// The beginning of a message in plain words.
 pub(crate) fn preview(m: &Message, names: &dyn Names) -> String {
+    if let Some(call) = m.call {
+        let v = &crate::i18n::t().voice;
+        return if call.missed { v.call_missed.to_owned() } else { (v.call_record)(call.duration_s.div_ceil(60).max(1)) };
+    }
     let text = super::markdown::plain_message(&m.content, names);
     let files = if m.attachments.is_empty() {
         String::new()

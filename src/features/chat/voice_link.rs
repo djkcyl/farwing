@@ -329,6 +329,11 @@ fn begin_call(inner: &Arc<Inner>, call: Call) {
                     call: Some(call.id.clone()),
                     ..Default::default()
                 });
+                // As the server answered this device (the others learn by push).
+                if let Some(snap) = &mut s.snap {
+                    snap.calls.retain(|c| c.id != call.id);
+                    snap.calls.push(call.clone());
+                }
             });
             *lock(&inner.voice) = Some(Active::Call(Arc::clone(&voice)));
             if answered {

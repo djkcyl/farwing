@@ -87,6 +87,19 @@ pub(crate) struct ChatUi {
     files: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
     settings: settings::SettingsUi,
     folded: HashSet<Id>,
+    /// The ringing call whose dialog was answered here.
+    dismissed_call: Option<String>,
+    /// Mute and deafen chosen outside a channel (they hold when joining).
+    muted: bool,
+    deafened: bool,
+    /// A voice participant's card: (channel, participant, where).
+    voice_card: Option<(Id, u32, egui::Pos2)>,
+    /// The settings dialog's page: chat (0) or voice (1).
+    me_tab: u8,
+    /// Audio endpoints for the voice settings (inputs, outputs).
+    endpoints: Option<(Vec<crate::features::voice::capture::Endpoint>, Vec<crate::features::voice::capture::Endpoint>)>,
+    /// The voice settings wait for a push-to-talk key.
+    capturing_key: bool,
     trusted: HashSet<String>,
     /// Open this channel once it is known (a new DM or group).
     pub(super) open: Option<Id>,
@@ -128,6 +141,13 @@ impl Default for ChatUi {
             files: None,
             settings: settings::SettingsUi::default(),
             folded: HashSet::new(),
+            dismissed_call: None,
+            muted: false,
+            deafened: false,
+            voice_card: None,
+            me_tab: 0,
+            endpoints: None,
+            capturing_key: false,
             trusted: HashSet::new(),
             open: None,
             picker_group: 0,
@@ -293,6 +313,7 @@ impl DeviceCenterApp {
             });
         }
         panels::user_card(ui, &chat, &state, &mut self.chat_ui);
+        panels::voice_card(ui, &chat, &state, &mut self.chat_ui);
         dialogs::show(ui.ctx(), &chat, &state, &mut self.chat_ui);
         settings::show(ui.ctx(), &chat, &state, &mut self.chat_ui);
         dialogs::image_viewer(ui.ctx(), &chat, &mut self.chat_ui);
@@ -352,6 +373,18 @@ impl DeviceCenterApp {
         ui.scope_builder(egui::UiBuilder::new().max_rect(head.shrink2(vec2(14.0, 0.0))).layout(egui::Layout::left_to_right(Align::Center)), |ui| {
             self.chat_header(ui, chat, state, &channel, group.as_ref(), dm.as_ref());
         });
+        // A call in this direct message: its bar over the messages.
+        if dm.is_some()
+            && let Some(call) = state.snap.as_ref().and_then(|s| s.calls.iter().find(|c| c.channel_id == channel_id)).cloned()
+        {
+            let strip = egui::Rect::from_min_size(body.min, vec2(body.width(), 44.0));
+            ui.painter().rect_filled(strip, 0.0, Color32::from_rgb(28, 45, 40));
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(strip.shrink2(vec2(16.0, 6.0))).layout(egui::Layout::left_to_right(Align::Center)),
+                |ui| self.call_bar(ui, chat, state, &call),
+            );
+            body.min.y = strip.bottom();
+        }
         let composer_h = composer::height(ui, &self.chat_ui, chat, channel_id);
         let list = egui::Rect::from_min_max(body.min, egui::pos2(body.right(), body.bottom() - composer_h));
         let input = egui::Rect::from_min_max(egui::pos2(body.left(), list.bottom()), body.max);
@@ -361,6 +394,89 @@ impl DeviceCenterApp {
         ui.scope_builder(egui::UiBuilder::new().max_rect(input).id_salt("chat-composer"), |ui| {
             composer::composer(ui, chat, state, &mut self.chat_ui, &channel, group.as_ref(), dm.as_ref());
         });
+    }
+
+    /// A call's state in its direct message, and what can be done.
+    fn call_bar(&mut self, ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, call: &farwing_protocol::chat::Call) {
+        use parts::{Glyph, glyph_button};
+        let v = &t().voice;
+        let me = state.me().map(|u| u.user_id.clone()).unwrap_or_default();
+        let here = state.my_voice.as_ref().is_some_and(|m| m.call.as_deref() == Some(call.id.as_str()));
+        let (text, color) = if call.state == "ringing" {
+            if call.caller.user_id == me {
+                (v.calling.to_owned(), crate::ui::theme::AMBER)
+            } else {
+                ((v.incoming)(call.caller.display_name()), crate::ui::theme::AMBER)
+            }
+        } else if here {
+            let seconds = call.answered_at.map_or(0, |at| ((chrono::Utc::now().timestamp_millis() - at).max(0) / 1000) as u64);
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+            (format!("{} · {:02}:{:02}", v.in_call, seconds / 60, seconds % 60), crate::ui::theme::GREEN)
+        } else {
+            (v.in_call_elsewhere.to_owned(), MUTED)
+        };
+        let (rect, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+        parts::paint_glyph(ui.painter(), rect, Glyph::Phone, color);
+        ui.add_space(6.0);
+        ui.label(RichText::new(text).strong().color(color));
+        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+            if here || (call.state == "ringing" && call.caller.user_id == me) {
+                if glyph_button(ui, Glyph::PhoneDown, v.hang_up, false).clicked() {
+                    chat.leave_voice();
+                }
+            } else if call.state == "ringing" {
+                if ui.button(v.decline).clicked() {
+                    chat.decline_call(&call.id);
+                }
+                if ui.add(crate::ui::controls::primary(v.answer)).clicked() {
+                    chat.answer_call(&call.id, false);
+                }
+            } else if ui.button(v.take_here).clicked() {
+                chat.answer_call(&call.id, true);
+            }
+        });
+    }
+
+    /// Over every page: a call ringing for this account.
+    pub(crate) fn chat_overlays(&mut self, ctx: &egui::Context) {
+        let Some(chat) = self.chat.clone() else { return };
+        let state = chat.view();
+        let me = state.me().map(|u| u.user_id.clone()).unwrap_or_default();
+        let ringing = state
+            .snap
+            .as_ref()
+            .and_then(|s| s.calls.iter().find(|c| c.state == "ringing" && c.callee.user_id == me).cloned());
+        let Some(call) = ringing else { return };
+        if self.chat_ui.dismissed_call.as_deref() == Some(call.id.as_str()) {
+            return;
+        }
+        let v = &t().voice;
+        let mut open_chat = false;
+        egui::Modal::new(egui::Id::new("chat-incoming-call")).frame(crate::ui::controls::dialog_frame()).show(ctx, |ui| {
+            ui.set_width(320.0);
+            ui.vertical_centered(|ui| {
+                ui.add_space(8.0);
+                parts::avatar(ui, &chat, &call.caller, 64.0, None);
+                ui.add_space(8.0);
+                ui.label(RichText::new((v.incoming)(call.caller.display_name())).size(16.0).strong().color(TEXT));
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let width = (ui.available_width() - 8.0) / 2.0;
+                    if ui.add_sized([width, 32.0], egui::Button::new(v.decline)).clicked() {
+                        chat.decline_call(&call.id);
+                    }
+                    if ui.add_sized([width, 32.0], crate::ui::controls::primary(v.answer)).clicked() {
+                        chat.answer_call(&call.id, false);
+                        open_chat = true;
+                    }
+                });
+            });
+        });
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        if open_chat {
+            self.chat_ui.dismissed_call = Some(call.id.clone());
+            self.open_chat(call.channel_id);
+        }
     }
 
     /// Connect to a device a friend shares (from a direct message).
@@ -423,6 +539,13 @@ impl DeviceCenterApp {
         }
         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
             let c = &t().chat;
+            if let Some(dm) = dm
+                && dm.friends
+                && state.snap.as_ref().is_some_and(|s| !s.calls.iter().any(|x| x.channel_id == channel.id))
+                && glyph_button(ui, Glyph::Phone, t().voice.call, false).clicked()
+            {
+                chat.start_call(channel.id);
+            }
             if glyph_button(ui, Glyph::Search, c.search, self.chat_ui.panel == Some(Panel::Search)).clicked() {
                 self.chat_ui.panel = if self.chat_ui.panel == Some(Panel::Search) { None } else { Some(Panel::Search) };
             }

@@ -327,6 +327,8 @@ fn message(
     ui.horizontal_top(|ui| {
         ui.add_space(9.0);
         ui.allocate_ui_with_layout(vec2(38.0, 20.0), egui::Layout::top_down(egui::Align::Center), |ui| {
+            // The column keeps its width when empty (continued rows).
+            ui.set_min_width(38.0);
             if continued {
                 if hovered {
                     ui.label(RichText::new(parts::time_text(m.created_at).rsplit(' ').next().unwrap_or("")).size(10.5).color(MUTED));
@@ -358,6 +360,17 @@ fn message(
             }
             if m.deleted {
                 ui.label(RichText::new(t().chat.deleted).italics().size(13.0).color(MUTED));
+                return;
+            }
+            if let Some(call) = m.call {
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                    let color = if call.missed { RED } else { crate::ui::theme::GREEN };
+                    parts::paint_glyph(ui.painter(), r, Glyph::Phone, color);
+                    let v = &t().voice;
+                    let text = if call.missed { v.call_missed.to_owned() } else { (v.call_record)(call.duration_s.div_ceil(60).max(1)) };
+                    ui.label(RichText::new(text).color(MUTED));
+                });
                 return;
             }
             let faded = e.sending || e.failed.is_some();

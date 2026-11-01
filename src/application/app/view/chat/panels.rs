@@ -366,6 +366,76 @@ pub(super) fn user_card(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState
     }
 }
 
+/// A voice participant's card: their volume here, and a moderator's mute
+/// and disconnect.
+pub(super) fn voice_card(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi) {
+    let Some((channel, participant, at)) = chat_ui.voice_card else { return };
+    let Some(p) = state
+        .snap
+        .as_ref()
+        .and_then(|s| s.voice.iter().find(|v| v.channel_id == channel))
+        .and_then(|v| v.participants.iter().find(|p| p.participant == participant))
+        .cloned()
+    else {
+        chat_ui.voice_card = None;
+        return;
+    };
+    let v = &t().voice;
+    let me = state.me().is_some_and(|u| u.user_id == p.user_id);
+    let moderate = state
+        .channel(channel)
+        .is_some_and(|(c, _, _)| c.permissions & farwing_protocol::chat::perm::VOICE_MODERATE != 0);
+    let area = egui::Area::new(ui.id().with("chat-voice-card"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(at + vec2(8.0, 0.0))
+        .show(ui.ctx(), |ui| {
+            parts::card_frame().show(ui, |ui| {
+                ui.set_width(220.0);
+                let name = state
+                    .members
+                    .values()
+                    .flat_map(|m| m.iter())
+                    .find(|m| m.user.user_id == p.user_id)
+                    .map(|m| parts::display_name(&m.user, &m.nickname))
+                    .or_else(|| state.me().filter(|u| u.user_id == p.user_id).map(|u| u.display_name().to_owned()))
+                    .unwrap_or_default();
+                ui.label(RichText::new(name).strong().color(TEXT));
+                if !me {
+                    let mut settings = chat.voice_settings();
+                    let mut volume = u32::from(*settings.volumes.get(&p.user_id).unwrap_or(&100));
+                    ui.label(parts::muted(v.user_volume));
+                    if ui.add(egui::Slider::new(&mut volume, 0..=200).suffix("%")).changed() {
+                        settings.volumes.insert(p.user_id.clone(), volume as u8);
+                        chat.set_voice_settings(settings);
+                    }
+                }
+                if moderate {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        let label = if p.server_muted { v.server_unmute } else { v.server_mute };
+                        if ui.button(label).clicked() {
+                            chat.moderate_voice(channel, participant, !p.server_muted);
+                        }
+                        if !me && ui.button(RichText::new(v.kick).color(crate::ui::theme::RED)).clicked() {
+                            chat.disconnect_voice(channel, participant);
+                            chat_ui.voice_card = None;
+                        }
+                    });
+                }
+            });
+        });
+    if ui.input(|i| i.pointer.any_pressed())
+        && let Some(pos) = ui.input(|i| i.pointer.interact_pos())
+        && !area.response.rect.contains(pos)
+        && pos.distance(at) > 4.0
+    {
+        chat_ui.voice_card = None;
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        chat_ui.voice_card = None;
+    }
+}
+
 pub(super) fn notify_menu(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, channel: &Channel, group: Option<&GroupState>) {
     let Some(prefs) = state.snap.as_ref().map(|s| s.prefs.clone()) else { return };
     let key = format!("c:{}", channel.id);

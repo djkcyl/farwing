@@ -395,8 +395,16 @@ impl VoiceRooms {
                 })
             };
             // Receiver reports and transport-wide feedback flow while the
-            // receiver's RTCP is read.
-            let rtcp = tokio::spawn(async move { while receiver.read_rtcp().await.is_ok() {} });
+            // receiver's RTCP is read; the sender's reports also show it is
+            // there while it says nothing.
+            let rtcp = {
+                let member = Arc::clone(&member);
+                tokio::spawn(async move {
+                    while receiver.read_rtcp().await.is_ok() {
+                        *member.heard.lock() = Some(Instant::now());
+                    }
+                })
+            };
             up.tasks.lock().extend([reader, rtcp]);
             Box::pin(async {})
         }));

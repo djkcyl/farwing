@@ -1253,6 +1253,7 @@ impl crate::ui::App for DeviceCenterApp {
         self.tick_power();
         self.draw_center(ui);
         self.draw_dialogs(&ctx);
+        self.chat_overlays(&ctx);
         self.component_dialogs(&ctx);
         self.prepare_exit();
         if !self.exit_requested && !self.login_restoring && !self.login_running {

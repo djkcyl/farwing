@@ -33,6 +33,12 @@ pub(super) enum Glyph {
     Down,
     File,
     PersonAdd,
+    Mic,
+    MicOff,
+    Headset,
+    HeadsetOff,
+    Phone,
+    PhoneDown,
 }
 
 pub(super) fn paint_glyph(p: &egui::Painter, rect: Rect, glyph: Glyph, color: Color32) {
@@ -163,6 +169,71 @@ pub(super) fn paint_glyph(p: &egui::Painter, rect: Rect, glyph: Glyph, color: Co
             p.add(egui::Shape::line(vec![q(-8.0, 7.0), q(-7.0, 2.5), q(-2.0, 1.0), q(3.0, 2.5), q(4.0, 7.0)], s));
             p.line_segment([q(7.0, -5.0), q(7.0, 1.0)], s);
             p.line_segment([q(4.0, -2.0), q(10.0, -2.0)], s);
+        }
+        Glyph::Mic | Glyph::MicOff => {
+            p.rect_stroke(
+                Rect::from_min_max(q(-3.0, -9.0), q(3.0, 2.0)),
+                3.0 * k,
+                s,
+                egui::StrokeKind::Middle,
+            );
+            p.add(egui::Shape::line(
+                vec![q(-6.5, -1.5), q(-6.0, 1.5), q(-4.0, 4.5), q(0.0, 6.0), q(4.0, 4.5), q(6.0, 1.5), q(6.5, -1.5)],
+                s,
+            ));
+            p.line_segment([q(0.0, 6.0), q(0.0, 9.0)], s);
+            if glyph == Glyph::MicOff {
+                p.line_segment([q(-8.0, -8.0), q(8.0, 8.0)], Stroke::new(1.6, color));
+            }
+        }
+        Glyph::Headset | Glyph::HeadsetOff => {
+            p.add(egui::Shape::line(
+                vec![q(-7.0, 3.0), q(-7.0, -1.0), q(-5.5, -5.5), q(-2.5, -7.5), q(2.5, -7.5), q(5.5, -5.5), q(7.0, -1.0), q(7.0, 3.0)],
+                s,
+            ));
+            p.rect_stroke(Rect::from_min_max(q(-8.5, 1.0), q(-4.5, 8.0)), 1.5 * k, s, egui::StrokeKind::Middle);
+            p.rect_stroke(Rect::from_min_max(q(4.5, 1.0), q(8.5, 8.0)), 1.5 * k, s, egui::StrokeKind::Middle);
+            if glyph == Glyph::HeadsetOff {
+                p.line_segment([q(-9.0, -8.0), q(9.0, 9.0)], Stroke::new(1.6, color));
+            }
+        }
+        Glyph::Phone => {
+            p.add(egui::Shape::closed_line(
+                vec![
+                    q(-7.0, -8.0),
+                    q(-3.5, -8.0),
+                    q(-2.0, -4.0),
+                    q(-4.0, -2.0),
+                    q(2.0, 4.0),
+                    q(4.0, 2.0),
+                    q(8.0, 3.5),
+                    q(8.0, 7.0),
+                    q(6.0, 9.0),
+                    q(-1.0, 7.0),
+                    q(-7.0, 1.0),
+                    q(-9.0, -6.0),
+                ],
+                s,
+            ));
+        }
+        Glyph::PhoneDown => {
+            p.add(egui::Shape::closed_line(
+                vec![
+                    q(-10.0, 1.0),
+                    q(-9.0, -3.0),
+                    q(-4.0, -5.0),
+                    q(4.0, -5.0),
+                    q(9.0, -3.0),
+                    q(10.0, 1.0),
+                    q(9.0, 4.0),
+                    q(5.0, 3.0),
+                    q(4.0, 0.0),
+                    q(-4.0, 0.0),
+                    q(-5.0, 3.0),
+                    q(-9.0, 4.0),
+                ],
+                s,
+            ));
         }
     }
 }

@@ -124,11 +124,27 @@ fn row(ui: &mut egui::Ui, active: bool, unread: bool, faded: bool, paint: impl F
 pub(super) fn side(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi) {
     let full = ui.max_rect();
     let bar = Rect::from_min_max(egui::pos2(full.left(), full.bottom() - 52.0), full.max);
-    let list = Rect::from_min_max(full.min, egui::pos2(full.right(), bar.top()));
+    // In voice: a strip above the user's bar.
+    let strip = state
+        .my_voice
+        .as_ref()
+        .map(|v| (v, Rect::from_min_max(egui::pos2(full.left(), bar.top() - 52.0), egui::pos2(full.right(), bar.top()))));
+    let list_bottom = strip.as_ref().map_or(bar.top(), |(_, r)| r.top());
+    let list = Rect::from_min_max(full.min, egui::pos2(full.right(), list_bottom));
     ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| match chat_ui.group {
         Some(g) => group_side(ui, chat, state, chat_ui, g),
         None => dm_side(ui, chat, state, chat_ui),
     });
+    if let Some((voice, rect)) = strip {
+        ui.painter().rect_filled(rect, 0.0, SIDEBAR);
+        ui.painter().hline(rect.x_range(), rect.top(), Stroke::new(1.0, LINE));
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(rect.shrink2(vec2(10.0, 7.0)))
+                .layout(egui::Layout::left_to_right(Align::Center)),
+            |ui| voice_bar(ui, chat, state, chat_ui, voice),
+        );
+    }
     ui.painter().rect_filled(bar, 0.0, SIDEBAR);
     ui.painter().hline(bar.x_range(), bar.top(), Stroke::new(1.0, LINE));
     ui.scope_builder(
@@ -205,8 +221,14 @@ fn group_side(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui:
                         parts::badge(ui, egui::pos2(rect.right() - 16.0, rect.center().y), mentions);
                     }
                 });
-                if response.clicked() && c.kind != ChannelKind::Voice {
+                if response.clicked() {
                     chat_ui.select_channel(c.id);
+                    if c.kind == ChannelKind::Voice && state.my_voice.as_ref().is_none_or(|v| v.channel != c.id || v.call.is_some()) {
+                        chat.join_voice(c.id);
+                    }
+                }
+                if c.kind == ChannelKind::Voice {
+                    voice_people(ui, chat, state, chat_ui, c.id, p);
                 }
             }
         });
@@ -295,5 +317,122 @@ fn user_bar(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &
         if parts::glyph_button(ui, Glyph::Gear, t().chat.settings, false).clicked() {
             chat_ui.dialog = Some(Dialog::Me);
         }
+        // Mute and deafen hold for the next channel too.
+        let v = &t().voice;
+        let (muted, deafened) = state.my_voice.as_ref().map_or((chat_ui.muted, chat_ui.deafened), |m| (m.muted, m.deafened));
+        if parts::glyph_button(ui, if deafened { Glyph::HeadsetOff } else { Glyph::Headset }, if deafened { v.undeafen } else { v.deafen }, deafened).clicked() {
+            chat_ui.deafened = !deafened;
+            chat_ui.muted = muted;
+            chat.set_voice_self(muted, !deafened);
+        }
+        if parts::glyph_button(ui, if muted { Glyph::MicOff } else { Glyph::Mic }, if muted { v.unmute } else { v.mute }, muted).clicked() {
+            chat_ui.muted = !muted;
+            chat_ui.deafened = deafened;
+            chat.set_voice_self(!muted, deafened);
+        }
     });
+}
+
+/// Where this device's voice is, and the way out.
+fn voice_bar(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi, voice: &crate::features::chat::state::MyVoice) {
+    let v = &t().voice;
+    let (title, color) = if voice.connected { (v.connected, GREEN) } else { (v.connecting, crate::ui::theme::AMBER) };
+    let place = match &voice.call {
+        Some(_) => state
+            .snap
+            .as_ref()
+            .and_then(|s| s.dms.iter().find(|d| d.channel.id == voice.channel))
+            .map(|d| d.user.display_name().to_owned())
+            .unwrap_or_default(),
+        None => state
+            .channel(voice.channel)
+            .map(|(c, g, _)| match g {
+                Some(g) => format!("{} / {}", c.name, g.group.name),
+                None => c.name.clone(),
+            })
+            .unwrap_or_default(),
+    };
+    let response = ui
+        .vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.label(RichText::new(title).size(13.0).strong().color(color));
+            let mut line = place;
+            if voice.compat {
+                line = format!("{line} · {}", v.compat);
+            }
+            ui.add(egui::Label::new(parts::muted(line)).truncate());
+        })
+        .response
+        .interact(Sense::click());
+    if response.clicked() {
+        if voice.call.is_none() {
+            if let Some((_, g, _)) = state.channel(voice.channel) {
+                chat_ui.group = g.map(|g| g.group.id);
+            }
+        } else {
+            chat_ui.group = None;
+        }
+        chat_ui.select_channel(voice.channel);
+    }
+    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+        let hint = if voice.call.is_some() { v.hang_up } else { v.disconnect };
+        let r = parts::glyph_button(ui, Glyph::PhoneDown, hint, false);
+        if r.clicked() {
+            chat.leave_voice();
+        }
+    });
+}
+
+/// The people in voice channel `channel` (those this device hears speak
+/// light up); a click opens their card.
+fn voice_people(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi, channel: Id, perms: i64) {
+    let Some(people) = state.snap.as_ref().and_then(|s| s.voice.iter().find(|v| v.channel_id == channel)) else { return };
+    let mine = state.my_voice.as_ref().filter(|v| v.channel == channel && v.call.is_none());
+    let (speaking, me_speaking, _) = if mine.is_some() { chat.voice_activity() } else { (Vec::new(), false, 0.0) };
+    let members = state.snap.as_ref().and_then(|_| chat_ui.group.and_then(|g| state.members.get(&g)));
+    for p in &people.participants {
+        let user = members
+            .and_then(|m| m.iter().find(|m| m.user.user_id == p.user_id))
+            .map(|m| (m.user.clone(), m.nickname.clone()))
+            .or_else(|| state.me().filter(|u| u.user_id == p.user_id).map(|u| (u.clone(), String::new())))
+            .unwrap_or_else(|| {
+                (
+                    farwing_protocol::chat::ChatUser {
+                        user_id: p.user_id.clone(),
+                        ..Default::default()
+                    },
+                    String::new(),
+                )
+            });
+        let talking = if mine.is_some_and(|m| m.participant == p.participant) { me_speaking } else { speaking.contains(&p.participant) };
+        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+        if response.hovered() {
+            ui.painter().rect_filled(rect, 5.0, HOVER);
+        }
+        let avatar = Rect::from_center_size(egui::pos2(rect.left() + 38.0, rect.center().y), vec2(20.0, 20.0));
+        parts::paint_avatar(ui, chat, avatar, &user.0, None);
+        if talking {
+            ui.painter().circle_stroke(avatar.center(), 11.5, Stroke::new(2.0, GREEN));
+        }
+        let name = parts::display_name(&user.0, &user.1);
+        let color = if talking { TEXT } else { Color32::from_rgb(140, 150, 166) };
+        let galley = ui.painter().layout_no_wrap(name, egui::FontId::proportional(13.0), color);
+        ui.painter().galley(egui::pos2(rect.left() + 54.0, rect.center().y - galley.size().y / 2.0), galley, color);
+        let mut x = rect.right() - 12.0;
+        for (on, glyph) in [
+            (p.self_deafened || p.server_deafened, Glyph::HeadsetOff),
+            (p.self_muted || p.server_muted, Glyph::MicOff),
+        ] {
+            if on {
+                let r = Rect::from_center_size(egui::pos2(x, rect.center().y), vec2(14.0, 14.0));
+                let c = if p.server_muted || p.server_deafened { crate::ui::theme::RED } else { MUTED };
+                parts::paint_glyph(ui.painter(), r, glyph, c);
+                x -= 18.0;
+            }
+        }
+        if response.clicked() && let Some(pos) = response.interact_pointer_pos() {
+            chat_ui.voice_card = Some((channel, p.participant, pos));
+        }
+    }
+    let _ = perms;
 }
