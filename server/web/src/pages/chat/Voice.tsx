@@ -1,16 +1,26 @@
 // Voice on the chat page (`docs/protocol/chat-design.md` §7, §12.2): who is
 // in each voice channel, this browser's voice bar and toggles, calls in
 // direct messages, a participant's volume and moderation, the settings.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useT } from '../../i18n/react';
 import { errorText } from '../../lib/api';
 import { navigate } from '../../lib/router';
 import { chat, useChat } from '../../lib/chat/store';
-import { has, PERM, type Call, type ChatUser, type Dm, type GroupState, type Id } from '../../lib/chat/types';
+import {
+  has,
+  PERM,
+  type Call,
+  type Channel,
+  type ChatUser,
+  type Dm,
+  type GroupState,
+  type Id,
+  type VoiceParticipant,
+} from '../../lib/chat/types';
 import { SOUND_GROUPS } from '../../lib/chat/sounds';
-import { Mic, testMicrophone, useVoice, voice, type VoiceSettings } from '../../lib/chat/voice';
+import { Mic, testMicrophone, useVoice, voice, type TrackRef, type VoiceSettings } from '../../lib/chat/voice';
 import { Icon } from '../../ui/icons';
-import { Button, Field, IconButton, Segmented, Select, Slider, Switch } from '../../ui/kit';
+import { Button, Field, IconButton, Loading, Segmented, Select, Slider, Switch } from '../../ui/kit';
 import { useOverlay } from '../../ui/overlay';
 import { Avatar, displayName } from './parts';
 
@@ -24,6 +34,7 @@ export function VoicePeople({
   channel: Id;
   onPerson(user: string, anchor: HTMLElement, voice: { channel: Id; participant: number }): void;
 }) {
+  const t = useT();
   const state = useChat();
   const v = useVoice();
   const people = state.snap?.voice.find((x) => x.channel_id === channel)?.participants ?? [];
@@ -59,6 +70,8 @@ export function VoicePeople({
           >
             <Avatar user={user} size={20} />
             <span className="ellipsis grow">{displayName(user, member?.nickname)}</span>
+            {p.tracks.includes('screen') && <span className="chat-live">{t.chat.voice.live}</span>}
+            {p.tracks.includes('cam_hi') && <Icon name="webcam" size={14} className="faint" />}
             {(p.self_muted || p.server_muted || p.cannot_speak) && (
               <Icon name="micOff" size={14} className={p.server_muted || p.cannot_speak ? 'red' : 'faint'} />
             )}
@@ -108,6 +121,14 @@ export function VoiceBar() {
             .join(' · ')}
         </span>
       </button>
+      {!my.call && (
+        <IconButton
+          icon="webcam"
+          label={v.camera ? t.chat.voice.cameraOff : t.chat.voice.cameraOn}
+          className={v.camera ? 'on' : ''}
+          onClick={() => void voice.setCamera(!v.camera)}
+        />
+      )}
       <IconButton
         icon="phoneOff"
         label={my.call ? t.chat.voice.hangUp : t.chat.voice.disconnect}
@@ -500,6 +521,182 @@ export function VoiceSettingsPanel() {
           />
         ))}
       </div>
+    </div>
+  );
+}
+
+/// One picture: a track in a muted video element.
+function VideoTile({ track, mirror }: { track: MediaStreamTrack; mirror?: boolean }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.srcObject = new MediaStream([track]);
+    void el.play().catch(() => undefined);
+    return () => {
+      el.srcObject = null;
+    };
+  }, [track]);
+  return <video ref={ref} autoPlay muted playsInline className={mirror ? 'mirror' : ''} />;
+}
+
+interface Source {
+  person: VoiceParticipant;
+  kind: 'cam' | 'screen';
+}
+
+/// The pictures of the voice channel this browser is in, above its
+/// messages: cameras and screens in a grid, one of them large when chosen.
+/// It watches the small camera picture in the grid and the large one when
+/// chosen; a screen only once opened (720p30 if asked for).
+export function VoiceStage({ group, channel }: { group: GroupState; channel: Channel }) {
+  const t = useT();
+  const state = useChat();
+  const v = useVoice();
+  const [focus, setFocus] = useState<{ participant: number; kind: 'cam' | 'screen' }>();
+  const [previous, setPrevious] = useState<{ participant: number; kind: 'cam' | 'screen' }>();
+  const [low, setLow] = useState(false);
+  const stage = useRef<HTMLDivElement>(null);
+  const people = state.snap?.voice.find((x) => x.channel_id === channel.id)?.participants ?? [];
+  const here = !!v.my && !v.my.call && v.my.channel === channel.id;
+  const me = v.my?.participant;
+  const sources: Source[] = people.flatMap((person) => [
+    ...(person.tracks.includes('cam_hi') || (person.participant === me && v.camera)
+      ? [{ person, kind: 'cam' as const }]
+      : []),
+    ...(person.tracks.includes('screen') ? [{ person, kind: 'screen' as const }] : []),
+  ]);
+  const focused = focus && sources.find((s) => s.person.participant === focus.participant && s.kind === focus.kind);
+  const key = sources.map((s) => `${s.person.participant}${s.kind}`).join(',');
+  // What this browser watches follows the layout; the earlier large picture
+  // stays a moment so the new one starts without a gap.
+  useEffect(() => {
+    if (!here) return;
+    const refs: TrackRef[] = [];
+    for (const s of sources) {
+      const p = s.person.participant;
+      if (p === me) continue;
+      const big = focused?.person.participant === p && focused.kind === s.kind;
+      const was = previous?.participant === p && previous.kind === s.kind;
+      if (s.kind === 'cam') {
+        refs.push({ participant: p, kind: big ? 'cam_hi' : 'cam_lo' });
+        if (was && !big) refs.push({ participant: p, kind: 'cam_hi' });
+      } else if (big || was) {
+        refs.push({ participant: p, kind: low && big ? 'screen_720' : 'screen' });
+        if (s.person.screen?.audio !== false) refs.push({ participant: p, kind: 'screen_audio' });
+      }
+    }
+    voice.watchTracks(refs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [here, key, focused?.person.participant, focused?.kind, previous, low, me]);
+  useEffect(() => {
+    if (!previous) return;
+    const timer = window.setTimeout(() => setPrevious(undefined), 2000);
+    return () => window.clearTimeout(timer);
+  }, [previous]);
+  if (!here || !sources.length) return null;
+  const choose = (next?: { participant: number; kind: 'cam' | 'screen' }) => {
+    if (focus) setPrevious(focus);
+    setFocus(next);
+    setLow(false);
+  };
+  const nameOf = (person: VoiceParticipant) => {
+    const member = state.members[group.group.id]?.find((m) => m.user.user_id === person.user_id);
+    if (person.participant === me) return t.chat.voice.you;
+    return member ? displayName(member.user, member.nickname) : '';
+  };
+  const trackOf = (s: Source, big: boolean) => {
+    if (s.person.participant === me) return s.kind === 'cam' ? v.localCamera : undefined;
+    const kinds =
+      s.kind === 'cam'
+        ? big
+          ? ['cam_hi', 'cam_lo']
+          : ['cam_lo', 'cam_hi']
+        : low && big
+          ? ['screen_720', 'screen']
+          : ['screen', 'screen_720'];
+    for (const kind of kinds) {
+      const found = v.videos.find((x) => x.participant === s.person.participant && x.kind === kind);
+      if (found) return found.track;
+    }
+    return undefined;
+  };
+  const tile = (s: Source) => {
+    const track = s.kind === 'screen' && !(focused === s) ? undefined : trackOf(s, focused === s);
+    return (
+      <button
+        key={`${s.person.participant}-${s.kind}`}
+        type="button"
+        className="voice-tile"
+        onClick={() => choose({ participant: s.person.participant, kind: s.kind })}
+      >
+        {track ? (
+          <VideoTile track={track} mirror={s.person.participant === me} />
+        ) : (
+          <span className="voice-tile-idle">
+            <Icon name={s.kind === 'screen' ? 'monitor' : 'webcam'} size={22} />
+            {s.kind === 'screen' && <span>{t.chat.voice.watch}</span>}
+          </span>
+        )}
+        <span className="voice-tile-name">
+          {s.kind === 'screen' && <span className="chat-live">{t.chat.voice.live}</span>}
+          <span className="ellipsis">{nameOf(s.person)}</span>
+        </span>
+      </button>
+    );
+  };
+  if (focused) {
+    const track = trackOf(focused, true);
+    const sharer = focused.kind === 'screen' && focused.person.participant !== me ? focused.person : undefined;
+    const control = v.control?.sharer === sharer?.device_id ? v.control : undefined;
+    return (
+      <div className="voice-stage focused" ref={stage}>
+        <div className="voice-big">
+          {track ? <VideoTile track={track} mirror={focused.person.participant === me} /> : <Loading />}
+        </div>
+        <div className="voice-stage-bar">
+          <IconButton icon="back" label={t.chat.voice.back} onClick={() => choose(undefined)} />
+          <span className="ellipsis grow">
+            {focused.kind === 'screen' && <span className="chat-live">{t.chat.voice.live}</span>}
+            {nameOf(focused.person)}
+          </span>
+          {sharer && sharer.screen?.quality !== '720p30' && (
+            <Segmented<'original' | 'p720'>
+              value={low ? 'p720' : 'original'}
+              options={[
+                { value: 'original', label: t.chat.voice.original },
+                { value: 'p720', label: t.chat.voice.p720 },
+              ]}
+              onChange={(q) => setLow(q === 'p720')}
+            />
+          )}
+          {sharer?.screen?.whole &&
+            (control?.allowed ? (
+              <Button size="sm" onClick={() => voice.endControl()}>
+                {t.chat.voice.giveBack}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                icon="mouse"
+                disabled={!!control}
+                onClick={() => void voice.requestControl(sharer.device_id)}
+              >
+                {control ? t.chat.voice.controlAsked : t.chat.voice.requestControl}
+              </Button>
+            ))}
+          <IconButton
+            icon="fullscreen"
+            label={t.chat.voice.fullscreen}
+            onClick={() => void stage.current?.requestFullscreen().catch(() => undefined)}
+          />
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="voice-stage" ref={stage}>
+      {sources.map(tile)}
     </div>
   );
 }

@@ -335,12 +335,17 @@ fn own_wire() -> sdp::Wire {
     wire
 }
 
-/// The tracks an offer announces, with their kinds and forwarded codecs.
-fn up_tracks(offer: &str, kinds: &[(String, String)], normalize: &Rewrite) -> Vec<Arc<UpTrack>> {
+/// The tracks an offer announces, with their kinds and forwarded codecs
+/// (each section's codec is the first of the answer's).
+fn up_tracks(offer: &str, answer: &str, kinds: &[(String, String)], normalize: &Rewrite) -> Vec<Arc<UpTrack>> {
     let own = own_wire();
+    let chosen = sdp::first_payload_types(answer);
     sdp::tracks(offer)
         .into_iter()
-        .filter_map(|t| {
+        .filter_map(|mut t| {
+            if let Some(pt) = chosen.get(&t.mid) {
+                t.payload_type = *pt;
+            }
             let kind = match kinds.iter().find(|(mid, _)| *mid == t.mid) {
                 Some((_, k)) if track::ALL.contains(&k.as_str()) => k.clone(),
                 Some(_) => return None,
@@ -566,7 +571,7 @@ impl VoiceRooms {
             let normalize = Rewrite::new(&wire, &own_wire());
             // Tracks already sent keep their caches.
             let old = up.tracks.read().clone();
-            let tracks: Vec<Arc<UpTrack>> = up_tracks(offer, kinds, &normalize)
+            let tracks: Vec<Arc<UpTrack>> = up_tracks(offer, &answer, kinds, &normalize)
                 .into_iter()
                 .map(|t| {
                     old.iter()
@@ -605,7 +610,7 @@ impl VoiceRooms {
         let normalize = Rewrite::new(&wire, &own_wire());
         let uplink = Arc::new(Uplink {
             pc: Arc::clone(&pc),
-            tracks: RwLock::new(up_tracks(offer, kinds, &normalize)),
+            tracks: RwLock::new(up_tracks(offer, &answer, kinds, &normalize)),
             wire: RwLock::new(wire),
             normalize: RwLock::new(normalize),
             tasks: Mutex::default(),

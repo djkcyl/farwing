@@ -251,7 +251,40 @@ export interface VoiceParticipant {
   server_deafened: boolean;
   /// The account lost `speak` here: nothing it says is forwarded.
   cannot_speak: boolean;
+  /// Kinds of track it sends now (`mic`, `cam_hi`, `cam_lo`, `screen`,
+  /// `screen_720`, `screen_audio`).
+  tracks: string[];
+  screen: VoiceScreen | null;
   joined_at: number;
+}
+
+export interface VoiceScreen {
+  /// `720p30`, `720p60`, `1080p30` or `1080p60`.
+  quality: string;
+  audio: boolean;
+  /// The whole screen (control can be asked for), or one window.
+  whole: boolean;
+}
+
+export interface ControlRequest {
+  id: string;
+  channel_id: Id;
+  from: ChatUser;
+  from_device: string;
+  sharer_device: string;
+}
+
+export interface ControlAnswered {
+  id: string;
+  channel_id: Id;
+  sharer_device: string;
+  allowed: boolean;
+  clipboard: boolean;
+}
+
+export interface ControlEnded {
+  id: string;
+  channel_id: Id;
 }
 
 export interface VoiceChannelState {

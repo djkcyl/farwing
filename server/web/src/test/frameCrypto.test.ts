@@ -73,6 +73,14 @@ describe('frame encryption', () => {
     expect(hex(await encryptor.encryptOpus(new Uint8Array(frame)))).toBe(sealed);
   });
 
+  test('H.264 and H.265 access units sealed as the native sender seals them', async () => {
+    for (const [codec, frame, sealed] of FRAMES.filter(([c]) => c === 'h264' || c === 'h265')) {
+      const encryptor = new FrameEncryptor(await importFrameKey(3, material(), true));
+      (encryptor as unknown as { counter: bigint }).counter = 42n;
+      expect(hex(await encryptor.encryptAnnexB(codec as 'h264' | 'h265', new Uint8Array(frame)))).toBe(sealed);
+    }
+  });
+
   test('each frame has its own counter and opens with the key', async () => {
     const encryptor = new FrameEncryptor(await importFrameKey(7, material(), true));
     const decryptor = new FrameDecryptor();

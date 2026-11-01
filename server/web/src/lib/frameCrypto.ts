@@ -46,6 +46,29 @@ export class FrameEncryptor {
   async encryptOpus(frame: Bytes): Promise<Bytes> {
     if (!frame.length) throw new Error('empty Opus frame');
     const clear = frame.subarray(0, 1);
+    return concat([clear, await this.seal(clear, frame.subarray(1))]);
+  }
+
+  /// An H.264 or H.265 access unit (Annex B): each slice sealed after its
+  /// header and first bytes, escaped so no start code appears.
+  async encryptAnnexB(codec: 'h264' | 'h265', frame: Bytes): Promise<Bytes> {
+    const header = codec === 'h264' ? 1 : 2;
+    const parts: Uint8Array[] = [];
+    for (const unit of annexBUnits(frame)) {
+      parts.push(START_CODE);
+      if (!encryptedNal(codec, unit)) {
+        parts.push(unit);
+        continue;
+      }
+      const clear = unit.subarray(0, header + CLEAR_SLICE);
+      parts.push(clear, escape(clear, await this.seal(clear, unit.subarray(header + CLEAR_SLICE))));
+    }
+    return concat(parts);
+  }
+
+  /// `rest` sealed with `clear` authenticated: ciphertext, tag, counter,
+  /// key ID, mark.
+  private async seal(clear: Bytes, rest: Bytes): Promise<Bytes> {
     const counter = this.counter;
     this.counter += 1n;
     const count = new Uint8Array(8);
@@ -54,13 +77,9 @@ export class FrameEncryptor {
     iv.set(this.key.salt, 0);
     iv.set(count, 4);
     const sealed = new Uint8Array(
-      await crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv, additionalData: clear, tagLength: 128 },
-        this.key.key,
-        frame.subarray(1),
-      ),
+      await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: clear, tagLength: 128 }, this.key.key, rest),
     );
-    return concat([clear, sealed, count, new Uint8Array([this.key.id, MARK])]);
+    return concat([sealed, count, new Uint8Array([this.key.id, MARK])]);
   }
 }
 
@@ -168,6 +187,22 @@ export function annexBUnits(data: Bytes): Bytes[] {
     if (last > start + prefix) units.push(data.subarray(start + prefix, last));
   });
   return units;
+}
+
+/// Escapes `data` (following `before`) so that no start code appears in it.
+function escape(before: Bytes, data: Bytes): Bytes {
+  const out: number[] = [];
+  let zeros = 0;
+  for (let i = before.length - 1; i >= 0 && before[i] === 0 && zeros < 2; i--) zeros += 1;
+  for (const byte of data) {
+    if (zeros >= 2 && byte <= 3) {
+      out.push(3);
+      zeros = 0;
+    }
+    out.push(byte);
+    zeros = byte === 0 ? zeros + 1 : 0;
+  }
+  return new Uint8Array(out);
 }
 
 /// Removes the escaping that keeps start codes out of encrypted units.

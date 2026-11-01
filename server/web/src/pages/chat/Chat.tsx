@@ -37,7 +37,7 @@ import { GroupSettings, NotifyMenu, orderChannels } from './GroupSettings';
 import { MemberList, UserCard } from './Members';
 import { MessageList } from './Messages';
 import { Avatar, displayName, GroupIcon, LinkGuard } from './parts';
-import { CallBar, CallButton, VoiceBar, VoiceCardPart, VoicePeople, VoiceToggles } from './Voice';
+import { CallBar, CallButton, VoiceBar, VoiceCardPart, VoicePeople, VoiceStage, VoiceToggles } from './Voice';
 
 const LAST_KEY = 'farwing.chat.last';
 
@@ -261,6 +261,7 @@ export default function ChatPage({ params }: { params: Record<string, string> })
             {dm && <CallBar dm={dm} />}
             <div className="chat-body">
               <div className="chat-center">
+                {group && channel.kind === 'voice' && <VoiceStage group={group} channel={channel} />}
                 <MessageList
                   channel={channel}
                   group={group}

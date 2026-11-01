@@ -70,9 +70,10 @@ fn with_headers(mut response: Response, cache: &'static str) -> Response {
     h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
     h.insert(
         "permissions-policy",
-        // The viewer's microphone and clipboard; nothing for embedded content.
+        // The microphone (viewer, voice), the camera (voice channels) and the
+        // clipboard; nothing for embedded content.
         HeaderValue::from_static(
-            "camera=(), geolocation=(), microphone=(self), clipboard-read=(self), clipboard-write=(self)",
+            "camera=(self), geolocation=(), microphone=(self), clipboard-read=(self), clipboard-write=(self)",
         ),
     );
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));

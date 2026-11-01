@@ -11,6 +11,7 @@ import { deviceKey, verify } from '../device';
 import { unb64, utf8 } from '../encoding';
 import type { VoiceWorkerMessage } from '../voiceWorker';
 import { open_ as openBox, seal, voiceSecret } from '../voiceKeys';
+import { navigate } from '../router';
 import { groupOf, play, type Sound, type SoundGroup } from './sounds';
 import {
   callSignalMessage,
@@ -27,6 +28,9 @@ import {
   type VoiceMoved,
   type VoiceOffer,
   type VoiceParticipant,
+  type ControlAnswered,
+  type ControlEnded,
+  type ControlRequest,
 } from './types';
 
 export interface MyVoice {
@@ -53,6 +57,8 @@ export interface VoiceSettings {
   threshold?: number;
   /// `KeyboardEvent.code` of the push-to-talk key (while the page has focus).
   key?: string;
+  /// The camera's device ID (unset: the default).
+  camera?: string;
   /// Output volume and each person's (percent, 0–100: the page plays through
   /// media elements, which the browser's echo cancellation hears).
   volume: number;
@@ -75,6 +81,25 @@ export interface VoiceState {
   /// Mute and deafen chosen outside a channel (they hold when joining).
   muted: boolean;
   deafened: boolean;
+  /// This browser's camera is on, and its picture.
+  camera: boolean;
+  localCamera?: MediaStreamTrack;
+  /// The pictures received now: (participant, kind) and their track.
+  videos: VoiceVideo[];
+  /// Control of someone's screen asked for here (§8.3).
+  control?: { id: string; sharer: string; allowed: boolean };
+}
+
+export interface VoiceVideo {
+  participant: number;
+  kind: string;
+  track: MediaStreamTrack;
+}
+
+/// One participant's track this browser watches.
+export interface TrackRef {
+  participant: number;
+  kind: string;
 }
 
 const SETTINGS = 'farwing.voice';
@@ -277,7 +302,7 @@ class Player {
 type Listener = () => void;
 
 class VoiceController {
-  state: VoiceState = { speaking: [], meSpeaking: false, muted: false, deafened: false };
+  state: VoiceState = { speaking: [], meSpeaking: false, muted: false, deafened: false, camera: false, videos: [] };
   settings = loadSettings();
   private listeners = new Set<Listener>();
   private session?: ChannelSession | CallSession;
@@ -404,8 +429,58 @@ class VoiceController {
     this.session = undefined;
     this.early = [];
     window.clearInterval(this.ticker);
-    this.set({ my: undefined, speaking: [], meSpeaking: false });
+    this.set({
+      my: undefined,
+      speaking: [],
+      meSpeaking: false,
+      camera: false,
+      localCamera: undefined,
+      videos: [],
+      control: undefined,
+    });
     if (s) await s.close(tell);
+  }
+
+  /// Turns this browser's camera on or off (in a voice channel).
+  async setCamera(on: boolean) {
+    if (!(this.session instanceof ChannelSession)) return;
+    try {
+      await this.session.setCamera(on);
+      this.set({ camera: on, localCamera: this.session.cameraTrack() });
+    } catch (e) {
+      this.set({ camera: false, localCamera: undefined });
+      this.note(e instanceof DOMException ? t().chat.voice.noCamera : t().chat.voice.failed);
+    }
+  }
+
+  /// The cameras and screens this browser watches (every mic comes anyway).
+  watchTracks(refs: TrackRef[]) {
+    if (this.session instanceof ChannelSession) this.session.watch(refs);
+  }
+
+  /// Asks the device sharing its whole screen for control.
+  async requestControl(sharer: string) {
+    if (!(this.session instanceof ChannelSession)) return;
+    try {
+      const { id } = await call<{ id: string }>(
+        'POST',
+        `/api/v2/chat/channels/${this.session.channel}/voice/control-request`,
+        { sharer_device: sharer },
+      );
+      this.set({ control: { id, sharer, allowed: false } });
+    } catch {
+      this.note(t().chat.voice.failed);
+    }
+  }
+
+  /// Gives control back.
+  endControl() {
+    const c = this.state.control;
+    if (!c || !(this.session instanceof ChannelSession)) return;
+    void call('DELETE', `/api/v2/chat/channels/${this.session.channel}/voice/control-request/${c.id}`).catch(
+      () => undefined,
+    );
+    this.set({ control: undefined });
   }
 
   /// Ends this browser's voice with `why` (`tell`: the server too).
@@ -539,6 +614,35 @@ class VoiceController {
     if (s instanceof ChannelSession) {
       const d = data as { channel_id?: Id };
       if (d.channel_id !== s.channel) return;
+      if (type === 'voice.control_answered') {
+        const a = data as ControlAnswered;
+        if (a.id !== this.state.control?.id) return;
+        if (!a.allowed) {
+          this.set({ control: undefined });
+          this.note(t().chat.voice.controlDeclined);
+          return;
+        }
+        this.set({ control: { ...this.state.control, allowed: true } });
+        // A remote desktop session to the sharer, under the share's grant.
+        navigate(`/view/${a.sharer_device}`);
+        return;
+      }
+      if (type === 'voice.control_ended') {
+        if ((data as ControlEnded).id === this.state.control?.id) {
+          this.set({ control: undefined });
+          this.note(t().chat.voice.controlEnded);
+        }
+        return;
+      }
+      if (type === 'voice.control_request') {
+        // Only devices that share their screen are asked: not a browser.
+        void call(
+          'POST',
+          `/api/v2/chat/channels/${s.channel}/voice/control-request/${(data as ControlRequest).id}/answer`,
+          { allowed: false, clipboard: false },
+        ).catch(() => undefined);
+        return;
+      }
       if (type === 'voice.offer') void s.offer(data as VoiceOffer);
       else if (type === 'voice.keys') void s.key(data as VoiceKeyPush);
       else if (type === 'voice.state') void s.state((data as VoiceChannelState).participants);
@@ -580,8 +684,15 @@ class ChannelSession {
   private mic?: Mic;
   private uplink?: RTCPeerConnection;
   private downlink?: RTCPeerConnection;
+  private micTx?: RTCRtpTransceiver;
+  /// The camera's two encodings: 720p30 and 320×180@15.
+  private cam?: { stream: MediaStream; hi: RTCRtpTransceiver; lo: RTCRtpTransceiver };
+  private watched = '';
+  /// Voices by participant; screen sounds by `participant`.
   private players = new Map<number, Player>();
+  private screenPlayers = new Map<number, Player>();
   private receivers = new Map<number, RTCRtpReceiver>();
+  private videos = new Map<string, VoiceVideo>();
   private people = new Map<number, VoiceParticipant>();
   private own = { id: 0, material: crypto.getRandomValues(new Uint8Array(20)) };
   private closed = false;
@@ -616,19 +727,115 @@ class ChannelSession {
     this.uplink = pc;
     const stream = new MediaStream([this.mic.track]);
     const tx = pc.addTransceiver(this.mic.track, { direction: 'sendonly', streams: [stream] });
+    this.micTx = tx;
     if (this.worker) tx.sender.transform = new RTCRtpScriptTransform(this.worker, { kind: 'send' });
     pc.onconnectionstatechange = () => {
       const my = this.voice.state.my;
       if (my) this.voice.set({ my: { ...my, connected: pc.connectionState === 'connected' } });
     };
+    await this.publish();
+  }
+
+  /// Offers the uplink as it is now, naming each section's kind.
+  private async publish() {
+    const pc = this.uplink;
+    if (!pc) return;
     await pc.setLocalDescription(await pc.createOffer());
     await gathered(pc, GATHER_FORWARDER_MS);
+    const tracks = [{ mid: this.micTx?.mid ?? '0', kind: 'mic' }];
+    if (this.cam) {
+      tracks.push({ mid: this.cam.hi.mid ?? '', kind: 'cam_hi' }, { mid: this.cam.lo.mid ?? '', kind: 'cam_lo' });
+    }
     const answer = await call<{ sdp: string }>('PUT', `/api/v2/chat/channels/${this.channel}/voice/publish`, {
       sdp: pc.localDescription!.sdp,
+      tracks,
     });
     if (this.closed) return;
     await pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
     await capBitrate(pc, this.bitrate);
+  }
+
+  /// The camera on (two encodings of one capture, H.264) or off.
+  async setCamera(on: boolean) {
+    const pc = this.uplink;
+    if (!pc || on === !!this.cam) return;
+    if (!on) {
+      const cam = this.cam!;
+      this.cam = undefined;
+      for (const tx of [cam.hi, cam.lo]) {
+        await tx.sender.replaceTrack(null);
+        tx.direction = 'inactive';
+      }
+      cam.stream.getTracks().forEach((t) => t.stop());
+      await this.publish();
+      return;
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        deviceId: this.voice.settings.camera ? { exact: this.voice.settings.camera } : undefined,
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30 },
+      },
+    });
+    const track = stream.getVideoTracks()[0];
+    // Sections of an earlier camera are used again.
+    const idle = pc.getTransceivers().filter((t) => t.direction === 'inactive' && t.receiver.track.kind === 'video');
+    const section = async (
+      source: MediaStreamTrack,
+      encoding: RTCRtpEncodingParameters,
+      reuse?: RTCRtpTransceiver,
+    ): Promise<RTCRtpTransceiver> => {
+      let tx = reuse;
+      if (tx) {
+        tx.direction = 'sendonly';
+        await tx.sender.replaceTrack(source);
+        const params = tx.sender.getParameters();
+        params.encodings = [{ ...params.encodings[0], ...encoding }];
+        await tx.sender.setParameters(params).catch(() => undefined);
+      } else {
+        tx = pc.addTransceiver(source, { direction: 'sendonly', streams: [stream], sendEncodings: [encoding] });
+        if (this.worker) tx.sender.transform = new RTCRtpScriptTransform(this.worker, { kind: 'send', video: true });
+      }
+      // H.264 as every receiver decodes it; constrained baseline first, as
+      // the forwarder offers it.
+      const h264 = (RTCRtpSender.getCapabilities('video')?.codecs ?? [])
+        .filter((c) => c.mimeType.toLowerCase() === 'video/h264' && c.sdpFmtpLine?.includes('packetization-mode=1'))
+        .sort((a, b) => Number(!a.sdpFmtpLine?.includes('42e01f')) - Number(!b.sdpFmtpLine?.includes('42e01f')));
+      if (h264.length) tx.setCodecPreferences(h264);
+      return tx;
+    };
+    const hi = await section(track, { maxBitrate: 1_200_000, maxFramerate: 30 }, idle[0]);
+    const lo = await section(
+      track.clone(),
+      { maxBitrate: 80_000, maxFramerate: 15, scaleResolutionDownBy: 4 },
+      idle[1],
+    );
+    this.cam = { stream, hi, lo };
+    await this.publish();
+  }
+
+  cameraTrack(): MediaStreamTrack | undefined {
+    return this.cam?.stream.getVideoTracks()[0];
+  }
+
+  /// The chosen cameras and screens, sent when they change.
+  watch(refs: TrackRef[]) {
+    const key = refs
+      .map((r) => `${r.participant}-${r.kind}`)
+      .sort()
+      .join(',');
+    if (key === this.watched) return;
+    this.watched = key;
+    void call('PUT', `/api/v2/chat/channels/${this.channel}/voice/subscribe`, { tracks: refs }).catch((e) => {
+      this.watched = '';
+      const reason = e instanceof ApiError ? (e.details as { reason?: string } | undefined)?.reason : undefined;
+      if (reason === 'voice_quota') this.voice.note(t().chat.voice.quota);
+    });
+  }
+
+  private publishVideos() {
+    this.voice.set({ videos: [...this.videos.values()] });
   }
 
   private post(message: VoiceWorkerMessage) {
@@ -661,15 +868,28 @@ class ChannelSession {
       this.downlink = pc;
       pc.ontrack = (e) => {
         const stream = parseStream(e.streams[0]?.id ?? '');
-        if (!stream || stream.kind !== 'mic') return;
-        const participant = stream.participant;
+        if (!stream) return;
+        const { participant, kind } = stream;
+        const video = e.track.kind === 'video';
         if (this.worker) {
-          e.receiver.transform = new RTCRtpScriptTransform(this.worker, { kind: 'receive', participant });
+          e.receiver.transform = new RTCRtpScriptTransform(this.worker, { kind: 'receive', participant, video });
         }
-        this.players.get(participant)?.stop();
-        const player = new Player(e.track);
-        this.players.set(participant, player);
-        this.receivers.set(participant, e.receiver);
+        if (video) {
+          const id = `${participant}-${kind}`;
+          this.videos.set(id, { participant, kind, track: e.track });
+          e.track.onended = () => {
+            if (this.videos.get(id)?.track === e.track) {
+              this.videos.delete(id);
+              this.publishVideos();
+            }
+          };
+          this.publishVideos();
+          return;
+        }
+        const players = kind === 'mic' ? this.players : this.screenPlayers;
+        players.get(participant)?.stop();
+        players.set(participant, new Player(e.track));
+        if (kind === 'mic') this.receivers.set(participant, e.receiver);
         this.applyPlayer(participant);
       };
     }
@@ -703,8 +923,15 @@ class ChannelSession {
     for (const p of left) {
       this.players.get(p)?.stop();
       this.players.delete(p);
+      this.screenPlayers.get(p)?.stop();
+      this.screenPlayers.delete(p);
       this.receivers.delete(p);
     }
+    // Pictures of people gone, or of tracks they stopped sending.
+    for (const [id, v] of this.videos) {
+      if (!next.get(v.participant)?.tracks.includes(v.kind)) this.videos.delete(id);
+    }
+    this.publishVideos();
     this.applySelf();
     for (const p of this.players.keys()) this.applyPlayer(p);
     // Another device of this account here: said once.
@@ -733,11 +960,13 @@ class ChannelSession {
     const s = this.voice.settings;
     const user = this.people.get(participant)?.user_id ?? '';
     const volume = ((s.volumes[user] ?? 100) * s.volume) / 100;
-    this.players.get(participant)?.apply(volume, this.deaf() || s.muted.includes(user), s.output);
+    const muted = this.deaf() || s.muted.includes(user);
+    this.players.get(participant)?.apply(volume, muted, s.output);
+    this.screenPlayers.get(participant)?.apply(volume, muted, s.output);
   }
 
   applySettings() {
-    for (const p of this.players.keys()) this.applyPlayer(p);
+    for (const p of new Set([...this.players.keys(), ...this.screenPlayers.keys()])) this.applyPlayer(p);
     this.mic?.apply();
     this.applySelf();
   }
@@ -790,8 +1019,10 @@ class ChannelSession {
     window.removeEventListener('keydown', this.keyDown);
     window.removeEventListener('keyup', this.keyUp);
     if (tell) await call('POST', `/api/v2/chat/channels/${this.channel}/voice/leave`).catch(() => undefined);
-    for (const p of this.players.values()) p.stop();
+    for (const p of [...this.players.values(), ...this.screenPlayers.values()]) p.stop();
     this.players.clear();
+    this.screenPlayers.clear();
+    this.cam?.stream.getTracks().forEach((t) => t.stop());
     this.uplink?.close();
     this.downlink?.close();
     this.mic?.close();

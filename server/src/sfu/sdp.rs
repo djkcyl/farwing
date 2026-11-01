@@ -217,6 +217,18 @@ fn sdp_payload_types(section: &Section<'_>) -> Vec<u8> {
         .collect()
 }
 
+/// Each media section's first payload type by its `a=mid` (an answer: the
+/// codec the sender will use).
+pub fn first_payload_types(sdp: &str) -> HashMap<String, u8> {
+    sections(sdp)
+        .iter()
+        .filter_map(|s| {
+            let mid = s.lines.iter().find_map(|l| l.strip_prefix("a=mid:"))?;
+            Some((mid.to_owned(), *sdp_payload_types(s).first()?))
+        })
+        .collect()
+}
+
 /// Codecs and header extensions of `sdp`.
 pub fn wire(sdp: &str) -> Wire {
     let mut wire = Wire::default();
