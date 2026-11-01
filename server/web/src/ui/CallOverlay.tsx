@@ -18,9 +18,13 @@ export function CallOverlay() {
   useEffect(() => {
     if (v.error) toast(v.error, 'red');
   }, [v.error, toast]);
+  useEffect(() => {
+    if (v.notice) toast(v.notice, 'blue');
+  }, [v.notice, toast]);
   const me = state.snap?.me.user_id;
   const ringing = state.snap?.calls.find((c) => c.state === 'ringing' && c.callee.user_id === me);
-  if (!ringing || dismissed === ringing.id) return null;
+  // Do not disturb (or its hours): it rings unanswered.
+  if (!ringing || dismissed === ringing.id || voice.dnd()) return null;
   const caller = ringing.caller;
   const avatar = caller.avatar ? chat.media(`/media/avatars/${caller.user_id}?v=${caller.avatar}`) : undefined;
   const name = userName(caller);

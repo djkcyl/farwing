@@ -1,7 +1,48 @@
 // Voice sounds (`docs/protocol/chat-design.md` §7.5): the native client's
 // short tones (`src/features/voice/sounds.rs`), synthesized in the page.
 
-export type Sound = 'ring' | 'ringback' | 'joined' | 'left' | 'came' | 'went' | 'muted' | 'unmuted';
+export type Sound =
+  | 'ring'
+  | 'ringback'
+  | 'joined'
+  | 'left'
+  | 'came'
+  | 'went'
+  | 'muted'
+  | 'unmuted'
+  | 'message'
+  | 'liveStarted'
+  | 'liveEnded'
+  | 'removed';
+
+/// The switches of the voice settings, one per kind of sound.
+export type SoundGroup = 'calls' | 'presence' | 'people' | 'mute' | 'messages' | 'live' | 'removed';
+
+export const SOUND_GROUPS: SoundGroup[] = ['calls', 'presence', 'people', 'mute', 'messages', 'live', 'removed'];
+
+export function groupOf(sound: Sound): SoundGroup {
+  switch (sound) {
+    case 'ring':
+    case 'ringback':
+      return 'calls';
+    case 'joined':
+    case 'left':
+      return 'presence';
+    case 'came':
+    case 'went':
+      return 'people';
+    case 'muted':
+    case 'unmuted':
+      return 'mute';
+    case 'message':
+      return 'messages';
+    case 'liveStarted':
+    case 'liveEnded':
+      return 'live';
+    case 'removed':
+      return 'removed';
+  }
+}
 
 /// (frequency Hz, milliseconds); 0 Hz is a pause.
 const NOTES: Record<Sound, [number, number][]> = {
@@ -27,6 +68,28 @@ const NOTES: Record<Sound, [number, number][]> = {
   went: [[587, 90]],
   muted: [[392, 60]],
   unmuted: [[659, 60]],
+  message: [
+    [988, 70],
+    [0, 30],
+    [1319, 90],
+  ],
+  liveStarted: [
+    [523, 70],
+    [659, 70],
+    [784, 120],
+  ],
+  liveEnded: [
+    [784, 70],
+    [659, 70],
+    [523, 120],
+  ],
+  removed: [
+    [659, 120],
+    [0, 40],
+    [440, 120],
+    [0, 40],
+    [330, 200],
+  ],
 };
 
 let context: AudioContext | undefined;

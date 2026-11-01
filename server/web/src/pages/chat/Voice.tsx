@@ -7,7 +7,8 @@ import { errorText } from '../../lib/api';
 import { navigate } from '../../lib/router';
 import { chat, useChat } from '../../lib/chat/store';
 import { has, PERM, type Call, type ChatUser, type Dm, type GroupState, type Id } from '../../lib/chat/types';
-import { useVoice, voice, type VoiceSettings } from '../../lib/chat/voice';
+import { SOUND_GROUPS } from '../../lib/chat/sounds';
+import { Mic, testMicrophone, useVoice, voice, type VoiceSettings } from '../../lib/chat/voice';
 import { Icon } from '../../ui/icons';
 import { Button, Field, IconButton, Segmented, Select, Slider, Switch } from '../../ui/kit';
 import { useOverlay } from '../../ui/overlay';
@@ -58,8 +59,8 @@ export function VoicePeople({
           >
             <Avatar user={user} size={20} />
             <span className="ellipsis grow">{displayName(user, member?.nickname)}</span>
-            {(p.self_muted || p.server_muted) && (
-              <Icon name="micOff" size={14} className={p.server_muted ? 'red' : 'faint'} />
+            {(p.self_muted || p.server_muted || p.cannot_speak) && (
+              <Icon name="micOff" size={14} className={p.server_muted || p.cannot_speak ? 'red' : 'faint'} />
             )}
             {(p.self_deafened || p.server_deafened) && (
               <Icon name="headsetOff" size={14} className={p.server_deafened ? 'red' : 'faint'} />
@@ -82,7 +83,7 @@ export function VoiceBar() {
     !my.call &&
     !!state.snap?.voice
       .find((c) => c.channel_id === my.channel)
-      ?.participants.find((p) => p.participant === my.participant)?.server_muted;
+      ?.participants.find((p) => p.participant === my.participant && (p.server_muted || p.cannot_speak));
   const where = chat.channel(my.channel);
   const place = my.call
     ? where?.dm
@@ -209,8 +210,8 @@ export function CallBar({ dm }: { dm: Dm }) {
   );
 }
 
-/// A participant's volume and, for moderators, server mute and disconnect
-/// (in their user card).
+/// A participant's volume and mute here and, for moderators, server mute,
+/// deafen, a move and disconnect (in their user card).
 export function VoiceCardPart({
   channel,
   participant,
@@ -229,7 +230,9 @@ export function VoiceCardPart({
     ?.participants.find((x) => x.participant === participant);
   if (!p) return null;
   const me = p.user_id === state.snap?.me.user_id;
-  const moderator = has(chat.channel(channel)?.channel.permissions ?? 0, PERM.VOICE_MODERATE);
+  const where = chat.channel(channel);
+  const moderator = has(where?.channel.permissions ?? 0, PERM.VOICE_MODERATE);
+  const others = where?.group?.channels.filter((c) => c.kind === 'voice' && c.id !== channel) ?? [];
   const act = async (f: () => Promise<unknown>) => {
     try {
       await f();
@@ -238,28 +241,43 @@ export function VoiceCardPart({
     }
   };
   const volume = voice.settings.volumes[p.user_id] ?? 100;
+  const mutedHere = voice.settings.muted.includes(p.user_id);
   return (
     <>
       {!me && (
-        <Field label={`${t.chat.voice.userVolume} · ${volume}%`}>
-          <Slider
-            value={volume}
-            min={0}
-            max={200}
-            step={5}
-            label={t.chat.voice.userVolume}
-            onChange={(n) => voice.setVolume(p.user_id, n)}
-          />
-        </Field>
+        <>
+          <Field label={`${t.chat.voice.userVolume} · ${volume}%`}>
+            <Slider
+              value={volume}
+              min={0}
+              max={100}
+              step={5}
+              label={t.chat.voice.userVolume}
+              onChange={(n) => voice.setVolume(p.user_id, n)}
+            />
+          </Field>
+          <Button size="sm" icon={mutedHere ? 'volume' : 'mute'} onClick={() => voice.muteUser(p.user_id, !mutedHere)}>
+            {mutedHere ? t.chat.voice.unmuteUser : t.chat.voice.muteUser}
+          </Button>
+        </>
       )}
       {moderator && (
-        <div className="row gap-sm">
+        <div className="row gap-sm wrap">
           <Button
             size="sm"
             icon={p.server_muted ? 'mic' : 'micOff'}
-            onClick={() => void act(() => voice.moderate(channel, participant, !p.server_muted))}
+            onClick={() => void act(() => voice.moderate(channel, participant, { server_muted: !p.server_muted }))}
           >
             {p.server_muted ? t.chat.voice.serverUnmute : t.chat.voice.serverMute}
+          </Button>
+          <Button
+            size="sm"
+            icon={p.server_deafened ? 'headset' : 'headsetOff'}
+            onClick={() =>
+              void act(() => voice.moderate(channel, participant, { server_deafened: !p.server_deafened }))
+            }
+          >
+            {p.server_deafened ? t.chat.voice.serverUndeafen : t.chat.voice.serverDeafen}
           </Button>
           {!me && (
             <Button
@@ -271,6 +289,24 @@ export function VoiceCardPart({
             </Button>
           )}
         </div>
+      )}
+      {moderator && others.length > 0 && (
+        <Field label={t.chat.voice.moveTo}>
+          <div className="row gap-sm wrap">
+            {others.map((c) => (
+              <Button
+                key={c.id}
+                size="sm"
+                icon="volume"
+                onClick={() =>
+                  void act(async () => (await voice.moderate(channel, participant, { move_to: c.id }), onClose()))
+                }
+              >
+                {c.name}
+              </Button>
+            ))}
+          </div>
+        </Field>
       )}
     </>
   );
@@ -291,6 +327,30 @@ function useDevices(): MediaDeviceInfo[] {
   return list;
 }
 
+/// The microphone's level for the settings: the session's, or one opened
+/// while the settings are shown.
+function useInputLevel(settings: VoiceSettings, paused: boolean): number {
+  const [level, setLevel] = useState(0);
+  const inVoice = voice.inVoice();
+  useEffect(() => {
+    if (paused) return;
+    let mic: Mic | undefined;
+    let gone = false;
+    if (!inVoice) {
+      void Mic.open(() => voice.settings)
+        .then((m) => (gone ? m.close() : (mic = m)))
+        .catch(() => undefined);
+    }
+    const timer = window.setInterval(() => setLevel(voice.inputLevel() ?? mic?.measure()[0] ?? 0), 100);
+    return () => {
+      gone = true;
+      window.clearInterval(timer);
+      mic?.close();
+    };
+  }, [inVoice, paused, settings.input, settings.echo, settings.noise, settings.gain]);
+  return level;
+}
+
 /// The voice tab of the chat settings.
 export function VoiceSettingsPanel() {
   const t = useT();
@@ -298,6 +358,9 @@ export function VoiceSettingsPanel() {
   const s = voice.settings;
   const devices = useDevices();
   const [capturing, setCapturing] = useState(false);
+  const [test, setTest] = useState<{ recording?: number; playing?: boolean }>({});
+  const testing = test.recording !== undefined || !!test.playing;
+  const level = useInputLevel(s, testing);
   const save = (next: Partial<VoiceSettings>) => voice.saveSettings({ ...s, ...next });
   useEffect(() => {
     if (!capturing) return;
@@ -316,6 +379,9 @@ export function VoiceSettingsPanel() {
       .map((d, i) => ({ value: d.deviceId, label: d.label || `${t.chat.voice.input} ${i + 1}` })),
   ];
   const canOutput = 'setSinkId' in HTMLMediaElement.prototype;
+  const db = level > 0 ? 20 * Math.log10(level) : -90;
+  const fill = Math.min(1, Math.max(0, (db + 70) / 70));
+  const open = s.mode === 'activity' && db > (s.threshold ?? -50);
   return (
     <div className="stack">
       <Field label={t.chat.voice.input}>
@@ -334,11 +400,37 @@ export function VoiceSettingsPanel() {
           />
         </Field>
       )}
+      <Field label={`${t.chat.voice.inputVolume} · ${s.inputVolume}%`}>
+        <Slider
+          value={s.inputVolume}
+          min={0}
+          max={200}
+          step={5}
+          label={t.chat.voice.inputVolume}
+          onChange={(n) => save({ inputVolume: n })}
+        />
+      </Field>
+      <div className="row gap">
+        <div className="voice-meter grow">
+          <span className={open ? 'on' : ''} style={{ width: `${fill * 100}%` }} />
+        </div>
+        <Button
+          size="sm"
+          disabled={testing || voice.inVoice()}
+          onClick={() => void testMicrophone(voice.settings, setTest).catch(() => setTest({}))}
+        >
+          {test.recording !== undefined
+            ? t.chat.voice.micRecording(test.recording)
+            : test.playing
+              ? t.chat.voice.micPlaying
+              : t.chat.voice.micTest}
+        </Button>
+      </div>
       <Field label={`${t.chat.voice.volume} · ${s.volume}%`}>
         <Slider
           value={s.volume}
           min={0}
-          max={200}
+          max={100}
           step={5}
           label={t.chat.voice.volume}
           onChange={(n) => save({ volume: n })}
@@ -354,7 +446,27 @@ export function VoiceSettingsPanel() {
           onChange={(mode) => save({ mode })}
         />
       </Field>
-      {s.mode === 'ptt' && (
+      {s.mode === 'activity' ? (
+        <div>
+          <Switch
+            label={t.chat.voice.autoThreshold}
+            checked={s.threshold === undefined}
+            onChange={(auto) => save({ threshold: auto ? undefined : -45 })}
+          />
+          {s.threshold !== undefined && (
+            <Field label={`${t.chat.voice.threshold} · ${s.threshold} dB`}>
+              <Slider
+                value={s.threshold}
+                min={-70}
+                max={-20}
+                step={1}
+                label={t.chat.voice.threshold}
+                onChange={(n) => save({ threshold: n })}
+              />
+            </Field>
+          )}
+        </div>
+      ) : (
         <Field label={t.chat.voice.key}>
           <Button size="sm" onClick={() => setCapturing(true)}>
             {capturing ? t.chat.voice.pressKey : (s.key ?? t.chat.voice.noKey)}
@@ -365,7 +477,28 @@ export function VoiceSettingsPanel() {
         <Switch label={t.chat.voice.echo} checked={s.echo} onChange={(echo) => save({ echo })} />
         <Switch label={t.chat.voice.noise} checked={s.noise} onChange={(noise) => save({ noise })} />
         <Switch label={t.chat.voice.gain} checked={s.gain} onChange={(gain) => save({ gain })} />
-        <Switch label={t.chat.voice.sounds} checked={s.sounds} onChange={(sounds) => save({ sounds })} />
+      </div>
+      <Field label={`${t.chat.voice.soundVolume} · ${s.soundVolume}%`}>
+        <Slider
+          value={s.soundVolume}
+          min={0}
+          max={100}
+          step={5}
+          label={t.chat.voice.soundVolume}
+          onChange={(n) => save({ soundVolume: n })}
+        />
+      </Field>
+      <div>
+        {SOUND_GROUPS.map((g) => (
+          <Switch
+            key={g}
+            label={t.chat.voice.soundGroups[g]}
+            checked={!s.soundsOff.includes(g)}
+            onChange={(on) =>
+              save({ soundsOff: on ? s.soundsOff.filter((x) => x !== g) : [...s.soundsOff.filter((x) => x !== g), g] })
+            }
+          />
+        ))}
       </div>
     </div>
   );

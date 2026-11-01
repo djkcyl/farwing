@@ -503,7 +503,12 @@ function GroupSide({
               >
                 <Icon name={channelIcon(c)} size={16} />
                 <span className="ellipsis grow">{c.name}</span>
-                {u.mentions > 0 && <span className="chat-badge inline">{u.mentions}</span>}
+                {u.mentions > 0 ? (
+                  <span className="chat-badge inline">{u.mentions}</span>
+                ) : (
+                  c.kind === 'voice' &&
+                  c.voice_compat && <span className="chat-channel-tag">{t.chat.voice.compat}</span>
+                )}
               </button>
               {c.kind === 'voice' && <VoicePeople group={group} channel={c.id} onPerson={onVoicePerson} />}
             </div>

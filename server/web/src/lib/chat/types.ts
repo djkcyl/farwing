@@ -217,6 +217,8 @@ export interface ChatLimits {
   max_attachments: number;
   max_attachment_bytes: number;
   create_groups: boolean;
+  /// Group owners may put a voice channel in compatible mode.
+  voice_compat: boolean;
 }
 
 export interface Snapshot {
@@ -247,6 +249,8 @@ export interface VoiceParticipant {
   self_deafened: boolean;
   server_muted: boolean;
   server_deafened: boolean;
+  /// The account lost `speak` here: nothing it says is forwarded.
+  cannot_speak: boolean;
   joined_at: number;
 }
 
@@ -274,6 +278,12 @@ export interface VoiceOffer {
   channel_id: Id;
   generation: number;
   sdp: string;
+}
+
+/// Moved by a moderator to `to`; no `to`: the channel's node went away.
+export interface VoiceMoved {
+  channel_id: Id;
+  to?: Id | null;
 }
 
 export interface VoiceKeyPush {

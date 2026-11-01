@@ -20,6 +20,7 @@ import type { Device, DeviceList, Friend, FriendRequests, Grants, UserSummary } 
 import { useApi } from '../../lib/useApi';
 import { Alert, Button, Card, Checkbox, Empty, Input, Loading, PageHeader, Select } from '../../ui/kit';
 import { chat } from '../../lib/chat/store';
+import { voice } from '../../lib/chat/voice';
 import { navigate } from '../../lib/router';
 import type { Dm } from '../../lib/chat/types';
 import { Dialog, useOverlay } from '../../ui/overlay';
@@ -375,6 +376,22 @@ export default function Friends() {
                       }}
                     >
                       {t.chat.members.sendDm}
+                    </Button>
+                    <Button
+                      size="sm"
+                      icon="phone"
+                      onClick={async () => {
+                        try {
+                          const dm = await call<Dm>('POST', '/api/v2/chat/dm', { user: f.user.user_id });
+                          chat.upsertDm(dm);
+                          navigate(`/chat/dm/${dm.channel.id}`);
+                          void voice.startCall(dm.channel.id);
+                        } catch (err) {
+                          toast(errorText(err), 'red');
+                        }
+                      }}
+                    >
+                      {t.chat.voice.call}
                     </Button>
                     <Button size="sm" icon="share" onClick={() => setEditing(f.user)}>
                       {m.permissions}

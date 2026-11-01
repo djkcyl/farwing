@@ -450,6 +450,9 @@ function Channels({ group }: { group: GroupState }) {
   const [creating, setCreating] = useState<{ kind: ChannelKind; name: string; parent: string }>();
   const [owRole, setOwRole] = useState(g.id);
   const categories = group.channels.filter((c) => c.kind === 'category');
+  const state = useChat();
+  // Compatible mode: the group owner's choice, where the server allows it.
+  const compatChoice = !!state.snap?.limits.voice_compat && state.snap.me.user_id === g.owner_id;
 
   const move = (c: Channel, up: boolean) => {
     const siblings = ordered.filter(
@@ -581,6 +584,13 @@ function Channels({ group }: { group: GroupState }) {
               </Field>
             </div>
           )}
+          {draft.kind === 'voice' && compatChoice && (
+            <Switch
+              label={t.chat.voice.compat}
+              checked={draft.voice_compat}
+              onChange={(voice_compat) => setDraft({ ...draft, voice_compat })}
+            />
+          )}
           <div className="row gap-sm">
             <Button
               variant="primary"
@@ -594,6 +604,7 @@ function Channels({ group }: { group: GroupState }) {
                       slow_mode_s: draft.kind === 'category' ? undefined : draft.slow_mode_s,
                       voice_bitrate: draft.kind === 'voice' ? draft.voice_bitrate : undefined,
                       voice_limit: draft.kind === 'voice' ? draft.voice_limit : undefined,
+                      voice_compat: draft.kind === 'voice' && compatChoice ? draft.voice_compat : undefined,
                     }),
                   t.chat.settings.saved,
                 )

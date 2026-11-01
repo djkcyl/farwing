@@ -295,6 +295,26 @@
   flex-direction: column;
   min-height: 0;
 }
+.chat-channel-tag {
+  flex: none;
+  font-size: 11px;
+  color: var(--faint);
+}
+.voice-meter {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+.voice-meter span {
+  display: block;
+  height: 100%;
+  background: var(--faint);
+  transition: width 0.1s;
+}
+.voice-meter span.on {
+  background: var(--green);
+}
 .chat-voice-people {
   display: flex;
   flex-direction: column;

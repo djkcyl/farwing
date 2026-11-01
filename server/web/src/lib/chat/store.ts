@@ -112,6 +112,10 @@ class ChatStore {
     this.running = true;
     voice.send = (type, data) => this.rt?.send(type, data);
     voice.upsertCall = (c) => this.setSnap((s) => ({ ...s, calls: [...s.calls.filter((x) => x.id !== c.id), c] }));
+    voice.dnd = () => {
+      const s = this.state.snap;
+      return !!s && (s.status === 'dnd' || quiet(s.prefs.quiet_start, s.prefs.quiet_end));
+    };
     voice.attach(() => this.state.snap);
     window.addEventListener('keydown', this.input, true);
     window.addEventListener('pointerdown', this.input, true);
@@ -349,7 +353,7 @@ class ChatStore {
       case 'call.answered': {
         const c = data as Call;
         this.setSnap((s) => ({ ...s, calls: [...s.calls.filter((x) => x.id !== c.id), c] }));
-        if (e.type === 'call.ring') {
+        if (e.type === 'call.ring' && !voice.dnd()) {
           this.notify(userName(c.caller), t().chat.voice.incoming(userName(c.caller)), `/chat/dm/${c.channel_id}`);
         }
         break;
@@ -451,6 +455,7 @@ class ChatStore {
       this.set({ typing: { ...this.state.typing, [m.channel_id]: rest } });
     }
     if (where && (document.hidden || this.state.focus !== m.channel_id) && this.shouldNotify(m, where, mention)) {
+      voice.sound('message');
       const title = where.dm
         ? userName(where.dm.user)
         : `${where.group?.group.name ?? ''} · ${where.channel.name} · ${userName(m.author)}`;
