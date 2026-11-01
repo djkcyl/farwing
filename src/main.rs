@@ -392,6 +392,15 @@ enum DevAction {
         /// 用这个频率（Hz）的测试音代替麦克风
         #[arg(long)]
         tone: Option<f32>,
+        /// 进入频道后打开摄像头
+        #[arg(long)]
+        camera: bool,
+        /// 进入频道后共享：`<屏幕 ID>|window:<标题片段>[:720p30|720p60|1080p30|1080p60]`（`primary` 为主屏）
+        #[arg(long)]
+        screen: Option<String>,
+        /// 共享时带声音
+        #[arg(long)]
+        share_audio: bool,
     },
     /// 无窗口解码被控主屏，可注入丢包与延迟，输出恢复时长等 JSON 指标
     Video {
@@ -883,7 +892,12 @@ fn main() -> Result<()> {
                     answer,
                     seconds,
                     tone,
-                } => runtime.block_on(farwing::application::cli::dev_voice(channel, call, answer, seconds, tone)),
+                    camera,
+                    screen,
+                    share_audio,
+                } => runtime.block_on(farwing::application::cli::dev_voice(
+                    channel, call, answer, seconds, tone, camera, screen, share_audio,
+                )),
                 DevAction::Video {
                     device_id,
                     seconds,

@@ -97,9 +97,13 @@ egui-winit = { version = "0.36.1", default-features = false, features = ["clipbo
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 windows = { version = "0.62.2", default-features = false, features = [
     "Foundation",
+    "Graphics_Capture",
+    "Graphics_DirectX_Direct3D11",
     "Data_Xml_Dom",
     "UI_Notifications",
     "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
     "Win32_System_Variant",
     "Win32_Devices_Display",
     "Win32_Devices_DeviceAndDriverInstallation",

@@ -51,6 +51,8 @@ pub(super) struct SoundState {
     connected: bool,
     channel: Option<Id>,
     people: Vec<u32>,
+    /// Those in the channel sharing their screen.
+    live: Vec<u32>,
     muted: bool,
     deafened: bool,
     rang: Option<std::time::Instant>,
@@ -62,6 +64,15 @@ pub(super) struct SoundState {
 pub(super) enum Active {
     Channel(Arc<ChannelVoice>),
     Call(Arc<CallVoice>),
+}
+
+/// What to share in a voice channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShareTarget {
+    /// A screen by ID (the primary if unset).
+    Screen(Option<i32>),
+    /// A window (its handle) and the program it belongs to.
+    Window { hwnd: isize, pid: u32 },
 }
 
 impl Active {
@@ -304,9 +315,16 @@ impl ChatService {
             sounds.push(Sound::Left);
         }
         let channel = voice.filter(|v| v.call.is_none()).map(|v| v.channel);
-        let people: Vec<u32> = channel
-            .and_then(|c| view.snap.as_ref()?.voice.iter().find(|v| v.channel_id == c))
-            .map(|v| v.participants.iter().map(|p| p.participant).collect())
+        let here = channel.and_then(|c| view.snap.as_ref()?.voice.iter().find(|v| v.channel_id == c));
+        let people: Vec<u32> = here.map(|v| v.participants.iter().map(|p| p.participant).collect()).unwrap_or_default();
+        let live: Vec<u32> = here
+            .map(|v| {
+                v.participants
+                    .iter()
+                    .filter(|p| p.tracks.iter().any(|k| k == farwing_protocol::chat::track::SCREEN))
+                    .map(|p| p.participant)
+                    .collect()
+            })
             .unwrap_or_default();
         if connected && channel == last.channel {
             let mine = voice.map(|v| v.participant).unwrap_or(0);
@@ -314,6 +332,11 @@ impl ChatService {
                 sounds.push(Sound::Came);
             } else if last.people.iter().any(|p| *p != mine && !people.contains(p)) {
                 sounds.push(Sound::Went);
+            }
+            if live.iter().any(|p| !last.live.contains(p)) {
+                sounds.push(Sound::LiveStarted);
+            } else if last.live.iter().any(|p| !live.contains(p) && people.contains(p)) {
+                sounds.push(Sound::LiveEnded);
             }
         }
         let (muted, deafened) = voice.map_or((last.muted, last.deafened), |v| (v.muted, v.deafened));
@@ -337,6 +360,7 @@ impl ChatService {
             connected,
             channel,
             people,
+            live,
             muted,
             deafened,
             rang: last.rang,
@@ -453,6 +477,96 @@ impl ChatService {
                 Some(Active::Call(c)) => c.engine.set_self(muted, deafened),
                 None => {}
             }
+        });
+    }
+
+    /// Turns the camera on or off in this device's voice channel.
+    pub(crate) fn set_camera(&self, on: bool) {
+        let Some(Active::Channel(v)) = lock(&self.inner.voice).clone() else { return };
+        let inner = Arc::clone(&self.inner);
+        let camera = lock(&self.inner.voice_settings).camera.clone();
+        self.inner.runtime.spawn(async move {
+            let spec = if on {
+                match tokio::task::spawn_blocking(move || {
+                    crate::features::host::peer::chat_video::camera_spec(camera.as_deref())
+                })
+                .await
+                {
+                    Ok(Ok(spec)) => Some(spec),
+                    _ => {
+                        update(&inner, |s| s.errors.push(crate::i18n::t().voice.no_camera.to_owned()));
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+            let result = v.set_camera(spec).await;
+            update(&inner, |s| {
+                if let Some(my) = &mut s.my_voice {
+                    my.camera = v.camera_on();
+                }
+                if result.is_err() {
+                    s.errors.push(crate::i18n::t().voice.failed.to_owned());
+                }
+            });
+        });
+    }
+
+    /// Shares `what` at `quality`, with its sound or not; `None`: stops
+    /// sharing.
+    pub(crate) fn share_screen(&self, share: Option<(ShareTarget, crate::features::host::peer::chat_video::Quality, bool)>) {
+        use crate::features::host::peer::chat_video::Shown;
+        let Some(Active::Channel(v)) = lock(&self.inner.voice).clone() else { return };
+        let inner = Arc::clone(&self.inner);
+        self.inner.runtime.spawn(async move {
+            let share = match share {
+                Some((ShareTarget::Screen(id), quality, audio)) => {
+                    let screens = crate::platform::windows::capture::screens().unwrap_or_default();
+                    let screen = screens
+                        .iter()
+                        .find(|s| Some(s.id) == id)
+                        .or_else(|| screens.iter().find(|s| s.primary))
+                        .or(screens.first())
+                        .cloned();
+                    let Some(screen) = screen else {
+                        update(&inner, |s| s.errors.push(crate::i18n::t().voice.failed.to_owned()));
+                        return;
+                    };
+                    Some((Shown::Screen(screen), quality, audio))
+                }
+                Some((ShareTarget::Window { hwnd, pid }, quality, audio)) => {
+                    Some((Shown::Window { hwnd, pid }, quality, audio))
+                }
+                None => None,
+            };
+            let sharing = share.is_some();
+            let result = v.set_screen(share).await;
+            update(&inner, |s| {
+                if let Some(my) = &mut s.my_voice {
+                    my.screen = if result.is_ok() { v.screen() } else { None };
+                }
+                if result.is_err() {
+                    s.errors.push(crate::i18n::t().voice.failed.to_owned());
+                }
+            });
+            if result.is_err() || !sharing || v.following.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                return;
+            }
+            // The share's own changes: a minimized window, a closed one.
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                let going = v.follow_share().await;
+                update(&inner, |s| {
+                    if let Some(my) = &mut s.my_voice {
+                        my.screen = v.screen();
+                    }
+                });
+                if !going {
+                    break;
+                }
+            }
+            v.following.store(false, std::sync::atomic::Ordering::Release);
         });
     }
 
@@ -626,6 +740,13 @@ pub(super) fn push(inner: &Arc<Inner>, kind: &str, data: &Value) {
                 && offer.channel_id == v.channel
             {
                 inner.runtime.spawn(async move { v.offer(offer).await });
+            }
+        }
+        (types::VOICE_DEMAND, Some(Active::Channel(v))) => {
+            if let Ok(demand) = serde_json::from_value::<farwing_protocol::chat::VoiceDemand>(data.clone())
+                && demand.channel_id == v.channel
+            {
+                v.demand(&demand.kinds);
             }
         }
         (types::VOICE_KEYS, Some(Active::Channel(v))) => {

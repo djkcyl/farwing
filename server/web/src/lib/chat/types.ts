@@ -264,6 +264,8 @@ export interface VoiceScreen {
   audio: boolean;
   /// The whole screen (control can be asked for), or one window.
   whole: boolean;
+  /// The shared window is minimized (its last picture stays).
+  minimized: boolean;
 }
 
 export interface ControlRequest {

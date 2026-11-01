@@ -27,6 +27,7 @@ pub(crate) mod notifications;
 pub(crate) mod nvenc;
 pub(crate) mod participant_overlay;
 pub(crate) mod preprocess;
+pub(crate) mod process_loopback;
 pub(crate) mod qsv;
 pub(crate) mod qsv_allocator;
 mod software_encoder;
@@ -38,6 +39,7 @@ pub(crate) mod system_power;
 pub(crate) mod transfer;
 pub(crate) mod virtual_audio;
 pub(crate) mod interface_mtu;
+pub(crate) mod window_capture;
 pub(crate) mod wol;
 
 use crate::media::encoding as format;

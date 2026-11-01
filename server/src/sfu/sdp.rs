@@ -217,14 +217,20 @@ fn sdp_payload_types(section: &Section<'_>) -> Vec<u8> {
         .collect()
 }
 
-/// Each media section's first payload type by its `a=mid` (an answer: the
-/// codec the sender will use).
-pub fn first_payload_types(sdp: &str) -> HashMap<String, u8> {
+/// The payload type each media section of an answer settles on, by its
+/// `a=mid`: a video section's first H.264 one (voice rooms send only
+/// H.264), otherwise the first.
+pub fn chosen_payload_types(sdp: &str) -> HashMap<String, u8> {
+    let codecs = wire(sdp).codecs;
     sections(sdp)
         .iter()
         .filter_map(|s| {
             let mid = s.lines.iter().find_map(|l| l.strip_prefix("a=mid:"))?;
-            Some((mid.to_owned(), *sdp_payload_types(s).first()?))
+            let types = sdp_payload_types(s);
+            let h264 = types
+                .iter()
+                .find(|pt| codecs.get(pt).is_some_and(|c| c.mime == "video/h264"));
+            Some((mid.to_owned(), *h264.or(types.first())?))
         })
         .collect()
 }

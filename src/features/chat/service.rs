@@ -988,4 +988,5 @@ async fn load_member_pages(inner: &Arc<Inner>, group: Id) -> Option<Vec<farwing_
 
 #[path = "voice_link.rs"]
 mod voice_link;
+pub(crate) use voice_link::ShareTarget;
 pub(crate) use voice_link::MicTest;

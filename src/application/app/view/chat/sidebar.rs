@@ -404,6 +404,16 @@ fn voice_bar(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: 
         if r.clicked() {
             chat.leave_voice();
         }
+        if voice.call.is_none() && voice.connected {
+            let hint = if voice.screen.is_some() { v.share_settings } else { v.share };
+            if parts::glyph_button(ui, Glyph::Screen, hint, voice.screen.is_some()).clicked() {
+                chat_ui.dialog = Some(super::Dialog::Share(super::ShareDraft::new(voice.screen.as_ref())));
+            }
+            let (glyph, hint) = if voice.camera { (Glyph::Camera, v.camera_off) } else { (Glyph::CameraOff, v.camera_on) };
+            if parts::glyph_button(ui, glyph, hint, voice.camera).clicked() {
+                chat.set_camera(!voice.camera);
+            }
+        }
     });
 }
 
@@ -443,6 +453,14 @@ fn voice_people(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_u
         let galley = ui.painter().layout_no_wrap(name, egui::FontId::proportional(13.0), color);
         ui.painter().galley(egui::pos2(rect.left() + 54.0, rect.center().y - galley.size().y / 2.0), galley, color);
         let mut x = rect.right() - 12.0;
+        if p.tracks.iter().any(|k| k == farwing_protocol::chat::track::SCREEN) {
+            x -= parts::paint_live(ui.painter(), egui::pos2(x + 7.0, rect.center().y)) + 4.0;
+        }
+        if p.tracks.iter().any(|k| k == farwing_protocol::chat::track::CAM_HI || k == farwing_protocol::chat::track::CAM_LO) {
+            let r = Rect::from_center_size(egui::pos2(x, rect.center().y), vec2(14.0, 14.0));
+            parts::paint_glyph(ui.painter(), r, Glyph::Camera, MUTED);
+            x -= 18.0;
+        }
         for (on, glyph) in [
             (p.self_deafened || p.server_deafened, Glyph::HeadsetOff),
             (p.self_muted || p.server_muted || p.cannot_speak, Glyph::MicOff),

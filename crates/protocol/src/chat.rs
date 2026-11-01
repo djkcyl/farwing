@@ -986,6 +986,8 @@ pub struct VoiceScreen {
     pub audio: bool,
     /// The whole screen (only then can control be requested), or one window.
     pub whole: bool,
+    /// The shared window is minimized (its last picture stays).
+    pub minimized: bool,
 }
 
 /// A track a device publishes: its media section and kind.

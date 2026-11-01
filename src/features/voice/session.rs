@@ -4,6 +4,7 @@
 //! forwarder offers); a call goes straight to the other device, each side
 //! signing its description's fingerprints.
 
+use crate::features::host::peer::chat_video::Shown;
 use super::engine::Engine;
 use super::keys::{DeviceKeys, FRAME_KEY};
 use super::settings::VoiceSettings;
@@ -12,7 +13,7 @@ use crate::media::frame_crypto::FrameKey;
 use anyhow::{Context, Result, anyhow, bail};
 use farwing_protocol::chat::{
     Call, CallSignal, Id, VoiceDescription, VoiceJoined, VoiceKeyPush, VoiceKeys, VoiceMode, VoiceOffer,
-    VoiceParticipant, call_signal_message, sdp_fingerprints, types,
+    VoiceParticipant, call_signal_message, sdp_fingerprints, track, types,
 };
 use farwing_protocol::realtime::{Envelope, IceServer};
 use reqwest::Method;
@@ -47,6 +48,18 @@ const KEY_SWITCH: Duration = Duration::from_secs(2);
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// The relays as webrtc takes them.
+fn ice(servers: &[IceServer]) -> Vec<RTCIceServer> {
+    servers
+        .iter()
+        .map(|s| RTCIceServer {
+            urls: s.urls.clone(),
+            username: s.username.clone(),
+            credential: s.credential.clone(),
+        })
+        .collect()
 }
 
 async fn connection(ice: &[IceServer]) -> Result<Arc<RTCPeerConnection>> {
@@ -133,8 +146,16 @@ pub(crate) struct ChannelVoice {
     keys: Arc<DeviceKeys>,
     outgoing: mpsc::UnboundedSender<Envelope>,
     ice: Vec<IceServer>,
-    uplink: Arc<RTCPeerConnection>,
+    uplink: crate::features::host::peer::chat_video::ChatUplink,
     downlink: tokio::sync::Mutex<Option<Arc<RTCPeerConnection>>>,
+    /// The share's description in the voice state.
+    screen: Mutex<Option<farwing_protocol::chat::VoiceScreen>>,
+    /// Self mute and deafen as last told, sent again with the share.
+    me: Mutex<(bool, bool)>,
+    /// Republishing one at a time.
+    publishing: tokio::sync::Mutex<()>,
+    /// A task follows the share (`follow_share`).
+    pub(crate) following: std::sync::atomic::AtomicBool,
     participants: Mutex<HashMap<u32, VoiceParticipant>>,
     /// (ID, key) of this device's frame key.
     key: Mutex<(u8, [u8; FRAME_KEY])>,
@@ -176,7 +197,8 @@ impl ChannelVoice {
         engine.set_self(muted, deafened);
         let key = (0u8, FrameKey::generate());
         engine.set_key(FrameKey::new(key.0, &key.1)?);
-        let uplink = connection(&joined.ice_servers).await?;
+        let cipher = (joined.mode == VoiceMode::E2ee).then(|| engine.cipher()).flatten();
+        let uplink = crate::features::host::peer::chat_video::ChatUplink::new(ice(&joined.ice_servers), cipher).await?;
         let voice = Arc::new(Self {
             channel,
             participant: joined.participant,
@@ -188,6 +210,10 @@ impl ChannelVoice {
             ice: joined.ice_servers.clone(),
             uplink,
             downlink: tokio::sync::Mutex::new(None),
+            screen: Mutex::new(None),
+            me: Mutex::new((muted, deafened)),
+            publishing: tokio::sync::Mutex::new(()),
+            following: std::sync::atomic::AtomicBool::new(false),
             participants: Mutex::new(joined.participants.iter().map(|p| (p.participant, p.clone())).collect()),
             key: Mutex::new(key),
             events,
@@ -210,48 +236,149 @@ impl ChannelVoice {
     }
 
     async fn publish(&self) -> Result<()> {
-        let track = mic_track();
-        let transceiver = self
-            .uplink
-            .add_transceiver_from_track(
-                Arc::clone(&track) as _,
-                Some(RTCRtpTransceiverInit {
-                    direction: RTCRtpTransceiverDirection::Sendonly,
-                    send_encodings: Vec::new(),
-                }),
-            )
-            .await?;
-        follow_loss(transceiver.sender().await, self.engine.clone());
+        follow_loss(Arc::clone(&self.uplink.mic_sender), self.engine.clone());
         let events = self.events.clone();
-        self.uplink.on_peer_connection_state_change(Box::new(move |state| {
-            match state {
-                RTCPeerConnectionState::Connected => {
-                    let _ = events.send(Event::Connected(true));
-                }
-                RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
-                    let _ = events.send(Event::Connected(false));
-                }
-                _ => {}
+        self.uplink.on_state(move |state| match state {
+            RTCPeerConnectionState::Connected => {
+                let _ = events.send(Event::Connected(true));
             }
-            Box::pin(async {})
-        }));
-        let offer = self.uplink.create_offer(None).await?;
-        let sdp = gathered(&self.uplink, offer, GATHER_FORWARDER).await?;
+            RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
+                let _ = events.send(Event::Connected(false));
+            }
+            _ => {}
+        });
+        self.republish().await?;
+        self.engine.set_track(Some(Arc::clone(&self.uplink.mic)));
+        tracing::info!(channel = %self.channel, "voice uplink published");
+        Ok(())
+    }
+
+    /// Offers the uplink as it is now: the mic, and the pictures and
+    /// sound it sends.
+    async fn republish(&self) -> Result<()> {
+        let _one = self.publishing.lock().await;
+        let offer = self.uplink.pc.create_offer(None).await?;
+        let sdp = gathered(&self.uplink.pc, offer, GATHER_FORWARDER).await?;
+        let camera = self.uplink.camera_on();
+        let screen = lock(&self.screen).clone();
+        let tracks: Vec<serde_json::Value> = self
+            .uplink
+            .mids()
+            .await
+            .into_iter()
+            .filter(|(kind, _)| match kind.as_str() {
+                track::MIC => true,
+                track::CAM_HI | track::CAM_LO => camera,
+                track::SCREEN | track::SCREEN_720 => screen.is_some(),
+                track::SCREEN_AUDIO => screen.as_ref().is_some_and(|s| s.audio),
+                _ => false,
+            })
+            .map(|(kind, mid)| json!({"mid": mid, "kind": kind}))
+            .collect();
         let answer: VoiceDescription = serde_json::from_value(
             self.client
                 .chat(
                     Method::PUT,
                     &format!("/api/v2/chat/channels/{}/voice/publish", self.channel),
-                    Some(json!({"sdp": sdp})),
+                    Some(json!({"sdp": sdp, "tracks": tracks})),
                 )
                 .await?,
         )?;
         self.uplink
+            .pc
             .set_remote_description(RTCSessionDescription::answer(answer.sdp)?)
             .await?;
-        self.engine.set_track(Some(track));
-        tracing::info!(channel = %self.channel, "voice uplink published");
         Ok(())
+    }
+
+    /// Turns the camera on (`spec`) or off.
+    pub(crate) async fn set_camera(&self, spec: Option<crate::media::camera::Spec>) -> Result<()> {
+        match spec {
+            Some(spec) => self.uplink.start_camera(spec),
+            None => self.uplink.stop_camera(),
+        }
+        self.republish().await
+    }
+
+    /// Shares `shown` at `quality` (with its sound or not), or stops.
+    pub(crate) async fn set_screen(
+        &self,
+        share: Option<(Shown, crate::features::host::peer::chat_video::Quality, bool)>,
+    ) -> Result<()> {
+        let description = match share {
+            Some((shown, quality, audio)) => {
+                let audio = if self.uplink.shown().as_ref() == Some(&shown) {
+                    self.uplink.set_quality(quality);
+                    self.uplink.set_sound(audio)
+                } else {
+                    self.uplink.start_screen(shown.clone(), quality, audio)
+                };
+                Some(farwing_protocol::chat::VoiceScreen {
+                    quality: quality.name().to_owned(),
+                    audio,
+                    whole: matches!(shown, Shown::Screen(_)),
+                    minimized: false,
+                })
+            }
+            None => {
+                self.uplink.stop_screen();
+                None
+            }
+        };
+        *lock(&self.screen) = description;
+        self.republish().await?;
+        self.tell_state().await;
+        Ok(())
+    }
+
+    /// Follows the share's capture: tells a minimized window, stops the
+    /// share when its capture ended. False once nothing is shared.
+    pub(crate) async fn follow_share(&self) -> bool {
+        let Some((minimized, ended)) = self.uplink.share_state() else {
+            return false;
+        };
+        if ended {
+            let _ = self.set_screen(None).await;
+            return false;
+        }
+        let changed = match lock(&self.screen).as_mut() {
+            Some(screen) if screen.minimized != minimized => {
+                screen.minimized = minimized;
+                true
+            }
+            _ => false,
+        };
+        if changed {
+            self.tell_state().await;
+        }
+        true
+    }
+
+    /// Someone watches the share's 720p30 copy (`voice.demand`).
+    pub(crate) fn demand(&self, kinds: &[String]) {
+        self.uplink.set_copy(kinds.iter().any(|k| k == track::SCREEN_720));
+    }
+
+    pub(crate) fn camera_on(&self) -> bool {
+        self.uplink.camera_on()
+    }
+
+    pub(crate) fn screen(&self) -> Option<farwing_protocol::chat::VoiceScreen> {
+        lock(&self.screen).clone()
+    }
+
+    /// The voice state this device describes: mute, deafen, the share.
+    async fn tell_state(&self) {
+        let (muted, deafened) = *lock(&self.me);
+        let screen = lock(&self.screen).clone();
+        let _ = self
+            .client
+            .chat(
+                Method::PUT,
+                &format!("/api/v2/chat/channels/{}/voice/state", self.channel),
+                Some(json!({"self_muted": muted, "self_deafened": deafened, "screen": screen})),
+            )
+            .await;
     }
 
     /// This device's key, sealed to each of `to`.
@@ -386,14 +513,8 @@ impl ChannelVoice {
 
     pub(crate) async fn set_self(&self, muted: bool, deafened: bool) {
         self.engine.set_self(muted, deafened);
-        let _ = self
-            .client
-            .chat(
-                Method::PUT,
-                &format!("/api/v2/chat/channels/{}/voice/state", self.channel),
-                Some(json!({"self_muted": muted, "self_deafened": deafened})),
-            )
-            .await;
+        *lock(&self.me) = (muted, deafened);
+        self.tell_state().await;
     }
 
     /// Leaves (`tell`: the server does not know yet).
@@ -405,7 +526,7 @@ impl ChannelVoice {
                 .await;
         }
         self.engine.set_track(None);
-        let _ = self.uplink.close().await;
+        self.uplink.close().await;
         if let Some(pc) = self.downlink.lock().await.take() {
             let _ = pc.close().await;
         }

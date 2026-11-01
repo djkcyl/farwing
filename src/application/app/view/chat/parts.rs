@@ -39,6 +39,9 @@ pub(super) enum Glyph {
     HeadsetOff,
     Phone,
     PhoneDown,
+    Camera,
+    CameraOff,
+    Screen,
 }
 
 pub(super) fn paint_glyph(p: &egui::Painter, rect: Rect, glyph: Glyph, color: Color32) {
@@ -216,6 +219,20 @@ pub(super) fn paint_glyph(p: &egui::Painter, rect: Rect, glyph: Glyph, color: Co
                 s,
             ));
         }
+        Glyph::Camera | Glyph::CameraOff => {
+            p.rect_stroke(Rect::from_min_max(q(-9.0, -5.5), q(3.5, 5.5)), 2.0 * k, s, egui::StrokeKind::Middle);
+            p.add(egui::Shape::closed_line(vec![q(3.5, -1.5), q(9.0, -5.0), q(9.0, 5.0), q(3.5, 1.5)], s));
+            if glyph == Glyph::CameraOff {
+                p.line_segment([q(-9.0, -8.0), q(8.0, 8.0)], Stroke::new(1.6, color));
+            }
+        }
+        Glyph::Screen => {
+            p.rect_stroke(Rect::from_min_max(q(-9.0, -7.0), q(9.0, 5.0)), 1.5 * k, s, egui::StrokeKind::Middle);
+            p.line_segment([q(0.0, 5.0), q(0.0, 8.5)], s);
+            p.line_segment([q(-4.0, 8.5), q(4.0, 8.5)], s);
+            p.add(egui::Shape::line(vec![q(-3.0, -1.0), q(0.0, -4.0), q(3.0, -1.0)], s));
+            p.line_segment([q(0.0, -4.0), q(0.0, 2.5)], s);
+        }
         Glyph::PhoneDown => {
             p.add(egui::Shape::closed_line(
                 vec![
@@ -236,6 +253,16 @@ pub(super) fn paint_glyph(p: &egui::Painter, rect: Rect, glyph: Glyph, color: Co
             ));
         }
     }
+}
+
+/// The red "live" pill after a name; its width.
+pub(super) fn paint_live(p: &egui::Painter, right_center: Pos2) -> f32 {
+    let galley = p.layout_no_wrap(t().voice.live.to_owned(), egui::FontId::proportional(10.5), Color32::WHITE);
+    let size = vec2(galley.size().x + 10.0, 16.0);
+    let rect = Rect::from_min_size(Pos2::new(right_center.x - size.x, right_center.y - size.y / 2.0), size);
+    p.rect_filled(rect, 4.0, crate::ui::theme::RED);
+    p.galley(rect.center() - galley.size() / 2.0, galley, Color32::WHITE);
+    size.x
 }
 
 /// A small square button with a painted glyph.

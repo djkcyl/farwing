@@ -131,6 +131,35 @@ struct Uplink {
     wire: RwLock<sdp::Wire>,
     normalize: RwLock<Rewrite>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
+    /// What the last offer negotiated (`offer_key`).
+    offer: Mutex<String>,
+}
+
+/// What an offer negotiates: its sections, their codecs, tracks and
+/// directions, and the transport's credentials (candidates, session
+/// versions and the order of attributes aside).
+fn offer_key(offer: &str) -> String {
+    let mut sections: Vec<Vec<&str>> = vec![Vec::new()];
+    for line in offer.lines().map(str::trim) {
+        if line.starts_with("m=") {
+            sections.push(Vec::new());
+        }
+        let kept = ["m=", "a=mid:", "a=rtpmap:", "a=fmtp:", "a=extmap:", "a=ssrc", "a=ice-ufrag:", "a=ice-pwd:", "a=fingerprint:"]
+            .iter()
+            .any(|p| line.starts_with(p))
+            || ["a=sendonly", "a=recvonly", "a=inactive", "a=sendrecv"].contains(&line);
+        if kept && let Some(section) = sections.last_mut() {
+            section.push(line);
+        }
+    }
+    sections
+        .into_iter()
+        .map(|mut section| {
+            section.sort_unstable();
+            section.join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 impl Uplink {
@@ -336,10 +365,10 @@ fn own_wire() -> sdp::Wire {
 }
 
 /// The tracks an offer announces, with their kinds and forwarded codecs
-/// (each section's codec is the first of the answer's).
+/// (each section's codec as `sdp::chosen_payload_types` reads the answer).
 fn up_tracks(offer: &str, answer: &str, kinds: &[(String, String)], normalize: &Rewrite) -> Vec<Arc<UpTrack>> {
     let own = own_wire();
-    let chosen = sdp::first_payload_types(answer);
+    let chosen = sdp::chosen_payload_types(answer);
     sdp::tracks(offer)
         .into_iter()
         .filter_map(|mut t| {
@@ -566,7 +595,17 @@ impl VoiceRooms {
         let member = room.member(participant);
         let existing = member.uplink.read().clone();
         if let Some(up) = existing {
-            let answer = negotiate(&up.pc, offer).await?;
+            // The same sections again (a sender that offers every track up
+            // front and only changes which it sends): nothing to negotiate.
+            // Renegotiating them anyway leaves an audio receiver of the
+            // connection deaf to its packets.
+            let key = offer_key(offer);
+            let same = *up.offer.lock() == key;
+            let answer = match up.pc.local_description().await {
+                Some(local) if same => local.sdp,
+                _ => negotiate(&up.pc, offer).await?,
+            };
+            *up.offer.lock() = key;
             let wire = sdp::wire(&answer);
             let normalize = Rewrite::new(&wire, &own_wire());
             // Tracks already sent keep their caches.
@@ -614,6 +653,7 @@ impl VoiceRooms {
             wire: RwLock::new(wire),
             normalize: RwLock::new(normalize),
             tasks: Mutex::default(),
+            offer: Mutex::new(offer_key(offer)),
         });
         let (weak_room, weak_member, weak_up) = (Arc::downgrade(&room), Arc::downgrade(&member), Arc::downgrade(&uplink));
         pc.on_track(Box::new(move |remote, receiver, _| {

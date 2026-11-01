@@ -31,6 +31,15 @@ impl VideoTrack {
             binding: Mutex::new(None),
         }
     }
+    /// A track named `id` (a voice channel's picture kind).
+    pub fn named(id: &str, preferred: Codec, negotiated: Arc<super::format::Negotiated>) -> Self {
+        Self {
+            id: id.to_owned(),
+            preferred,
+            negotiated: Mutex::new(negotiated),
+            binding: Mutex::new(None),
+        }
+    }
     pub fn mid_len(&self) -> usize {
         lock(&self.binding)
             .as_ref()

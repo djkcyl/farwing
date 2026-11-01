@@ -33,6 +33,43 @@ pub(super) enum Dialog {
     Link { href: String, trust: bool },
     Confirm { title: String, action: Confirmed },
     StartDm,
+    Share(ShareDraft),
+}
+
+/// The share picker's choices.
+#[derive(Clone, PartialEq)]
+pub(super) struct ShareDraft {
+    /// The windows tab is open (not the screens).
+    pub windows: bool,
+    pub screens: Vec<crate::media::capture::Screen>,
+    pub list: Vec<crate::platform::windows::window_capture::Window>,
+    pub listed: std::time::Instant,
+    /// The chosen screen (by ID) or window (by handle).
+    pub screen: Option<i32>,
+    pub window: Option<isize>,
+    pub quality: crate::features::host::peer::chat_video::Quality,
+    pub audio: bool,
+}
+
+impl ShareDraft {
+    /// The picker as the share is now (`current`), or for a new one.
+    pub(super) fn new(current: Option<&farwing_protocol::chat::VoiceScreen>) -> Self {
+        use crate::features::host::peer::chat_video::Quality;
+        let screens = crate::platform::windows::capture::screens().unwrap_or_default();
+        let primary = screens.iter().find(|s| s.primary).or(screens.first()).map(|s| s.id);
+        Self {
+            windows: current.is_some_and(|c| !c.whole),
+            screens,
+            list: crate::platform::windows::window_capture::list(),
+            listed: std::time::Instant::now(),
+            screen: primary,
+            window: None,
+            quality: current
+                .and_then(|c| Quality::ALL.into_iter().find(|q| q.name() == c.quality))
+                .unwrap_or(Quality::P1080F30),
+            audio: current.is_none_or(|c| c.audio),
+        }
+    }
 }
 
 /// What a confirmation does when accepted.

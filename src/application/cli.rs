@@ -1555,6 +1555,9 @@ pub async fn dev_voice(
     answer: bool,
     seconds: u64,
     tone: Option<f32>,
+    camera: bool,
+    screen: Option<String>,
+    audio: bool,
 ) -> Result<()> {
     use farwing_protocol::chat::Id;
     if let Some(hz) = tone {
@@ -1581,6 +1584,7 @@ pub async fn dev_voice(
         }
         let start = std::time::Instant::now();
         let mut answered = false;
+        let mut pictures = false;
         let mut speaking = 0u32;
         let mut samples = 0u32;
         let mut connected_at = None;
@@ -1599,6 +1603,34 @@ pub async fn dev_voice(
             }
             if connected_at.is_none() && view.my_voice.as_ref().is_some_and(|v| v.connected) {
                 connected_at = Some(start.elapsed().as_millis() as u64);
+            }
+            // Pictures once in the channel: the camera, a screen share.
+            if !pictures && connected_at.is_some() && view.my_voice.as_ref().is_some_and(|v| v.call.is_none()) {
+                pictures = true;
+                if camera {
+                    chat.set_camera(true);
+                }
+                if let Some(s) = &screen {
+                    use crate::features::host::peer::chat_video::Quality;
+                    let (id, quality) = match s.rsplit_once(':') {
+                        Some((id, q)) => match Quality::ALL.into_iter().find(|x| x.name() == q) {
+                            Some(quality) => (id, quality),
+                            None => (s.as_str(), Quality::P1080F30),
+                        },
+                        None => (s.as_str(), Quality::P1080F30),
+                    };
+                    let target = match id.strip_prefix("window:") {
+                        Some(title) => crate::platform::windows::window_capture::list()
+                            .into_iter()
+                            .find(|w| w.title.contains(title))
+                            .map(|w| crate::features::chat::ShareTarget::Window { hwnd: w.hwnd, pid: w.pid }),
+                        None => Some(crate::features::chat::ShareTarget::Screen(id.parse().ok())),
+                    };
+                    match target {
+                        Some(target) => chat.share_screen(Some((target, quality, audio))),
+                        None => tracing::warn!(id, "dev voice: no such window"),
+                    }
+                }
             }
             let (_, me_speaking, level) = chat.voice_activity();
             input_peak = input_peak.max(level);

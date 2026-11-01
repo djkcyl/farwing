@@ -99,6 +99,9 @@ pub(crate) struct MyVoice {
     pub muted: bool,
     pub deafened: bool,
     pub compat: bool,
+    /// Sending the camera, and the share.
+    pub camera: bool,
+    pub screen: Option<farwing_protocol::chat::VoiceScreen>,
 }
 
 /// A notification a push asks for.

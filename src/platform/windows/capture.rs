@@ -404,7 +404,9 @@ impl Desktop {
         }
         Self::open_local(selected)
     }
-    pub(super) fn open_local(selected: &Screen) -> Result<Self> {
+    /// In this process (no capture service): a voice channel share, which
+    /// shows what its user sees and not the secure desktop.
+    pub(crate) fn open_local(selected: &Screen) -> Result<Self> {
         let power = power::Request::new()?;
         let screen = refresh(selected)?;
         let backend = match Duplication::open(&screen.device_name) {

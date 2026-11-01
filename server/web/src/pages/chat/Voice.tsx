@@ -653,6 +653,9 @@ export function VoiceStage({ group, channel }: { group: GroupState; channel: Cha
       <div className="voice-stage focused" ref={stage}>
         <div className="voice-big">
           {track ? <VideoTile track={track} mirror={focused.person.participant === me} /> : <Loading />}
+          {focused.kind === 'screen' && focused.person.screen?.minimized && (
+            <span className="voice-minimized">{t.chat.voice.minimized}</span>
+          )}
         </div>
         <div className="voice-stage-bar">
           <IconButton icon="back" label={t.chat.voice.back} onClick={() => choose(undefined)} />

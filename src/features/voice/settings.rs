@@ -29,6 +29,8 @@ pub(crate) struct VoiceSettings {
     /// Endpoint IDs; `None`: the system's default.
     pub input: Option<String>,
     pub output: Option<String>,
+    /// The camera for voice channels (its ID); `None`: the first one.
+    pub camera: Option<String>,
     pub echo: bool,
     pub noise: Noise,
     /// Automatic gain.
@@ -59,6 +61,7 @@ impl Default for VoiceSettings {
         Self {
             input: None,
             output: None,
+            camera: None,
             echo: true,
             noise: Noise::Standard,
             gain: true,

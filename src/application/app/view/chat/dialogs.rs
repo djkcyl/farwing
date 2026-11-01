@@ -16,6 +16,13 @@ use serde_json::json;
 const EXPIRES: [Option<u64>; 7] = [Some(1800), Some(3600), Some(6 * 3600), Some(86400), Some(7 * 86400), Some(30 * 86400), None];
 const USES: [u32; 7] = [0, 1, 5, 10, 25, 50, 100];
 
+/// Keeps a dialog with a changing list drawn while it is open.
+fn ui_repaint_soon(ctx: &egui::Context, on: bool) {
+    if on {
+        ctx.request_repaint_after(std::time::Duration::from_secs(1));
+    }
+}
+
 fn answer<'a>(state: &'a ChatState, key: &str) -> Option<&'a Answer> {
     state.answers.get(key)
 }
@@ -273,6 +280,91 @@ fn dialog(ctx: &egui::Context, chat: &ChatService, state: &ChatState, chat_ui: &
                         ui.add(egui::Spinner::new());
                     }
                 });
+            });
+            keep &= !response.should_close();
+        }
+        Dialog::Share(draft) => {
+            let v = &t().voice;
+            let sharing = state.my_voice.as_ref().and_then(|m| m.screen.clone());
+            // Windows come and go: the list follows every few seconds.
+            if draft.windows && draft.listed.elapsed() > std::time::Duration::from_secs(3) {
+                draft.list = crate::platform::windows::window_capture::list();
+                draft.listed = std::time::Instant::now();
+            }
+            ui_repaint_soon(ctx, draft.windows);
+            let response = egui::Modal::new(egui::Id::new("chat-share")).frame(dialog_frame()).show(ctx, |ui| {
+                ui.set_width(440.0);
+                let title = if sharing.is_some() { v.share_settings } else { v.share };
+                if dialog_header(ui, title, DialogIcon::Info, true) {
+                    keep = false;
+                }
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut draft.windows, false, v.screens);
+                    ui.selectable_value(&mut draft.windows, true, v.windows);
+                });
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical().max_height(220.0).min_scrolled_height(220.0).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    if draft.windows {
+                        if draft.list.is_empty() {
+                            ui.label(parts::muted(v.no_windows));
+                        }
+                        for w in &draft.list {
+                            let label = if w.program.is_empty() { w.title.clone() } else { format!("{}  ·  {}", w.title, w.program) };
+                            let chosen = draft.window == Some(w.hwnd);
+                            if ui
+                                .add(egui::Button::selectable(chosen, egui::RichText::new(label)).truncate().min_size(vec2(ui.available_width(), 30.0)))
+                                .clicked()
+                            {
+                                draft.window = Some(w.hwnd);
+                            }
+                        }
+                    } else {
+                        for s in &draft.screens {
+                            let label = format!("{}  ·  {}×{}", s.display_name, s.width, s.height);
+                            let chosen = draft.screen == Some(s.id);
+                            if ui
+                                .add(egui::Button::selectable(chosen, label).min_size(vec2(ui.available_width(), 30.0)))
+                                .clicked()
+                            {
+                                draft.screen = Some(s.id);
+                            }
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(parts::muted(v.quality));
+                    for q in crate::features::host::peer::chat_video::Quality::ALL {
+                        ui.selectable_value(&mut draft.quality, q, q.name());
+                    }
+                });
+                ui.horizontal(|ui| {
+                    crate::ui::controls::switch(ui, &mut draft.audio);
+                    ui.label(v.share_sound);
+                });
+                if draft.audio && draft.windows && !crate::platform::windows::process_loopback::supported() {
+                    ui.label(parts::muted(v.system_sound));
+                }
+                let window = draft.window.and_then(|h| draft.list.iter().find(|w| w.hwnd == h));
+                let ready = if draft.windows { window.is_some() } else { draft.screen.is_some() };
+                let start = DialogAction::new(if sharing.is_some() { v.apply } else { v.start_share }).enabled(ready);
+                let stop = sharing.is_some().then_some(v.stop_share);
+                let (ok, stopped) = dialog_actions(ui, Some(start), stop.or(Some(t().common.cancel)));
+                if ok {
+                    let target = match window {
+                        Some(w) if draft.windows => crate::features::chat::ShareTarget::Window { hwnd: w.hwnd, pid: w.pid },
+                        _ => crate::features::chat::ShareTarget::Screen(draft.screen),
+                    };
+                    chat.share_screen(Some((target, draft.quality, draft.audio)));
+                    keep = false;
+                }
+                if stopped {
+                    if sharing.is_some() {
+                        chat.share_screen(None);
+                    }
+                    keep = false;
+                }
             });
             keep &= !response.should_close();
         }

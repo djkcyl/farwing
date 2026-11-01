@@ -379,6 +379,18 @@ video.mirror {
   display: grid;
   place-items: center;
   background: black;
+  position: relative;
+}
+.voice-minimized {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 65%);
+  color: white;
+  font-size: 13px;
 }
 .voice-stage-bar {
   flex: none;

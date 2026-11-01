@@ -23,6 +23,9 @@ pub(crate) enum Sound {
     Muted,
     Unmuted,
     Message,
+    /// Someone in this device's channel started or ended a share.
+    LiveStarted,
+    LiveEnded,
     /// Moved to another channel or disconnected by a moderator.
     Removed,
 }
@@ -62,6 +65,7 @@ impl Sound {
             Self::Came | Self::Went => SoundGroup::People,
             Self::Muted | Self::Unmuted => SoundGroup::Mute,
             Self::Message => SoundGroup::Messages,
+            Self::LiveStarted | Self::LiveEnded => SoundGroup::Live,
             Self::Removed => SoundGroup::Removed,
         }
     }
@@ -79,6 +83,8 @@ fn notes(sound: Sound) -> &'static [(f32, u32)] {
         Sound::Muted => &[(392.0, 60)],
         Sound::Unmuted => &[(659.0, 60)],
         Sound::Message => &[(988.0, 70), (0.0, 30), (1319.0, 90)],
+        Sound::LiveStarted => &[(523.0, 70), (659.0, 70), (784.0, 120)],
+        Sound::LiveEnded => &[(784.0, 70), (659.0, 70), (523.0, 120)],
         Sound::Removed => &[(659.0, 120), (0.0, 40), (440.0, 120), (0.0, 40), (330.0, 200)],
     }
 }

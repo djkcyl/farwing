@@ -73,7 +73,9 @@ struct Inner {
     capture: Mutex<Option<Capture>>,
     track: Mutex<Option<Arc<TrackLocalStaticRTP>>>,
     e2ee: AtomicBool,
-    encryptor: Mutex<Option<Encryptor>>,
+    /// This device's frame cipher: one counter for all its tracks (the
+    /// pictures share it).
+    encryptor: Mutex<Option<Arc<Mutex<Encryptor>>>>,
     /// The channel's rate, and the rate now (lower on a lossy path).
     max_bitrate: AtomicU32,
     bitrate: AtomicU32,
@@ -219,10 +221,15 @@ impl Engine {
     /// the new ID from now on).
     pub(crate) fn set_key(&self, key: FrameKey) {
         let mut enc = lock(&self.0.encryptor);
-        match enc.as_mut() {
-            Some(e) => e.set_key(key),
-            None => *enc = Some(Encryptor::new(key)),
+        match enc.as_ref() {
+            Some(e) => lock(e).set_key(key),
+            None => *enc = Some(Arc::new(Mutex::new(Encryptor::new(key)))),
         }
+    }
+
+    /// The frame cipher, for the other tracks this device sends.
+    pub(crate) fn cipher(&self) -> Option<Arc<Mutex<Encryptor>>> {
+        lock(&self.0.encryptor).clone()
     }
 
     /// A sender's frame key.
@@ -523,9 +530,9 @@ async fn send(inner: Arc<Inner>) {
             };
             let payload = if inner.e2ee.load(Ordering::Relaxed) {
                 // Nothing goes out unsealed in an end-to-end channel.
-                let mut enc = lock(&inner.encryptor);
-                let Some(e) = enc.as_mut() else { continue };
-                match e.encrypt(Codec::Opus, &out[..length]) {
+                let cipher = lock(&inner.encryptor).clone();
+                let Some(e) = cipher else { continue };
+                match lock(&e).encrypt(Codec::Opus, &out[..length]) {
                     Ok(p) => Bytes::from(p),
                     Err(_) => continue,
                 }

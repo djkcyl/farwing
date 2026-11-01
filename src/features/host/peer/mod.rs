@@ -1145,6 +1145,7 @@ mod ingress;
 mod forward;
 mod media;
 pub(crate) mod uplink;
+pub(crate) mod chat_video;
 pub(crate) mod screens;
 use channels::bind_channel;
 use channels::publish_state;
