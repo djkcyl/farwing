@@ -86,6 +86,18 @@ export function DeviceCard({ device: d, shared }: { device: Device; shared?: boo
           >
             {t.devices.watch}
           </Button>
+          {d.policy.camera && (!d.owner || d.granted.includes('camera')) && (
+            <Button
+              size="sm"
+              variant="ghost"
+              icon="webcam"
+              disabled={!!blocker}
+              title={blocker}
+              onClick={() => navigate(`/camera/${d.device_id}`)}
+            >
+              {t.devices.camera}
+            </Button>
+          )}
           <Button size="sm" variant="ghost" onClick={() => navigate(`/devices/${d.device_id}`)}>
             {t.common.details}
           </Button>

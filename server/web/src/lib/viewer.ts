@@ -125,6 +125,10 @@ export interface ViewerEvents {
   /// The server limits this session to this while relayed (kbit/s; 0: no
   /// limit).
   budget?(kbps: number): void;
+  /// The host's cameras in detail.
+  cameras?(cameras: fpp.CameraInfo[]): void;
+  /// The picture-in-picture camera (`video_1`); none when it ends.
+  pip?(stream: MediaStream | undefined): void;
   log?(line: string): void;
 }
 
@@ -232,10 +236,14 @@ function iceServers(started: SessionStarted): RTCIceServer[] {
 }
 
 /// An account session on an own or shared device.
-export async function accountAdmission(target: string, visit: string): Promise<Admission> {
+export async function accountAdmission(
+  target: string,
+  visit: string,
+  purpose: 'desktop' | 'camera' = 'desktop',
+): Promise<Admission> {
   const ticket = await call<SessionTicket>('POST', '/api/v2/sessions', {
     target_device_id: target,
-    purpose: 'desktop',
+    purpose,
     visit,
   });
   return { ticket, hostId: target };
@@ -249,6 +257,13 @@ export interface ViewerOptions {
   codec?(): number;
   /// Physical screen size for a host without displays (virtual display).
   screen?: { width: number; height: number };
+  /// A session for the host's cameras only.
+  camera?: boolean;
+}
+
+/// Where this browser remembers its parameters for a host's camera.
+function cameraKey(host: string, camera: number): string {
+  return `farwing.camera.${host}.${camera}`;
 }
 
 export class Viewer {
@@ -271,6 +286,12 @@ export class Viewer {
   private stream = new MediaStream();
   /// The host's own video and sound, played again when forwarding ends.
   private directVideo?: MediaStreamTrack;
+  private screens?: fpp.Screens;
+  private cameras: fpp.CameraInfo[] = [];
+  /// A camera session opened its first camera.
+  private cameraOpened = false;
+  private pipTrack?: MediaStreamTrack;
+  private pipCamera?: number;
   private directAudio?: MediaStreamTrack;
   private forwardedAudio = false;
   private forward?: ForwardReceiver;
@@ -374,6 +395,7 @@ export class Viewer {
 
   private async sessionStart() {
     this.attempt = crypto.randomUUID();
+    this.cameraOpened = false;
     const width = Math.round((this.options.screen?.width ?? screen.width) * devicePixelRatio);
     const height = Math.round((this.options.screen?.height ?? screen.height) * devicePixelRatio);
     if (!this.decoders.length) this.decoders = await decodeSupport();
@@ -382,7 +404,7 @@ export class Viewer {
       'session.start',
       {
         attempt_id: this.attempt,
-        purpose: 'desktop',
+        purpose: this.options.camera ? 'camera' : 'desktop',
         options: {
           decoders: this.decoders.map((d) => ({
             codec: CODEC_NAMES[d.codec],
@@ -615,6 +637,11 @@ export class Viewer {
     const mid = event.transceiver.mid ?? '';
     const index =
       this.tracks.get(mid) ?? (event.streams[0]?.id.startsWith('video_') ? Number(event.streams[0].id.slice(6)) : -1);
+    if (index === 1) {
+      this.pipTrack = track;
+      if (this.pipCamera !== undefined) this.events.pip?.(new MediaStream([track]));
+      return;
+    }
     if (index === 0) {
       // Lower the playout delay where the browser allows it.
       const receiver = event.receiver as RTCRtpReceiver & { jitterBufferTarget?: number | null };
@@ -924,7 +951,8 @@ export class Viewer {
       }
       case fpp.Type.SESSION: {
         const message = fpp.parseSession(frame.body);
-        if (message.kind === 'screens') this.events.screens?.(message.value);
+        if (message.kind === 'screens') this.onScreens(message.value);
+        else if (message.kind === 'cameras') this.onCameras(message.value);
         else if (message.kind === 'stream') this.onStream(message.value);
         else if (message.kind === 'microphone_state') this.onMicrophoneState(message.state);
         else if (message.kind === 'forward') this.onForward(message.value);
@@ -988,7 +1016,79 @@ export class Viewer {
   /// Show another screen of the host on this viewer's one picture
   /// (`video_0`). The answer carries the screen list it left.
   switchScreen(screenId: number): Promise<void> {
+    if (this.cameras.some((c) => c.id === screenId)) return this.openCamera(screenId, 0);
     return this.capture(screenId, true, 0);
+  }
+
+  private onScreens(screens: fpp.Screens) {
+    this.screens = screens;
+    this.events.screens?.(screens);
+    this.openFirstCamera();
+  }
+
+  private onCameras(cameras: fpp.CameraInfo[]) {
+    this.cameras = cameras;
+    this.events.cameras?.(cameras);
+    this.openFirstCamera();
+  }
+
+  /// A camera session shows the first camera that can be opened.
+  private openFirstCamera() {
+    if (!this.options.camera || this.cameraOpened || !this.screens) return;
+    if (this.screens.screens.some((s) => s.track === 0)) return;
+    const camera = this.cameras.find((c) => !c.unavailable);
+    if (!camera) return;
+    this.cameraOpened = true;
+    void this.openCamera(camera.id, 0);
+  }
+
+  /// This browser's parameters for a camera of this host, if it chose any.
+  chosenCameraParams(camera: number): fpp.CameraParams | undefined {
+    const host = this.admission?.hostId;
+    const stored = host ? localStorage.getItem(cameraKey(host, camera)) : null;
+    if (!stored) return undefined;
+    try {
+      return JSON.parse(stored) as fpp.CameraParams;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /// Show camera `camera` on `track`, with this browser's parameters for it.
+  async openCamera(camera: number, track: number): Promise<void> {
+    const params = this.chosenCameraParams(camera);
+    if (params) await this.request(fpp.Type.SESSION, fpp.cameraParams(camera, params)).catch(() => undefined);
+    return this.capture(camera, true, track);
+  }
+
+  /// Use `params` for a camera (none: the owner's) and remember the choice.
+  setCameraParams(camera: number, params: fpp.CameraParams | undefined): Promise<void> {
+    const host = this.admission?.hostId;
+    if (host) {
+      if (params) localStorage.setItem(cameraKey(host, camera), JSON.stringify(params));
+      else localStorage.removeItem(cameraKey(host, camera));
+    }
+    return this.request(fpp.Type.SESSION, params ? fpp.cameraParams(camera, params) : fpp.cameraReset(camera)).then(
+      () => undefined,
+    );
+  }
+
+  /// A camera's picture adjustment.
+  adjustCamera(camera: number, control: number, value: number, auto: boolean): Promise<void> {
+    return this.request(fpp.Type.SESSION, fpp.cameraAdjust(camera, control, value, auto)).then(() => undefined);
+  }
+
+  /// Show camera `camera` picture in picture (`video_1`); none ends it.
+  async pictureInPicture(camera: number | undefined) {
+    const previous = this.pipCamera;
+    this.pipCamera = camera;
+    if (previous !== undefined && previous !== camera) await this.capture(previous, false);
+    if (camera === undefined) {
+      this.events.pip?.(undefined);
+      return;
+    }
+    await this.openCamera(camera, 1);
+    if (this.pipTrack) this.events.pip?.(new MediaStream([this.pipTrack]));
   }
 
   /// Restart the capture of a screen: a fresh key frame.

@@ -12,17 +12,22 @@ import { ViewerScreen } from '../ui/ViewerScreen';
 export default function View({ params }: { params: Record<string, string> }) {
   const t = useT();
   const target = params.id;
+  const cameraOnly = params.camera === '1';
   const list = useApi<DeviceList>('/api/v2/devices');
   const device = [...(list.data?.own ?? []), ...(list.data?.shared ?? [])].find((d) => d.device_id === target);
   const visit = useMemo(() => (target ? newVisit() : ''), [target]);
-  const admit = useCallback(() => accountAdmission(target, visit), [target, visit]);
+  const admit = useCallback(
+    () => accountAdmission(target, visit, cameraOnly ? 'camera' : 'desktop'),
+    [target, visit, cameraOnly],
+  );
   const title = device?.alias ?? target;
   const subtitle = device
     ? `${platformText(device.platform)}${device.owner ? ` · ${t.devices.sharedBy(displayName(device.owner))}` : ''}`
     : undefined;
   return (
     <ViewerScreen
-      key={target}
+      key={`${target}${cameraOnly ? ':camera' : ''}`}
+      camera={cameraOnly}
       title={title}
       subtitle={subtitle}
       admit={admit}

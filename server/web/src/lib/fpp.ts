@@ -188,7 +188,7 @@ export function errorBody(code: string, reason = ''): Uint8Array {
 // SESSION ------------------------------------------------------------------
 
 /// What a display is (`wire.rs` `DisplayKind`).
-export const DisplayKind = { PHYSICAL: 0, VIRTUAL: 1, FALLBACK: 2, FOREIGN: 3, EXCLUSIVE: 4 } as const;
+export const DisplayKind = { PHYSICAL: 0, VIRTUAL: 1, FALLBACK: 2, FOREIGN: 3, EXCLUSIVE: 4, CAMERA: 5 } as const;
 
 /// One of the host's displays (SESSION `Displays`).
 export interface Screen {
@@ -202,6 +202,57 @@ export interface Screen {
   fps: number;
   /// The `video_N` track carrying this screen; -1 when not captured.
   track: number;
+  /// A camera's picture is shown mirrored, then turned clockwise.
+  mirror: boolean;
+  quarterTurns: number;
+}
+
+/// A camera mode (SESSION `Cameras`); `format` 0 NV12, 1 YUY2, 2 MJPEG, 3 H.264.
+export interface CameraMode {
+  width: number;
+  height: number;
+  fpsNumerator: number;
+  fpsDenominator: number;
+  format: number;
+}
+
+/// Camera parameters; zero values are automatic. `matrix` 1 BT.601,
+/// 2 BT.709; `range` 1 limited, 2 full.
+export interface CameraParams {
+  mode?: CameraMode;
+  matrix: number;
+  range: number;
+  bitrateKbps: number;
+  mirror: boolean;
+  quarterTurns: number;
+}
+
+/// A picture adjustment; `control` as `camera.rs` `CameraControlKind`.
+export interface CameraControl {
+  control: number;
+  minimum: number;
+  maximum: number;
+  step: number;
+  default: number;
+  value: number;
+  canAuto: boolean;
+  auto: boolean;
+}
+
+/// One of the host's cameras in detail (SESSION `Cameras`).
+export interface CameraInfo {
+  /// Its display ID.
+  id: number;
+  name: string;
+  /// Why it cannot be opened now; empty when it can.
+  unavailable: string;
+  modes: CameraMode[];
+  owner?: CameraParams;
+  custom?: CameraParams;
+  running?: CameraParams;
+  /// It runs with another participant's parameters: their name.
+  chosenBy: string;
+  controls: CameraControl[];
 }
 
 export interface Screens {
@@ -237,6 +288,7 @@ export type SessionMessage =
   | { kind: 'stream'; value: StreamState }
   | { kind: 'microphone_state'; state: number }
   | { kind: 'forward'; value: Forward }
+  | { kind: 'cameras'; value: CameraInfo[] }
   | { kind: 'other'; tag: number };
 
 /// Where the picture comes from (`docs/protocol/farwing-protocol.md` §6.7):
@@ -274,6 +326,8 @@ export function parseSession(body: Uint8Array): SessionMessage {
           height: s.uint32(6),
           fps: s.uint32(7),
           track: s.int32(15),
+          mirror: s.bool(16),
+          quarterTurns: s.uint32(17) % 4,
         })),
       },
     };
@@ -315,8 +369,91 @@ export function parseSession(body: Uint8Array): SessionMessage {
       },
     };
   }
+  const cameras = f.message(26);
+  if (cameras) return { kind: 'cameras', value: cameras.messages(1).map(parseCamera) };
   if (f.has(4)) return { kind: 'other', tag: 4 };
   return { kind: 'other', tag: 0 };
+}
+
+function parseMode(m: Fields): CameraMode {
+  return {
+    width: m.uint32(1),
+    height: m.uint32(2),
+    fpsNumerator: m.uint32(3),
+    fpsDenominator: m.uint32(4),
+    format: m.int32(5),
+  };
+}
+
+function parseParams(p: Fields | undefined): CameraParams | undefined {
+  if (!p) return undefined;
+  const mode = p.message(1);
+  return {
+    mode: mode ? parseMode(mode) : undefined,
+    matrix: p.uint32(2),
+    range: p.uint32(3),
+    bitrateKbps: p.uint32(4),
+    mirror: p.bool(5),
+    quarterTurns: p.uint32(6) % 4,
+  };
+}
+
+function parseCamera(c: Fields): CameraInfo {
+  return {
+    id: c.int32(1),
+    name: c.string(2),
+    unavailable: c.string(3),
+    modes: c.messages(4).map(parseMode),
+    owner: parseParams(c.message(5)),
+    custom: parseParams(c.message(6)),
+    running: parseParams(c.message(7)),
+    chosenBy: c.string(8),
+    controls: c.messages(9).map((k) => ({
+      control: k.int32(1),
+      minimum: k.sint32(2),
+      maximum: k.sint32(3),
+      step: k.sint32(4),
+      default: k.sint32(5),
+      value: k.sint32(6),
+      canAuto: k.bool(7),
+      auto: k.bool(8),
+    })),
+  };
+}
+
+function writeParams(p: CameraParams): Writer {
+  const w = new Writer();
+  if (p.mode) {
+    w.message(
+      1,
+      new Writer()
+        .int(1, p.mode.width)
+        .int(2, p.mode.height)
+        .int(3, p.mode.fpsNumerator)
+        .int(4, p.mode.fpsDenominator)
+        .int(5, p.mode.format),
+    );
+  }
+  return w.int(2, p.matrix).int(3, p.range).int(4, p.bitrateKbps).int(5, p.mirror).int(6, p.quarterTurns);
+}
+
+/// This viewer's parameters for a camera (SESSION `CameraRequest`).
+export function cameraParams(camera: number, params: CameraParams): Uint8Array {
+  return new Writer()
+    .message(27, new Writer().message(1, new Writer().int(1, camera).message(2, writeParams(params))))
+    .finish();
+}
+
+/// Back to the owner's parameters for a camera.
+export function cameraReset(camera: number): Uint8Array {
+  return new Writer().message(27, new Writer().intAlways(2, camera)).finish();
+}
+
+/// A camera's picture adjustment; `auto` hands it to the camera.
+export function cameraAdjust(camera: number, control: number, value: number, auto: boolean): Uint8Array {
+  return new Writer()
+    .message(27, new Writer().message(3, new Writer().int(1, camera).int(2, control).sint(3, value).int(4, auto)))
+    .finish();
 }
 
 /// Whether this viewer receives through the forwarder (a push on the

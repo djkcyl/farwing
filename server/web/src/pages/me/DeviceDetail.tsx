@@ -81,6 +81,16 @@ export default function DeviceDetail({ params }: { params: Record<string, string
             >
               {m.watchInBrowser}
             </Button>
+            {device?.policy.camera && (own || device.granted.includes('camera')) && (
+              <Button
+                icon="webcam"
+                disabled={!!blocker}
+                title={blocker}
+                onClick={() => navigate(`/camera/${d.device_id}`)}
+              >
+                {t.devices.camera}
+              </Button>
+            )}
             {own && (
               <Button
                 icon="edit"

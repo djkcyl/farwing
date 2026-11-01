@@ -1,6 +1,37 @@
 // The browser viewer (desktop session, files, annotation) and the visitor
 // page.
 
+const zhControls = [
+  '亮度',
+  '对比度',
+  '色调',
+  '饱和度',
+  '清晰度',
+  '伽马',
+  '白平衡',
+  '逆光补偿',
+  '增益',
+  '防闪烁',
+  '曝光',
+  '对焦',
+  '变焦',
+];
+const enControls = [
+  'Brightness',
+  'Contrast',
+  'Hue',
+  'Saturation',
+  'Sharpness',
+  'Gamma',
+  'White balance',
+  'Backlight compensation',
+  'Gain',
+  'Anti-flicker',
+  'Exposure',
+  'Focus',
+  'Zoom',
+];
+
 export const zh = {
   back: '返回',
   /** Connection states of the viewer (`ViewerState`). */
@@ -91,6 +122,24 @@ export const zh = {
     starting: '正在开启麦克风…',
     waiting: '麦克风已开启，正在等待对方使用',
     turnOff: '关闭麦克风',
+  },
+  camera: {
+    title: '摄像头',
+    pictureInPicture: '画中画',
+    mode: '分辨率与帧率',
+    modeValue: (w: number, h: number, fps: number) => `${w}×${h} · ${fps} 帧`,
+    color: '色彩',
+    automatic: '自动',
+    full: '完整',
+    limited: '有限',
+    orientation: '方向',
+    mirror: '镜像',
+    bitrate: '码率上限',
+    adjustments: '画面调整',
+    ownerSettings: '恢复为主人的设置',
+    chosenBy: (name: string) => `正在使用 ${name} 的设置`,
+    closePip: '关闭画中画',
+    controls: zhControls,
   },
   annotation: {
     title: '批注',
@@ -416,6 +465,24 @@ export const en: typeof zh = {
     starting: 'Turning on microphone…',
     waiting: 'Microphone on, waiting for the host to use it',
     turnOff: 'Turn off microphone',
+  },
+  camera: {
+    title: 'Camera',
+    pictureInPicture: 'Picture in picture',
+    mode: 'Resolution and frame rate',
+    modeValue: (w: number, h: number, fps: number) => `${w}×${h} · ${fps} fps`,
+    color: 'Color',
+    automatic: 'Auto',
+    full: 'Full',
+    limited: 'Limited',
+    orientation: 'Orientation',
+    mirror: 'Mirror',
+    bitrate: 'Bitrate limit',
+    adjustments: 'Picture adjustments',
+    ownerSettings: "Use the owner's settings",
+    chosenBy: (name: string) => `Using ${name}'s settings`,
+    closePip: 'Close picture in picture',
+    controls: enControls,
   },
   annotation: {
     title: 'Annotation',

@@ -40,6 +40,7 @@ const PATHS: Record<string, string> = {
   exitFullscreen: 'M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5',
   pip: 'M3 5h18v14H3zM12 12h7v5h-7z',
   camera: 'M4 8h3l2-3h6l2 3h3v11H4zM12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
+  webcam: 'M3 7h12v10H3zM15 10l6-3v10l-6-3',
   chart: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
   cursor: 'M5 3l14 7-6 2-2 6z',
   mouse: 'M12 3a6 6 0 0 0-6 6v6a6 6 0 0 0 12 0V9a6 6 0 0 0-6-6zM12 7v4',

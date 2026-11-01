@@ -104,10 +104,11 @@ function Routes() {
   if (auth.status === 'signed_out') return path === '/register' ? <RegisterPage /> : <LoginPage />;
 
   const view = match('/view/:id', path);
-  if (view) {
+  const camera = match('/camera/:id', path);
+  if (view || camera) {
     return (
       <Suspense fallback={<Loading />}>
-        <ViewPage params={view} />
+        <ViewPage params={view ?? { ...camera, camera: '1' }} />
       </Suspense>
     );
   }

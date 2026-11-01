@@ -27,6 +27,8 @@ export interface DevicePolicy {
   wol: boolean;
   assist: boolean;
   max_participants: number;
+  camera: boolean;
+  listen: boolean;
 }
 
 export interface Device {

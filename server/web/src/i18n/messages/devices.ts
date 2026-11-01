@@ -2,6 +2,7 @@
 
 export const zh = {
   watch: '观看',
+  camera: '摄像头',
   /** "{owner} 共享 · {capabilities}" */
   sharedBy: (owner: string) => `${owner} 共享`,
   watching: (n: number) => `${n} 人正在连接`,
@@ -14,6 +15,7 @@ export const zh = {
 
 export const en: typeof zh = {
   watch: 'Watch',
+  camera: 'Camera',
   sharedBy: (owner) => `Shared by ${owner}`,
   watching: (n) => `${n} connected`,
   notHost: "This device can't be controlled",

@@ -11,8 +11,16 @@ import { argbCss, type AnnotationState } from '../lib/annotation';
 import { ApiError, call, errorText, hasToken } from '../lib/api';
 import { DEFAULT_DIR, droppedEntries, type TransferInfo } from '../lib/files';
 import { capText, displayName, num } from '../lib/format';
-import type { CursorShape, HostEvent, Participant, ParticipantPointer, Screens, StreamState } from '../lib/fpp';
-import { HostEventKind } from '../lib/fpp';
+import type {
+  CameraInfo,
+  CursorShape,
+  HostEvent,
+  Participant,
+  ParticipantPointer,
+  Screens,
+  StreamState,
+} from '../lib/fpp';
+import { DisplayKind, HostEventKind } from '../lib/fpp';
 import { SystemCommand, Usage } from '../lib/input';
 import { PeerRequestError } from '../lib/peerio';
 import { sendViewerReport, VisitSummary } from '../lib/record';
@@ -30,6 +38,8 @@ import {
   WIRE_CODEC,
 } from '../lib/viewer';
 import { FilesPanel, TransferList } from './FilesPanel';
+import { CameraMenu, orientationStyle } from './CameraMenu';
+import { Menu, MenuItem } from './ViewerMenu';
 import { Icon, type IconName } from './icons';
 import { Button, Spinner } from './kit';
 import { Dialog, useOverlay } from './overlay';
@@ -207,80 +217,6 @@ function ToolButton({
   );
 }
 
-function Menu({
-  label,
-  icon,
-  text,
-  active,
-  children,
-}: {
-  label: string;
-  icon: IconName;
-  text?: string;
-  active?: boolean;
-  children: ReactNode;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    window.addEventListener('mousedown', close);
-    return () => window.removeEventListener('mousedown', close);
-  }, [open]);
-  return (
-    <div className="tool-menu" ref={ref}>
-      <button
-        type="button"
-        className={`tool ${open || active ? 'active' : ''}`}
-        title={label}
-        aria-label={label}
-        onClick={() => setOpen(!open)}
-      >
-        <Icon name={icon} size={18} />
-        {text && <span className="tool-text">{text}</span>}
-      </button>
-      {open && (
-        <div className="menu" onClick={() => setOpen(false)}>
-          {children}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function MenuItem({
-  selected,
-  onClick,
-  children,
-  hint,
-  disabled,
-  title,
-}: {
-  selected?: boolean;
-  onClick(): void;
-  children: ReactNode;
-  hint?: ReactNode;
-  disabled?: boolean;
-  title?: string;
-}) {
-  return (
-    <button
-      type="button"
-      className={`menu-item ${selected ? 'selected' : ''}`}
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-    >
-      <span className="menu-check">{selected && <Icon name="check" size={14} />}</span>
-      <span className="grow">{children}</span>
-      {hint && <span className="small faint">{hint}</span>}
-    </button>
-  );
-}
-
 export interface ViewerScreenProps {
   title: string;
   subtitle?: ReactNode;
@@ -290,6 +226,8 @@ export interface ViewerScreenProps {
   onLeave(): void;
   /// Re-create lost sessions automatically (5 minutes).
   autoRetry?: boolean;
+  /// The host's cameras only.
+  camera?: boolean;
 }
 
 /// Ask the host for this picture: the tier (5 automatic), frame rate,
@@ -304,7 +242,15 @@ function sendCapture(v: Viewer, quality: number, fps: number, codec: number, cur
   });
 }
 
-export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry = true }: ViewerScreenProps) {
+export function ViewerScreen({
+  title,
+  subtitle,
+  admit,
+  visit,
+  onLeave,
+  autoRetry = true,
+  camera = false,
+}: ViewerScreenProps) {
   const t = useT();
   const { toast } = useOverlay();
   const root = useRef<HTMLDivElement>(null);
@@ -322,6 +268,9 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
   const [retryAt, setRetryAt] = useState<number>();
   const [now, setNow] = useState(() => Date.now());
   const [screens, setScreens] = useState<Screens>();
+  const [cameras, setCameras] = useState<CameraInfo[]>([]);
+  const [cameraPip, setCameraPip] = useState<{ camera: number; stream?: MediaStream }>();
+  const pipVideo = useRef<HTMLVideoElement>(null);
   const [streamState, setStreamState] = useState<StreamState>();
   const [grants, setGrants] = useState<string[]>([]);
   const [people, setPeople] = useState<{ participants: Participant[]; controlling: string }>();
@@ -411,6 +360,7 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
             return admission;
           },
           codec: () => capture.current.codec,
+          camera,
         },
         {
           state: (s) => {
@@ -427,6 +377,8 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
             setAudioTrack(stream.getAudioTracks()[0]);
           },
           screens: setScreens,
+          cameras: setCameras,
+          pip: (stream) => setCameraPip((p) => (p && stream ? { ...p, stream } : undefined)),
           streamState: setStreamState,
           permissions: (g) => setGrants([...g]),
           participants: setPeople,
@@ -888,16 +840,18 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
   const chosenCodec = codecs?.includes(codec as VideoCodecId) ? codec : 0;
 
   const current = screens?.screens.find((s) => s.id === screens.current);
-  // The screen in video_0: what input positions refer to.
+  // The screen in video_0: what input positions refer to (a camera takes no input).
   const shown = screens?.screens.find((s) => s.track === 0) ?? current;
-  pictureMap.current = shown
-    ? {
-        screenId: shown.id,
-        width: shown.width,
-        height: shown.height,
-        box: () => (video.current?.videoWidth ? contentBox(video.current, scale) : undefined),
-      }
-    : undefined;
+  const showsCamera = shown?.kind === DisplayKind.CAMERA;
+  pictureMap.current =
+    shown && !showsCamera
+      ? {
+          screenId: shown.id,
+          width: shown.width,
+          height: shown.height,
+          box: () => (video.current?.videoWidth ? contentBox(video.current, scale) : undefined),
+        }
+      : undefined;
   const byId = useMemo(() => new Map((people?.participants ?? []).map((p) => [p.id, p])), [people]);
   const visiblePointers = pointers.filter(
     (p) => p.visible && p.idleMs < 3000 && (!current || p.screenId === current.id),
@@ -992,26 +946,40 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
               ))}
             </Menu>
           )}
-          <ToolButton
-            icon="mouse"
-            label={
-              control.held
-                ? t.viewer.control.stop
-                : control.pending
-                  ? control.asking
-                    ? t.viewer.control.asking
-                    : t.viewer.control.pending
-                  : !controlAllowed
-                    ? t.viewer.control.noPermission
-                    : controller && !controller.you
-                      ? t.viewer.control.otherControlling(controller.nickname || t.viewer.control.otherParticipant)
-                      : t.viewer.control.start
-            }
-            active={control.held}
-            dim={!controlAllowed && !control.held}
-            disabled={!playing || control.pending}
-            onClick={() => void toggleControl()}
-          />
+          {!showsCamera && (
+            <ToolButton
+              icon="mouse"
+              label={
+                control.held
+                  ? t.viewer.control.stop
+                  : control.pending
+                    ? control.asking
+                      ? t.viewer.control.asking
+                      : t.viewer.control.pending
+                    : !controlAllowed
+                      ? t.viewer.control.noPermission
+                      : controller && !controller.you
+                        ? t.viewer.control.otherControlling(controller.nickname || t.viewer.control.otherParticipant)
+                        : t.viewer.control.start
+              }
+              active={control.held}
+              dim={!controlAllowed && !control.held}
+              disabled={!playing || control.pending}
+              onClick={() => void toggleControl()}
+            />
+          )}
+          {cameras.length > 0 && (
+            <CameraMenu
+              viewer={viewer.current}
+              cameras={cameras}
+              shown={showsCamera ? shown?.id : undefined}
+              pip={cameraPip?.camera}
+              onPip={(id) => {
+                setCameraPip(id === undefined ? undefined : { camera: id });
+                void viewer.current?.pictureInPicture(id);
+              }}
+            />
+          )}
           {control.held && (
             <Menu label={t.viewer.screen.keys} icon="keyboard">
               <div className="menu-label">{t.viewer.screen.mouse}</div>
@@ -1087,8 +1055,10 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
               )}
             </Menu>
           )}
-          {!inkAllowed && ink.available && <ToolButton icon="edit" label={missing('annotation')} disabled />}
-          {inkAllowed && ink.available && (
+          {!inkAllowed && ink.available && !showsCamera && (
+            <ToolButton icon="edit" label={missing('annotation')} disabled />
+          )}
+          {inkAllowed && ink.available && !showsCamera && (
             <Menu label={t.viewer.annotation.title} icon="edit">
               <MenuItem selected={ink.enabled} onClick={() => void toggleInk()}>
                 {t.viewer.annotation.turnOn}
@@ -1352,12 +1322,42 @@ export function ViewerScreen({ title, subtitle, admit, visit, onLeave, autoRetry
             playsInline
             muted
             onResize={(e) => setVideoSize([e.currentTarget.videoWidth, e.currentTarget.videoHeight])}
-            style={
-              scale === 'original' && videoSize[0]
+            style={{
+              ...(scale === 'original' && videoSize[0]
                 ? { width: videoSize[0] / devicePixelRatio, height: videoSize[1] / devicePixelRatio }
-                : undefined
-            }
+                : undefined),
+              ...(showsCamera && shown ? orientationStyle(shown.mirror, shown.quarterTurns) : undefined),
+            }}
           />
+          {cameraPip?.stream && (
+            <div className="pip">
+              <video
+                ref={(element) => {
+                  pipVideo.current = element;
+                  if (element && element.srcObject !== cameraPip.stream) element.srcObject = cameraPip.stream ?? null;
+                }}
+                autoPlay
+                playsInline
+                muted
+                style={(() => {
+                  const s = screens?.screens.find((x) => x.id === cameraPip.camera);
+                  return s ? orientationStyle(s.mirror, s.quarterTurns) : undefined;
+                })()}
+              />
+              <button
+                type="button"
+                className="tool pip-close"
+                title={t.viewer.camera.closePip}
+                aria-label={t.viewer.camera.closePip}
+                onClick={() => {
+                  setCameraPip(undefined);
+                  void viewer.current?.pictureInPicture(undefined);
+                }}
+              >
+                <Icon name="close" size={14} />
+              </button>
+            </div>
+          )}
           {box && playing && annotating && shown && viewer.current && (
             <AnnotationLayer
               annotation={viewer.current.annotation}
