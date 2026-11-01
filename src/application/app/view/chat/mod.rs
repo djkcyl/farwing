@@ -201,7 +201,27 @@ impl DeviceCenterApp {
     /// Every frame: chat's notifications, and no focused channel while
     /// another page is shown.
     pub(crate) fn tick_chat(&mut self) {
-        let Some(chat) = &self.chat else { return };
+        let Some(chat) = &self.chat else {
+            crate::ui::tray::set_voice(false, false, false, false);
+            return;
+        };
+        let view = chat.view();
+        let voice = view.my_voice.clone();
+        crate::ui::tray::set_voice(
+            voice.is_some(),
+            voice.as_ref().is_some_and(|v| v.muted),
+            voice.as_ref().is_some_and(|v| v.deafened),
+            voice.as_ref().is_some_and(|v| v.call.is_some()),
+        );
+        if let Some(v) = &voice {
+            match crate::ui::tray::take_voice_action() {
+                1 => chat.set_voice_self(!v.muted, v.deafened),
+                2 => chat.set_voice_self(v.muted, !v.deafened),
+                3 => chat.leave_voice(),
+                _ => {}
+            }
+        }
+        chat.tick_sounds(&view);
         if self.center_ui.page != super::Page::Chat {
             chat.set_focus(None);
         }

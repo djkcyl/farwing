@@ -28,6 +28,22 @@ static STATE: AtomicU8 = AtomicU8::new(TrayState::Idle as u8);
 /// Exiting would also stop a background host: the menu offers leaving the
 /// device center (the host keeps running) and quitting completely.
 static FULL_EXIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// In a voice channel or call (`docs/protocol/chat-design.md` §7.7): bit 0
+/// in voice, bit 1 muted, bit 2 deafened, bit 3 a call.
+static VOICE: AtomicU8 = AtomicU8::new(0);
+/// What the menu asked of the voice: 1 mute, 2 deafen, 3 leave (0: none).
+static VOICE_ACTION: AtomicU8 = AtomicU8::new(0);
+
+/// The device center's voice, for the menu.
+pub(crate) fn set_voice(in_voice: bool, muted: bool, deafened: bool, call: bool) {
+    let bits = u8::from(in_voice) | (u8::from(muted) << 1) | (u8::from(deafened) << 2) | (u8::from(call) << 3);
+    VOICE.store(bits, Ordering::Relaxed);
+}
+
+/// The voice action chosen in the menu since last asked.
+pub(crate) fn take_voice_action() -> u8 {
+    VOICE_ACTION.swap(0, Ordering::Relaxed)
+}
 
 /// The taskbar is light (Windows' "default app mode" applies to apps only).
 fn light_taskbar() -> bool {
@@ -175,6 +191,17 @@ unsafe extern "system" fn procedure(
                     let open = HSTRING::from(t().controls.tray_open);
                     let _ = AppendMenuW(menu, MF_STRING, 1, &open);
                     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+                    let voice = VOICE.load(Ordering::Relaxed);
+                    if voice & 1 != 0 {
+                        let v = &t().voice;
+                        let mute = HSTRING::from(if voice & 2 != 0 { v.unmute } else { v.mute });
+                        let deafen = HSTRING::from(if voice & 4 != 0 { v.undeafen } else { v.deafen });
+                        let leave = HSTRING::from(if voice & 8 != 0 { v.hang_up } else { v.disconnect });
+                        let _ = AppendMenuW(menu, MF_STRING, 11, &mute);
+                        let _ = AppendMenuW(menu, MF_STRING, 12, &deafen);
+                        let _ = AppendMenuW(menu, MF_STRING, 13, &leave);
+                        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+                    }
                     if FULL_EXIT.load(Ordering::Relaxed) {
                         let leave = HSTRING::from(t().controls.tray_leave);
                         let quit = HSTRING::from(t().controls.tray_quit);
@@ -199,6 +226,9 @@ unsafe extern "system" fn procedure(
                     .0;
                     let _ = PostMessageW(Some(window), WM_NULL, WPARAM(0), LPARAM(0));
                     let _ = DestroyMenu(menu);
+                    if (11..=13).contains(&selected) {
+                        VOICE_ACTION.store((selected - 10) as u8, Ordering::Relaxed);
+                    }
                     let request = match selected {
                         1 => Some(super::window_manager::Request::ShowMain),
                         2 => Some(super::window_manager::Request::Exit),

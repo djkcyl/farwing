@@ -5,3 +5,4 @@ pub(crate) mod engine;
 pub(crate) mod keys;
 pub(crate) mod session;
 pub(crate) mod settings;
+pub(crate) mod sounds;

@@ -576,6 +576,10 @@ fn voice_settings(ui: &mut egui::Ui, chat: &ChatService, chat_ui: &mut ChatUi) {
             }
         }
     }
+    ui.horizontal(|ui| {
+        crate::ui::controls::switch(ui, &mut s.sounds);
+        ui.label(v.sounds);
+    });
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.label(parts::muted(v.volume));

@@ -83,6 +83,8 @@ struct Inner {
     voice_keys: Mutex<Option<Arc<crate::features::voice::keys::DeviceKeys>>>,
     /// The channel being joined and its pushes until the session is up.
     voice_joining: Mutex<Option<(Id, Vec<(String, Value)>)>>,
+    /// What the voice sounds last saw.
+    sounds: Mutex<voice_link::SoundState>,
 }
 
 #[derive(Clone)]
@@ -121,6 +123,7 @@ impl ChatService {
             voice_settings: Mutex::new(crate::features::voice::settings::load()),
             voice_keys: Mutex::new(None),
             voice_joining: Mutex::new(None),
+            sounds: Mutex::new(Default::default()),
         });
         runtime.spawn(run(Arc::clone(&inner), rx));
         runtime.spawn(tick(Arc::clone(&inner)));

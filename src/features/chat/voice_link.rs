@@ -13,6 +13,17 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+/// What the voice sounds last saw.
+#[derive(Default)]
+pub(super) struct SoundState {
+    connected: bool,
+    channel: Option<Id>,
+    people: Vec<u32>,
+    muted: bool,
+    deafened: bool,
+    rang: Option<std::time::Instant>,
+}
+
 #[derive(Clone)]
 pub(super) enum Active {
     Channel(Arc<ChannelVoice>),
@@ -128,6 +139,66 @@ impl ChatService {
                 (who, me, c.engine.input_level())
             }
             None => (Vec::new(), false, 0.0),
+        }
+    }
+
+    /// Plays the sounds the state's changes call for (each frame).
+    pub(crate) fn tick_sounds(&self, view: &crate::features::chat::state::ChatState) {
+        use crate::features::voice::sounds::{Sound, play};
+        let settings = lock(&self.inner.voice_settings).clone();
+        let mut last = lock(&self.inner.sounds);
+        let mut sounds = Vec::new();
+        let me = view.me().map(|u| u.user_id.clone()).unwrap_or_default();
+        let dnd = view.snap.as_ref().is_some_and(|s| s.status == farwing_protocol::chat::Status::Dnd);
+        let calls = view.snap.as_ref().map(|s| s.calls.as_slice()).unwrap_or(&[]);
+        let ring = calls.iter().find(|c| c.state == "ringing").map(|c| c.caller.user_id != me);
+        match ring {
+            Some(incoming) if last.rang.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(3)) => {
+                if !(incoming && dnd) {
+                    sounds.push(if incoming { Sound::Ring } else { Sound::Ringback });
+                }
+                last.rang = Some(std::time::Instant::now());
+            }
+            None => last.rang = None,
+            _ => {}
+        }
+        let voice = view.my_voice.as_ref();
+        let connected = voice.is_some_and(|v| v.connected);
+        if connected && !last.connected {
+            sounds.push(Sound::Joined);
+        } else if !connected && last.connected {
+            sounds.push(Sound::Left);
+        }
+        let channel = voice.filter(|v| v.call.is_none()).map(|v| v.channel);
+        let people: Vec<u32> = channel
+            .and_then(|c| view.snap.as_ref()?.voice.iter().find(|v| v.channel_id == c))
+            .map(|v| v.participants.iter().map(|p| p.participant).collect())
+            .unwrap_or_default();
+        if connected && channel == last.channel {
+            let mine = voice.map(|v| v.participant).unwrap_or(0);
+            if people.iter().any(|p| *p != mine && !last.people.contains(p)) {
+                sounds.push(Sound::Came);
+            } else if last.people.iter().any(|p| *p != mine && !people.contains(p)) {
+                sounds.push(Sound::Went);
+            }
+        }
+        let (muted, deafened) = voice.map_or((last.muted, last.deafened), |v| (v.muted, v.deafened));
+        if voice.is_some() && (muted != last.muted || deafened != last.deafened) {
+            sounds.push(if muted || deafened { Sound::Muted } else { Sound::Unmuted });
+        }
+        *last = SoundState {
+            connected,
+            channel,
+            people,
+            muted,
+            deafened,
+            rang: last.rang,
+        };
+        drop(last);
+        if settings.sounds {
+            for s in sounds {
+                play(s, settings.output.clone(), f32::from(settings.volume) / 100.0);
+            }
         }
     }
 
