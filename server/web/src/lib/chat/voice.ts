@@ -135,6 +135,12 @@ function iceConfig(servers: IceServer[]): RTCConfiguration {
   };
 }
 
+/// (participant, kind) of a forwarded track's stream, `p<participant>-<kind>`.
+export function parseStream(id: string): { participant: number; kind: string } | undefined {
+  const m = /^p(\d+)-(\w+)$/.exec(id);
+  return m ? { participant: Number(m[1]), kind: m[2] } : undefined;
+}
+
 /// The microphone as the settings ask (`stereo`: two channels).
 export function openMicrophone(s: VoiceSettings, stereo = false): Promise<MediaStream> {
   return navigator.mediaDevices.getUserMedia({
@@ -654,9 +660,9 @@ class ChannelSession {
       const pc = new RTCPeerConnection(iceConfig(this.ice));
       this.downlink = pc;
       pc.ontrack = (e) => {
-        const id = e.streams[0]?.id ?? '';
-        const participant = Number(id.startsWith('p') ? id.slice(1) : NaN);
-        if (!Number.isFinite(participant)) return;
+        const stream = parseStream(e.streams[0]?.id ?? '');
+        if (!stream || stream.kind !== 'mic') return;
+        const participant = stream.participant;
         if (this.worker) {
           e.receiver.transform = new RTCRtpScriptTransform(this.worker, { kind: 'receive', participant });
         }

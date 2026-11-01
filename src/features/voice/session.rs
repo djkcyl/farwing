@@ -297,7 +297,10 @@ impl ChannelVoice {
             let weak = Arc::downgrade(self);
             pc.on_track(Box::new(move |track, _, _| {
                 if let Some(v) = weak.upgrade() {
-                    let participant = track.stream_id().strip_prefix('p').and_then(|n| n.parse::<u32>().ok());
+                    let stream = track.stream_id();
+                    let participant = farwing_protocol::chat::track::parse(&stream)
+                        .filter(|(_, kind)| *kind == farwing_protocol::chat::track::MIC)
+                        .map(|(p, _)| p);
                     if let Some(p) = participant {
                         let user = lock(&v.participants).get(&p).map(|x| x.user_id.clone()).unwrap_or_default();
                         tracing::info!(participant = p, "voice track");
