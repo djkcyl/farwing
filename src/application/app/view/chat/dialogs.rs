@@ -576,6 +576,38 @@ fn voice_settings(ui: &mut egui::Ui, chat: &ChatService, chat_ui: &mut ChatUi) {
             }
         }
     }
+    // Keys that toggle mute and deafen, wherever the focus is.
+    for (which, label) in [(1u8, v.mute), (2u8, v.deafen)] {
+        let slot = if which == 1 { &mut s.mute_key } else { &mut s.deafen_key };
+        ui.horizontal(|ui| {
+            ui.label(parts::muted(format!("{label} · {}", v.key)));
+            let waiting = chat_ui.capturing_toggle == which;
+            let text = if waiting {
+                v.press_key.to_owned()
+            } else {
+                slot.map_or(v.no_key.to_owned(), |k| {
+                    crate::plugins::hotkeys::label(&crate::plugins::hotkeys::Binding { key: k.vk, modifiers: 0 })
+                })
+            };
+            if ui.button(text).clicked() {
+                chat_ui.capturing_toggle = if waiting { 0 } else { which };
+            }
+            if slot.is_some() && ui.small_button("×").clicked() {
+                *slot = None;
+            }
+        });
+        if chat_ui.capturing_toggle == which
+            && let Some(vk) = ui.input(|i| {
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::Key { key, pressed: true, .. } => crate::plugins::hotkeys::key_code(*key),
+                    _ => None,
+                })
+            })
+        {
+            *slot = Some(Key { vk });
+            chat_ui.capturing_toggle = 0;
+        }
+    }
     ui.horizontal(|ui| {
         crate::ui::controls::switch(ui, &mut s.sounds);
         ui.label(v.sounds);

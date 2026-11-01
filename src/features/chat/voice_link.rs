@@ -88,6 +88,32 @@ async fn keys(inner: &Arc<Inner>) -> anyhow::Result<Arc<DeviceKeys>> {
     Ok(keys)
 }
 
+/// The mute and deafen keys, while a session runs (also with the window
+/// closed).
+fn toggles(inner: &Arc<Inner>, engine: crate::features::voice::engine::Engine) {
+    let inner = Arc::clone(inner);
+    inner.runtime.clone().spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
+        loop {
+            tick.tick().await;
+            if inner.stop.is_cancelled() || lock(&inner.voice).is_none() {
+                return;
+            }
+            let pressed = engine.take_toggles();
+            if pressed == 0 {
+                continue;
+            }
+            let (muted, deafened) = {
+                let state = lock(&inner.state);
+                state.my_voice.as_ref().map_or((false, false), |v| (v.muted, v.deafened))
+            };
+            let muted = if pressed & 1 != 0 { !muted } else { muted };
+            let deafened = if pressed & 2 != 0 { !deafened } else { deafened };
+            ChatService { inner: Arc::clone(&inner) }.set_voice_self(muted, deafened);
+        }
+    });
+}
+
 /// Follows a session's events into the state.
 fn watch(inner: &Arc<Inner>, mut events: mpsc::UnboundedReceiver<Event>) {
     let inner = Arc::clone(inner);
@@ -260,6 +286,7 @@ impl ChatService {
                             v.compat = voice.mode == VoiceMode::Compatible;
                         }
                     });
+                    toggles(&inner, voice.engine.clone());
                     *lock(&inner.voice) = Some(Active::Channel(voice));
                     // What came while joining.
                     let waiting = lock(&inner.voice_joining).take().map(|(_, w)| w).unwrap_or_default();
@@ -407,6 +434,7 @@ fn begin_call(inner: &Arc<Inner>, call: Call) {
                 }
             });
             *lock(&inner.voice) = Some(Active::Call(Arc::clone(&voice)));
+            toggles(inner, voice.engine.clone());
             if answered {
                 // The callee's side waits for the caller's offer.
                 let v = Arc::clone(&voice);

@@ -77,6 +77,8 @@ struct Inner {
     server_deafened: AtomicBool,
     /// The push-to-talk key is held.
     talk: AtomicBool,
+    /// Mute (bit 0) and deafen (bit 1) keys pressed since last asked.
+    toggles: std::sync::atomic::AtomicU8,
     speaking: AtomicBool,
     playback: AudioPlayback,
     receivers: Mutex<HashMap<u32, Receiver>>,
@@ -105,6 +107,7 @@ impl Engine {
             server_muted: AtomicBool::new(false),
             server_deafened: AtomicBool::new(false),
             talk: AtomicBool::new(false),
+            toggles: std::sync::atomic::AtomicU8::new(0),
             speaking: AtomicBool::new(false),
             playback,
             receivers: Mutex::new(HashMap::new()),
@@ -212,6 +215,11 @@ impl Engine {
         self.0.server_muted.store(muted, Ordering::Relaxed);
         self.0.server_deafened.store(deafened, Ordering::Relaxed);
         self.apply_output();
+    }
+
+    /// The mute (bit 0) and deafen (bit 1) keys pressed since last asked.
+    pub(crate) fn take_toggles(&self) -> u8 {
+        self.0.toggles.swap(0, Ordering::Relaxed)
     }
 
     /// The push-to-talk key went down or up.
@@ -370,6 +378,7 @@ async fn send(inner: Arc<Inner>) {
     let mut open_until: Option<Instant> = None;
     let mut was_open = false;
     let mut silent_frames: u64 = 0;
+    let mut keys_down = (false, false);
     // The background noise, followed slowly upwards and quickly downwards.
     let mut floor_db = -60f32;
     let mut tick = tokio::time::interval(Duration::from_millis(10));
@@ -378,6 +387,22 @@ async fn send(inner: Arc<Inner>) {
         tokio::select! {
             _ = inner.stop.cancelled() => return,
             _ = tick.tick() => {}
+        }
+        // The toggle keys, read as they are (no hook): a press counts once.
+        {
+            let settings = lock(&inner.settings);
+            let down = |k: Option<super::settings::Key>| {
+                // SAFETY: a plain query of the key's state.
+                k.is_some_and(|k| unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(i32::from(k.vk)) < 0 })
+            };
+            let now = (down(settings.mute_key), down(settings.deafen_key));
+            if now.0 && !keys_down.0 {
+                inner.toggles.fetch_or(1, Ordering::Relaxed);
+            }
+            if now.1 && !keys_down.1 {
+                inner.toggles.fetch_or(2, Ordering::Relaxed);
+            }
+            keys_down = now;
         }
         loop {
             let block = {

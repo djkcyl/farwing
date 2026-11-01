@@ -36,6 +36,9 @@ pub(crate) struct VoiceSettings {
     /// Activity threshold (dBFS); `None`: follows the background noise.
     pub threshold_db: Option<f32>,
     pub key: Option<Key>,
+    /// Keys that toggle mute and deafen, wherever the focus is.
+    pub mute_key: Option<Key>,
+    pub deafen_key: Option<Key>,
     /// Output volume (percent, 0–200).
     pub volume: u8,
     /// Each person's volume (percent), by account.
@@ -54,6 +57,8 @@ impl Default for VoiceSettings {
             mode: Mode::Activity,
             threshold_db: None,
             key: None,
+            mute_key: None,
+            deafen_key: None,
             volume: 100,
             volumes: BTreeMap::new(),
             sounds: true,

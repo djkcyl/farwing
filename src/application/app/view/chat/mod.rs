@@ -100,6 +100,8 @@ pub(crate) struct ChatUi {
     endpoints: Option<(Vec<crate::features::voice::capture::Endpoint>, Vec<crate::features::voice::capture::Endpoint>)>,
     /// The voice settings wait for a push-to-talk key.
     capturing_key: bool,
+    /// ...or a mute (1) or deafen (2) key.
+    capturing_toggle: u8,
     trusted: HashSet<String>,
     /// Open this channel once it is known (a new DM or group).
     pub(super) open: Option<Id>,
@@ -148,6 +150,7 @@ impl Default for ChatUi {
             me_tab: 0,
             endpoints: None,
             capturing_key: false,
+            capturing_toggle: 0,
             trusted: HashSet::new(),
             open: None,
             picker_group: 0,
