@@ -282,6 +282,8 @@ pub struct Channel {
     pub voice_bitrate: u32,
     /// 0: unlimited.
     pub voice_limit: u32,
+    /// A voice channel in compatible mode (§10.4): no frame encryption.
+    pub voice_compat: bool,
     pub overwrites: Vec<Overwrite>,
     /// The caller's permissions in it.
     pub permissions: i64,
@@ -386,6 +388,19 @@ pub struct Message {
     /// The sender's `nonce`, on the answer and the pushes of a new message.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub nonce: String,
+    /// A call's record in a direct message (its author called).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call: Option<CallRecord>,
+}
+
+/// How a call in a direct message went (§7.6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CallRecord {
+    /// From answer to end; 0 when missed or declined.
+    pub duration_s: u32,
+    /// Nobody answered (or the other side declined).
+    pub missed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -449,6 +464,10 @@ pub struct Snapshot {
     pub group_invites: Vec<GroupInvite>,
     /// Server limits the clients check before sending.
     pub limits: ChatLimits,
+    /// Who is in the voice channels the account sees.
+    pub voice: Vec<VoiceChannelState>,
+    /// The account's calls that ring or run.
+    pub calls: Vec<Call>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -540,6 +559,7 @@ pub struct ChannelUpdate {
     pub slow_mode_s: Option<u32>,
     pub voice_bitrate: Option<u32>,
     pub voice_limit: Option<u32>,
+    pub voice_compat: Option<bool>,
 }
 
 /// The channels of a group in their new order: each with its category.
@@ -842,6 +862,269 @@ pub mod types {
     pub const PREFS: &str = "chat.prefs";
     /// An account's name or avatar changed (a [`ChatUser`]).
     pub const USER: &str = "chat.user";
+
+    // ---- voice (§7)
+    /// Who is in a voice channel now ([`VoiceChannelState`]), to everyone
+    /// who sees it.
+    pub const VOICE_STATE: &str = "voice.state";
+    /// Server → the device: its downlink's next description
+    /// ([`VoiceOffer`]).
+    pub const VOICE_OFFER: &str = "voice.offer";
+    /// Device → server: the answer to a [`VOICE_OFFER`] ([`VoiceOffer`]).
+    pub const VOICE_ANSWER: &str = "voice.answer";
+    /// Server → the device: another participant's frame key for it
+    /// ([`VoiceKeyPush`]).
+    pub const VOICE_KEYS: &str = "voice.keys";
+    /// Server → the device: it is out of the channel ([`VoiceLeft`]).
+    pub const VOICE_LEFT: &str = "voice.left";
+
+    // ---- calls in direct messages (§7.6)
+    /// To the callee's devices: a call rings ([`Call`]).
+    pub const CALL_RING: &str = "call.ring";
+    /// To the caller's other devices: it calls from one of them ([`Call`]).
+    pub const CALL_OUTGOING: &str = "call.outgoing";
+    /// To both devices in the call: who takes part now ([`Call`]).
+    pub const CALL_ANSWERED: &str = "call.answered";
+    /// The call is over for this device ([`CallEnded`]).
+    pub const CALL_ENDED: &str = "call.ended";
+    /// Device ↔ device through the server: offer, answer, candidates
+    /// ([`CallSignal`]).
+    pub const CALL_SIGNAL: &str = "call.signal";
+}
+
+// ===================================================================== voice
+
+/// How a voice channel's media is protected (§10.4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceMode {
+    /// Each participant's frames are encrypted with its own key.
+    #[default]
+    E2ee,
+    /// No frame encryption (media is still encrypted to the forwarder).
+    Compatible,
+}
+
+/// A device in a voice channel.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceParticipant {
+    /// Its number in the channel; its tracks' stream is `p<number>`.
+    pub participant: u32,
+    pub user_id: String,
+    pub device_id: String,
+    /// The device's Ed25519 key, which signs its frame-key boxes, and its
+    /// X25519 key, which they are sealed to (§10).
+    pub ed25519: String,
+    pub x25519: String,
+    pub self_muted: bool,
+    pub self_deafened: bool,
+    /// By a moderator.
+    pub server_muted: bool,
+    pub server_deafened: bool,
+    /// Unix milliseconds.
+    pub joined_at: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceChannelState {
+    pub channel_id: Id,
+    pub participants: Vec<VoiceParticipant>,
+}
+
+/// `POST /chat/channels/{id}/voice/join`
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceJoin {
+    pub self_muted: bool,
+    pub self_deafened: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceJoined {
+    pub channel_id: Id,
+    /// This device's number.
+    pub participant: u32,
+    pub mode: VoiceMode,
+    /// The channel's bitrate (kbit/s).
+    pub bitrate_kbps: u32,
+    /// For reaching the forwarder.
+    pub ice_servers: Vec<crate::realtime::IceServer>,
+    pub participants: Vec<VoiceParticipant>,
+}
+
+/// A session description: `PUT …/voice/publish` and its answer.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceDescription {
+    pub sdp: String,
+}
+
+/// `PUT …/voice/state`: the device's own mute and deafen.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceSelf {
+    pub self_muted: bool,
+    pub self_deafened: bool,
+}
+
+/// `PATCH …/voice/participants/{participant}` (`voice_moderate`).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceModerate {
+    pub server_muted: Option<bool>,
+    pub server_deafened: Option<bool>,
+}
+
+/// A frame key sealed to one device (§10.2): `ephemeral` is the sender's
+/// one-time X25519 key; `data` the AES-256-GCM box of
+/// `frame_key(20) ‖ key_id(1) ‖ participant(u32 BE)`; `signature` the
+/// sender device's Ed25519 signature of [`key_box_message`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceKeyBox {
+    pub device_id: String,
+    pub ephemeral: String,
+    pub data: String,
+    pub signature: String,
+}
+
+/// `POST …/voice/keys`: this device's key for the others.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceKeys {
+    pub key_id: u8,
+    pub boxes: Vec<VoiceKeyBox>,
+}
+
+/// `PUT /devices/self/x25519`: the device's X25519 key (base64url), signed
+/// by its Ed25519 key over [`x25519_message`] (§10.1).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeviceX25519 {
+    pub public: String,
+    pub signature: String,
+}
+
+pub fn x25519_message(public: &str) -> String {
+    format!("FWX25519\n{public}")
+}
+
+/// What the sender signs for a key box: the channel (or call), its own
+/// participant number, the receiving device and the box.
+pub fn key_box_message(scope: &str, participant: u32, device_id: &str, ephemeral: &str, data: &str) -> String {
+    format!("FWVKEY1\n{scope}\n{participant}\n{device_id}\n{ephemeral}\n{data}")
+}
+
+/// `voice.offer` (server → device) and `voice.answer` (device → server).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceOffer {
+    pub channel_id: Id,
+    /// Answers count only for the latest offer.
+    pub generation: u64,
+    pub sdp: String,
+}
+
+/// `voice.keys`: a participant's frame key for this device.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceKeyPush {
+    pub channel_id: Id,
+    /// The sender.
+    pub participant: u32,
+    pub device_id: String,
+    pub key_id: u8,
+    pub ephemeral: String,
+    pub data: String,
+    pub signature: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceLeft {
+    pub channel_id: Id,
+    /// `disconnected` (by a moderator), `replaced` (the device joined
+    /// elsewhere), `forbidden` (lost the permission), `idle` (no media),
+    /// `ended` (the channel went away).
+    pub reason: String,
+}
+
+// ===================================================================== calls
+
+/// A call in a direct message (§7.6).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Call {
+    pub id: String,
+    pub channel_id: Id,
+    pub caller: ChatUser,
+    pub caller_device: String,
+    pub callee: ChatUser,
+    /// The device that answered; empty while it rings.
+    pub callee_device: String,
+    /// `ringing` or `active`.
+    pub state: String,
+    pub video: bool,
+    /// Unix milliseconds.
+    pub started_at: i64,
+    pub answered_at: Option<i64>,
+    /// The devices' Ed25519 keys: each signs its descriptions (§10.2).
+    pub caller_key: String,
+    pub callee_key: String,
+    /// Relays for this device (in the pushes to the devices in the call).
+    pub ice_servers: Vec<crate::realtime::IceServer>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CallStart {
+    pub video: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CallEnded {
+    pub call_id: String,
+    pub channel_id: Id,
+    /// `declined`, `missed`, `hangup`, `answered_elsewhere`, `moved`,
+    /// `failed`.
+    pub reason: String,
+}
+
+/// `call.signal`: `kind` is `offer`, `answer` or `candidate`; descriptions
+/// carry the sender device's signature of [`call_signal_message`].
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CallSignal {
+    pub call_id: String,
+    pub kind: String,
+    pub data: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub signature: String,
+    /// Set by the server: who sent it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub from_device: String,
+}
+
+/// What a device signs for a description in a call: the call and the
+/// description's DTLS fingerprints, which bind the media to the device.
+pub fn call_signal_message(call_id: &str, fingerprints: &[String]) -> String {
+    format!("FWCALL1\n{call_id}\n{}", fingerprints.join("\n"))
+}
+
+/// The DTLS fingerprints (`a=fingerprint:` values) of a description.
+pub fn sdp_fingerprints(sdp: &str) -> Vec<String> {
+    let mut out: Vec<String> = sdp
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("a=fingerprint:"))
+        .map(|f| f.trim().to_ascii_lowercase())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]

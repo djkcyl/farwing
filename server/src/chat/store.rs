@@ -355,11 +355,12 @@ pub struct ChannelRow {
     pub slow_mode_s: u32,
     pub voice_bitrate: u32,
     pub voice_limit: u32,
+    pub voice_compat: bool,
     pub created_at: i64,
 }
 
 const CHANNEL_COLS: &str = "id, group_id, kind, name, topic, parent_id, position, slow_mode_s, \
-                            voice_bitrate, voice_limit, created_at";
+                            voice_bitrate, voice_limit, created_at, voice_compat";
 
 fn channel_from(r: &Row<'_>) -> R<ChannelRow> {
     let kind: String = r.get(2)?;
@@ -375,6 +376,7 @@ fn channel_from(r: &Row<'_>) -> R<ChannelRow> {
         voice_bitrate: r.get(8)?,
         voice_limit: r.get(9)?,
         created_at: r.get(10)?,
+        voice_compat: r.get::<_, i64>(11)? != 0,
     })
 }
 
@@ -399,7 +401,8 @@ pub fn channels(c: &Connection, group: i64) -> R<Vec<ChannelRow>> {
 pub fn insert_channel(c: &Connection, ch: &ChannelRow) -> R<()> {
     c.execute(
         "INSERT INTO chat_channels (id, group_id, kind, name, topic, parent_id, position, slow_mode_s,
-         voice_bitrate, voice_limit, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         voice_bitrate, voice_limit, created_at, voice_compat)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             ch.id,
             ch.group_id,
@@ -411,7 +414,8 @@ pub fn insert_channel(c: &Connection, ch: &ChannelRow) -> R<()> {
             ch.slow_mode_s,
             ch.voice_bitrate,
             ch.voice_limit,
-            ch.created_at
+            ch.created_at,
+            ch.voice_compat
         ],
     )?;
     Ok(())
@@ -420,7 +424,7 @@ pub fn insert_channel(c: &Connection, ch: &ChannelRow) -> R<()> {
 pub fn update_channel(c: &Connection, ch: &ChannelRow) -> R<()> {
     c.execute(
         "UPDATE chat_channels SET name = ?2, topic = ?3, parent_id = ?4, position = ?5, slow_mode_s = ?6,
-         voice_bitrate = ?7, voice_limit = ?8 WHERE id = ?1",
+         voice_bitrate = ?7, voice_limit = ?8, voice_compat = ?9 WHERE id = ?1",
         params![
             ch.id,
             ch.name,
@@ -429,7 +433,8 @@ pub fn update_channel(c: &Connection, ch: &ChannelRow) -> R<()> {
             ch.position,
             ch.slow_mode_s,
             ch.voice_bitrate,
-            ch.voice_limit
+            ch.voice_limit,
+            ch.voice_compat
         ],
     )?;
     Ok(())
@@ -713,7 +718,7 @@ pub fn user_dms(c: &Connection, user: &str) -> R<Vec<(ChannelRow, String)>> {
             .collect::<Vec<_>>()
             .join(", ")
     ))?;
-    st.query_map([user], |r| Ok((channel_from(r)?, r.get(11)?)))?.collect()
+    st.query_map([user], |r| Ok((channel_from(r)?, r.get(12)?)))?.collect()
 }
 
 // ================================================================== messages
@@ -730,10 +735,11 @@ pub struct MessageRow {
     pub pinned_at: Option<i64>,
     pub edited_at: Option<i64>,
     pub deleted_at: Option<i64>,
+    pub call: Option<farwing_protocol::chat::CallRecord>,
 }
 
 const MESSAGE_COLS: &str =
-    "id, channel_id, author_id, content, reply_to, mentions, attachments, pinned_at, edited_at, deleted_at";
+    "id, channel_id, author_id, content, reply_to, mentions, attachments, pinned_at, edited_at, deleted_at, call";
 
 fn message_from(r: &Row<'_>) -> R<MessageRow> {
     let mentions: String = r.get(5)?;
@@ -749,6 +755,9 @@ fn message_from(r: &Row<'_>) -> R<MessageRow> {
         pinned_at: r.get(7)?,
         edited_at: r.get(8)?,
         deleted_at: r.get(9)?,
+        call: r
+            .get::<_, Option<String>>(10)?
+            .and_then(|s| serde_json::from_str(&s).ok()),
     })
 }
 
@@ -777,7 +786,7 @@ pub fn messages_by_id(c: &Connection, ids: &[i64]) -> R<HashMap<i64, MessageRow>
 pub fn insert_message(c: &mut Connection, m: &MessageRow) -> R<()> {
     let tx = c.transaction()?;
     tx.execute(
-        &format!("INSERT INTO chat_messages ({MESSAGE_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, NULL)"),
+        &format!("INSERT INTO chat_messages ({MESSAGE_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, NULL, ?8)"),
         params![
             m.id,
             m.channel_id,
@@ -785,7 +794,8 @@ pub fn insert_message(c: &mut Connection, m: &MessageRow) -> R<()> {
             m.content,
             m.reply_to,
             serde_json::to_string(&m.mentions).unwrap_or_default(),
-            serde_json::to_string(&m.attachments).unwrap_or_default()
+            serde_json::to_string(&m.attachments).unwrap_or_default(),
+            m.call.map(|c| serde_json::to_string(&c).unwrap_or_default())
         ],
     )?;
     for a in &m.attachments {

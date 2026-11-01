@@ -18,8 +18,10 @@ mod estimate;
 mod leg;
 mod room;
 pub mod sdp;
+mod voice;
 
 pub use room::{LegStats, RoomStats};
+pub use voice::{VoiceOp, VoiceResult};
 
 use farwing_protocol::api::ForwardLayer;
 use leg::{ForwardTrack, Leg, Rewrite, Tap, TapBuilder};
@@ -137,6 +139,8 @@ pub enum SfuRequest {
     Close {
         room: String,
     },
+    /// A voice channel's operation; the answer is a [`VoiceResult`] (JSON).
+    Voice(VoiceOp),
 }
 
 pub struct Sfu {
@@ -144,6 +148,7 @@ pub struct Sfu {
     rooms: Mutex<HashMap<String, Arc<Room>>>,
     /// What the viewers' connections send, per session.
     meters: Arc<crate::egress::Meters>,
+    voice: voice::VoiceRooms,
 }
 
 fn media_engine() -> Result<MediaEngine, SfuError> {
@@ -162,6 +167,7 @@ impl Sfu {
             config: RwLock::new(config),
             rooms: Mutex::default(),
             meters,
+            voice: voice::VoiceRooms::default(),
         })
     }
 
@@ -578,6 +584,10 @@ impl Sfu {
             SfuRequest::Close { room } => {
                 self.close_room(&room).await;
                 Ok(String::new())
+            }
+            SfuRequest::Voice(op) => {
+                let result = self.voice.handle(self, op).await?;
+                Ok(serde_json::to_string(&result).unwrap_or_default())
             }
         }
     }

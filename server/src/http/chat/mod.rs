@@ -8,6 +8,7 @@ pub mod groups;
 pub mod invites;
 pub mod messages;
 pub mod misc;
+pub mod voice;
 
 use super::App;
 use crate::chat::store::{self, MemberRow};
@@ -101,6 +102,18 @@ pub fn routes(r: Router<App>) -> Router<App> {
             put(messages::pin).delete(messages::unpin),
         )
         .route("/api/v2/chat/search", get(messages::search))
+        .route("/api/v2/chat/channels/{id}/voice/join", post(voice::join))
+        .route("/api/v2/chat/channels/{id}/voice/leave", post(voice::leave))
+        .route("/api/v2/chat/channels/{id}/voice/publish", put(voice::publish))
+        .route("/api/v2/chat/channels/{id}/voice/state", put(voice::state))
+        .route("/api/v2/chat/channels/{id}/voice/keys", post(voice::keys))
+        .route(
+            "/api/v2/chat/channels/{id}/voice/participants/{participant}",
+            patch(voice::moderate).delete(voice::disconnect),
+        )
+        .route("/api/v2/devices/self/x25519", put(voice::put_x25519))
+        .route("/api/v2/chat/dm/{id}/call", post(voice::call))
+        .route("/api/v2/chat/calls/{id}/{action}", post(voice::call_action))
         .route("/api/v2/chat/attachments", post(files::create_attachment))
         .route("/media/upload/{id}", put(files::upload))
         .route("/media/attachments/{id}/{name}", get(files::download))

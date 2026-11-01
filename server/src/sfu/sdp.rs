@@ -166,6 +166,20 @@ pub fn tracks(sdp: &str) -> Vec<Track> {
             }
         }
         let repairs: Vec<u32> = rtx.values().chain(fec.values()).copied().collect();
+        // Browsers may name the track only at the media level (`a=msid:`)
+        // and give its SSRCs a CNAME alone.
+        if msids.is_empty()
+            && let Some((stream, track)) = section.lines.iter().find_map(|l| {
+                let mut ids = l.strip_prefix("a=msid:")?.split_whitespace();
+                Some((ids.next()?.to_owned(), ids.next()?.to_owned()))
+            })
+            && let Some(ssrc) = section.lines.iter().find_map(|l| {
+                let ssrc: u32 = l.strip_prefix("a=ssrc:")?.split(' ').next()?.parse().ok()?;
+                (!repairs.contains(&ssrc)).then_some(ssrc)
+            })
+        {
+            msids.push((ssrc, stream, track));
+        }
         for (ssrc, stream_id, id) in msids {
             if repairs.contains(&ssrc) {
                 continue;

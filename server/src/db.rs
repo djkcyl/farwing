@@ -349,6 +349,7 @@ CREATE TABLE IF NOT EXISTS chat_channels (
     slow_mode_s   INTEGER NOT NULL DEFAULT 0,
     voice_bitrate INTEGER NOT NULL DEFAULT 64,
     voice_limit   INTEGER NOT NULL DEFAULT 0,
+    voice_compat  INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS chat_channels_group ON chat_channels(group_id);
@@ -377,7 +378,9 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     attachments TEXT NOT NULL DEFAULT '[]',
     pinned_at   INTEGER,
     edited_at   INTEGER,
-    deleted_at  INTEGER
+    deleted_at  INTEGER,
+    -- A call's record in a direct message (JSON `CallRecord`).
+    call        TEXT
 );
 CREATE INDEX IF NOT EXISTS chat_messages_channel ON chat_messages(channel_id, id);
 CREATE INDEX IF NOT EXISTS chat_messages_author ON chat_messages(author_id, id);
@@ -859,6 +862,19 @@ pub fn update_device_profile(c: &Connection, id: &str, p: &DeviceInitRequest) ->
             now_s(),
         ],
     )?;
+    Ok(())
+}
+
+/// The device's X25519 key (chat-design §10.1); empty when it has none.
+pub fn device_x25519(c: &Connection, id: &str) -> R<String> {
+    Ok(c
+        .query_row("SELECT x25519 FROM devices WHERE id = ?1", [id], |r| r.get(0))
+        .optional()?
+        .unwrap_or_default())
+}
+
+pub fn set_device_x25519(c: &Connection, id: &str, key: &str) -> R<()> {
+    c.execute("UPDATE devices SET x25519 = ?2 WHERE id = ?1", params![id, key])?;
     Ok(())
 }
 

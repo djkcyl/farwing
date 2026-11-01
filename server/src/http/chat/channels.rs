@@ -81,6 +81,7 @@ pub async fn create(
                 slow_mode_s: 0,
                 voice_bitrate: voice_default,
                 voice_limit: 0,
+                voice_compat: false,
                 created_at: crate::db::now_s(),
             };
             store::insert_channel(c, &row)?;
@@ -141,6 +142,10 @@ pub async fn update(
         return Err(ApiError::bad_request("slow_mode_s is 0-21600"));
     }
     check_voice(req.voice_bitrate, req.voice_limit, app.cfg().chat.voice_max_kbps)?;
+    // Compatible mode is a choice only where the server allows it (§10.4).
+    if req.voice_compat.is_some() && app.cfg().e2ee != farwing_protocol::api::E2ee::Allowed {
+        return Err(ApiError::bad_request("the server decides the voice mode"));
+    }
     let u = auth.user.id.clone();
     let (group, out) = app
         .db
@@ -174,6 +179,9 @@ pub async fn update(
             }
             if let Some(l) = req.voice_limit {
                 ch.voice_limit = l;
+            }
+            if let Some(compat) = req.voice_compat {
+                ch.voice_compat = compat;
             }
             store::update_channel(c, &ch)?;
             let group = ctx.group.id;

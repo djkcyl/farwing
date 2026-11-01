@@ -3,12 +3,14 @@
 //! [`store`], permissions in [`perms`], the HTTP handlers in
 //! `crate::http::chat`.
 
+pub mod calls;
 pub mod conn;
 pub mod hub;
 pub mod media;
 pub mod perms;
 pub mod push;
 pub mod store;
+pub mod voice;
 
 use crate::db::{R, now_ms, now_s};
 use farwing_protocol::chat::{
@@ -25,6 +27,8 @@ pub const RESTORE_DAYS: i64 = 30;
 /// Chat state that lives in memory: the connections and the media key.
 pub struct Chat {
     pub hub: std::sync::Arc<hub::ChatHub>,
+    pub voice: voice::Voice,
+    pub calls: calls::Calls,
     pub media: media::MediaKey,
     /// Recent sends by `(user, nonce)`: a repeated send makes no second
     /// message.
@@ -38,6 +42,8 @@ impl Chat {
     pub fn new(media_key: [u8; 32]) -> Self {
         Self {
             hub: Default::default(),
+            voice: Default::default(),
+            calls: Default::default(),
             media: media::MediaKey(media_key),
             nonces: Default::default(),
         }
@@ -282,6 +288,7 @@ pub fn wire_channel(ch: &ChannelRow, overwrites: Vec<Overwrite>, permissions: i6
         slow_mode_s: ch.slow_mode_s,
         voice_bitrate: ch.voice_bitrate,
         voice_limit: ch.voice_limit,
+        voice_compat: ch.voice_compat,
         overwrites,
         permissions,
         last_message_id: last.map(Id),
@@ -419,6 +426,7 @@ pub fn wire_messages(c: &Connection, rows: &[MessageRow]) -> R<Vec<Message>> {
             deleted: m.deleted_at.is_some(),
             created_at: Id(m.id).created_ms(),
             nonce: String::new(),
+            call: m.call,
         })
         .collect())
 }
@@ -579,9 +587,26 @@ pub fn snapshot(c: &Connection, user: &str, limits: ChatLimits) -> R<(Snapshot, 
             prefs: store::prefs(c, user)?,
             group_invites,
             limits,
+            // Filled from the live voice state by the connection.
+            voice: Vec::new(),
+            calls: Vec::new(),
         },
         store::audience(c, user)?,
     ))
+}
+
+/// What a snapshot takes from memory: who is in the voice channels it
+/// shows, and the account's calls.
+pub fn fill_live(app: &crate::http::App, user: &str, snap: &mut Snapshot) {
+    let visible: Vec<i64> = snap
+        .groups
+        .iter()
+        .flat_map(|g| g.channels.iter())
+        .filter(|c| c.kind == farwing_protocol::chat::ChannelKind::Voice)
+        .map(|c| c.id.0)
+        .collect();
+    snap.voice = app.chat.voice.states(&visible);
+    snap.calls = app.chat.calls.of(user);
 }
 
 /// Remove attachments never sent (an hour old); with `hourly`, also purge

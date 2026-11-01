@@ -15,6 +15,9 @@ use webrtc::rtp_transceiver::rtp_codec::{
 pub const TRANSPORT_CC_URI: &str =
     "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
 pub const MID_URI: &str = "urn:ietf:params:rtp-hdrext:sdes:mid";
+/// RFC 6464: the sender's level, read by voice receivers for who is
+/// speaking (it stays readable with frame encryption).
+pub const AUDIO_LEVEL_URI: &str = "urn:ietf:params:rtp-hdrext:ssrc-audio-level";
 pub const VIDEO_TIMING_URI: &str = "http://www.webrtc.org/experiments/rtp-hdrext/video-timing";
 pub const SENDING_DELAY_URI: &str = "urn:farwing:rtp-hdrext:sending-delay";
 pub const COLOR_SPACE_URI: &str = "http://www.webrtc.org/experiments/rtp-hdrext/color-space";
@@ -31,7 +34,7 @@ pub const RSFEC_FMTP: &str = "max-k=109;repair-window=10000000;rtx-as-source=1";
 pub const OPUS_FMTP: &str = "minptime=10;stereo=1;useinbandfec=1";
 pub const OPUS_PAYLOAD_TYPE: u8 = 111;
 
-pub const AUDIO_EXTENSIONS: [&str; 2] = [TRANSPORT_CC_URI, MID_URI];
+pub const AUDIO_EXTENSIONS: [&str; 3] = [TRANSPORT_CC_URI, MID_URI, AUDIO_LEVEL_URI];
 /// Only what a Farwing host sends and a viewer reads. Eight IDs keep every
 /// packet on the one-byte extension header (IDs 1..=14).
 pub const VIDEO_EXTENSIONS: [&str; 8] = [
@@ -203,6 +206,18 @@ pub fn register_header_extensions(
         )?;
     }
     Ok(())
+}
+
+/// The IDs [`register_header_extensions`] gives with `video_extra`: one per
+/// URI, in registration order.
+pub fn header_extension_ids<'a>(video_extra: &[&'a str]) -> Vec<(u8, &'a str)> {
+    let mut uris: Vec<&str> = Vec::new();
+    for uri in AUDIO_EXTENSIONS.iter().chain(VIDEO_EXTENSIONS.iter()).chain(video_extra) {
+        if !uris.contains(uri) {
+            uris.push(uri);
+        }
+    }
+    uris.into_iter().enumerate().map(|(i, uri)| (i as u8 + 1, uri)).collect()
 }
 
 /// The forwarder's layer report to the host (RTCP APP, RFC 3550 §6.7, name

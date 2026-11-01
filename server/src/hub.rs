@@ -420,6 +420,17 @@ impl Hub {
         servers
     }
 
+    /// The relays for a session of the chat (a voice channel or a call)
+    /// that is not a hub session.
+    pub fn relay_servers(
+        &self,
+        sid: &str,
+        device_id: &str,
+        access: &crate::egress::Access,
+    ) -> Vec<farwing_protocol::realtime::IceServer> {
+        self.servers_for(sid, device_id, access, true)
+    }
+
     /// Session `sid`'s budget while relayed (kbit/s; 0: none) to its host,
     /// and to its controller to show.
     pub fn push_budget(&self, sid: &str, budget_kbps: u32) {

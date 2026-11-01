@@ -29,6 +29,7 @@ pub async fn state(State(app): State<App>, auth: AccountAuth) -> ApiResult<Json<
     let u = auth.user.id.clone();
     let limits = crate::chat::conn::chat_limits(&app);
     let (mut snap, audience) = app.db.call(move |c| crate::chat::snapshot(c, &u, limits)).await?;
+    crate::chat::fill_live(&app, &auth.user.id, &mut snap);
     let online = app.chat.hub.online();
     let wanted: Vec<String> = audience.into_iter().filter(|u| online.contains(u)).collect();
     let w = wanted.clone();

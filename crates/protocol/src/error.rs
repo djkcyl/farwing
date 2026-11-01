@@ -316,6 +316,18 @@ pub mod reason {
     pub const CHAT_CONTENT_INVALID: &str = "chat_content_invalid";
     /// `conflict`
     pub const CHAT_ALREADY_MEMBER: &str = "chat_already_member";
+    /// `forbidden`: the voice channel has as many people as its limit.
+    pub const VOICE_FULL: &str = "voice_full";
+    /// `forbidden`: the account's egress policy allows no forwarding, which
+    /// voice channels need.
+    pub const VOICE_NO_FORWARDING: &str = "voice_no_forwarding";
+    /// `bad_request`: the device registered no X25519 key, which end-to-end
+    /// voice needs.
+    pub const VOICE_NO_KEY: &str = "voice_no_key";
+    /// `not_found`: the device is not in that voice channel or call.
+    pub const VOICE_NOT_IN: &str = "voice_not_in";
+    /// `conflict`: the call was answered, ended or never existed.
+    pub const CALL_GONE: &str = "call_gone";
 
     // ---- a host refusing a direct (LAN) connection
     /// `forbidden`: the host does not trust this device.
@@ -410,6 +422,11 @@ pub mod reason {
         CHAT_PIN_LIMIT,
         CHAT_CONTENT_INVALID,
         CHAT_ALREADY_MEMBER,
+        VOICE_FULL,
+        VOICE_NO_FORWARDING,
+        VOICE_NO_KEY,
+        VOICE_NOT_IN,
+        CALL_GONE,
         NOT_TRUSTED,
         NO_ACCESS_CODE,
         HOST_BUSY,

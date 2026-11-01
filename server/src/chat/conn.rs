@@ -129,6 +129,8 @@ pub async fn run(app: App, socket: WebSocket, device: String, auth: crate::hub::
     }
     if app.chat.hub.detach(&device, &conn_id).is_some() {
         tracing::info!(device_id = %device, "chat disconnected");
+        app.chat.voice.chat_connection(&device, false);
+        app.chat.calls.chat_connection(&device, false);
         push::presence(&app, &user).await;
     }
 }
@@ -174,6 +176,9 @@ async fn frame(
                 }
             };
             app.chat.hub.set_ready(device, conn_id, body.idle);
+            app.chat.voice.chat_connection(device, true);
+            app.chat.calls.chat_connection(device, true);
+            super::fill_live(app, user, &mut snap);
             *ready = true;
             push::presence(app, user).await;
             let online = app.chat.hub.online();
@@ -231,6 +236,23 @@ async fn frame(
                 );
                 push::to_channel(app, channel, &push, Some(user)).await;
             }
+            None
+        }
+        types::VOICE_ANSWER => {
+            let Ok(body) = env.body::<chat::VoiceOffer>() else {
+                return Some(error(re.as_deref(), ErrorCode::BadRequest, "invalid voice.answer"));
+            };
+            if body.sdp.is_empty() || body.sdp.len() > 64 * 1024 {
+                return Some(error(re.as_deref(), ErrorCode::BadRequest, "invalid voice.answer"));
+            }
+            super::voice::answer(app, device, body).await;
+            None
+        }
+        types::CALL_SIGNAL => {
+            let Ok(body) = env.body::<chat::CallSignal>() else {
+                return Some(error(re.as_deref(), ErrorCode::BadRequest, "invalid call.signal"));
+            };
+            super::calls::signal(app, device, body);
             None
         }
         other => {

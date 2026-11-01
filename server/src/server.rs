@@ -227,6 +227,18 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
             }
         }));
     }
+    // Voice channels lose devices without a chat connection or media.
+    {
+        let app = Arc::clone(&app);
+        tasks.push(tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                ticks.tick().await;
+                crate::chat::voice::sweep(&app).await;
+                crate::chat::calls::sweep(&app).await;
+            }
+        }));
+    }
     // Chat upkeep: attachments never sent, dissolved groups past their
     // restore window, messages past the retention, the groups' audit logs.
     {

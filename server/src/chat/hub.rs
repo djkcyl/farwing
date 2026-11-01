@@ -97,6 +97,13 @@ impl ChatHub {
         }
     }
 
+    /// Send `env` to `device`'s connection, when ready.
+    pub fn send_device(&self, device: &str, env: &Envelope) {
+        if let Some(c) = self.st.lock().conns.get(device).filter(|c| c.ready) {
+            let _ = c.tx.send(Outbound::Text(env.encode()));
+        }
+    }
+
     /// Send `env` to every ready connection of the users in `users`.
     pub fn send_users<'a>(&self, users: impl IntoIterator<Item = &'a String>, env: &Envelope) {
         let users: HashSet<&String> = users.into_iter().collect();

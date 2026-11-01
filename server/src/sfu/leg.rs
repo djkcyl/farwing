@@ -210,6 +210,16 @@ pub(super) struct Rewrite {
 }
 
 impl Rewrite {
+    /// Same tables on both sides; only each SSRC's MID changes (voice
+    /// downlinks: the forwarder's own offer, a MID per forwarded track).
+    pub fn mids_only(mid_extension: Option<u8>) -> Self {
+        Self {
+            mid_extension,
+            identity: true,
+            ..Default::default()
+        }
+    }
+
     pub fn new(host: &sdp::Wire, leg: &sdp::Wire) -> Self {
         let mut payload_types = HashMap::new();
         for (pt, codec) in &host.codecs {
@@ -261,20 +271,24 @@ impl Rewrite {
     }
 
     /// `false`: the leg did not negotiate the packet's codec.
-    fn apply(&self, packet: &mut Packet) -> bool {
-        if self.identity {
+    pub fn apply(&self, packet: &mut Packet) -> bool {
+        if self.identity && self.mids.is_empty() {
             return true;
         }
-        let Some(pt) = self.payload_types.get(&packet.header.payload_type) else {
-            return false;
-        };
-        packet.header.payload_type = *pt;
+        if !self.identity {
+            let Some(pt) = self.payload_types.get(&packet.header.payload_type) else {
+                return false;
+            };
+            packet.header.payload_type = *pt;
+        }
         let mid = self.mids.get(&packet.header.ssrc);
         let extensions = std::mem::take(&mut packet.header.extensions);
         packet.header.extensions = extensions
             .into_iter()
             .filter_map(|mut e| {
-                e.id = *self.extensions.get(&e.id)?;
+                if !self.identity {
+                    e.id = *self.extensions.get(&e.id)?;
+                }
                 if Some(e.id) == self.mid_extension
                     && let Some(mid) = mid
                 {
@@ -321,7 +335,8 @@ pub(super) struct Leg {
     pub pc: Arc<RTCPeerConnection>,
     tap: Arc<Tap>,
     queue: mpsc::Sender<Packet>,
-    pub rewrite: Rewrite,
+    /// Voice downlinks change it as tracks come and go.
+    pub rewrite: parking_lot::RwLock<Rewrite>,
     /// Transport-wide sequence extension ID of the leg.
     tcc: Option<u8>,
     tcc_seq: AtomicU16,
@@ -369,7 +384,7 @@ impl Leg {
             pc,
             tap,
             queue,
-            rewrite,
+            rewrite: parking_lot::RwLock::new(rewrite),
             tcc,
             tcc_seq: AtomicU16::new(rand::random()),
             rtx_seq: Mutex::default(),
@@ -416,7 +431,7 @@ impl Leg {
             let Some(bound) = self.tap.bound(packet.header.ssrc) else {
                 continue;
             };
-            if !self.rewrite.apply(&mut packet) {
+            if !self.rewrite.read().apply(&mut packet) {
                 continue;
             }
             let mut sequence = None;

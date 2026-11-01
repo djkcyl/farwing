@@ -245,7 +245,7 @@ pub struct PeerIdentity {
     pub public_key: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IceServer {
     pub urls: Vec<String>,
     #[serde(default)]
