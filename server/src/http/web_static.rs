@@ -80,7 +80,7 @@ fn with_headers(mut response: Response, cache: &'static str) -> Response {
 }
 
 /// The emoji pack: `EMOJ`, a count, then `(name length u16, name, offset
-/// u32, length u32)` entries, then the files (`emoji/make_pack.py`).
+/// u32, length u32)` entries, then the files (`emoji/tool`).
 fn emoji_index() -> &'static std::collections::HashMap<&'static str, &'static [u8]> {
     static INDEX: std::sync::OnceLock<std::collections::HashMap<&'static str, &'static [u8]>> =
         std::sync::OnceLock::new();

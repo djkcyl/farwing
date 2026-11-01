@@ -40,7 +40,7 @@ fn main() {
         );
     }
     code.push_str("];\n");
-    // Emoji images (`emoji/emoji.pack`, made by `emoji/make_pack.py`).
+    // Emoji images (`emoji/emoji.pack`, made by `emoji/tool`).
     let pack = Path::new(env!("CARGO_MANIFEST_DIR")).join("emoji").join("emoji.pack");
     println!("cargo:rerun-if-changed={}", pack.display());
     if pack.is_file() {

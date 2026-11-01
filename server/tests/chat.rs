@@ -875,3 +875,18 @@ async fn the_chat_connection_pushes_messages_typing_and_presence() {
     srv.post_empty("/api/v2/auth/logout", &f.alice).await.ok();
     assert_eq!(aw.expect_close(&["chat.presence"]).await, Some(4003));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn emoji_images_and_their_index_are_served() {
+    let srv = start().await;
+    let r = srv.http.get(srv.url("/emoji/1f600.png")).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    assert_eq!(r.headers()["content-type"], "image/png");
+    let img = image::load_from_memory(&r.bytes().await.unwrap()).unwrap();
+    assert_eq!((img.width(), img.height()), (72, 72));
+    let index: Value = srv.http.get(srv.url("/emoji/index.json")).send().await.unwrap().json().await.unwrap();
+    let first = &index[0];
+    assert_eq!(first["c"], "1f600");
+    assert!(first["zk"].as_array().is_some_and(|k| !k.is_empty()));
+    assert_eq!(srv.http.get(srv.url("/emoji/nope.png")).send().await.unwrap().status().as_u16(), 404);
+}
