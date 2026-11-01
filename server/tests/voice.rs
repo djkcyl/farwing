@@ -185,7 +185,7 @@ impl Voicer {
     }
 }
 
-async fn setup(customize: impl FnOnce(&mut farwing_server::Config)) -> (TestServer, Vec<Dev>, String) {
+async fn setup(customize: impl FnOnce(&mut farwing_server::Config)) -> (TestServer, Vec<Dev>, String, String) {
     let srv = start_with(|c| {
         c.sfu.port = free_udp_port();
         c.turn.relay_bind = "127.0.0.1".parse().unwrap();
@@ -218,12 +218,12 @@ async fn setup(customize: impl FnOnce(&mut farwing_server::Config)) -> (TestServ
         .iter()
         .find(|c| c["kind"] == "voice")
         .unwrap()["id"]);
-    (srv, devs, voice)
+    (srv, devs, voice, group)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn every_mic_reaches_everyone_else_as_people_come_and_go() {
-    let (srv, devs, voice) = setup(|c| c.e2ee = farwing_protocol::api::E2ee::Off).await;
+    let (srv, devs, voice, _) = setup(|c| c.e2ee = farwing_protocol::api::E2ee::Off).await;
     let mut people = Vec::new();
     for dev in devs {
         let mut v = Voicer::join(&srv, dev, &voice).await;
@@ -334,7 +334,7 @@ async fn every_mic_reaches_everyone_else_as_people_come_and_go() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn end_to_end_voice_needs_a_device_key_and_respects_the_limit() {
-    let (srv, devs, voice) = setup(|_| {}).await;
+    let (srv, devs, voice, _) = setup(|_| {}).await;
     srv.post(&format!("/api/v2/chat/channels/{voice}/voice/join"), &devs[0], json!({}))
         .await
         .err_reason(400, "bad_request", "voice_no_key");
@@ -388,7 +388,7 @@ async fn end_to_end_voice_needs_a_device_key_and_respects_the_limit() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn accounts_without_forwarding_stay_out() {
-    let (srv, devs, voice) = setup(|c| {
+    let (srv, devs, voice, _) = setup(|c| {
         c.e2ee = farwing_protocol::api::E2ee::Off;
         c.egress.users.forward = false;
     })
@@ -464,4 +464,57 @@ async fn calls_ring_connect_signal_and_leave_a_record() {
     assert_eq!(record["data"]["call"]["missed"], true);
     let history = srv.get(&format!("/api/v2/chat/channels/{channel}/messages"), &bob).await;
     assert_eq!(history.ok()["messages"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn moderators_deafen_and_move_and_it_is_audited() {
+    let (srv, devs, voice, group) = setup(|c| c.e2ee = farwing_protocol::api::E2ee::Off).await;
+    let mut people = Vec::new();
+    for d in devs[..2].iter().cloned() {
+        let mut v = Voicer::join(&srv, d, &voice).await;
+        v.publish(&srv, &voice).await;
+        people.push(v);
+    }
+    for v in &mut people {
+        v.pump(Duration::from_millis(1500)).await;
+    }
+    let bob = people[1].participant;
+    // Deafened by the owner: bob hears nothing.
+    srv.call(
+        Method::PATCH,
+        &format!("/api/v2/chat/channels/{voice}/voice/participants/{bob}"),
+        &people[0].dev,
+        Some(json!({"server_deafened": true})),
+    )
+    .await
+    .ok();
+    let alice_stream = format!("p{}", people[0].participant);
+    people[1].listen(Duration::from_millis(300)).await;
+    people[0].say(b"deaf", 20).await;
+    let heard = people[1].listen(Duration::from_millis(800)).await;
+    assert!(heard.get(&alice_stream).is_none_or(|p| !p.contains(&Bytes::from_static(b"deaf"))));
+    // Moved to another voice channel.
+    let other = srv
+        .post("/api/v2/chat/channels", &people[0].dev, json!({"group_id": group, "kind": "voice", "name": "语音 2"}))
+        .await
+        .ok()
+        .clone();
+    let other = s(&other["id"]);
+    srv.call(
+        Method::PATCH,
+        &format!("/api/v2/chat/channels/{voice}/voice/participants/{bob}"),
+        &people[0].dev,
+        Some(json!({"move_to": other})),
+    )
+    .await
+    .ok();
+    people[1].pump(Duration::from_millis(800)).await;
+    let moved = people[1].pushes.iter().find(|p| p["type"] == "voice.moved").expect("voice.moved").clone();
+    assert_eq!(s(&moved["data"]["to"]), other);
+    people[0].pump(Duration::from_millis(500)).await;
+    let last = people[0].pushes.iter().rev().find(|p| p["type"] == "voice.state").unwrap().clone();
+    assert_eq!(last["data"]["participants"].as_array().unwrap().len(), 1);
+    let audit = srv.get(&format!("/api/v2/chat/groups/{group}/audit"), &people[0].dev).await;
+    let actions: Vec<String> = audit.ok()["entries"].as_array().unwrap().iter().map(|e| s(&e["action"])).collect();
+    assert!(actions.contains(&"voice_deafen".to_owned()) && actions.contains(&"voice_move".to_owned()), "{actions:?}");
 }

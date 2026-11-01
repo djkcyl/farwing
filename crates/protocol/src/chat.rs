@@ -477,6 +477,8 @@ pub struct ChatLimits {
     pub max_attachments: u32,
     pub max_attachment_bytes: u64,
     pub create_groups: bool,
+    /// Group owners may put a voice channel in compatible mode (§10.4).
+    pub voice_compat: bool,
 }
 
 impl Default for ChatLimits {
@@ -486,6 +488,7 @@ impl Default for ChatLimits {
             max_attachments: limits::MAX_ATTACHMENTS,
             max_attachment_bytes: 100 * 1024 * 1024,
             create_groups: true,
+            voice_compat: false,
         }
     }
 }
@@ -877,6 +880,9 @@ pub mod types {
     pub const VOICE_KEYS: &str = "voice.keys";
     /// Server → the device: it is out of the channel ([`VoiceLeft`]).
     pub const VOICE_LEFT: &str = "voice.left";
+    /// Server → the device: join another channel, or this one again on
+    /// another node ([`VoiceMoved`]).
+    pub const VOICE_MOVED: &str = "voice.moved";
 
     // ---- calls in direct messages (§7.6)
     /// To the callee's devices: a call rings ([`Call`]).
@@ -922,6 +928,9 @@ pub struct VoiceParticipant {
     /// By a moderator.
     pub server_muted: bool,
     pub server_deafened: bool,
+    /// The account lost `speak` here meanwhile: nothing it says is
+    /// forwarded.
+    pub cannot_speak: bool,
     /// Unix milliseconds.
     pub joined_at: i64,
 }
@@ -976,6 +985,8 @@ pub struct VoiceSelf {
 pub struct VoiceModerate {
     pub server_muted: Option<bool>,
     pub server_deafened: Option<bool>,
+    /// Another voice channel of the group the device should be in.
+    pub move_to: Option<Id>,
 }
 
 /// A frame key sealed to one device (§10.2): `ephemeral` is the sender's
@@ -1040,6 +1051,15 @@ pub struct VoiceKeyPush {
     pub ephemeral: String,
     pub data: String,
     pub signature: String,
+}
+
+/// `voice.moved`: a moderator moved the device to `to`; `None`: the
+/// channel's node went away, join it again.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceMoved {
+    pub channel_id: Id,
+    pub to: Option<Id>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

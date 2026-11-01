@@ -10,7 +10,7 @@ use crate::sfu::{SfuRequest, VoiceOp, VoiceResult};
 use farwing_protocol::ErrorCode;
 use farwing_protocol::chat::{
     ChannelKind, Id, VoiceChannelState, VoiceJoin, VoiceJoined, VoiceKeyPush, VoiceKeys, VoiceLeft, VoiceMode,
-    VoiceModerate, VoiceOffer, VoiceParticipant, VoiceSelf, perm, types,
+    VoiceModerate, VoiceMoved, VoiceOffer, VoiceParticipant, VoiceSelf, perm, types,
 };
 use farwing_protocol::error::reason;
 use farwing_protocol::realtime::Envelope;
@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 const CHAT_GRACE: Duration = Duration::from_secs(30);
 /// Or whose media connection carried nothing this long.
 const MEDIA_IDLE_MS: u64 = 20_000;
+/// A channel whose node failed this many sweeps in a row moves (§7.2).
+const NODE_FAILURES: u32 = 2;
 /// Key boxes per request, and the size of each field.
 const MAX_BOXES: usize = 128;
 const MAX_FIELD: usize = 1024;
@@ -41,6 +43,8 @@ struct Chan {
     node: Option<(String, String)>,
     mode: VoiceMode,
     parts: BTreeMap<u32, Part>,
+    /// Sweeps in a row the node did not answer.
+    failures: u32,
 }
 
 #[derive(Default)]
@@ -55,6 +59,11 @@ pub struct Voice {
     st: Mutex<State>,
     /// One operation at a time per channel.
     locks: Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+/// Nothing `info` says is forwarded.
+fn silenced(info: &VoiceParticipant) -> bool {
+    info.server_muted || info.server_deafened || info.cannot_speak
 }
 
 fn not_in() -> ApiError {
@@ -253,6 +262,10 @@ pub async fn join(app: &App, user: &str, device: &crate::db::DeviceRow, channel:
             "the account may not use forwarding",
         ));
     }
+    if access.used_up {
+        app.egress.ledger.close(&session);
+        return Err(ApiError::reason(ErrorCode::Forbidden, reason::VOICE_QUOTA, "the month's traffic is used up"));
+    }
     app.egress.apply(&session, &access);
     let ice_servers = app.hub.relay_servers(&session, &device.id, &access);
     let info = VoiceParticipant {
@@ -265,6 +278,7 @@ pub async fn join(app: &App, user: &str, device: &crate::db::DeviceRow, channel:
         self_deafened: req.self_deafened,
         server_muted: false,
         server_deafened: false,
+        cannot_speak: false,
         joined_at: crate::db::now_ms(),
     };
     let participants = {
@@ -276,6 +290,7 @@ pub async fn join(app: &App, user: &str, device: &crate::db::DeviceRow, channel:
                 .flatten(),
             mode,
             parts: BTreeMap::new(),
+            failures: 0,
         });
         chan.parts.insert(
             participant,
@@ -350,9 +365,12 @@ pub async fn publish(app: &App, user: &str, device: &str, channel: i64, sdp: Str
         },
     )
     .await?;
-    if part.info.server_muted {
-        let (_, room, node) = app.chat.voice.part(channel, device).ok_or_else(not_in)?;
-        run(app, node.as_ref(), VoiceOp::Mute { room, participant, muted: true }).await?;
+    let (now, room, node) = app.chat.voice.part(channel, device).ok_or_else(not_in)?;
+    if silenced(&now.info) {
+        run(app, node.as_ref(), VoiceOp::Mute { room: room.clone(), participant, muted: true }).await?;
+    }
+    if now.info.server_deafened {
+        run(app, node.as_ref(), VoiceOp::Deafen { room, participant, deafened: true }).await?;
     }
     drop(held);
     let app2 = app.clone();
@@ -398,58 +416,137 @@ pub async fn set_self(app: &App, device: &str, channel: i64, req: VoiceSelf) -> 
     Ok(())
 }
 
-/// `PATCH …/voice/participants/{participant}` (`voice_moderate`).
-pub async fn moderate(app: &App, user: &str, channel: i64, participant: u32, req: VoiceModerate) -> ApiResult<()> {
+/// The group of `channel` when `user` may moderate voice there.
+async fn moderator(app: &App, user: &str, channel: i64) -> ApiResult<i64> {
     let u = user.to_owned();
-    let allowed = app
+    let group = app
         .db
-        .call(move |c| Ok(super::access(c, &u, channel)?.is_some_and(|a| a.can(perm::VOICE_MODERATE))))
+        .call(move |c| {
+            Ok(super::access(c, &u, channel)?
+                .filter(|a| a.can(perm::VOICE_MODERATE))
+                .and_then(|a| a.group_id()))
+        })
         .await?;
-    if !allowed {
-        return Err(crate::http::chat::forbidden());
+    group.ok_or_else(crate::http::chat::forbidden)
+}
+
+async fn audit(app: &App, group: i64, actor: &str, action: &'static str, target: String, channel: i64) {
+    let actor = actor.to_owned();
+    let details = serde_json::json!({ "channel_id": Id(channel) });
+    let _ = app
+        .db
+        .call(move |c| super::store::audit(c, group, &actor, action, &target, &details))
+        .await;
+}
+
+/// `PATCH …/voice/participants/{participant}` (`voice_moderate`): server
+/// mute and deafen, or a move to another voice channel of the group.
+pub async fn moderate(app: &App, user: &str, channel: i64, participant: u32, req: VoiceModerate) -> ApiResult<()> {
+    let group = moderator(app, user, channel).await?;
+    if let Some(to) = req.move_to {
+        return move_to(app, user, group, channel, participant, to.0).await;
     }
     let lock = app.chat.voice.lock(channel);
-    let _held = lock.lock().await;
-    let (room, node, muted) = {
+    let held = lock.lock().await;
+    let (room, node, info, before) = {
         let mut st = app.chat.voice.st.lock();
         let chan = st.chans.get_mut(&channel).ok_or_else(not_in)?;
         let (room, node) = (chan.room.clone(), chan.node.clone());
         let part = chan.parts.get_mut(&participant).ok_or_else(not_in)?;
+        let before = part.info.clone();
         if let Some(m) = req.server_muted {
             part.info.server_muted = m;
         }
         if let Some(d) = req.server_deafened {
             part.info.server_deafened = d;
         }
-        (room, node, req.server_muted)
+        (room, node, part.info.clone(), before)
     };
-    if let Some(muted) = muted {
-        run(app, node.as_ref(), VoiceOp::Mute { room, participant, muted }).await?;
+    run(
+        app,
+        node.as_ref(),
+        VoiceOp::Mute {
+            room: room.clone(),
+            participant,
+            muted: silenced(&info),
+        },
+    )
+    .await?;
+    run(
+        app,
+        node.as_ref(),
+        VoiceOp::Deafen {
+            room,
+            participant,
+            deafened: info.server_deafened,
+        },
+    )
+    .await?;
+    drop(held);
+    if before.server_muted != info.server_muted {
+        let action = if info.server_muted { "voice_mute" } else { "voice_unmute" };
+        audit(app, group, user, action, info.user_id.clone(), channel).await;
     }
-    drop(_held);
+    if before.server_deafened != info.server_deafened {
+        let action = if info.server_deafened { "voice_deafen" } else { "voice_undeafen" };
+        audit(app, group, user, action, info.user_id.clone(), channel).await;
+    }
     push_state(app, channel).await;
+    Ok(())
+}
+
+/// The device of `participant` goes to voice channel `to` of the same group
+/// (it joins there itself, `voice.moved`).
+async fn move_to(app: &App, user: &str, group: i64, channel: i64, participant: u32, to: i64) -> ApiResult<()> {
+    let (device, target_user) = {
+        let st = app.chat.voice.st.lock();
+        st.chans
+            .get(&channel)
+            .and_then(|c| c.parts.get(&participant))
+            .map(|p| (p.info.device_id.clone(), p.info.user_id.clone()))
+            .ok_or_else(not_in)?
+    };
+    let (u, t) = (user.to_owned(), target_user.clone());
+    let fits = app
+        .db
+        .call(move |c| {
+            let mover = super::access(c, &u, to)?;
+            let moved = super::access(c, &t, to)?;
+            Ok(mover.is_some_and(|a| a.group_id() == Some(group) && a.channel.kind == ChannelKind::Voice)
+                && moved.is_some_and(|a| a.can(perm::CONNECT)))
+        })
+        .await?;
+    if !fits || to == channel {
+        return Err(ApiError::bad_request("not a voice channel the device can join"));
+    }
+    app.chat.hub.send_device(
+        &device,
+        &Envelope::new(
+            types::VOICE_MOVED,
+            VoiceMoved {
+                channel_id: Id(channel),
+                to: Some(Id(to)),
+            },
+        ),
+    );
+    leave(app, &device, channel, None).await;
+    audit(app, group, user, "voice_move", target_user, channel).await;
     Ok(())
 }
 
 /// `DELETE …/voice/participants/{participant}` (`voice_moderate`).
 pub async fn disconnect(app: &App, user: &str, channel: i64, participant: u32) -> ApiResult<()> {
-    let u = user.to_owned();
-    let allowed = app
-        .db
-        .call(move |c| Ok(super::access(c, &u, channel)?.is_some_and(|a| a.can(perm::VOICE_MODERATE))))
-        .await?;
-    if !allowed {
-        return Err(crate::http::chat::forbidden());
-    }
-    let device = {
+    let group = moderator(app, user, channel).await?;
+    let (device, target) = {
         let st = app.chat.voice.st.lock();
         st.chans
             .get(&channel)
             .and_then(|c| c.parts.get(&participant))
-            .map(|p| p.info.device_id.clone())
+            .map(|p| (p.info.device_id.clone(), p.info.user_id.clone()))
             .ok_or_else(not_in)?
     };
     leave(app, &device, channel, Some("disconnected")).await;
+    audit(app, group, user, "voice_disconnect", target, channel).await;
     Ok(())
 }
 
@@ -552,7 +649,8 @@ pub async fn leave(app: &App, device: &str, channel: i64, reason: Option<&str>) 
 }
 
 /// Every few seconds: devices without a chat connection, silent or failed
-/// media connections, and people who lost the permission leave.
+/// media connections, and people who lost the permission leave; those who
+/// lost `speak` are not forwarded; a channel whose node is gone moves.
 pub async fn sweep(app: &App) {
     let chans: Vec<(i64, String, Option<(String, String)>, Vec<Part>)> = {
         let st = app.chat.voice.st.lock();
@@ -567,9 +665,32 @@ pub async fn sweep(app: &App) {
             .filter(|p| p.gone_since.is_some_and(|t| t.elapsed() > CHAT_GRACE))
             .map(|p| (p.info.device_id.clone(), "idle"))
             .collect();
-        if let Ok(result) = run(app, node.as_ref(), VoiceOp::Idle { room, idle_ms: MEDIA_IDLE_MS }).await {
-            for p in parts.iter().filter(|p| result.idle.contains(&p.info.participant)) {
-                out.push((p.info.device_id.clone(), "idle"));
+        match run(app, node.as_ref(), VoiceOp::Idle { room: room.clone(), idle_ms: MEDIA_IDLE_MS }).await {
+            Ok(result) => {
+                if let Some(c) = app.chat.voice.st.lock().chans.get_mut(&channel) {
+                    c.failures = 0;
+                }
+                for p in parts.iter().filter(|p| result.idle.contains(&p.info.participant)) {
+                    out.push((p.info.device_id.clone(), "idle"));
+                }
+            }
+            Err(_) => {
+                let failed = app
+                    .chat
+                    .voice
+                    .st
+                    .lock()
+                    .chans
+                    .get_mut(&channel)
+                    .map(|c| {
+                        c.failures += 1;
+                        c.failures >= NODE_FAILURES
+                    })
+                    .unwrap_or(false);
+                if failed {
+                    relocate(app, channel).await;
+                    continue;
+                }
             }
         }
         let users: Vec<String> = parts.iter().map(|p| p.info.user_id.clone()).collect();
@@ -578,15 +699,44 @@ pub async fn sweep(app: &App) {
             .call(move |c| {
                 users
                     .iter()
-                    .map(|u| Ok(super::access(c, u, channel)?.is_some_and(|a| a.can(perm::CONNECT))))
-                    .collect::<Result<Vec<bool>, _>>()
+                    .map(|u| {
+                        let a = super::access(c, u, channel)?;
+                        Ok((
+                            a.as_ref().is_some_and(|a| a.can(perm::CONNECT)),
+                            a.as_ref().is_some_and(|a| a.can(perm::SPEAK)),
+                        ))
+                    })
+                    .collect::<Result<Vec<(bool, bool)>, _>>()
             })
             .await
             .unwrap_or_default();
-        for (p, ok) in parts.iter().zip(allowed) {
-            if !ok {
+        let mut changed = Vec::new();
+        for (p, (connect, speak)) in parts.iter().zip(allowed) {
+            if !connect {
                 out.push((p.info.device_id.clone(), "forbidden"));
+            } else if p.info.cannot_speak == speak {
+                changed.push((p.info.participant, !speak));
             }
+        }
+        if !changed.is_empty() {
+            for (participant, cannot) in changed {
+                let info = {
+                    let mut st = app.chat.voice.st.lock();
+                    st.chans.get_mut(&channel).and_then(|c| c.parts.get_mut(&participant)).map(|p| {
+                        p.info.cannot_speak = cannot;
+                        p.info.clone()
+                    })
+                };
+                if let Some(info) = info {
+                    let op = VoiceOp::Mute {
+                        room: room.clone(),
+                        participant,
+                        muted: silenced(&info),
+                    };
+                    let _ = run(app, node.as_ref(), op).await;
+                }
+            }
+            push_state(app, channel).await;
         }
         out.sort();
         out.dedup_by(|a, b| a.0 == b.0);
@@ -594,4 +744,41 @@ pub async fn sweep(app: &App) {
             leave(app, &device, channel, Some(why)).await;
         }
     }
+}
+
+/// The channel's node stopped answering: everyone in it is told to join
+/// again, which picks a node anew.
+async fn relocate(app: &App, channel: i64) {
+    let lock = app.chat.voice.lock(channel);
+    let _held = lock.lock().await;
+    let removed = {
+        let mut st = app.chat.voice.st.lock();
+        let chan = st.chans.remove(&channel);
+        if let Some(c) = &chan {
+            for p in c.parts.values() {
+                if st.by_device.get(&p.info.device_id) == Some(&channel) {
+                    st.by_device.remove(&p.info.device_id);
+                }
+            }
+        }
+        chan
+    };
+    let Some(chan) = removed else { return };
+    tracing::warn!(channel, node = ?chan.node.as_ref().map(|n| &n.0), "voice node lost; the channel moves");
+    for p in chan.parts.values() {
+        app.egress.ledger.close(&p.session);
+        app.egress.ended(&p.session);
+        app.chat.hub.send_device(
+            &p.info.device_id,
+            &Envelope::new(
+                types::VOICE_MOVED,
+                VoiceMoved {
+                    channel_id: Id(channel),
+                    to: None,
+                },
+            ),
+        );
+    }
+    drop(_held);
+    push_state(app, channel).await;
 }

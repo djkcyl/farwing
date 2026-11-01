@@ -268,6 +268,7 @@ pub fn chat_limits(app: &App) -> chat::ChatLimits {
     chat::ChatLimits {
         max_attachment_bytes: u64::from(cfg.chat.max_attachment_mb) * 1024 * 1024,
         create_groups: cfg.chat.create_groups,
+        voice_compat: cfg.e2ee == farwing_protocol::api::E2ee::Allowed,
         ..Default::default()
     }
 }

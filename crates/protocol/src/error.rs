@@ -321,6 +321,8 @@ pub mod reason {
     /// `forbidden`: the account's egress policy allows no forwarding, which
     /// voice channels need.
     pub const VOICE_NO_FORWARDING: &str = "voice_no_forwarding";
+    /// `forbidden`: the account used up this month's traffic.
+    pub const VOICE_QUOTA: &str = "voice_quota";
     /// `bad_request`: the device registered no X25519 key, which end-to-end
     /// voice needs.
     pub const VOICE_NO_KEY: &str = "voice_no_key";
@@ -424,6 +426,7 @@ pub mod reason {
         CHAT_ALREADY_MEMBER,
         VOICE_FULL,
         VOICE_NO_FORWARDING,
+        VOICE_QUOTA,
         VOICE_NO_KEY,
         VOICE_NOT_IN,
         CALL_GONE,

@@ -48,8 +48,11 @@ pub enum VoiceOp {
     /// The answer to offer `generation`; another offer if things changed
     /// meanwhile.
     Answer { room: String, participant: u32, generation: u64, sdp: String },
-    /// A moderator's mute: its packets go nowhere.
+    /// A moderator's mute (or a lost permission to speak): its packets go
+    /// nowhere.
     Mute { room: String, participant: u32, muted: bool },
+    /// A moderator's deafen: nothing reaches it.
+    Deafen { room: String, participant: u32, deafened: bool },
     Leave { room: String, participant: u32 },
     Close { room: String },
     /// Participants whose connections failed, or who published and sent
@@ -87,6 +90,7 @@ struct Down {
 struct Member {
     participant: u32,
     muted: AtomicBool,
+    deafened: AtomicBool,
     failed: AtomicBool,
     /// The last uplink packet.
     heard: Mutex<Option<Instant>>,
@@ -100,6 +104,7 @@ impl Member {
         Arc::new(Self {
             participant,
             muted: AtomicBool::new(false),
+            deafened: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             heard: Mutex::new(None),
             uplink: RwLock::new(None),
@@ -146,7 +151,7 @@ impl Room {
             return;
         }
         for m in self.members.read().values() {
-            if m.participant == from.participant {
+            if m.participant == from.participant || m.deafened.load(Ordering::Relaxed) {
                 continue;
             }
             if let Some(leg) = m.leg.read().as_ref() {
@@ -277,6 +282,18 @@ impl VoiceRooms {
                     && let Some(m) = room.members.read().get(&participant)
                 {
                     m.muted.store(muted, Ordering::Relaxed);
+                }
+                Ok(VoiceResult::default())
+            }
+            VoiceOp::Deafen {
+                room,
+                participant,
+                deafened,
+            } => {
+                if let Some(room) = self.existing(&room)
+                    && let Some(m) = room.members.read().get(&participant)
+                {
+                    m.deafened.store(deafened, Ordering::Relaxed);
                 }
                 Ok(VoiceResult::default())
             }

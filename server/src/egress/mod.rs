@@ -102,6 +102,8 @@ impl Month {
 pub struct Access {
     pub relay: RelayAccess,
     pub forward: bool,
+    /// This month's traffic is used up.
+    pub used_up: bool,
 }
 
 impl Default for Access {
@@ -109,6 +111,7 @@ impl Default for Access {
         Self {
             relay: RelayAccess::default(),
             forward: true,
+            used_up: false,
         }
     }
 }
@@ -231,6 +234,7 @@ impl Egress {
                 RelayAccess::default()
             },
             forward: effective.forward && !used_up,
+            used_up,
         }
     }
 

@@ -9,6 +9,7 @@ use crate::http::auth::AccountAuth;
 use crate::http::{App, JsonBody};
 use axum::Json;
 use axum::extract::{Path, State};
+use farwing_protocol::ErrorCode;
 use farwing_protocol::api::Empty;
 use farwing_protocol::chat::{Channel, ChannelCreate, ChannelKind, ChannelOrder, ChannelUpdate, Overwrite, limits, perm};
 use serde_json::json;
@@ -181,6 +182,13 @@ pub async fn update(
                 ch.voice_limit = l;
             }
             if let Some(compat) = req.voice_compat {
+                if compat != ch.voice_compat && ctx.group.owner_id != u {
+                    return Ok(Err(ApiError::reason(
+                        ErrorCode::Forbidden,
+                        farwing_protocol::error::reason::CHAT_OWNER,
+                        "only the group owner sets the voice mode",
+                    )));
+                }
                 ch.voice_compat = compat;
             }
             store::update_channel(c, &ch)?;
