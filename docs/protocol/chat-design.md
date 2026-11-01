@@ -225,8 +225,8 @@
 | `PUT /me/avatar` · `GET /avatars/{user}` · `PUT`、`GET /chat/groups/{id}/icon` | 头像与群图标 |
 | `GET`、`PUT /chat/prefs` | 通知、勿扰时段、隐藏通知内容、已读回执、聊天的其他个人设置 |
 | `PUT /me/status {status}` | 在线状态 |
-| `POST /chat/channels/{id}/voice/join\|leave` · `PUT …/voice/publish` · `PUT …/voice/subscribe` · `POST …/voice/keys` · `PATCH …/voice/state` | 语音频道（§7、§10）；`state` 为自己的静音、关闭声音 |
-| `POST /chat/channels/{id}/voice/moderate {device, action}` | 服务器静音 / 关闭声音、移动、断开（`voice_moderate`） |
+| `POST /chat/channels/{id}/voice/join\|leave` · `PUT …/voice/publish` · `PUT …/voice/subscribe` · `POST …/voice/keys` · `PUT …/voice/state` | 语音频道（§7、§10）；`state` 为自己的静音、关闭声音 |
+| `PATCH /chat/channels/{id}/voice/participants/{participant} {server_muted?, server_deafened?, move_to?}` · `DELETE …` | 服务器静音 / 关闭声音、移到同群组的另一个语音频道、断开（`voice_moderate`，记入群组审计日志） |
 | `POST /chat/channels/{id}/voice/control-request` · `POST …/control-request/{request}/answer` · `DELETE …/control-request/{request}` | 请求控制（§8.3） |
 | `POST /chat/dm/{channel}/call` · `POST /chat/calls/{call}/answer\|decline\|hangup\|move` | 私信通话（§7.6） |
 | `PUT /devices/self/x25519` | 登记设备的 X25519 公钥（§10.1） |
@@ -253,6 +253,7 @@
 | `voice.state` | `{channel, device, user, muted, deafened, server_muted, server_deafened, video, screens}`（进出与状态变化；在场的人与有 `view` 的人都收到） |
 | `call.*` | 私信通话，见 §7.6 |
 | `voice.offer` · `voice.tracks` · `voice.keys` | 语音媒体，见 §7.3、§10 |
+| `voice.left` · `voice.moved` | 本设备离开了频道（原因）；被移到另一个频道，或频道的节点失联、需重新进入 |
 
 推送范围：群组事件发给该群组成员的在线聊天连接中、对相关频道有 `view` 的；私信事件只发给双方。
 
@@ -464,5 +465,13 @@
 - 按键说话（2026-11-01 定）：原生轮询按键状态（焦点在任何程序都可用，鼠标侧键也行）；网页端只在页面有焦点时。
 - 连接与保活（2026-11-01 定）：连转发器只等 300 ms 收集候选，私信通话最多 3 秒；不说话时每 25 帧发一个静音包，转发器以 RTP 或 RTCP 判断在线，20 秒什么都没有才移出。
 - 用词（2026-11-01 定）：“闭麦”改称“关闭声音”（不播放也不发送），与“静音”区分。
+- 按设计核对后补齐（2026-11-01 定）：
+  - 管理员“关闭其声音”在转发器上执行（不再转发给他，他的声音也不转发）；被禁言等失去 `speak` 时转发器不再转发他的声音（参与者带 `cannot_speak`，界面显示为被静音）。
+  - 节点连续两次（约 10 秒）不应答时，控制节点让频道里的人重新进入（`voice.moved` 不带 `to`），重新选节点。
+  - 月流量用完时进入被拒的原因为 `voice_quota`（“本月流量已用完”），与“不能使用多人转发”区分。
+  - 网页端每人与输出音量为 0–100%：播放用媒体元素，浏览器的回声消除才听得到；原生仍为 0–200%。
+  - 提示音音量为输出音量的百分比；每类提示音单独开关。
+  - 按键说话的提权提示：前台程序以管理员身份运行而设备中心没有时，语音条显示一行提示（随前台变化）。
+  - 不压低其他声音：语音会话打开前对本进程在语音设备上的会话设置不参与压低（`SetDuckingPreference`）。
 - 窗口采集在多显示器与 DPI 缩放下的坐标与尺寸处理。
 - 语音频道节点故障时的重连细节与参与者编号的稳定性。
