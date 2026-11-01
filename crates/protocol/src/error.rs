@@ -286,6 +286,37 @@ pub mod reason {
     /// `unavailable`: no forwarder could take the stream.
     pub const FORWARDING_UNAVAILABLE: &str = "forwarding_unavailable";
 
+    // ---- chat (`docs/protocol/chat-design.md` §6.2)
+    /// `forbidden`: the caller's permissions in the group or channel do
+    /// not allow it.
+    pub const CHAT_FORBIDDEN: &str = "chat_forbidden";
+    /// `forbidden`, `until` (Unix seconds): muted in the group.
+    pub const CHAT_MUTED: &str = "chat_muted";
+    /// `rate_limited`, `retry_after_ms`: the channel's slow mode.
+    pub const CHAT_SLOW_MODE: &str = "chat_slow_mode";
+    /// `forbidden`: banned from the group.
+    pub const CHAT_BANNED: &str = "chat_banned";
+    /// `forbidden`: a direct message with someone who is no longer a friend.
+    pub const CHAT_NOT_FRIENDS: &str = "chat_not_friends";
+    /// `forbidden`: the group's (or the account's) attachment space is full.
+    pub const CHAT_QUOTA: &str = "chat_quota";
+    /// `payload_too_large`, `max` (bytes): a file over the server's limit.
+    pub const CHAT_TOO_LARGE: &str = "chat_too_large";
+    /// `forbidden`: the server administrator froze the group.
+    pub const CHAT_FROZEN: &str = "chat_frozen";
+    /// `forbidden`: only administrators may create groups on this server.
+    pub const CHAT_GROUPS_DISABLED: &str = "chat_groups_disabled";
+    /// `conflict`: the owner cannot leave or be removed; transfer first.
+    pub const CHAT_OWNER: &str = "chat_owner";
+    /// `forbidden`: a role at or above the caller's highest role.
+    pub const CHAT_ROLE_RANK: &str = "chat_role_rank";
+    /// `conflict`, `max`: the channel has the most pinned messages.
+    pub const CHAT_PIN_LIMIT: &str = "chat_pin_limit";
+    /// `bad_request`, `max`: an empty message or one over `max` characters.
+    pub const CHAT_CONTENT_INVALID: &str = "chat_content_invalid";
+    /// `conflict`
+    pub const CHAT_ALREADY_MEMBER: &str = "chat_already_member";
+
     // ---- a host refusing a direct (LAN) connection
     /// `forbidden`: the host does not trust this device.
     pub const NOT_TRUSTED: &str = "not_trusted";
@@ -365,6 +396,20 @@ pub mod reason {
         FORWARDING_DISABLED,
         FORWARDING_MODE_NOT_ALLOWED,
         FORWARDING_UNAVAILABLE,
+        CHAT_FORBIDDEN,
+        CHAT_MUTED,
+        CHAT_SLOW_MODE,
+        CHAT_BANNED,
+        CHAT_NOT_FRIENDS,
+        CHAT_QUOTA,
+        CHAT_TOO_LARGE,
+        CHAT_FROZEN,
+        CHAT_GROUPS_DISABLED,
+        CHAT_OWNER,
+        CHAT_ROLE_RANK,
+        CHAT_PIN_LIMIT,
+        CHAT_CONTENT_INVALID,
+        CHAT_ALREADY_MEMBER,
         NOT_TRUSTED,
         NO_ACCESS_CODE,
         HOST_BUSY,

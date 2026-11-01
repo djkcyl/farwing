@@ -33,7 +33,7 @@ pub fn now_ms() -> i64 {
 
 /// Schema version of [`SCHEMA`]. A database of any other version is refused;
 /// there is no migration (see [`open_connection`]).
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (
@@ -57,7 +57,11 @@ CREATE TABLE IF NOT EXISTS users (
     relay         INTEGER,
     forward       INTEGER,
     rate_mbps     INTEGER,
-    quota_gb      INTEGER
+    quota_gb      INTEGER,
+    -- Chat (`docs/protocol/chat-design.md` §2.3): the avatar's version
+    -- (empty: none) and the status the account chose.
+    avatar        TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'online'
 );
 CREATE TABLE IF NOT EXISTS devices (
     id              TEXT PRIMARY KEY,
@@ -83,7 +87,9 @@ CREATE TABLE IF NOT EXISTS devices (
     created_ip      TEXT NOT NULL DEFAULT '',
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
-    last_seen_at    INTEGER NOT NULL DEFAULT 0
+    last_seen_at    INTEGER NOT NULL DEFAULT 0,
+    -- The device's X25519 key for call frame keys (chat-design §10.1).
+    x25519          TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS devices_user ON devices(user_id);
 CREATE TABLE IF NOT EXISTS access_tokens (
@@ -288,6 +294,179 @@ CREATE TABLE IF NOT EXISTS egress_usage (
 );
 "#;
 
+/// Chat tables (`docs/protocol/chat-design.md` §2.3). IDs are Snowflakes
+/// (`crate::chat::ids`); the `@everyone` role's ID is its group's.
+const CHAT_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS chat_groups (
+    id            INTEGER PRIMARY KEY,
+    name          TEXT NOT NULL,
+    icon          TEXT NOT NULL DEFAULT '',
+    owner_id      TEXT NOT NULL,
+    public        INTEGER NOT NULL DEFAULT 0,
+    join_approval INTEGER NOT NULL DEFAULT 0,
+    description   TEXT NOT NULL DEFAULT '',
+    -- Attachment space in bytes; NULL: the server's default.
+    quota_bytes   INTEGER,
+    created_at    INTEGER NOT NULL,
+    frozen_at     INTEGER,
+    dissolved_at  INTEGER
+);
+CREATE INDEX IF NOT EXISTS chat_groups_owner ON chat_groups(owner_id);
+CREATE TABLE IF NOT EXISTS chat_members (
+    group_id    INTEGER NOT NULL REFERENCES chat_groups(id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    nickname    TEXT NOT NULL DEFAULT '',
+    joined_at   INTEGER NOT NULL,
+    muted_until INTEGER,
+    PRIMARY KEY (group_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS chat_members_user ON chat_members(user_id);
+CREATE TABLE IF NOT EXISTS chat_roles (
+    id          INTEGER PRIMARY KEY,
+    group_id    INTEGER NOT NULL REFERENCES chat_groups(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    color       INTEGER NOT NULL DEFAULT 0,
+    permissions INTEGER NOT NULL,
+    position    INTEGER NOT NULL,
+    mentionable INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS chat_roles_group ON chat_roles(group_id);
+CREATE TABLE IF NOT EXISTS chat_member_roles (
+    group_id INTEGER NOT NULL,
+    user_id  TEXT NOT NULL,
+    role_id  INTEGER NOT NULL REFERENCES chat_roles(id) ON DELETE CASCADE,
+    PRIMARY KEY (group_id, user_id, role_id),
+    FOREIGN KEY (group_id, user_id) REFERENCES chat_members(group_id, user_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS chat_channels (
+    id            INTEGER PRIMARY KEY,
+    group_id      INTEGER REFERENCES chat_groups(id) ON DELETE CASCADE,
+    kind          TEXT NOT NULL,
+    name          TEXT NOT NULL DEFAULT '',
+    topic         TEXT NOT NULL DEFAULT '',
+    parent_id     INTEGER,
+    position      INTEGER NOT NULL DEFAULT 0,
+    slow_mode_s   INTEGER NOT NULL DEFAULT 0,
+    voice_bitrate INTEGER NOT NULL DEFAULT 64,
+    voice_limit   INTEGER NOT NULL DEFAULT 0,
+    created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chat_channels_group ON chat_channels(group_id);
+CREATE TABLE IF NOT EXISTS chat_overwrites (
+    channel_id INTEGER NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+    role_id    INTEGER NOT NULL,
+    allow      INTEGER NOT NULL DEFAULT 0,
+    deny       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (channel_id, role_id)
+);
+CREATE TABLE IF NOT EXISTS chat_dm (
+    channel_id INTEGER PRIMARY KEY REFERENCES chat_channels(id) ON DELETE CASCADE,
+    user_a     TEXT NOT NULL,
+    user_b     TEXT NOT NULL,
+    UNIQUE (user_a, user_b),
+    CHECK (user_a < user_b)
+);
+CREATE INDEX IF NOT EXISTS chat_dm_b ON chat_dm(user_b);
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id          INTEGER PRIMARY KEY,
+    channel_id  INTEGER NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+    author_id   TEXT NOT NULL,
+    content     TEXT NOT NULL DEFAULT '',
+    reply_to    INTEGER,
+    mentions    TEXT NOT NULL DEFAULT '{}',
+    attachments TEXT NOT NULL DEFAULT '[]',
+    pinned_at   INTEGER,
+    edited_at   INTEGER,
+    deleted_at  INTEGER
+);
+CREATE INDEX IF NOT EXISTS chat_messages_channel ON chat_messages(channel_id, id);
+CREATE INDEX IF NOT EXISTS chat_messages_author ON chat_messages(author_id, id);
+CREATE INDEX IF NOT EXISTS chat_messages_pinned ON chat_messages(channel_id, pinned_at)
+    WHERE pinned_at IS NOT NULL;
+CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts USING fts5(
+    content, tokenize = 'trigram', content = '', contentless_delete = 1
+);
+CREATE TABLE IF NOT EXISTS chat_attachments (
+    id          INTEGER PRIMARY KEY,
+    owner_id    TEXT NOT NULL,
+    channel_id  INTEGER NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+    group_id    INTEGER,
+    name        TEXT NOT NULL,
+    mime        TEXT NOT NULL,
+    size        INTEGER NOT NULL,
+    width       INTEGER NOT NULL DEFAULT 0,
+    height      INTEGER NOT NULL DEFAULT 0,
+    thumb       INTEGER NOT NULL DEFAULT 0,
+    sha256      TEXT NOT NULL DEFAULT '',
+    -- The bytes arrived; until then the hash of the upload token.
+    uploaded    INTEGER NOT NULL DEFAULT 0,
+    upload_hash TEXT,
+    created_at  INTEGER NOT NULL,
+    message_id  INTEGER
+);
+CREATE INDEX IF NOT EXISTS chat_attachments_message ON chat_attachments(message_id);
+CREATE INDEX IF NOT EXISTS chat_attachments_group ON chat_attachments(group_id);
+CREATE INDEX IF NOT EXISTS chat_attachments_owner ON chat_attachments(owner_id);
+CREATE INDEX IF NOT EXISTS chat_attachments_pending ON chat_attachments(created_at)
+    WHERE message_id IS NULL;
+CREATE TABLE IF NOT EXISTS chat_read_states (
+    user_id      TEXT NOT NULL,
+    channel_id   INTEGER NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+    last_read_id INTEGER NOT NULL DEFAULT 0,
+    mentions     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, channel_id)
+);
+CREATE TABLE IF NOT EXISTS chat_bans (
+    group_id INTEGER NOT NULL REFERENCES chat_groups(id) ON DELETE CASCADE,
+    user_id  TEXT NOT NULL,
+    by_user  TEXT NOT NULL,
+    reason   TEXT NOT NULL DEFAULT '',
+    at       INTEGER NOT NULL,
+    PRIMARY KEY (group_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS chat_invites (
+    code       TEXT PRIMARY KEY,
+    group_id   INTEGER NOT NULL REFERENCES chat_groups(id) ON DELETE CASCADE,
+    by_user    TEXT NOT NULL,
+    max_uses   INTEGER,
+    uses       INTEGER NOT NULL DEFAULT 0,
+    expires_at INTEGER,
+    revoked_at INTEGER,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chat_invites_group ON chat_invites(group_id);
+CREATE TABLE IF NOT EXISTS chat_group_invites (
+    id       INTEGER PRIMARY KEY,
+    group_id INTEGER NOT NULL REFERENCES chat_groups(id) ON DELETE CASCADE,
+    user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    by_user  TEXT NOT NULL,
+    at       INTEGER NOT NULL,
+    UNIQUE (group_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS chat_group_invites_user ON chat_group_invites(user_id);
+CREATE TABLE IF NOT EXISTS chat_join_requests (
+    group_id INTEGER NOT NULL REFERENCES chat_groups(id) ON DELETE CASCADE,
+    user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    via      TEXT NOT NULL,
+    at       INTEGER NOT NULL,
+    PRIMARY KEY (group_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS chat_audit (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id INTEGER NOT NULL,
+    actor_id TEXT NOT NULL,
+    action   TEXT NOT NULL,
+    target   TEXT NOT NULL DEFAULT '',
+    details  TEXT NOT NULL DEFAULT '{}',
+    at       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chat_audit_group ON chat_audit(group_id, id);
+CREATE TABLE IF NOT EXISTS chat_prefs (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    prefs   TEXT NOT NULL DEFAULT '{}'
+);
+"#;
+
 impl Db {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         if let Some(dir) = path.parent() {
@@ -356,6 +535,7 @@ pub fn open_connection(path: &Path) -> anyhow::Result<Connection> {
         );
     }
     conn.execute_batch(SCHEMA)?;
+    conn.execute_batch(CHAT_SCHEMA)?;
     if version.is_none() {
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?1)",
@@ -470,6 +650,7 @@ pub fn delete_user(c: &mut Connection, id: &str) -> R<Vec<String>> {
     revoke_tokens_for_user(&tx, id, "user_deleted")?;
     tx.execute("UPDATE devices SET user_id = NULL WHERE user_id = ?1", [id])?;
     tx.execute("DELETE FROM assist_saved WHERE user_id = ?1", [id])?;
+    crate::chat::store::dissolve_owned(&tx, id)?;
     tx.execute("DELETE FROM users WHERE id = ?1", [id])?;
     tx.commit()?;
     Ok(devices)

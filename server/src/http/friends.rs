@@ -123,6 +123,7 @@ fn grant_changes(
 /// newly shared devices to both.
 async fn announce_friendship(app: &App, a: &UserRow, b: &UserRow) -> ApiResult<()> {
     push_friend_changed(app, &b.id, FriendChangeKind::RequestAccepted, a).await;
+    crate::chat::push::friendship_changed(app, &a.id, &b.id).await;
     for (owner, viewer) in [(a, b), (b, a)] {
         let seen = devices_seen_by(app, &owner.id, &viewer.id).await?;
         push_visibility(app, owner, &viewer.id, &HashMap::new(), &seen).await;
@@ -394,6 +395,7 @@ pub async fn remove(
     };
     app.hub.regrant(&other.id, &revoke_all(&mine_seen));
     app.hub.regrant(&auth.user.id, &revoke_all(&theirs_seen));
+    crate::chat::push::friendship_changed(&app, &auth.user.id, &other.id).await;
     tracing::info!(user_id = %auth.user.id, friend = %other.id, "friendship removed");
     friend_event(&app, &auth, &other, "friend.remove", ip).await;
     let data = serde_json::json!({ "who": display(&auth.user) });

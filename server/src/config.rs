@@ -81,6 +81,7 @@ pub struct Config {
     pub egress: EgressConfig,
     pub limits: LimitsConfig,
     pub web: WebConfig,
+    pub chat: ChatConfig,
 }
 
 impl Default for Config {
@@ -102,6 +103,7 @@ impl Default for Config {
             egress: EgressConfig::default(),
             limits: LimitsConfig::default(),
             web: WebConfig::default(),
+            chat: ChatConfig::default(),
         }
     }
 }
@@ -172,6 +174,49 @@ impl Default for EgressPolicy {
 pub const EGRESS_LIMIT_MBPS: std::ops::RangeInclusive<u32> = 1..=100_000;
 pub const EGRESS_RATE_MBPS: std::ops::RangeInclusive<u32> = 1..=10_000;
 pub const EGRESS_QUOTA_GB: std::ops::RangeInclusive<u32> = 1..=1_000_000;
+
+/// Chat (`docs/protocol/chat-design.md` §13).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ChatConfig {
+    /// Every user may create groups; off: administrators only.
+    pub create_groups: bool,
+    /// Largest attachment (MB).
+    pub max_attachment_mb: u32,
+    /// Attachment space of a group without its own (GB).
+    pub group_quota_gb: u32,
+    /// Attachment space of an account's direct messages (GB).
+    pub dm_quota_gb: u32,
+    /// Days messages are kept; none: forever.
+    pub retention_days: Option<u32>,
+    /// Messages an account may send per `rate_window_s`.
+    pub rate_messages: u32,
+    pub rate_window_s: u32,
+    /// Highest bitrate of a voice channel (kbit/s).
+    pub voice_max_kbps: u32,
+}
+
+impl Default for ChatConfig {
+    fn default() -> Self {
+        Self {
+            create_groups: true,
+            max_attachment_mb: 100,
+            group_quota_gb: 10,
+            dm_quota_gb: 5,
+            retention_days: None,
+            rate_messages: 5,
+            rate_window_s: 5,
+            voice_max_kbps: 128,
+        }
+    }
+}
+
+/// Ranges of the chat settings.
+pub const CHAT_ATTACHMENT_MB: std::ops::RangeInclusive<u32> = 1..=4096;
+pub const CHAT_QUOTA_GB: std::ops::RangeInclusive<u32> = 1..=100_000;
+pub const CHAT_RETENTION_DAYS: std::ops::RangeInclusive<u32> = 1..=36_500;
+pub const CHAT_RATE_MESSAGES: std::ops::RangeInclusive<u32> = 1..=100;
+pub const CHAT_RATE_WINDOW_S: std::ops::RangeInclusive<u32> = 1..=60;
 
 /// Viewers from which a host forwards.
 pub const SFU_THRESHOLD: std::ops::RangeInclusive<u32> = 2..=16;
@@ -623,6 +668,33 @@ impl Config {
                     format!("egress.{who}.quota_gb must be 1-1000000"),
                 ));
             }
+        }
+        let chat = &self.chat;
+        for (field, value, range) in [
+            ("chat.max_attachment_mb", chat.max_attachment_mb, CHAT_ATTACHMENT_MB),
+            ("chat.group_quota_gb", chat.group_quota_gb, CHAT_QUOTA_GB),
+            ("chat.dm_quota_gb", chat.dm_quota_gb, CHAT_QUOTA_GB),
+            ("chat.rate_messages", chat.rate_messages, CHAT_RATE_MESSAGES),
+            ("chat.rate_window_s", chat.rate_window_s, CHAT_RATE_WINDOW_S),
+        ] {
+            if !range.contains(&value) {
+                return Err(SettingError::range(
+                    field,
+                    format!("{field} must be {}-{}", range.start(), range.end()),
+                ));
+            }
+        }
+        if chat.retention_days.is_some_and(|d| !CHAT_RETENTION_DAYS.contains(&d)) {
+            return Err(SettingError::range(
+                "chat.retention_days",
+                "chat.retention_days must be 1-36500",
+            ));
+        }
+        if !farwing_protocol::chat::limits::VOICE_BITRATES.contains(&chat.voice_max_kbps) {
+            return Err(SettingError::invalid(
+                "chat.voice_max_kbps",
+                "chat.voice_max_kbps must be 32, 64, 96 or 128",
+            ));
         }
         if tracing_subscriber::EnvFilter::try_new(&self.log).is_err() {
             return Err(SettingError::invalid("log", "log is not a valid filter"));

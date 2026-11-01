@@ -169,6 +169,7 @@ pub async fn set_profile(
     app.db
         .call(move |c| webdb::set_nickname(c, &uid, &nickname))
         .await?;
+    crate::chat::push::user_changed(&app, &auth.user.id).await;
     Ok(Json(Empty {}))
 }
 

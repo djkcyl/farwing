@@ -5,6 +5,7 @@
 pub mod accounts;
 pub mod acme;
 pub mod assist;
+pub mod chat;
 pub mod config;
 pub mod crypto;
 pub mod db;

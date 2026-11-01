@@ -14,6 +14,7 @@
 //! and consumers cannot drift apart.
 
 pub mod api;
+pub mod chat;
 pub mod direct;
 pub mod error;
 pub mod ids;

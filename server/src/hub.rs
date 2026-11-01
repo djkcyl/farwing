@@ -74,6 +74,8 @@ impl LinkAuth {
 pub enum Admission {
     Presence { device_id: String, auth: LinkAuth },
     Controller { session_id: String },
+    /// A chat connection (`crate::chat::conn`) of an account's device.
+    Chat { device_id: String, auth: LinkAuth },
 }
 
 struct Ticket {
@@ -245,6 +247,8 @@ pub struct Hub {
     state: Mutex<HubState>,
     events: UnboundedSender<HubEvent>,
     persist: UnboundedSender<PersistJob>,
+    /// Chat connections end with the credentials they were admitted with.
+    chat: std::sync::OnceLock<Arc<crate::chat::hub::ChatHub>>,
 }
 
 pub struct HubChannels {
@@ -368,12 +372,18 @@ impl Hub {
                 state: Mutex::new(HubState::default()),
                 events,
                 persist,
+                chat: std::sync::OnceLock::new(),
             }),
             HubChannels {
                 events: events_rx,
                 persist: persist_rx,
             },
         )
+    }
+
+    /// The chat connections revoked credentials close.
+    pub fn set_chat(&self, chat: Arc<crate::chat::hub::ChatHub>) {
+        let _ = self.chat.set(chat);
     }
 
     /// Limits and timers for new links and sessions.
@@ -624,6 +634,17 @@ impl Hub {
         self.issue_ticket(
             &mut st,
             Admission::Presence {
+                device_id: device_id.to_owned(),
+                auth,
+            },
+        )
+    }
+
+    pub fn issue_chat_ticket(&self, device_id: &str, auth: LinkAuth) -> String {
+        let mut st = self.state.lock();
+        self.issue_ticket(
+            &mut st,
+            Admission::Chat {
                 device_id: device_id.to_owned(),
                 auth,
             },
@@ -1156,9 +1177,14 @@ impl Hub {
     fn revoke_where(&self, matches: impl Fn(&str, &LinkAuth) -> bool) {
         let mut st = self.state.lock();
         st.tickets.retain(|_, t| match &t.admission {
-            Admission::Presence { device_id, auth } => !matches(device_id, auth),
+            Admission::Presence { device_id, auth } | Admission::Chat { device_id, auth } => {
+                !matches(device_id, auth)
+            }
             Admission::Controller { .. } => true,
         });
+        if let Some(chat) = self.chat.get() {
+            chat.revoke_where(&matches);
+        }
         // Sessions whose controller credential is revoked.
         let ctrl_sids: Vec<String> = st
             .sessions

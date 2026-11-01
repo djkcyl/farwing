@@ -2,6 +2,7 @@
 
 pub mod account;
 pub mod admin_api;
+pub mod chat;
 pub mod assist;
 pub mod auth;
 pub mod devices;
@@ -76,6 +77,8 @@ pub struct AppState {
     pub control: std::sync::OnceLock<crate::runtime::Control>,
     /// What notifications watch for (`crate::notify`).
     pub watch: crate::notify::Watch,
+    /// Chat connections and media tokens (`crate::chat`).
+    pub chat: crate::chat::Chat,
 }
 
 impl AppState {
@@ -255,6 +258,8 @@ fn valid_request_id(v: &str) -> bool {
 fn body_limit(path: &str) -> usize {
     if path == path::SELF_WALLPAPER {
         farwing_protocol::limits::MAX_WALLPAPER_BYTES
+    } else if path == "/api/v2/me/avatar" || (path.starts_with("/api/v2/chat/groups/") && path.ends_with("/icon")) {
+        farwing_protocol::chat::limits::MAX_IMAGE_BYTES
     } else {
         farwing_protocol::limits::MAX_JSON_BODY
     }
@@ -573,6 +578,7 @@ pub fn router(app: App) -> Router {
         )
         .route(farwing_protocol::WS_PATH, get(crate::ws::upgrade))
         .route(misc::HEALTHZ, get(misc::healthz));
+    let api = chat::routes(api);
 
     api.fallback(web_static::serve)
         .method_not_allowed_fallback(method_not_allowed)

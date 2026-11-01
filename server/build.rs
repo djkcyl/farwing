@@ -40,6 +40,18 @@ fn main() {
         );
     }
     code.push_str("];\n");
+    // Emoji images (`emoji/emoji.pack`, made by `emoji/make_pack.py`).
+    let pack = Path::new(env!("CARGO_MANIFEST_DIR")).join("emoji").join("emoji.pack");
+    println!("cargo:rerun-if-changed={}", pack.display());
+    if pack.is_file() {
+        let _ = writeln!(
+            code,
+            "pub static EMOJI: &[u8] = include_bytes!({:?});",
+            pack.display().to_string()
+        );
+    } else {
+        code.push_str("pub static EMOJI: &[u8] = &[];\n");
+    }
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR")).join("web_assets.rs");
     std::fs::write(out, code).expect("write web_assets.rs");
 }

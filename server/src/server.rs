@@ -72,6 +72,7 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
     } else {
         None
     };
+    let media_key = db.with(crate::chat::media::load_key)?;
     let edges = Arc::new(crate::edge::EdgeHub::new());
     edges.load(db.with(|c| crate::webdb::edge_nodes(c))?);
     edges.reconfigure(&cfg.turn, &cfg.sfu);
@@ -106,7 +107,9 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
         local_relay: Default::default(),
         control: OnceLock::new(),
         watch: Default::default(),
+        chat: crate::chat::Chat::new(media_key),
     });
+    hub.set_chat(Arc::clone(&app.chat.hub));
     let router = http::router(Arc::clone(&app));
     let started = Components::start(Arc::clone(&app), router, listener).await?;
     let _ = app.control.set(started.control.clone());
@@ -224,6 +227,20 @@ pub async fn start(cfg: Config, listener: Option<std::net::TcpListener>) -> Resu
             }
         }));
     }
+    // Chat upkeep: attachments never sent, dissolved groups past their
+    // restore window, messages past the retention, the groups' audit logs.
+    {
+        let app = Arc::clone(&app);
+        tasks.push(tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(600));
+            let mut n: u64 = 0;
+            loop {
+                tick.tick().await;
+                crate::chat::upkeep(&app, n.is_multiple_of(6)).await;
+                n += 1;
+            }
+        }));
+    }
     // Audit log, connection record and notification retention (`web.audit_days`).
     {
         let app = Arc::clone(&app);
@@ -286,6 +303,7 @@ impl RunningServer {
     pub async fn shutdown(self) {
         tracing::info!("shutting down");
         self.app.hub.shutdown();
+        self.app.chat.hub.shutdown();
         self.app.forwarding.local.close().await;
         // Give connection tasks a moment to flush their close frames.
         tokio::time::sleep(Duration::from_millis(200)).await;

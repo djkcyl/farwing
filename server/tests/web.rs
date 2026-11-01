@@ -455,7 +455,7 @@ async fn browser_logins_expire_sooner_and_web_caps_limit_browsers() {
         .await;
     assert_eq!(
         r.ok()["target"]["granted"],
-        json!(["view", "control", "clipboard", "files", "audio", "microphone", "annotation"])
+        json!(["view", "control", "clipboard", "files", "audio", "microphone", "annotation", "camera", "listen"])
     );
     srv.post("/api/v2/sessions", &web, json!({"target_device_id": host.id, "purpose": "ports"}))
         .await
@@ -468,7 +468,7 @@ async fn browser_logins_expire_sooner_and_web_caps_limit_browsers() {
 
     // The administrator makes the web view-only.
     let settings = srv.get("/api/v2/admin/settings", &web).await.ok()["settings"].clone();
-    assert_eq!(settings["web"]["caps"].as_array().unwrap().len(), 7);
+    assert_eq!(settings["web"]["caps"].as_array().unwrap().len(), 9);
     srv.put("/api/v2/admin/settings", &web, json!({"web": {"caps": ["audio", "view", "ports"]}}))
         .await
         .err(400, "bad_request");

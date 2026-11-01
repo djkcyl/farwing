@@ -239,7 +239,7 @@ impl Resp {
 pub fn host_policy(host: bool) -> Value {
     json!({
         "control": host, "files": true, "ports": host, "power": host,
-        "wol": false, "assist": host, "max_participants": 8
+        "wol": false, "assist": host, "max_participants": 8, "camera": false, "listen": false
     })
 }
 

@@ -79,6 +79,52 @@ fn with_headers(mut response: Response, cache: &'static str) -> Response {
     response
 }
 
+/// The emoji pack: `EMOJ`, a count, then `(name length u16, name, offset
+/// u32, length u32)` entries, then the files (`emoji/make_pack.py`).
+fn emoji_index() -> &'static std::collections::HashMap<&'static str, &'static [u8]> {
+    static INDEX: std::sync::OnceLock<std::collections::HashMap<&'static str, &'static [u8]>> =
+        std::sync::OnceLock::new();
+    INDEX.get_or_init(|| {
+        let pack = assets::EMOJI;
+        let mut out = std::collections::HashMap::new();
+        if pack.len() < 8 || &pack[..4] != b"EMOJ" {
+            return out;
+        }
+        let u32_at = |i: usize| pack.get(i..i + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+        let Some(count) = u32_at(4) else { return out };
+        let mut at = 8;
+        for _ in 0..count {
+            let Some(len) = pack.get(at..at + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize) else {
+                break;
+            };
+            let Some(name) = pack.get(at + 2..at + 2 + len).and_then(|b| std::str::from_utf8(b).ok()) else {
+                break;
+            };
+            at += 2 + len;
+            let (Some(offset), Some(size)) = (u32_at(at), u32_at(at + 4)) else { break };
+            at += 8;
+            if let Some(bytes) = pack.get(offset..offset + size) {
+                out.insert(name, bytes);
+            }
+        }
+        out
+    })
+}
+
+/// `GET /emoji/{file}`: an emoji image (`1f600.png`, code points joined by
+/// `-`) or the index of names and keywords (`index.json`).
+pub fn emoji(file: &str, _headers: &HeaderMap) -> Response {
+    let Some(bytes) = emoji_index().get(file).copied() else {
+        return crate::error::ApiError::not_found().into_response();
+    };
+    let mut response = ([(header::CONTENT_TYPE, mime(file))], Body::from(bytes)).into_response();
+    response.headers_mut().insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=604800"));
+    response
+}
+
 /// Shown to whoever builds the server without the web console (a developer).
 const NOT_BUILT: &str = "<!doctype html><html lang=en><meta charset=utf-8><title>Farwing</title>\
 <body style=\"font-family:sans-serif;background:#16181d;color:#e6e8ee;padding:48px\">\

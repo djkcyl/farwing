@@ -76,8 +76,9 @@
 | `chat_bans` | `group_id, user_id, by, reason, at` |
 | `chat_invites` | `id(code), group_id, by, max_uses, uses, expires_at, revoked_at` |
 | `chat_join_requests` | `group_id, user_id, via(invite\|public), at` |
+| `chat_group_invites` | `id, group_id, user_id, by_user, at`（拉好友入群、待对方接受） |
 | `chat_audit` | `group_id, actor_id, action, target, details(json), at` |
-| `chat_prefs` | `user_id, key, value(json)`（通知设置、勿扰时段、隐藏通知内容、已读回执开关等，按账号同步） |
+| `chat_prefs` | `user_id, prefs(json)`（通知设置、勿扰时段、隐藏通知内容、已读回执开关等，整份按账号同步） |
 | `users` 加列 | `avatar`（图片文件名）、`status(online\|idle\|dnd\|invisible)` |
 | `devices` 加列 | `x25519`（设备的 X25519 公钥，§10.1） |
 
@@ -88,10 +89,10 @@
 ### 2.4 附件存储
 
 - 文件在数据目录 `attachments/<群组 id 或 dm>/<附件 id>`；图片另存缩略图 `…/<附件 id>.thumb.webp`（长边 ≤ 400 像素）。
-- 上传：`POST /chat/attachments`，主体为原始字节，`X-Farwing-File-Name`、`Content-Type` 头；按频道检查“上传附件”权限、单文件上限、群组容量（私信算发送者的个人配额）；流式写入，边写边算 SHA-256。回执附件 ID；1 小时内没有被消息引用的附件被清理。
+- 上传分两步（签名请求要缓冲主体，大文件不走它）：`POST /chat/attachments {channel_id, name, mime, size}` 按频道检查“上传附件”权限、单文件上限、群组容量（私信算发送者的个人配额），回执附件 ID 与上传地址 `/media/upload/{id}?t=<一次性令牌>`；客户端对它 `PUT` 原始字节（不签名），服务端流式写入、边写边算 SHA-256，字节数必须与声明一致。1 小时内没有被消息引用的附件被清理。
 - 图片：服务端读取尺寸并生成缩略图，解码前检查像素数（≤ 50 MP），防解压炸弹；动图只取第一帧做缩略图。
-- 下载：`GET /chat/attachments/{id}/{name}`，账号认证且能看到该频道；`Content-Disposition: attachment`（图片的缩略图与原图预览可内联）、`X-Content-Type-Options: nosniff`、`Content-Security-Policy: sandbox`。支持 `Range`。
-- 头像与群图标：`PUT /me/avatar`、`PUT /chat/groups/{id}/icon`，原始字节 ≤ 4 MiB（PNG / JPEG / WebP / GIF 取第一帧），服务端裁成正方形 256 像素 WebP；`GET /avatars/{user_id}?v=` 与 `GET /chat/groups/{id}/icon?v=` 带 ETag。
+- 下载走 `/media/...`，以查询参数里的媒体令牌认证（浏览器的 `<img>` 不能加签名头）：`POST /chat/media-token`（账号）→ `{token, expires_at}`，一天有效，HMAC 密钥存在数据库里，重启不失效。`GET /media/attachments/{id}/{name}?t=`（能看到该频道，且在 `read_history` 规则内）、`GET /media/thumbs/{id}?t=`；服务端解码过的图片内联并带原类型，其余 `Content-Disposition: attachment` 与 `application/octet-stream`（`&download=1` 强制下载）；`X-Content-Type-Options: nosniff`、`Content-Security-Policy: sandbox`、支持 `Range`。
+- 头像与群图标：`PUT /me/avatar`、`PUT /chat/groups/{id}/icon`（签名请求，原始字节 ≤ 4 MiB，PNG / JPEG / WebP / GIF 取第一帧），服务端裁成正方形 256 像素 WebP，回执新的版本号；`GET /media/avatars/{user_id}?v=&t=` 与 `GET /media/icons/{group_id}?v=&t=`，按版本号长期缓存。
 
 ## 3. 权限
 
@@ -194,8 +195,8 @@
 
 聊天走单独的实时连接，与远程桌面的在线连接（由被控进程或后台服务持有）分开：设备中心与网页各自持有一条，不受“允许被控”与后台服务影响。
 
-- `POST /chat/ticket`（账号）→ `{ticket, endpoints}`；`GET /ws?ticket=` 建立的连接角色为 `chat`。同一设备同时只有一条聊天连接（新的取代旧的，`4001`），与它的在线连接互不取代。
-- 信封、心跳、恢复与重连同 farwing-protocol §4.2–4.4。
+- `POST /chat/ticket`（账号）→ `{ticket, endpoints}`；`GET /ws?ticket=` 建立的连接角色为 `chat`。同一设备同时只有一条聊天连接（新的取代旧的，`4001`），与它的在线连接互不取代；登录被撤销时关闭（`4003`）。
+- 信封、心跳与重连同 farwing-protocol §4.2–4.4；聊天连接不恢复（`hello` 里没有恢复令牌），断开后用新票据重连，重新取快照。`GET /chat/state` 以 HTTP 回执同样的快照。
 - 连接建立后客户端发 `chat.hello{status, idle}`，服务端回 `ack{snapshot}`：自己的群组、频道、角色、成员数、未读状态、私信列表、好友在线状态、各语音频道在场的人。之后的变化都以推送到达。
 
 ### 6.2 HTTP 接口（路径前缀 `/api/v2`，均为账号认证）
@@ -230,7 +231,7 @@
 | `POST /chat/dm/{channel}/call` · `POST /chat/calls/{call}/answer\|decline\|hangup\|move` | 私信通话（§7.6） |
 | `PUT /devices/self/x25519` | 登记设备的 X25519 公钥（§10.1） |
 
-错误沿用 §3.3 的格式；新增的 `code`：`chat_forbidden`（没有权限）、`chat_muted`（被禁言）、`chat_slow_mode`（带 `retry_after_ms`）、`chat_banned`、`chat_group_full`、`chat_quota`（附件容量）、`chat_too_large`、`chat_not_friends`、`voice_full`。
+错误沿用 §3.3 的格式，聊天的情形用 `details.reason` 区分（与其他接口一致，不另加 `code`）：`forbidden` + `chat_forbidden`（没有权限）、`chat_muted`（被禁言，带 `until`）、`chat_banned`、`chat_not_friends`、`chat_quota`（附件容量）、`chat_frozen`（群组被冻结）、`chat_groups_disabled`、`chat_role_rank`；`rate_limited` + `chat_slow_mode`（带 `retry_after_ms`）；`payload_too_large` + `chat_too_large`（带 `max`）；`conflict` + `chat_owner`、`chat_pin_limit`、`chat_already_member`；`bad_request` + `chat_content_invalid`（带 `max`）；`voice_full` 在阶段 V 加。
 
 ### 6.3 推送（聊天连接）
 
@@ -243,7 +244,12 @@
 | `chat.group` · `chat.group_removed` | 群组的增改（加入、设置变化）、自己离开 / 被踢 / 群组解散 |
 | `chat.channel` · `chat.channel_removed` · `chat.roles` · `chat.member` | 频道、角色、成员（加入、离开、昵称、角色、禁言）变化 |
 | `chat.presence` | `{user, status}` |
-| `chat.invite` | 收到拉群邀请、加入申请有结果 |
+| `chat.invite` · `chat.invite_removed` | 收到拉群邀请、邀请已处理 |
+| `chat.request` | 新的加入申请（给能审批的人，带 `user`）；申请有结果（给申请人，`approved`） |
+| `chat.member_removed` | 成员离开或被移出（给群组其余在线成员） |
+| `chat.dm` | 私信频道新建或好友关系变化（只读与否） |
+| `chat.user` | 某账号的昵称或头像变化（给好友与共同群组的人） |
+| `chat.prefs` | 自己在另一台设备上改了聊天设置 |
 | `voice.state` | `{channel, device, user, muted, deafened, server_muted, server_deafened, video, screens}`（进出与状态变化；在场的人与有 `view` 的人都收到） |
 | `call.*` | 私信通话，见 §7.6 |
 | `voice.offer` · `voice.tracks` · `voice.keys` | 语音媒体，见 §7.3、§10 |

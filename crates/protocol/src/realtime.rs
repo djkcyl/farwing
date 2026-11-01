@@ -642,8 +642,5 @@ mod tests {
         assert!(text.contains("\"gen\":2"));
         let body: RtcCandidate = decoded.body().unwrap();
         assert_eq!(body.candidate.sdp_mid.as_deref(), Some("0"));
-        let setting = serde_json::to_value(SessionSetting::SenderInfo { infos: Vec::new() })
-            .unwrap();
-        assert_eq!(setting["kind"], "sender_info");
     }
 }

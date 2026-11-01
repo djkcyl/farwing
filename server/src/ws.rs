@@ -28,6 +28,7 @@ enum Start {
     },
     Controller(String),
     Resume(String),
+    Chat { device_id: String, auth: LinkAuth },
 }
 
 fn header<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -85,6 +86,15 @@ pub async fn upgrade(
                 }
             }
             Some(Admission::Controller { session_id }) => Start::Controller(session_id),
+            Some(Admission::Chat { device_id, auth }) => {
+                if !link_auth_valid(&app, &device_id, &auth).await {
+                    return rejected("credentials revoked");
+                }
+                if auth.user_id().is_none() {
+                    return rejected("chat needs an account");
+                }
+                Start::Chat { device_id, auth }
+            }
             None => return rejected("invalid or expired ticket"),
         }
     } else if let Some(resume) = resume {
@@ -109,6 +119,12 @@ pub async fn upgrade(
 }
 
 async fn run(app: App, socket: WebSocket, start: Start, ip: IpAddr) {
+    let start = match start {
+        Start::Chat { device_id, auth } => {
+            return crate::chat::conn::run(app, socket, device_id, auth).await;
+        }
+        other => other,
+    };
     let (tx, mut rx) = unbounded_channel::<Outbound>();
     let conn_id = new_uuid();
     let conn = ConnHandle {
@@ -125,6 +141,7 @@ async fn run(app: App, socket: WebSocket, start: Start, ip: IpAddr) {
         } => hub.attach_presence(&device_id, auth, epoch, conn),
         Start::Controller(sid) => hub.attach_controller(&sid, conn),
         Start::Resume(token) => hub.attach_resume(&token, conn),
+        Start::Chat { .. } => unreachable!("handled above"),
     };
     let (mut sink, mut stream) = socket.split();
     let Some(link_id) = link_id else {

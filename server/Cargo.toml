@@ -36,6 +36,8 @@ getrandom = "0.3"
 hex = "0.4"
 http-body-util = "0.1"
 hmac = "0.12"
+# Chat images: dimensions, thumbnails, avatars (`src/chat/media.rs`).
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 instant-acme = { version = "0.8.5", default-features = false, features = ["ring", "hyper-rustls", "rcgen"] }
 ipnet = { version = "2.11", features = ["serde"] }
 parking_lot = "0.12"
@@ -58,6 +60,7 @@ tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 url = "2.5"
 uuid = { version = "1.18", features = ["v4"] }
+webp = { version = "0.3.1", default-features = false }
 webrtc-util = { version = "0.17", default-features = false, features = ["conn", "vnet"] }
 # Media forwarding (SFU): the client's patched WebRTC stack, so both legs
 # negotiate and frame packets exactly as Farwing clients do.

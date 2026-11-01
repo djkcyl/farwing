@@ -228,7 +228,20 @@ curl "${H[@]}" $S/api/v2/admin/sfu    # 转发房间：被控、所在节点、�
 
 每个房间：`id`、`host_device_id`、`node`（边缘节点名称，空 = 本服务器）、`mode`（`e2ee` / `compatible`）、`sessions`、`created_at`、`stats`（`packets`、`bytes`、`uplink_repairs`（向被控补要的包）、`keyframe_requests`、`legs`：每位观看者的 `packets`、`bytes`、`repairs`、`dropped`、`loss`（%）、`rtt_ms`）。边缘节点上的房间统计随节点每 10 秒的健康报告更新。概览的 `forwarding_rooms`、`forwarding_viewers` 与会话列表的 `forwarded_by`（转发所在节点，空字符串 = 本服务器，`null` = 未转发）来自同一数据。房间由客户端经 `/api/v2/sfu/*` 打开（`farwing-protocol.md` §3.14）；关闭多人转发时所有房间立即关闭。
 
-## 7. 其他管理接口
+## 7. 群组（聊天）
+
+设计见 [chat-design.md](protocol/chat-design.md) §13。只管理群组，不提供读消息内容的接口。
+
+| 方法 路径 | 说明 |
+| --- | --- |
+| `GET /api/v2/admin/chat/groups` | 全部群组：名称、群主、成员数、频道数、附件用量（字节）、单独的容量、创建时间、冻结、解散时间 |
+| `PATCH /api/v2/admin/chat/groups/{id}` | `{frozen?, owner?, quota_bytes?}`：冻结或解冻、转让给某个成员、单独的附件容量（`null` 回到服务器默认） |
+| `DELETE /api/v2/admin/chat/groups/{id}` · `POST …/{id}/restore` | 解散（30 天内可恢复，之后连同文件删除）、恢复 |
+| `GET /api/v2/admin/chat/groups/{id}/audit?before=` | 群组审计日志 |
+
+这些操作记入服务器审计日志（`chat_group_update`、`chat_group_dissolve`、`chat_group_restore`）。设置文档的 `chat` 一节：`create_groups`、`max_attachment_mb`（1–4096，默认 100）、`group_quota_gb`（默认 10）、`dm_quota_gb`（默认 5）、`retention_days`（空为永久）、`rate_messages` / `rate_window_s`（默认 5 秒 5 条）、`voice_max_kbps`（32 / 64 / 96 / 128）。
+
+## 8. 其他管理接口
 
 | 接口 | 说明 |
 | --- | --- |
