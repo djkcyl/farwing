@@ -7,6 +7,7 @@ import { useAuth } from '../../lib/auth';
 import { capText, dateTime, listText, WEB_CAPS } from '../../lib/format';
 import type {
   Applied,
+  ChatServerSettings,
   E2eeLevel,
   EgressPolicy,
   LimitsSettings,
@@ -44,7 +45,7 @@ import {
 import { useOverlay } from '../../ui/overlay';
 import { settingErrorText as saveError } from '../../lib/settingError';
 
-type Tab = 'basic' | 'certificate' | 'relay' | 'forwarding' | 'egress' | 'access' | 'limits' | 'backup';
+type Tab = 'basic' | 'certificate' | 'relay' | 'forwarding' | 'egress' | 'access' | 'chat' | 'limits' | 'backup';
 
 /// Save a partial settings document; the toast says what restarted.
 function useSave(onApplied: (view: Applied) => void) {
@@ -930,6 +931,92 @@ function Egress({ view, onApplied }: { view: SettingsView; onApplied(v: Applied)
   );
 }
 
+// ---------------------------------------------------------------- chat
+
+function ChatSettings({ view, onApplied }: { view: SettingsView; onApplied(v: Applied): void }) {
+  const t = useT();
+  const m = t.admin.settings;
+  const initial = view.settings.chat;
+  const [draft, setDraft] = useState(initial);
+  const { save, busy, error } = useSave(onApplied);
+  const set = (p: Partial<ChatServerSettings>) => setDraft({ ...draft, ...p });
+  return (
+    <Card
+      title={m.tabs.chat}
+      actions={<SaveButton busy={busy} changed={!same(draft, initial)} onClick={() => void save({ chat: draft })} />}
+    >
+      <div className="stack">
+        {error && <Alert>{error}</Alert>}
+        <Switch
+          checked={draft.create_groups}
+          onChange={(create_groups) => set({ create_groups })}
+          label={m.chatCreateGroups}
+        />
+        <div className="grid grid-cols-3">
+          <Field label={m.chatAttachmentMb}>
+            <NumberInput
+              value={draft.max_attachment_mb}
+              min={1}
+              max={4096}
+              onChange={(v) => set({ max_attachment_mb: v ?? 0 })}
+            />
+          </Field>
+          <Field label={m.chatGroupQuota}>
+            <NumberInput
+              value={draft.group_quota_gb}
+              min={1}
+              max={100000}
+              onChange={(v) => set({ group_quota_gb: v ?? 0 })}
+            />
+          </Field>
+          <Field label={m.chatDmQuota}>
+            <NumberInput
+              value={draft.dm_quota_gb}
+              min={1}
+              max={100000}
+              onChange={(v) => set({ dm_quota_gb: v ?? 0 })}
+            />
+          </Field>
+          <Field label={m.chatRetention}>
+            <NumberInput
+              value={draft.retention_days}
+              min={1}
+              max={36500}
+              placeholder={m.chatForever}
+              onChange={(retention_days) => set({ retention_days })}
+            />
+          </Field>
+          <Field label={m.chatRate}>
+            <div className="row gap-sm">
+              <NumberInput
+                value={draft.rate_messages}
+                min={1}
+                max={100}
+                onChange={(v) => set({ rate_messages: v ?? 0 })}
+              />
+              <span className="muted nowrap">{m.chatPer}</span>
+              <NumberInput
+                value={draft.rate_window_s}
+                min={1}
+                max={60}
+                onChange={(v) => set({ rate_window_s: v ?? 0 })}
+              />
+              <span className="muted nowrap">{m.chatSeconds}</span>
+            </div>
+          </Field>
+          <Field label={m.chatVoiceMax}>
+            <Select
+              value={draft.voice_max_kbps}
+              onChange={(voice_max_kbps) => set({ voice_max_kbps })}
+              options={[32, 64, 96, 128].map((k) => ({ value: k, label: `${k} kbps` }))}
+            />
+          </Field>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 // -------------------------------------------------------------- limits
 
 function Limits({ view, onApplied }: { view: SettingsView; onApplied(v: Applied): void }) {
@@ -1048,6 +1135,7 @@ export default function Settings() {
     ['forwarding', <Forwarding key={generation} view={current} onApplied={applied} />],
     ['egress', <Egress key={generation} view={current} onApplied={applied} />],
     ['access', <Access key={generation} view={current} onApplied={applied} />],
+    ['chat', <ChatSettings key={generation} view={current} onApplied={applied} />],
     ['limits', <Limits key={generation} view={current} onApplied={applied} />],
     ['backup', <Backup key={generation} onApplied={applied} />],
   ];

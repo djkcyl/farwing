@@ -134,8 +134,7 @@ const zhReasons = {
   chat_banned: '你已被该群组封禁',
   chat_not_friends: '你们已不是好友',
   chat_quota: '附件空间已满',
-  chat_too_large: (max: Param) =>
-    max === undefined ? '文件超过大小上限' : `文件超过 ${Math.floor(max / 1048576)} MB`,
+  chat_too_large: (max: Param) => (max === undefined ? '文件超过大小上限' : `文件超过 ${Math.floor(max / 1048576)} MB`),
   chat_frozen: '该群组已被冻结',
   chat_groups_disabled: '只有管理员可以创建群组',
   chat_owner: '群主须先转让群组',

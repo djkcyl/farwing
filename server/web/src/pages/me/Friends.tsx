@@ -19,6 +19,9 @@ import {
 import type { Device, DeviceList, Friend, FriendRequests, Grants, UserSummary } from '../../lib/types';
 import { useApi } from '../../lib/useApi';
 import { Alert, Button, Card, Checkbox, Empty, Input, Loading, PageHeader, Select } from '../../ui/kit';
+import { chat } from '../../lib/chat/store';
+import { navigate } from '../../lib/router';
+import type { Dm } from '../../lib/chat/types';
 import { Dialog, useOverlay } from '../../ui/overlay';
 
 function Avatar({ user }: { user: UserSummary }) {
@@ -358,6 +361,21 @@ export default function Friends() {
                 user={f.user}
                 actions={
                   <>
+                    <Button
+                      size="sm"
+                      icon="message"
+                      onClick={async () => {
+                        try {
+                          const dm = await call<Dm>('POST', '/api/v2/chat/dm', { user: f.user.user_id });
+                          chat.upsertDm(dm);
+                          navigate(`/chat/dm/${dm.channel.id}`);
+                        } catch (err) {
+                          toast(errorText(err), 'red');
+                        }
+                      }}
+                    >
+                      {t.chat.members.sendDm}
+                    </Button>
                     <Button size="sm" icon="share" onClick={() => setEditing(f.user)}>
                       {m.permissions}
                     </Button>

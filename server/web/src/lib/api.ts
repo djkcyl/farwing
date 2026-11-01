@@ -151,6 +151,22 @@ export async function call<T>(method: string, path: string, body?: unknown, opti
   return value as T;
 }
 
+/// A signed request whose body is raw bytes (an avatar, a group icon).
+export async function signedRaw<T>(method: string, path: string, bytes: Uint8Array): Promise<T> {
+  const headers = await signedHeaders(method, sitePath(path), bytes, true);
+  headers['content-type'] = 'application/octet-stream';
+  const response = await fetch(sitePath(path), { method, headers, body: bytes as BufferSource });
+  const raw = await response.text();
+  let value: { error?: { code?: string; message?: string; details?: unknown } } = {};
+  try {
+    value = raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new ApiError(response.status, 'http', response.statusText);
+  }
+  if (!response.ok) throw failed(response, value, true);
+  return value as T;
+}
+
 /// A signed GET of binary content (wallpapers).
 export async function fetchBlob(path: string): Promise<Blob> {
   const response = await fetch(sitePath(path), {

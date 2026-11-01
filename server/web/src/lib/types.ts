@@ -536,6 +536,18 @@ export interface ServerSettings {
     caps: string[];
   };
   egress: EgressSettings;
+  chat: ChatServerSettings;
+}
+
+export interface ChatServerSettings {
+  create_groups: boolean;
+  max_attachment_mb: number;
+  group_quota_gb: number;
+  dm_quota_gb: number;
+  retention_days: number | null;
+  rate_messages: number;
+  rate_window_s: number;
+  voice_max_kbps: number;
 }
 
 export interface SfuSettings {

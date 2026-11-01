@@ -4,6 +4,7 @@ import type { Lang } from '../lang';
 import * as account from './account';
 import * as admin from './admin';
 import * as auth from './auth';
+import * as chat from './chat';
 import * as common from './common';
 import * as devices from './devices';
 import * as format from './format';
@@ -25,6 +26,7 @@ const zh = {
   viewer: viewer.zh,
   records: records.zh,
   notices: notices.zh,
+  chat: chat.zh,
 };
 
 export type Messages = typeof zh;
@@ -41,6 +43,7 @@ const en: Messages = {
   viewer: viewer.en,
   records: records.en,
   notices: notices.en,
+  chat: chat.en,
 };
 
 export const messages: Record<Lang, Messages> = { 'zh-CN': zh, en };

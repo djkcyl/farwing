@@ -6,6 +6,7 @@ import { useT } from '../i18n/react';
 import { useAuth } from '../lib/auth';
 import { displayName, instanceText } from '../lib/format';
 import { useUnreadNotices } from '../lib/notices';
+import { chat, useChat } from '../lib/chat/store';
 import { Link, useLocation } from '../lib/router';
 import { BrandLogo } from './BrandLogo';
 import { Icon, type IconName } from './icons';
@@ -25,6 +26,7 @@ const USER_NAV: NavItem[] = [
   { to: '/', label: 'home', icon: 'home' },
   { to: '/devices', label: 'devices', icon: 'monitor', prefix: true },
   { to: '/friends', label: 'friends', icon: 'users' },
+  { to: '/chat', label: 'chat', icon: 'message', prefix: true },
   { to: '/favorites', label: 'favorites', icon: 'star' },
   { to: '/records', label: 'records', icon: 'history' },
   { to: '/notifications', label: 'notifications', icon: 'bell' },
@@ -43,6 +45,7 @@ const ADMIN_NAV: NavItem[] = [
   { to: '/admin/nodes', label: 'nodes', icon: 'globe' },
   { to: '/admin/settings', label: 'settings', icon: 'settings' },
   { to: '/admin/tokens', label: 'tokens', icon: 'key' },
+  { to: '/admin/groups', label: 'groups', icon: 'message', prefix: true },
   { to: '/admin/audit', label: 'audit', icon: 'log' },
 ];
 
@@ -59,6 +62,8 @@ export function Shell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const name = displayName(auth.me);
   const unread = useUnreadNotices(auth.status === 'signed_in');
+  useChat();
+  const chatTotals = chat.totals();
 
   const nav = (items: NavItem[]) =>
     items.map((item) => (
@@ -66,6 +71,8 @@ export function Shell({ children }: { children: ReactNode }) {
         <Icon name={item.icon} size={17} />
         <span>{t.nav[item.label]}</span>
         {item.to === '/notifications' && unread > 0 && <span className="nav-count">{unread}</span>}
+        {item.to === '/chat' && chatTotals.mentions > 0 && <span className="nav-count">{chatTotals.mentions}</span>}
+        {item.to === '/chat' && !chatTotals.mentions && chatTotals.unread && <span className="nav-dot" />}
       </Link>
     ));
 

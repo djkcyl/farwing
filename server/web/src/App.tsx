@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, type ComponentType, type LazyExoticComponent
 import { LangProvider, useT } from './i18n/react';
 import { AuthProvider, useAuth } from './lib/auth';
 import { match, navigate, RouterProvider, useLocation } from './lib/router';
+import { chat } from './lib/chat/store';
 import { Button, Empty, Loading } from './ui/kit';
 import { OverlayProvider } from './ui/overlay';
 import { LangSwitch } from './ui/LangSwitch';
@@ -15,11 +16,19 @@ type Page =
 
 const page = (load: () => Promise<{ default: ComponentType<{ params: Record<string, string> }> }>) => lazy(load);
 
+const ChatPage = page(() => import('./pages/chat/Chat'));
+
 const USER_ROUTES: [string, Page][] = [
   ['/', page(() => import('./pages/me/Home'))],
   ['/devices', page(() => import('./pages/me/Devices'))],
   ['/devices/:id', page(() => import('./pages/me/DeviceDetail'))],
   ['/friends', page(() => import('./pages/me/Friends'))],
+  ['/chat', ChatPage],
+  ['/chat/dm', ChatPage],
+  ['/chat/dm/:channel', ChatPage],
+  ['/chat/invite/:code', ChatPage],
+  ['/chat/:group', ChatPage],
+  ['/chat/:group/:channel', ChatPage],
   ['/favorites', page(() => import('./pages/me/Favorites'))],
   ['/records', page(() => import('./pages/me/Records'))],
   ['/notifications', page(() => import('./pages/me/Notices'))],
@@ -40,6 +49,7 @@ const ADMIN_ROUTES: [string, Page][] = [
   ['/admin/nodes', page(() => import('./pages/admin/Nodes'))],
   ['/admin/records', page(() => import('./pages/admin/Records'))],
   ['/admin/audit', page(() => import('./pages/admin/Audit'))],
+  ['/admin/groups', page(() => import('./pages/admin/Groups'))],
 ];
 
 const ViewPage = page(() => import('./pages/View'));
@@ -63,6 +73,13 @@ function Routes() {
   const t = useT();
   const auth = useAuth();
   const { path } = useLocation();
+
+  // One chat connection while signed in, on every page.
+  useEffect(() => {
+    if (auth.status !== 'signed_in') return;
+    chat.start();
+    return () => chat.stop();
+  }, [auth.status]);
 
   // Pages for signed-out visitors send signed-in users home.
   useEffect(() => {

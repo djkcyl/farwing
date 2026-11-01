@@ -4,6 +4,7 @@ export const zh = {
   home: '概览',
   devices: '设备',
   friends: '好友',
+  chat: '聊天',
   favorites: '收藏',
   records: '记录',
   notifications: '通知',
@@ -21,12 +22,14 @@ export const zh = {
   tokens: 'API 令牌',
   allRecords: '连接记录',
   audit: '审计日志',
+  groups: '群组',
 };
 
 export const en: typeof zh = {
   home: 'Overview',
   devices: 'Devices',
   friends: 'Friends',
+  chat: 'Chat',
   favorites: 'Favorites',
   records: 'Records',
   notifications: 'Notifications',
@@ -44,4 +47,5 @@ export const en: typeof zh = {
   tokens: 'API tokens',
   allRecords: 'Connection records',
   audit: 'Audit log',
+  groups: 'Groups',
 };
