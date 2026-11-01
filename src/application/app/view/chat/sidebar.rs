@@ -360,6 +360,16 @@ fn voice_bar(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: 
             if voice.compat {
                 line = format!("{line} · {}", v.compat);
             }
+            let server_muted = voice.call.is_none()
+                && state
+                    .snap
+                    .as_ref()
+                    .and_then(|s| s.voice.iter().find(|c| c.channel_id == voice.channel))
+                    .and_then(|c| c.participants.iter().find(|p| p.participant == voice.participant))
+                    .is_some_and(|p| p.server_muted);
+            if server_muted {
+                line = format!("{line} · {}", v.server_muted);
+            }
             ui.add(egui::Label::new(parts::muted(line)).truncate());
         })
         .response

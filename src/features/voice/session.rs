@@ -145,6 +145,14 @@ impl ChannelVoice {
                 )
                 .await?,
         )?;
+        // Nothing leaves this device unencrypted when it accepts only
+        // end-to-end encryption.
+        if joined.mode == VoiceMode::Compatible && crate::transport::nat::settings::current().e2ee_only {
+            let _ = client
+                .chat(Method::POST, &format!("/api/v2/chat/channels/{channel}/voice/leave"), None)
+                .await;
+            anyhow::bail!("{}", crate::i18n::t().voice.e2ee_only);
+        }
         let engine = Engine::start(settings, &tokio::runtime::Handle::current());
         engine.set_e2ee(joined.mode == VoiceMode::E2ee);
         engine.set_bitrate(joined.bitrate_kbps);

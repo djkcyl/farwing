@@ -94,11 +94,20 @@ fn toggles(inner: &Arc<Inner>, engine: crate::features::voice::engine::Engine) {
     let inner = Arc::clone(inner);
     inner.runtime.clone().spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
+        let mut told = None;
         loop {
             tick.tick().await;
             if inner.stop.is_cancelled() || lock(&inner.voice).is_none() {
                 return;
             }
+            // The microphone failed (or went away): said once.
+            let failed = engine.capture_error();
+            if failed.is_some() && failed != told {
+                let v = &crate::i18n::t().voice;
+                let text = if failed.as_deref() == Some(v.no_microphone) { v.no_microphone } else { v.microphone_lost };
+                update(&inner, |s| s.errors.push(text.to_owned()));
+            }
+            told = failed;
             let pressed = engine.take_toggles();
             if pressed == 0 {
                 continue;

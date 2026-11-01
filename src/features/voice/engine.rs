@@ -75,8 +75,6 @@ struct Inner {
     self_deafened: AtomicBool,
     server_muted: AtomicBool,
     server_deafened: AtomicBool,
-    /// The push-to-talk key is held.
-    talk: AtomicBool,
     /// Mute (bit 0) and deafen (bit 1) keys pressed since last asked.
     toggles: std::sync::atomic::AtomicU8,
     speaking: AtomicBool,
@@ -106,7 +104,6 @@ impl Engine {
             self_deafened: AtomicBool::new(false),
             server_muted: AtomicBool::new(false),
             server_deafened: AtomicBool::new(false),
-            talk: AtomicBool::new(false),
             toggles: std::sync::atomic::AtomicU8::new(0),
             speaking: AtomicBool::new(false),
             playback,
@@ -220,11 +217,6 @@ impl Engine {
     /// The mute (bit 0) and deafen (bit 1) keys pressed since last asked.
     pub(crate) fn take_toggles(&self) -> u8 {
         self.0.toggles.swap(0, Ordering::Relaxed)
-    }
-
-    /// The push-to-talk key went down or up.
-    pub(crate) fn talk(&self, held: bool) {
-        self.0.talk.store(held, Ordering::Relaxed);
     }
 
     /// A received track of `participant` (account `user`).
@@ -430,11 +422,10 @@ async fn send(inner: Arc<Inner>) {
                 // The key is read as it is, in the foreground or not: no
                 // hook, no raw input taken from the windows.
                 Mode::PushToTalk => {
-                    let held = inner.talk.load(Ordering::Relaxed)
-                        || settings.key.is_some_and(|k| {
-                            // SAFETY: a plain query of the key's state.
-                            unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(i32::from(k.vk)) < 0 }
-                        });
+                    let held = settings.key.is_some_and(|k| {
+                        // SAFETY: a plain query of the key's state.
+                        unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(i32::from(k.vk)) < 0 }
+                    });
                     held.then_some(PTT_TAIL)
                 }
                 Mode::Activity => {
