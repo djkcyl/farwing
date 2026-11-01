@@ -2,7 +2,7 @@
 // (`known_vectors`), encrypted by the host, decrypt to the same frames here.
 import { describe, expect, test } from 'vitest';
 import { hex } from '../lib/encoding';
-import { FrameDecryptor, importFrameKey, type FrameCodec } from '../lib/frameCrypto';
+import { FrameDecryptor, FrameEncryptor, importFrameKey, type FrameCodec } from '../lib/frameCrypto';
 
 const bytes = (text: string) => new Uint8Array(text.match(/../g)!.map((b) => parseInt(b, 16)));
 
@@ -62,5 +62,25 @@ describe('frame decryption', () => {
     const header = bytes(FRAMES[0][2]);
     header[14] ^= 1;
     await expect(decryptor.decrypt('h264', header)).rejects.toThrow();
+  });
+});
+
+describe('frame encryption', () => {
+  test('Opus frames sealed as the native sender seals them', async () => {
+    const encryptor = new FrameEncryptor(await importFrameKey(3, material(), true));
+    (encryptor as unknown as { counter: bigint }).counter = 42n;
+    const [, frame, sealed] = FRAMES[3];
+    expect(hex(await encryptor.encryptOpus(new Uint8Array(frame)))).toBe(sealed);
+  });
+
+  test('each frame has its own counter and opens with the key', async () => {
+    const encryptor = new FrameEncryptor(await importFrameKey(7, material(), true));
+    const decryptor = new FrameDecryptor();
+    decryptor.add(await importFrameKey(7, material()));
+    const frame = new Uint8Array([0xfc, 1, 2, 3, 4, 5]);
+    const a = await encryptor.encryptOpus(frame);
+    const b = await encryptor.encryptOpus(frame);
+    expect(hex(a)).not.toBe(hex(b));
+    expect(hex(await decryptor.decrypt('opus', b))).toBe(hex(frame));
   });
 });

@@ -9,6 +9,7 @@ import { sitePath } from '../base';
 import { navigate } from '../router';
 import { Realtime, reconnectable, type Envelope } from '../realtime';
 import { parse, plain } from './markdown';
+import { voice } from './voice';
 import {
   idAfter,
   idCmp,
@@ -27,6 +28,8 @@ import {
   type ReadState,
   type Snapshot,
   type Status,
+  type Call,
+  type VoiceChannelState,
 } from './types';
 
 /// A message being sent (not yet answered by the server).
@@ -107,6 +110,9 @@ class ChatStore {
   start() {
     if (this.running) return;
     this.running = true;
+    voice.send = (type, data) => this.rt?.send(type, data);
+    voice.upsertCall = (c) => this.setSnap((s) => ({ ...s, calls: [...s.calls.filter((x) => x.id !== c.id), c] }));
+    voice.attach(() => this.state.snap);
     window.addEventListener('keydown', this.input, true);
     window.addEventListener('pointerdown', this.input, true);
     window.addEventListener('pointermove', this.input, true);
@@ -122,6 +128,8 @@ class ChatStore {
     window.clearInterval(this.idleTimer);
     window.clearTimeout(this.retryTimer);
     window.clearTimeout(this.tokenTimer);
+    void voice.stop(true);
+    voice.detach();
     this.rt?.bye();
     this.rt = undefined;
     this.state = { connection: 'connecting', presences: {}, reads: {}, messages: {}, typing: {}, members: {} };
@@ -163,6 +171,7 @@ class ChatStore {
     if (rt !== this.rt) return;
     this.rt = undefined;
     if (code === 4001) {
+      void voice.stop(true);
       this.set({ connection: 'elsewhere' });
       return;
     }
@@ -327,7 +336,31 @@ class ChatStore {
       case 'chat.prefs':
         this.setSnap((s) => ({ ...s, prefs: data as Prefs }));
         return;
+      case 'voice.state': {
+        const d = data as VoiceChannelState;
+        this.setSnap((s) => ({
+          ...s,
+          voice: [...s.voice.filter((v) => v.channel_id !== d.channel_id), ...(d.participants.length ? [d] : [])],
+        }));
+        break;
+      }
+      case 'call.ring':
+      case 'call.outgoing':
+      case 'call.answered': {
+        const c = data as Call;
+        this.setSnap((s) => ({ ...s, calls: [...s.calls.filter((x) => x.id !== c.id), c] }));
+        if (e.type === 'call.ring') {
+          this.notify(userName(c.caller), t().chat.voice.incoming(userName(c.caller)), `/chat/dm/${c.channel_id}`);
+        }
+        break;
+      }
+      case 'call.ended': {
+        const d = data as { call_id: string };
+        this.setSnap((s) => ({ ...s, calls: s.calls.filter((x) => x.id !== d.call_id) }));
+        break;
+      }
     }
+    if (e.type.startsWith('voice.') || e.type.startsWith('call.')) voice.push(e.type, e.data);
   }
 
   private onUser(u: ChatUser) {

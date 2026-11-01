@@ -5,6 +5,7 @@ import { useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
 import { navigate, useLocation } from '../../lib/router';
 import { chat, useChat } from '../../lib/chat/store';
+import { voice } from '../../lib/chat/voice';
 import {
   has,
   PERM,
@@ -36,6 +37,7 @@ import { GroupSettings, NotifyMenu, orderChannels } from './GroupSettings';
 import { MemberList, UserCard } from './Members';
 import { MessageList } from './Messages';
 import { Avatar, displayName, GroupIcon, LinkGuard } from './parts';
+import { CallBar, CallButton, VoiceBar, VoiceCardPart, VoicePeople, VoiceToggles } from './Voice';
 
 const LAST_KEY = 'farwing.chat.last';
 
@@ -64,7 +66,11 @@ export default function ChatPage({ params }: { params: Record<string, string> })
   const [members, setMembers] = useState(() => localStorage.getItem('farwing.chat.members') !== '0');
   const [reply, setReply] = useState<Message>();
   const [editing, setEditing] = useState<Message>();
-  const [card, setCard] = useState<{ user: string; anchor: HTMLElement }>();
+  const [card, setCard] = useState<{
+    user: string;
+    anchor: HTMLElement;
+    voice?: { channel: string; participant: number };
+  }>();
   const [image, setImage] = useState<Attachment>();
   const [jumpTo, setJumpTo] = useState<{ id: string; at: number }>();
   const [notifyOpen, setNotifyOpen] = useState(false);
@@ -176,10 +182,12 @@ export default function ChatPage({ params }: { params: Record<string, string> })
             current={params.channel}
             onSettings={() => setDialog('settings')}
             onInvite={() => setDialog('invite')}
+            onVoicePerson={(user, anchor, voice) => setCard({ user, anchor, voice })}
           />
         ) : (
           <Empty title={t.common.notFound} />
         )}
+        <VoiceBar />
         <UserBar onSettings={() => setDialog('me')} />
       </aside>
       <main className="chat-main" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
@@ -210,7 +218,7 @@ export default function ChatPage({ params }: { params: Record<string, string> })
               {dm ? (
                 <>
                   <Avatar user={dm.user} size={26} status={state.presences[dm.user.user_id]} />
-                  <b className="ellipsis">{displayName(dm.user)}</b>
+                  <b className="ellipsis chat-head-name">{displayName(dm.user)}</b>
                   <DmDevices dm={dm} />
                 </>
               ) : (
@@ -221,6 +229,7 @@ export default function ChatPage({ params }: { params: Record<string, string> })
                 </>
               )}
               <span className="grow" />
+              {dm && <CallButton dm={dm} />}
               <IconButton
                 icon="pin"
                 label={t.chat.header.pins}
@@ -249,6 +258,7 @@ export default function ChatPage({ params }: { params: Record<string, string> })
                 onClick={() => setPanel(panel === 'search' ? undefined : 'search')}
               />
             </header>
+            {dm && <CallBar dm={dm} />}
             <div className="chat-body">
               <div className="chat-center">
                 <MessageList
@@ -320,7 +330,17 @@ export default function ChatPage({ params }: { params: Record<string, string> })
       <ChatSettings open={dialog === 'me'} onClose={() => setDialog(undefined)} />
       {group && <GroupSettings group={group} open={dialog === 'settings'} onClose={() => setDialog(undefined)} />}
       {group && <InviteDialog group={group} open={dialog === 'invite'} onClose={() => setDialog(undefined)} />}
-      {card && <UserCard userId={card.user} anchor={card.anchor} group={group} onClose={() => setCard(undefined)} />}
+      {card && (
+        <UserCard userId={card.user} anchor={card.anchor} group={group} onClose={() => setCard(undefined)}>
+          {card.voice && (
+            <VoiceCardPart
+              channel={card.voice.channel}
+              participant={card.voice.participant}
+              onClose={() => setCard(undefined)}
+            />
+          )}
+        </UserCard>
+      )}
       <ImageViewer a={image} onClose={() => setImage(undefined)} />
       <LinkGuard />
     </div>
@@ -426,11 +446,13 @@ function GroupSide({
   current,
   onSettings,
   onInvite,
+  onVoicePerson,
 }: {
   group: GroupState;
   current?: string;
   onSettings(): void;
   onInvite(): void;
+  onVoicePerson(user: string, anchor: HTMLElement, voice: { channel: string; participant: number }): void;
 }) {
   const t = useT();
   useChat();
@@ -469,16 +491,22 @@ function GroupSide({
           const muted = chat.notifyLevel(c.id, group.group.id) === 'none';
           if (c.parent_id && folded.has(c.parent_id) && c.id !== current && !u.mentions) return null;
           return (
-            <button
-              key={c.id}
-              type="button"
-              className={`chat-channel ${c.id === current ? 'active' : ''} ${u.unread && !muted ? 'unread' : ''} ${muted ? 'muted-channel' : ''}`}
-              onClick={() => navigate(`/chat/${group.group.id}/${c.id}`)}
-            >
-              <Icon name={channelIcon(c)} size={16} />
-              <span className="ellipsis grow">{c.name}</span>
-              {u.mentions > 0 && <span className="chat-badge inline">{u.mentions}</span>}
-            </button>
+            <div key={c.id}>
+              <button
+                type="button"
+                className={`chat-channel ${c.id === current ? 'active' : ''} ${u.unread && !muted ? 'unread' : ''} ${muted ? 'muted-channel' : ''}`}
+                onClick={() => {
+                  navigate(`/chat/${group.group.id}/${c.id}`);
+                  const my = voice.state.my;
+                  if (c.kind === 'voice' && (!my || my.channel !== c.id || my.call)) void voice.join(c.id);
+                }}
+              >
+                <Icon name={channelIcon(c)} size={16} />
+                <span className="ellipsis grow">{c.name}</span>
+                {u.mentions > 0 && <span className="chat-badge inline">{u.mentions}</span>}
+              </button>
+              {c.kind === 'voice' && <VoicePeople group={group} channel={c.id} onPerson={onVoicePerson} />}
+            </div>
           );
         })}
       </div>
@@ -606,6 +634,7 @@ function UserBar({ onSettings }: { onSettings(): void }) {
         <div className="ellipsis">{displayName(me)}</div>
         <div className="small muted">{t.chat.status[status]}</div>
       </div>
+      <VoiceToggles />
       <IconButton icon="settings" label={t.chat.me.title} onClick={onSettings} />
     </div>
   );

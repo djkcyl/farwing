@@ -321,6 +321,39 @@ export function Switch({
   );
 }
 
+/// A value in a range: the console's track and knob over the browser's
+/// slider (which keeps the keyboard and pointer handling).
+export function Slider({
+  value,
+  min = 0,
+  max = 100,
+  step = 1,
+  label,
+  onChange,
+}: {
+  value: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  label: string;
+  onChange(value: number): void;
+}) {
+  const fill = `${((value - min) / (max - min)) * 100}%`;
+  return (
+    <input
+      type="range"
+      className="slider"
+      min={min}
+      max={max}
+      step={step}
+      value={value}
+      aria-label={label}
+      style={{ '--fill': fill } as CSSProperties}
+      onChange={(e) => onChange(Number(e.target.value))}
+    />
+  );
+}
+
 export function Checkbox({
   checked,
   onChange,

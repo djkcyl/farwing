@@ -21,9 +21,10 @@ import type { Friend } from '../../lib/types';
 
 type FriendList = { friends: Friend[] };
 import { Icon } from '../../ui/icons';
-import { Button, Checkbox, Copy, Empty, Field, IconButton, Input, Loading, Select, Switch } from '../../ui/kit';
+import { Button, Checkbox, Copy, Empty, Field, IconButton, Input, Loading, Select, Switch, Tabs } from '../../ui/kit';
 import { Dialog, useOverlay } from '../../ui/overlay';
 import { Avatar, displayName, GroupIcon, Rich, timeText } from './parts';
+import { VoiceSettingsPanel } from './Voice';
 
 export function CreateGroup({ open, onClose }: { open: boolean; onClose(): void }) {
   const t = useT();
@@ -377,6 +378,7 @@ export function ChatSettings({ open, onClose }: { open: boolean; onClose(): void
   const [permission, setPermission] = useState(
     typeof Notification === 'undefined' ? 'denied' : Notification.permission,
   );
+  const [tab, setTab] = useState<'chat' | 'voice'>('chat');
   useEffect(() => {
     if (open && state.snap) setPrefs(state.snap.prefs);
   }, [open, state.snap]);
@@ -393,87 +395,99 @@ export function ChatSettings({ open, onClose }: { open: boolean; onClose(): void
   const me = state.snap.me;
   return (
     <Dialog open={open} title={t.chat.me.title} onClose={onClose}>
-      <div className="stack">
-        <div className="row gap">
-          <Avatar user={me} size={56} />
-          <div className="stack-sm">
-            <label className="btn btn-default btn-sm file-pick">
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/gif,image/webp"
-                onChange={async (e) => {
-                  const file = e.target.files?.[0];
-                  e.target.value = '';
-                  if (!file) return;
-                  try {
-                    await uploadSigned('/api/v2/me/avatar', file);
-                  } catch (err) {
-                    toast(errorText(err), 'red');
-                  }
-                }}
-              />
-              <Icon name="upload" size={14} />
-              <span>{t.chat.me.changeAvatar}</span>
-            </label>
-            {me.avatar && (
-              <Button
-                size="sm"
-                onClick={() => void call('DELETE', '/api/v2/me/avatar').catch((e) => toast(errorText(e), 'red'))}
-              >
-                {t.chat.me.removeAvatar}
+      <Tabs<'chat' | 'voice'>
+        items={[
+          { id: 'chat', label: t.chat.me.title },
+          { id: 'voice', label: t.chat.voice.settings },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
+      {tab === 'voice' ? (
+        <VoiceSettingsPanel />
+      ) : (
+        <div className="stack">
+          <div className="row gap">
+            <Avatar user={me} size={56} />
+            <div className="stack-sm">
+              <label className="btn btn-default btn-sm file-pick">
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = '';
+                    if (!file) return;
+                    try {
+                      await uploadSigned('/api/v2/me/avatar', file);
+                    } catch (err) {
+                      toast(errorText(err), 'red');
+                    }
+                  }}
+                />
+                <Icon name="upload" size={14} />
+                <span>{t.chat.me.changeAvatar}</span>
+              </label>
+              {me.avatar && (
+                <Button
+                  size="sm"
+                  onClick={() => void call('DELETE', '/api/v2/me/avatar').catch((e) => toast(errorText(e), 'red'))}
+                >
+                  {t.chat.me.removeAvatar}
+                </Button>
+              )}
+            </div>
+          </div>
+          <Field label={t.chat.me.status}>
+            <Select<Status>
+              value={status}
+              onChange={(s) => void chat.setStatus(s).catch((e) => toast(errorText(e), 'red'))}
+              options={(['online', 'idle', 'dnd', 'invisible'] as Status[]).map((s) => ({
+                value: s,
+                label: t.chat.status[s],
+              }))}
+            />
+          </Field>
+          <Field label={t.chat.me.notifications} group>
+            {permission === 'granted' ? (
+              <span className="muted">{t.chat.me.notificationsOn}</span>
+            ) : permission === 'denied' ? (
+              <span className="muted">{t.chat.me.notificationsBlocked}</span>
+            ) : (
+              <Button size="sm" onClick={async () => setPermission(await Notification.requestPermission())}>
+                {t.chat.me.allowNotifications}
               </Button>
             )}
-          </div>
-        </div>
-        <Field label={t.chat.me.status}>
-          <Select<Status>
-            value={status}
-            onChange={(s) => void chat.setStatus(s).catch((e) => toast(errorText(e), 'red'))}
-            options={(['online', 'idle', 'dnd', 'invisible'] as Status[]).map((s) => ({
-              value: s,
-              label: t.chat.status[s],
-            }))}
+          </Field>
+          <Field label={t.chat.me.quietHours} group>
+            <div className="row gap-sm">
+              <Input
+                type="time"
+                className="chat-time-input"
+                value={prefs.quiet_start}
+                onChange={(e) => void save({ ...prefs, quiet_start: e.target.value })}
+              />
+              <span className="muted">{t.chat.me.to}</span>
+              <Input
+                type="time"
+                className="chat-time-input"
+                value={prefs.quiet_end}
+                onChange={(e) => void save({ ...prefs, quiet_end: e.target.value })}
+              />
+            </div>
+          </Field>
+          <Switch
+            label={t.chat.me.hideContent}
+            checked={prefs.hide_content}
+            onChange={(v) => void save({ ...prefs, hide_content: v })}
           />
-        </Field>
-        <Field label={t.chat.me.notifications} group>
-          {permission === 'granted' ? (
-            <span className="muted">{t.chat.me.notificationsOn}</span>
-          ) : permission === 'denied' ? (
-            <span className="muted">{t.chat.me.notificationsBlocked}</span>
-          ) : (
-            <Button size="sm" onClick={async () => setPermission(await Notification.requestPermission())}>
-              {t.chat.me.allowNotifications}
-            </Button>
-          )}
-        </Field>
-        <Field label={t.chat.me.quietHours} group>
-          <div className="row gap-sm">
-            <Input
-              type="time"
-              className="chat-time-input"
-              value={prefs.quiet_start}
-              onChange={(e) => void save({ ...prefs, quiet_start: e.target.value })}
-            />
-            <span className="muted">{t.chat.me.to}</span>
-            <Input
-              type="time"
-              className="chat-time-input"
-              value={prefs.quiet_end}
-              onChange={(e) => void save({ ...prefs, quiet_end: e.target.value })}
-            />
-          </div>
-        </Field>
-        <Switch
-          label={t.chat.me.hideContent}
-          checked={prefs.hide_content}
-          onChange={(v) => void save({ ...prefs, hide_content: v })}
-        />
-        <Switch
-          label={t.chat.me.readReceipts}
-          checked={prefs.read_receipts}
-          onChange={(v) => void save({ ...prefs, read_receipts: v })}
-        />
-      </div>
+          <Switch
+            label={t.chat.me.readReceipts}
+            checked={prefs.read_receipts}
+            onChange={(v) => void save({ ...prefs, read_receipts: v })}
+          />
+        </div>
+      )}
     </Dialog>
   );
 }

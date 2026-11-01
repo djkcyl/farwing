@@ -1,6 +1,6 @@
 // A group's members beside the messages: by role, online first; and the
 // card a click on a name opens.
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, type ReactNode } from 'react';
 import { useT } from '../../i18n/react';
 import { call, errorText } from '../../lib/api';
 import { navigate } from '../../lib/router';
@@ -81,11 +81,14 @@ export function UserCard({
   anchor,
   group,
   onClose,
+  children,
 }: {
   userId: string;
   anchor: HTMLElement;
   group?: GroupState;
   onClose(): void;
+  /// More for this person (their voice controls).
+  children?: ReactNode;
 }) {
   const t = useT();
   const state = useChat();
@@ -145,6 +148,7 @@ export function UserCard({
           {t.chat.members.sendDm}
         </Button>
       )}
+      {children}
     </div>
   );
 }

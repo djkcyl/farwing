@@ -149,9 +149,24 @@ export function MessageList({ channel, group, dm, jumpTo, onReply, onEdit, onUse
         {!box.older && (
           <div className="chat-start">
             <div className="chat-start-icon">
-              <Icon name={dm ? 'message' : 'hash'} size={28} />
+              <Icon
+                name={
+                  dm
+                    ? 'message'
+                    : channel.kind === 'voice'
+                      ? 'volume'
+                      : channel.kind === 'announcement'
+                        ? 'megaphone'
+                        : 'hash'
+                }
+                size={28}
+              />
             </div>
-            <h2>{t.chat.message.start(dm ? displayName(dm.user) : `#${channel.name}`)}</h2>
+            <h2>
+              {t.chat.message.start(
+                dm ? displayName(dm.user) : channel.kind === 'text' ? `#${channel.name}` : channel.name,
+              )}
+            </h2>
             {channel.topic && <div className="muted">{channel.topic}</div>}
           </div>
         )}
@@ -326,6 +341,16 @@ function MessageItem({
               {timeText(m.created_at)}
             </span>
             {m.pinned && <Icon name="pin" size={12} className="msg-pinned" />}
+          </div>
+        )}
+        {m.call && (
+          <div className="msg-call">
+            <Icon name="phone" size={15} className={m.call.missed ? 'red' : 'green'} />
+            <span className="muted">
+              {m.call.missed
+                ? t.chat.voice.callMissed
+                : t.chat.voice.callRecord(Math.max(1, Math.ceil(m.call.duration_s / 60)))}
+            </span>
           </div>
         )}
         {m.content && (

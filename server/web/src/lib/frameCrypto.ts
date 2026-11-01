@@ -20,11 +20,48 @@ export interface FrameKey {
   salt: Bytes;
 }
 
-export async function importFrameKey(id: number, material: Uint8Array): Promise<FrameKey> {
+export async function importFrameKey(id: number, material: Uint8Array, encrypt = false): Promise<FrameKey> {
   if (material.length !== KEY_BYTES) throw new Error(`frame key has ${material.length} bytes`);
   const bytes = new Uint8Array(material);
-  const key = await crypto.subtle.importKey('raw', bytes.slice(0, 16), 'AES-GCM', false, ['decrypt']);
+  const key = await crypto.subtle.importKey('raw', bytes.slice(0, 16), 'AES-GCM', false, [
+    encrypt ? 'encrypt' : 'decrypt',
+  ]);
   return { id, key, salt: bytes.slice(16) };
+}
+
+/// Seals Opus frames as the native sender does (`Encryptor`): the TOC byte
+/// clear, the rest one unit; one counter for the sender, from a random start.
+export class FrameEncryptor {
+  private counter = BigInt(crypto.getRandomValues(new Uint32Array(1))[0]);
+  private key: FrameKey;
+
+  constructor(key: FrameKey) {
+    this.key = key;
+  }
+
+  setKey(key: FrameKey) {
+    this.key = key;
+  }
+
+  async encryptOpus(frame: Bytes): Promise<Bytes> {
+    if (!frame.length) throw new Error('empty Opus frame');
+    const clear = frame.subarray(0, 1);
+    const counter = this.counter;
+    this.counter += 1n;
+    const count = new Uint8Array(8);
+    new DataView(count.buffer).setBigUint64(0, counter);
+    const iv = new Uint8Array(12);
+    iv.set(this.key.salt, 0);
+    iv.set(count, 4);
+    const sealed = new Uint8Array(
+      await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv, additionalData: clear, tagLength: 128 },
+        this.key.key,
+        frame.subarray(1),
+      ),
+    );
+    return concat([clear, sealed, count, new Uint8Array([this.key.id, MARK])]);
+  }
 }
 
 /// The current and the previous key.

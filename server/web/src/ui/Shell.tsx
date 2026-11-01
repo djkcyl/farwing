@@ -9,6 +9,7 @@ import { useUnreadNotices } from '../lib/notices';
 import { chat, useChat } from '../lib/chat/store';
 import { Link, useLocation } from '../lib/router';
 import { BrandLogo } from './BrandLogo';
+import { CallOverlay } from './CallOverlay';
 import { Icon, type IconName } from './icons';
 import { IconButton } from './kit';
 import { LangSwitch } from './LangSwitch';
@@ -127,6 +128,7 @@ export function Shell({ children }: { children: ReactNode }) {
         </div>
         <main className="content">{children}</main>
       </div>
+      <CallOverlay />
     </div>
   );
 }

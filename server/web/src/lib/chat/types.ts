@@ -101,6 +101,8 @@ export interface Channel {
   slow_mode_s: number;
   voice_bitrate: number;
   voice_limit: number;
+  /// A voice channel in compatible mode (no frame encryption).
+  voice_compat: boolean;
   overwrites: Overwrite[];
   permissions: number;
   last_message_id: Id | null;
@@ -166,6 +168,13 @@ export interface Message {
   deleted: boolean;
   created_at: number;
   nonce?: string;
+  /// A call's record in a direct message (its author called).
+  call?: CallRecord;
+}
+
+export interface CallRecord {
+  duration_s: number;
+  missed: boolean;
 }
 
 export interface ReadState {
@@ -220,6 +229,105 @@ export interface Snapshot {
   prefs: Prefs;
   group_invites: GroupInvite[];
   limits: ChatLimits;
+  voice: VoiceChannelState[];
+  calls: Call[];
+}
+
+// ------------------------------------------------------------------ voice
+
+export type VoiceMode = 'e2ee' | 'compatible';
+
+export interface VoiceParticipant {
+  participant: number;
+  user_id: string;
+  device_id: string;
+  ed25519: string;
+  x25519: string;
+  self_muted: boolean;
+  self_deafened: boolean;
+  server_muted: boolean;
+  server_deafened: boolean;
+  joined_at: number;
+}
+
+export interface VoiceChannelState {
+  channel_id: Id;
+  participants: VoiceParticipant[];
+}
+
+export interface IceServer {
+  urls: string[];
+  username: string;
+  credential: string;
+}
+
+export interface VoiceJoined {
+  channel_id: Id;
+  participant: number;
+  mode: VoiceMode;
+  bitrate_kbps: number;
+  ice_servers: IceServer[];
+  participants: VoiceParticipant[];
+}
+
+export interface VoiceOffer {
+  channel_id: Id;
+  generation: number;
+  sdp: string;
+}
+
+export interface VoiceKeyPush {
+  channel_id: Id;
+  participant: number;
+  device_id: string;
+  key_id: number;
+  ephemeral: string;
+  data: string;
+  signature: string;
+}
+
+export interface Call {
+  id: string;
+  channel_id: Id;
+  caller: ChatUser;
+  caller_device: string;
+  callee: ChatUser;
+  callee_device: string;
+  state: 'ringing' | 'active';
+  video: boolean;
+  started_at: number;
+  answered_at: number | null;
+  caller_key: string;
+  callee_key: string;
+  ice_servers: IceServer[];
+}
+
+export interface CallSignal {
+  call_id: string;
+  kind: 'offer' | 'answer' | 'candidate';
+  data: string;
+  signature?: string;
+  from_device?: string;
+}
+
+/// What a device signs for a key box (`farwing_protocol::chat::key_box_message`).
+export function keyBoxMessage(scope: string, participant: number, device: string, ephemeral: string, data: string) {
+  return `FWVKEY1\n${scope}\n${participant}\n${device}\n${ephemeral}\n${data}`;
+}
+
+/// What a device signs for a call description.
+export function callSignalMessage(callId: string, fingerprints: string[]) {
+  return `FWCALL1\n${callId}\n${fingerprints.join('\n')}`;
+}
+
+/// A description's DTLS fingerprints, sorted, lower case.
+export function sdpFingerprints(sdp: string): string[] {
+  const out = sdp
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('a=fingerprint:'))
+    .map((l) => l.slice('a=fingerprint:'.length).trim().toLowerCase());
+  return [...new Set(out)].sort();
 }
 
 export interface Invite {
