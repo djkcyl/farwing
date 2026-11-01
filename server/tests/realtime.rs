@@ -345,6 +345,35 @@ async fn full_session_flow_relay_and_endings() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn camera_sessions_need_the_owners_switch() {
+    let p = pair_with(|_| {}).await;
+    let ctrl = p.ctrl.clone();
+    let start = || {
+        p.srv.post(
+            "/api/v2/sessions",
+            &ctrl,
+            json!({"target_device_id": p.host.id, "purpose": "camera"}),
+        )
+    };
+    // Sessions allowed, cameras not.
+    p.srv
+        .set_policy(&p.host, json!({"control": true, "max_participants": 8}))
+        .await;
+    start().await.err_reason(409, "host_disabled", "camera_disabled");
+    p.srv
+        .set_policy(&p.host, json!({"control": true, "camera": true, "max_participants": 8}))
+        .await;
+    let r = start().await;
+    assert!(r.ok()["session_id"].is_string());
+    // Without sessions at all, none.
+    p.srv
+        .set_policy(&p.host, json!({"control": false, "camera": true, "max_participants": 8}))
+        .await;
+    start().await.err(409, "host_disabled");
+    p.srv.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn session_start_requires_online_host_and_controller_connection() {
     let mut p = pair_with(|c| c.limits.resume_ttl_s = 60).await;
     let ctrl = p.ctrl.clone();
