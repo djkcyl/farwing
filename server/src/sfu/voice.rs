@@ -1,21 +1,28 @@
-//! Voice channels on the forwarder (`docs/protocol/chat-design.md` §7.3).
+//! Voice channels on the forwarder (`docs/protocol/chat-design.md` §7.3,
+//! §8).
 //!
 //! Every participant publishes on its own connection (its uplink: the
-//! participant offers) and receives everyone else's tracks on another (its
-//! downlink: the forwarder offers, and offers again as tracks come and go).
-//! Uplink packets are brought to the forwarder's own tables (browsers number
-//! payload types and header extensions their way); each downlink then only
-//! sets every packet's MID to its track's on that connection. Tracks keep
-//! their SSRCs; their stream is `p<participant>`.
+//! participant offers, naming each media section's kind) and receives what
+//! it chose of everyone else's tracks on another (its downlink: the
+//! forwarder offers, and offers again as tracks and choices change): every
+//! `mic`, and the cameras and screens it subscribed to. Uplink packets are
+//! brought to the forwarder's own tables (browsers number payload types and
+//! header extensions their way); each downlink then only sets every
+//! packet's MID to its track's on that connection. Tracks keep their SSRCs;
+//! their stream is `p<participant>-<kind>`. Video is repaired here: lost
+//! uplink packets are asked for again, a receiver's losses are resent from
+//! a cache, keyframe requests reach the sender merged.
 //!
 //! The control node drives it with [`VoiceOp`]s, here or on an edge node:
-//! a publication changes what the others should receive, and each of them
+//! a publication or a choice changes what someone should receive, and each
 //! gets an offer once its previous one is answered.
 
-use super::leg::{ForwardTrack, Leg, Rewrite, Tap, TapBuilder};
+use super::leg::{ForwardTrack, Leg, Rewrite, Rtcp, Tap, TapBuilder};
+use super::room::{Cache, Missing};
 use super::{SfuError, media_engine, negotiate, sdp, GATHER_TIMEOUT};
+use farwing_protocol::chat::track;
 use parking_lot::{Mutex, RwLock};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -30,28 +37,53 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+use webrtc::rtcp::transport_feedbacks::transport_layer_nack::{TransportLayerNack, nack_pairs_from_sequence_numbers};
 use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
+use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+
+/// Keyframe requests for one track are merged within this.
+const KEYFRAME_INTERVAL: Duration = Duration::from_millis(300);
+/// Lost uplink video packets are looked for this often.
+const NACK_TICK: Duration = Duration::from_millis(20);
 
 /// A voice operation, as the control node sends it.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "vop", rename_all = "snake_case")]
 pub enum VoiceOp {
     /// Publishes, or renegotiates, `participant`'s uplink; the answer.
-    Publish { room: String, participant: u32, sdp: String },
+    /// `kinds`: (mid, kind) of its media sections (none: every audio
+    /// section is a `mic`).
+    Publish {
+        room: String,
+        participant: u32,
+        sdp: String,
+        #[serde(default)]
+        kinds: Vec<(String, String)>,
+    },
     /// `participant`'s downlink should carry what the others publish now:
     /// an offer, unless nothing changed or one is not answered yet.
     /// `session`: whose egress its packets are.
     Sync { room: String, participant: u32, session: String },
+    /// `participant` chose these (participant, kind) besides every `mic`;
+    /// an offer as for `Sync`.
+    Subscribe {
+        room: String,
+        participant: u32,
+        session: String,
+        tracks: Vec<(u32, String)>,
+    },
     /// The answer to offer `generation`; another offer if things changed
     /// meanwhile.
     Answer { room: String, participant: u32, generation: u64, sdp: String },
-    /// A moderator's mute (or a lost permission to speak): its packets go
+    /// A moderator's mute (or a lost permission to speak): its voice goes
     /// nowhere.
     Mute { room: String, participant: u32, muted: bool },
-    /// A moderator's deafen: nothing reaches it.
+    /// A moderator's deafen: no sound reaches it.
     Deafen { room: String, participant: u32, deafened: bool },
     Leave { room: String, participant: u32 },
     Close { room: String },
@@ -69,18 +101,69 @@ pub struct VoiceResult {
     pub idle: Vec<u32>,
 }
 
+/// One track a participant sends.
+struct UpTrack {
+    /// As the sender announced it (its payload types).
+    info: sdp::Track,
+    kind: String,
+    /// The forwarded codec: the forwarder's payload type and MIME.
+    payload_type: u8,
+    mime: String,
+    cache: Mutex<Cache>,
+    missing: Mutex<Missing>,
+    keyframe_at: Mutex<Option<Instant>>,
+}
+
+impl UpTrack {
+    fn video(&self) -> bool {
+        self.info.kind == sdp::Kind::Video
+    }
+    /// Sound, which deafened members miss.
+    fn sound(&self) -> bool {
+        self.info.kind == sdp::Kind::Audio
+    }
+}
+
 struct Uplink {
     pc: Arc<RTCPeerConnection>,
-    tracks: RwLock<Vec<sdp::Track>>,
-    /// The uplink's tables to the forwarder's.
+    tracks: RwLock<Vec<Arc<UpTrack>>>,
+    /// The sender's tables, and how they become the forwarder's.
+    wire: RwLock<sdp::Wire>,
     normalize: RwLock<Rewrite>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
+}
+
+impl Uplink {
+    fn track(&self, ssrc: u32) -> Option<Arc<UpTrack>> {
+        self.tracks.read().iter().find(|t| t.info.ssrc == ssrc).cloned()
+    }
+
+    /// Asks the sender for a keyframe of `ssrc` (merged).
+    async fn keyframe(&self, ssrc: u32) {
+        let Some(t) = self.track(ssrc) else { return };
+        {
+            let mut at = t.keyframe_at.lock();
+            if at.is_some_and(|at| at.elapsed() < KEYFRAME_INTERVAL) {
+                return;
+            }
+            *at = Some(Instant::now());
+        }
+        let _ = self
+            .pc
+            .write_rtcp(&[Box::new(PictureLossIndication {
+                sender_ssrc: 0,
+                media_ssrc: ssrc,
+            })])
+            .await;
+    }
 }
 
 #[derive(Default)]
 struct Down {
     /// Forwarded tracks: their SSRC → (participant, sender).
     sent: HashMap<u32, (u32, Arc<RTCRtpSender>)>,
+    /// Video tracks the offer out adds: a keyframe once it is answered.
+    fresh: Vec<u32>,
     generation: u64,
     pending: Option<u64>,
     /// Changed while an offer was out.
@@ -96,6 +179,8 @@ struct Member {
     heard: Mutex<Option<Instant>>,
     uplink: RwLock<Option<Arc<Uplink>>>,
     leg: RwLock<Option<Arc<Leg>>>,
+    /// (participant, kind) chosen besides every `mic`.
+    subs: RwLock<HashSet<(u32, String)>>,
     down: tokio::sync::Mutex<Down>,
 }
 
@@ -109,8 +194,13 @@ impl Member {
             heard: Mutex::new(None),
             uplink: RwLock::new(None),
             leg: RwLock::new(None),
+            subs: RwLock::default(),
             down: tokio::sync::Mutex::new(Down::default()),
         })
+    }
+
+    fn wants(&self, from: u32, kind: &str) -> bool {
+        !track::chosen(kind) || self.subs.read().contains(&(from, kind.to_owned()))
     }
 
     async fn close(&self) {
@@ -145,18 +235,74 @@ impl Room {
         )
     }
 
-    /// `from`'s packet to everyone else's downlink.
-    fn fan_out(&self, from: &Member, packet: &Packet) {
-        if from.muted.load(Ordering::Relaxed) {
+    /// The uplink holding SSRC `ssrc`.
+    fn uplink_of(&self, ssrc: u32) -> Option<Arc<Uplink>> {
+        self.members.read().values().find_map(|m| {
+            let up = m.uplink.read().clone()?;
+            up.track(ssrc).is_some().then_some(up)
+        })
+    }
+
+    /// `from`'s packet (on the forwarder's tables) to everyone who receives
+    /// that track.
+    fn fan_out(&self, from: &Member, up: &UpTrack, packet: Packet) {
+        if up.kind == track::MIC && from.muted.load(Ordering::Relaxed) {
+            return;
+        }
+        if up.video() && !up.cache.lock().insert(packet.clone()) {
             return;
         }
         for m in self.members.read().values() {
-            if m.participant == from.participant || m.deafened.load(Ordering::Relaxed) {
+            if m.participant == from.participant
+                || (up.sound() && m.deafened.load(Ordering::Relaxed))
+                || !m.wants(from.participant, &up.kind)
+            {
                 continue;
             }
             if let Some(leg) = m.leg.read().as_ref() {
                 leg.push(packet.clone());
             }
+        }
+    }
+
+    /// A receiver's feedback on its downlink: losses resent from the cache,
+    /// keyframe requests passed to the sender.
+    async fn feedback(&self, leg: &Leg, packets: Rtcp) {
+        for packet in packets {
+            let any = packet.as_any();
+            if let Some(nack) = any.downcast_ref::<TransportLayerNack>() {
+                self.repair(leg, nack);
+            } else if let Some(pli) = any.downcast_ref::<PictureLossIndication>() {
+                if let Some(up) = self.uplink_of(pli.media_ssrc) {
+                    up.keyframe(pli.media_ssrc).await;
+                }
+            } else if let Some(fir) = any.downcast_ref::<FullIntraRequest>() {
+                for entry in &fir.fir {
+                    if let Some(up) = self.uplink_of(entry.ssrc) {
+                        up.keyframe(entry.ssrc).await;
+                    }
+                }
+            }
+        }
+    }
+
+    fn repair(&self, leg: &Leg, nack: &TransportLayerNack) {
+        let Some(up) = self.uplink_of(nack.media_ssrc) else { return };
+        let Some(t) = up.track(nack.media_ssrc) else { return };
+        if t.info.rtx == 0 {
+            return;
+        }
+        let Some(rtx_pt) = farwing_rtc_wire::rtx_payload_type(t.payload_type) else { return };
+        let repairs: Vec<Packet> = {
+            let cache = t.cache.lock();
+            nack.nacks
+                .iter()
+                .flat_map(|pair| pair.packet_list())
+                .filter_map(|seq| leg.repair(cache.get(seq)?, t.info.rtx, rtx_pt))
+                .collect()
+        };
+        for packet in repairs {
+            leg.push(packet);
         }
     }
 }
@@ -189,6 +335,37 @@ fn own_wire() -> sdp::Wire {
     wire
 }
 
+/// The tracks an offer announces, with their kinds and forwarded codecs.
+fn up_tracks(offer: &str, kinds: &[(String, String)], normalize: &Rewrite) -> Vec<Arc<UpTrack>> {
+    let own = own_wire();
+    sdp::tracks(offer)
+        .into_iter()
+        .filter_map(|t| {
+            let kind = match kinds.iter().find(|(mid, _)| *mid == t.mid) {
+                Some((_, k)) if track::ALL.contains(&k.as_str()) => k.clone(),
+                Some(_) => return None,
+                None if kinds.is_empty() && t.kind == sdp::Kind::Audio => track::MIC.to_owned(),
+                None => return None,
+            };
+            let payload_type = if normalize.identity {
+                t.payload_type
+            } else {
+                *normalize.payload_types.get(&t.payload_type)?
+            };
+            let mime = own.codecs.get(&payload_type)?.mime.clone();
+            Some(Arc::new(UpTrack {
+                info: t,
+                kind,
+                payload_type,
+                mime,
+                cache: Mutex::new(Cache::new()),
+                missing: Mutex::default(),
+                keyframe_at: Mutex::default(),
+            }))
+        })
+        .collect()
+}
+
 #[derive(Default)]
 pub struct VoiceRooms {
     rooms: Mutex<HashMap<String, Arc<Room>>>,
@@ -209,31 +386,44 @@ impl VoiceRooms {
 
     pub async fn handle(&self, sfu: &super::Sfu, op: VoiceOp) -> Result<VoiceResult, SfuError> {
         match op {
-            VoiceOp::Publish { room, participant, sdp } => Ok(VoiceResult {
-                answer: self.publish(sfu, &room, participant, &sdp).await?,
+            VoiceOp::Publish {
+                room,
+                participant,
+                sdp,
+                kinds,
+            } => Ok(VoiceResult {
+                answer: self.publish(sfu, &room, participant, &sdp, &kinds).await?,
                 ..Default::default()
             }),
             VoiceOp::Sync { room, participant, session } => {
                 let room = self.room(&room);
                 let member = room.member(participant);
-                let mut down = member.down.lock().await;
-                if down.pending.is_some() {
-                    down.dirty = true;
-                    return Ok(VoiceResult::default());
-                }
-                let offer = offer(sfu, &room, &member, &mut down, &session).await?;
                 Ok(VoiceResult {
-                    offer,
+                    offer: sync(sfu, &room, &member, &session).await?,
+                    ..Default::default()
+                })
+            }
+            VoiceOp::Subscribe {
+                room,
+                participant,
+                session,
+                tracks,
+            } => {
+                let room = self.room(&room);
+                let member = room.member(participant);
+                *member.subs.write() = tracks.into_iter().filter(|(_, k)| track::chosen(k)).collect();
+                Ok(VoiceResult {
+                    offer: sync(sfu, &room, &member, &session).await?,
                     ..Default::default()
                 })
             }
             VoiceOp::Answer {
-                room,
+                room: room_id,
                 participant,
                 generation,
                 sdp,
             } => {
-                let Some(room) = self.existing(&room) else {
+                let Some(room) = self.existing(&room_id) else {
                     return Err(SfuError::NoRoom);
                 };
                 let Some(member) = room.members.read().get(&participant).cloned() else {
@@ -257,7 +447,7 @@ impl VoiceRooms {
                         continue;
                     };
                     if let Some(forward) = track.as_any().downcast_ref::<ForwardTrack>() {
-                        for ssrc in [forward.track.ssrc, forward.track.rtx, forward.track.fec] {
+                        for ssrc in [forward.track.ssrc, forward.track.rtx] {
                             if ssrc != 0 {
                                 mids.insert(ssrc, bytes::Bytes::copy_from_slice(mid.as_bytes()));
                             }
@@ -265,6 +455,12 @@ impl VoiceRooms {
                     }
                 }
                 leg.rewrite.write().mids = mids;
+                // New pictures start with a keyframe.
+                for ssrc in std::mem::take(&mut down.fresh) {
+                    if let Some(up) = room.uplink_of(ssrc) {
+                        up.keyframe(ssrc).await;
+                    }
+                }
                 let offer = if down.dirty {
                     down.dirty = false;
                     let session = leg.id.clone();
@@ -340,8 +536,15 @@ impl VoiceRooms {
         }
     }
 
-    async fn publish(&self, sfu: &super::Sfu, room_id: &str, participant: u32, offer: &str) -> Result<String, SfuError> {
-        let tracks = sdp::tracks(offer);
+    async fn publish(
+        &self,
+        sfu: &super::Sfu,
+        room_id: &str,
+        participant: u32,
+        offer: &str,
+        kinds: &[(String, String)],
+    ) -> Result<String, SfuError> {
+        let announced = sdp::tracks(offer);
         let room = self.room(room_id);
         // Tracks keep their SSRCs on every downlink: two participants'
         // must differ (they are random; the client offers anew).
@@ -349,7 +552,7 @@ impl VoiceRooms {
             let members = room.members.read();
             for m in members.values().filter(|m| m.participant != participant) {
                 if let Some(up) = m.uplink.read().as_ref()
-                    && up.tracks.read().iter().any(|t| tracks.iter().any(|n| n.ssrc == t.ssrc))
+                    && up.tracks.read().iter().any(|t| announced.iter().any(|n| n.ssrc == t.info.ssrc))
                 {
                     return Err(SfuError::Description("SSRC in use".into()));
                 }
@@ -359,8 +562,22 @@ impl VoiceRooms {
         let existing = member.uplink.read().clone();
         if let Some(up) = existing {
             let answer = negotiate(&up.pc, offer).await?;
+            let wire = sdp::wire(&answer);
+            let normalize = Rewrite::new(&wire, &own_wire());
+            // Tracks already sent keep their caches.
+            let old = up.tracks.read().clone();
+            let tracks: Vec<Arc<UpTrack>> = up_tracks(offer, kinds, &normalize)
+                .into_iter()
+                .map(|t| {
+                    old.iter()
+                        .find(|o| o.info.ssrc == t.info.ssrc && o.kind == t.kind)
+                        .cloned()
+                        .unwrap_or(t)
+                })
+                .collect();
             *up.tracks.write() = tracks;
-            *up.normalize.write() = Rewrite::new(&sdp::wire(&answer), &own_wire());
+            *up.wire.write() = wire;
+            *up.normalize.write() = normalize;
             return Ok(answer);
         }
         let mut media = media_engine()?;
@@ -384,47 +601,111 @@ impl VoiceRooms {
                 return Err(e);
             }
         };
+        let wire = sdp::wire(&answer);
+        let normalize = Rewrite::new(&wire, &own_wire());
         let uplink = Arc::new(Uplink {
             pc: Arc::clone(&pc),
-            tracks: RwLock::new(tracks),
-            normalize: RwLock::new(Rewrite::new(&sdp::wire(&answer), &own_wire())),
+            tracks: RwLock::new(up_tracks(offer, kinds, &normalize)),
+            wire: RwLock::new(wire),
+            normalize: RwLock::new(normalize),
             tasks: Mutex::default(),
         });
         let (weak_room, weak_member, weak_up) = (Arc::downgrade(&room), Arc::downgrade(&member), Arc::downgrade(&uplink));
-        pc.on_track(Box::new(move |track, receiver, _| {
+        pc.on_track(Box::new(move |remote, receiver, _| {
             let (Some(room), Some(member), Some(up)) = (weak_room.upgrade(), weak_member.upgrade(), weak_up.upgrade())
             else {
                 return Box::pin(async {});
             };
-            if !up.tracks.read().iter().any(|t| t.ssrc == track.ssrc()) {
-                tracing::debug!(ssrc = track.ssrc(), "unannounced voice track");
-            }
-            let reader = {
-                let (room, member, up) = (Arc::clone(&room), Arc::clone(&member), Arc::clone(&up));
-                tokio::spawn(async move {
-                    while let Ok((mut packet, _)) = track.read_rtp().await {
+            let mut tasks = Vec::new();
+            {
+                let (room, member, up, remote) =
+                    (Arc::clone(&room), Arc::clone(&member), Arc::clone(&up), Arc::clone(&remote));
+                tasks.push(tokio::spawn(async move {
+                    while let Ok((mut packet, _)) = remote.read_rtp().await {
                         *member.heard.lock() = Some(Instant::now());
+                        let Some(t) = up.track(packet.header.ssrc) else { continue };
+                        if t.video() {
+                            t.missing.lock().received(packet.header.sequence_number);
+                        }
                         if !up.normalize.read().apply(&mut packet) {
                             continue;
                         }
-                        room.fan_out(&member, &packet);
+                        room.fan_out(&member, &t, packet);
                     }
-                })
-            };
+                }));
+            }
+            if remote.kind() == RTPCodecType::Video {
+                // Retransmissions: the original packet, forwarded as media.
+                let (room, member, up, remote) =
+                    (Arc::clone(&room), Arc::clone(&member), Arc::clone(&up), Arc::clone(&remote));
+                tasks.push(tokio::spawn(async move {
+                    while let Ok((rtx, _)) = remote.read_rtx().await {
+                        if rtx.payload.len() <= 2 {
+                            continue;
+                        }
+                        let Some(t) = up.tracks.read().iter().find(|t| t.info.rtx == rtx.header.ssrc).cloned() else {
+                            continue;
+                        };
+                        let Some(apt) = up.wire.read().codecs.get(&rtx.header.payload_type).and_then(sdp::Codec::apt)
+                        else {
+                            continue;
+                        };
+                        let mut original = rtx;
+                        let seq = u16::from_be_bytes([original.payload[0], original.payload[1]]);
+                        original.payload = original.payload.slice(2..);
+                        original.header.ssrc = t.info.ssrc;
+                        original.header.sequence_number = seq;
+                        original.header.payload_type = apt;
+                        original.header.padding = false;
+                        t.missing.lock().received(seq);
+                        if !up.normalize.read().apply(&mut original) {
+                            continue;
+                        }
+                        room.fan_out(&member, &t, original);
+                    }
+                }));
+            }
             // Receiver reports and transport-wide feedback flow while the
             // receiver's RTCP is read; the sender's reports also show it is
             // there while it says nothing.
-            let rtcp = {
+            {
                 let member = Arc::clone(&member);
-                tokio::spawn(async move {
+                tasks.push(tokio::spawn(async move {
                     while receiver.read_rtcp().await.is_ok() {
                         *member.heard.lock() = Some(Instant::now());
                     }
-                })
-            };
-            up.tasks.lock().extend([reader, rtcp]);
+                }));
+            }
+            up.tasks.lock().extend(tasks);
             Box::pin(async {})
         }));
+        // Lost video packets asked for again.
+        {
+            let weak_up = Arc::downgrade(&uplink);
+            uplink.tasks.lock().push(tokio::spawn(async move {
+                let mut tick = tokio::time::interval(NACK_TICK);
+                loop {
+                    tick.tick().await;
+                    let Some(up) = weak_up.upgrade() else { return };
+                    let now = Instant::now();
+                    let tracks = up.tracks.read().clone();
+                    for t in tracks.iter().filter(|t| t.video() && t.info.rtx != 0) {
+                        let due = t.missing.lock().due(now);
+                        if due.is_empty() {
+                            continue;
+                        }
+                        let _ = up
+                            .pc
+                            .write_rtcp(&[Box::new(TransportLayerNack {
+                                sender_ssrc: 0,
+                                media_ssrc: t.info.ssrc,
+                                nacks: nack_pairs_from_sequence_numbers(&due),
+                            })])
+                            .await;
+                    }
+                }
+            }));
+        }
         let weak_member = Arc::downgrade(&member);
         pc.on_peer_connection_state_change(Box::new(move |state| {
             if matches!(state, RTCPeerConnectionState::Failed) && let Some(m) = weak_member.upgrade() {
@@ -435,45 +716,63 @@ impl VoiceRooms {
         *member.heard.lock() = Some(Instant::now());
         let old = member.uplink.write().replace(uplink);
         if let Some(old) = old {
+            for task in old.tasks.lock().drain(..) {
+                task.abort();
+            }
             let _ = old.pc.close().await;
         }
         Ok(answer)
     }
 }
 
-/// Brings `member`'s downlink to the others' tracks; the offer when it
+/// An offer for `member`'s downlink now, or later if one is out.
+async fn sync(
+    sfu: &super::Sfu,
+    room: &Arc<Room>,
+    member: &Arc<Member>,
+    session: &str,
+) -> Result<Option<(u64, String)>, SfuError> {
+    let mut down = member.down.lock().await;
+    if down.pending.is_some() {
+        down.dirty = true;
+        return Ok(None);
+    }
+    offer(sfu, room, member, &mut down, session).await
+}
+
+/// Brings `member`'s downlink to what it should receive; the offer when it
 /// changed (`None`: nothing to send, or already so).
 async fn offer(
     sfu: &super::Sfu,
-    room: &Room,
+    room: &Arc<Room>,
     member: &Arc<Member>,
     down: &mut Down,
     session: &str,
 ) -> Result<Option<(u64, String)>, SfuError> {
-    let wanted: Vec<(u32, sdp::Track)> = {
+    let wanted: Vec<(u32, Arc<UpTrack>)> = {
         let members = room.members.read();
         let mut out = Vec::new();
         for m in members.values().filter(|m| m.participant != member.participant) {
             if let Some(up) = m.uplink.read().as_ref() {
-                for t in up.tracks.read().iter().filter(|t| t.kind == sdp::Kind::Audio) {
-                    out.push((m.participant, t.clone()));
+                for t in up.tracks.read().iter().filter(|t| member.wants(m.participant, &t.kind)) {
+                    out.push((m.participant, Arc::clone(t)));
                 }
             }
         }
-        out.sort_by_key(|(p, t)| (*p, t.ssrc));
+        out.sort_by_key(|(p, t)| (*p, t.info.ssrc));
         out
     };
     let existing = member.leg.read().clone();
     let leg = match existing {
         Some(leg) => leg,
         None if wanted.is_empty() => return Ok(None),
-        None => new_leg(sfu, member, session).await?,
+        None => new_leg(sfu, room, member, session).await?,
     };
     let mut changed = false;
     let gone: Vec<u32> = down
         .sent
         .keys()
-        .filter(|ssrc| !wanted.iter().any(|(_, t)| t.ssrc == **ssrc))
+        .filter(|ssrc| !wanted.iter().any(|(_, t)| t.info.ssrc == **ssrc))
         .copied()
         .collect();
     for ssrc in gone {
@@ -482,16 +781,19 @@ async fn offer(
             changed = true;
         }
     }
-    for (participant, track) in wanted {
-        if down.sent.contains_key(&track.ssrc) {
+    for (participant, t) in wanted {
+        if down.sent.contains_key(&t.info.ssrc) {
             continue;
         }
         let forward = ForwardTrack {
             track: sdp::Track {
-                stream_id: format!("p{participant}"),
-                ..track.clone()
+                stream_id: track::stream(participant, &t.kind),
+                id: t.kind.clone(),
+                payload_type: t.payload_type,
+                fec: 0,
+                ..t.info.clone()
             },
-            mime: "audio/opus".into(),
+            mime: t.mime.clone(),
         };
         let transceiver = leg
             .pc
@@ -509,7 +811,10 @@ async fn offer(
         leg.tasks.lock().push(tokio::spawn(async move {
             while reading.read_rtcp().await.is_ok() {}
         }));
-        down.sent.insert(track.ssrc, (participant, sender));
+        if t.video() {
+            down.fresh.push(t.info.ssrc);
+        }
+        down.sent.insert(t.info.ssrc, (participant, sender));
         changed = true;
     }
     if !changed && down.generation > 0 {
@@ -526,7 +831,7 @@ async fn offer(
     Ok(Some((down.generation, sdp)))
 }
 
-async fn new_leg(sfu: &super::Sfu, member: &Arc<Member>, session: &str) -> Result<Arc<Leg>, SfuError> {
+async fn new_leg(sfu: &super::Sfu, room: &Arc<Room>, member: &Arc<Member>, session: &str) -> Result<Arc<Leg>, SfuError> {
     let (rtcp_tx, mut rtcp_rx) = mpsc::unbounded_channel();
     let tap = Tap::new(rtcp_tx);
     let mut registry = Registry::new();
@@ -551,8 +856,14 @@ async fn new_leg(sfu: &super::Sfu, member: &Arc<Member>, session: &str) -> Resul
     {
         let mut tasks = leg.tasks.lock();
         tasks.push(tokio::spawn(Arc::clone(&leg).run(packets)));
-        // Receiver reports and feedback: nothing to act on for voice.
-        tasks.push(tokio::spawn(async move { while rtcp_rx.recv().await.is_some() {} }));
+        // The receiver's losses and keyframe requests.
+        let (weak_room, weak_leg) = (Arc::downgrade(room), Arc::downgrade(&leg));
+        tasks.push(tokio::spawn(async move {
+            while let Some(packets) = rtcp_rx.recv().await {
+                let (Some(room), Some(leg)) = (weak_room.upgrade(), weak_leg.upgrade()) else { return };
+                room.feedback(&leg, packets).await;
+            }
+        }));
     }
     let weak_member = Arc::downgrade(member);
     pc.on_peer_connection_state_change(Box::new(move |state| {

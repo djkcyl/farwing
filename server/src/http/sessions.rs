@@ -107,7 +107,29 @@ pub async fn create(
     ClientIp(ip): ClientIp,
     JsonBody(req): JsonBody<CreateSessionRequest>,
 ) -> ApiResult<Json<SessionTicket>> {
-    let target = visible_device(&app, &auth, &req.target_device_id).await?;
+    // A screen share's sharer let this device take control (chat §8.3):
+    // its grants, without the host's own switches (agreed in person).
+    let shared = (req.purpose == Purpose::Desktop)
+        .then(|| app.chat.voice.share_grant(&auth.user.id, &auth.device.id, &req.target_device_id))
+        .flatten();
+    let target = match shared {
+        Some(granted) => {
+            let id = req.target_device_id.clone();
+            let row = app
+                .db
+                .call(move |c| crate::db::get_device(c, &id))
+                .await?
+                .ok_or_else(ApiError::device_not_found)?;
+            crate::http::devices::Visible {
+                row,
+                relation: Relation::Share,
+                granted,
+                owner: None,
+            }
+        }
+        None => visible_device(&app, &auth, &req.target_device_id).await?,
+    };
+    let shared = target.relation == Relation::Share;
     if target.row.id == auth.device.id {
         return Err(ApiError::reason(
             ErrorCode::BadRequest,
@@ -129,7 +151,7 @@ pub async fn create(
     if !app.hub.is_online(&target.row.id) {
         return Err(ApiError::device_offline());
     }
-    if !policy_allows(&target.row, req.purpose) {
+    if !shared && !policy_allows(&target.row, req.purpose) {
         let e = ApiError::from(ErrorCode::HostDisabled);
         let p = &target.row.policy;
         return Err(match req.purpose {

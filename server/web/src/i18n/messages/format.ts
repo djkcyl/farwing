@@ -30,6 +30,7 @@ export const zh = {
     friend: '好友',
     assist: '访客',
     trusted: '受信任的访客',
+    share: '共享屏幕时同意的控制',
   },
   /** What a session is for (`purpose`). */
   purposes: {
@@ -97,6 +98,7 @@ export const en: typeof zh = {
     friend: 'Friend',
     assist: 'Visitor',
     trusted: 'Trusted visitor',
+    share: 'Control given while sharing',
   },
   purposes: {
     desktop: 'Remote desktop',

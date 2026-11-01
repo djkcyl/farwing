@@ -9,8 +9,9 @@ use crate::http::App;
 use crate::sfu::{SfuRequest, VoiceOp, VoiceResult};
 use farwing_protocol::ErrorCode;
 use farwing_protocol::chat::{
-    ChannelKind, Id, VoiceChannelState, VoiceJoin, VoiceJoined, VoiceKeyPush, VoiceKeys, VoiceLeft, VoiceMode,
-    VoiceModerate, VoiceMoved, VoiceOffer, VoiceParticipant, VoiceSelf, perm, types,
+    ChannelKind, ControlAnswer, ControlAnswered, ControlEnded, ControlRequest, Id, VoiceChannelState, VoiceDemand,
+    VoiceJoin, VoiceJoined, VoiceKeyPush, VoiceKeys, VoiceLeft, VoiceMode, VoiceModerate, VoiceMoved, VoiceOffer,
+    VoiceParticipant, VoiceSelf, VoiceSubscribe, VoiceTrack, perm, track, types,
 };
 use farwing_protocol::error::reason;
 use farwing_protocol::realtime::Envelope;
@@ -35,6 +36,22 @@ struct Part {
     /// Its egress (and relay credentials) are this session's.
     session: String,
     gone_since: Option<Instant>,
+    /// The others' tracks it chose (besides every `mic`).
+    subs: Vec<(u32, String)>,
+    /// What it was last told the others watch of what it does not send.
+    demand: Vec<String>,
+}
+
+/// Control of a screen share asked for, and given (§8.3).
+#[derive(Clone)]
+struct Control {
+    channel: i64,
+    requester_user: String,
+    requester_device: String,
+    sharer_device: String,
+    /// Answered yes (with the clipboard or not).
+    allowed: Option<bool>,
+    clipboard: bool,
 }
 
 struct Chan {
@@ -52,6 +69,7 @@ struct State {
     chans: HashMap<i64, Chan>,
     by_device: HashMap<String, i64>,
     next: u32,
+    controls: HashMap<String, Control>,
 }
 
 #[derive(Default)]
@@ -115,6 +133,28 @@ impl Voice {
         let chan = st.chans.get(&channel)?;
         let part = chan.parts.values().find(|p| p.info.device_id == device)?.clone();
         Some((part, chan.room.clone(), chan.node.clone()))
+    }
+
+    /// What a screen share's control gives `device` of account `user` on
+    /// `host`: the capabilities, if its sharer said yes.
+    pub fn share_grant(&self, user: &str, device: &str, host: &str) -> Option<Vec<String>> {
+        let st = self.st.lock();
+        st.controls
+            .values()
+            .find(|c| {
+                c.allowed == Some(true) && c.requester_user == user && c.requester_device == device && c.sharer_device == host
+            })
+            .map(|c| {
+                let mut caps = vec![
+                    farwing_protocol::caps::VIEW.to_owned(),
+                    farwing_protocol::caps::CONTROL.to_owned(),
+                    farwing_protocol::caps::ANNOTATION.to_owned(),
+                ];
+                if c.clipboard {
+                    caps.push(farwing_protocol::caps::CLIPBOARD.to_owned());
+                }
+                caps
+            })
     }
 
     /// The device's chat connection ended (`false`) or came back.
@@ -279,6 +319,8 @@ pub async fn join(app: &App, user: &str, device: &crate::db::DeviceRow, channel:
         server_muted: false,
         server_deafened: false,
         cannot_speak: false,
+        tracks: Vec::new(),
+        screen: None,
         joined_at: crate::db::now_ms(),
     };
     let participants = {
@@ -298,6 +340,8 @@ pub async fn join(app: &App, user: &str, device: &crate::db::DeviceRow, channel:
                 info,
                 session: session.clone(),
                 gone_since: None,
+                subs: Vec::new(),
+                demand: Vec::new(),
             },
         );
         let parts: Vec<VoiceParticipant> = chan.parts.values().map(|p| p.info.clone()).collect();
@@ -339,22 +383,42 @@ pub async fn join(app: &App, user: &str, device: &crate::db::DeviceRow, channel:
 }
 
 /// `PUT …/voice/publish`
-pub async fn publish(app: &App, user: &str, device: &str, channel: i64, sdp: String) -> ApiResult<String> {
-    if sdp.is_empty() || sdp.len() > 64 * 1024 {
+pub async fn publish(
+    app: &App,
+    user: &str,
+    device: &str,
+    channel: i64,
+    sdp: String,
+    tracks: Vec<VoiceTrack>,
+) -> ApiResult<String> {
+    if sdp.is_empty() || sdp.len() > 64 * 1024 || tracks.len() > track::ALL.len() {
         return Err(ApiError::bad_request("invalid description"));
     }
+    if tracks.iter().any(|t| !track::ALL.contains(&t.kind.as_str()) || t.mid.is_empty() || t.mid.len() > 32) {
+        return Err(ApiError::bad_request("invalid tracks"));
+    }
+    let video = tracks.iter().any(|t| t.kind != track::MIC);
     let u = user.to_owned();
-    let speak = app
+    let allowed = app
         .db
-        .call(move |c| Ok(super::access(c, &u, channel)?.is_some_and(|a| a.can(perm::SPEAK))))
+        .call(move |c| {
+            Ok(super::access(c, &u, channel)?.is_some_and(|a| a.can(perm::SPEAK) && (!video || a.can(perm::VIDEO))))
+        })
         .await?;
-    if !speak {
+    if !allowed {
         return Err(crate::http::chat::forbidden());
     }
     let lock = app.chat.voice.lock(channel);
     let held = lock.lock().await;
     let (part, room, node) = app.chat.voice.part(channel, device).ok_or_else(not_in)?;
     let participant = part.info.participant;
+    let mut kinds: Vec<String> = if tracks.is_empty() {
+        vec![track::MIC.to_owned()]
+    } else {
+        tracks.iter().map(|t| t.kind.clone()).collect()
+    };
+    kinds.sort();
+    kinds.dedup();
     let result = run(
         app,
         node.as_ref(),
@@ -362,9 +426,16 @@ pub async fn publish(app: &App, user: &str, device: &str, channel: i64, sdp: Str
             room,
             participant,
             sdp,
+            kinds: tracks.into_iter().map(|t| (t.mid, t.kind)).collect(),
         },
     )
     .await?;
+    {
+        let mut st = app.chat.voice.st.lock();
+        if let Some(p) = st.chans.get_mut(&channel).and_then(|c| c.parts.get_mut(&participant)) {
+            p.info.tracks = kinds;
+        }
+    }
     let (now, room, node) = app.chat.voice.part(channel, device).ok_or_else(not_in)?;
     if silenced(&now.info) {
         run(app, node.as_ref(), VoiceOp::Mute { room: room.clone(), participant, muted: true }).await?;
@@ -373,6 +444,8 @@ pub async fn publish(app: &App, user: &str, device: &str, channel: i64, sdp: Str
         run(app, node.as_ref(), VoiceOp::Deafen { room, participant, deafened: true }).await?;
     }
     drop(held);
+    end_lost_controls(app, channel).await;
+    push_state(app, channel).await;
     let app2 = app.clone();
     tokio::spawn(async move {
         let lock = app2.chat.voice.lock(channel);
@@ -380,6 +453,215 @@ pub async fn publish(app: &App, user: &str, device: &str, channel: i64, sdp: Str
         sync_all(&app2, channel, Some(participant)).await;
     });
     Ok(result.answer)
+}
+
+/// `PUT …/voice/subscribe`: the others' tracks this device watches.
+pub async fn subscribe(app: &App, device: &str, channel: i64, req: VoiceSubscribe) -> ApiResult<()> {
+    if req.tracks.len() > 64 || req.tracks.iter().any(|t| !track::chosen(&t.kind) || !track::ALL.contains(&t.kind.as_str())) {
+        return Err(ApiError::bad_request("invalid tracks"));
+    }
+    let (part, room, node) = app.chat.voice.part(channel, device).ok_or_else(not_in)?;
+    // With this month's traffic used up, the sound goes on but no pictures
+    // start (§11).
+    if !req.tracks.is_empty() && app.egress.access(&part.session, false).used_up {
+        return Err(ApiError::reason(ErrorCode::Forbidden, reason::VOICE_QUOTA, "the month's traffic is used up"));
+    }
+    let tracks: Vec<(u32, String)> = req.tracks.into_iter().map(|t| (t.participant, t.kind)).collect();
+    let lock = app.chat.voice.lock(channel);
+    let held = lock.lock().await;
+    {
+        let mut st = app.chat.voice.st.lock();
+        if let Some(p) = st.chans.get_mut(&channel).and_then(|c| c.parts.get_mut(&part.info.participant)) {
+            p.subs = tracks.clone();
+        }
+    }
+    let op = VoiceOp::Subscribe {
+        room,
+        participant: part.info.participant,
+        session: part.session.clone(),
+        tracks,
+    };
+    let result = run(app, node.as_ref(), op).await?;
+    push_offer(app, device, channel, result.offer);
+    drop(held);
+    push_demand(app, channel);
+    Ok(())
+}
+
+/// Each sender learns what the others watch of what it does not send
+/// (`screen_720`), when that changed.
+fn push_demand(app: &App, channel: i64) {
+    let mut out = Vec::new();
+    {
+        let mut st = app.chat.voice.st.lock();
+        let Some(chan) = st.chans.get_mut(&channel) else { return };
+        let wanted: Vec<(u32, String)> = chan.parts.values().flat_map(|p| p.subs.clone()).collect();
+        for p in chan.parts.values_mut() {
+            let mut kinds: Vec<String> = wanted
+                .iter()
+                .filter(|(who, kind)| *who == p.info.participant && kind == track::SCREEN_720)
+                .map(|(_, k)| k.clone())
+                .collect();
+            kinds.dedup();
+            if kinds != p.demand {
+                p.demand = kinds.clone();
+                out.push((p.info.device_id.clone(), kinds));
+            }
+        }
+    }
+    for (device, kinds) in out {
+        app.chat.hub.send_device(
+            &device,
+            &Envelope::new(
+                types::VOICE_DEMAND,
+                VoiceDemand {
+                    channel_id: Id(channel),
+                    kinds,
+                },
+            ),
+        );
+    }
+}
+
+/// Controls given over shares that ended (the sharer stopped sharing its
+/// whole screen or left, or the asker left) are taken back.
+async fn end_lost_controls(app: &App, channel: i64) {
+    let lost: Vec<(String, Control)> = {
+        let st = app.chat.voice.st.lock();
+        let chan = st.chans.get(&channel);
+        let sharing = |device: &str| {
+            chan.and_then(|c| c.parts.values().find(|p| p.info.device_id == device)).is_some_and(|p| {
+                p.info.tracks.iter().any(|k| k == track::SCREEN) && p.info.screen.as_ref().is_some_and(|s| s.whole)
+            })
+        };
+        let present = |device: &str| chan.is_some_and(|c| c.parts.values().any(|p| p.info.device_id == device));
+        st.controls
+            .iter()
+            .filter(|(_, c)| c.channel == channel && (!sharing(&c.sharer_device) || !present(&c.requester_device)))
+            .map(|(id, c)| (id.clone(), c.clone()))
+            .collect()
+    };
+    for (id, c) in lost {
+        end_control(app, &id, &c);
+    }
+}
+
+fn end_control(app: &App, id: &str, c: &Control) {
+    app.chat.voice.st.lock().controls.remove(id);
+    app.hub.end_shared(&c.sharer_device, &c.requester_device);
+    let env = Envelope::new(
+        types::CONTROL_ENDED,
+        ControlEnded {
+            id: id.to_owned(),
+            channel_id: Id(c.channel),
+        },
+    );
+    app.chat.hub.send_device(&c.sharer_device, &env);
+    app.chat.hub.send_device(&c.requester_device, &env);
+}
+
+/// `POST …/voice/control-request {sharer_device}`: asks the device sharing
+/// its whole screen to let this one take control.
+pub async fn control_request(app: &App, user: &str, device: &str, channel: i64, sharer_device: &str) -> ApiResult<String> {
+    let (me, sharer) = {
+        let st = app.chat.voice.st.lock();
+        let chan = st.chans.get(&channel).ok_or_else(not_in)?;
+        let me = chan.parts.values().find(|p| p.info.device_id == device).cloned().ok_or_else(not_in)?;
+        let sharer = chan
+            .parts
+            .values()
+            .find(|p| p.info.device_id == sharer_device)
+            .cloned()
+            .ok_or_else(not_in)?;
+        (me, sharer)
+    };
+    let whole = sharer.info.tracks.iter().any(|k| k == track::SCREEN) && sharer.info.screen.as_ref().is_some_and(|s| s.whole);
+    if !whole || sharer.info.device_id == device {
+        return Err(ApiError::bad_request("that device does not share its whole screen"));
+    }
+    let u = user.to_owned();
+    let from = app.db.call(move |c| super::store::user(c, &u)).await?;
+    let id = uuid::Uuid::new_v4().to_string();
+    {
+        let mut st = app.chat.voice.st.lock();
+        // One request per pair at a time.
+        st.controls
+            .retain(|_, c| !(c.requester_device == device && c.sharer_device == sharer.info.device_id));
+        st.controls.insert(
+            id.clone(),
+            Control {
+                channel,
+                requester_user: user.to_owned(),
+                requester_device: me.info.device_id.clone(),
+                sharer_device: sharer.info.device_id.clone(),
+                allowed: None,
+                clipboard: false,
+            },
+        );
+    }
+    app.chat.hub.send_device(
+        &sharer.info.device_id,
+        &Envelope::new(
+            types::CONTROL_REQUEST,
+            ControlRequest {
+                id: id.clone(),
+                channel_id: Id(channel),
+                from,
+                from_device: device.to_owned(),
+                sharer_device: sharer.info.device_id.clone(),
+            },
+        ),
+    );
+    Ok(id)
+}
+
+/// `POST …/voice/control-request/{id}/answer` (the sharer).
+pub async fn control_answer(app: &App, device: &str, id: &str, answer: ControlAnswer) -> ApiResult<()> {
+    let control = {
+        let mut st = app.chat.voice.st.lock();
+        let c = st
+            .controls
+            .get_mut(id)
+            .filter(|c| c.sharer_device == device && c.allowed.is_none())
+            .ok_or_else(not_in)?;
+        c.allowed = Some(answer.allowed);
+        c.clipboard = answer.clipboard;
+        c.clone()
+    };
+    if !answer.allowed {
+        app.chat.voice.st.lock().controls.remove(id);
+    }
+    app.chat.hub.send_device(
+        &control.requester_device,
+        &Envelope::new(
+            types::CONTROL_ANSWERED,
+            ControlAnswered {
+                id: id.to_owned(),
+                channel_id: Id(control.channel),
+                sharer_device: control.sharer_device.clone(),
+                allowed: answer.allowed,
+                clipboard: answer.clipboard,
+            },
+        ),
+    );
+    Ok(())
+}
+
+/// `DELETE …/voice/control-request/{id}`: the sharer takes control back,
+/// or the asker gives it up.
+pub async fn control_end(app: &App, device: &str, id: &str) -> ApiResult<()> {
+    let control = app
+        .chat
+        .voice
+        .st
+        .lock()
+        .controls
+        .get(id)
+        .filter(|c| c.sharer_device == device || c.requester_device == device)
+        .cloned()
+        .ok_or_else(not_in)?;
+    end_control(app, id, &control);
+    Ok(())
 }
 
 /// `voice.answer` on the chat connection.
@@ -411,7 +693,9 @@ pub async fn set_self(app: &App, device: &str, channel: i64, req: VoiceSelf) -> 
             .ok_or_else(not_in)?;
         part.info.self_muted = req.self_muted;
         part.info.self_deafened = req.self_deafened;
+        part.info.screen = req.screen;
     }
+    end_lost_controls(app, channel).await;
     push_state(app, channel).await;
     Ok(())
 }
@@ -645,6 +929,8 @@ pub async fn leave(app: &App, device: &str, channel: i64, reason: Option<&str>) 
         sync_all(app, channel, None).await;
     }
     drop(held);
+    end_lost_controls(app, channel).await;
+    push_demand(app, channel);
     push_state(app, channel).await;
 }
 

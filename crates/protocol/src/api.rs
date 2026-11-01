@@ -317,6 +317,10 @@ pub enum Relation {
     /// A device the host trusts (`docs/access-model.md` §2.2): admitted by
     /// its device key, over the server or directly.
     Trusted,
+    /// Someone watching this device's screen share in a voice channel, whom
+    /// its user let take control (`docs/protocol/chat-design.md` §8.3): the
+    /// server's grants, while the share lasts.
+    Share,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

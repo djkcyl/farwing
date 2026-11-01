@@ -99,12 +99,52 @@ impl Voicer {
     }
 
     async fn publish(&mut self, srv: &TestServer, channel: &str) {
+        self.publish_tracks(srv, channel, json!([])).await;
+    }
+
+    /// Publishes with media sections named: `tracks` is `[{mid, kind}]`.
+    async fn publish_tracks(&mut self, srv: &TestServer, channel: &str, tracks: Value) {
         let offer = self.up.offer().await;
         let r = srv
-            .put(&format!("/api/v2/chat/channels/{channel}/voice/publish"), &self.dev, json!({"sdp": offer}))
+            .put(
+                &format!("/api/v2/chat/channels/{channel}/voice/publish"),
+                &self.dev,
+                json!({"sdp": offer, "tracks": tracks}),
+            )
             .await;
         self.up.answer(s(&r.ok()["sdp"])).await;
         self.up.connected().await;
+    }
+
+    /// A video track of `kind` on the uplink (before publishing).
+    async fn add_video(&self, kind: &str) -> Arc<TrackLocalStaticRTP> {
+        let h264 = farwing_rtc_wire::VIDEO_CODECS
+            .iter()
+            .find(|c| c.mime_type.eq_ignore_ascii_case("video/H264"))
+            .unwrap();
+        let track = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: h264.mime_type.to_owned(),
+                clock_rate: 90_000,
+                channels: 0,
+                sdp_fmtp_line: h264.fmtp.to_owned(),
+                rtcp_feedback: Vec::new(),
+            },
+            kind.to_owned(),
+            "me".to_owned(),
+        ));
+        self.up
+            .pc
+            .add_transceiver_from_track(
+                Arc::clone(&track) as _,
+                Some(RTCRtpTransceiverInit {
+                    direction: RTCRtpTransceiverDirection::Sendonly,
+                    send_encodings: Vec::new(),
+                }),
+            )
+            .await
+            .unwrap();
+        track
     }
 
     /// Answers the forwarder's offers and keeps other pushes, for `wait`.
@@ -246,7 +286,7 @@ async fn every_mic_reaches_everyone_else_as_people_come_and_go() {
     for (i, v) in people.iter_mut().enumerate() {
         let heard = v.listen(Duration::from_millis(800)).await;
         for (j, other) in ids.iter().enumerate() {
-            let stream = format!("p{other}");
+            let stream = format!("p{other}-mic");
             if i == j {
                 assert!(!heard.contains_key(&stream), "{} hears itself", v.participant);
             } else {
@@ -296,7 +336,7 @@ async fn every_mic_reaches_everyone_else_as_people_come_and_go() {
     people[1].say(b"bob-muted", 20).await;
     let heard = people[2].listen(Duration::from_millis(600)).await;
     assert!(
-        !heard.get(&format!("p{}", ids[1])).is_some_and(|p| p.contains(&Bytes::from_static(b"bob-muted"))),
+        !heard.get(&format!("p{}-mic", ids[1])).is_some_and(|p| p.contains(&Bytes::from_static(b"bob-muted"))),
         "a muted participant is not forwarded"
     );
     // Bob may not mute alice.
@@ -488,7 +528,7 @@ async fn moderators_deafen_and_move_and_it_is_audited() {
     )
     .await
     .ok();
-    let alice_stream = format!("p{}", people[0].participant);
+    let alice_stream = format!("p{}-mic", people[0].participant);
     people[1].listen(Duration::from_millis(300)).await;
     people[0].say(b"deaf", 20).await;
     let heard = people[1].listen(Duration::from_millis(800)).await;
@@ -517,4 +557,116 @@ async fn moderators_deafen_and_move_and_it_is_audited() {
     let audit = srv.get(&format!("/api/v2/chat/groups/{group}/audit"), &people[0].dev).await;
     let actions: Vec<String> = audit.ok()["entries"].as_array().unwrap().iter().map(|e| s(&e["action"])).collect();
     assert!(actions.contains(&"voice_deafen".to_owned()) && actions.contains(&"voice_move".to_owned()), "{actions:?}");
+}
+
+async fn show(track: &TrackLocalStaticRTP, frame: &'static [u8], n: u16) {
+    for i in 0..n {
+        let packet = Packet {
+            header: Header {
+                version: 2,
+                sequence_number: i,
+                timestamp: u32::from(i) * 3000,
+                marker: true,
+                ..Default::default()
+            },
+            payload: Bytes::from_static(frame),
+        };
+        track.write_rtp(&packet).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pictures_reach_who_watches_and_control_is_asked_for() {
+    let (srv, devs, voice, _) = setup(|c| c.e2ee = farwing_protocol::api::E2ee::Off).await;
+    let mut alice = Voicer::join(&srv, devs[0].clone(), &voice).await;
+    let cam = alice.add_video("cam").await;
+    let screen = alice.add_video("screen").await;
+    alice
+        .publish_tracks(
+            &srv,
+            &voice,
+            json!([{"mid": "0", "kind": "mic"}, {"mid": "1", "kind": "cam_hi"}, {"mid": "2", "kind": "screen"}]),
+        )
+        .await;
+    let mut bob = Voicer::join(&srv, devs[1].clone(), &voice).await;
+    bob.publish(&srv, &voice).await;
+    let mut carol = Voicer::join(&srv, devs[2].clone(), &voice).await;
+    carol.publish(&srv, &voice).await;
+    for v in [&mut alice, &mut bob, &mut carol] {
+        v.pump(Duration::from_millis(1500)).await;
+    }
+    let a = alice.participant;
+    let state = alice.pushes.iter().rev().find(|p| p["type"] == "voice.state").unwrap().clone();
+    let me = state["data"]["participants"].as_array().unwrap().iter().find(|p| p["participant"] == a).unwrap().clone();
+    assert_eq!(me["tracks"], json!(["cam_hi", "mic", "screen"]));
+
+    // Pictures only once chosen.
+    bob.listen(Duration::from_millis(200)).await;
+    show(&cam, b"camera-frame", 20).await;
+    let heard = bob.listen(Duration::from_millis(600)).await;
+    assert!(heard.get(&format!("p{a}-cam_hi")).is_none(), "{:?}", heard.keys());
+    srv.put(
+        &format!("/api/v2/chat/channels/{voice}/voice/subscribe"),
+        &bob.dev,
+        json!({"tracks": [{"participant": a, "kind": "cam_hi"}]}),
+    )
+    .await
+    .ok();
+    bob.pump(Duration::from_millis(1500)).await;
+    bob.listen(Duration::from_millis(200)).await;
+    show(&cam, b"camera-frame", 30).await;
+    let heard = bob.listen(Duration::from_millis(800)).await;
+    assert!(
+        heard.get(&format!("p{a}-cam_hi")).is_some_and(|p| p.contains(&Bytes::from_static(b"camera-frame"))),
+        "{:?}",
+        heard.keys()
+    );
+    // Carol watches the screen at 720p30: alice is asked to send it.
+    srv.put(
+        &format!("/api/v2/chat/channels/{voice}/voice/subscribe"),
+        &carol.dev,
+        json!({"tracks": [{"participant": a, "kind": "screen"}, {"participant": a, "kind": "screen_720"}]}),
+    )
+    .await
+    .ok();
+    alice.pump(Duration::from_millis(800)).await;
+    let demand = alice.pushes.iter().rev().find(|p| p["type"] == "voice.demand").expect("voice.demand").clone();
+    assert_eq!(demand["data"]["kinds"], json!(["screen_720"]));
+    carol.pump(Duration::from_millis(1500)).await;
+    carol.listen(Duration::from_millis(200)).await;
+    show(&screen, b"screen-frame", 30).await;
+    let heard = carol.listen(Duration::from_millis(800)).await;
+    assert!(heard.get(&format!("p{a}-screen")).is_some_and(|p| p.contains(&Bytes::from_static(b"screen-frame"))));
+
+    // Control: only of a whole screen, asked, answered, taken back.
+    let ask_path = format!("/api/v2/chat/channels/{voice}/voice/control-request");
+    let ask_body = json!({"sharer_device": alice.dev.id});
+    srv.post(&ask_path, &bob.dev, ask_body.clone()).await.err(400, "bad_request");
+    srv.put(
+        &format!("/api/v2/chat/channels/{voice}/voice/state"),
+        &alice.dev,
+        json!({"screen": {"quality": "1080p30", "audio": true, "whole": true}}),
+    )
+    .await
+    .ok();
+    let id = s(&srv.post(&ask_path, &bob.dev, ask_body.clone()).await.ok()["id"]);
+    alice.pump(Duration::from_millis(500)).await;
+    let req = alice.pushes.iter().rev().find(|p| p["type"] == "voice.control_request").expect("asked").clone();
+    assert_eq!(s(&req["data"]["id"]), id);
+    assert_eq!(s(&req["data"]["from_device"]), bob.dev.id);
+    srv.post(
+        &format!("/api/v2/chat/channels/{voice}/voice/control-request/{id}/answer"),
+        &alice.dev,
+        json!({"allowed": true, "clipboard": true}),
+    )
+    .await
+    .ok();
+    bob.pump(Duration::from_millis(500)).await;
+    let answered = bob.pushes.iter().rev().find(|p| p["type"] == "voice.control_answered").expect("answered").clone();
+    assert_eq!(answered["data"]["allowed"], json!(true));
+    // Stopping the whole-screen share takes the control back.
+    srv.put(&format!("/api/v2/chat/channels/{voice}/voice/state"), &alice.dev, json!({})).await.ok();
+    bob.pump(Duration::from_millis(500)).await;
+    assert!(bob.pushes.iter().any(|p| p["type"] == "voice.control_ended" && s(&p["data"]["id"]) == id));
 }

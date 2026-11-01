@@ -351,6 +351,7 @@ pub fn relation_str(r: Relation) -> &'static str {
         Relation::Friend => "friend",
         Relation::Assist => "assist",
         Relation::Trusted => "trusted",
+        Relation::Share => "share",
     }
 }
 
@@ -1134,6 +1135,25 @@ impl Hub {
     /// there (hosts not in the map are unaffected). Sessions whose purpose is
     /// no longer allowed end with `permission_revoked`; the others get
     /// `session.permissions` on both sides when their grants changed.
+/// Sessions in which `controller_device` controls `host_device` by a
+    /// screen share's grant end (`docs/protocol/chat-design.md` §8.3).
+    pub fn end_shared(&self, host_device: &str, controller_device: &str) {
+        let mut st = self.state.lock();
+        let ended: Vec<String> = st
+            .sessions
+            .values()
+            .filter(|s| {
+                s.relation == Relation::Share
+                    && s.host_device_id == host_device
+                    && s.controller_device_id == controller_device
+            })
+            .map(|s| s.id.clone())
+            .collect();
+        for sid in ended {
+            self.end_session_locked(&mut st, &sid, End::PermissionRevoked);
+        }
+    }
+
     pub fn regrant(&self, controller_user: &str, caps: &HashMap<String, Vec<String>>) {
         let mut st = self.state.lock();
         let affected: Vec<(String, Vec<String>)> = st

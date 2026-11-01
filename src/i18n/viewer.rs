@@ -116,6 +116,7 @@ pub(crate) struct Viewer {
     pub relation_friend: &'static str,
     pub relation_guest: &'static str,
     pub relation_trusted: &'static str,
+    pub relation_share: &'static str,
     pub participant: &'static str,
     // Performance monitor (performance_panel.rs)
     pub performance_monitor: &'static str,
@@ -536,6 +537,7 @@ pub(crate) const ZH_CN: Viewer = Viewer {
     relation_friend: "好友",
     relation_guest: "访客",
     relation_trusted: "受信任",
+    relation_share: "共享中",
     participant: "参与者",
     performance_monitor: "性能监控",
     frame_updates: "画面更新",
@@ -917,6 +919,7 @@ pub(crate) const EN: Viewer = Viewer {
     relation_friend: "Friend",
     relation_guest: "Visitor",
     relation_trusted: "Trusted",
+    relation_share: "Share",
     participant: "Participant",
     performance_monitor: "Performance monitor",
     frame_updates: "Frame updates",

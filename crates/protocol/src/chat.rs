@@ -883,6 +883,16 @@ pub mod types {
     /// Server → the device: join another channel, or this one again on
     /// another node ([`VoiceMoved`]).
     pub const VOICE_MOVED: &str = "voice.moved";
+    /// Server → the device: tracks someone watches that it does not send
+    /// ([`VoiceDemand`]).
+    pub const VOICE_DEMAND: &str = "voice.demand";
+    /// Server → the sharing device: someone asks to take control
+    /// ([`ControlRequest`]).
+    pub const CONTROL_REQUEST: &str = "voice.control_request";
+    /// Server → the asking device: the sharer's answer ([`ControlAnswered`]).
+    pub const CONTROL_ANSWERED: &str = "voice.control_answered";
+    /// Server → both: the control given ended ([`ControlEnded`]).
+    pub const CONTROL_ENDED: &str = "voice.control_ended";
 
     // ---- calls in direct messages (§7.6)
     /// To the callee's devices: a call rings ([`Call`]).
@@ -931,8 +941,125 @@ pub struct VoiceParticipant {
     /// The account lost `speak` here meanwhile: nothing it says is
     /// forwarded.
     pub cannot_speak: bool,
+    /// The kinds of track it sends now ([`track`]).
+    pub tracks: Vec<String>,
+    /// Its screen share, as it describes it.
+    pub screen: Option<VoiceScreen>,
     /// Unix milliseconds.
     pub joined_at: i64,
+}
+
+/// The kinds of track in a voice channel (§7.3).
+pub mod track {
+    pub const MIC: &str = "mic";
+    /// The camera: 720p30 and 320×180@15.
+    pub const CAM_HI: &str = "cam_hi";
+    pub const CAM_LO: &str = "cam_lo";
+    /// The screen share, its sound, and a 720p30 copy encoded while someone
+    /// watches it.
+    pub const SCREEN: &str = "screen";
+    pub const SCREEN_720: &str = "screen_720";
+    pub const SCREEN_AUDIO: &str = "screen_audio";
+    pub const ALL: [&str; 6] = [MIC, CAM_HI, CAM_LO, SCREEN, SCREEN_720, SCREEN_AUDIO];
+    /// Tracks only some receivers want (everyone gets every `mic`).
+    pub fn chosen(kind: &str) -> bool {
+        kind != MIC
+    }
+    /// A forwarded track's stream: `p<participant>-<kind>`.
+    pub fn stream(participant: u32, kind: &str) -> String {
+        format!("p{participant}-{kind}")
+    }
+    /// (participant, kind) of a forwarded track's stream.
+    pub fn parse(stream: &str) -> Option<(u32, &str)> {
+        let (p, kind) = stream.strip_prefix('p')?.split_once('-')?;
+        Some((p.parse().ok()?, kind))
+    }
+}
+
+/// A screen share as its sender describes it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceScreen {
+    /// `720p30`, `720p60`, `1080p30` or `1080p60`.
+    pub quality: String,
+    /// With sound.
+    pub audio: bool,
+    /// The whole screen (only then can control be requested), or one window.
+    pub whole: bool,
+}
+
+/// A track a device publishes: its media section and kind.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceTrack {
+    pub mid: String,
+    pub kind: String,
+}
+
+/// One participant's track a device wants.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceTrackRef {
+    pub participant: u32,
+    pub kind: String,
+}
+
+/// `PUT …/voice/subscribe`: the chosen tracks this device receives (all
+/// `mic`s come anyway).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceSubscribe {
+    pub tracks: Vec<VoiceTrackRef>,
+}
+
+/// `voice.demand`: kinds someone watches that the device does not send
+/// (`screen_720`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceDemand {
+    pub channel_id: Id,
+    pub kinds: Vec<String>,
+}
+
+/// `voice.control_request`: `from` (device `from_device`) asks to control
+/// the screen this device shares.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ControlRequest {
+    pub id: String,
+    pub channel_id: Id,
+    pub from: ChatUser,
+    pub from_device: String,
+    pub sharer_device: String,
+}
+
+/// `POST …/control-request/{id}/answer`
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ControlAnswer {
+    pub allowed: bool,
+    pub clipboard: bool,
+}
+
+/// `voice.control_answered`: to the asking device; when allowed it opens a
+/// remote desktop session to `sharer_device`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ControlAnswered {
+    pub id: String,
+    pub channel_id: Id,
+    pub sharer_device: String,
+    pub allowed: bool,
+    pub clipboard: bool,
+}
+
+/// `voice.control_ended`: the control given is over (taken back, the share
+/// or the voice ended).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ControlEnded {
+    pub id: String,
+    pub channel_id: Id,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -964,19 +1091,24 @@ pub struct VoiceJoined {
     pub participants: Vec<VoiceParticipant>,
 }
 
-/// A session description: `PUT …/voice/publish` and its answer.
+/// A session description: `PUT …/voice/publish` (with each media
+/// section's kind; none: every audio section is a `mic`) and its answer.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VoiceDescription {
     pub sdp: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tracks: Vec<VoiceTrack>,
 }
 
-/// `PUT …/voice/state`: the device's own mute and deafen.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+/// `PUT …/voice/state`: the device's own mute and deafen, and its screen
+/// share's description (sent every time).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VoiceSelf {
     pub self_muted: bool,
     pub self_deafened: bool,
+    pub screen: Option<VoiceScreen>,
 }
 
 /// `PATCH …/voice/participants/{participant}` (`voice_moderate`).

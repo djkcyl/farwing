@@ -79,6 +79,7 @@ pub(crate) const ZH_CN: Records = Records {
         "friend" => "好友",
         "assist" => "访客",
         "trusted" => "受信任设备",
+        "share" => "共享屏幕时同意的控制",
         _ => "",
     },
     purpose: |p| match p {
@@ -210,6 +211,7 @@ pub(crate) const EN: Records = Records {
         "friend" => "Friend",
         "assist" => "Visitor",
         "trusted" => "Trusted device",
+        "share" => "Control given while sharing",
         _ => "",
     },
     purpose: |p| match p {

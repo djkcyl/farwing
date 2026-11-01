@@ -83,25 +83,25 @@ const NACK_FIRST: Duration = Duration::from_millis(5);
 const NACK_TRIES: u8 = 8;
 const NACK_AGE: Duration = Duration::from_secs(1);
 
-struct Cache {
+pub(super) struct Cache {
     slots: Vec<Option<Packet>>,
 }
 
 impl Cache {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             slots: vec![None; CACHE],
         }
     }
 
-    fn get(&self, seq: u16) -> Option<&Packet> {
+    pub(super) fn get(&self, seq: u16) -> Option<&Packet> {
         self.slots[seq as usize % CACHE]
             .as_ref()
             .filter(|p| p.header.sequence_number == seq)
     }
 
     /// `false` if the packet was already there.
-    fn insert(&mut self, packet: Packet) -> bool {
+    pub(super) fn insert(&mut self, packet: Packet) -> bool {
         let seq = packet.header.sequence_number;
         if self.get(seq).is_some() {
             return false;
@@ -119,13 +119,13 @@ struct Lost {
 
 /// Sequence gaps of an uplink stream not yet filled.
 #[derive(Default)]
-struct Missing {
+pub(super) struct Missing {
     highest: Option<u16>,
     lost: HashMap<u16, Lost>,
 }
 
 impl Missing {
-    fn received(&mut self, seq: u16) {
+    pub(super) fn received(&mut self, seq: u16) {
         let Some(highest) = self.highest else {
             self.highest = Some(seq);
             return;
@@ -152,7 +152,7 @@ impl Missing {
         self.lost.remove(&seq);
     }
 
-    fn due(&mut self, now: Instant) -> Vec<u16> {
+    pub(super) fn due(&mut self, now: Instant) -> Vec<u16> {
         self.lost
             .retain(|_, l| l.tries < NACK_TRIES && now.duration_since(l.since) < NACK_AGE);
         let mut due: Vec<u16> = self

@@ -107,6 +107,16 @@ pub fn routes(r: Router<App>) -> Router<App> {
         .route("/api/v2/chat/channels/{id}/voice/publish", put(voice::publish))
         .route("/api/v2/chat/channels/{id}/voice/state", put(voice::state))
         .route("/api/v2/chat/channels/{id}/voice/keys", post(voice::keys))
+        .route("/api/v2/chat/channels/{id}/voice/subscribe", put(voice::subscribe))
+        .route("/api/v2/chat/channels/{id}/voice/control-request", post(voice::control_request))
+        .route(
+            "/api/v2/chat/channels/{id}/voice/control-request/{request}/answer",
+            post(voice::control_answer),
+        )
+        .route(
+            "/api/v2/chat/channels/{id}/voice/control-request/{request}",
+            axum::routing::delete(voice::control_end),
+        )
         .route(
             "/api/v2/chat/channels/{id}/voice/participants/{participant}",
             patch(voice::moderate).delete(voice::disconnect),

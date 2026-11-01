@@ -314,6 +314,7 @@ async fn connect_once(
                 Relation::Trusted => t().session.relation_trusted,
                 Relation::Assist => t().session.relation_guest,
                 Relation::Friend => t().session.relation_friend,
+                Relation::Share => t().session.relation_share,
             },
         ),
     );

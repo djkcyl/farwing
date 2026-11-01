@@ -13,6 +13,8 @@ pub enum Kind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Track {
     pub kind: Kind,
+    /// Its media section's `a=mid` (empty if none).
+    pub mid: String,
     pub stream_id: String,
     pub id: String,
     pub ssrc: u32,
@@ -129,6 +131,12 @@ pub fn tracks(sdp: &str) -> Vec<Track> {
             continue;
         }
         let payload_type = sdp_payload_types(&section).first().copied().unwrap_or(0);
+        let mid = section
+            .lines
+            .iter()
+            .find_map(|l| l.strip_prefix("a=mid:"))
+            .unwrap_or_default()
+            .to_owned();
         let mut msids: Vec<(u32, String, String)> = Vec::new();
         let mut rtx = HashMap::new();
         let mut fec = HashMap::new();
@@ -186,6 +194,7 @@ pub fn tracks(sdp: &str) -> Vec<Track> {
             }
             out.push(Track {
                 kind,
+                mid: mid.clone(),
                 stream_id,
                 id,
                 ssrc,

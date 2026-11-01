@@ -455,6 +455,7 @@ fn relation_label(relation: &str) -> Option<&'static str> {
         "friend" => Some(t.relation_friend),
         "assist" => Some(t.relation_guest),
         "trusted" => Some(t.relation_trusted),
+        "share" => Some(t.relation_share),
         _ => None,
     }
 }

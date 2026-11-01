@@ -62,6 +62,8 @@ pub(super) fn caption(
         text.kind_friend_device
     } else if connection.relation == "trusted" {
         text.kind_trusted_device
+    } else if connection.relation == "share" {
+        text.kind_share
     } else {
         text.kind_own_device
     };
@@ -141,6 +143,8 @@ pub(super) enum Relation {
     Friend,
     Trusted,
     Visitor,
+    /// Someone this device's user let take control while sharing.
+    Share,
 }
 
 impl Relation {
@@ -149,6 +153,7 @@ impl Relation {
             "own" => Some(Self::Own),
             "friend" => Some(Self::Friend),
             "trusted" => Some(Self::Trusted),
+            "share" => Some(Self::Share),
             "assist" => Some(Self::Visitor),
             _ if assistance => Some(Self::Visitor),
             _ => None,
@@ -162,13 +167,14 @@ impl Relation {
             Self::Friend => text.relation_friend,
             Self::Trusted => text.relation_trusted,
             Self::Visitor => text.relation_visitor,
+            Self::Share => text.relation_share,
         }
     }
 
     fn color(self) -> egui::Color32 {
         match self {
             Self::Friend => theme::GREEN,
-            Self::Visitor => theme::AMBER,
+            Self::Visitor | Self::Share => theme::AMBER,
             Self::Own | Self::Trusted => theme::ACCENT,
         }
     }

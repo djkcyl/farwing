@@ -9,7 +9,8 @@ use axum::Json;
 use axum::extract::{Path, State};
 use farwing_protocol::api::Empty;
 use farwing_protocol::chat::{
-    Call, CallStart, DeviceX25519, VoiceDescription, VoiceJoin, VoiceJoined, VoiceKeys, VoiceModerate, VoiceSelf, x25519_message,
+    Call, CallStart, ControlAnswer, DeviceX25519, VoiceDescription, VoiceJoin, VoiceJoined, VoiceKeys, VoiceModerate,
+    VoiceSelf, VoiceSubscribe, x25519_message,
 };
 
 /// `POST /chat/channels/{id}/voice/join`
@@ -35,8 +36,61 @@ pub async fn publish(
     Path(cid): Path<String>,
     JsonBody(req): JsonBody<VoiceDescription>,
 ) -> ApiResult<Json<VoiceDescription>> {
-    let sdp = voice::publish(&app, &auth.user.id, &auth.device.id, id(&cid)?, req.sdp).await?;
-    Ok(Json(VoiceDescription { sdp }))
+    let sdp = voice::publish(&app, &auth.user.id, &auth.device.id, id(&cid)?, req.sdp, req.tracks).await?;
+    Ok(Json(VoiceDescription { sdp, tracks: Vec::new() }))
+}
+
+/// `PUT /chat/channels/{id}/voice/subscribe`
+pub async fn subscribe(
+    State(app): State<App>,
+    auth: AccountAuth,
+    Path(cid): Path<String>,
+    JsonBody(req): JsonBody<VoiceSubscribe>,
+) -> ApiResult<Json<Empty>> {
+    voice::subscribe(&app, &auth.device.id, id(&cid)?, req).await?;
+    Ok(Json(Empty {}))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ControlAsk {
+    sharer_device: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct ControlAsked {
+    id: String,
+}
+
+/// `POST /chat/channels/{id}/voice/control-request`
+pub async fn control_request(
+    State(app): State<App>,
+    auth: AccountAuth,
+    Path(cid): Path<String>,
+    JsonBody(req): JsonBody<ControlAsk>,
+) -> ApiResult<Json<ControlAsked>> {
+    let id = voice::control_request(&app, &auth.user.id, &auth.device.id, id(&cid)?, &req.sharer_device).await?;
+    Ok(Json(ControlAsked { id }))
+}
+
+/// `POST /chat/channels/{id}/voice/control-request/{request}/answer`
+pub async fn control_answer(
+    State(app): State<App>,
+    auth: AccountAuth,
+    Path((_cid, request)): Path<(String, String)>,
+    JsonBody(req): JsonBody<ControlAnswer>,
+) -> ApiResult<Json<Empty>> {
+    voice::control_answer(&app, &auth.device.id, &request, req).await?;
+    Ok(Json(Empty {}))
+}
+
+/// `DELETE /chat/channels/{id}/voice/control-request/{request}`
+pub async fn control_end(
+    State(app): State<App>,
+    auth: AccountAuth,
+    Path((_cid, request)): Path<(String, String)>,
+) -> ApiResult<Json<Empty>> {
+    voice::control_end(&app, &auth.device.id, &request).await?;
+    Ok(Json(Empty {}))
 }
 
 /// `PUT /chat/channels/{id}/voice/state`

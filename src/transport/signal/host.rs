@@ -746,7 +746,9 @@ impl Session {
         // visitors (`docs/access-model.md` §2.2).
         let grants = match incoming.relation {
             Relation::Own => farwing_protocol::caps::all(),
-            Relation::Friend => incoming.grants.clone(),
+            // A screen share's viewer whom this device's user let take
+            // control: what the server says, while the share lasts.
+            Relation::Friend | Relation::Share => incoming.grants.clone(),
             Relation::Trusted => {
                 let device = crate::transport::direct::store::find_trusted(&incoming.controller.public_key)
                     .filter(|d| d.device_id == incoming.controller.device_id)
@@ -842,6 +844,7 @@ impl Session {
                 farwing_protocol::api::Relation::Friend => "friend",
                 farwing_protocol::api::Relation::Assist => "assist",
                 farwing_protocol::api::Relation::Trusted => "trusted",
+                farwing_protocol::api::Relation::Share => "share",
             }
             .to_owned(),
         });
