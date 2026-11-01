@@ -121,6 +121,16 @@ impl ClientIdentity {
         self.key.sign(message)
     }
 
+    /// The device's X25519 secret for voice frame keys
+    /// (`docs/protocol/chat-design.md` §10.1), derived from its Ed25519
+    /// seed: kept where that is, nothing more to store.
+    pub(crate) fn x25519_secret(&self) -> [u8; 32] {
+        let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(b"farwing-x25519"), &self.key.seed());
+        let mut out = [0u8; 32];
+        hk.expand(b"device", &mut out).expect("32 bytes is a valid length");
+        out
+    }
+
     /// The same key under another device ID: a device without a server
     /// registration identifies itself by an ID derived from its key (§12.7).
     pub(crate) fn with_device_id(&self, device_id: impl Into<String>) -> Self {

@@ -663,6 +663,15 @@ impl AuthenticatedClient {
         self.request(|api| async move { api.media_download(path, dest).await }).await
     }
 
+    /// This device's identity (its ID and key).
+    pub(crate) fn device_identity(&self) -> Option<crate::account::api::ClientIdentity> {
+        self.api
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .and_then(|api| api.identity().cloned())
+    }
+
     /// The server this account is on.
     pub(crate) fn server_config(&self) -> Option<crate::account::server::ServerConfig> {
         self.api

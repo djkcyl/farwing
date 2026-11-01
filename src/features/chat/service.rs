@@ -77,6 +77,12 @@ struct Inner {
     /// Groups whose member list is on its way (pages ask every frame).
     members_loading: Mutex<std::collections::HashSet<Id>>,
     counter: AtomicU64,
+    /// The voice channel or call this device is in.
+    voice: Mutex<Option<voice_link::Active>>,
+    voice_settings: Mutex<crate::features::voice::settings::VoiceSettings>,
+    voice_keys: Mutex<Option<Arc<crate::features::voice::keys::DeviceKeys>>>,
+    /// The channel being joined and its pushes until the session is up.
+    voice_joining: Mutex<Option<(Id, Vec<(String, Value)>)>>,
 }
 
 #[derive(Clone)]
@@ -111,6 +117,10 @@ impl ChatService {
             typing_sent: Mutex::new(HashMap::new()),
             members_loading: Mutex::new(std::collections::HashSet::new()),
             counter: AtomicU64::new(1),
+            voice: Mutex::new(None),
+            voice_settings: Mutex::new(crate::features::voice::settings::load()),
+            voice_keys: Mutex::new(None),
+            voice_joining: Mutex::new(None),
         });
         runtime.spawn(run(Arc::clone(&inner), rx));
         runtime.spawn(tick(Arc::clone(&inner)));
@@ -129,6 +139,9 @@ impl ChatService {
 
     pub(crate) fn stop(&self) {
         self.inner.stop.cancel();
+        if let Some(active) = lock(&self.inner.voice).take() {
+            self.inner.runtime.spawn(async move { active.close(true).await });
+        }
     }
 
     /// The server's address (invite links).
@@ -924,6 +937,9 @@ async fn connect(inner: &Arc<Inner>, outgoing: &mut mpsc::UnboundedReceiver<Enve
                             }
                             rt::PONG | rt::ACK | rt::ERROR => {}
                             kind => {
+                                if kind.starts_with("voice.") || kind.starts_with("call.") {
+                                    voice_link::push(inner, kind, &env.data);
+                                }
                                 let hidden = inner.hidden.load(Ordering::Relaxed);
                                 let mut notice = None;
                                 update(inner, |s| notice = s.apply(kind, env.data.clone(), hidden));
@@ -963,3 +979,6 @@ async fn load_member_pages(inner: &Arc<Inner>, group: Id) -> Option<Vec<farwing_
         }
     }
 }
+
+#[path = "voice_link.rs"]
+mod voice_link;

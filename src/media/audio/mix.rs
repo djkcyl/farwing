@@ -9,7 +9,7 @@ use bytes::Bytes;
 use crossbeam_queue::ArrayQueue;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 /// One 10-ms stereo block at 48 kHz.
@@ -31,6 +31,10 @@ pub(crate) struct Voice {
     packets: ArrayQueue<Packet>,
     generation: AtomicU64,
     ended: AtomicBool,
+    /// How loud it plays (f32 bits; 1.0 as sent, 0: silent).
+    gain: AtomicU32,
+    /// The last decoded block's peak (f32 bits), before the gain.
+    peak: AtomicU32,
 }
 
 impl Voice {
@@ -39,7 +43,20 @@ impl Voice {
             packets: ArrayQueue::new(256),
             generation: AtomicU64::new(1),
             ended: AtomicBool::new(false),
+            gain: AtomicU32::new(1f32.to_bits()),
+            peak: AtomicU32::new(0),
         })
+    }
+    /// The last decoded 10 ms's peak (0–1).
+    pub(crate) fn peak(&self) -> f32 {
+        f32::from_bits(self.peak.load(Ordering::Relaxed))
+    }
+    /// 0–2: silent to twice as loud; the stream keeps being decoded.
+    pub(crate) fn set_gain(&self, gain: f32) {
+        self.gain.store(gain.clamp(0.0, 2.0).to_bits(), Ordering::Relaxed);
+    }
+    fn gain(&self) -> f32 {
+        f32::from_bits(self.gain.load(Ordering::Relaxed))
     }
     /// A packet of the stream (Opus at 48 kHz, 10–120 ms).
     pub(crate) fn receive(&self, data: Bytes, timestamp: u32, sequence: u16) {
@@ -104,13 +121,16 @@ impl Decoder {
     }
     /// Add the next 10 ms to `mix` (nothing before the first packet).
     pub(crate) fn add_to(&mut self, mix: &mut [f32; BLOCK_SAMPLES], scratch: &mut [f32; BLOCK_SAMPLES]) -> Result<()> {
+        self.add_scaled(mix, scratch, 1.0)
+    }
+    fn add_scaled(&mut self, mix: &mut [f32; BLOCK_SAMPLES], scratch: &mut [f32; BLOCK_SAMPLES], gain: f32) -> Result<()> {
         if !self.started {
             return Ok(());
         }
         scratch.fill(0.0);
         self.neteq.block(scratch, &mut self.stats)?;
         for (out, sample) in mix.iter_mut().zip(scratch.iter()) {
-            *out += *sample;
+            *out += *sample * gain;
         }
         Ok(())
     }
@@ -155,7 +175,9 @@ impl Voices {
                     decoder.insert(&packet.data, packet.timestamp, packet.sequence, packet.arrived);
                 }
             }
-            decoder.add_to(mix, &mut self.scratch)?;
+            decoder.add_scaled(mix, &mut self.scratch, voice.gain())?;
+            let peak = self.scratch.iter().fold(0f32, |m, s| m.max(s.abs()));
+            voice.peak.store(peak.to_bits(), Ordering::Relaxed);
         }
         Ok(())
     }

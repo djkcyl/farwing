@@ -376,6 +376,23 @@ enum DevAction {
         #[command(subcommand)]
         action: DevCameraAction,
     },
+    /// 无窗口进入语音频道或私信通话，发送测试音，输出收到的各路声音的 JSON 统计
+    Voice {
+        /// 语音频道 ID
+        #[arg(long)]
+        channel: Option<String>,
+        /// 呼叫这个私信频道的对方
+        #[arg(long)]
+        call: Option<String>,
+        /// 接听打进来的通话
+        #[arg(long)]
+        answer: bool,
+        #[arg(long, default_value_t = 15)]
+        seconds: u64,
+        /// 用这个频率（Hz）的测试音代替麦克风
+        #[arg(long)]
+        tone: Option<f32>,
+    },
     /// 无窗口解码被控主屏，可注入丢包与延迟，输出恢复时长等 JSON 指标
     Video {
         #[arg(long)]
@@ -860,6 +877,13 @@ fn main() -> Result<()> {
                 } => runtime.block_on(farwing::application::cli::dev_clipboard(
                     &device_id, scratch, pull_only, options,
                 )),
+                DevAction::Voice {
+                    channel,
+                    call,
+                    answer,
+                    seconds,
+                    tone,
+                } => runtime.block_on(farwing::application::cli::dev_voice(channel, call, answer, seconds, tone)),
                 DevAction::Video {
                     device_id,
                     seconds,

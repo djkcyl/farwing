@@ -410,6 +410,10 @@ impl AudioPlayback {
         let voice = mix::Voice::new();
         lock(&self.0.shared.added_voices).push(voice.clone());
         self.start()?;
+        // A playback of voices alone (a call) opens its output for them.
+        if !self.0.shared.receiving.swap(true, Ordering::AcqRel) {
+            self.0.shared.notify_output();
+        }
         Ok(voice)
     }
 

@@ -83,6 +83,22 @@ pub(crate) struct ChatState {
     pub emoji: std::sync::Arc<Vec<super::emoji::Entry>>,
     /// A message to bring into view (a jump to a reply, pin or result).
     pub jump: Option<(Id, Id, Instant)>,
+    /// This device in a voice channel or call.
+    pub my_voice: Option<MyVoice>,
+}
+
+/// This device's voice: where, and how it goes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct MyVoice {
+    /// The voice channel, or the direct message of a call.
+    pub channel: Id,
+    /// The call's ID (a call rather than a channel).
+    pub call: Option<String>,
+    pub participant: u32,
+    pub connected: bool,
+    pub muted: bool,
+    pub deafened: bool,
+    pub compat: bool,
 }
 
 /// A notification a push asks for.
@@ -298,6 +314,35 @@ impl ChatState {
         }
         match kind {
             types::MESSAGE => return self.add_message(body(data)?, window_hidden),
+            types::VOICE_STATE => {
+                let d: farwing_protocol::chat::VoiceChannelState = body(data)?;
+                if let Some(snap) = &mut self.snap {
+                    snap.voice.retain(|v| v.channel_id != d.channel_id);
+                    if !d.participants.is_empty() {
+                        snap.voice.push(d);
+                    }
+                }
+            }
+            types::CALL_RING | types::CALL_OUTGOING | types::CALL_ANSWERED => {
+                let call: farwing_protocol::chat::Call = body(data)?;
+                let ringing = kind == types::CALL_RING;
+                let notice = ringing.then(|| Notice {
+                    title: call.caller.display_name().to_owned(),
+                    body: (crate::i18n::t().voice.incoming)(call.caller.display_name()),
+                    channel: call.channel_id,
+                });
+                if let Some(snap) = &mut self.snap {
+                    snap.calls.retain(|c| c.id != call.id);
+                    snap.calls.push(call);
+                }
+                return notice;
+            }
+            types::CALL_ENDED => {
+                let d: farwing_protocol::chat::CallEnded = body(data)?;
+                if let Some(snap) = &mut self.snap {
+                    snap.calls.retain(|c| c.id != d.call_id);
+                }
+            }
             types::MESSAGE_UPDATED => self.replace_message(body(data)?),
             types::MESSAGE_DELETED => {
                 let d: farwing_protocol::chat::MessageDeleted = body(data)?;

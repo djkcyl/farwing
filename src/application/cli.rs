@@ -1546,3 +1546,84 @@ pub async fn dev_input(
     })
     .await
 }
+
+/// `dev voice`: joins a voice channel or call without a window, sends a
+/// test tone, and prints what each sender's track brought.
+pub async fn dev_voice(
+    channel: Option<String>,
+    call: Option<String>,
+    answer: bool,
+    seconds: u64,
+    tone: Option<f32>,
+) -> Result<()> {
+    use farwing_protocol::chat::Id;
+    if let Some(hz) = tone {
+        // SAFETY: set before any thread that reads the environment starts.
+        unsafe { std::env::set_var("FARWING_DEV_VOICE_TONE", hz.to_string()) };
+    }
+    with_client(|client| async move {
+        let chat = crate::features::chat::ChatService::start(
+            client,
+            tokio::runtime::Handle::current(),
+            egui::Context::default(),
+        );
+        let ready = std::time::Instant::now();
+        while chat.view().connection != crate::features::chat::state::Connection::Ready {
+            anyhow::ensure!(ready.elapsed() < Duration::from_secs(15), "chat did not connect");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let me = chat.view().me().map(|u| u.user_id.clone()).unwrap_or_default();
+        if let Some(c) = &channel {
+            chat.join_voice(Id(c.parse()?));
+        }
+        if let Some(c) = &call {
+            chat.start_call(Id(c.parse()?));
+        }
+        let start = std::time::Instant::now();
+        let mut answered = false;
+        let mut speaking = 0u32;
+        let mut samples = 0u32;
+        let mut connected_at = None;
+        let mut input_peak = 0f32;
+        while start.elapsed() < Duration::from_secs(seconds) {
+            let view = chat.view();
+            if answer
+                && !answered
+                && let Some(ring) = view
+                    .snap
+                    .as_ref()
+                    .and_then(|s| s.calls.iter().find(|c| c.state == "ringing" && c.callee.user_id == me))
+            {
+                chat.answer_call(&ring.id, false);
+                answered = true;
+            }
+            if connected_at.is_none() && view.my_voice.as_ref().is_some_and(|v| v.connected) {
+                connected_at = Some(start.elapsed().as_millis() as u64);
+            }
+            let (_, me_speaking, level) = chat.voice_activity();
+            input_peak = input_peak.max(level);
+            speaking += u32::from(me_speaking);
+            samples += 1;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let view = chat.view();
+        let report = serde_json::json!({
+            "connected_after_ms": connected_at,
+            "my_voice": view.my_voice.as_ref().map(|v| serde_json::json!({
+                "participant": v.participant, "connected": v.connected, "compat": v.compat,
+                "call": v.call,
+            })),
+            "speaking_share": f64::from(speaking) / f64::from(samples.max(1)),
+            "input_peak": input_peak,
+            "heard": chat.voice_stats(),
+            "errors": view.errors,
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        chat.leave_voice();
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        chat.stop();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        Ok(())
+    })
+    .await
+}
