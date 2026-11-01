@@ -106,6 +106,8 @@ pub(crate) struct Notice {
     pub title: String,
     pub body: String,
     pub channel: Id,
+    /// A message (it has a sound).
+    pub message: bool,
 }
 
 pub(crate) fn id_after(a: Option<Id>, b: Option<Id>) -> bool {
@@ -117,6 +119,13 @@ pub(crate) fn id_after(a: Option<Id>, b: Option<Id>) -> bool {
 }
 
 impl ChatState {
+    /// Do not disturb, or within its hours: nothing rings.
+    pub(crate) fn do_not_disturb(&self) -> bool {
+        self.snap
+            .as_ref()
+            .is_some_and(|s| s.status == Status::Dnd || quiet(&s.prefs, chrono::Local::now().time()))
+    }
+
     pub(crate) fn me(&self) -> Option<&ChatUser> {
         self.snap.as_ref().map(|s| &s.me)
     }
@@ -294,6 +303,7 @@ impl ChatState {
             title,
             body,
             channel: m.channel_id,
+            message: true,
         })
     }
 
@@ -325,11 +335,13 @@ impl ChatState {
             }
             types::CALL_RING | types::CALL_OUTGOING | types::CALL_ANSWERED => {
                 let call: farwing_protocol::chat::Call = body(data)?;
-                let ringing = kind == types::CALL_RING;
+                // Do not disturb (or its hours): it rings unanswered.
+                let ringing = kind == types::CALL_RING && !self.do_not_disturb();
                 let notice = ringing.then(|| Notice {
                     title: call.caller.display_name().to_owned(),
                     body: (crate::i18n::t().voice.incoming)(call.caller.display_name()),
                     channel: call.channel_id,
+                    message: false,
                 });
                 if let Some(snap) = &mut self.snap {
                     snap.calls.retain(|c| c.id != call.id);
@@ -443,6 +455,7 @@ impl ChatState {
                     title: crate::i18n::t().chat.invite_title.to_owned(),
                     body: format!("{} · {}", inv.by.display_name(), inv.group.name),
                     channel: Id(0),
+                    message: false,
                 };
                 s.group_invites.push(inv);
                 return Some(notice);

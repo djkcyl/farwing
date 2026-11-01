@@ -7,11 +7,43 @@ use crate::features::chat::state::MyVoice;
 use crate::features::voice::keys::DeviceKeys;
 use crate::features::voice::session::{CallVoice, ChannelVoice, Event};
 use crate::features::voice::settings::{self, VoiceSettings};
-use farwing_protocol::chat::{Call, CallEnded, CallSignal, Id, VoiceKeyPush, VoiceLeft, VoiceMode, VoiceOffer, types};
+use crate::features::voice::capture::Capture;
+use crate::features::voice::engine::Engine;
+use crate::features::voice::sounds::{self, Sound};
+use farwing_protocol::chat::{
+    Call, CallEnded, CallSignal, Id, VoiceKeyPush, VoiceLeft, VoiceMode, VoiceMoved, VoiceOffer, types,
+};
 use reqwest::Method;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+
+/// The microphone test records this long, then plays it back.
+const TEST: Duration = Duration::from_secs(5);
+/// The settings' meter keeps the microphone open this long after it was
+/// last shown.
+const PREVIEW_KEEP: Duration = Duration::from_millis(1500);
+
+/// The microphone outside a voice session: the settings' meter and the
+/// microphone test.
+pub(super) struct Preview {
+    capture: Capture,
+    polled: Instant,
+    /// Started at, and what it recorded.
+    recording: Option<(Instant, Vec<f32>)>,
+    /// Playing back until.
+    playing: Option<Instant>,
+}
+
+/// Where the microphone test is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MicTest {
+    Idle,
+    /// Seconds left.
+    Recording(u64),
+    Playing,
+}
 
 /// What the voice sounds last saw.
 #[derive(Default)]
@@ -22,6 +54,8 @@ pub(super) struct SoundState {
     muted: bool,
     deafened: bool,
     rang: Option<std::time::Instant>,
+    /// The channel where another device of this account was pointed out.
+    hinted: Option<Id>,
 }
 
 #[derive(Clone)]
@@ -50,6 +84,7 @@ fn reason_text(reason: &str) -> &'static str {
     match reason {
         "voice_full" => v.full,
         "voice_no_forwarding" => v.no_forwarding,
+        "voice_quota" => v.quota,
         "disconnected" => v.left_disconnected,
         "replaced" => v.left_replaced,
         "forbidden" | "chat_forbidden" => v.left_forbidden,
@@ -61,7 +96,7 @@ fn reason_text(reason: &str) -> &'static str {
 
 fn error_reason(error: &anyhow::Error) -> String {
     let text = format!("{error:#}");
-    for r in ["voice_full", "voice_no_forwarding", "chat_forbidden"] {
+    for r in ["voice_full", "voice_no_forwarding", "voice_quota", "chat_forbidden"] {
         if text.contains(r) {
             return r.to_owned();
         }
@@ -153,6 +188,8 @@ impl ChatService {
             tracing::warn!(error = %format!("{e:#}"), "voice settings not saved");
         }
         *lock(&self.inner.voice_settings) = s.clone();
+        // The settings' microphone opens again with the new devices.
+        lock(&self.inner.preview).take();
         if let Some(active) = lock(&self.inner.voice).clone() {
             match active {
                 Active::Channel(v) => v.engine.set_settings(&s),
@@ -177,14 +214,76 @@ impl ChatService {
         }
     }
 
+    /// The microphone's level (0–1) for the settings: the session's, or
+    /// the microphone opened for the settings meanwhile.
+    pub(crate) fn input_meter(&self) -> f32 {
+        let gain = f32::from(lock(&self.inner.voice_settings).input_volume) / 100.0;
+        if let Some(active) = lock(&self.inner.voice).clone() {
+            let level = match active {
+                Active::Channel(v) => v.engine.input_level(),
+                Active::Call(c) => c.engine.input_level(),
+            };
+            return (level * gain).min(1.0);
+        }
+        let mut preview = self.preview();
+        let Some(p) = preview.as_mut() else { return 0.0 };
+        p.polled = Instant::now();
+        (p.capture.peak() * gain).min(1.0)
+    }
+
+    /// The microphone for the settings, opened when needed.
+    fn preview(&self) -> std::sync::MutexGuard<'_, Option<Preview>> {
+        let mut preview = lock(&self.inner.preview);
+        if preview.is_none() {
+            let settings = lock(&self.inner.voice_settings).clone();
+            *preview = Some(Preview {
+                capture: Capture::start(Engine::capture_config(&settings)),
+                polled: Instant::now(),
+                recording: None,
+                playing: None,
+            });
+            let inner = Arc::clone(&self.inner);
+            self.inner.runtime.spawn(preview_loop(inner));
+        }
+        preview
+    }
+
+    /// Records five seconds of the microphone and plays them back (not
+    /// while in voice: the session has the microphone).
+    pub(crate) fn mic_test(&self) {
+        if lock(&self.inner.voice).is_some() {
+            return;
+        }
+        if let Some(p) = self.preview().as_mut()
+            && p.recording.is_none()
+        {
+            p.recording = Some((Instant::now(), Vec::new()));
+            p.polled = Instant::now();
+        }
+    }
+
+    pub(crate) fn mic_test_state(&self) -> MicTest {
+        let preview = lock(&self.inner.preview);
+        match preview.as_ref() {
+            Some(Preview { recording: Some((at, _)), .. }) => {
+                MicTest::Recording(TEST.saturating_sub(at.elapsed()).as_secs() + 1)
+            }
+            Some(Preview { playing: Some(until), .. }) if Instant::now() < *until => MicTest::Playing,
+            _ => MicTest::Idle,
+        }
+    }
+
+    /// Plays `sound` as the settings say (its kind on, its volume).
+    pub(crate) fn play_sound(&self, sound: Sound) {
+        play_sound(&self.inner, sound);
+    }
+
     /// Plays the sounds the state's changes call for (each frame).
     pub(crate) fn tick_sounds(&self, view: &crate::features::chat::state::ChatState) {
-        use crate::features::voice::sounds::{Sound, play};
-        let settings = lock(&self.inner.voice_settings).clone();
         let mut last = lock(&self.inner.sounds);
         let mut sounds = Vec::new();
         let me = view.me().map(|u| u.user_id.clone()).unwrap_or_default();
-        let dnd = view.snap.as_ref().is_some_and(|s| s.status == farwing_protocol::chat::Status::Dnd);
+        let dnd = view.do_not_disturb();
         let calls = view.snap.as_ref().map(|s| s.calls.as_slice()).unwrap_or(&[]);
         let ring = calls.iter().find(|c| c.state == "ringing").map(|c| c.caller.user_id != me);
         match ring {
@@ -221,6 +320,19 @@ impl ChatService {
         if voice.is_some() && (muted != last.muted || deafened != last.deafened) {
             sounds.push(if muted || deafened { Sound::Muted } else { Sound::Unmuted });
         }
+        // Another device of this account in the same channel: said once.
+        let mut hinted = last.hinted;
+        if let (Some(c), Some(v)) = (channel, voice)
+            && hinted != Some(c)
+            && view
+                .snap
+                .as_ref()
+                .and_then(|s| s.voice.iter().find(|x| x.channel_id == c))
+                .is_some_and(|x| x.participants.iter().any(|p| p.user_id == me && p.participant != v.participant))
+        {
+            hinted = Some(c);
+            update(&self.inner, |s| s.errors.push(crate::i18n::t().voice.other_device.to_owned()));
+        }
         *last = SoundState {
             connected,
             channel,
@@ -228,12 +340,11 @@ impl ChatService {
             muted,
             deafened,
             rang: last.rang,
+            hinted,
         };
         drop(last);
-        if settings.sounds {
-            for s in sounds {
-                play(s, settings.output.clone(), f32::from(settings.volume) / 100.0);
-            }
+        for s in sounds {
+            play_sound(&self.inner, s);
         }
     }
 
@@ -345,12 +456,13 @@ impl ChatService {
         });
     }
 
-    /// A moderator's mute of `participant` in `channel`.
-    pub(crate) fn moderate_voice(&self, channel: Id, participant: u32, muted: bool) {
+    /// A moderator's change to `participant` in `channel`: `server_muted`,
+    /// `server_deafened` or `move_to`.
+    pub(crate) fn moderate_voice(&self, channel: Id, participant: u32, change: Value) {
         self.fire(
             Method::PATCH,
             format!("/api/v2/chat/channels/{channel}/voice/participants/{participant}"),
-            Some(serde_json::json!({"server_muted": muted})),
+            Some(change),
         );
     }
 
@@ -421,6 +533,48 @@ impl ChatService {
     }
 }
 
+fn play_sound(inner: &Arc<Inner>, sound: Sound) {
+    let settings = lock(&inner.voice_settings).clone();
+    if let Some(level) = settings.sound_level(sound) {
+        sounds::play(sound, settings.output.clone(), level);
+    }
+}
+
+/// Keeps the settings' microphone: drained, recording the test, closed
+/// when no longer shown.
+async fn preview_loop(inner: Arc<Inner>) {
+    let mut tick = tokio::time::interval(Duration::from_millis(20));
+    loop {
+        tick.tick().await;
+        let mut slot = lock(&inner.preview);
+        let Some(p) = slot.as_mut() else { return };
+        let gain = f32::from(lock(&inner.voice_settings).input_volume) / 100.0;
+        let mut done = None;
+        if let Some((at, buffer)) = p.recording.as_mut() {
+            while let Some(block) = p.capture.blocks.pop() {
+                buffer.extend(block.iter().map(|s| (s * gain).clamp(-1.0, 1.0)));
+            }
+            if at.elapsed() >= TEST {
+                done = Some(std::mem::take(buffer));
+            }
+        } else {
+            while p.capture.blocks.pop().is_some() {}
+        }
+        if let Some(samples) = done {
+            p.recording = None;
+            p.playing = Some(Instant::now() + Duration::from_millis(samples.len() as u64 / 48) + Duration::from_millis(200));
+            p.polled = Instant::now();
+            let settings = lock(&inner.voice_settings).clone();
+            sounds::play_recording(samples, settings.output.clone(), f32::from(settings.volume) / 100.0);
+        }
+        let busy = p.recording.is_some() || p.playing.is_some_and(|t| Instant::now() < t);
+        if !busy && p.polled.elapsed() > PREVIEW_KEEP || inner.stop.is_cancelled() {
+            *slot = None;
+            return;
+        }
+    }
+}
+
 /// This device takes part in `call` (calling, or answered).
 fn begin_call(inner: &Arc<Inner>, call: Call) {
     let settings = lock(&inner.voice_settings).clone();
@@ -488,11 +642,31 @@ pub(super) fn push(inner: &Arc<Inner>, kind: &str, data: &Value) {
                 inner.runtime.spawn(async move { v.state(state.participants).await });
             }
         }
+        (types::VOICE_MOVED, Some(Active::Channel(v))) => {
+            if let Ok(moved) = serde_json::from_value::<VoiceMoved>(data.clone())
+                && moved.channel_id == v.channel
+            {
+                lock(&inner.voice).take();
+                if moved.to.is_some() {
+                    play_sound(inner, Sound::Removed);
+                }
+                let target = moved.to.unwrap_or(moved.channel_id);
+                let inner = Arc::clone(inner);
+                let runtime = inner.runtime.clone();
+                runtime.spawn(async move {
+                    v.close(false).await;
+                    ChatService { inner }.join_voice(target);
+                });
+            }
+        }
         (types::VOICE_LEFT, Some(Active::Channel(v))) => {
             if let Ok(left) = serde_json::from_value::<VoiceLeft>(data.clone())
                 && left.channel_id == v.channel
             {
                 lock(&inner.voice).take();
+                if left.reason == "disconnected" {
+                    play_sound(inner, Sound::Removed);
+                }
                 let why = reason_text(&left.reason);
                 update(inner, |s| {
                     s.my_voice = None;

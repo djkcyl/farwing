@@ -25,6 +25,10 @@ const FRAME: usize = BLOCK * 2;
 const ACTIVITY_HOLD: Duration = Duration::from_millis(400);
 /// Push-to-talk keeps sending this long after the key is let go.
 const PTT_TAIL: Duration = Duration::from_millis(200);
+/// The Opus rate never goes below this on a lossy path (§7.4).
+const MIN_BITRATE: u32 = 24_000;
+/// From this channel bitrate on, voice is encoded in stereo.
+const STEREO_FROM: u32 = 96_000;
 /// A sender counts as speaking while its level is over this (dBov) and fresh.
 const SPEAKING_DBOV: u8 = 50;
 const SPEAKING_FRESH: Duration = Duration::from_millis(300);
@@ -70,6 +74,8 @@ struct Inner {
     track: Mutex<Option<Arc<TrackLocalStaticRTP>>>,
     e2ee: AtomicBool,
     encryptor: Mutex<Option<Encryptor>>,
+    /// The channel's rate, and the rate now (lower on a lossy path).
+    max_bitrate: AtomicU32,
     bitrate: AtomicU32,
     self_muted: AtomicBool,
     self_deafened: AtomicBool,
@@ -99,6 +105,7 @@ impl Engine {
             track: Mutex::new(None),
             e2ee: AtomicBool::new(false),
             encryptor: Mutex::new(None),
+            max_bitrate: AtomicU32::new(64_000),
             bitrate: AtomicU32::new(64_000),
             self_muted: AtomicBool::new(false),
             self_deafened: AtomicBool::new(false),
@@ -113,13 +120,14 @@ impl Engine {
             stop: CancellationToken::new(),
         });
         let engine = Self(inner);
+        super::capture::keep_others_loud(settings.input.as_deref(), settings.output.as_deref());
         engine.apply_settings(&settings, true);
         let _ = engine.0.playback.start();
         runtime.spawn(send(Arc::clone(&engine.0)));
         engine
     }
 
-    fn capture_config(settings: &VoiceSettings) -> CaptureConfig {
+    pub(crate) fn capture_config(settings: &VoiceSettings) -> CaptureConfig {
         CaptureConfig {
             input: settings.input.clone(),
             output: settings.output.clone(),
@@ -154,7 +162,7 @@ impl Engine {
         }
         self.apply_output();
         for r in lock(&self.0.receivers).values() {
-            r.voice.set_gain(f32::from(*settings.volumes.get(&r.user).unwrap_or(&100)) / 100.0);
+            r.voice.set_gain(settings.gain_of(&r.user));
         }
     }
 
@@ -174,7 +182,31 @@ impl Engine {
     }
 
     pub(crate) fn set_bitrate(&self, kbps: u32) {
-        self.0.bitrate.store(kbps.clamp(16, 128) * 1000, Ordering::Relaxed);
+        let bps = kbps.clamp(24, 128) * 1000;
+        self.0.max_bitrate.store(bps, Ordering::Relaxed);
+        self.0.bitrate.store(bps, Ordering::Relaxed);
+    }
+
+    /// The far end's report of the uplink (`fraction_lost` of 256): the rate
+    /// steps down on loss to [`MIN_BITRATE`] and back up while clean.
+    pub(crate) fn report_loss(&self, fraction_lost: u8) {
+        let max = self.0.max_bitrate.load(Ordering::Relaxed);
+        let now = self.0.bitrate.load(Ordering::Relaxed);
+        let loss = f32::from(fraction_lost) / 256.0;
+        let next = if loss > 0.10 {
+            now * 7 / 10
+        } else if loss > 0.03 {
+            now * 9 / 10
+        } else if loss < 0.01 {
+            now + (now / 10).max(2_000)
+        } else {
+            now
+        };
+        let next = next.clamp(MIN_BITRATE.min(max), max);
+        if next != now {
+            tracing::debug!(loss, from = now, to = next, "voice bitrate follows the path");
+            self.0.bitrate.store(next, Ordering::Relaxed);
+        }
     }
 
     /// End-to-end: frames are sealed with this device's key and opened
@@ -222,8 +254,7 @@ impl Engine {
     /// A received track of `participant` (account `user`).
     pub(crate) fn receive(&self, participant: u32, user: &str, track: Arc<TrackRemote>) {
         let Ok(voice) = self.0.playback.add_voice() else { return };
-        let gain = f32::from(*lock(&self.0.settings).volumes.get(user).unwrap_or(&100)) / 100.0;
-        voice.set_gain(gain);
+        voice.set_gain(lock(&self.0.settings).gain_of(user));
         let decryptor = Arc::new(Mutex::new(Decryptor::default()));
         for key in lock(&self.0.early_keys).remove(&participant).unwrap_or_default() {
             lock(&decryptor).add_key(key);
@@ -363,7 +394,8 @@ fn dbov(frame: &[f32]) -> (u8, f32) {
 /// The send loop: blocks from the microphone, 20-ms packets out.
 async fn send(inner: Arc<Inner>) {
     let mut frame: Vec<f32> = Vec::with_capacity(FRAME);
-    let mut encoder: Option<(u32, opusic_c::Encoder)> = None;
+    // (stereo, rate, encoder)
+    let mut encoder: Option<(bool, u32, opusic_c::Encoder)> = None;
     let mut out = [0u8; 1500];
     let mut sequence: u16 = rand::random();
     let mut timestamp: u32 = rand::random();
@@ -408,7 +440,8 @@ async fn send(inner: Arc<Inner>) {
             if frame.len() < FRAME {
                 continue;
             }
-            let pcm: Vec<f32> = frame.drain(..FRAME).collect();
+            let input_gain = f32::from(lock(&inner.settings).input_volume) / 100.0;
+            let pcm: Vec<f32> = frame.drain(..FRAME).map(|s| (s * input_gain).clamp(-1.0, 1.0)).collect();
             let this_ts = timestamp;
             timestamp = timestamp.wrapping_add(FRAME as u32);
             let (level, db) = dbov(&pcm);
@@ -450,9 +483,18 @@ async fn send(inner: Arc<Inner>) {
             let level = if open { level } else { 127 };
             let Some(track) = lock(&inner.track).clone() else { continue };
             let bitrate = inner.bitrate.load(Ordering::Relaxed);
-            if encoder.as_ref().is_none_or(|(b, _)| *b != bitrate) {
+            let stereo = inner.max_bitrate.load(Ordering::Relaxed) >= STEREO_FROM;
+            if let Some((s, b, enc)) = encoder.as_mut()
+                && *s == stereo
+                && *b != bitrate
+            {
+                if enc.set_bitrate(opusic_c::Bitrate::Value(bitrate)).is_ok() {
+                    *b = bitrate;
+                }
+            }
+            if encoder.as_ref().is_none_or(|(s, _, _)| *s != stereo) {
                 let config = crate::media::audio::encoder::Config {
-                    stereo: false,
+                    stereo,
                     fec: true,
                     dtx: true,
                     cbr: false,
@@ -462,14 +504,16 @@ async fn send(inner: Arc<Inner>) {
                     max_playback_rate: 48_000,
                 };
                 match crate::media::audio::encoder::create_encoder(config) {
-                    Ok(e) => encoder = Some((bitrate, e)),
+                    Ok(e) => encoder = Some((stereo, bitrate, e)),
                     Err(e) => {
                         tracing::warn!(error = ?e, "voice encoder failed");
                         continue;
                     }
                 }
             }
-            let Some((_, enc)) = encoder.as_mut() else { continue };
+            let Some((_, _, enc)) = encoder.as_mut() else { continue };
+            // The microphone is mono: both channels carry it.
+            let pcm: Vec<f32> = if stereo { pcm.iter().flat_map(|s| [*s, *s]).collect() } else { pcm };
             let length = match enc.encode_float_to_slice(&pcm, &mut out) {
                 Ok(n) => n,
                 Err(e) => {

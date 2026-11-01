@@ -48,6 +48,112 @@ pub(crate) struct Capture {
     error: Arc<Mutex<Option<String>>>,
 }
 
+/// Calls do not lower other programs' sound (§7.4): this process's audio
+/// sessions on the voice devices opt out of Windows' ducking, before the
+/// streams open.
+pub(crate) fn keep_others_loud(input: Option<&str>, output: Option<&str>) {
+    let (input, output) = (input.map(str::to_owned), output.map(str::to_owned));
+    let worker = std::thread::spawn(move || {
+        use windows::Win32::Media::Audio::{
+            IAudioSessionControl2, IAudioSessionManager2, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture,
+            eCommunications, eConsole, eRender,
+        };
+        use windows::Win32::System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
+        use windows::core::{HSTRING, Interface};
+        // SAFETY: COM on this thread only; every interface is released here.
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            if let Ok(enumerator) = CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) {
+                let mut devices: Vec<IMMDevice> = Vec::new();
+                for flow in [eRender, eCapture] {
+                    for role in [eConsole, eCommunications] {
+                        if let Ok(d) = enumerator.GetDefaultAudioEndpoint(flow, role) {
+                            devices.push(d);
+                        }
+                    }
+                }
+                for id in [input, output].into_iter().flatten() {
+                    if let Ok(d) = enumerator.GetDevice(&HSTRING::from(id.as_str())) {
+                        devices.push(d);
+                    }
+                }
+                for device in devices {
+                    let Ok(manager) = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else { continue };
+                    let Ok(control) = manager.GetAudioSessionControl(None, 0) else { continue };
+                    if let Ok(control) = control.cast::<IAudioSessionControl2>() {
+                        let _ = control.SetDuckingPreference(true);
+                    }
+                }
+            }
+            CoUninitialize();
+        }
+    });
+    let _ = worker.join();
+}
+
+/// The window in front belongs to an elevated process while this one is
+/// not: keys pressed there do not reach push-to-talk (asked at most once
+/// a second).
+pub(crate) fn foreground_elevated() -> bool {
+    static LAST: Mutex<Option<(std::time::Instant, bool)>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((at, answer)) = *last
+        && at.elapsed() < Duration::from_secs(1)
+    {
+        return answer;
+    }
+    let answer = elevated_in_front();
+    *last = Some((std::time::Instant::now(), answer));
+    answer
+}
+
+fn elevated_in_front() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    fn elevated(process: HANDLE) -> Option<bool> {
+        // SAFETY: plain queries on handles owned here.
+        unsafe {
+            let mut token = HANDLE::default();
+            OpenProcessToken(process, TOKEN_QUERY, &mut token).ok()?;
+            let mut e = TOKEN_ELEVATION::default();
+            let mut length = 0;
+            let ok = GetTokenInformation(
+                token,
+                TokenElevation,
+                Some((&raw mut e).cast()),
+                size_of::<TOKEN_ELEVATION>() as u32,
+                &mut length,
+            );
+            let _ = CloseHandle(token);
+            ok.ok()?;
+            Some(e.TokenIsElevated != 0)
+        }
+    }
+    // SAFETY: as above.
+    unsafe {
+        if elevated(GetCurrentProcess()).unwrap_or(false) {
+            return false;
+        }
+        let window = GetForegroundWindow();
+        let mut pid = 0;
+        GetWindowThreadProcessId(window, Some(&mut pid));
+        if pid == 0 || pid == std::process::id() {
+            return false;
+        }
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        // An elevated process's token is not open to this one: elevated too.
+        let answer = elevated(process).unwrap_or(true);
+        let _ = CloseHandle(process);
+        answer
+    }
+}
+
 /// An audio endpoint: its ID and name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Endpoint {

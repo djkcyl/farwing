@@ -75,6 +75,23 @@ async fn connection(ice: &[IceServer]) -> Result<Arc<RTCPeerConnection>> {
     Ok(Arc::new(api.new_peer_connection(configuration).await?))
 }
 
+/// The far end's receiver reports on the mic's sender steer the Opus rate.
+fn follow_loss(sender: Arc<webrtc::rtp_transceiver::rtp_sender::RTCRtpSender>, engine: Engine) {
+    tokio::spawn(async move {
+        while let Ok((packets, _)) = sender.read_rtcp().await {
+            for packet in packets {
+                if let Some(rr) = packet
+                    .as_any()
+                    .downcast_ref::<webrtc::rtcp::receiver_report::ReceiverReport>()
+                    && let Some(block) = rr.reports.first()
+                {
+                    engine.report_loss(block.fraction_lost);
+                }
+            }
+        }
+    });
+}
+
 fn mic_track() -> Arc<TrackLocalStaticRTP> {
     Arc::new(TrackLocalStaticRTP::new(
         RTCRtpCodecCapability {
@@ -194,7 +211,8 @@ impl ChannelVoice {
 
     async fn publish(&self) -> Result<()> {
         let track = mic_track();
-        self.uplink
+        let transceiver = self
+            .uplink
             .add_transceiver_from_track(
                 Arc::clone(&track) as _,
                 Some(RTCRtpTransceiverInit {
@@ -203,6 +221,7 @@ impl ChannelVoice {
                 }),
             )
             .await?;
+        follow_loss(transceiver.sender().await, self.engine.clone());
         let events = self.events.clone();
         self.uplink.on_peer_connection_state_change(Box::new(move |state| {
             match state {
@@ -465,14 +484,16 @@ impl CallVoice {
         let ice = lock(&self.call).ice_servers.clone();
         let pc = connection(&ice).await?;
         let track = mic_track();
-        pc.add_transceiver_from_track(
-            Arc::clone(&track) as _,
-            Some(RTCRtpTransceiverInit {
-                direction: RTCRtpTransceiverDirection::Sendrecv,
-                send_encodings: Vec::new(),
-            }),
-        )
-        .await?;
+        let transceiver = pc
+            .add_transceiver_from_track(
+                Arc::clone(&track) as _,
+                Some(RTCRtpTransceiverInit {
+                    direction: RTCRtpTransceiverDirection::Sendrecv,
+                    send_encodings: Vec::new(),
+                }),
+            )
+            .await?;
+        follow_loss(transceiver.sender().await, self.engine.clone());
         self.engine.set_track(Some(track));
         let weak = Arc::downgrade(self);
         pc.on_track(Box::new(move |track, _, _| {

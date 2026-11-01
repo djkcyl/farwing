@@ -7,7 +7,7 @@ use crate::features::chat::state::{Answer, ChatState};
 use crate::i18n::t;
 use crate::ui::theme::{HOVER, LINE, MUTED, TEXT};
 use egui::{Rect, RichText, Sense, Stroke, vec2};
-use farwing_protocol::chat::{Channel, GroupState, Member, Message, Notify, Status};
+use farwing_protocol::chat::{Channel, GroupState, Id, Member, Message, Notify, Status};
 use reqwest::Method;
 
 pub(crate) fn bytes(n: u64) -> String {
@@ -406,21 +406,57 @@ pub(super) fn voice_card(ui: &mut egui::Ui, chat: &ChatService, state: &ChatStat
                     ui.label(parts::muted(v.user_volume));
                     if ui.add(egui::Slider::new(&mut volume, 0..=200).suffix("%")).changed() {
                         settings.volumes.insert(p.user_id.clone(), volume as u8);
+                        chat.set_voice_settings(settings.clone());
+                    }
+                    let muted = settings.muted.contains(&p.user_id);
+                    if ui.button(if muted { v.unmute_user } else { v.mute_user }).clicked() {
+                        if muted {
+                            settings.muted.remove(&p.user_id);
+                        } else {
+                            settings.muted.insert(p.user_id.clone());
+                        }
                         chat.set_voice_settings(settings);
                     }
                 }
                 if moderate {
                     ui.add_space(4.0);
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let label = if p.server_muted { v.server_unmute } else { v.server_mute };
                         if ui.button(label).clicked() {
-                            chat.moderate_voice(channel, participant, !p.server_muted);
+                            chat.moderate_voice(channel, participant, serde_json::json!({"server_muted": !p.server_muted}));
+                        }
+                        let label = if p.server_deafened { v.server_undeafen } else { v.server_deafen };
+                        if ui.button(label).clicked() {
+                            chat.moderate_voice(channel, participant, serde_json::json!({"server_deafened": !p.server_deafened}));
                         }
                         if !me && ui.button(RichText::new(v.kick).color(crate::ui::theme::RED)).clicked() {
                             chat.disconnect_voice(channel, participant);
                             chat_ui.voice_card = None;
                         }
                     });
+                    // Another voice channel of the group.
+                    let others: Vec<(Id, String)> = state
+                        .channel(channel)
+                        .and_then(|(_, g, _)| g)
+                        .map(|g| {
+                            g.channels
+                                .iter()
+                                .filter(|c| c.kind == farwing_protocol::chat::ChannelKind::Voice && c.id != channel)
+                                .map(|c| (c.id, c.name.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !others.is_empty() {
+                        ui.menu_button(v.move_to, |ui| {
+                            for (id, name) in others {
+                                if ui.button(name).clicked() {
+                                    chat.moderate_voice(channel, participant, serde_json::json!({"move_to": id}));
+                                    chat_ui.voice_card = None;
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
                 }
             });
         });

@@ -229,6 +229,9 @@ impl DeviceCenterApp {
             chat.set_focus(None);
         }
         for notice in chat.take_notices() {
+            if notice.message {
+                chat.play_sound(crate::features::voice::sounds::Sound::Message);
+            }
             self.notifications.show_chat(notice.channel.0, notice.title, notice.body);
         }
     }
@@ -447,6 +450,17 @@ impl DeviceCenterApp {
                 if glyph_button(ui, Glyph::PhoneDown, v.hang_up, false).clicked() {
                     chat.leave_voice();
                 }
+                if let Some(mine) = state.my_voice.as_ref().filter(|_| here) {
+                    let (muted, deafened) = (mine.muted, mine.deafened);
+                    let (glyph, hint) = if deafened { (Glyph::HeadsetOff, v.undeafen) } else { (Glyph::Headset, v.deafen) };
+                    if glyph_button(ui, glyph, hint, deafened).clicked() {
+                        chat.set_voice_self(muted, !deafened);
+                    }
+                    let (glyph, hint) = if muted { (Glyph::MicOff, v.unmute) } else { (Glyph::Mic, v.mute) };
+                    if glyph_button(ui, glyph, hint, muted).clicked() {
+                        chat.set_voice_self(!muted, deafened);
+                    }
+                }
             } else if call.state == "ringing" {
                 if ui.button(v.decline).clicked() {
                     chat.decline_call(&call.id);
@@ -465,6 +479,9 @@ impl DeviceCenterApp {
         let Some(chat) = self.chat.clone() else { return };
         let state = chat.view();
         let me = state.me().map(|u| u.user_id.clone()).unwrap_or_default();
+        if state.do_not_disturb() {
+            return;
+        }
         let ringing = state
             .snap
             .as_ref()

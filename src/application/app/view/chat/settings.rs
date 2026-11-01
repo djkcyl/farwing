@@ -174,7 +174,7 @@ pub(super) fn show(ctx: &egui::Context, chat: &ChatService, state: &ChatState, c
             match chat_ui.settings.tab {
                 Tab::Overview => overview(ui, chat, state, chat_ui, &g),
                 Tab::Roles => roles(ui, chat, chat_ui, &g),
-                Tab::Channels => channels(ui, chat, chat_ui, &g),
+                Tab::Channels => channels(ui, chat, state, chat_ui, &g),
                 Tab::Members => members(ui, chat, state, chat_ui, &g),
                 Tab::Invites => invites(ui, chat, state, &g),
                 Tab::Bans => bans(ui, chat, state, &g),
@@ -435,7 +435,7 @@ fn roles(ui: &mut egui::Ui, chat: &ChatService, chat_ui: &mut ChatUi, g: &GroupS
 
 const SLOW: [u32; 10] = [0, 5, 10, 30, 60, 300, 600, 1800, 3600, 21600];
 
-fn channels(ui: &mut egui::Ui, chat: &ChatService, chat_ui: &mut ChatUi, g: &GroupState) {
+fn channels(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi, g: &GroupState) {
     let c = &t().chat;
     let id = g.group.id;
     let list = ordered(&g.channels);
@@ -530,6 +530,26 @@ fn channels(ui: &mut egui::Ui, chat: &ChatService, chat_ui: &mut ChatUi, g: &Gro
                         ui.selectable_value(&mut draft.voice_bitrate, b, format!("{b} kbps"));
                     }
                 });
+                let v = &t().voice;
+                ui.horizontal(|ui| {
+                    ui.label(parts::muted(v.voice_limit));
+                    let mut limited = draft.voice_limit > 0;
+                    if ui.checkbox(&mut limited, "").changed() {
+                        draft.voice_limit = if limited { 10 } else { 0 };
+                    }
+                    if limited {
+                        ui.add(egui::DragValue::new(&mut draft.voice_limit).range(1..=farwing_protocol::chat::limits::MAX_VOICE_LIMIT));
+                    } else {
+                        ui.label(parts::muted(v.no_limit));
+                    }
+                });
+                let owner = state.me().is_some_and(|u| u.user_id == g.group.owner_id);
+                if owner && state.snap.as_ref().is_some_and(|s| s.limits.voice_compat) {
+                    ui.horizontal(|ui| {
+                        crate::ui::controls::switch(ui, &mut draft.voice_compat);
+                        ui.label(v.compat);
+                    });
+                }
             }
             ui.horizontal(|ui| {
                 if ui.add(crate::ui::controls::primary(c.save)).clicked() {
@@ -543,6 +563,11 @@ fn channels(ui: &mut egui::Ui, chat: &ChatService, chat_ui: &mut ChatUi, g: &Gro
                             "parent_id": if category { serde_json::Value::Null } else { json!(draft.parent_id) },
                             "slow_mode_s": (!category).then_some(draft.slow_mode_s),
                             "voice_bitrate": (draft.kind == ChannelKind::Voice).then_some(draft.voice_bitrate),
+                            "voice_limit": (draft.kind == ChannelKind::Voice).then_some(draft.voice_limit),
+                            "voice_compat": (draft.kind == ChannelKind::Voice
+                                && state.snap.as_ref().is_some_and(|s| s.limits.voice_compat)
+                                && state.me().is_some_and(|u| u.user_id == g.group.owner_id))
+                            .then_some(draft.voice_compat),
                         })),
                     );
                 }

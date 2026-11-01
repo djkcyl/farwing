@@ -219,6 +219,14 @@ fn group_side(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui:
                     ui.painter().galley(egui::pos2(rect.left() + 28.0, rect.center().y - galley.size().y / 2.0), galley, color);
                     if mentions > 0 {
                         parts::badge(ui, egui::pos2(rect.right() - 16.0, rect.center().y), mentions);
+                    } else if c.kind == ChannelKind::Voice && c.voice_compat {
+                        ui.painter().text(
+                            egui::pos2(rect.right() - 8.0, rect.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                            t().voice.compat,
+                            egui::FontId::proportional(11.0),
+                            MUTED,
+                        );
                     }
                 });
                 if response.clicked() {
@@ -366,9 +374,15 @@ fn voice_bar(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: 
                     .as_ref()
                     .and_then(|s| s.voice.iter().find(|c| c.channel_id == voice.channel))
                     .and_then(|c| c.participants.iter().find(|p| p.participant == voice.participant))
-                    .is_some_and(|p| p.server_muted);
+                    .is_some_and(|p| p.server_muted || p.cannot_speak);
             if server_muted {
                 line = format!("{line} · {}", v.server_muted);
+            }
+            if chat.voice_settings().mode == crate::features::voice::settings::Mode::PushToTalk
+                && crate::features::voice::capture::foreground_elevated()
+            {
+                ui.add(egui::Label::new(RichText::new(v.elevated).size(12.0).color(crate::ui::theme::AMBER)).wrap());
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
             }
             ui.add(egui::Label::new(parts::muted(line)).truncate());
         })
@@ -431,11 +445,11 @@ fn voice_people(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_u
         let mut x = rect.right() - 12.0;
         for (on, glyph) in [
             (p.self_deafened || p.server_deafened, Glyph::HeadsetOff),
-            (p.self_muted || p.server_muted, Glyph::MicOff),
+            (p.self_muted || p.server_muted || p.cannot_speak, Glyph::MicOff),
         ] {
             if on {
                 let r = Rect::from_center_size(egui::pos2(x, rect.center().y), vec2(14.0, 14.0));
-                let c = if p.server_muted || p.server_deafened { crate::ui::theme::RED } else { MUTED };
+                let c = if p.server_muted || p.server_deafened || p.cannot_speak { crate::ui::theme::RED } else { MUTED };
                 parts::paint_glyph(ui.painter(), r, glyph, c);
                 x -= 18.0;
             }

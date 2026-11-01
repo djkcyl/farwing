@@ -281,7 +281,7 @@ fn dialog(ctx: &egui::Context, chat: &ChatService, state: &ChatState, chat_ui: &
             let mut prefs: Prefs = snap.prefs.clone();
             let before = prefs.clone();
             let response = egui::Modal::new(egui::Id::new("chat-me")).frame(dialog_frame()).show(ctx, |ui| {
-                ui.set_width(420.0);
+                ui.set_width(if chat_ui.me_tab == 1 { 710.0 } else { 420.0 });
                 if dialog_header(ui, c.settings, DialogIcon::Edit, true) {
                     keep = false;
                 }
@@ -423,6 +423,15 @@ fn settle(chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi) {
         chat_ui.select_channel(Id(id));
         chat.forget("open_dm");
     }
+    // A call from the friends page: the direct message opens and rings.
+    if let Some(Answer::Done(v)) = answer(state, "call_dm")
+        && let Some(id) = v["channel"]["id"].as_str().and_then(|s| s.parse().ok())
+    {
+        chat_ui.group = None;
+        chat_ui.select_channel(Id(id));
+        chat.forget("call_dm");
+        chat.start_call(Id(id));
+    }
     // The avatar file chosen.
     if let Some(rx) = &chat_ui.settings.avatar_pick
         && let Ok(paths) = rx.try_recv()
@@ -493,132 +502,186 @@ fn voice_settings(ui: &mut egui::Ui, chat: &ChatService, chat_ui: &mut ChatUi) {
             .as_ref()
             .and_then(|id| list.iter().find(|e| &e.id == id))
             .map_or(v.default_device.to_owned(), |e| e.name.clone());
-        egui::ComboBox::from_id_salt(salt).width(380.0).selected_text(shown).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt(salt).width(340.0).selected_text(shown).show_ui(ui, |ui| {
             ui.selectable_value(value, None, v.default_device);
             for e in list {
                 ui.selectable_value(value, Some(e.id.clone()), &e.name);
             }
         });
     };
-    device(ui, "voice-input", v.input, &mut s.input, &inputs);
-    device(ui, "voice-output", v.output, &mut s.output, &outputs);
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        crate::ui::controls::switch(ui, &mut s.echo);
-        ui.label(v.echo);
-    });
-    ui.horizontal(|ui| {
-        crate::ui::controls::switch(ui, &mut s.gain);
-        ui.label(v.agc);
-    });
-    ui.horizontal(|ui| {
-        ui.label(parts::muted(v.noise));
-        for (n, label) in [(Noise::Off, v.noise_off), (Noise::Standard, v.noise_standard), (Noise::Ai, v.noise_ai)] {
-            ui.selectable_value(&mut s.noise, n, label);
-        }
-    });
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.label(parts::muted(v.mode));
-        ui.selectable_value(&mut s.mode, Mode::Activity, v.activity);
-        ui.selectable_value(&mut s.mode, Mode::PushToTalk, v.push_to_talk);
-    });
-    match s.mode {
-        Mode::Activity => {
+    // Two columns: the whole page fits a small window.
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(360.0);
+            device(ui, "voice-input", v.input, &mut s.input, &inputs);
+            device(ui, "voice-output", v.output, &mut s.output, &outputs);
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.label(parts::muted(v.threshold));
-                let mut auto = s.threshold_db.is_none();
-                if ui.checkbox(&mut auto, v.auto).changed() {
-                    s.threshold_db = if auto { None } else { Some(-45.0) };
-                }
-                if let Some(db) = &mut s.threshold_db {
-                    ui.add(egui::Slider::new(db, -70.0..=-20.0).suffix(" dB"));
+                ui.label(parts::muted(v.input_volume));
+                let mut volume = u32::from(s.input_volume);
+                if ui.add(egui::Slider::new(&mut volume, 0..=200).suffix("%")).changed() {
+                    s.input_volume = volume as u8;
                 }
             });
-            // The microphone's level while in voice.
-            let (_, speaking, level) = chat.voice_activity();
+            // The microphone's level, in voice or not.
+            let level = chat.input_meter();
             let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), egui::Sense::hover());
             ui.painter().rect_filled(rect, 3.0, crate::ui::theme::SURFACE);
             let db = if level > 0.0 { 20.0 * level.log10() } else { -90.0 };
             let fill = ((db + 70.0) / 70.0).clamp(0.0, 1.0);
             let bar = egui::Rect::from_min_size(rect.min, vec2(rect.width() * fill, rect.height()));
-            ui.painter().rect_filled(bar, 3.0, if speaking { crate::ui::theme::GREEN } else { crate::ui::theme::MUTED });
+            let open = s.mode == Mode::Activity && s.threshold_db.is_none_or(|t| db > t);
+            ui.painter().rect_filled(bar, 3.0, if open && db > -60.0 { crate::ui::theme::GREEN } else { crate::ui::theme::MUTED });
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
-        }
-        Mode::PushToTalk => {
-            ui.horizontal(|ui| {
-                ui.label(parts::muted(v.key));
-                let label = if chat_ui.capturing_key {
-                    v.press_key.to_owned()
-                } else {
-                    s.key.map_or(v.no_key.to_owned(), |k| {
-                        crate::plugins::hotkeys::label(&crate::plugins::hotkeys::Binding { key: k.vk, modifiers: 0 })
-                    })
+            {
+                use crate::features::chat::MicTest;
+                let state = chat.mic_test_state();
+                let label = match state {
+                    MicTest::Idle => v.mic_test.to_owned(),
+                    MicTest::Recording(left) => (v.mic_recording)(left),
+                    MicTest::Playing => v.mic_playing.to_owned(),
                 };
-                if ui.button(label).clicked() {
-                    chat_ui.capturing_key = !chat_ui.capturing_key;
+                let in_voice = chat.view().my_voice.is_some();
+                if ui
+                    .add_enabled(state == MicTest::Idle && !in_voice, egui::Button::new(label))
+                    .clicked()
+                {
+                    chat.mic_test();
+                }
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                crate::ui::controls::switch(ui, &mut s.echo);
+                ui.label(v.echo);
+            });
+            ui.horizontal(|ui| {
+                crate::ui::controls::switch(ui, &mut s.gain);
+                ui.label(v.agc);
+            });
+            ui.horizontal(|ui| {
+                ui.label(parts::muted(v.noise));
+                for (n, label) in [(Noise::Off, v.noise_off), (Noise::Standard, v.noise_standard), (Noise::Ai, v.noise_ai)] {
+                    ui.selectable_value(&mut s.noise, n, label);
                 }
             });
-            if chat_ui.capturing_key {
-                let pressed = ui.input(|i| {
-                    i.events.iter().find_map(|e| match e {
-                        egui::Event::Key { key, pressed: true, .. } => crate::plugins::hotkeys::key_code(*key),
-                        egui::Event::PointerButton { button: egui::PointerButton::Extra1, pressed: true, .. } => Some(5),
-                        egui::Event::PointerButton { button: egui::PointerButton::Extra2, pressed: true, .. } => Some(6),
-                        egui::Event::PointerButton { button: egui::PointerButton::Middle, pressed: true, .. } => Some(4),
-                        _ => None,
-                    })
-                });
-                if let Some(vk) = pressed {
-                    s.key = Some(Key { vk });
-                    chat_ui.capturing_key = false;
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(parts::muted(v.mode));
+                ui.selectable_value(&mut s.mode, Mode::Activity, v.activity);
+                ui.selectable_value(&mut s.mode, Mode::PushToTalk, v.push_to_talk);
+            });
+            match s.mode {
+                Mode::Activity => {
+                    ui.horizontal(|ui| {
+                        ui.label(parts::muted(v.threshold));
+                        let mut auto = s.threshold_db.is_none();
+                        if ui.checkbox(&mut auto, v.auto).changed() {
+                            s.threshold_db = if auto { None } else { Some(-45.0) };
+                        }
+                        if let Some(db) = &mut s.threshold_db {
+                            ui.add(egui::Slider::new(db, -70.0..=-20.0).suffix(" dB"));
+                        }
+                    });
+                }
+                Mode::PushToTalk => {
+                    ui.horizontal(|ui| {
+                        ui.label(parts::muted(v.key));
+                        let label = if chat_ui.capturing_key {
+                            v.press_key.to_owned()
+                        } else {
+                            s.key.map_or(v.no_key.to_owned(), |k| {
+                                crate::plugins::hotkeys::label(&crate::plugins::hotkeys::Binding { key: k.vk, modifiers: 0 })
+                            })
+                        };
+                        if ui.button(label).clicked() {
+                            chat_ui.capturing_key = !chat_ui.capturing_key;
+                        }
+                    });
+                    if chat_ui.capturing_key {
+                        let pressed = ui.input(|i| {
+                            i.events.iter().find_map(|e| match e {
+                                egui::Event::Key { key, pressed: true, .. } => crate::plugins::hotkeys::key_code(*key),
+                                egui::Event::PointerButton { button: egui::PointerButton::Extra1, pressed: true, .. } => Some(5),
+                                egui::Event::PointerButton { button: egui::PointerButton::Extra2, pressed: true, .. } => Some(6),
+                                egui::Event::PointerButton { button: egui::PointerButton::Middle, pressed: true, .. } => Some(4),
+                                _ => None,
+                            })
+                        });
+                        if let Some(vk) = pressed {
+                            s.key = Some(Key { vk });
+                            chat_ui.capturing_key = false;
+                        }
+                    }
                 }
             }
-        }
-    }
-    // Keys that toggle mute and deafen, wherever the focus is.
-    for (which, label) in [(1u8, v.mute), (2u8, v.deafen)] {
-        let slot = if which == 1 { &mut s.mute_key } else { &mut s.deafen_key };
-        ui.horizontal(|ui| {
-            ui.label(parts::muted(format!("{label} · {}", v.key)));
-            let waiting = chat_ui.capturing_toggle == which;
-            let text = if waiting {
-                v.press_key.to_owned()
-            } else {
-                slot.map_or(v.no_key.to_owned(), |k| {
-                    crate::plugins::hotkeys::label(&crate::plugins::hotkeys::Binding { key: k.vk, modifiers: 0 })
-                })
-            };
-            if ui.button(text).clicked() {
-                chat_ui.capturing_toggle = if waiting { 0 } else { which };
+        });
+        ui.add_space(20.0);
+        ui.vertical(|ui| {
+            ui.set_width(330.0);
+            // Keys that toggle mute and deafen, wherever the focus is.
+            for (which, label) in [(1u8, v.mute), (2u8, v.deafen)] {
+                let slot = if which == 1 { &mut s.mute_key } else { &mut s.deafen_key };
+                ui.horizontal(|ui| {
+                    ui.label(parts::muted(format!("{label} · {}", v.key)));
+                    let waiting = chat_ui.capturing_toggle == which;
+                    let text = if waiting {
+                        v.press_key.to_owned()
+                    } else {
+                        slot.map_or(v.no_key.to_owned(), |k| {
+                            crate::plugins::hotkeys::label(&crate::plugins::hotkeys::Binding { key: k.vk, modifiers: 0 })
+                        })
+                    };
+                    if ui.button(text).clicked() {
+                        chat_ui.capturing_toggle = if waiting { 0 } else { which };
+                    }
+                    if slot.is_some() && ui.small_button("×").clicked() {
+                        *slot = None;
+                    }
+                });
+                if chat_ui.capturing_toggle == which
+                    && let Some(vk) = ui.input(|i| {
+                        i.events.iter().find_map(|e| match e {
+                            egui::Event::Key { key, pressed: true, .. } => crate::plugins::hotkeys::key_code(*key),
+                            _ => None,
+                        })
+                    })
+                {
+                    *slot = Some(Key { vk });
+                    chat_ui.capturing_toggle = 0;
+                }
             }
-            if slot.is_some() && ui.small_button("×").clicked() {
-                *slot = None;
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(parts::muted(v.volume));
+                let mut volume = u32::from(s.volume);
+                if ui.add(egui::Slider::new(&mut volume, 0..=200).suffix("%")).changed() {
+                    s.volume = volume as u8;
+                }
+            });
+            ui.add_space(6.0);
+            ui.label(RichText::new(v.sounds).strong().color(TEXT));
+            ui.horizontal(|ui| {
+                ui.label(parts::muted(v.sound_volume));
+                let mut volume = u32::from(s.sound_volume);
+                if ui.add(egui::Slider::new(&mut volume, 0..=100).suffix("%")).changed() {
+                    s.sound_volume = volume as u8;
+                }
+            });
+            use crate::features::voice::sounds::SoundGroup;
+            for (group, label) in SoundGroup::ALL.into_iter().zip(v.sound_groups) {
+                ui.horizontal(|ui| {
+                    let mut on = !s.sounds_off.contains(&group);
+                    if crate::ui::controls::switch(ui, &mut on).changed() {
+                        if on {
+                            s.sounds_off.remove(&group);
+                        } else {
+                            s.sounds_off.insert(group);
+                        }
+                    }
+                    ui.label(label);
+                });
             }
         });
-        if chat_ui.capturing_toggle == which
-            && let Some(vk) = ui.input(|i| {
-                i.events.iter().find_map(|e| match e {
-                    egui::Event::Key { key, pressed: true, .. } => crate::plugins::hotkeys::key_code(*key),
-                    _ => None,
-                })
-            })
-        {
-            *slot = Some(Key { vk });
-            chat_ui.capturing_toggle = 0;
-        }
-    }
-    ui.horizontal(|ui| {
-        crate::ui::controls::switch(ui, &mut s.sounds);
-        ui.label(v.sounds);
-    });
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.label(parts::muted(v.volume));
-        let mut volume = u32::from(s.volume);
-        if ui.add(egui::Slider::new(&mut volume, 0..=200).suffix("%")).changed() {
-            s.volume = volume as u8;
-        }
     });
     if s != before {
         chat.set_voice_settings(s);

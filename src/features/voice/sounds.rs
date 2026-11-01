@@ -1,6 +1,8 @@
 //! Voice sounds (`docs/protocol/chat-design.md` §7.5): a ringing call,
-//! joining and leaving, people coming and going, mute. Short synthesized
-//! tones on the call output, each on a thread of its own.
+//! joining and leaving, people coming and going, mute, new messages, a
+//! share starting and ending, being moved or disconnected. Short
+//! synthesized tones on the call output, each on a thread of its own; the
+//! same output plays the microphone test back.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::Arc;
@@ -20,6 +22,49 @@ pub(crate) enum Sound {
     Went,
     Muted,
     Unmuted,
+    Message,
+    /// Moved to another channel or disconnected by a moderator.
+    Removed,
+}
+
+/// The switches of the voice settings, one per kind of sound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SoundGroup {
+    Calls,
+    /// This device joining and leaving.
+    Presence,
+    /// Others joining and leaving.
+    People,
+    Mute,
+    Messages,
+    Live,
+    Removed,
+}
+
+impl SoundGroup {
+    pub(crate) const ALL: [SoundGroup; 7] = [
+        Self::Calls,
+        Self::Presence,
+        Self::People,
+        Self::Mute,
+        Self::Messages,
+        Self::Live,
+        Self::Removed,
+    ];
+}
+
+impl Sound {
+    pub(crate) fn group(self) -> SoundGroup {
+        match self {
+            Self::Ring | Self::Ringback => SoundGroup::Calls,
+            Self::Joined | Self::Left => SoundGroup::Presence,
+            Self::Came | Self::Went => SoundGroup::People,
+            Self::Muted | Self::Unmuted => SoundGroup::Mute,
+            Self::Message => SoundGroup::Messages,
+            Self::Removed => SoundGroup::Removed,
+        }
+    }
 }
 
 /// (frequency Hz, milliseconds); 0 Hz is a pause.
@@ -33,6 +78,8 @@ fn notes(sound: Sound) -> &'static [(f32, u32)] {
         Sound::Went => &[(587.0, 90)],
         Sound::Muted => &[(392.0, 60)],
         Sound::Unmuted => &[(659.0, 60)],
+        Sound::Message => &[(988.0, 70), (0.0, 30), (1319.0, 90)],
+        Sound::Removed => &[(659.0, 120), (0.0, 40), (440.0, 120), (0.0, 40), (330.0, 200)],
     }
 }
 
@@ -56,6 +103,30 @@ fn render(sound: Sound, rate: u32, volume: f32) -> Vec<f32> {
 
 /// Plays `sound` on output `device` (`None`: the default) at `volume` (0–2).
 pub(crate) fn play(sound: Sound, device: Option<String>, volume: f32) {
+    play_with(device, move |rate| render(sound, rate, volume));
+}
+
+/// Plays mono 48 kHz `samples` (the microphone test) on `device`.
+pub(crate) fn play_recording(samples: Vec<f32>, device: Option<String>, volume: f32) {
+    play_with(device, move |rate| {
+        // Linear resampling to the output's rate.
+        let step = 48_000.0 / rate as f64;
+        let n = (samples.len() as f64 / step) as usize;
+        (0..n)
+            .map(|i| {
+                let at = i as f64 * step;
+                let j = at as usize;
+                let frac = (at - j as f64) as f32;
+                let a = samples.get(j).copied().unwrap_or(0.0);
+                let b = samples.get(j + 1).copied().unwrap_or(a);
+                (a + (b - a) * frac) * volume
+            })
+            .collect()
+    });
+}
+
+/// Plays what `render` makes for the output's rate.
+fn play_with(device: Option<String>, render: impl FnOnce(u32) -> Vec<f32> + Send + 'static) {
     std::thread::Builder::new()
         .name("voice-sound".into())
         .spawn(move || {
@@ -70,7 +141,7 @@ pub(crate) fn play(sound: Sound, device: Option<String>, volume: f32) {
             }
             let config = supported.config();
             let channels = config.channels as usize;
-            let samples = Arc::new(render(sound, config.sample_rate, volume));
+            let samples = Arc::new(render(config.sample_rate));
             let length = samples.len();
             let position = Arc::new(AtomicUsize::new(0));
             let stream = {

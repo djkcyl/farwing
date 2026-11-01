@@ -232,6 +232,12 @@ fn zh_audit(action: &str) -> &'static str {
         "invite_revoke" => "作废了邀请链接",
         "request_approve" => "批准了加入申请",
         "request_reject" => "拒绝了加入申请",
+        "voice_mute" => "在语音里静音了成员",
+        "voice_unmute" => "在语音里取消了静音",
+        "voice_deafen" => "在语音里关闭了成员的声音",
+        "voice_undeafen" => "在语音里开启了成员的声音",
+        "voice_move" => "把成员移到了其他语音频道",
+        "voice_disconnect" => "把成员移出了语音",
         _ => "",
     }
 }
@@ -266,6 +272,12 @@ fn en_audit(action: &str) -> &'static str {
         "invite_revoke" => "revoked an invite link",
         "request_approve" => "approved a join request",
         "request_reject" => "rejected a join request",
+        "voice_mute" => "muted a member in voice",
+        "voice_unmute" => "unmuted a member in voice",
+        "voice_deafen" => "deafened a member in voice",
+        "voice_undeafen" => "undeafened a member in voice",
+        "voice_move" => "moved a member to another voice channel",
+        "voice_disconnect" => "disconnected a member from voice",
         _ => "",
     }
 }

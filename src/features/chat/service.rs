@@ -85,6 +85,8 @@ struct Inner {
     voice_joining: Mutex<Option<(Id, Vec<(String, Value)>)>>,
     /// What the voice sounds last saw.
     sounds: Mutex<voice_link::SoundState>,
+    /// The microphone for the voice settings, outside a session.
+    preview: Mutex<Option<voice_link::Preview>>,
 }
 
 #[derive(Clone)]
@@ -124,6 +126,7 @@ impl ChatService {
             voice_keys: Mutex::new(None),
             voice_joining: Mutex::new(None),
             sounds: Mutex::new(Default::default()),
+            preview: Mutex::new(None),
         });
         runtime.spawn(run(Arc::clone(&inner), rx));
         runtime.spawn(tick(Arc::clone(&inner)));
@@ -985,3 +988,4 @@ async fn load_member_pages(inner: &Arc<Inner>, group: Id) -> Option<Vec<farwing_
 
 #[path = "voice_link.rs"]
 mod voice_link;
+pub(crate) use voice_link::MicTest;

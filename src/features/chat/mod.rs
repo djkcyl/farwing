@@ -6,4 +6,4 @@ pub(crate) mod markdown;
 pub(crate) mod service;
 pub(crate) mod state;
 
-pub(crate) use service::{ChatService, ImageKey};
+pub(crate) use service::{ChatService, ImageKey, MicTest};

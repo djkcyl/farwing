@@ -1,7 +1,7 @@
 //! Notification area integration on the existing Windows event-loop thread.
 use crate::i18n::t;
 use anyhow::{Result, ensure};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU8, Ordering};
 use windows::{
     Win32::{
         Foundation::*,
@@ -33,11 +33,89 @@ static FULL_EXIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 static VOICE: AtomicU8 = AtomicU8::new(0);
 /// What the menu asked of the voice: 1 mute, 2 deafen, 3 leave (0: none).
 static VOICE_ACTION: AtomicU8 = AtomicU8::new(0);
+/// The icon's window, for updates from the voice.
+static WINDOW: AtomicIsize = AtomicIsize::new(0);
 
-/// The device center's voice, for the menu.
+/// The device center's voice, for the menu; the icon marks it.
 pub(crate) fn set_voice(in_voice: bool, muted: bool, deafened: bool, call: bool) {
     let bits = u8::from(in_voice) | (u8::from(muted) << 1) | (u8::from(deafened) << 2) | (u8::from(call) << 3);
-    VOICE.store(bits, Ordering::Relaxed);
+    let before = VOICE.swap(bits, Ordering::Relaxed);
+    let window = WINDOW.load(Ordering::Relaxed);
+    if (before & 0b1001) != (bits & 0b1001) && window != 0 {
+        show(HWND(window as *mut _), NIM_MODIFY);
+    }
+}
+
+/// `icon` with a green dot in its corner: in a voice channel or call.
+fn with_dot(icon: HICON) -> HICON {
+    use windows::Win32::Graphics::Gdi::*;
+    // SAFETY: GDI objects created here are released here; `icon` is
+    // replaced by the new one.
+    unsafe {
+        let mut info = ICONINFO::default();
+        if GetIconInfo(icon, &mut info).is_err() || info.hbmColor.is_invalid() {
+            return icon;
+        }
+        let mut bitmap = BITMAP::default();
+        GetObjectW(info.hbmColor.into(), size_of::<BITMAP>() as i32, Some((&raw mut bitmap).cast()));
+        let (w, h) = (bitmap.bmWidth, bitmap.bmHeight);
+        let dc = CreateCompatibleDC(None);
+        let mut header = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut pixels = vec![0u32; (w * h).max(0) as usize];
+        GetDIBits(dc, info.hbmColor, 0, h as u32, Some(pixels.as_mut_ptr().cast()), &mut header, DIB_RGB_COLORS);
+        let r = w as f32 * 0.24;
+        let (cx, cy) = (w as f32 - r - 0.5, h as f32 - r - 0.5);
+        for y in 0..h {
+            for x in 0..w {
+                let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+                let i = (y * w + x) as usize;
+                if d <= r {
+                    pixels[i] = 0xFF4C_C38A;
+                } else if d <= r + 1.2 {
+                    pixels[i] = 0xFFFF_FFFF;
+                }
+            }
+        }
+        let mut bits = std::ptr::null_mut();
+        let color = CreateDIBSection(Some(dc), &header, DIB_RGB_COLORS, &mut bits, None, 0);
+        let result = match color {
+            Ok(color) if !bits.is_null() => {
+                std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast::<u32>(), pixels.len());
+                let mask = CreateBitmap(w, h, 1, 1, None);
+                let made = CreateIconIndirect(&ICONINFO {
+                    fIcon: true.into(),
+                    hbmMask: mask,
+                    hbmColor: color,
+                    ..Default::default()
+                });
+                let _ = DeleteObject(mask.into());
+                let _ = DeleteObject(color.into());
+                made.ok()
+            }
+            _ => None,
+        };
+        let _ = DeleteObject(info.hbmColor.into());
+        let _ = DeleteObject(info.hbmMask.into());
+        let _ = DeleteDC(dc);
+        match result {
+            Some(made) => {
+                let _ = DestroyIcon(icon);
+                made
+            }
+            None => icon,
+        }
+    }
 }
 
 /// The voice action chosen in the menu since last asked.
@@ -100,6 +178,11 @@ fn data(window: HWND, icon: HICON) -> NOTIFYICONDATAW {
         2 => tip = format!("{tip} · {}", t().controls.tray_connections_off),
         _ => {}
     }
+    let voice = VOICE.load(Ordering::Relaxed);
+    if voice & 1 != 0 {
+        let v = &t().voice;
+        tip = format!("{tip} · {}", if voice & 8 != 0 { v.in_call } else { v.connected });
+    }
     let limit = data.szTip.len() - 1;
     for (to, from) in data.szTip[..limit].iter_mut().zip(tip.encode_utf16()) {
         *to = from;
@@ -109,7 +192,10 @@ fn data(window: HWND, icon: HICON) -> NOTIFYICONDATAW {
 
 /// Add (or update) the icon for the current state and taskbar colour.
 fn show(window: HWND, message: NOTIFY_ICON_MESSAGE) -> bool {
-    let icon = icon(STATE.load(Ordering::Relaxed));
+    let mut icon = icon(STATE.load(Ordering::Relaxed));
+    if VOICE.load(Ordering::Relaxed) & 1 != 0 && !icon.is_invalid() {
+        icon = with_dot(icon);
+    }
     let shown = unsafe { Shell_NotifyIconW(message, &data(window, icon)).as_bool() };
     if !icon.is_invalid() {
         // The shell keeps its own copy.
@@ -147,6 +233,7 @@ impl Tray {
                 None,
             )?;
             let tray = Self { window };
+            WINDOW.store(window.0 as isize, Ordering::Relaxed);
             ensure!(add(window), t().controls.tray_create_failed);
             Ok(tray)
         }
@@ -161,6 +248,7 @@ impl Tray {
 impl Drop for Tray {
     fn drop(&mut self) {
         unsafe {
+            WINDOW.store(0, Ordering::Relaxed);
             let _ = Shell_NotifyIconW(NIM_DELETE, &data(self.window, HICON::default()));
             let _ = DestroyWindow(self.window);
         }
