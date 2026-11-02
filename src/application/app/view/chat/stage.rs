@@ -1,10 +1,12 @@
 //! The pictures of the voice channel or call this device is in, above its
 //! messages (`docs/protocol/chat-design.md` §8, §7.6): cameras and screens
-//! in a grid, one of them large when chosen. In a channel the grid shows
-//! each camera's small picture, a chosen camera its large one, and a screen
-//! is received only once opened (at 720p30 if asked for); the picture shown
-//! before a choice stays two seconds, so the new one starts without a gap.
-//! In a call everything the other device sends comes anyway.
+//! in a grid, or the camera of whoever speaks large with the rest in a row
+//! ("speaker"), and one of them large with its bar when chosen. In a
+//! channel small pictures are each camera's small one, a large camera its
+//! large one, and a screen is received only once opened (at 720p30 if asked
+//! for); the picture shown before a change stays two seconds, so the new
+//! one starts without a gap. In a call everything the other device sends
+//! comes anyway. This device's own camera and share show as it sends them.
 
 use super::ChatUi;
 use super::parts::{self, Glyph};
@@ -19,6 +21,12 @@ use std::time::{Duration, Instant};
 /// How long the picture shown before a choice is still received.
 const KEEP: Duration = Duration::from_secs(2);
 const TILE: egui::Vec2 = vec2(224.0, 126.0);
+/// The pictures below the speaker.
+const SMALL: egui::Vec2 = vec2(160.0, 90.0);
+/// The row of the layout switch.
+const HEADER: f32 = 36.0;
+/// The speaker shown stays at least this long.
+const HOLD: Duration = Duration::from_millis(1500);
 /// The other device of a call.
 const PEER: u32 = 1;
 
@@ -41,6 +49,10 @@ pub(super) struct StageUi {
     /// The tracks last asked for, by this device's participant number
     /// (asked again in a new voice session).
     watched: (u32, Vec<(u32, String)>),
+    /// The speaker layout.
+    speaker: bool,
+    /// Whose camera the speaker layout shows, since when.
+    talker: Option<(u32, Instant)>,
 }
 
 impl StageUi {
@@ -51,6 +63,47 @@ impl StageUi {
         self.focus = next;
         self.low = false;
     }
+
+    /// The picture shown large: the chosen one, else the speaker's.
+    fn large_one(&self) -> Option<(u32, Kind)> {
+        self.focus
+            .or_else(|| self.talker.filter(|_| self.speaker).map(|(p, _)| (p, Kind::Camera)))
+    }
+
+    /// Follows who speaks (speaker layout): the one shown stays while it
+    /// speaks and at least `HOLD`, then the camera of one speaking now.
+    fn follow(&mut self, chat: &ChatService, all: &[Source]) {
+        let now = Instant::now();
+        let cameras: Vec<u32> = all.iter().filter(|s| s.kind == Kind::Camera && !s.mine).map(|s| s.participant).collect();
+        let current = self.talker.filter(|(p, _)| cameras.contains(p));
+        let next = if !self.speaker || cameras.is_empty() {
+            None
+        } else {
+            let (speaking, _, _) = chat.voice_activity();
+            match current {
+                Some((p, since)) if speaking.contains(&p) || now.duration_since(since) < HOLD => Some(p),
+                _ => speaking
+                    .iter()
+                    .copied()
+                    .find(|p| cameras.contains(p))
+                    .or(current.map(|(p, _)| p))
+                    .or(cameras.first().copied()),
+            }
+        };
+        if next == current.map(|(p, _)| p) {
+            self.talker = current;
+            return;
+        }
+        if let Some((old, _)) = current {
+            self.previous = Some(((old, Kind::Camera), now + KEEP));
+        }
+        self.talker = next.map(|p| (p, now));
+    }
+}
+
+/// The layouts apply: someone else shows a camera.
+fn switchable(all: &[Source]) -> bool {
+    all.iter().any(|s| s.kind == Kind::Camera && !s.mine)
 }
 
 /// A picture someone shows.
@@ -140,18 +193,19 @@ pub(super) fn sources(chat: &ChatService, state: &ChatState, channel: Id) -> (Ve
     (out, false)
 }
 
-/// The stage's height for `count` pictures in a message area of
-/// `available` height.
-pub(super) fn height(chat_ui: &ChatUi, count: usize, width: f32, available: f32) -> f32 {
-    if count == 0 {
+/// The stage's height for `all` in a message area of `available` height.
+pub(super) fn height(chat_ui: &ChatUi, all: &[Source], width: f32, available: f32) -> f32 {
+    if all.is_empty() {
         return 0.0;
     }
-    if chat_ui.stage.focus.is_some() {
+    let switch = switchable(all);
+    if chat_ui.stage.focus.is_some() || (chat_ui.stage.speaker && switch) {
         return (available * 0.62).max(240.0).min(available - 120.0).max(0.0);
     }
     let per_row = (((width - 16.0) / (TILE.x + 8.0)).floor() as usize).max(1);
-    let rows = count.div_ceil(per_row);
-    (rows as f32 * (TILE.y + 8.0) + 16.0).min(available * 0.45)
+    let rows = all.len().div_ceil(per_row);
+    let header = if switch { HEADER - 8.0 } else { 0.0 };
+    (header + rows as f32 * (TILE.y + 8.0) + 16.0).min(available * 0.45)
 }
 
 /// Keeps what this device receives from the forwarder in step with what
@@ -159,10 +213,11 @@ pub(super) fn height(chat_ui: &ChatUi, count: usize, width: f32, available: f32)
 fn watch(chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi, all: &[Source]) {
     let me = state.my_voice.as_ref().map(|m| m.participant);
     let stage = &mut chat_ui.stage;
+    let large = stage.large_one();
     let mut refs: Vec<(u32, String)> = Vec::new();
     for s in all.iter().filter(|s| !s.mine) {
         let p = s.participant;
-        let big = stage.focus == Some((p, s.kind));
+        let big = large == Some((p, s.kind));
         let was = stage.previous.is_some_and(|(f, _)| f == (p, s.kind));
         match s.kind {
             Kind::Camera => {
@@ -205,28 +260,36 @@ fn kinds(source: &Source, big: bool, low: bool, call: bool) -> [&'static str; 2]
     }
 }
 
-/// Paints `source`'s newest picture fitted in `rect`; false when there is
-/// none yet.
-fn paint_picture(ui: &egui::Ui, chat: &ChatService, source: &Source, rect: Rect, big: bool, low: bool, call: bool) -> bool {
-    for kind in kinds(source, big, low, call) {
-        let Some(picture) = chat.picture(source.participant, kind) else { continue };
-        let Some(id) = crate::ui::video_textures::texture(picture.handle) else {
-            ui.ctx().request_repaint();
-            return false;
-        };
-        let size = vec2(picture.width.max(1) as f32, picture.height.max(1) as f32);
-        let scale = (rect.width() / size.x).min(rect.height() / size.y);
-        let fitted = Rect::from_center_size(rect.center(), size * scale);
-        ui.painter().image(id, fitted, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
-        return true;
+/// `source`'s newest picture: this device's own as it sends it, else the
+/// best kind still coming (any kind once none is).
+fn picture(chat: &ChatService, source: &Source, big: bool, low: bool, call: bool) -> Option<crate::features::voice::video::Picture> {
+    if source.mine {
+        return chat.my_picture(if source.kind == Kind::Screen { track::SCREEN } else { track::CAM_HI });
     }
-    false
+    let found: Vec<_> = kinds(source, big, low, call).iter().filter_map(|kind| chat.picture(source.participant, kind)).collect();
+    found.iter().find(|p| p.fresh()).or(found.first()).copied()
+}
+
+/// Paints `source`'s newest picture fitted in `rect`: where it went, `None`
+/// when there is none yet.
+fn paint_picture(ui: &egui::Ui, chat: &ChatService, source: &Source, rect: Rect, big: bool, low: bool, call: bool) -> Option<Rect> {
+    let picture = picture(chat, source, big, low, call)?;
+    let Some(id) = crate::ui::video_textures::texture(picture.handle) else {
+        ui.ctx().request_repaint();
+        return None;
+    };
+    let size = vec2(picture.width.max(1) as f32, picture.height.max(1) as f32);
+    let scale = (rect.width() / size.x).min(rect.height() / size.y);
+    let fitted = Rect::from_center_size(rect.center(), size * scale);
+    ui.painter().image(id, fitted, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+    Some(fitted)
 }
 
 pub(super) fn stage(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi, all: &[Source], call: bool) {
     if chat_ui.stage.previous.is_some_and(|(_, until)| Instant::now() >= until) {
         chat_ui.stage.previous = None;
     }
+    chat_ui.stage.follow(chat, all);
     if !call {
         watch(chat, state, chat_ui, all);
     }
@@ -245,40 +308,88 @@ pub(super) fn stage(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, ch
         large(ui, chat, state, chat_ui, &all[index], rect, call);
         return;
     }
-    let per_row = (((rect.width() - 16.0) / (TILE.x + 8.0)).floor() as usize).clamp(1, all.len().max(1));
+    let mut area = rect;
+    if switchable(all) {
+        let v = &t().voice;
+        let header = Rect::from_min_size(rect.min, vec2(rect.width(), HEADER)).shrink2(vec2(8.0, 4.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(header).layout(egui::Layout::right_to_left(Align::Center)), |ui| {
+            ui.selectable_value(&mut chat_ui.stage.speaker, true, v.speaker);
+            ui.selectable_value(&mut chat_ui.stage.speaker, false, v.grid);
+        });
+        area.min.y += HEADER - 8.0;
+    }
+    let talker = chat_ui
+        .stage
+        .large_one()
+        .and_then(|(p, kind)| all.iter().position(|s| s.participant == p && s.kind == kind));
+    if let Some(index) = talker {
+        speaker(ui, chat, chat_ui, all, index, area, call);
+        return;
+    }
+    let per_row = (((area.width() - 16.0) / (TILE.x + 8.0)).floor() as usize).clamp(1, all.len().max(1));
     // The grid in the middle.
-    let left = ((rect.width() - per_row as f32 * (TILE.x + 8.0) + 8.0) / 2.0).max(8.0);
+    let left = ((area.width() - per_row as f32 * (TILE.x + 8.0) + 8.0) / 2.0).max(8.0);
     for (i, s) in all.iter().enumerate() {
         let (row, col) = (i / per_row, i % per_row);
-        let tile = Rect::from_min_size(rect.min + vec2(left + col as f32 * (TILE.x + 8.0), 8.0 + row as f32 * (TILE.y + 8.0)), TILE);
-        if !rect.intersects(tile) {
-            continue;
+        let rect = Rect::from_min_size(area.min + vec2(left + col as f32 * (TILE.x + 8.0), 8.0 + row as f32 * (TILE.y + 8.0)), TILE);
+        if area.intersects(rect) {
+            tile(ui, chat, chat_ui, s, rect, call);
         }
-        let response = ui.interact(tile, ui.id().with(("stage-tile", s.participant, s.kind, s.mine)), Sense::click());
-        ui.painter().rect_filled(tile, 6.0, SURFACE);
-        // A channel's screens come once opened; a call's come anyway.
-        let shown = !s.mine && (s.kind == Kind::Camera || call) && paint_picture(ui, chat, s, tile.shrink(1.0), false, false, call);
-        if !shown {
-            let glyph = if s.kind == Kind::Screen { Glyph::Screen } else { Glyph::Camera };
-            let icon = Rect::from_center_size(tile.center() - vec2(0.0, 10.0), vec2(26.0, 26.0));
-            parts::paint_glyph(ui.painter(), icon, glyph, MUTED);
-            if s.kind == Kind::Screen && !s.mine && !call {
-                ui.painter().text(
-                    tile.center() + vec2(0.0, 16.0),
-                    egui::Align2::CENTER_CENTER,
-                    t().voice.watch,
-                    egui::FontId::proportional(12.5),
-                    TEXT,
-                );
-            }
+    }
+}
+
+/// The speaker's camera (`all[index]`) large, the other pictures in a row
+/// below.
+fn speaker(ui: &mut egui::Ui, chat: &ChatService, chat_ui: &mut ChatUi, all: &[Source], index: usize, area: Rect, call: bool) {
+    let s = &all[index];
+    let others: Vec<&Source> = all.iter().enumerate().filter(|(i, _)| *i != index).map(|(_, s)| s).collect();
+    let row = if others.is_empty() { 0.0 } else { SMALL.y + 8.0 };
+    let main = Rect::from_min_max(area.min + vec2(8.0, 8.0), egui::pos2(area.right() - 8.0, area.bottom() - 8.0 - row));
+    let response = ui.interact(main, ui.id().with(("stage-speaker", s.participant)), Sense::click());
+    let shown = paint_picture(ui, chat, s, main, true, false, call);
+    if shown.is_none() {
+        ui.put(Rect::from_center_size(main.center(), vec2(24.0, 24.0)), egui::Spinner::new());
+    }
+    name_line(ui, shown.unwrap_or(main), &s.name, false);
+    if response.clicked() {
+        chat_ui.stage.choose(Some((s.participant, s.kind)));
+    }
+    let per_row = (((area.width() - 16.0) / (SMALL.x + 8.0)).floor() as usize).max(1);
+    let count = others.len().min(per_row);
+    let left = ((area.width() - count as f32 * (SMALL.x + 8.0) + 8.0) / 2.0).max(8.0);
+    for (i, other) in others.into_iter().take(per_row).enumerate() {
+        let rect = Rect::from_min_size(egui::pos2(area.left() + left + i as f32 * (SMALL.x + 8.0), main.bottom() + 8.0), SMALL);
+        tile(ui, chat, chat_ui, other, rect, call);
+    }
+}
+
+/// One small picture; a click shows it large.
+fn tile(ui: &mut egui::Ui, chat: &ChatService, chat_ui: &mut ChatUi, s: &Source, rect: Rect, call: bool) {
+    let response = ui.interact(rect, ui.id().with(("stage-tile", s.participant, s.kind, s.mine)), Sense::click());
+    ui.painter().rect_filled(rect, 6.0, SURFACE);
+    // A channel's screens come once opened; a call's come anyway.
+    let shown =
+        (s.kind == Kind::Camera || call || s.mine) && paint_picture(ui, chat, s, rect.shrink(1.0), false, false, call).is_some();
+    if !shown {
+        let glyph = if s.kind == Kind::Screen { Glyph::Screen } else { Glyph::Camera };
+        let icon = Rect::from_center_size(rect.center() - vec2(0.0, 10.0), vec2(26.0, 26.0));
+        parts::paint_glyph(ui.painter(), icon, glyph, MUTED);
+        if s.kind == Kind::Screen && !s.mine && !call {
+            ui.painter().text(
+                rect.center() + vec2(0.0, 16.0),
+                egui::Align2::CENTER_CENTER,
+                t().voice.watch,
+                egui::FontId::proportional(12.5),
+                TEXT,
+            );
         }
-        if response.hovered() {
-            ui.painter().rect_stroke(tile, 6.0, Stroke::new(1.5, crate::ui::theme::ACCENT), egui::StrokeKind::Inside);
-        }
-        name_line(ui, tile, &s.name, s.kind == Kind::Screen);
-        if response.clicked() && !s.mine {
-            chat_ui.stage.choose(Some((s.participant, s.kind)));
-        }
+    }
+    if response.hovered() {
+        ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.5, crate::ui::theme::ACCENT), egui::StrokeKind::Inside);
+    }
+    name_line(ui, rect, &s.name, s.kind == Kind::Screen);
+    if response.clicked() {
+        chat_ui.stage.choose(Some((s.participant, s.kind)));
     }
 }
 
@@ -305,7 +416,7 @@ fn large(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut
     let v = &t().voice;
     let bar = Rect::from_min_size(egui::pos2(rect.left(), rect.bottom() - 44.0), vec2(rect.width(), 44.0));
     let picture_rect = Rect::from_min_max(rect.min, egui::pos2(rect.right(), bar.top()));
-    if !paint_picture(ui, chat, s, picture_rect, true, chat_ui.stage.low, call) {
+    if paint_picture(ui, chat, s, picture_rect, true, chat_ui.stage.low, call).is_none() {
         ui.put(Rect::from_center_size(picture_rect.center(), vec2(24.0, 24.0)), egui::Spinner::new());
     }
     if s.kind == Kind::Screen && s.screen.as_ref().is_some_and(|sc| sc.minimized) {
@@ -338,7 +449,7 @@ fn large(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut
                     chat_ui.stage.theater = !on;
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!on));
                 }
-                if !chat_ui.stage.theater && ui.add(egui::Button::new(v.pop_out)).clicked() {
+                if !chat_ui.stage.theater && !s.mine && ui.add(egui::Button::new(v.pop_out)).clicked() {
                     let low = chat_ui.stage.low;
                     let tracks: Vec<(u32, String)> = if call {
                         Vec::new()
@@ -351,7 +462,7 @@ fn large(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut
                     };
                     super::popout::open(chat.clone(), s.participant, kinds(s, true, low, call), tracks, s.name.clone());
                 }
-                if s.kind != Kind::Screen {
+                if s.kind != Kind::Screen || s.mine {
                     return;
                 }
                 // Control is asked for a channel's whole-screen share.

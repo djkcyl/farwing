@@ -3,7 +3,8 @@
 //! again from the forwarder, or a keyframe is asked for), made into frames,
 //! opened in end-to-end channels, decoded on the window's graphics adapter
 //! and drawn into a shared texture the window shows
-//! (`ui::video_textures`).
+//! (`ui::video_textures`). This device's own camera and share are decoded
+//! the same way from what it sends (`Preview`).
 
 use crate::media::frame_crypto::{Codec, Decryptor};
 use crate::platform::windows::decoder::{WindowsDecodedFrame, WindowsVideoDecoder};
@@ -156,6 +157,53 @@ impl Pictures {
         for (_, feed) in lock(&self.0).drain() {
             feed.task.abort();
         }
+    }
+}
+
+/// This device's own camera or share as it sends it: the encoded frames
+/// (before end-to-end encryption) decoded like a watched track's, so the
+/// stage shows what the others see.
+pub(crate) struct Preview {
+    frames: SyncSender<Vec<u8>>,
+    picture: Arc<Mutex<Option<Picture>>>,
+    wants_keyframe: Arc<AtomicBool>,
+    /// A frame did not fit: the next ones wait for a keyframe.
+    broken: AtomicBool,
+}
+
+impl Preview {
+    pub(crate) fn start() -> Option<Self> {
+        let picture: Arc<Mutex<Option<Picture>>> = Arc::default();
+        let wants_keyframe = Arc::new(AtomicBool::new(false));
+        let (frames, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(4);
+        let (shown, wants) = (Arc::clone(&picture), Arc::clone(&wants_keyframe));
+        std::thread::Builder::new()
+            .name("voice-preview".into())
+            .spawn(move || {
+                if let Err(e) = decode_loop(&rx, &shown, &AtomicU64::new(0), &wants, true) {
+                    tracing::warn!(error = %format!("{e:#}"), "voice preview stopped");
+                }
+            })
+            .ok()?;
+        Some(Self {
+            frames,
+            picture,
+            wants_keyframe,
+            broken: AtomicBool::new(false),
+        })
+    }
+
+    /// Takes a frame as sent (Annex B); true when it needs a keyframe.
+    pub(crate) fn push(&self, frame: &[u8], keyframe: bool) -> bool {
+        if keyframe || !self.broken.load(Ordering::Acquire) {
+            let full = matches!(self.frames.try_send(frame.to_vec()), Err(TrySendError::Full(_)));
+            self.broken.store(full, Ordering::Release);
+        }
+        self.wants_keyframe.swap(false, Ordering::AcqRel) || self.broken.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn picture(&self) -> Option<Picture> {
+        *lock(&self.picture)
     }
 }
 

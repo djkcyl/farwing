@@ -612,9 +612,10 @@ interface Source {
 }
 
 /// The pictures of the voice channel this browser is in, above its
-/// messages: cameras and screens in a grid, one of them large when chosen.
-/// It watches the small camera picture in the grid and the large one when
-/// chosen; a screen only once opened (720p30 if asked for).
+/// messages: cameras and screens in a grid, or the camera of whoever speaks
+/// large with the rest in a row ("speaker"), and one of them large when
+/// chosen. It watches small camera pictures small and a large camera
+/// large; a screen only once opened (720p30 if asked for).
 export function VoiceStage({ group, channel }: { group: GroupState; channel: Channel }) {
   const t = useT();
   const state = useChat();
@@ -622,6 +623,9 @@ export function VoiceStage({ group, channel }: { group: GroupState; channel: Cha
   const [focus, setFocus] = useState<{ participant: number; kind: 'cam' | 'screen' }>();
   const [previous, setPrevious] = useState<{ participant: number; kind: 'cam' | 'screen' }>();
   const [low, setLow] = useState(false);
+  const [speaker, setSpeaker] = useState(false);
+  /// Whose camera the speaker layout shows, since when.
+  const [talker, setTalker] = useState<{ participant: number; since: number }>();
   const stage = useRef<HTMLDivElement>(null);
   const people = state.snap?.voice.find((x) => x.channel_id === channel.id)?.participants ?? [];
   const here = !!v.my && !v.my.call && v.my.channel === channel.id;
@@ -633,7 +637,35 @@ export function VoiceStage({ group, channel }: { group: GroupState; channel: Cha
     ...(person.tracks.includes('screen') ? [{ person, kind: 'screen' as const }] : []),
   ]);
   const focused = focus && sources.find((s) => s.person.participant === focus.participant && s.kind === focus.kind);
+  const cameras = sources
+    .filter((s) => s.kind === 'cam' && s.person.participant !== me)
+    .map((s) => s.person.participant);
+  const talking =
+    !focused && speaker && talker
+      ? sources.find((s) => s.kind === 'cam' && s.person.participant === talker.participant)
+      : undefined;
+  const large = focused ?? talking;
   const key = sources.map((s) => `${s.person.participant}${s.kind}`).join(',');
+  // The speaker layout follows who speaks: the one shown stays while it
+  // speaks and at least 1.5 s, then the camera of one speaking now.
+  useEffect(() => {
+    const now = Date.now();
+    const current = talker && cameras.includes(talker.participant) ? talker : undefined;
+    let next: number | undefined;
+    if (speaker && cameras.length) {
+      next =
+        current && (v.speaking.includes(current.participant) || now - current.since < 1500)
+          ? current.participant
+          : (v.speaking.find((p) => cameras.includes(p)) ?? current?.participant ?? cameras[0]);
+    }
+    if (next === current?.participant) {
+      if (current !== talker) setTalker(current);
+      return;
+    }
+    if (current) setPrevious({ participant: current.participant, kind: 'cam' });
+    setTalker(next === undefined ? undefined : { participant: next, since: now });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speaker, key, v.speaking, talker, me]);
   // What this browser watches follows the layout; the earlier large picture
   // stays a moment so the new one starts without a gap.
   useEffect(() => {
@@ -642,7 +674,7 @@ export function VoiceStage({ group, channel }: { group: GroupState; channel: Cha
     for (const s of sources) {
       const p = s.person.participant;
       if (p === me) continue;
-      const big = focused?.person.participant === p && focused.kind === s.kind;
+      const big = large?.person.participant === p && large.kind === s.kind;
       const was = previous?.participant === p && previous.kind === s.kind;
       if (s.kind === 'cam') {
         refs.push({ participant: p, kind: big ? 'cam_hi' : 'cam_lo' });
@@ -654,7 +686,7 @@ export function VoiceStage({ group, channel }: { group: GroupState; channel: Cha
     }
     voice.watchTracks(refs);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [here, key, focused?.person.participant, focused?.kind, previous, low, me]);
+  }, [here, key, large?.person.participant, large?.kind, previous, low, me]);
   useEffect(() => {
     if (!previous) return;
     const timer = window.setTimeout(() => setPrevious(undefined), 2000);
@@ -763,8 +795,40 @@ export function VoiceStage({ group, channel }: { group: GroupState; channel: Cha
       </div>
     );
   }
+  const switcher = cameras.length > 0 && (
+    <div className="voice-stage-head">
+      <Segmented<'grid' | 'speaker'>
+        value={speaker ? 'speaker' : 'grid'}
+        options={[
+          { value: 'grid', label: t.chat.voice.grid },
+          { value: 'speaker', label: t.chat.voice.speaker },
+        ]}
+        onChange={(layout) => setSpeaker(layout === 'speaker')}
+      />
+    </div>
+  );
+  if (talking) {
+    const track = trackOf(talking, true);
+    return (
+      <div className="voice-stage speaker" ref={stage}>
+        {switcher}
+        <button
+          type="button"
+          className="voice-big"
+          onClick={() => choose({ participant: talking.person.participant, kind: 'cam' })}
+        >
+          {track ? <VideoTile track={track} /> : <Loading />}
+          <span className="voice-tile-name">
+            <span className="ellipsis">{nameOf(talking.person)}</span>
+          </span>
+        </button>
+        {sources.length > 1 && <div className="voice-row">{sources.filter((s) => s !== talking).map(tile)}</div>}
+      </div>
+    );
+  }
   return (
     <div className="voice-stage" ref={stage}>
+      {switcher}
       {sources.map(tile)}
     </div>
   );

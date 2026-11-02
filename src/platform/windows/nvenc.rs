@@ -132,6 +132,7 @@ pub(crate) fn warm_up(device: &ID3D11Device) -> Result<()> {
         device,
         640,
         360,
+        None,
         rate,
         Format::AVC,
         super::format::Color::Sdr,
@@ -157,6 +158,9 @@ pub(crate) struct Encoder {
     format: Format,
     /// Long-term reference slots in use (H.264/HEVC only), 0 without.
     ltr_slots: u8,
+    /// The largest size the session takes without a new one (made with
+    /// `new_within`); `None`: a size change needs a new encoder.
+    room: Option<(u32, u32)>,
 }
 
 /// Two long-term references, P frames from one reference
@@ -216,15 +220,19 @@ fn input_rejected(error: &str) -> String {
 }
 
 impl Encoder {
-    pub(crate) fn new_format(
+    /// An encoder that later takes any size within `room` on the same
+    /// session (`reconfigure_stream`); without one, a size change needs a
+    /// new encoder.
+    pub(crate) fn new_within(
         device: &ID3D11Device,
-        width: u32,
-        height: u32,
+        (width, height): (u32, u32),
+        room: Option<(u32, u32)>,
         rate: Rate,
         format: Format,
         color: super::format::Color,
     ) -> Result<Self> {
-        let encoder = Self::build(device, width, height, rate, format, color)?;
+        let room = room.map(|(w, h)| (w.max(width), h.max(height)));
+        let encoder = Self::build(device, width, height, room, rate, format, color)?;
         tracing::info!(
             width,
             height,
@@ -240,6 +248,7 @@ impl Encoder {
         device: &ID3D11Device,
         width: u32,
         height: u32,
+        room: Option<(u32, u32)>,
         rate: Rate,
         format: Format,
         color: super::format::Color,
@@ -249,6 +258,7 @@ impl Encoder {
                 device,
                 width,
                 height,
+                None,
                 rate,
                 format,
                 Conversion::planar_44410(device, (width, height), color)?,
@@ -256,13 +266,14 @@ impl Encoder {
         }
         let conversion = Conversion::new(device, (width, height), format, color)?;
         let compute = conversion.is_compute();
-        match Self::create(device, width, height, rate, format, conversion) {
+        match Self::create(device, width, height, room, rate, format, conversion) {
             Err(error) if compute && error.downcast_ref::<InputRejected>().is_some() => {
                 tracing::debug!(%error, "NVENC registered compute input rejected; trying pixel candidate");
                 Self::create(
                     device,
                     width,
                     height,
+                    room,
                     rate,
                     format,
                     Conversion::pixel(device, (width, height), format, 1, color)?,
@@ -275,6 +286,7 @@ impl Encoder {
         device: &ID3D11Device,
         width: u32,
         height: u32,
+        room: Option<(u32, u32)>,
         rate: Rate,
         format: Format,
         conversion: Conversion,
@@ -328,6 +340,7 @@ impl Encoder {
             maximum: (0, 0),
             format,
             ltr_slots: 0,
+            room: None,
         };
         let _current = encoder
             .cuda
@@ -404,6 +417,8 @@ impl Encoder {
                 "{}",
                 t().system.nvenc_size_exceeds_capability
             );
+            encoder.room = room.map(|(w, h)| (w.min(encoder.maximum.0), h.min(encoder.maximum.1)));
+            let (room_width, room_height) = encoder.room.unwrap_or((width, height));
             let mut preset = nv::NV_ENC_PRESET_CONFIG::default();
             preset.version = nv::NV_ENC_PRESET_CONFIG_VER;
             preset.presetCfg.version = nv::NV_ENC_CONFIG_VER;
@@ -526,8 +541,8 @@ impl Encoder {
             init.frameRateDen = 1;
             init.enablePTD = 1;
             init.enableEncodeAsync = 0;
-            init.maxEncodeWidth = width;
-            init.maxEncodeHeight = height;
+            init.maxEncodeWidth = room_width;
+            init.maxEncodeHeight = room_height;
             init.tuningInfo = tuning;
             init.encodeConfig = &mut encoder.config;
             let mut status = f.nvEncInitializeEncoder.unwrap()(encoder.session, &mut init);
@@ -591,6 +606,96 @@ impl Encoder {
     }
     pub(crate) fn maximum_size(&self) -> (u32, u32) {
         self.maximum
+    }
+
+    /// The same session at `size` within its room: a new input, the rate
+    /// planned for that size and an IDR next. False when it does not fit.
+    pub(crate) fn reconfigure_stream(
+        &mut self,
+        device: &ID3D11Device,
+        size: (u32, u32),
+        format: Format,
+        rate: Rate,
+        color: super::format::Color,
+    ) -> Result<bool> {
+        let Some(room) = self.room else {
+            return Ok(false);
+        };
+        if format != self.format
+            || format.chroma != 1
+            || self.cuda.is_some()
+            || size.0 > room.0
+            || size.1 > room.1
+            || size.0 % 2 != 0
+            || size.1 % 2 != 0
+            || !(1..=144).contains(&rate.fps)
+        {
+            return Ok(false);
+        }
+        let conversion = if self.conversion.is_compute() {
+            Conversion::compute(device, size, format, 1, color)?
+        } else {
+            Conversion::pixel(device, size, format, 1, color)?
+        };
+        let f = &self.api.functions;
+        let mut resource = nv::NV_ENC_REGISTER_RESOURCE::default();
+        resource.version = nv::NV_ENC_REGISTER_RESOURCE_VER;
+        resource.resourceType = nv::NV_ENC_INPUT_RESOURCE_TYPE::NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX;
+        resource.width = size.0;
+        resource.height = size.1;
+        resource.resourceToRegister = conversion.output.as_raw();
+        resource.bufferFormat = match format.depth {
+            10 => nv::NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_YUV420_10BIT,
+            _ => nv::NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_NV12,
+        };
+        resource.bufferUsage = nv::NV_ENC_BUFFER_USAGE::NV_ENC_INPUT_IMAGE;
+        let mut config = self.config;
+        set_rate(&mut config, self.format.codec, rate, rate.fps, size);
+        let mut params = nv::NV_ENC_RECONFIGURE_PARAMS::default();
+        params.version = nv::NV_ENC_RECONFIGURE_PARAMS_VER;
+        params.reInitEncodeParams = self.init;
+        params.reInitEncodeParams.encodeWidth = size.0;
+        params.reInitEncodeParams.encodeHeight = size.1;
+        params.reInitEncodeParams.darWidth = size.0;
+        params.reInitEncodeParams.darHeight = size.1;
+        params.reInitEncodeParams.frameRateNum = rate.fps;
+        params.reInitEncodeParams.encodeConfig = &mut config;
+        params.set_resetEncoder(1);
+        params.set_forceIDR(1);
+        // SAFETY: an open session; the new input outlives its registration
+        // (kept with the conversion), `config` lives through the call, and
+        // encoding is synchronous, so the old input is not mapped.
+        unsafe {
+            self.api.check(
+                self.session,
+                f.nvEncRegisterResource.unwrap()(self.session, &mut resource),
+                "RegisterResource",
+            )?;
+            ensure!(
+                !resource.registeredResource.is_null(),
+                "{}",
+                t().system.nvenc_no_registered_resource
+            );
+            let result = self.api.check(
+                self.session,
+                f.nvEncReconfigureEncoder.unwrap()(self.session, &mut params),
+                "ReconfigureEncoder",
+            );
+            if let Err(error) = result {
+                f.nvEncUnregisterResource.unwrap()(self.session, resource.registeredResource);
+                return Err(error);
+            }
+            f.nvEncUnregisterResource.unwrap()(self.session, self.registered);
+        }
+        self.registered = resource.registeredResource;
+        self.conversion = conversion;
+        self.config = config;
+        self.init = params.reInitEncodeParams;
+        self.init.encodeConfig = ptr::null_mut();
+        self.frame_rate = super::encoder_rate::Controller::new(rate);
+        self.tier = Some(rate.tier);
+        tracing::info!(width = size.0, height = size.1, fps = rate.fps, "NVENC stream reconfigured");
+        Ok(true)
     }
 
     pub(crate) fn configure_rate(&mut self, rate: Rate) -> Result<bool> {

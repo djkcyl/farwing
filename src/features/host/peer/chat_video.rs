@@ -131,6 +131,8 @@ pub(crate) struct VideoSlot {
     keyframe: Arc<AtomicBool>,
     transport: Transport,
     timeline: Arc<Timeline>,
+    /// This device's own view of what the track sends.
+    preview: Mutex<Option<crate::features::voice::video::Preview>>,
 }
 
 impl VideoSlot {
@@ -163,7 +165,15 @@ impl VideoSlot {
 
     /// `false` once the uplink is gone.
     fn send(&self, frame: Encoded) -> bool {
+        if lock(&self.preview).as_ref().is_some_and(|p| p.push(&frame.data, frame.keyframe)) {
+            self.keyframe.store(true, Ordering::Release);
+        }
         self.frames.blocking_send(frame).is_ok()
+    }
+
+    /// Shows what the track sends on this device too, or stops.
+    fn show_here(&self, on: bool) {
+        *lock(&self.preview) = on.then(crate::features::voice::video::Preview::start).flatten();
     }
 }
 
@@ -408,6 +418,7 @@ impl ChatUplink {
                 keyframe,
                 transport: slot_transport,
                 timeline,
+                preview: Mutex::new(None),
             }));
         }
         // Nothing is shown yet.
@@ -508,7 +519,14 @@ impl ChatUplink {
     fn pause(&self, kind: &str) {
         if let Some(slot) = self.slot(kind) {
             slot.activate(None);
+            slot.show_here(false);
         }
+    }
+
+    /// This device's own camera (`cam_hi`) or share (`screen`) as sent.
+    pub(crate) fn own_picture(&self, kind: &str) -> Option<crate::features::voice::video::Picture> {
+        let slot = self.slot(kind)?;
+        lock(&slot.preview).as_ref()?.picture()
     }
 
     /// Each track's media section (after the offer): (kind, mid).
@@ -533,6 +551,7 @@ impl ChatUplink {
         let lo = self.slot(track::CAM_LO);
         hi.keyframe.store(true, Ordering::Release);
         hi.activate(Some(CAM_HI.2));
+        hi.show_here(true);
         if let Some(lo) = &lo {
             lo.keyframe.store(true, Ordering::Release);
             lo.activate(Some(CAM_LO.2));
@@ -572,6 +591,7 @@ impl ChatUplink {
         let copy = self.slot(track::SCREEN_720);
         main.keyframe.store(true, Ordering::Release);
         main.activate(Some(quality.shape().2));
+        main.show_here(true);
         let control = Arc::new(ShareControl {
             quality: Mutex::new(quality),
             copy: AtomicBool::new(false),
@@ -675,9 +695,15 @@ impl ChatUplink {
     }
 }
 
-/// An encoder for pictures of `size` at `rate`: hardware first.
-fn encoder(device: &windows::Win32::Graphics::Direct3D11::ID3D11Device, size: (u32, u32), rate: Rate) -> Result<Encoder> {
-    Encoder::hardware_format(device, size, Format::AVC, rate, crate::media::encoding::Color::Sdr)
+/// An encoder for pictures of `size` (later any within `room`) at `rate`:
+/// hardware first.
+fn encoder(
+    device: &windows::Win32::Graphics::Direct3D11::ID3D11Device,
+    size: (u32, u32),
+    room: (u32, u32),
+    rate: Rate,
+) -> Result<Encoder> {
+    Encoder::hardware_within(device, size, Some(room), Format::AVC, rate, crate::media::encoding::Color::Sdr)
         .or_else(|e| {
             tracing::debug!(error = %format!("{e:#}"), "voice picture: software encoder");
             Encoder::software_format(device, size, Format::AVC, rate)
@@ -696,23 +722,27 @@ fn rate(bps: u32, fps: u32, tier: Tier) -> Rate {
 }
 
 /// One encoding of a capture: its encoder (made for the first picture's
-/// size) and slot.
+/// size, set to another size on the same session where the driver allows)
+/// and slot.
 struct Encoding<'a> {
     slot: &'a VideoSlot,
     cap: u32,
     fps: u32,
     tier: Tier,
+    /// The largest picture this encoding takes.
+    room: (u32, u32),
     encoder: Option<(Encoder, (u32, u32))>,
     last: Option<Instant>,
 }
 
 impl<'a> Encoding<'a> {
-    fn new(slot: &'a VideoSlot, cap: u32, fps: u32, tier: Tier) -> Self {
+    fn new(slot: &'a VideoSlot, cap: u32, fps: u32, tier: Tier, room: (u32, u32)) -> Self {
         Self {
             slot,
             cap,
             fps,
             tier,
+            room,
             encoder: None,
             last: None,
         }
@@ -734,8 +764,24 @@ impl<'a> Encoding<'a> {
     ) -> Result<bool> {
         let bps = self.slot.rate(self.cap);
         let mut keyframe = self.slot.take_keyframe();
-        if self.encoder.as_ref().is_none_or(|(_, s)| *s != size) {
-            self.encoder = Some((encoder(device, size, rate(bps, self.fps, self.tier))?, size));
+        if let Some((enc, shape)) = self.encoder.as_mut()
+            && *shape != size
+        {
+            let rate = rate(bps, self.fps, self.tier);
+            match enc.reconfigure_stream(device, size, Format::AVC, rate, crate::media::encoding::Color::Sdr) {
+                Ok(true) => {
+                    *shape = size;
+                    keyframe = true;
+                }
+                Ok(false) => self.encoder = None,
+                Err(e) => {
+                    tracing::debug!(error = %format!("{e:#}"), "voice picture: encoder not resized");
+                    self.encoder = None;
+                }
+            }
+        }
+        if self.encoder.is_none() {
+            self.encoder = Some((encoder(device, size, self.room, rate(bps, self.fps, self.tier))?, size));
             keyframe = true;
         }
         if self.last.is_none() {
@@ -807,8 +853,8 @@ fn camera_loop(spec: &crate::media::camera::Spec, hi: &VideoSlot, lo: Option<&Vi
     let device = source.device().clone();
     let mut small = crate::platform::windows::preprocess::Converter::new(&device)?;
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut big = Encoding::new(hi, CAM_HI.2, CAM_HI_FPS, Tier::P720);
-    let mut low = lo.map(|lo| Encoding::new(lo, CAM_LO.2, CAM_LO_FPS, Tier::P720));
+    let mut big = Encoding::new(hi, CAM_HI.2, CAM_HI_FPS, Tier::P720, (CAM_HI.0, CAM_HI.1));
+    let mut low = lo.map(|lo| Encoding::new(lo, CAM_LO.2, CAM_LO_FPS, Tier::P720, (CAM_LO.0, CAM_LO.1)));
     while !stop.load(Ordering::Acquire) {
         let Some(frame) = source.next(100, Tier::P720, false, false, (CAM_HI.0, CAM_HI.1))? else {
             continue;
@@ -909,8 +955,10 @@ fn screen_loop(
     let cancel = Arc::new(AtomicBool::new(false));
     let mut quality = *lock(&control.quality);
     let (_, fps, cap) = quality.shape();
-    let mut picture = Encoding::new(main, cap, fps, Tier::P1080);
-    let mut p720 = copy.map(|copy| Encoding::new(copy, SCREEN_720.2, 30, Tier::P720));
+    // Room for either quality: a change is the same encoder at a new size.
+    let room = Quality::P1080F60.shape().0;
+    let mut picture = Encoding::new(main, cap, fps, Tier::P1080, room);
+    let mut p720 = copy.map(|copy| Encoding::new(copy, SCREEN_720.2, 30, Tier::P720, (SCREEN_720.0, SCREEN_720.1)));
     // The last picture, encoded again at the rate when the screen is still.
     let mut last: Option<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D> = None;
     while !stop.load(Ordering::Acquire) {

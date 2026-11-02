@@ -458,7 +458,7 @@ impl DeviceCenterApp {
         }
         // The voice channel's or call's pictures over its messages.
         let (sources, call) = stage::sources(chat, state, channel_id);
-        let stage_h = stage::height(&self.chat_ui, sources.len(), body.width(), body.height());
+        let stage_h = stage::height(&self.chat_ui, &sources, body.width(), body.height());
         if stage_h > 0.0 {
             let area = egui::Rect::from_min_size(body.min, vec2(body.width(), stage_h));
             ui.scope_builder(egui::UiBuilder::new().max_rect(area).id_salt("chat-stage"), |ui| {

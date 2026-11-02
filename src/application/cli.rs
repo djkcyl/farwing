@@ -1590,8 +1590,18 @@ pub async fn dev_voice(
         let mut samples = 0u32;
         let mut connected_at = None;
         let mut input_peak = 0f32;
+        // `<id>:<quality>><quality>`: the share changes quality halfway.
+        let mut requality: Option<(crate::features::chat::ShareTarget, crate::features::host::peer::chat_video::Quality, bool)> =
+            None;
         while start.elapsed() < Duration::from_secs(seconds) {
             let view = chat.view();
+            if let Some((target, quality, audio)) = requality
+                && start.elapsed() >= Duration::from_secs(seconds) / 2
+            {
+                requality = None;
+                tracing::info!(quality = quality.name(), "dev voice: share quality changes");
+                chat.share_screen(Some((target, quality, audio)));
+            }
             if answer
                 && !answered
                 && let Some(ring) = view
@@ -1613,12 +1623,16 @@ pub async fn dev_voice(
                 }
                 if let Some(s) = &screen {
                     use crate::features::host::peer::chat_video::Quality;
-                    let (id, quality) = match s.rsplit_once(':') {
-                        Some((id, q)) => match Quality::ALL.into_iter().find(|x| x.name() == q) {
-                            Some(quality) => (id, quality),
-                            None => (s.as_str(), Quality::P1080F30),
-                        },
-                        None => (s.as_str(), Quality::P1080F30),
+                    let named = |q: &str| Quality::ALL.into_iter().find(|x| x.name() == q);
+                    let (id, quality, later) = match s.rsplit_once(':') {
+                        Some((id, q)) => {
+                            let (first, then) = q.split_once('>').map_or((q, None), |(a, b)| (a, named(b)));
+                            match named(first) {
+                                Some(quality) => (id, quality, then),
+                                None => (s.as_str(), Quality::P1080F30, None),
+                            }
+                        }
+                        None => (s.as_str(), Quality::P1080F30, None),
                     };
                     // `window:<title part>` or `window:#<process ID>`.
                     let target = match id.strip_prefix("window:") {
@@ -1632,7 +1646,10 @@ pub async fn dev_voice(
                         None => Some(crate::features::chat::ShareTarget::Screen(id.parse().ok())),
                     };
                     match target {
-                        Some(target) => chat.share_screen(Some((target, quality, audio))),
+                        Some(target) => {
+                            chat.share_screen(Some((target, quality, audio)));
+                            requality = later.map(|q| (target, q, audio));
+                        }
                         None => tracing::warn!(id, "dev voice: no such window"),
                     }
                 }
@@ -1665,6 +1682,14 @@ pub async fn dev_voice(
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         let view = chat.view();
+        // This device's own camera and share as it sends them.
+        let own: Vec<serde_json::Value> = [track::CAM_HI, track::SCREEN]
+            .iter()
+            .filter_map(|kind| {
+                let p = chat.my_picture(kind)?;
+                Some(serde_json::json!({"kind": kind, "width": p.width, "height": p.height, "fresh": p.fresh()}))
+            })
+            .collect();
         let report = serde_json::json!({
             "connected_after_ms": connected_at,
             "my_voice": view.my_voice.as_ref().map(|v| serde_json::json!({
@@ -1675,6 +1700,7 @@ pub async fn dev_voice(
             "input_peak": input_peak,
             "heard": chat.voice_stats(),
             "pictures": chat.picture_stats(),
+            "own": own,
             "errors": view.errors,
         });
         println!("{}", serde_json::to_string_pretty(&report)?);

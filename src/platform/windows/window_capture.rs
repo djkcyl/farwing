@@ -149,6 +149,17 @@ fn adapter(hwnd: HWND) -> Option<u64> {
     Some(screen.render_adapter.unwrap_or(screen.adapter))
 }
 
+/// Asks once to capture without the yellow border (Windows 11; granted to
+/// desktop programs without asking anyone).
+fn borderless() {
+    static ASKED: std::sync::Once = std::sync::Once::new();
+    ASKED.call_once(|| {
+        use windows::Graphics::Capture::{GraphicsCaptureAccess, GraphicsCaptureAccessKind};
+        let status = GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Borderless).and_then(|op| op.join());
+        tracing::info!(?status, "window capture: borderless access");
+    });
+}
+
 /// A window being captured; stops when dropped.
 pub(crate) struct Capture {
     device: ID3D11Device,
@@ -195,7 +206,10 @@ impl Capture {
             }))?;
             let session = pool.CreateCaptureSession(&item)?;
             // Windows 11 only; the border stays elsewhere.
-            let _ = session.SetIsBorderRequired(false);
+            borderless();
+            if let Err(e) = session.SetIsBorderRequired(false) {
+                tracing::debug!(error = %e, "window capture keeps its border");
+            }
             let _ = session.SetIsCursorCaptureEnabled(true);
             session.StartCapture()?;
             Ok(Self {

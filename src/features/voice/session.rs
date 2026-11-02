@@ -293,6 +293,11 @@ impl ChannelVoice {
         self.republish().await
     }
 
+    /// This device's own camera or share as it sends it.
+    pub(crate) fn own_picture(&self, kind: &str) -> Option<super::video::Picture> {
+        self.uplink.own_picture(kind)
+    }
+
     /// Shares `shown` at `quality` (with its sound or not), or stops.
     pub(crate) async fn set_screen(
         &self,
@@ -698,6 +703,11 @@ impl CallVoice {
 
     pub(crate) fn camera_on(&self) -> bool {
         self.link.try_lock().ok().and_then(|l| l.as_ref().map(|l| l.camera_on())).unwrap_or(false)
+    }
+
+    /// This device's own camera or share as it sends it.
+    pub(crate) fn own_picture(&self, kind: &str) -> Option<super::video::Picture> {
+        self.link.try_lock().ok()?.as_ref()?.own_picture(kind)
     }
 
     /// Shares `shown` at `quality` (with its sound or not), or stops.

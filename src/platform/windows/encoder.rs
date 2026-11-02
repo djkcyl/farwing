@@ -278,6 +278,7 @@ impl Encoder {
     ) -> Result<bool> {
         match self {
             Self::Intel(encoder) => encoder.reconfigure_stream(device, size, format, rate, color),
+            Self::Nvidia(encoder) => encoder.reconfigure_stream(device, size, format, rate, color),
             _ => Ok(false),
         }
     }
@@ -288,12 +289,24 @@ impl Encoder {
         rate: super::format::Rate,
         color: super::format::Color,
     ) -> Result<Self> {
+        Self::hardware_within(device, size, None, format, rate, color)
+    }
+    /// A hardware encoder that later changes to sizes within `room` on the
+    /// same session where the driver allows (`reconfigure_stream`).
+    pub(crate) fn hardware_within(
+        device: &ID3D11Device,
+        size: (u32, u32),
+        room: Option<(u32, u32)>,
+        format: super::format::Format,
+        rate: super::format::Rate,
+        color: super::format::Color,
+    ) -> Result<Self> {
         unsafe {
             let dxgi: windows::Win32::Graphics::Dxgi::IDXGIDevice = device.cast()?;
             let desc = dxgi.GetAdapter()?.GetDesc()?;
             match desc.VendorId {
-                0x10de => Ok(Self::Nvidia(super::nvenc::Encoder::new_format(
-                    device, size.0, size.1, rate, format, color,
+                0x10de => Ok(Self::Nvidia(super::nvenc::Encoder::new_within(
+                    device, size, room, rate, format, color,
                 )?)),
                 0x1002 => Ok(Self::Amd(super::amf::Encoder::new(
                     device, size, format, rate, color,

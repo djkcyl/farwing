@@ -119,6 +119,13 @@ impl Active {
             Self::Call(c) => &c.pictures,
         }
     }
+
+    fn own_picture(&self, kind: &str) -> Option<crate::features::voice::video::Picture> {
+        match self {
+            Self::Channel(v) => v.own_picture(kind),
+            Self::Call(c) => c.own_picture(kind),
+        }
+    }
 }
 
 /// What to share in a voice channel.
@@ -631,6 +638,12 @@ impl ChatService {
     /// The newest picture of `participant`'s `kind`, if watched.
     pub(crate) fn picture(&self, participant: u32, kind: &str) -> Option<crate::features::voice::video::Picture> {
         lock(&self.inner.voice).as_ref()?.pictures().picture(participant, kind)
+    }
+
+    /// This device's own camera (`cam_hi`) or share (`screen`) as it
+    /// sends it.
+    pub(crate) fn my_picture(&self, kind: &str) -> Option<crate::features::voice::video::Picture> {
+        lock(&self.inner.voice).clone()?.own_picture(kind)
     }
 
     /// What each watched picture brought (`dev voice`).

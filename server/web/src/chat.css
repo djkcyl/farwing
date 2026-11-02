@@ -327,6 +327,38 @@
 .voice-stage:fullscreen {
   max-height: none;
 }
+.voice-stage-head {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+}
+.voice-stage.speaker {
+  display: flex;
+  flex-direction: column;
+  height: 56vh;
+  max-height: 56vh;
+  overflow: hidden;
+}
+.voice-stage.speaker .voice-big {
+  border: none;
+  padding: 0;
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.voice-row {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  overflow-x: auto;
+}
+.voice-row .voice-tile {
+  flex: none;
+  width: 160px;
+}
 .voice-tile {
   position: relative;
   aspect-ratio: 16 / 9;
