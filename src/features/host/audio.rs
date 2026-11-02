@@ -88,6 +88,8 @@ pub(crate) trait AudioOwner: Send + Sync {
     fn audio_quality(&self) -> crate::media::audio::encoder::Quality;
     fn audio_device_changes(&self) -> tokio::sync::watch::Receiver<Option<Device>>;
     fn audio_status(&self, status: Status);
+    /// The owner asks the desktop's sound to leave out this device's calls.
+    fn exclude_calls(&self) -> bool;
 }
 
 impl AudioOwner for Lease {
@@ -105,6 +107,9 @@ impl AudioOwner for Lease {
     }
     fn audio_status(&self, status: Status) {
         Lease::audio_status(self, status);
+    }
+    fn exclude_calls(&self) -> bool {
+        self.host().exclude_calls()
     }
 }
 
@@ -125,6 +130,9 @@ impl AudioOwner for HostAudio {
         self.0.audio_device_changes()
     }
     fn audio_status(&self, _status: Status) {}
+    fn exclude_calls(&self) -> bool {
+        self.0.exclude_calls()
+    }
 }
 
 struct Shared {
@@ -302,9 +310,22 @@ impl Audio {
     pub fn transmitter(&self) -> &Transmitter {
         &self.0.transmitter
     }
+    /// The process tree the desktop's sound leaves out: the device center
+    /// (its calls, §9.4), when the owner asks, the capture follows the
+    /// default output and this Windows captures per process.
+    fn excluded(&self, follows_default: bool) -> Option<u32> {
+        if !follows_default
+            || !self.0.lease.exclude_calls()
+            || !crate::platform::windows::process_loopback::supported()
+        {
+            return None;
+        }
+        crate::platform::windows::process_loopback::control_center()
+    }
     fn open(
         &self,
         endpoint: &crate::platform::windows::loopback::Endpoint,
+        excluded: Option<u32>,
         generation: u64,
         origin: Instant,
     ) -> anyhow::Result<crate::platform::windows::loopback::Subscription> {
@@ -314,6 +335,7 @@ impl Audio {
         // One capture per endpoint serves every participant.
         let capture = crate::platform::windows::loopback::subscribe(
             endpoint,
+            excluded,
             Arc::new(move |samples, at| {
                 if !source.current(generation) {
                     return;
@@ -355,6 +377,8 @@ impl Audio {
         let mut choice = self.0.lease.audio_device_changes();
         let mut selected_device = choice.borrow_and_update().clone();
         let mut stream: Option<Capture> = None;
+        // The process tree the open stream leaves out.
+        let mut excluded: Option<u32> = None;
         let mut devices: Option<Devices> = None;
         let mut endpoint: Option<Endpoint> = None;
         let mut generation = self.0.generation.load(Ordering::Acquire);
@@ -426,11 +450,21 @@ impl Audio {
                         }
                         endpoint = selected;
                         next_device_check = now + Duration::from_secs(2);
+                        // The device center started or quit, or the owner
+                        // changed the setting: open again.
+                        if stream.is_some() && self.excluded(selected_device.is_none()) != excluded {
+                            self.invalidate();
+                            stream = None;
+                            started = None;
+                            generation = self.0.generation.load(Ordering::Acquire);
+                            retry.wake(now);
+                        }
                     }
                 }
                 if stream.is_none() && retry.ready(now) {
                     if let Some(endpoint) = &endpoint {
-                        let capture = self.open(endpoint, generation, origin)?;
+                        excluded = self.excluded(selected_device.is_none());
+                        let capture = self.open(endpoint, excluded, generation, origin)?;
                         if !self.current(generation) {
                             return Ok(());
                         }

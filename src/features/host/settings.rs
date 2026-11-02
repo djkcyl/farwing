@@ -27,6 +27,8 @@ pub(crate) struct HostSettings {
     /// How this host's picture passes the server's forwarder.
     pub forwarding: super::forwarding::Mode,
     pub camera: CameraSettings,
+    /// The desktop's sound leaves out this device's Farwing calls (§9.4).
+    pub exclude_calls: bool,
 }
 
 /// Remote camera and microphone (`docs/protocol/camera-design.md` §2, §5).
@@ -61,6 +63,7 @@ impl Default for HostSettings {
             max_participants: farwing_protocol::limits::DEFAULT_MAX_PARTICIPANTS,
             forwarding: Default::default(),
             camera: Default::default(),
+            exclude_calls: true,
         }
     }
 }

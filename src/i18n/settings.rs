@@ -120,6 +120,7 @@ pub(crate) struct Settings {
     /// Device name
     pub device_disconnected: fn(&str) -> String,
     pub audio_capture_device: &'static str,
+    pub exclude_call_audio: &'static str,
     pub reading_devices: &'static str,
     pub no_playback_devices: &'static str,
     pub encoder: &'static str,
@@ -491,6 +492,7 @@ pub(crate) const ZH_CN: Settings = Settings {
     system_default_device: "跟随系统默认",
     device_disconnected: |name| format!("{name}（未连接）"),
     audio_capture_device: "声音采集设备",
+    exclude_call_audio: "排除本机 Farwing 通话的声音",
     reading_devices: "正在读取设备…",
     no_playback_devices: "暂无可用播放设备",
     encoder: "编码器",
@@ -861,6 +863,7 @@ pub(crate) const EN: Settings = Settings {
     system_default_device: "System default",
     device_disconnected: |name| format!("{name} (disconnected)"),
     audio_capture_device: "Audio capture device",
+    exclude_call_audio: "Leave out this device's Farwing calls",
     reading_devices: "Reading devices…",
     no_playback_devices: "No playback devices",
     encoder: "Encoder",

@@ -350,6 +350,16 @@ impl DeviceCenterApp {
                     Err(error) => self.status = StatusMessage::error(error.to_string()),
                 }
             }
+            let mut exclude = host.exclude_calls();
+            form_row(ui, "", "", |ui| {
+                ui.checkbox(&mut exclude, text.exclude_call_audio);
+            });
+            if exclude != host.exclude_calls() {
+                match host.set_exclude_calls(exclude) {
+                    Ok(()) => self.save_host_settings(),
+                    Err(error) => self.status = StatusMessage::error(error.to_string()),
+                }
+            }
             use crate::features::host::{EncoderCodec, EncoderMode, EncodingSettings};
             let original = host.encoding_settings();
             let mut selected = original;

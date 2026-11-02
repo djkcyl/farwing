@@ -7,8 +7,34 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 struct Hub {
     endpoint: String,
+    /// The process tree left out (the device center's calls, §9.4).
+    excluded: Option<u32>,
     subscribers: Mutex<Vec<(u64, Samples)>>,
-    capture: Mutex<Option<Capture>>,
+    capture: Mutex<Option<Source>>,
+}
+
+/// What a hub captures.
+enum Source {
+    Endpoint(Capture),
+    /// Everything the processes but one tree play.
+    Processes(crate::platform::windows::process_loopback::Capture),
+}
+
+impl Source {
+    fn poll(&mut self) -> Result<()> {
+        match self {
+            Self::Endpoint(capture) => capture.poll(),
+            Self::Processes(capture) if capture.alive() => Ok(()),
+            Self::Processes(_) => anyhow::bail!("{}", crate::i18n::t().system.loopback_closed),
+        }
+    }
+
+    fn producing(&self) -> bool {
+        match self {
+            Self::Endpoint(capture) => capture.producing(),
+            Self::Processes(capture) => capture.alive(),
+        }
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -32,15 +58,16 @@ pub(crate) struct Subscription {
 }
 
 /// Receive `samples` from `endpoint`'s capture, opening it if this is the
-/// first subscriber (or the shared one failed).
-pub(crate) fn subscribe(endpoint: &Endpoint, samples: Samples) -> Result<Subscription> {
+/// first subscriber (or the shared one failed); with `excluded`, what every
+/// process but that tree plays instead (process loopback, §9.4).
+pub(crate) fn subscribe(endpoint: &Endpoint, excluded: Option<u32>, samples: Samples) -> Result<Subscription> {
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut hubs = lock(&HUBS);
     hubs.retain(|hub| hub.strong_count() > 0);
     if let Some(hub) = hubs
         .iter()
         .filter_map(Weak::upgrade)
-        .find(|hub| hub.endpoint == endpoint.id && hub.healthy())
+        .find(|hub| hub.endpoint == endpoint.id && hub.excluded == excluded && hub.healthy())
     {
         lock(&hub.subscribers).push((id, samples));
         tracing::debug!(subscribers = lock(&hub.subscribers).len(), "desktop audio capture shared");
@@ -48,24 +75,31 @@ pub(crate) fn subscribe(endpoint: &Endpoint, samples: Samples) -> Result<Subscri
     }
     let hub = Arc::new(Hub {
         endpoint: endpoint.id.clone(),
+        excluded,
         subscribers: Mutex::new(vec![(id, samples)]),
         capture: Mutex::new(None),
     });
     let weak = Arc::downgrade(&hub);
-    let capture = super::open(
-        endpoint,
-        Arc::new(move |block, at| {
-            let Some(hub) = weak.upgrade() else {
-                return;
-            };
-            // Callbacks are cheap queue pushes; clone the list out of the lock.
-            let subscribers: Vec<Samples> =
-                lock(&hub.subscribers).iter().map(|(_, s)| s.clone()).collect();
-            for subscriber in subscribers {
-                subscriber(block, at);
-            }
-        }),
-    )?;
+    let deliver: Samples = Arc::new(move |block, at| {
+        let Some(hub) = weak.upgrade() else {
+            return;
+        };
+        // Callbacks are cheap queue pushes; clone the list out of the lock.
+        let subscribers: Vec<Samples> = lock(&hub.subscribers).iter().map(|(_, s)| s.clone()).collect();
+        for subscriber in subscribers {
+            subscriber(block, at);
+        }
+    });
+    let capture = match excluded {
+        Some(pid) => {
+            use crate::platform::windows::process_loopback::{Capture as Processes, Target};
+            tracing::info!(pid, "desktop audio leaves out the device center");
+            Source::Processes(Processes::start(Target::AllBut(pid), move |block| {
+                deliver(*block, std::time::Instant::now())
+            })?)
+        }
+        None => Source::Endpoint(super::open(endpoint, deliver)?),
+    };
     *lock(&hub.capture) = Some(capture);
     hubs.push(Arc::downgrade(&hub));
     Ok(Subscription { id, hub })
@@ -73,7 +107,7 @@ pub(crate) fn subscribe(endpoint: &Endpoint, samples: Samples) -> Result<Subscri
 
 impl Subscription {
     pub(crate) fn producing(&self) -> bool {
-        lock(&self.hub.capture).as_ref().is_some_and(Capture::producing)
+        lock(&self.hub.capture).as_ref().is_some_and(Source::producing)
     }
 
     /// The shared capture's failure, seen by every subscriber.

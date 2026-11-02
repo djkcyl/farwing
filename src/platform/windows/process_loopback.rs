@@ -50,6 +50,40 @@ pub(crate) struct Capture {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+/// The device center of this profile in this session (its process ID):
+/// the process whose window carries the control center's mark.
+pub(crate) fn control_center() -> Option<u32> {
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetPropW, GetWindowThreadProcessId};
+    use windows::core::BOOL;
+    unsafe extern "system" fn each(hwnd: HWND, found: LPARAM) -> BOOL {
+        // SAFETY: `found` is the slot passed below, alive for the call.
+        let found = unsafe { &mut *(found.0 as *mut Option<u32>) };
+        let mark: Vec<u16> = crate::product::instance_atom("ControlCenter.Window.v1")
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: plain queries of a window's properties.
+        unsafe {
+            if !GetPropW(hwnd, windows::core::PCWSTR(mark.as_ptr())).is_invalid() {
+                let mut pid = 0;
+                GetWindowThreadProcessId(hwnd, Some(&mut pid));
+                if pid != 0 {
+                    *found = Some(pid);
+                    return BOOL(0);
+                }
+            }
+        }
+        BOOL(1)
+    }
+    let mut found = None;
+    // SAFETY: the callback only reads window properties.
+    unsafe {
+        let _ = EnumWindows(Some(each), LPARAM((&raw mut found) as isize));
+    }
+    found
+}
+
 impl Drop for Capture {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
@@ -60,6 +94,11 @@ impl Drop for Capture {
 }
 
 impl Capture {
+    /// Still capturing (its thread has not stopped on a failure).
+    pub(crate) fn alive(&self) -> bool {
+        self.thread.as_ref().is_some_and(|t| !t.is_finished())
+    }
+
     /// Starts capturing `target` (where that is not supported, everything
     /// the default output plays); `samples` gets each 10 ms block,
     /// interleaved stereo.

@@ -119,6 +119,22 @@ impl Handle {
     pub(crate) fn audio_defaults(&self) -> super::super::audio::DefaultDevices {
         lock(&self.ownership).audio_defaults
     }
+    /// The desktop's sound leaves out this device's calls.
+    pub(crate) fn exclude_calls(&self) -> bool {
+        lock(&self.ownership).exclude_calls
+    }
+    pub(crate) fn set_exclude_calls(&self, on: bool) -> anyhow::Result<()> {
+        let mut state = lock(&self.ownership);
+        anyhow::ensure!(state.active, "{}", t().features.host_account_session_ended);
+        if state.exclude_calls != on {
+            state.exclude_calls = on;
+            state.settings_revision = state.settings_revision.wrapping_add(1);
+            state.dirty = true;
+            state.status.saving = true;
+            state.status.settings_error = None;
+        }
+        Ok(())
+    }
     pub(crate) fn file_transfer_allowed(&self) -> bool {
         lock(&self.ownership).file_transfer
     }
