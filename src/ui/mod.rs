@@ -13,6 +13,7 @@ pub(crate) mod branding;
 pub(crate) mod controls;
 pub(crate) mod fonts;
 pub(crate) mod theme;
+pub(crate) mod video_textures;
 use app::AppFactory;
 
 use app::AppSession;

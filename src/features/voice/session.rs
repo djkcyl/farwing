@@ -160,6 +160,10 @@ pub(crate) struct ChannelVoice {
     /// (ID, key) of this device's frame key.
     key: Mutex<(u8, [u8; FRAME_KEY])>,
     events: mpsc::UnboundedSender<Event>,
+    /// The cameras and screens watched.
+    pub(crate) pictures: super::video::Pictures,
+    /// The tracks last asked for (`watch`).
+    watched: tokio::sync::Mutex<Vec<(u32, String)>>,
 }
 
 impl ChannelVoice {
@@ -214,6 +218,8 @@ impl ChannelVoice {
             me: Mutex::new((muted, deafened)),
             publishing: tokio::sync::Mutex::new(()),
             following: std::sync::atomic::AtomicBool::new(false),
+            pictures: super::video::Pictures::default(),
+            watched: tokio::sync::Mutex::new(Vec::new()),
             participants: Mutex::new(joined.participants.iter().map(|p| (p.participant, p.clone())).collect()),
             key: Mutex::new(key),
             events,
@@ -354,6 +360,38 @@ impl ChannelVoice {
         true
     }
 
+    /// The cameras and screens this device watches now (all mics come
+    /// anyway): (participant, kind).
+    pub(crate) async fn watch(&self, mut tracks: Vec<(u32, String)>) {
+        tracks.sort();
+        tracks.dedup();
+        let mut watched = self.watched.lock().await;
+        if *watched == tracks {
+            return;
+        }
+        let body = farwing_protocol::chat::VoiceSubscribe {
+            tracks: tracks
+                .iter()
+                .map(|(participant, kind)| farwing_protocol::chat::VoiceTrackRef {
+                    participant: *participant,
+                    kind: kind.clone(),
+                })
+                .collect(),
+        };
+        match self
+            .client
+            .chat(
+                Method::PUT,
+                &format!("/api/v2/chat/channels/{}/voice/subscribe", self.channel),
+                Some(serde_json::to_value(&body).unwrap_or_default()),
+            )
+            .await
+        {
+            Ok(_) => *watched = tracks,
+            Err(e) => tracing::warn!(error = %format!("{e:#}"), "voice pictures not chosen"),
+        }
+    }
+
     /// Someone watches the share's 720p30 copy (`voice.demand`).
     pub(crate) fn demand(&self, kinds: &[String]) {
         self.uplink.set_copy(kinds.iter().any(|k| k == track::SCREEN_720));
@@ -422,16 +460,23 @@ impl ChannelVoice {
         if downlink.is_none() {
             let pc = connection(&self.ice).await?;
             let weak = Arc::downgrade(self);
+            let weak_pc = Arc::downgrade(&pc);
             pc.on_track(Box::new(move |track, _, _| {
-                if let Some(v) = weak.upgrade() {
-                    let stream = track.stream_id();
-                    let participant = farwing_protocol::chat::track::parse(&stream)
-                        .filter(|(_, kind)| *kind == farwing_protocol::chat::track::MIC)
-                        .map(|(p, _)| p);
-                    if let Some(p) = participant {
-                        let user = lock(&v.participants).get(&p).map(|x| x.user_id.clone()).unwrap_or_default();
-                        tracing::info!(participant = p, "voice track");
-                        v.engine.receive(p, &user, track);
+                if let Some(v) = weak.upgrade()
+                    && let Some((p, kind)) = farwing_protocol::chat::track::parse(&track.stream_id())
+                {
+                    let user = lock(&v.participants).get(&p).map(|x| x.user_id.clone()).unwrap_or_default();
+                    match kind {
+                        track::MIC => {
+                            tracing::info!(participant = p, "voice track");
+                            v.engine.receive(p, &user, track);
+                        }
+                        track::SCREEN_AUDIO => v.engine.receive_share(p, &user, track),
+                        track::CAM_HI | track::CAM_LO | track::SCREEN | track::SCREEN_720 => {
+                            let decryptor = v.engine.e2ee().then(|| v.engine.decryptor(p));
+                            v.pictures.receive(p, kind, track, decryptor, weak_pc.clone());
+                        }
+                        _ => {}
                     }
                 }
                 Box::pin(async {})
@@ -471,6 +516,7 @@ impl ChannelVoice {
         };
         for p in &left {
             self.engine.forget(*p);
+            self.pictures.forget(*p);
         }
         if !left.is_empty() && self.mode == VoiceMode::E2ee {
             // Those who left must not hear what comes next.
@@ -527,6 +573,7 @@ impl ChannelVoice {
         }
         self.engine.set_track(None);
         self.uplink.close().await;
+        self.pictures.close();
         if let Some(pc) = self.downlink.lock().await.take() {
             let _ = pc.close().await;
         }

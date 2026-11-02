@@ -15,6 +15,7 @@ mod panels;
 pub(super) mod parts;
 mod settings;
 mod sidebar;
+mod stage;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Panel {
@@ -149,6 +150,8 @@ pub(crate) struct ChatUi {
     search_sent: String,
     /// A short note at the bottom (copied, request sent).
     toast: Option<(String, std::time::Instant)>,
+    /// The voice channel's pictures.
+    stage: stage::StageUi,
 }
 
 impl Default for ChatUi {
@@ -195,6 +198,7 @@ impl Default for ChatUi {
             search_more_left: false,
             search_sent: String::new(),
             toast: None,
+            stage: stage::StageUi::default(),
         }
     }
 }
@@ -380,6 +384,9 @@ impl DeviceCenterApp {
         dialogs::show(ui.ctx(), &chat, &state, &mut self.chat_ui);
         settings::show(ui.ctx(), &chat, &state, &mut self.chat_ui);
         dialogs::image_viewer(ui.ctx(), &chat, &mut self.chat_ui);
+        if self.chat_ui.stage.theater {
+            stage::theater(ui.ctx(), &chat, &state, &mut self.chat_ui);
+        }
         composer::poll_files(&chat, &mut self.chat_ui);
         // Files dropped on the window go to the open channel.
         let dropped: Vec<std::path::PathBuf> = ui
@@ -447,6 +454,15 @@ impl DeviceCenterApp {
                 |ui| self.call_bar(ui, chat, state, &call),
             );
             body.min.y = strip.bottom();
+        }
+        // The voice channel's pictures over its messages.
+        let stage_h = stage::height(state, &self.chat_ui, channel_id, body.width(), body.height());
+        if stage_h > 0.0 {
+            let area = egui::Rect::from_min_size(body.min, vec2(body.width(), stage_h));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(area).id_salt("chat-stage"), |ui| {
+                stage::stage(ui, chat, state, &mut self.chat_ui, channel_id, group.as_ref().map(|g| g.group.id));
+            });
+            body.min.y = area.bottom();
         }
         let composer_h = composer::height(ui, &self.chat_ui, chat, channel_id);
         let list = egui::Rect::from_min_max(body.min, egui::pos2(body.right(), body.bottom() - composer_h));
@@ -516,6 +532,7 @@ impl DeviceCenterApp {
         let Some(chat) = self.chat.clone() else { return };
         let state = chat.view();
         let me = state.me().map(|u| u.user_id.clone()).unwrap_or_default();
+        self.control_overlays(ctx, &chat, &state);
         if state.do_not_disturb() {
             return;
         }
@@ -554,6 +571,57 @@ impl DeviceCenterApp {
             self.chat_ui.dismissed_call = Some(call.id.clone());
             self.open_chat(call.channel_id);
         }
+    }
+
+    /// A request to control this device's share, and a session the share's
+    /// sharer allowed.
+    fn control_overlays(&mut self, ctx: &egui::Context, chat: &ChatService, state: &ChatState) {
+        if let Some(device) = chat.take_open_device() {
+            let name = state
+                .snap
+                .as_ref()
+                .and_then(|s| s.voice.iter().flat_map(|v| &v.participants).find(|p| p.device_id == device))
+                .and_then(|p| state.members.values().flatten().find(|m| m.user.user_id == p.user_id))
+                .map(|m| parts::display_name(&m.user, &m.nickname))
+                .unwrap_or_else(|| crate::account::api::device_id_text(&device));
+            self.spawn_viewer(name, Some(device), None, false);
+        }
+        let Some(request) = state.control_asks.first().cloned() else { return };
+        let v = &t().voice;
+        let host_off = self.host.is_none();
+        let mut clipboard = ctx.data(|d| d.get_temp::<bool>(egui::Id::new("chat-control-clipboard"))).unwrap_or(false);
+        egui::Modal::new(egui::Id::new("chat-control-request")).frame(crate::ui::controls::dialog_frame()).show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.vertical_centered(|ui| {
+                ui.add_space(8.0);
+                parts::avatar(ui, chat, &request.from, 56.0, None);
+                ui.add_space(8.0);
+                ui.label(RichText::new((v.control_ask)(request.from.display_name())).size(15.0).strong().color(TEXT));
+                ui.add_space(8.0);
+            });
+            ui.horizontal(|ui| {
+                crate::ui::controls::switch(ui, &mut clipboard);
+                ui.label(v.allow_clipboard);
+            });
+            if host_off {
+                ui.label(parts::muted(v.host_off));
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let width = (ui.available_width() - 8.0) / 2.0;
+                if ui.add_sized([width, 32.0], egui::Button::new(v.deny)).clicked() {
+                    chat.answer_control(&request.id, false, false);
+                }
+                if ui
+                    .add_enabled_ui(!host_off, |ui| ui.add_sized([width, 32.0], crate::ui::controls::primary(v.allow)))
+                    .inner
+                    .clicked()
+                {
+                    chat.answer_control(&request.id, true, clipboard);
+                }
+            });
+        });
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("chat-control-clipboard"), clipboard));
     }
 
     /// Connect to a device a friend shares (from a direct message).

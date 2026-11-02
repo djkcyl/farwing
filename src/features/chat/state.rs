@@ -85,6 +85,32 @@ pub(crate) struct ChatState {
     pub jump: Option<(Id, Id, Instant)>,
     /// This device in a voice channel or call.
     pub my_voice: Option<MyVoice>,
+    /// Control of someone's share this device asked for (or got).
+    pub control: Option<ControlAsked>,
+    /// Requests to control this device's share, to be answered.
+    pub control_asks: Vec<farwing_protocol::chat::ControlRequest>,
+    /// The control this device gave, until it ends.
+    pub control_given: Option<farwing_protocol::chat::ControlRequest>,
+    /// A device to open a remote desktop session to (a share's control).
+    pub open_device: Option<String>,
+}
+
+impl ChatState {
+    /// This device's voice is over, and any control of a share with it.
+    pub(crate) fn end_voice(&mut self) {
+        self.my_voice = None;
+        self.control = None;
+        self.control_asks.clear();
+        self.control_given = None;
+    }
+}
+
+/// Control of a share asked for by this device.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ControlAsked {
+    pub id: String,
+    pub sharer_device: String,
+    pub allowed: bool,
 }
 
 /// This device's voice: where, and how it goes.

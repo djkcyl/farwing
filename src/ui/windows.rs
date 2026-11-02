@@ -273,6 +273,7 @@ impl DesktopWindow {
         self.window_resize.min_size = self.min_inner_size.map(|size| {
             winit::dpi::LogicalSize::new(size.x, size.y).to_physical(self.window.scale_factor())
         });
+        crate::ui::video_textures::sync(&mut self.presenter);
         let output = self.context.run_ui(input, |ui| {
             let ctx = ui.ctx().clone();
             super::chrome::resize_regions(ui, &self.window, |response, direction| {

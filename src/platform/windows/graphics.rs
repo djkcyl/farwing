@@ -114,6 +114,20 @@ impl UiPresenter {
         })
     }
 
+    /// The device the window draws with.
+    pub(crate) fn device(&self) -> &ID3D11Device {
+        &self.device
+    }
+
+    /// `view` (a texture on this device) as an egui texture.
+    pub(crate) fn register_texture(&mut self, view: ID3D11ShaderResourceView) -> egui::TextureId {
+        self.renderer.register_user_texture(view)
+    }
+
+    pub(crate) fn unregister_texture(&mut self, id: egui::TextureId) {
+        self.renderer.unregister_user_texture(id);
+    }
+
     pub(crate) fn resize(&mut self, size: PhysicalSize<u32>) -> Result<()> {
         if size.width > 0 && size.height > 0 {
             self.requested_size = size;

@@ -401,6 +401,9 @@ enum DevAction {
         /// 共享时带声音
         #[arg(long)]
         share_audio: bool,
+        /// 观看其他人的摄像头与共享（报告收到的画面）
+        #[arg(long)]
+        watch: bool,
     },
     /// 无窗口解码被控主屏，可注入丢包与延迟，输出恢复时长等 JSON 指标
     Video {
@@ -895,8 +898,9 @@ fn main() -> Result<()> {
                     camera,
                     screen,
                     share_audio,
+                    watch,
                 } => runtime.block_on(farwing::application::cli::dev_voice(
-                    channel, call, answer, seconds, tone, camera, screen, share_audio,
+                    channel, call, answer, seconds, tone, camera, screen, share_audio, watch,
                 )),
                 DevAction::Video {
                     device_id,

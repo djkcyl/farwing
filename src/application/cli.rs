@@ -1558,8 +1558,9 @@ pub async fn dev_voice(
     camera: bool,
     screen: Option<String>,
     audio: bool,
+    watch: bool,
 ) -> Result<()> {
-    use farwing_protocol::chat::Id;
+    use farwing_protocol::chat::{Id, track};
     if let Some(hz) = tone {
         // SAFETY: set before any thread that reads the environment starts.
         unsafe { std::env::set_var("FARWING_DEV_VOICE_TONE", hz.to_string()) };
@@ -1619,10 +1620,14 @@ pub async fn dev_voice(
                         },
                         None => (s.as_str(), Quality::P1080F30),
                     };
+                    // `window:<title part>` or `window:#<process ID>`.
                     let target = match id.strip_prefix("window:") {
                         Some(title) => crate::platform::windows::window_capture::list()
                             .into_iter()
-                            .find(|w| w.title.contains(title))
+                            .find(|w| match title.strip_prefix('#') {
+                                Some(pid) => pid.parse() == Ok(w.pid),
+                                None => w.title.contains(title),
+                            })
                             .map(|w| crate::features::chat::ShareTarget::Window { hwnd: w.hwnd, pid: w.pid }),
                         None => Some(crate::features::chat::ShareTarget::Screen(id.parse().ok())),
                     };
@@ -1631,6 +1636,27 @@ pub async fn dev_voice(
                         None => tracing::warn!(id, "dev voice: no such window"),
                     }
                 }
+            }
+            // Every camera (large) and screen of the others, once in the channel.
+            if watch && let Some(mine) = view.my_voice.as_ref().filter(|v| v.connected && v.call.is_none()) {
+                let mut refs = Vec::new();
+                for p in view
+                    .snap
+                    .as_ref()
+                    .and_then(|s| s.voice.iter().find(|c| c.channel_id == mine.channel))
+                    .map(|c| c.participants.as_slice())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|p| p.participant != mine.participant)
+                {
+                    for kind in [track::CAM_HI, track::SCREEN, track::SCREEN_AUDIO] {
+                        let sent = if kind == track::SCREEN_AUDIO { track::SCREEN } else { kind };
+                        if p.tracks.iter().any(|k| k == sent) {
+                            refs.push((p.participant, kind.to_owned()));
+                        }
+                    }
+                }
+                chat.watch(refs);
             }
             let (_, me_speaking, level) = chat.voice_activity();
             input_peak = input_peak.max(level);
@@ -1648,6 +1674,7 @@ pub async fn dev_voice(
             "speaking_share": f64::from(speaking) / f64::from(samples.max(1)),
             "input_peak": input_peak,
             "heard": chat.voice_stats(),
+            "pictures": chat.picture_stats(),
             "errors": view.errors,
         });
         println!("{}", serde_json::to_string_pretty(&report)?);

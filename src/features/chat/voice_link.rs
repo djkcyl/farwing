@@ -384,11 +384,7 @@ impl ChatService {
     /// Joins voice channel `channel` (leaving any other voice first).
     pub(crate) fn join_voice(&self, channel: Id) {
         let inner = Arc::clone(&self.inner);
-        let (muted, deafened) = self
-            .view()
-            .my_voice
-            .as_ref()
-            .map_or((false, false), |v| (v.muted, v.deafened));
+        let (muted, deafened) = *lock(&self.inner.voice_self);
         self.inner.runtime.spawn(async move {
             let old = lock(&inner.voice).take();
             if let Some(old) = old {
@@ -443,7 +439,7 @@ impl ChatService {
                     tracing::warn!(error = %format!("{e:#}"), "voice join failed");
                     let why = reason_text(&error_reason(&e));
                     update(&inner, |s| {
-                        s.my_voice = None;
+                        s.end_voice();
                         s.errors.push(why.to_owned());
                     });
                 }
@@ -456,7 +452,7 @@ impl ChatService {
         let inner = Arc::clone(&self.inner);
         self.inner.runtime.spawn(async move {
             let active = lock(&inner.voice).take();
-            update(&inner, |s| s.my_voice = None);
+            update(&inner, |s| s.end_voice());
             if let Some(a) = active {
                 a.close(true).await;
             }
@@ -464,6 +460,7 @@ impl ChatService {
     }
 
     pub(crate) fn set_voice_self(&self, muted: bool, deafened: bool) {
+        *lock(&self.inner.voice_self) = (muted, deafened);
         update(&self.inner, |s| {
             if let Some(v) = &mut s.my_voice {
                 v.muted = muted;
@@ -568,6 +565,118 @@ impl ChatService {
             }
             v.following.store(false, std::sync::atomic::Ordering::Release);
         });
+    }
+
+    /// The cameras and screens to receive now: (participant, kind).
+    pub(crate) fn watch(&self, tracks: Vec<(u32, String)>) {
+        let Some(Active::Channel(v)) = lock(&self.inner.voice).clone() else { return };
+        self.inner.runtime.spawn(async move { v.watch(tracks).await });
+    }
+
+    /// The newest picture of `participant`'s `kind`, if watched.
+    pub(crate) fn picture(&self, participant: u32, kind: &str) -> Option<crate::features::voice::video::Picture> {
+        match lock(&self.inner.voice).as_ref() {
+            Some(Active::Channel(v)) => v.pictures.picture(participant, kind),
+            _ => None,
+        }
+    }
+
+    /// What each watched picture brought (`dev voice`).
+    pub(crate) fn picture_stats(&self) -> Vec<crate::features::voice::video::PictureStats> {
+        match lock(&self.inner.voice).as_ref() {
+            Some(Active::Channel(v)) => v.pictures.stats(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Asks `sharer_device` (sharing its whole screen) for control.
+    pub(crate) fn request_control(&self, sharer_device: &str) {
+        let Some(Active::Channel(v)) = lock(&self.inner.voice).clone() else { return };
+        let (inner, sharer) = (Arc::clone(&self.inner), sharer_device.to_owned());
+        self.inner.runtime.spawn(async move {
+            let asked = inner
+                .client
+                .chat(
+                    Method::POST,
+                    &format!("/api/v2/chat/channels/{}/voice/control-request", v.channel),
+                    Some(serde_json::json!({"sharer_device": sharer})),
+                )
+                .await;
+            update(&inner, |s| match asked {
+                Ok(answer) => {
+                    s.control = Some(crate::features::chat::state::ControlAsked {
+                        id: answer["id"].as_str().unwrap_or_default().to_owned(),
+                        sharer_device: sharer,
+                        allowed: false,
+                    });
+                }
+                Err(_) => s.errors.push(crate::i18n::t().voice.failed.to_owned()),
+            });
+        });
+    }
+
+    /// Gives back (or stops asking for) the control of a share.
+    pub(crate) fn end_control(&self) {
+        let Some(Active::Channel(v)) = lock(&self.inner.voice).clone() else { return };
+        let mut id = None;
+        update(&self.inner, |s| id = s.control.take().map(|c| c.id));
+        let Some(id) = id else { return };
+        self.close_control(v.channel, id);
+    }
+
+    /// Takes back the control this device gave.
+    pub(crate) fn take_back_control(&self) {
+        let Some(Active::Channel(v)) = lock(&self.inner.voice).clone() else { return };
+        let mut id = None;
+        update(&self.inner, |s| id = s.control_given.take().map(|c| c.id));
+        let Some(id) = id else { return };
+        self.close_control(v.channel, id);
+    }
+
+    fn close_control(&self, channel: Id, id: String) {
+        let inner = Arc::clone(&self.inner);
+        self.inner.runtime.spawn(async move {
+            let _ = inner
+                .client
+                .chat(Method::DELETE, &format!("/api/v2/chat/channels/{channel}/voice/control-request/{id}"), None)
+                .await;
+            update(&inner, |_| {});
+        });
+    }
+
+    /// Answers a request to control this device's share.
+    pub(crate) fn answer_control(&self, id: &str, allowed: bool, clipboard: bool) {
+        let Some(Active::Channel(v)) = lock(&self.inner.voice).clone() else { return };
+        let inner = Arc::clone(&self.inner);
+        let id = id.to_owned();
+        self.inner.runtime.spawn(async move {
+            let answered = inner
+                .client
+                .chat(
+                    Method::POST,
+                    &format!("/api/v2/chat/channels/{}/voice/control-request/{id}/answer", v.channel),
+                    Some(serde_json::json!({"allowed": allowed, "clipboard": clipboard})),
+                )
+                .await;
+            update(&inner, |s| {
+                let request = s.control_asks.iter().position(|r| r.id == id).map(|i| s.control_asks.remove(i));
+                match answered {
+                    Ok(_) if allowed => s.control_given = request,
+                    Ok(_) => {}
+                    Err(_) => s.errors.push(crate::i18n::t().voice.failed.to_owned()),
+                }
+            });
+        });
+    }
+
+    /// The device to open a session to (a share's control), once.
+    pub(crate) fn take_open_device(&self) -> Option<String> {
+        if lock(&self.inner.state).open_device.is_none() {
+            return None;
+        }
+        let mut device = None;
+        update(&self.inner, |s| device = s.open_device.take());
+        device
     }
 
     /// A moderator's change to `participant` in `channel`: `server_muted`,
@@ -698,10 +807,14 @@ fn begin_call(inner: &Arc<Inner>, call: Call) {
     match CallVoice::new(Arc::clone(&inner.client), inner.outgoing.clone(), call.clone(), settings, tx) {
         Ok(voice) => {
             watch(inner, rx);
+            let (muted, deafened) = *lock(&inner.voice_self);
+            voice.engine.set_self(muted, deafened);
             update(inner, |s| {
                 s.my_voice = Some(MyVoice {
                     channel,
                     call: Some(call.id.clone()),
+                    muted,
+                    deafened,
                     ..Default::default()
                 });
                 // As the server answered this device (the others learn by push).
@@ -740,6 +853,49 @@ pub(super) fn push(inner: &Arc<Inner>, kind: &str, data: &Value) {
                 && offer.channel_id == v.channel
             {
                 inner.runtime.spawn(async move { v.offer(offer).await });
+            }
+        }
+        (types::CONTROL_REQUEST, Some(Active::Channel(v))) => {
+            if let Ok(request) = serde_json::from_value::<farwing_protocol::chat::ControlRequest>(data.clone())
+                && request.channel_id == v.channel
+            {
+                update(inner, |s| {
+                    s.control_asks.retain(|r| r.id != request.id);
+                    s.control_asks.push(request);
+                });
+            }
+        }
+        (types::CONTROL_ANSWERED, Some(Active::Channel(_))) => {
+            if let Ok(answer) = serde_json::from_value::<farwing_protocol::chat::ControlAnswered>(data.clone()) {
+                update(inner, |s| {
+                    if s.control.as_ref().is_none_or(|c| c.id != answer.id) {
+                        return;
+                    }
+                    if answer.allowed {
+                        if let Some(c) = &mut s.control {
+                            c.allowed = true;
+                        }
+                        // A remote desktop session to the sharer, under the share's grant.
+                        s.open_device = Some(answer.sharer_device.clone());
+                    } else {
+                        s.control = None;
+                        s.errors.push(crate::i18n::t().voice.control_declined.to_owned());
+                    }
+                });
+            }
+        }
+        (types::CONTROL_ENDED, Some(Active::Channel(_))) => {
+            if let Ok(ended) = serde_json::from_value::<farwing_protocol::chat::ControlEnded>(data.clone()) {
+                update(inner, |s| {
+                    s.control_asks.retain(|r| r.id != ended.id);
+                    if s.control_given.as_ref().is_some_and(|r| r.id == ended.id) {
+                        s.control_given = None;
+                    }
+                    if s.control.as_ref().is_some_and(|c| c.id == ended.id) {
+                        s.control = None;
+                        s.errors.push(crate::i18n::t().voice.control_ended.to_owned());
+                    }
+                });
             }
         }
         (types::VOICE_DEMAND, Some(Active::Channel(v))) => {
@@ -790,7 +946,7 @@ pub(super) fn push(inner: &Arc<Inner>, kind: &str, data: &Value) {
                 }
                 let why = reason_text(&left.reason);
                 update(inner, |s| {
-                    s.my_voice = None;
+                    s.end_voice();
                     s.errors.push(why.to_owned());
                 });
                 inner.runtime.spawn(async move { v.close(false).await });
@@ -815,7 +971,7 @@ pub(super) fn push(inner: &Arc<Inner>, kind: &str, data: &Value) {
                 && ended.call_id == c.id()
             {
                 lock(&inner.voice).take();
-                update(inner, |s| s.my_voice = None);
+                update(inner, |s| s.end_voice());
                 inner.runtime.spawn(async move { c.close().await });
             }
         }

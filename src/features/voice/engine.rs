@@ -61,7 +61,6 @@ pub(crate) struct ReceiverStats {
 struct Receiver {
     voice: Arc<mix::Voice>,
     counts: Arc<(std::sync::atomic::AtomicU64, std::sync::atomic::AtomicU64)>,
-    decryptor: Arc<Mutex<Decryptor>>,
     user: String,
     /// (level in dBov, when), from the packets' header.
     level: Arc<Mutex<(u8, Instant)>>,
@@ -88,8 +87,10 @@ struct Inner {
     speaking: AtomicBool,
     playback: AudioPlayback,
     receivers: Mutex<HashMap<u32, Receiver>>,
-    /// Keys that came before their sender's track.
-    early_keys: Mutex<HashMap<u32, Vec<FrameKey>>>,
+    /// The share sounds watched, by participant.
+    shares: Mutex<HashMap<u32, Receiver>>,
+    /// Each sender's keys, for all its tracks (they share one counter).
+    decryptors: Mutex<HashMap<u32, Arc<Mutex<Decryptor>>>>,
     /// What the senders who left brought.
     gone: Mutex<Vec<ReceiverStats>>,
     stop: CancellationToken,
@@ -117,7 +118,8 @@ impl Engine {
             speaking: AtomicBool::new(false),
             playback,
             receivers: Mutex::new(HashMap::new()),
-            early_keys: Mutex::new(HashMap::new()),
+            shares: Mutex::new(HashMap::new()),
+            decryptors: Mutex::new(HashMap::new()),
             gone: Mutex::new(Vec::new()),
             stop: CancellationToken::new(),
         });
@@ -165,6 +167,9 @@ impl Engine {
         self.apply_output();
         for r in lock(&self.0.receivers).values() {
             r.voice.set_gain(settings.gain_of(&r.user));
+        }
+        for r in lock(&self.0.shares).values() {
+            r.voice.set_gain(settings.share_gain_of(&r.user));
         }
     }
 
@@ -234,11 +239,17 @@ impl Engine {
 
     /// A sender's frame key.
     pub(crate) fn add_key(&self, participant: u32, key: FrameKey) {
-        if let Some(r) = lock(&self.0.receivers).get(&participant) {
-            lock(&r.decryptor).add_key(key);
-            return;
-        }
-        lock(&self.0.early_keys).entry(participant).or_default().push(key);
+        lock(&self.decryptor(participant)).add_key(key);
+    }
+
+    /// `participant`'s keys, for any of its tracks.
+    pub(crate) fn decryptor(&self, participant: u32) -> Arc<Mutex<Decryptor>> {
+        Arc::clone(lock(&self.0.decryptors).entry(participant).or_default())
+    }
+
+    /// Frames are sealed end to end.
+    pub(crate) fn e2ee(&self) -> bool {
+        self.0.e2ee.load(Ordering::Relaxed)
     }
 
     pub(crate) fn set_self(&self, muted: bool, deafened: bool) {
@@ -260,12 +271,22 @@ impl Engine {
 
     /// A received track of `participant` (account `user`).
     pub(crate) fn receive(&self, participant: u32, user: &str, track: Arc<TrackRemote>) {
+        self.receive_sound(participant, user, track, false);
+    }
+
+    /// `participant`'s share sound (played apart from its voice).
+    pub(crate) fn receive_share(&self, participant: u32, user: &str, track: Arc<TrackRemote>) {
+        self.receive_sound(participant, user, track, true);
+    }
+
+    fn receive_sound(&self, participant: u32, user: &str, track: Arc<TrackRemote>, share: bool) {
         let Ok(voice) = self.0.playback.add_voice() else { return };
-        voice.set_gain(lock(&self.0.settings).gain_of(user));
-        let decryptor = Arc::new(Mutex::new(Decryptor::default()));
-        for key in lock(&self.0.early_keys).remove(&participant).unwrap_or_default() {
-            lock(&decryptor).add_key(key);
-        }
+        let gain = {
+            let settings = lock(&self.0.settings);
+            if share { settings.share_gain_of(user) } else { settings.gain_of(user) }
+        };
+        voice.set_gain(gain);
+        let decryptor = self.decryptor(participant);
         let level = Arc::new(Mutex::new((127u8, Instant::now())));
         let counts = Arc::new((std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)));
         let task = {
@@ -306,12 +327,12 @@ impl Engine {
                 voice.end();
             })
         };
-        let old = lock(&self.0.receivers).insert(
+        let map = if share { &self.0.shares } else { &self.0.receivers };
+        let old = lock(map).insert(
             participant,
             Receiver {
                 voice,
                 counts,
-                decryptor,
                 user: user.to_owned(),
                 level,
                 task,
@@ -325,6 +346,11 @@ impl Engine {
 
     /// `participant` is gone.
     pub(crate) fn forget(&self, participant: u32) {
+        if let Some(r) = lock(&self.0.shares).remove(&participant) {
+            r.task.abort();
+            r.voice.end();
+        }
+        lock(&self.0.decryptors).remove(&participant);
         if let Some(r) = lock(&self.0.receivers).remove(&participant) {
             r.task.abort();
             r.voice.end();
@@ -336,7 +362,6 @@ impl Engine {
                 decoded_peak: r.voice.peak(),
             });
         }
-        lock(&self.0.early_keys).remove(&participant);
     }
 
     /// Who speaks now: the participants, and whether this device does.
@@ -380,7 +405,8 @@ impl Engine {
     pub(crate) async fn close(&self) {
         self.0.stop.cancel();
         lock(&self.0.capture).take();
-        let receivers: Vec<Receiver> = lock(&self.0.receivers).drain().map(|(_, r)| r).collect();
+        let mut receivers: Vec<Receiver> = lock(&self.0.receivers).drain().map(|(_, r)| r).collect();
+        receivers.extend(lock(&self.0.shares).drain().map(|(_, r)| r));
         for r in receivers {
             r.task.abort();
             r.voice.end();

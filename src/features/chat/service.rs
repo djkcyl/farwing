@@ -83,6 +83,8 @@ struct Inner {
     voice_keys: Mutex<Option<Arc<crate::features::voice::keys::DeviceKeys>>>,
     /// The channel being joined and its pushes until the session is up.
     voice_joining: Mutex<Option<(Id, Vec<(String, Value)>)>>,
+    /// Mute and deafen chosen last (they hold when joining).
+    voice_self: Mutex<(bool, bool)>,
     /// What the voice sounds last saw.
     sounds: Mutex<voice_link::SoundState>,
     /// The microphone for the voice settings, outside a session.
@@ -125,6 +127,7 @@ impl ChatService {
             voice_settings: Mutex::new(crate::features::voice::settings::load()),
             voice_keys: Mutex::new(None),
             voice_joining: Mutex::new(None),
+            voice_self: Mutex::new((false, false)),
             sounds: Mutex::new(Default::default()),
             preview: Mutex::new(None),
         });

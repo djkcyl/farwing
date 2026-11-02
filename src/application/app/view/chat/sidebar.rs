@@ -124,11 +124,14 @@ fn row(ui: &mut egui::Ui, active: bool, unread: bool, faded: bool, paint: impl F
 pub(super) fn side(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi) {
     let full = ui.max_rect();
     let bar = Rect::from_min_max(egui::pos2(full.left(), full.bottom() - 52.0), full.max);
-    // In voice: a strip above the user's bar.
+    // In voice: a strip above the user's bar (taller while control of the
+    // share is given: the way to take it back).
+    let given = state.control_given.is_some() && state.my_voice.as_ref().is_some_and(|v| v.call.is_none());
+    let strip_h = if given { 92.0 } else { 52.0 };
     let strip = state
         .my_voice
         .as_ref()
-        .map(|v| (v, Rect::from_min_max(egui::pos2(full.left(), bar.top() - 52.0), egui::pos2(full.right(), bar.top()))));
+        .map(|v| (v, Rect::from_min_max(egui::pos2(full.left(), bar.top() - strip_h), egui::pos2(full.right(), bar.top()))));
     let list_bottom = strip.as_ref().map_or(bar.top(), |(_, r)| r.top());
     let list = Rect::from_min_max(full.min, egui::pos2(full.right(), list_bottom));
     ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| match chat_ui.group {
@@ -138,12 +141,21 @@ pub(super) fn side(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, cha
     if let Some((voice, rect)) = strip {
         ui.painter().rect_filled(rect, 0.0, SIDEBAR);
         ui.painter().hline(rect.x_range(), rect.top(), Stroke::new(1.0, LINE));
+        let row = Rect::from_min_size(rect.min, vec2(rect.width(), 52.0));
         ui.scope_builder(
             egui::UiBuilder::new()
-                .max_rect(rect.shrink2(vec2(10.0, 7.0)))
+                .max_rect(row.shrink2(vec2(10.0, 7.0)))
                 .layout(egui::Layout::left_to_right(Align::Center)),
             |ui| voice_bar(ui, chat, state, chat_ui, voice),
         );
+        if given {
+            let below = Rect::from_min_max(egui::pos2(rect.left() + 10.0, row.bottom()), egui::pos2(rect.right() - 10.0, rect.bottom() - 8.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(below), |ui| {
+                if ui.add_sized(below.size(), egui::Button::new(t().voice.take_back)).clicked() {
+                    chat.take_back_control();
+                }
+            });
+        }
     }
     ui.painter().rect_filled(bar, 0.0, SIDEBAR);
     ui.painter().hline(bar.x_range(), bar.top(), Stroke::new(1.0, LINE));

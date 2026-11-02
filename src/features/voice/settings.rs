@@ -48,6 +48,8 @@ pub(crate) struct VoiceSettings {
     pub volume: u8,
     /// Each person's volume (percent), by account.
     pub volumes: BTreeMap<String, u8>,
+    /// Each account's share sound (percent), apart from its voice.
+    pub share_volumes: BTreeMap<String, u8>,
     /// People this device does not play, by account.
     pub muted: BTreeSet<String>,
     /// Sounds' volume (percent of the output volume).
@@ -73,6 +75,7 @@ impl Default for VoiceSettings {
             deafen_key: None,
             volume: 100,
             volumes: BTreeMap::new(),
+            share_volumes: BTreeMap::new(),
             muted: BTreeSet::new(),
             sound_volume: 60,
             sounds_off: BTreeSet::new(),
@@ -101,6 +104,11 @@ impl VoiceSettings {
         } else {
             f32::from(*self.volumes.get(user).unwrap_or(&100)) / 100.0
         }
+    }
+
+    /// How loud `user`'s share sound plays (0–2).
+    pub(crate) fn share_gain_of(&self, user: &str) -> f32 {
+        f32::from(*self.share_volumes.get(user).unwrap_or(&100)) / 100.0
     }
 
     /// `sound`'s volume (0–2), `None` when it is off.

@@ -255,6 +255,11 @@ pub(super) fn paint_glyph(p: &egui::Painter, rect: Rect, glyph: Glyph, color: Co
     }
 }
 
+/// The "live" pill's width.
+pub(super) fn live_width(p: &egui::Painter) -> f32 {
+    p.layout_no_wrap(t().voice.live.to_owned(), egui::FontId::proportional(10.5), Color32::WHITE).size().x + 10.0
+}
+
 /// The red "live" pill after a name; its width.
 pub(super) fn paint_live(p: &egui::Painter, right_center: Pos2) -> f32 {
     let galley = p.layout_no_wrap(t().voice.live.to_owned(), egui::FontId::proportional(10.5), Color32::WHITE);
