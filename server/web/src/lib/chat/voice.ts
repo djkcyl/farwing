@@ -443,7 +443,7 @@ class VoiceController {
 
   /// Turns this browser's camera on or off (in a voice channel).
   async setCamera(on: boolean) {
-    if (!(this.session instanceof ChannelSession)) return;
+    if (!this.session) return;
     try {
       await this.session.setCamera(on);
       this.set({ camera: on, localCamera: this.session.cameraTrack() });
@@ -1030,6 +1030,31 @@ class ChannelSession {
   }
 }
 
+/// A call's sections, the same on both devices, by MID order: the kind of
+/// a received track is its section's (§7.6).
+const CALL_SECTIONS = ['mic', 'cam_hi', 'screen', 'screen_audio'];
+
+/// H.264 (constrained baseline first) with its retransmissions: pictures in
+/// calls are H.264 as every device decodes it.
+function h264Preferences(): RTCRtpCodec[] {
+  const codecs = RTCRtpReceiver.getCapabilities('video')?.codecs ?? [];
+  const h264 = codecs
+    .filter((c) => c.mimeType.toLowerCase() === 'video/h264' && c.sdpFmtpLine?.includes('packetization-mode=1'))
+    .sort((a, b) => Number(!a.sdpFmtpLine?.includes('42e01f')) - Number(!b.sdpFmtpLine?.includes('42e01f')));
+  return h264.length ? [...h264, ...codecs.filter((c) => c.mimeType.toLowerCase() === 'video/rtx')] : [];
+}
+
+function preferH264(transceiver: RTCRtpTransceiver | undefined) {
+  const codecs = h264Preferences();
+  if (transceiver && codecs.length) {
+    try {
+      transceiver.setCodecPreferences(codecs);
+    } catch {
+      // The browser's own choice then.
+    }
+  }
+}
+
 class CallSession {
   readonly id: string;
   private c: Call;
@@ -1037,7 +1062,9 @@ class CallSession {
   private micReady?: Promise<Mic>;
   private mic?: Mic;
   private player?: Player;
+  private sharePlayer?: Player;
   private receiver?: RTCRtpReceiver;
+  private cam?: MediaStream;
   private me = '';
   private closed = false;
   private voice: VoiceController;
@@ -1073,10 +1100,34 @@ class CallSession {
       const pc = new RTCPeerConnection({ iceServers: iceConfig(this.c.ice_servers).iceServers });
       // A track (not a transceiver): the answering side's goes into the offer's audio.
       pc.addTrack(mic.track, new MediaStream([mic.track]));
+      if (this.c.caller_device === this.me) {
+        // The caller lays out every section at once: camera (sent when on),
+        // the other's screen and its sound.
+        preferH264(pc.addTransceiver('video', { direction: 'sendrecv' }));
+        preferH264(pc.addTransceiver('video', { direction: 'recvonly' }));
+        pc.addTransceiver('audio', { direction: 'recvonly' });
+      }
       pc.ontrack = (e) => {
-        this.player?.stop();
-        this.player = new Player(e.track);
-        this.receiver = e.receiver;
+        const kind = CALL_SECTIONS[Number(e.transceiver.mid)] ?? 'mic';
+        if (kind === 'mic') {
+          this.player?.stop();
+          this.player = new Player(e.track);
+          this.receiver = e.receiver;
+        } else if (kind === 'screen_audio') {
+          this.sharePlayer?.stop();
+          this.sharePlayer = new Player(e.track);
+        } else {
+          const track = e.track;
+          const show = (on: boolean) => {
+            const others = this.voice.state.videos.filter((x) => x.kind !== kind);
+            this.voice.set({ videos: on ? [...others, { participant: 1, kind, track }] : others });
+          };
+          // A picture shows while it comes.
+          track.onunmute = () => show(true);
+          track.onmute = () => show(false);
+          track.onended = () => show(false);
+          if (!track.muted) show(true);
+        }
         this.applySettings();
       };
       pc.onconnectionstatechange = () => {
@@ -1124,6 +1175,11 @@ class CallSession {
     const pc = await this.peer();
     if (s.kind === 'offer') {
       await pc.setRemoteDescription({ type: 'offer', sdp: s.data });
+      // The camera's section sends too (once the camera is on); pictures are H.264.
+      const camera = pc.getTransceivers().find((x) => x.mid === '1');
+      if (camera && camera.direction !== 'sendrecv') camera.direction = 'sendrecv';
+      preferH264(camera);
+      preferH264(pc.getTransceivers().find((x) => x.mid === '2'));
       await pc.setLocalDescription(await pc.createAnswer());
       await gathered(pc, GATHER_CALL_MS);
       await this.signalOut('answer', pc.localDescription!.sdp);
@@ -1141,7 +1197,41 @@ class CallSession {
     const user = this.peerUser();
     const muted = this.voice.state.deafened || s.muted.includes(user);
     this.player?.apply(((s.volumes[user] ?? 100) * s.volume) / 100, muted, s.output);
+    this.sharePlayer?.apply(s.volume, this.voice.state.deafened, s.output);
     this.mic?.apply();
+  }
+
+  /// The camera on (in the camera's section, no new negotiation) or off.
+  async setCamera(on: boolean) {
+    const pc = await this.peer();
+    const section = pc.getTransceivers().find((x) => x.mid === '1');
+    if (!section) throw new Error('no camera section');
+    if (!on) {
+      await section.sender.replaceTrack(null);
+      this.cam?.getTracks().forEach((x) => x.stop());
+      this.cam = undefined;
+      return;
+    }
+    if (this.cam) return;
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        deviceId: this.voice.settings.camera ? { exact: this.voice.settings.camera } : undefined,
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30 },
+      },
+    });
+    this.cam = stream;
+    await section.sender.replaceTrack(stream.getVideoTracks()[0]);
+    const params = section.sender.getParameters();
+    if (params.encodings?.[0]) {
+      params.encodings[0].maxBitrate = 1_200_000;
+      await section.sender.setParameters(params).catch(() => undefined);
+    }
+  }
+
+  cameraTrack() {
+    return this.cam?.getVideoTracks()[0];
   }
 
   setSelf(muted: boolean, deafened: boolean) {
@@ -1172,6 +1262,8 @@ class CallSession {
     window.removeEventListener('keyup', this.keyUp);
     if (tell) await call('POST', `/api/v2/chat/calls/${this.id}/hangup`).catch(() => undefined);
     this.player?.stop();
+    this.sharePlayer?.stop();
+    this.cam?.getTracks().forEach((x) => x.stop());
     void this.pc?.then((pc) => pc.close());
     this.mic?.close();
   }

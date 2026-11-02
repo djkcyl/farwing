@@ -45,6 +45,15 @@ pub(crate) struct Picture {
     pub handle: isize,
     pub width: u32,
     pub height: u32,
+    /// When it was drawn.
+    pub at: Option<Instant>,
+}
+
+impl Picture {
+    /// A new picture came lately (the sender still sends).
+    pub(crate) fn fresh(&self) -> bool {
+        self.at.is_some_and(|at| at.elapsed() < Duration::from_secs(2))
+    }
 }
 
 /// What a watched track brought (`dev voice`).
@@ -592,6 +601,7 @@ fn draw(
         handle: *handle,
         width: size.0,
         height: size.1,
+        at: Some(Instant::now()),
     })
 }
 

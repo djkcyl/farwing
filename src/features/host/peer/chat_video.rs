@@ -244,6 +244,29 @@ pub(crate) struct ChatUplink {
 
 type StateHook = Box<dyn Fn(RTCPeerConnectionState) + Send + Sync>;
 
+/// Which tracks a connection carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Layout {
+    /// To the forwarder, sent only: cameras and shares in two sizes.
+    Channel,
+    /// To the other device of a call, sent and received: one size each,
+    /// in sections mic, camera, screen, share sound (this order on both
+    /// sides; the kind of a received track is its section's).
+    Call,
+}
+
+impl Layout {
+    /// The kinds of the call's sections, by MID order.
+    pub(crate) const CALL_SECTIONS: [&'static str; 4] = [track::MIC, track::CAM_HI, track::SCREEN, track::SCREEN_AUDIO];
+
+    fn pictures(self) -> &'static [&'static str] {
+        match self {
+            Self::Channel => &[track::CAM_HI, track::CAM_LO, track::SCREEN, track::SCREEN_720],
+            Self::Call => &[track::CAM_HI, track::SCREEN],
+        }
+    }
+}
+
 fn opus_track(id: &str) -> Arc<TrackLocalStaticRTP> {
     Arc::new(TrackLocalStaticRTP::new(
         RTCRtpCodecCapability {
@@ -261,7 +284,11 @@ fn opus_track(id: &str) -> Arc<TrackLocalStaticRTP> {
 impl ChatUplink {
     /// The connection with all its tracks (pictures start later); not yet
     /// offered.
-    pub(crate) async fn new(ice_servers: Vec<RTCIceServer>, cipher: Option<super::uplink::Cipher>) -> Result<Self> {
+    pub(crate) async fn new(
+        ice_servers: Vec<RTCIceServer>,
+        cipher: Option<super::uplink::Cipher>,
+        layout: Layout,
+    ) -> Result<Self> {
         let cancel = CancellationToken::new();
         let owner = cancel.clone();
         let transport = Transport::for_owner(Arc::new(move || !owner.is_cancelled()), cancel.clone(), BOUNDS);
@@ -272,8 +299,22 @@ impl ChatUplink {
         settings.enable_sender_rtx(true);
         settings.enable_sender_rsfec(true);
         let mut media = MediaEngine::default();
-        farwing_rtc_wire::register_codecs(&mut media)?;
+        match layout {
+            Layout::Channel => farwing_rtc_wire::register_codecs(&mut media)?,
+            // A call's pictures are H.264 both ways (a browser would send
+            // what comes first otherwise).
+            Layout::Call => farwing_rtc_wire::register_codecs_where(&mut media, |c| {
+                c.mime_type.eq_ignore_ascii_case("video/h264") || c.mime_type == farwing_rtc_wire::RSFEC_MIME_TYPE
+            })?,
+        }
         farwing_rtc_wire::register_header_extensions(&mut media, &[farwing_rtc_wire::DEPENDENCY_DESCRIPTOR_URI])?;
+        if layout == Layout::Call {
+            // The other device's pictures come here too: losses asked for
+            // again, reports and transport feedback sent back.
+            registry.add(Box::new(webrtc::interceptor::nack::generator::Generator::builder()));
+            registry.add(Box::new(webrtc::interceptor::report::receiver::ReceiverReport::builder()));
+            registry = webrtc::api::interceptor_registry::configure_twcc_receiver_only(registry, &mut media)?;
+        }
         let api = APIBuilder::new()
             .with_media_engine(media)
             .with_interceptor_registry(registry)
@@ -289,7 +330,10 @@ impl ChatUplink {
         );
         let sendonly = || {
             Some(RTCRtpTransceiverInit {
-                direction: RTCRtpTransceiverDirection::Sendonly,
+                direction: match layout {
+                    Layout::Channel => RTCRtpTransceiverDirection::Sendonly,
+                    Layout::Call => RTCRtpTransceiverDirection::Sendrecv,
+                },
                 send_encodings: Vec::new(),
             })
         };
@@ -301,7 +345,7 @@ impl ChatUplink {
             .await;
         let mut tasks = Vec::new();
         let mut slots = Vec::new();
-        for (index, kind) in [track::CAM_HI, track::CAM_LO, track::SCREEN, track::SCREEN_720].into_iter().enumerate() {
+        for (index, kind) in layout.pictures().iter().copied().enumerate() {
             let video = Arc::new(VideoTrack::named(kind, Codec::H264, Arc::new(Negotiated::deferred())));
             let slot_transport = if index == 0 { transport.clone() } else { transport.fork(index) };
             let sender = pc
@@ -457,8 +501,14 @@ impl ChatUplink {
         *lock(&self.on_state) = Some(Box::new(hook));
     }
 
-    fn slot(&self, kind: &str) -> Arc<VideoSlot> {
-        Arc::clone(self.slots.iter().find(|s| s.kind == kind).expect("every picture kind has a slot"))
+    fn slot(&self, kind: &str) -> Option<Arc<VideoSlot>> {
+        self.slots.iter().find(|s| s.kind == kind).cloned()
+    }
+
+    fn pause(&self, kind: &str) {
+        if let Some(slot) = self.slot(kind) {
+            slot.activate(None);
+        }
     }
 
     /// Each track's media section (after the offer): (kind, mid).
@@ -479,17 +529,20 @@ impl ChatUplink {
 
     /// Starts sending the camera (`spec`), both encodings.
     pub(crate) fn start_camera(&self, spec: crate::media::camera::Spec) {
-        let (hi, lo) = (self.slot(track::CAM_HI), self.slot(track::CAM_LO));
+        let Some(hi) = self.slot(track::CAM_HI) else { return };
+        let lo = self.slot(track::CAM_LO);
         hi.keyframe.store(true, Ordering::Release);
-        lo.keyframe.store(true, Ordering::Release);
         hi.activate(Some(CAM_HI.2));
-        lo.activate(Some(CAM_LO.2));
+        if let Some(lo) = &lo {
+            lo.keyframe.store(true, Ordering::Release);
+            lo.activate(Some(CAM_LO.2));
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let thread = std::thread::Builder::new()
             .name("voice-camera".into())
             .spawn(move || {
-                if let Err(e) = camera_loop(&spec, &hi, &lo, &flag) {
+                if let Err(e) = camera_loop(&spec, &hi, lo.as_deref(), &flag) {
                     tracing::warn!(error = %format!("{e:#}"), "voice camera stopped");
                 }
             })
@@ -502,8 +555,8 @@ impl ChatUplink {
     pub(crate) fn stop_camera(&self) {
         if let Some(worker) = lock(&self.camera).take() {
             worker.stop();
-            self.slot(track::CAM_HI).activate(None);
-            self.slot(track::CAM_LO).activate(None);
+            self.pause(track::CAM_HI);
+            self.pause(track::CAM_LO);
         }
     }
 
@@ -515,9 +568,9 @@ impl ChatUplink {
     /// Starts sharing `shown` at `quality`, with its sound or not; true
     /// when the sound started too.
     pub(crate) fn start_screen(&self, shown: Shown, quality: Quality, audio: bool) -> bool {
-        let (main, copy) = (self.slot(track::SCREEN), self.slot(track::SCREEN_720));
+        let Some(main) = self.slot(track::SCREEN) else { return false };
+        let copy = self.slot(track::SCREEN_720);
         main.keyframe.store(true, Ordering::Release);
-        copy.keyframe.store(true, Ordering::Release);
         main.activate(Some(quality.shape().2));
         let control = Arc::new(ShareControl {
             quality: Mutex::new(quality),
@@ -530,7 +583,7 @@ impl ChatUplink {
         let thread = std::thread::Builder::new()
             .name("voice-screen".into())
             .spawn(move || {
-                if let Err(e) = screen_loop(&what, &main, &copy, &shared, &flag) {
+                if let Err(e) = screen_loop(&what, &main, copy.as_deref(), &shared, &flag) {
                     tracing::warn!(error = %format!("{e:#}"), "voice screen share stopped");
                 }
                 shared.ended.store(true, Ordering::Release);
@@ -574,8 +627,8 @@ impl ChatUplink {
     pub(crate) fn stop_screen(&self) {
         if let Some(share) = lock(&self.screen).take() {
             share.worker.stop();
-            self.slot(track::SCREEN).activate(None);
-            self.slot(track::SCREEN_720).activate(None);
+            self.pause(track::SCREEN);
+            self.pause(track::SCREEN_720);
         }
     }
 
@@ -593,15 +646,18 @@ impl ChatUplink {
     pub(crate) fn set_quality(&self, quality: Quality) {
         if let Some(share) = lock(&self.screen).as_ref() {
             *lock(&share.control.quality) = quality;
-            self.slot(track::SCREEN).activate(Some(quality.shape().2));
+            if let Some(main) = self.slot(track::SCREEN) {
+                main.activate(Some(quality.shape().2));
+            }
         }
     }
 
     /// Someone watches the share's 720p30 copy (`voice.demand`).
     pub(crate) fn set_copy(&self, watched: bool) {
         if let Some(share) = lock(&self.screen).as_ref() {
-            if share.control.copy.swap(watched, Ordering::AcqRel) != watched {
-                let copy = self.slot(track::SCREEN_720);
+            if share.control.copy.swap(watched, Ordering::AcqRel) != watched
+                && let Some(copy) = self.slot(track::SCREEN_720)
+            {
                 copy.keyframe.store(true, Ordering::Release);
                 copy.activate(watched.then_some(SCREEN_720.2));
             }
@@ -744,7 +800,7 @@ fn scaled(
     )
 }
 
-fn camera_loop(spec: &crate::media::camera::Spec, hi: &VideoSlot, lo: &VideoSlot, stop: &AtomicBool) -> Result<()> {
+fn camera_loop(spec: &crate::media::camera::Spec, hi: &VideoSlot, lo: Option<&VideoSlot>, stop: &AtomicBool) -> Result<()> {
     let _runtime = crate::platform::windows::encoder::Runtime::new()?;
     let mut source = crate::platform::windows::source::open(&Source::Camera(spec.clone()))?;
     tracing::info!(camera = %spec.name, width = spec.mode.width, height = spec.mode.height, "voice camera started");
@@ -752,7 +808,7 @@ fn camera_loop(spec: &crate::media::camera::Spec, hi: &VideoSlot, lo: &VideoSlot
     let mut small = crate::platform::windows::preprocess::Converter::new(&device)?;
     let cancel = Arc::new(AtomicBool::new(false));
     let mut big = Encoding::new(hi, CAM_HI.2, CAM_HI_FPS, Tier::P720);
-    let mut low = Encoding::new(lo, CAM_LO.2, CAM_LO_FPS, Tier::P720);
+    let mut low = lo.map(|lo| Encoding::new(lo, CAM_LO.2, CAM_LO_FPS, Tier::P720));
     while !stop.load(Ordering::Acquire) {
         let Some(frame) = source.next(100, Tier::P720, false, false, (CAM_HI.0, CAM_HI.1))? else {
             continue;
@@ -764,7 +820,9 @@ fn camera_loop(spec: &crate::media::camera::Spec, hi: &VideoSlot, lo: &VideoSlot
         if big.due(now) && !big.encode(&device, &frame.texture, texture_size(&frame.texture), now, &cancel)? {
             break;
         }
-        if low.due(now) {
+        if let Some(low) = low.as_mut()
+            && low.due(now)
+        {
             let texture = scaled(&mut small, &device, &frame.texture, Tier::P720, (CAM_LO.0, CAM_LO.1))?;
             if !low.encode(&device, &texture, texture_size(&texture), now, &cancel)? {
                 break;
@@ -834,7 +892,7 @@ impl Pictures {
 fn screen_loop(
     shown: &Shown,
     main: &VideoSlot,
-    copy: &VideoSlot,
+    copy: Option<&VideoSlot>,
     control: &ShareControl,
     stop: &AtomicBool,
 ) -> Result<()> {
@@ -852,7 +910,7 @@ fn screen_loop(
     let mut quality = *lock(&control.quality);
     let (_, fps, cap) = quality.shape();
     let mut picture = Encoding::new(main, cap, fps, Tier::P1080);
-    let mut p720 = Encoding::new(copy, SCREEN_720.2, 30, Tier::P720);
+    let mut p720 = copy.map(|copy| Encoding::new(copy, SCREEN_720.2, 30, Tier::P720));
     // The last picture, encoded again at the rate when the screen is still.
     let mut last: Option<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D> = None;
     while !stop.load(Ordering::Acquire) {
@@ -896,7 +954,10 @@ fn screen_loop(
         if picture.due(now) && !picture.encode(&device, &texture, texture_size(&texture), now, &cancel)? {
             break;
         }
-        if control.copy.load(Ordering::Acquire) && p720.due(now) {
+        if let Some(p720) = p720.as_mut()
+            && control.copy.load(Ordering::Acquire)
+            && p720.due(now)
+        {
             let small_texture = scaled(&mut small, &device, &texture, Tier::P720, (SCREEN_720.0, SCREEN_720.1))?;
             if !p720.encode(&device, &small_texture, texture_size(&small_texture), now, &cancel)? {
                 break;

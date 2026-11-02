@@ -455,12 +455,13 @@ impl DeviceCenterApp {
             );
             body.min.y = strip.bottom();
         }
-        // The voice channel's pictures over its messages.
-        let stage_h = stage::height(state, &self.chat_ui, channel_id, body.width(), body.height());
+        // The voice channel's or call's pictures over its messages.
+        let (sources, call) = stage::sources(chat, state, channel_id);
+        let stage_h = stage::height(&self.chat_ui, sources.len(), body.width(), body.height());
         if stage_h > 0.0 {
             let area = egui::Rect::from_min_size(body.min, vec2(body.width(), stage_h));
             ui.scope_builder(egui::UiBuilder::new().max_rect(area).id_salt("chat-stage"), |ui| {
-                stage::stage(ui, chat, state, &mut self.chat_ui, channel_id, group.as_ref().map(|g| g.group.id));
+                stage::stage(ui, chat, state, &mut self.chat_ui, &sources, call);
             });
             body.min.y = area.bottom();
         }
@@ -504,6 +505,16 @@ impl DeviceCenterApp {
                     chat.leave_voice();
                 }
                 if let Some(mine) = state.my_voice.as_ref().filter(|_| here) {
+                    if mine.connected {
+                        let hint = if mine.screen.is_some() { v.share_settings } else { v.share };
+                        if glyph_button(ui, Glyph::Screen, hint, mine.screen.is_some()).clicked() {
+                            self.chat_ui.dialog = Some(Dialog::Share(ShareDraft::new(mine.screen.as_ref())));
+                        }
+                        let (glyph, hint) = if mine.camera { (Glyph::Camera, v.camera_off) } else { (Glyph::CameraOff, v.camera_on) };
+                        if glyph_button(ui, glyph, hint, mine.camera).clicked() {
+                            chat.set_camera(!mine.camera);
+                        }
+                    }
                     let (muted, deafened) = (mine.muted, mine.deafened);
                     let (glyph, hint) = if deafened { (Glyph::HeadsetOff, v.undeafen) } else { (Glyph::Headset, v.deafen) };
                     if glyph_button(ui, glyph, hint, deafened).clicked() {

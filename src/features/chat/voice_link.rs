@@ -66,6 +66,61 @@ pub(super) enum Active {
     Call(Arc<CallVoice>),
 }
 
+/// Pictures alike in a channel and a call.
+impl Active {
+    async fn set_camera(&self, spec: Option<crate::media::camera::Spec>) -> anyhow::Result<()> {
+        match self {
+            Self::Channel(v) => v.set_camera(spec).await,
+            Self::Call(c) => c.set_camera(spec).await,
+        }
+    }
+
+    fn camera_on(&self) -> bool {
+        match self {
+            Self::Channel(v) => v.camera_on(),
+            Self::Call(c) => c.camera_on(),
+        }
+    }
+
+    async fn set_screen(
+        &self,
+        share: Option<(crate::features::host::peer::chat_video::Shown, crate::features::host::peer::chat_video::Quality, bool)>,
+    ) -> anyhow::Result<()> {
+        match self {
+            Self::Channel(v) => v.set_screen(share).await,
+            Self::Call(c) => c.set_screen(share).await,
+        }
+    }
+
+    fn screen(&self) -> Option<farwing_protocol::chat::VoiceScreen> {
+        match self {
+            Self::Channel(v) => v.screen(),
+            Self::Call(c) => c.screen(),
+        }
+    }
+
+    async fn follow_share(&self) -> bool {
+        match self {
+            Self::Channel(v) => v.follow_share().await,
+            Self::Call(c) => c.follow_share().await,
+        }
+    }
+
+    fn following(&self) -> &std::sync::atomic::AtomicBool {
+        match self {
+            Self::Channel(v) => &v.following,
+            Self::Call(c) => &c.following,
+        }
+    }
+
+    fn pictures(&self) -> &crate::features::voice::video::Pictures {
+        match self {
+            Self::Channel(v) => &v.pictures,
+            Self::Call(c) => &c.pictures,
+        }
+    }
+}
+
 /// What to share in a voice channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ShareTarget {
@@ -479,7 +534,7 @@ impl ChatService {
 
     /// Turns the camera on or off in this device's voice channel.
     pub(crate) fn set_camera(&self, on: bool) {
-        let Some(Active::Channel(v)) = lock(&self.inner.voice).clone() else { return };
+        let Some(v) = lock(&self.inner.voice).clone() else { return };
         let inner = Arc::clone(&self.inner);
         let camera = lock(&self.inner.voice_settings).camera.clone();
         self.inner.runtime.spawn(async move {
@@ -514,7 +569,7 @@ impl ChatService {
     /// sharing.
     pub(crate) fn share_screen(&self, share: Option<(ShareTarget, crate::features::host::peer::chat_video::Quality, bool)>) {
         use crate::features::host::peer::chat_video::Shown;
-        let Some(Active::Channel(v)) = lock(&self.inner.voice).clone() else { return };
+        let Some(v) = lock(&self.inner.voice).clone() else { return };
         let inner = Arc::clone(&self.inner);
         self.inner.runtime.spawn(async move {
             let share = match share {
@@ -547,7 +602,7 @@ impl ChatService {
                     s.errors.push(crate::i18n::t().voice.failed.to_owned());
                 }
             });
-            if result.is_err() || !sharing || v.following.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            if result.is_err() || !sharing || v.following().swap(true, std::sync::atomic::Ordering::AcqRel) {
                 return;
             }
             // The share's own changes: a minimized window, a closed one.
@@ -563,7 +618,7 @@ impl ChatService {
                     break;
                 }
             }
-            v.following.store(false, std::sync::atomic::Ordering::Release);
+            v.following().store(false, std::sync::atomic::Ordering::Release);
         });
     }
 
@@ -575,18 +630,12 @@ impl ChatService {
 
     /// The newest picture of `participant`'s `kind`, if watched.
     pub(crate) fn picture(&self, participant: u32, kind: &str) -> Option<crate::features::voice::video::Picture> {
-        match lock(&self.inner.voice).as_ref() {
-            Some(Active::Channel(v)) => v.pictures.picture(participant, kind),
-            _ => None,
-        }
+        lock(&self.inner.voice).as_ref()?.pictures().picture(participant, kind)
     }
 
     /// What each watched picture brought (`dev voice`).
     pub(crate) fn picture_stats(&self) -> Vec<crate::features::voice::video::PictureStats> {
-        match lock(&self.inner.voice).as_ref() {
-            Some(Active::Channel(v)) => v.pictures.stats(),
-            _ => Vec::new(),
-        }
+        lock(&self.inner.voice).as_ref().map(|v| v.pictures().stats()).unwrap_or_default()
     }
 
     /// Asks `sharer_device` (sharing its whole screen) for control.

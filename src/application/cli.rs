@@ -1605,8 +1605,8 @@ pub async fn dev_voice(
             if connected_at.is_none() && view.my_voice.as_ref().is_some_and(|v| v.connected) {
                 connected_at = Some(start.elapsed().as_millis() as u64);
             }
-            // Pictures once in the channel: the camera, a screen share.
-            if !pictures && connected_at.is_some() && view.my_voice.as_ref().is_some_and(|v| v.call.is_none()) {
+            // Pictures once connected (a channel or a call): the camera, a screen share.
+            if !pictures && connected_at.is_some() && view.my_voice.is_some() {
                 pictures = true;
                 if camera {
                     chat.set_camera(true);

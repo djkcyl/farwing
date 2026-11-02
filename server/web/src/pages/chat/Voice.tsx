@@ -121,14 +121,12 @@ export function VoiceBar() {
             .join(' · ')}
         </span>
       </button>
-      {!my.call && (
-        <IconButton
-          icon="webcam"
-          label={v.camera ? t.chat.voice.cameraOff : t.chat.voice.cameraOn}
-          className={v.camera ? 'on' : ''}
-          onClick={() => void voice.setCamera(!v.camera)}
-        />
-      )}
+      <IconButton
+        icon="webcam"
+        label={v.camera ? t.chat.voice.cameraOff : t.chat.voice.cameraOn}
+        className={v.camera ? 'on' : ''}
+        onClick={() => void voice.setCamera(!v.camera)}
+      />
       <IconButton
         icon="phoneOff"
         label={my.call ? t.chat.voice.hangUp : t.chat.voice.disconnect}
@@ -208,6 +206,14 @@ export function CallBar({ dm }: { dm: Dm }) {
       <span className="grow" />
       {here || calling ? (
         <>
+          {here && (
+            <IconButton
+              icon="webcam"
+              label={v.camera ? t.chat.voice.cameraOff : t.chat.voice.cameraOn}
+              className={v.camera ? 'on' : ''}
+              onClick={() => void voice.setCamera(!v.camera)}
+            />
+          )}
           {here && <VoiceToggles />}
           <Button size="sm" variant="danger" icon="phoneOff" onClick={() => void voice.stop(true)}>
             {t.chat.voice.hangUp}
@@ -227,6 +233,66 @@ export function CallBar({ dm }: { dm: Dm }) {
           {t.chat.voice.takeHere}
         </Button>
       )}
+    </div>
+  );
+}
+
+/// A call's pictures over its messages: the other device's camera and
+/// screen, and this browser's camera; one large when chosen.
+export function CallStage({ dm }: { dm: Dm }) {
+  const t = useT();
+  const state = useChat();
+  const v = useVoice();
+  const [focus, setFocus] = useState<string>();
+  const stage = useRef<HTMLDivElement>(null);
+  const c = callOf(dm.channel.id, state.snap?.calls);
+  if (!c || v.my?.call !== c.id) return null;
+  const tiles = [
+    ...v.videos
+      .filter((x) => x.participant === 1)
+      .map((x) => ({
+        key: x.kind,
+        track: x.track,
+        name: displayName(dm.user),
+        live: x.kind === 'screen',
+        mirror: false,
+      })),
+    ...(v.localCamera ? [{ key: 'me', track: v.localCamera, name: t.chat.voice.you, live: false, mirror: true }] : []),
+  ];
+  if (!tiles.length) return null;
+  const focused = tiles.find((x) => x.key === focus);
+  if (focused) {
+    return (
+      <div className="voice-stage focused" ref={stage}>
+        <div className="voice-big">
+          <VideoTile track={focused.track} mirror={focused.mirror} />
+        </div>
+        <div className="voice-stage-bar">
+          <IconButton icon="back" label={t.chat.voice.back} onClick={() => setFocus(undefined)} />
+          <span className="ellipsis grow">
+            {focused.live && <span className="chat-live">{t.chat.voice.live}</span>}
+            {focused.name}
+          </span>
+          <IconButton
+            icon="fullscreen"
+            label={t.chat.voice.fullscreen}
+            onClick={() => void stage.current?.requestFullscreen().catch(() => undefined)}
+          />
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="voice-stage">
+      {tiles.map((tile) => (
+        <button key={tile.key} type="button" className="voice-tile" onClick={() => setFocus(tile.key)}>
+          <VideoTile track={tile.track} mirror={tile.mirror} />
+          <span className="voice-tile-name">
+            {tile.live && <span className="chat-live">{t.chat.voice.live}</span>}
+            <span className="ellipsis">{tile.name}</span>
+          </span>
+        </button>
+      ))}
     </div>
   );
 }
