@@ -13,6 +13,7 @@ mod dialogs;
 mod messages;
 mod panels;
 pub(super) mod parts;
+mod popout;
 mod settings;
 mod sidebar;
 mod stage;

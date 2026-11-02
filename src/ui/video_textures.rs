@@ -1,9 +1,9 @@
 //! Pictures decoded off the window's thread (`features::voice::video`),
-//! shown by the window: a decoder draws into a shared texture on the
-//! window's graphics adapter and publishes its handle; the window opens
-//! each handle once on its own device and draws it as an egui texture.
+//! shown by the windows: a decoder draws into a shared texture on the main
+//! window's graphics adapter and publishes its handle; each window opens a
+//! handle once on its own device and draws it as an egui texture.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -12,11 +12,13 @@ use windows::Win32::Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11Textu
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::core::Interface;
 
-/// The window's adapter (LUID), 0 before the window draws.
+/// The main window's adapter (LUID), 0 before a window draws.
 static ADAPTER: AtomicU64 = AtomicU64::new(0);
 
 /// A handle not drawn for this long is let go.
 const UNUSED: Duration = Duration::from_secs(3);
+/// A window not drawn for this long is gone: its textures go too.
+const GONE: Duration = Duration::from_secs(10);
 
 struct Opened {
     // Kept alive while egui draws the view.
@@ -27,21 +29,32 @@ struct Opened {
     failed: bool,
 }
 
-thread_local! {
-    static OPENED: RefCell<HashMap<isize, Opened>> = RefCell::new(HashMap::new());
+/// One window's textures.
+struct Window {
+    opened: HashMap<isize, Opened>,
+    synced: Instant,
 }
 
-/// The adapter decoders draw on (the window's), once it has drawn.
+thread_local! {
+    /// By window (its device).
+    static WINDOWS: RefCell<HashMap<usize, Window>> = RefCell::new(HashMap::new());
+    /// The window drawing now.
+    static CURRENT: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The adapter decoders draw on (the main window's), once one has drawn.
 pub(crate) fn adapter() -> Option<u64> {
     Some(ADAPTER.load(Ordering::Relaxed)).filter(|a| *a != 0)
 }
 
-/// The egui texture of shared texture `handle`, if it is open (it opens
-/// before the next frame otherwise).
+/// The egui texture of shared texture `handle` in the window drawing now,
+/// if it is open (it opens before that window's next frame otherwise).
 pub(crate) fn texture(handle: isize) -> Option<egui::TextureId> {
-    OPENED.with(|opened| {
-        let mut opened = opened.borrow_mut();
-        let entry = opened.entry(handle).or_insert(Opened {
+    let current = CURRENT.with(Cell::get);
+    WINDOWS.with(|windows| {
+        let mut windows = windows.borrow_mut();
+        let window = windows.get_mut(&current)?;
+        let entry = window.opened.entry(handle).or_insert(Opened {
             _texture: None,
             id: None,
             used: Instant::now(),
@@ -52,23 +65,32 @@ pub(crate) fn texture(handle: isize) -> Option<egui::TextureId> {
     })
 }
 
-/// Before each frame: opens the handles asked for, lets go of the unused.
+/// Before each of a window's frames: opens the handles it asked for, lets
+/// go of the unused, and marks it as the window drawing now.
 pub(crate) fn sync(presenter: &mut crate::platform::graphics::UiPresenter) {
     if ADAPTER.load(Ordering::Relaxed) == 0
         && let Some(luid) = luid(presenter.device())
     {
         ADAPTER.store(luid, Ordering::Relaxed);
     }
-    OPENED.with(|opened| {
-        let mut opened = opened.borrow_mut();
-        opened.retain(|_, entry| {
+    let key = presenter.device().as_raw() as usize;
+    CURRENT.with(|c| c.set(key));
+    WINDOWS.with(|windows| {
+        let mut windows = windows.borrow_mut();
+        windows.retain(|k, w| *k == key || w.synced.elapsed() < GONE);
+        let window = windows.entry(key).or_insert_with(|| Window {
+            opened: HashMap::new(),
+            synced: Instant::now(),
+        });
+        window.synced = Instant::now();
+        window.opened.retain(|_, entry| {
             let keep = entry.used.elapsed() < UNUSED;
             if !keep && let Some(id) = entry.id {
                 presenter.unregister_texture(id);
             }
             keep
         });
-        for (handle, entry) in opened.iter_mut().filter(|(_, e)| e.id.is_none() && !e.failed) {
+        for (handle, entry) in window.opened.iter_mut().filter(|(_, e)| e.id.is_none() && !e.failed) {
             match open(presenter, *handle) {
                 Ok((texture, view)) => {
                     entry.id = Some(presenter.register_texture(view));

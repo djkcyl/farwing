@@ -107,6 +107,7 @@ pub(crate) struct Voice {
     pub share_volume: &'static str,
     pub you: &'static str,
     pub control_ask: fn(&str) -> String,
+    pub pop_out: &'static str,
 }
 
 pub(crate) const ZH_CN: Voice = Voice {
@@ -216,6 +217,7 @@ pub(crate) const ZH_CN: Voice = Voice {
     share_volume: "直播音量",
     you: "你",
     control_ask: |name| format!("{name} 请求控制你的屏幕"),
+    pop_out: "弹出",
 };
 
 pub(crate) const EN: Voice = Voice {
@@ -333,4 +335,5 @@ pub(crate) const EN: Voice = Voice {
     share_volume: "Stream volume",
     you: "You",
     control_ask: |name| format!("{name} asks to control your screen"),
+    pop_out: "Pop out",
 };

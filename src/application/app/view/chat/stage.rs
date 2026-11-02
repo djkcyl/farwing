@@ -180,6 +180,12 @@ fn watch(chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi, all: &[Sou
             Kind::Screen => {}
         }
     }
+    // Pictures shown in windows of their own keep coming.
+    refs.extend(
+        super::popout::watched()
+            .into_iter()
+            .filter(|(p, _)| all.iter().any(|s| !s.mine && s.participant == *p)),
+    );
     refs.sort();
     refs.dedup();
     let key = (me.unwrap_or(0), refs);
@@ -331,6 +337,19 @@ fn large(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut
                 if ui.add(egui::Button::new(label)).clicked() {
                     chat_ui.stage.theater = !on;
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!on));
+                }
+                if !chat_ui.stage.theater && ui.add(egui::Button::new(v.pop_out)).clicked() {
+                    let low = chat_ui.stage.low;
+                    let tracks: Vec<(u32, String)> = if call {
+                        Vec::new()
+                    } else {
+                        let mut tracks = vec![(s.participant, kinds(s, true, low, call)[0].to_owned())];
+                        if s.kind == Kind::Screen && s.screen.as_ref().is_none_or(|sc| sc.audio) {
+                            tracks.push((s.participant, track::SCREEN_AUDIO.to_owned()));
+                        }
+                        tracks
+                    };
+                    super::popout::open(chat.clone(), s.participant, kinds(s, true, low, call), tracks, s.name.clone());
                 }
                 if s.kind != Kind::Screen {
                     return;
