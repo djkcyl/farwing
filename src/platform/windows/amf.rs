@@ -91,6 +91,7 @@ pub(crate) struct Encoder {
     conversion: Conversion,
     format: Format,
     rate: Rate,
+    size: (u32, u32),
     maximum: (u32, u32),
     frame_rate: super::encoder_rate::Controller,
     configured_fps: u32,
@@ -201,6 +202,7 @@ impl Encoder {
                 conversion,
                 format,
                 rate,
+                size,
                 maximum: size,
                 frame_rate: super::encoder_rate::Controller::new(rate),
                 configured_fps: rate.fps,
@@ -476,6 +478,8 @@ impl Encoder {
         let result = self.set(avc, hevc, value);
         if self.format.codec == Codec::H265
             && matches!(hevc, b"HevcUsage\0" | b"HevcColorBitDepth\0")
+            || self.format.codec == Codec::Av1
+                && matches!(avc, b"Av1Usage\0" | b"Av1ColorBitDepth\0")
         {
             return result;
         }
@@ -514,6 +518,10 @@ impl Encoder {
     }
     fn configure_av1(&self, size: (u32, u32), rate: Rate) -> Result<()> {
         let color = self.conversion.color.space(None);
+        // Same rule as AVC/HEVC: only usage and depth are mandatory. Drivers
+        // differ in the optional properties they accept (the 780M rejects the
+        // output matrix coefficient for every codec), so Init and the output
+        // probe decide, not a single rejected tuning or colour property.
         for (name, value) in [
             (a::AMF_VIDEO_ENCODER_AV1_USAGE, 2),
             (a::AMF_VIDEO_ENCODER_AV1_ENCODING_LATENCY_MODE, 3),
@@ -555,7 +563,7 @@ impl Encoder {
                 color.matrix as i64,
             ),
         ] {
-            self.set(name, name, integer(value))?;
+            self.set_initial(name, name, integer(value))?;
         }
         for name in [
             a::AMF_VIDEO_ENCODER_AV1_PRE_ANALYSIS_ENABLE,
@@ -564,7 +572,7 @@ impl Encoder {
             a::AMF_VIDEO_ENCODER_AV1_ENFORCE_HRD,
             a::AMF_VIDEO_ENCODER_AV1_FILLER_DATA,
         ] {
-            self.set(name, name, boolean(false))?;
+            self.set_initial(name, name, boolean(false))?;
         }
         // Older AV1 runtimes have no B-picture properties and only encode
         // forward frames. On runtimes exposing them, keep reordering disabled.
@@ -574,7 +582,15 @@ impl Encoder {
         ] {
             self.set_initial(name, name, integer(0))?;
         }
-        self.set(
+        // VCN4 (RX 7000, 780M) only codes 64x16-aligned pictures, and the
+        // default 64X16_ONLY mode rejects every other size, 1080p included.
+        // NO_RESTRICTIONS pads instead; `output` declares the real size.
+        self.set_initial(
+            a::AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE,
+            a::AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE,
+            integer(3),
+        )?;
+        self.set_initial(
             a::AMF_VIDEO_ENCODER_AV1_FRAMESIZE,
             a::AMF_VIDEO_ENCODER_AV1_FRAMESIZE,
             a::AMFVariantStruct {
@@ -587,7 +603,7 @@ impl Encoder {
                 },
             },
         )?;
-        self.set(
+        self.set_initial(
             a::AMF_VIDEO_ENCODER_AV1_FRAMERATE,
             a::AMF_VIDEO_ENCODER_AV1_FRAMERATE,
             frame_rate(rate.fps),
@@ -902,8 +918,15 @@ impl Encoder {
                     .as_ref()
                     .is_some_and(|(_, requested)| *requested)
             };
+            let data = std::slice::from_raw_parts(bytes, size).to_vec();
             let frame = Encoded {
-                data: std::slice::from_raw_parts(bytes, size).to_vec(),
+                data: if self.format.codec == Codec::Av1 {
+                    // AV1 has no cropping syntax for the driver's alignment
+                    // padding, so the sequence header carries the padded size.
+                    openuuyc_codec::syntax::av1::visible::declare(data, self.size)
+                } else {
+                    data
+                },
                 keyframe,
                 timestamp_100ns: buffer.vt().GetPts.context("AMF GetPts接口缺失")?(
                     buffer.raw(),

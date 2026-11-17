@@ -599,6 +599,19 @@ pub(super) fn capture_loop(
                             && (actual.visible_width, actual.visible_height) == size,
                         "编码器实际输出偏离协商格式"
                     );
+                    // An aligned-only AV1 encoder pads the picture and only
+                    // declares its real size; a receiver that cannot crop
+                    // would present the padding and misplace the pointer.
+                    if output.format.codec == crate::features::host::format::Codec::Av1
+                        && !negotiated.av1_visible_size
+                        && (actual.coded_width, actual.coded_height) != size
+                    {
+                        return Err(encoder::SwitchCandidate(format!(
+                            "对端不支持裁剪 AV1 对齐补边（编码 {}×{}，画面 {}×{}）",
+                            actual.coded_width, actual.coded_height, size.0, size.1
+                        ))
+                        .into());
+                    }
                 }
             }
             Ok((encoded, force, Instant::now()))
