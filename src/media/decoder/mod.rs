@@ -566,6 +566,7 @@ pub(crate) fn detect_native_decoder_support(
         Ok(DeviceCapability {
             preferred_codec: profile.codec.preferred(),
             openuuyc_sdr_10bit: true,
+            openuuyc_av1_visible_size: true,
             ice_id: String::new(),
             display_info: crate::platform::display_hdr::capabilities(
                 profile.local_display.refresh_hz,

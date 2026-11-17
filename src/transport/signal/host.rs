@@ -739,6 +739,7 @@ impl Session {
         let capability = crate::protocol::capability::DeviceCapability {
             preferred_codec: self.preferred_codec,
             openuuyc_sdr_10bit: true,
+            openuuyc_av1_visible_size: true,
             ice_id: self.ice_id.clone(),
             display_info: self.peer.as_ref().context("缺少被控会话")?.displays(),
             video_codec_capability: self.capabilities.iter().map(|c| c.wire()).collect(),

@@ -91,6 +91,7 @@ pub(crate) struct Encoder {
     conversion: Conversion,
     format: Format,
     rate: Rate,
+    size: (u32, u32),
     maximum: (u32, u32),
     frame_rate: super::encoder_rate::Controller,
     configured_fps: u32,
@@ -201,6 +202,7 @@ impl Encoder {
                 conversion,
                 format,
                 rate,
+                size,
                 maximum: size,
                 frame_rate: super::encoder_rate::Controller::new(rate),
                 configured_fps: rate.fps,
@@ -580,6 +582,14 @@ impl Encoder {
         ] {
             self.set_initial(name, name, integer(0))?;
         }
+        // VCN4 (RX 7000, 780M) only codes 64x16-aligned pictures, and the
+        // default 64X16_ONLY mode rejects every other size, 1080p included.
+        // NO_RESTRICTIONS pads instead; `output` declares the real size.
+        self.set_initial(
+            a::AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE,
+            a::AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE,
+            integer(3),
+        )?;
         self.set_initial(
             a::AMF_VIDEO_ENCODER_AV1_FRAMESIZE,
             a::AMF_VIDEO_ENCODER_AV1_FRAMESIZE,
@@ -908,8 +918,15 @@ impl Encoder {
                     .as_ref()
                     .is_some_and(|(_, requested)| *requested)
             };
+            let data = std::slice::from_raw_parts(bytes, size).to_vec();
             let frame = Encoded {
-                data: std::slice::from_raw_parts(bytes, size).to_vec(),
+                data: if self.format.codec == Codec::Av1 {
+                    // AV1 has no cropping syntax for the driver's alignment
+                    // padding, so the sequence header carries the padded size.
+                    openuuyc_codec::syntax::av1::visible::declare(data, self.size)
+                } else {
+                    data
+                },
                 keyframe,
                 timestamp_100ns: buffer.vt().GetPts.context("AMF GetPts接口缺失")?(
                     buffer.raw(),
