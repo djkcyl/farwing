@@ -51,6 +51,11 @@ pub struct Decoder {
     pub height: u32,
     /// Decoded in hardware.
     pub hardware: bool,
+    /// AV1 pictures are presented at the visible size declared after their
+    /// sequence header: AV1 cannot crop, so encoders that only code aligned
+    /// pictures (AMD VCN4) pad them and declare the real size.
+    #[serde(default)]
+    pub av1_visible_size: bool,
 }
 
 /// The controller's display: displays the host creates for it take this

@@ -500,6 +500,22 @@ fn run(group: &Group, start: Start) -> Result<Option<End>> {
                         "{}",
                         t().features.peer_encoder_output_mismatch
                     );
+                    // An aligned-only AV1 encoder pads the picture and only
+                    // declares its real size: a viewer that cannot crop would
+                    // show the padding and misplace the pointer.
+                    if output.format.codec == crate::media::encoding::Codec::Av1
+                        && (actual.coded_width, actual.coded_height) != size
+                        && !group.av1_visible_size()
+                    {
+                        tracing::warn!(
+                            coded = ?(actual.coded_width, actual.coded_height),
+                            ?size,
+                            "AV1 padding a viewer cannot crop; trying another encoder"
+                        );
+                        return Err(
+                            encoder::SwitchCandidate(t().features.peer_av1_padding_unsupported.to_owned()).into()
+                        );
+                    }
                 }
             }
             Ok((encoded, plan, Instant::now()))

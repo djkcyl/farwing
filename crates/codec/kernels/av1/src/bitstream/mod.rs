@@ -6,6 +6,7 @@ mod bits;
 pub mod obu;
 mod sequence;
 pub mod syntax;
+pub mod visible;
 
 pub use sequence::{Chroma, Sequence};
 

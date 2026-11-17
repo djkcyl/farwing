@@ -244,6 +244,7 @@ pub(super) fn capture_loop(
             let joining = encode_group::Joining {
                 frames: sender.clone(),
                 clock: started,
+                av1_visible_size: negotiated.av1_visible_size,
                 start: super::pipeline::Start {
                     source: source.clone(),
                     gpu_compatibility: negotiated.gpu_compatibility,

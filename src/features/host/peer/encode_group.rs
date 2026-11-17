@@ -179,6 +179,9 @@ pub(super) enum End {
 struct Member {
     /// The forwarder uplink: takes frames, does not keep the pipeline.
     observer: bool,
+    /// Its viewer presents AV1 at the declared visible size (the padding of
+    /// an aligned-only encoder left out).
+    av1_visible_size: bool,
     /// While this member's picture goes through the forwarder: its
     /// participant and track.
     forwarded: Option<(u64, usize)>,
@@ -205,9 +208,10 @@ struct Member {
 }
 
 impl Member {
-    fn new(frames: mpsc::Sender<Encoded>, clock: Instant, observer: bool) -> Self {
+    fn new(frames: mpsc::Sender<Encoded>, clock: Instant, observer: bool, av1_visible_size: bool) -> Self {
         Self {
             observer,
+            av1_visible_size,
             forwarded: None,
             vote: None,
             keyframe: false,
@@ -401,6 +405,10 @@ impl Group {
     pub(super) fn set_size(&self, size: (u32, u32)) {
         self.lock().size = size;
     }
+    /// Every member's viewer presents AV1 at its declared visible size.
+    pub(super) fn av1_visible_size(&self) -> bool {
+        self.lock().members.values().all(|m| m.av1_visible_size)
+    }
     pub(super) fn set_cursor(&self, cursor: Option<Snapshot>) {
         self.lock().cursor = cursor;
     }
@@ -437,6 +445,8 @@ pub(super) static REGISTRY: LazyLock<Arc<Registry>> =
 pub(super) struct Joining {
     pub frames: mpsc::Sender<Encoded>,
     pub clock: Instant,
+    /// Its viewer presents AV1 at the declared visible size.
+    pub av1_visible_size: bool,
     /// How a new pipeline starts, if this member opens one.
     pub start: super::pipeline::Start,
 }
@@ -476,7 +486,7 @@ impl Registry {
         joining: Joining,
     ) -> Membership {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
-        let member = Member::new(joining.frames, joining.clock, false);
+        let member = Member::new(joining.frames, joining.clock, false, joining.av1_visible_size);
         let mut groups = self.groups();
         // An ended pipeline takes nobody new.
         let open: Vec<&Arc<Group>> = groups.iter().filter(|g| g.lock().end.is_none()).collect();
@@ -577,7 +587,8 @@ impl Registry {
         clock: Instant,
     ) -> Membership {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
-        group.lock().members.insert(id, Member::new(frames, clock, true));
+        // The forwarder's viewers are members of their own.
+        group.lock().members.insert(id, Member::new(frames, clock, true, true));
         Membership {
             registry: self.clone(),
             group: group.clone(),
@@ -827,6 +838,7 @@ mod tests {
             Joining {
                 frames,
                 clock,
+                av1_visible_size: true,
                 start: super::super::pipeline::Start::test(),
             },
             received,

@@ -504,7 +504,7 @@ SPAKE2（`spake2` crate，Ed25519 群，对称模式），口令为访问码的 
 **客户端约定的载荷（服务端只校验大小并转发）**
 
 - `ConnectOptions`（`crates/protocol/src/session.rs`）：`{decoders: [Decoder], display: LocalDisplay?, stream: StreamSettings?}`，服务端原样转发，只有被控解读。
-  - `Decoder`：`{codec: "h264"|"hevc"|"av1", chroma444, bit10, width, height, hardware}`：主控能解码的格式与最大尺寸。被控只选两端都支持的格式；10 位格式只在有对应解码器时使用（SDR 10 位与 HDR 都需要）。
+  - `Decoder`：`{codec: "h264"|"hevc"|"av1", chroma444, bit10, width, height, hardware, av1_visible_size}`：主控能解码的格式与最大尺寸。被控只选两端都支持的格式；10 位格式只在有对应解码器时使用（SDR 10 位与 HDR 都需要）。`av1_visible_size`（缺省 false）：主控按 AV1 序列头后声明的可见尺寸显示。AV1 没有裁剪语法，只能编码对齐尺寸的编码器（AMD VCN4，64×16）会在右边和下边补边，序列头写的是补边后的尺寸，紧跟一个私有元数据 OBU（类型 31，`FWVS` 加大端的宽、高各 16 位）声明真实尺寸；不认识的解码器忽略它，显示补边。有成员没有这一项时（网页端），被控遇到补边的 AV1 就换别的编码器。
   - `LocalDisplay`：`{width, height, scale}`：被控为它新建的显示器（兜底屏、超级屏）取这个尺寸与缩放（`scale` 0 由被控决定）。
   - `StreamSettings`：`{quality: "auto"|"low"|"standard"|"high"|"ultra"|"custom", bitrate_kbps（custom 的码率上限）, fps（不超过主控刷新率）, chroma444, hdr, codec?（空由被控选择）, cursor（光标画进画面）, weak_network: "bitrate"|"frame_rate", cinema}`：会话从这些设置开始；会话中用 SESSION `StreamRequest` 修改（§6、peer-messages.md）。自动画质的起始档位由被控按主控设备记住，不由主控提供。
 

@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub(super) struct Session {
     decoder: Decoder,
     sequence: Bytes,
+    /// Unpadded size declared with `sequence`; AV1 itself cannot crop.
+    visible: Option<(u32, u32)>,
 }
 impl Session {
     pub fn new(extra: &[u8]) -> Result<Self, Error> {
@@ -25,6 +27,7 @@ impl Session {
         let mut this = Self {
             decoder: Decoder::with_settings(&settings).map_err(error)?,
             sequence: Bytes::new(),
+            visible: None,
         };
         if !extra.is_empty() {
             this.push(extra, 0, &AtomicBool::new(false))?;
@@ -95,6 +98,7 @@ impl Session {
                 sequence = Some(Bytes::copy_from_slice(unit.bytes));
             }
         }
+        let visible = farwing_av1::bitstream::visible::declared(data).unwrap_or(self.visible);
         match self
             .decoder
             .send_data(data.to_vec().into_boxed_slice(), None, Some(token), None)
@@ -109,7 +113,10 @@ impl Session {
                     if output.is_some() || p.timestamp() != Some(token) {
                         return Err(Error::Unsupported);
                     }
-                    output = Some(pack(&p, token, cancel)?);
+                    let mut frame = pack(&p, token, cancel)?;
+                    (frame.width, frame.height) =
+                        farwing_av1::bitstream::visible::clamp(visible, (frame.width, frame.height));
+                    output = Some(frame);
                     match self.decoder.send_pending_data() {
                         Ok(()) | Err(Rav1dError::TryAgain) => {}
                         Err(e) => return Err(error(e)),
@@ -125,6 +132,7 @@ impl Session {
         if let Some(sequence) = sequence {
             self.sequence = sequence;
         }
+        self.visible = visible;
         Ok(output)
     }
 }

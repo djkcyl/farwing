@@ -521,6 +521,7 @@ fn probe_hardware_decoders() -> Vec<(VideoCodec, Decoder)> {
                                 width,
                                 height,
                                 hardware: true,
+                                av1_visible_size: true,
                             },
                         ));
                         break;
@@ -545,6 +546,7 @@ fn probe_software_av1() -> Vec<Decoder> {
                         width: 1920,
                         height: 1080,
                         hardware: false,
+                        av1_visible_size: true,
                     });
                 }
             }
@@ -583,6 +585,7 @@ pub(crate) fn detect_native_decoder_support(
                         width: 1920,
                         height: 1080,
                         hardware: false,
+                        av1_visible_size: true,
                     });
                 }
             }

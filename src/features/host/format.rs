@@ -25,6 +25,9 @@ pub(crate) struct Negotiated {
     codecs: AtomicU8,
     pub preferred_gpu: Option<u64>,
     pub gpu_compatibility: bool,
+    /// The controller presents AV1 at its declared visible size (the
+    /// padding of an aligned-only encoder left out).
+    pub av1_visible_size: bool,
     source_gpu: AtomicU64,
     requested_gpu: Option<crate::media::selection::GpuId>,
 }
@@ -36,6 +39,7 @@ impl Negotiated {
             codecs: AtomicU8::new(15),
             preferred_gpu: None,
             gpu_compatibility: false,
+            av1_visible_size: false,
             source_gpu: AtomicU64::new(0),
             requested_gpu: None,
         }
@@ -47,6 +51,7 @@ impl Negotiated {
             codecs: AtomicU8::new(15),
             preferred_gpu: self.preferred_gpu,
             gpu_compatibility: self.gpu_compatibility,
+            av1_visible_size: self.av1_visible_size,
             source_gpu: AtomicU64::new(self.source_gpu.load(Ordering::Relaxed)),
             requested_gpu: self.requested_gpu,
         }
@@ -99,6 +104,10 @@ impl Negotiated {
             codecs: AtomicU8::new(15),
             preferred_gpu: crate::media::selection::resolve_gpu(requested_gpu),
             gpu_compatibility: settings.gpu_compatibility,
+            av1_visible_size: decoders
+                .iter()
+                .filter(|d| Codec::of(d.codec) == Codec::Av1)
+                .all(|d| d.av1_visible_size),
             source_gpu: AtomicU64::new(source_gpu),
             requested_gpu,
         })
@@ -414,6 +423,7 @@ mod tests {
             width: 2560,
             height: 1440,
             hardware: true,
+            av1_visible_size: true,
         }
     }
 
