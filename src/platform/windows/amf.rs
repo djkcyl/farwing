@@ -476,6 +476,8 @@ impl Encoder {
         let result = self.set(avc, hevc, value);
         if self.format.codec == Codec::H265
             && matches!(hevc, b"HevcUsage\0" | b"HevcColorBitDepth\0")
+            || self.format.codec == Codec::Av1
+                && matches!(avc, b"Av1Usage\0" | b"Av1ColorBitDepth\0")
         {
             return result;
         }
@@ -514,6 +516,10 @@ impl Encoder {
     }
     fn configure_av1(&self, size: (u32, u32), rate: Rate) -> Result<()> {
         let color = self.conversion.color.space(None);
+        // Same rule as AVC/HEVC: only usage and depth are mandatory. Drivers
+        // differ in the optional properties they accept (the 780M rejects the
+        // output matrix coefficient for every codec), so Init and the output
+        // probe decide, not a single rejected tuning or colour property.
         for (name, value) in [
             (a::AMF_VIDEO_ENCODER_AV1_USAGE, 2),
             (a::AMF_VIDEO_ENCODER_AV1_ENCODING_LATENCY_MODE, 3),
@@ -555,7 +561,7 @@ impl Encoder {
                 color.matrix as i64,
             ),
         ] {
-            self.set(name, name, integer(value))?;
+            self.set_initial(name, name, integer(value))?;
         }
         for name in [
             a::AMF_VIDEO_ENCODER_AV1_PRE_ANALYSIS_ENABLE,
@@ -564,7 +570,7 @@ impl Encoder {
             a::AMF_VIDEO_ENCODER_AV1_ENFORCE_HRD,
             a::AMF_VIDEO_ENCODER_AV1_FILLER_DATA,
         ] {
-            self.set(name, name, boolean(false))?;
+            self.set_initial(name, name, boolean(false))?;
         }
         // Older AV1 runtimes have no B-picture properties and only encode
         // forward frames. On runtimes exposing them, keep reordering disabled.
@@ -574,7 +580,7 @@ impl Encoder {
         ] {
             self.set_initial(name, name, integer(0))?;
         }
-        self.set(
+        self.set_initial(
             a::AMF_VIDEO_ENCODER_AV1_FRAMESIZE,
             a::AMF_VIDEO_ENCODER_AV1_FRAMESIZE,
             a::AMFVariantStruct {
@@ -587,7 +593,7 @@ impl Encoder {
                 },
             },
         )?;
-        self.set(
+        self.set_initial(
             a::AMF_VIDEO_ENCODER_AV1_FRAMERATE,
             a::AMF_VIDEO_ENCODER_AV1_FRAMERATE,
             frame_rate(rate.fps),
