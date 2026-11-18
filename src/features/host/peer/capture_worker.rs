@@ -57,6 +57,15 @@ pub(super) fn capture_loop(
     let mut last_diagnostics = None;
     let mut metrics = metrics::Metrics::default();
     let mut paused_capture_at = None::<Instant>;
+    // 采集线程注册 MMCSS，避免被同机编码/后台任务抢占；失败不影响采集。
+    #[cfg(windows)]
+    let _capture_priority = match crate::platform::windows::mmcss::CapturePriority::enter() {
+        Ok(priority) => Some(priority),
+        Err(error) => {
+            tracing::warn!(%error, "host capture MMCSS registration failed");
+            None
+        }
+    };
     let mut pipeline = None::<pipeline::Pipeline>;
     // 共享纹理环在这台机器上建过一次没成就别再试：退回串行编码，
     // 而不是让采集每帧都重建一次失败。
