@@ -158,10 +158,15 @@ mod real {
                     implementation: ready.implementation,
                 }),
                 Ok(Err(error)) => {
+                    drop(tx);
                     let _ = thread.join();
                     anyhow::bail!(error);
                 }
                 Err(_) => {
+                    // 超时时编码线程可能还在初始化。必须先把任务通道的发送端
+                    // 丢掉，否则它初始化成功后会在 `rx.recv()` 上等任务，而这里
+                    // 正等着它退出——采集线程会永久卡在 join 上。
+                    drop(tx);
                     let _ = thread.join();
                     anyhow::bail!("编码线程未能启动");
                 }
@@ -278,6 +283,10 @@ mod real {
         let context = unsafe { device.GetImmediateContext()? };
         let mut converter = crate::platform::windows::preprocess::Converter::new(&device)?;
         let mut metadata = BTreeMap::new();
+        // 队列满时丢掉的是已经编好的帧，主控那边看不到 RTP 丢包，只会一直拿到
+        // 引用不到的画面。等队列重新腾出位置再补一个关键帧接回去，而不是在队列
+        // 满的时候猛插 IDR 把码率顶得更高。
+        let mut resync = false;
         while let Ok(mut job) = rx.recv() {
             if cancel.load(Ordering::Acquire) {
                 break;
@@ -285,6 +294,10 @@ mod real {
             job.capture.lease.wait()?;
             let reconfigured = encoder.configure_rate(job.rate)?;
             if reconfigured {
+                keyframe.store(true, Ordering::Release);
+            }
+            if resync && sender.capacity() > 0 {
+                resync = false;
                 keyframe.store(true, Ordering::Release);
             }
             let force = keyframe.swap(false, Ordering::AcqRel);
@@ -380,12 +393,13 @@ mod real {
                 {
                     metadata.pop_first();
                 }
-                // 发送端过慢时丢这一帧，让采集/编码继续跑；不要顺手强制关键帧，
-                // 避免在队列已满时制造 IDR 雪崩。
+                // 发送端过慢时丢这一帧，让采集/编码继续跑；关键帧等队列腾出
+                // 位置再补（见上面的 `resync`）。
                 match sender.try_send(frame) {
                     Ok(()) => {}
                     Err(tokio::sync::mpsc::error::TrySendError::Full(frame)) => {
                         stats.send_drops.fetch_add(1, Ordering::Relaxed);
+                        resync = true;
                         drop(frame);
                     }
                     Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {

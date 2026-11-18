@@ -67,9 +67,16 @@ pub(super) fn capture_loop(
         }
     };
     let mut pipeline = None::<pipeline::Pipeline>;
+    let mut pipeline_key = None::<((u32, u32), ((u64, Backend, Format), Color))>;
     // 共享纹理环在这台机器上建过一次没成就别再试：退回串行编码，
     // 而不是让采集每帧都重建一次失败。
     let mut pipeline_unavailable = false;
+    // 队列满丢的是已经编好的帧，主控看不到 RTP 丢包；等队列腾出位置再补一次
+    // 关键帧把参考关系接回去。
+    let mut send_resync = false;
+    // 目标帧率低于刷新率时的下一个放行时刻，按周期累加而不是按上一帧加固定
+    // 时长，否则 144Hz 屏上的 60fps 会被卡成 48fps。
+    let mut next_frame_at = None::<Instant>;
 
     while !cancel.is_cancelled() && handle.requested() {
         let iteration_started = Instant::now();
@@ -240,6 +247,7 @@ pub(super) fn capture_loop(
                 desktop = None;
                 encoder = None;
                 pipeline = None;
+                pipeline_key = None;
                 current = None;
                 transfer = None;
                 encoding_device = None;
@@ -284,22 +292,132 @@ pub(super) fn capture_loop(
         } else {
             paused_capture_at = None;
         }
+        let source_device = desktop.as_ref().context("缺少采集源")?.device.clone();
+        // NVENC 即使和采集同卡也用独立的 D3D11 上下文：采集/预处理在采集上下文
+        // 上按 fence 交付，不依赖 NVENC 自己怎么处理采集上下文。
+        let isolated_nvenc = hardware
+            && candidate.capability.backend == crate::features::host::format::Backend::Nvidia;
+        let device =
+            if !hardware || (!isolated_nvenc && candidate.capability.adapter == screen.adapter) {
+                source_device.clone()
+            } else {
+                if encoding_device
+                    .as_ref()
+                    .is_none_or(|(adapter, _)| *adapter != candidate.capability.adapter)
+                {
+                    match capture::create_device(candidate.capability.adapter) {
+                        Ok((device, _)) => {
+                            tracing::info!(
+                                source_adapter = screen.adapter,
+                                encoder_adapter = candidate.capability.adapter,
+                                isolated_nvenc,
+                                "host encoding device created independently of capture"
+                            );
+                            encoding_device = Some((candidate.capability.adapter, device))
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error,?candidate_id,"encoder adapter failed");
+                            failed.insert(candidate_id);
+                            continue;
+                        }
+                    }
+                }
+                encoding_device.as_ref().unwrap().1.clone()
+            };
+        // 共享环和编码线程只依赖采集源和候选，跟这一帧的内容无关，所以在第一帧
+        // 之前就建好：先抓帧再建会把第一个 present 直接吞掉，静态桌面上那意味着
+        // 主控一直收不到画面。
+        // 建的时候码率估计可能还停在暂停值，编码器会话不接受太小的目标码率，
+        // 用一个能建起来的下限起步；真正的码率每帧由 submit 时的 rate 重配。
+        let initial_peak = transport
+            .media_rate()
+            .min(bounds.maximum)
+            .max(crate::features::host::parameters::MIN_ENCODER_RATE);
+        let pipeline_target = desktop
+            .as_ref()
+            .and_then(|desktop| desktop.raw_desc())
+            .filter(|_| {
+                cfg!(windows)
+                    && !pipeline_unavailable
+                    && hardware
+                    && candidate.capability.backend
+                        == crate::features::host::format::Backend::Nvidia
+                    && candidate.capability.adapter == screen.adapter
+                    && !wanted.cursor_capture
+            })
+            .map(|_| {
+                // 缩放/上限由预处理做，编码尺寸必须和它算出来的完全一致，不能只按
+                // 画质档位算：档位尺寸被协商上限压小时两者会差一截。
+                let (width, height) = output_size(screen.width, screen.height, wanted.quality);
+                (
+                    crate::media::geometry::fit_size(width, height, wanted.maximum),
+                    (candidate_id, wanted.color),
+                )
+            });
+        if pipeline_target != pipeline_key {
+            drop(pipeline.take());
+            pipeline_key = None;
+            if let Some(key) = pipeline_target {
+                let rebuilding = Instant::now();
+                let raw_desc = desktop
+                    .as_ref()
+                    .context("缺少采集源")?
+                    .raw_desc()
+                    .context("采集源不再提供DXGI原始纹理")?;
+                let created = pipeline::Pipeline::new(
+                    &source_device,
+                    device.clone(),
+                    raw_desc,
+                    key.0,
+                    wanted.format,
+                    crate::features::host::format::Rate {
+                        target: initial_peak,
+                        peak: initial_peak,
+                        fps: wanted.fps,
+                        quality: wanted.quality,
+                        quality_target,
+                    },
+                    wanted.color,
+                    sender.clone(),
+                    keyframe.clone(),
+                    encode_cancel.clone(),
+                    started,
+                );
+                match created {
+                    Ok(created) => {
+                        tracing::info!(
+                            size = ?key.0,
+                            ?candidate_id,
+                            elapsed_ms = rebuilding.elapsed().as_secs_f64() * 1000.,
+                            "host encode pipeline replacement completed"
+                        );
+                        handle.encoder(
+                            created.implementation(),
+                            created.maximum_size(),
+                            &screen,
+                            desktop.as_ref().context("缺少采集源")?.backend_name(),
+                        );
+                        pipeline = Some(created);
+                        pipeline_key = Some(key);
+                        frame_metadata.clear();
+                        encode_errors = 0;
+                        keyframe.store(true, Ordering::Release);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error,?candidate_id,"host encode pipeline unavailable; falling back to the serial path");
+                        pipeline_unavailable = true;
+                        encoder = None;
+                        current = None;
+                    }
+                }
+            }
+        }
         let wait_ms = ((1000.0 / f64::from(wanted.fps)).round() as u32).max(1);
         let capture_started = Instant::now();
         // AcquireNextFrame already blocks until the next desktop present (or
         // this timeout). Sleeping to a separate deadline first makes the loop
         // wake just after that present and wait a whole extra refresh.
-        let raw_pipeline_eligible = cfg!(windows)
-            && hardware
-            && candidate.capability.backend == crate::features::host::format::Backend::Nvidia
-            && candidate.capability.adapter == screen.adapter
-            && !wanted.cursor_capture
-            && pipeline.is_some()
-            && current.is_some_and(|(old_size, old_candidate)| {
-                old_size == output_size(screen.width, screen.height, wanted.quality)
-                    && old_candidate == (candidate_id, wanted.color)
-            });
-        if raw_pipeline_eligible {
+        if pipeline.is_some() {
             let stream = desktop.as_mut().context("缺少采集源")?;
             let generation_before = stream.generation;
             let raw = pipeline.as_mut().expect("raw pipeline exists").next_raw(
@@ -316,6 +434,7 @@ pub(super) fn capture_loop(
             // 别把旧设备的纹理环继续往里灌。
             if desktop.as_ref().map(|d| d.generation) != Some(generation_before) {
                 pipeline = None;
+                pipeline_key = None;
                 encoder = None;
                 current = None;
                 transfer = None;
@@ -327,20 +446,28 @@ pub(super) fn capture_loop(
             // 时主控的光标位置会停住。
             let sampled = desktop.as_ref().context("缺少采集源")?.cursor.clone();
             *lock(&pointer) = sampled;
+            // 采集源自己刷新过 screen（分辨率/方向变了）时，下一轮的编码尺寸要
+            // 跟着重算，否则流水线会拿旧尺寸的编码器去收新尺寸的画面。
+            screen = desktop.as_ref().context("缺少采集源")?.screen.clone();
             let Some(raw) = raw? else {
                 continue;
             };
             metrics.new_frames += 1;
-            let size = output_size(raw.width, raw.height, wanted.quality);
-            // 目标已经等于屏幕刷新率时不再按时间戳二次限速；present 抖动本身
-            // 不该让我们的门限再丢一帧。
-            let minimum_interval = Duration::from_secs_f64(1.0 / f64::from(wanted.fps));
-            if wanted.fps < screen.fps
-                && last_frame.is_some_and(|at| {
-                    raw.captured.saturating_duration_since(at) < minimum_interval.mul_f64(0.9)
-                })
-            {
-                continue;
+            let size = pipeline_key.context("流水线缺少编码尺寸")?.0;
+            // 目标帧率低于刷新率时按截止时间丢帧，截止时间每次只推进一个周期：
+            // 144Hz 屏上 60fps 才会 2/3 帧交替取（60fps），而不是每帧都等到
+            // 下一个 ≥0.9 周期（48fps）。
+            if wanted.fps < screen.fps {
+                let period = Duration::from_secs_f64(1.0 / f64::from(wanted.fps));
+                if next_frame_at.is_some_and(|at| raw.captured < at) {
+                    continue;
+                }
+                // 落后超过一整个周期说明中间断过（卡顿/丢帧），重新对齐，
+                // 否则会把攒下的额度一次性放完。
+                next_frame_at = Some(match next_frame_at {
+                    Some(at) if at + period > raw.captured => at + period,
+                    _ => raw.captured + period,
+                });
             }
             let peak = transport.media_rate().min(bounds.maximum);
             let codec_minimum = crate::features::host::parameters::MIN_ENCODER_RATE;
@@ -420,6 +547,7 @@ pub(super) fn capture_loop(
                     tracing::warn!(%error, %detail, ?candidate_id, "host encode pipeline submit failed; rebuilding");
                     failed.insert(candidate_id);
                     pipeline = None;
+                    pipeline_key = None;
                     encoder = None;
                     current = None;
                     keyframe.store(true, Ordering::Release);
@@ -442,9 +570,11 @@ pub(super) fn capture_loop(
             generation = capture_state.generation;
             encoder = None;
             pipeline = None;
+            pipeline_key = None;
             cached = None;
             current = None;
             last_frame = None;
+            next_frame_at = None;
             transfer = None;
             keyframe.store(true, Ordering::Release);
         }
@@ -504,12 +634,17 @@ pub(super) fn capture_loop(
             }
         };
         // AcquireNextFrame 按桌面刷新率交付，目标帧率更低时在这里按时间戳丢弃，
-        // 不能靠抓帧前 sleep 来限速，否则会稳定错过 vblank。
-        let minimum_interval = Duration::from_secs_f64(1.0 / f64::from(wanted.fps));
-        if last_frame.is_some_and(|at| {
-            frame.captured.saturating_duration_since(at) < minimum_interval.mul_f64(0.9)
-        }) {
-            continue;
+        // 不能靠抓帧前 sleep 来限速，否则会稳定错过 vblank。截止时间按周期累加，
+        // 144Hz 屏上 60fps 才不会掉到 48fps。
+        if wanted.fps < screen.fps {
+            let period = Duration::from_secs_f64(1.0 / f64::from(wanted.fps));
+            if next_frame_at.is_some_and(|at| frame.captured < at) {
+                continue;
+            }
+            next_frame_at = Some(match next_frame_at {
+                Some(at) if at + period > frame.captured => at + period,
+                _ => frame.captured + period,
+            });
         }
         let peak = transport.media_rate().min(bounds.maximum);
         // A zero/tiny allocation is a transport pause, not an encoder failure.
@@ -525,127 +660,6 @@ pub(super) fn capture_loop(
             continue;
         }
         let size = output_size(frame.width, frame.height, wanted.quality);
-        let source_device = &desktop.as_ref().context("缺少采集源")?.device;
-        // NVENC owns a separate D3D11 context even on the capture adapter.
-        // Transfer explicitly orders capture/preprocessing before encoding,
-        // instead of relying on NVENC's handling of the capture context.
-        let isolated_nvenc = hardware
-            && candidate.capability.backend == crate::features::host::format::Backend::Nvidia;
-        let device =
-            if !hardware || (!isolated_nvenc && candidate.capability.adapter == screen.adapter) {
-                source_device.clone()
-            } else {
-                if encoding_device
-                    .as_ref()
-                    .is_none_or(|(adapter, _)| *adapter != candidate.capability.adapter)
-                {
-                    match capture::create_device(candidate.capability.adapter) {
-                        Ok((device, _)) => {
-                            tracing::info!(
-                                source_adapter = screen.adapter,
-                                encoder_adapter = candidate.capability.adapter,
-                                isolated_nvenc,
-                                "host encoding device created independently of capture"
-                            );
-                            encoding_device = Some((candidate.capability.adapter, device))
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error,?candidate_id,"encoder adapter failed");
-                            failed.insert(candidate_id);
-                            continue;
-                        }
-                    }
-                }
-                encoding_device.as_ref().unwrap().1.clone()
-            };
-        // 只有独立 NVENC 设备、同卡这条路径才走采集→编码流水线；跨卡、
-        // AMF/oneVPL/软件编码继续走原来的串行路径。内嵌光标要求画面在采集
-        // 线程就合成好，流水线不做这件事。
-        let pipeline_eligible = cfg!(windows)
-            && !pipeline_unavailable
-            && hardware
-            && candidate.capability.backend == crate::features::host::format::Backend::Nvidia
-            && candidate.capability.adapter == screen.adapter
-            && !wanted.cursor_capture
-            && desktop
-                .as_ref()
-                .is_some_and(|desktop| desktop.raw_desc().is_some());
-        if !pipeline_eligible && pipeline.is_some() {
-            // 换回串行编码路径时，流水线留下的 current 不能冒充一个已经建好
-            // 的本地编码器。
-            pipeline = None;
-            current = None;
-            encoder = None;
-        }
-        if pipeline_eligible {
-            let rate = crate::features::host::format::Rate {
-                target: media_rate,
-                peak,
-                fps: wanted.fps,
-                quality: wanted.quality,
-                quality_target,
-            };
-            let needs_rebuild = pipeline.is_none()
-                || current.is_none_or(|(old_size, old_candidate)| {
-                    old_size != size || old_candidate != (candidate_id, wanted.color)
-                });
-            if needs_rebuild {
-                let rebuilding = Instant::now();
-                drop(pipeline.take());
-                let close_ms = rebuilding.elapsed().as_secs_f64() * 1000.;
-                let raw_desc = desktop
-                    .as_ref()
-                    .context("缺少采集源")?
-                    .raw_desc()
-                    .context("采集源不再提供DXGI原始纹理")?;
-                match pipeline::Pipeline::new(
-                    source_device,
-                    device.clone(),
-                    raw_desc,
-                    size,
-                    wanted.format,
-                    rate,
-                    wanted.color,
-                    sender.clone(),
-                    keyframe.clone(),
-                    encode_cancel.clone(),
-                    started,
-                ) {
-                    Ok(created) => {
-                        tracing::info!(
-                            ?size,
-                            ?candidate_id,
-                            close_ms,
-                            elapsed_ms = rebuilding.elapsed().as_secs_f64() * 1000.,
-                            "host encode pipeline replacement completed"
-                        );
-                        handle.encoder(
-                            created.implementation(),
-                            created.maximum_size(),
-                            &screen,
-                            desktop.as_ref().context("缺少采集源")?.backend_name(),
-                        );
-                        pipeline = Some(created);
-                        current = Some((size, (candidate_id, wanted.color)));
-                        frame_metadata.clear();
-                        encode_errors = 0;
-                        keyframe.store(true, Ordering::Release);
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error,?candidate_id,"host encode pipeline unavailable; falling back to the serial path");
-                        pipeline_unavailable = true;
-                        pipeline = None;
-                        encoder = None;
-                        current = None;
-                        cached = None;
-                        continue;
-                    }
-                }
-            }
-            // 这一帧只用来建立流水线；从下一帧开始走 next_raw，把缩放和
-            // NVENC 都留在编码线程，采集线程只做 Acquire 与共享纹理复制。
-            continue;
-        }
         if current.is_some_and(|(old_size, old_candidate)| {
             (old_size != size || old_candidate != (candidate_id, wanted.color))
                 && old_candidate.0.0 == candidate_id.0
@@ -746,7 +760,7 @@ pub(super) fn capture_loop(
             keyframe.store(true, Ordering::Release);
         }
         let active_encoder = encoder.as_mut().context("缺少编码器")?;
-        let needs_transfer = device != *source_device;
+        let needs_transfer = device != source_device;
         let transfer_started = Instant::now();
         let prepared = (|| -> Result<Option<crate::features::host::transfer::Delivery>> {
             if !needs_transfer {
@@ -754,10 +768,10 @@ pub(super) fn capture_loop(
             }
             if transfer
                 .as_ref()
-                .is_none_or(|t| !t.matches(source_device, &device, &frame))
+                .is_none_or(|t| !t.matches(&source_device, &device, &frame))
             {
                 transfer = Some(crate::features::host::transfer::Transfer::new(
-                    source_device,
+                    &source_device,
                     &device,
                     &frame,
                 )?);
@@ -787,6 +801,12 @@ pub(super) fn capture_loop(
             });
             metrics.rate.record(rate_started.elapsed());
             if reconfigured? {
+                keyframe.store(true, Ordering::Release);
+            }
+            // 队列满时丢掉的帧已经编好了，主控那边看不到 RTP 丢包、只会一直拿到
+            // 引用不到的画面；等队列重新腾出位置再补一个关键帧接回去。
+            if send_resync && sender.capacity() > 0 {
+                send_resync = false;
                 keyframe.store(true, Ordering::Release);
             }
             // Network requests are rate-limited at their RTCP entry. Explicit
@@ -859,12 +879,14 @@ pub(super) fn capture_loop(
                     tracing::warn!(%error,"capture graphics device was removed; recreating selected source");
                     encoder = None;
                     pipeline = None;
+                    pipeline_key = None;
                     current = None;
                     cached = None;
                     desktop = None;
                     transfer = None;
                     encoding_device = None;
                     last_frame = None;
+                    next_frame_at = None;
                     publication.send_if_modified(|state| {
                         if state.visible {
                             state.visible = false;
@@ -889,6 +911,7 @@ pub(super) fn capture_loop(
                     failed.insert(candidate_id);
                     encoder = None;
                     pipeline = None;
+                    pipeline_key = None;
                     current = None;
                     cached = None;
                     last_frame = None;
@@ -964,12 +987,13 @@ pub(super) fn capture_loop(
             {
                 frame_metadata.pop_first();
             }
-            // 发送端过慢时丢这一帧，让采集/编码继续跑；也不顺手请求关键帧，
-            // 队列已经满的时候再插 IDR 只会让码率越丢越高。
+            // 发送端过慢时丢这一帧，让采集/编码继续跑；关键帧等队列腾出位置
+            // 再补（见 `send_resync`），队列满的时候再插 IDR 只会让码率越丢越高。
             match sender.try_send(frame) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(frame)) => {
                     metrics.send_drops += 1;
+                    send_resync = true;
                     drop(frame);
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
