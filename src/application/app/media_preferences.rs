@@ -73,6 +73,15 @@ impl Inventory {
                 }
             }
         }
+        // Linux lists none: NVENC and VA-API use the GPU the desktop runs on.
+        if selected.is_none()
+            && self.pending.is_none()
+            && self.error.is_none()
+            && !self.adapters.iter().any(|a| a.id.is_some())
+        {
+            ui.label("自动（没有可指定的显卡）");
+            return;
+        }
         let repeated: std::collections::HashSet<_> = self
             .adapters
             .iter()

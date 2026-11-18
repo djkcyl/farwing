@@ -6,6 +6,7 @@ use crate::ui::theme;
 
 type Path = Vec<[f32; 2]>;
 
+#[cfg(windows)]
 fn text_paths(text: &str, size: f32, weight: i32) -> Result<Vec<Path>> {
     use windows::Win32::{
         Foundation::{COLORREF, SIZE},
@@ -175,6 +176,19 @@ fn text_paths(text: &str, size: f32, weight: i32) -> Result<Vec<Path>> {
         paths.push(compact);
     }
     Ok(paths)
+}
+
+/// The lettering is traced from a GDI rasterization, which has no Linux
+/// counterpart yet. The brand mark and its frame still draw; only the text is
+/// left out, so the remote side sees a header without a caption.
+#[cfg(not(windows))]
+fn text_paths(text: &str, _size: f32, _weight: i32) -> Result<Vec<Path>> {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        tracing::info!("whiteboard brand lettering is unavailable on this platform");
+    });
+    let _ = text;
+    Ok(Vec::new())
 }
 
 fn arc(cx: f32, cy: f32, rx: f32, ry: f32, start: f32, end: f32) -> Path {

@@ -39,6 +39,13 @@ impl DisplayAspect {
             Self::UltraWide => Some((21, 9)),
         }
     }
+    #[cfg_attr(
+        not(windows),
+        allow(
+            dead_code,
+            reason = "Only the Windows viewer resizes its window to one video pixel per screen pixel."
+        )
+    )]
     pub fn size(video: (u32, u32), ratio: Option<(u32, u32)>) -> (u32, u32) {
         match ratio {
             Some((w, h)) if w > 0 && h > 0 => (

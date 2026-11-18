@@ -22,6 +22,11 @@ use super::power_request as power;
 mod recovery;
 mod session;
 
+/// Capture never asks the local user on Windows.
+pub(crate) fn needs_consent() -> bool {
+    false
+}
+
 /// Read the state of this process's interactive session. Unknown/failure is
 /// not an unlocked session; callers retain their last confirmed report.
 pub(crate) fn session_locked() -> Option<bool> {
@@ -193,6 +198,12 @@ fn outputs() -> Result<Vec<(IDXGIAdapter1, IDXGIOutput1, Screen)>> {
     }
 }
 
+/// Windows 这一侧从来不是 Wayland 会话。共享代码用这个问题挑「摆窗口接取拖放」
+/// 还是「走 OLE 那条路」，这里永远是后者（见 `features::drag_drop`）。
+pub(crate) fn wayland_session() -> bool {
+    false
+}
+
 pub(crate) fn screens() -> Result<Vec<Screen>> {
     Ok(outputs()?
         .into_iter()
@@ -326,11 +337,20 @@ pub(crate) fn encoding_adapters() -> Result<Vec<EncodingAdapter>> {
     }
 }
 
+/// The graphics device that captured frames live on.
+pub(crate) type Device = ID3D11Device;
+
+/// Whether `device` was removed (driver reset, adapter gone) and every
+/// resource on it has to be recreated.
+pub(crate) fn device_lost(device: &Device) -> bool {
+    unsafe { device.GetDeviceRemovedReason() }.is_err()
+}
+
 #[derive(Clone)]
 pub(crate) struct Frame {
     pub width: u32,
     pub height: u32,
-    pub texture: ID3D11Texture2D,
+    pub image: ID3D11Texture2D,
     pub captured: std::time::Instant,
     pub is_new: bool,
     pub hdr_metadata: Option<crate::media::video_color::HdrMetadata>,
@@ -935,7 +955,7 @@ impl Duplication {
                 Ok(Some(Frame {
                     width: desc.Width,
                     height: desc.Height,
-                    texture,
+                    image: texture,
                     captured,
                     _storage: None,
                     is_new: true,
@@ -996,7 +1016,7 @@ impl Duplication {
         Ok(Some(Frame {
             width: output.Width,
             height: output.Height,
-            texture,
+            image: texture,
             captured: std::time::Instant::now(),
             is_new: pointer_changed,
             _storage: None,

@@ -44,6 +44,7 @@ pub(crate) fn format(data: &[u8]) -> Option<super::video_format::VideoFormatSign
     // AV1 cannot crop; an aligned-only encoder declares its unpadded size.
     let (visible_width, visible_height) = visible::clamp(visible::declared(data).flatten(), (w, h));
     Some(super::video_format::VideoFormatSignature {
+        profile_idc: s.profile,
         coded_width: w,
         coded_height: h,
         visible_width,

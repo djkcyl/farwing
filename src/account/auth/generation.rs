@@ -24,7 +24,7 @@ fn deleted(value: Result<(), Error>) -> Result<()> {
 }
 
 pub(super) fn ensure() -> Result<()> {
-    use crate::platform::windows::host_service::vault;
+    use crate::platform::host_service::vault;
     let managed = vault::applies()?;
     let mut checked = CHECKED.lock().unwrap_or_else(|e| e.into_inner());
     if checked[usize::from(managed)] {

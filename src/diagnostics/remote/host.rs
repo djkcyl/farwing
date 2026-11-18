@@ -31,7 +31,7 @@ pub(crate) fn bind(
     }));
     let weak = Arc::downgrade(&channel);
     let worker_stop = cancel.clone();
-    let activity = crate::platform::windows::host_service::activity::Work::new();
+    let activity = crate::platform::host_service::activity::Work::new();
     tokio::spawn(async move {
         let _activity = activity;
         let cancel = worker_stop;

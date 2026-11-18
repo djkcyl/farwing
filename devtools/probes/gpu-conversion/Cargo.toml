@@ -1,0 +1,18 @@
+[package]
+name = "gpu-conversion-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1"
+cros-libva = { path = "../../../vendor/cros-libva" }
+glow = "0.17"
+libloading = "0.8"
+openuuyc-h264 = { path = "../../../crates/codec/kernels/h264" }
+thiserror = "2"
+tracing = "0.1"
+yuv = "0.8.17"
+
+[profile.release]
+opt-level = 3

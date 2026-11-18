@@ -5,7 +5,7 @@ mod returning;
 use crate::{
     features::clipboard::{self, Clipboard, FileOffer, FileSummary},
     media::capture::Screen,
-    platform::windows::drag_drop as native,
+    platform::drag_drop as native,
     protocol::drag_drop::{self as wire, Packet, Payload, Point},
 };
 use anyhow::{Result, ensure};
@@ -40,6 +40,10 @@ pub(crate) enum Stage {
     Preparing,
     Dragging,
     Submitted,
+    #[cfg_attr(
+        not(windows),
+        allow(dead_code, reason = "Only the Windows viewer offers the drag return.")
+    )]
     Returning,
     Reading,
     Complete,
@@ -118,6 +122,8 @@ struct Shared {
     ready: AtomicBool,
     peer_enabled: AtomicBool,
     return_capable: AtomicBool,
+    /// 对端收得下拖动预览图（`wire::DRAG_IMAGE`）。
+    image_capable: AtomicBool,
     token: AtomicU64,
     screens: Mutex<Vec<Screen>>,
     stop: CancellationToken,
@@ -177,6 +183,10 @@ enum Command {
     Prepared(u64, Result<FileSummary, String>),
     Offer(u64, FileOffer, Result<FileSummary, String>),
     Native(u64, native::Event),
+    #[cfg_attr(
+        not(windows),
+        allow(dead_code, reason = "Only the Windows viewer offers the drag return.")
+    )]
     Resume(u64),
     Image(u64, wire::DragImage),
 }
@@ -217,6 +227,7 @@ impl Endpoint {
             ready: AtomicBool::new(false),
             peer_enabled: AtomicBool::new(role == Role::Host),
             return_capable: AtomicBool::new(false),
+            image_capable: AtomicBool::new(false),
             token: AtomicU64::new(0),
             screens: Mutex::default(),
             stop: stop.clone(),
@@ -392,6 +403,9 @@ struct Entry {
     offer: Option<FileOffer>,
     native: Option<native::Session>,
     portal: Option<native::portal::Portal>,
+    /// Wayland 会话里的接取者。和 `portal` 二选一：Wayland 会话只摆它，X11 只摆
+    /// `portal`（见 `Payload::Probe` 那条）。
+    catch: Option<native::Catcher>,
     release_source: Option<ReleaseSource>,
     source_released: bool,
     image: Option<wire::DragImage>,
@@ -440,6 +454,9 @@ impl Drop for Entry {
         }
         if let Some(native) = &self.native {
             native.cancel();
+        }
+        if let Some(catch) = &self.catch {
+            catch.cancel();
         }
     }
 }
@@ -493,7 +510,15 @@ impl Actor {
         };
         let data = wire::encode(Packet {
             token: self.token,
-            capabilities: wire::NATIVE_RETURN,
+            // `DRAG_IMAGE` 两边都置：它说的是「我收得下这张拖动预览图」，和
+            // `NATIVE_RETURN`（能不能把拖出去的东西再拖回来）本来就是两件事。
+            // 不认识这一位的对端会忽略未知位，所以线上是兼容的。
+            capabilities: wire::DRAG_IMAGE
+                | if native::RETURN_CAPABLE {
+                    wire::NATIVE_RETURN
+                } else {
+                    0
+                },
             drag: id,
             sequence,
             payload: Some(payload),
@@ -591,6 +616,7 @@ impl Actor {
             offer: None,
             native: None,
             portal: None,
+            catch: None,
             release_source: None,
             source_released: false,
             image: None,
@@ -648,7 +674,16 @@ impl Actor {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         }
-        tracing::info!(drag = id, stage, "native file drag finished");
+        // 拖放失败时这里就是唯一能看出根因的地方：stage 只说结局，原因在 message 里，
+        // 而它此前根本没被记下来（stage=3 是「取消」，可能是对端撤的、也可能是本地
+        // 能力不够），reverse 则说明是哪一侧发起的。
+        tracing::info!(
+            drag = id,
+            stage,
+            reverse = self.entries.get(&id).is_some_and(|entry| entry.reverse),
+            message = %message,
+            "native file drag finished"
+        );
         let _ =
             self.shared
                 .source_held
@@ -692,7 +727,14 @@ impl Actor {
             Command::Image(id, image) => {
                 if let Some(entry) = self.entries.get_mut(&id) {
                     entry.image = Some(image.clone());
-                    if self.shared.return_capable.load(Ordering::Acquire) {
+                    // 发不发只看**对端**收不收得下：`DRAG_IMAGE` 是这一版新加的位，
+                    // 上游不置它（于是这里一张图都不发，和上游现在的行为一致）；
+                    // 旧的回退是「两边都能把拖出去的东西拖回来才发」，那是拿
+                    // `NATIVE_RETURN` 兼任了两件事，Linux 被控端压根置不上它。
+                    let accepts = self.shared.image_capable.load(Ordering::Acquire)
+                        || (native::RETURN_CAPABLE
+                            && self.shared.return_capable.load(Ordering::Acquire));
+                    if accepts {
                         self.emit(id, Payload::Image(image), false).await?;
                     }
                 }
@@ -777,6 +819,10 @@ impl Actor {
                         self.emit(id, Payload::Resumed(true), false).await?;
                     }
                     native::portal::Event::Released => {
+                        // 这一句就是主控接手的发令枪（见 `SourceReleased` 那条：
+                        // 它拿它当「原按下已经交还」的证据）。没有它，拖出会一直
+                        // 停在「正在准备文件」，所以两侧都记一笔。
+                        tracing::info!(drag = id, "原文件拖动已收场，交还主控");
                         let entry = self.entries.get_mut(&id).unwrap();
                         entry.source_released = true;
                         let _ = self.shared.pointer_owner.compare_exchange(
@@ -1078,6 +1124,7 @@ impl Actor {
             self.reported = None;
             self.shared.ready.store(false, Ordering::Release);
             self.shared.return_capable.store(false, Ordering::Release);
+            self.shared.image_capable.store(false, Ordering::Release);
             if token != 0 {
                 self.emit(0, Payload::Hello(1), false).await?;
             }
@@ -1107,6 +1154,10 @@ impl Actor {
                 packet.capabilities & wire::NATIVE_RETURN != 0,
                 Ordering::Release,
             );
+            self.shared.image_capable.store(
+                packet.capabilities & wire::DRAG_IMAGE != 0,
+                Ordering::Release,
+            );
             self.shared.ready.store(true, Ordering::Release);
             self.emit(0, Payload::HelloAck(1), false).await?;
             return Ok(());
@@ -1120,6 +1171,10 @@ impl Actor {
             Payload::HelloAck(1) if self.role == Role::Host => {
                 self.shared.return_capable.store(
                     packet.capabilities & wire::NATIVE_RETURN != 0,
+                    Ordering::Release,
+                );
+                self.shared.image_capable.store(
+                    packet.capabilities & wire::DRAG_IMAGE != 0,
                     Ordering::Release,
                 );
                 self.shared.ready.store(true, Ordering::Release)
@@ -1145,11 +1200,18 @@ impl Actor {
                     self.entries.remove(&id);
                 }
             }
+            // 这张图只是「拖起来时跟着指针的那个图标」，别让它把整次拖放判死。
+            // NATIVE_RETURN 说的是「能不能把拖出去的东西再拖回来」，不是「认不认识这个
+            // 扩展」：被控端是 Linux 时它老老实实报 false（XDND 还没法把拖放还给原手势），
+            // 可它照样会把这图发过来——发不发只看**对端**的能力位。以前这里要求对方也
+            // 能拖回，于是 Linux 被控一拖出就卡在这条提示上，整次拖放跟着结束。
+            //
+            // 上图这件事现在由 `wire::DRAG_IMAGE` 单独声明（`Command::Image` 那条），
+            // 「收不收得下」不再借用 `NATIVE_RETURN`。这条语义值得去上游提：上游的
+            // 接收端至今仍在用 `NATIVE_RETURN` 判断收不收图，而我们的发送端只看对端
+            // 有没有声明 `DRAG_IMAGE`。所以上游光放宽接收端还不够，还得登记并声明
+            // 这一位，Linux 被控端的预览图才送得到上游 OpenUUYC 的 Windows 主控。
             Payload::Image(image) => {
-                ensure!(
-                    self.shared.return_capable.load(Ordering::Acquire),
-                    "未协商拖放图像"
-                );
                 if let Some(entry) = self
                     .entries
                     .get_mut(&id)
@@ -1315,6 +1377,7 @@ impl Actor {
                 let alive = entry.ticket.alive.clone();
                 let binding = self.shared.clone();
                 let token = self.token;
+                let screen = target.clone();
                 let guard = Arc::new(move || {
                     alive.load(Ordering::Acquire)
                         && binding.enabled.load(Ordering::Acquire)
@@ -1325,16 +1388,53 @@ impl Actor {
                 });
                 let commands = self.input.clone();
                 let alive = entry.ticket.alive.clone();
-                entry.portal = Some(native::portal::Portal::start(
-                    position,
-                    self.shared.return_capable.load(Ordering::Acquire),
-                    guard,
-                    Arc::new(move |event| {
+                let notify: Arc<dyn Fn(native::portal::Event) + Send + Sync> = Arc::new({
+                    let commands = commands.clone();
+                    let alive = alive.clone();
+                    move |event| {
                         if commands.try_send(Command::Portal(id, event)).is_err() {
                             alive.store(false, Ordering::Release);
                         }
-                    }),
-                )?);
+                    }
+                });
+                // 两条路各管一个世界，而且只挑一条：两个世界的拖放互相看不见
+                // （XWayland 不桥接 XDND，反过来也一样，就像剪贴板那两座孤岛）。
+                //
+                // Wayland 会话里不能走 XDND 那条：`portal.rs` 要靠 XTEST 假装按下
+                // 鼠标去驱动那次交接，而这在 Wayland 上不可靠；它自己也会拒绝
+                // （`xdnd::connect`），问题是它拒绝的方式是报错——那会直接把整次
+                // 拖放判死，另一条路连机会都没有。
+                if crate::platform::capture::wayland_session() {
+                    // 摆到拖动点上：接取者按这个点自己换算成合成器的逻辑坐标。
+                    // 采集给的是物理像素（`screen_position` 那套），换算要这块屏的
+                    // 逻辑尺寸，只有平台那边问得到。
+                    let local = native::Position {
+                        x: position.x - screen.left,
+                        y: position.y - screen.top,
+                    };
+                    match native::Catcher::start(
+                        &screen.device_name,
+                        (screen.width, screen.height),
+                        local,
+                        guard,
+                        notify,
+                    ) {
+                        Ok(catcher) => entry.catch = Some(catcher),
+                        // Wayland 会话里这是唯一的一条路，起不来这次拖出就接不住了。
+                        // 但不在这里报错把拖放判死，只算「没接住」：主控那边 `tick` 的
+                        // 3 秒看门狗会取消这次拖放。
+                        Err(error) => {
+                            tracing::debug!(error = format!("{error:#}"), "Wayland 拖放接取不可用")
+                        }
+                    }
+                } else {
+                    entry.portal = Some(native::portal::Portal::start(
+                        position,
+                        self.shared.return_capable.load(Ordering::Acquire),
+                        guard,
+                        notify,
+                    )?);
+                }
                 self.entries.insert(id, entry);
             }
             Payload::SourceReleased(true) => {
@@ -1343,6 +1443,11 @@ impl Actor {
                     .get_mut(&id)
                     .filter(|e| e.reverse && !e.sending)
                 {
+                    tracing::info!(
+                        drag = id,
+                        preserve = entry.preserve_source,
+                        "原文件拖动已收场，可以接手本地拖动了"
+                    );
                     entry.source_released = true;
                     if entry.preserve_source && !entry.committed && !entry.resuming {
                         entry.ticket.cancel();

@@ -20,6 +20,13 @@ impl StreamControlHandle {
             .and_then(|s| s.display.preferred);
         state.device_preferences.display_aspect.ratio(preferred)
     }
+    #[cfg_attr(
+        not(windows),
+        allow(
+            dead_code,
+            reason = "The Linux viewer keeps the aspect with its frame size and fits the video itself."
+        )
+    )]
     pub(crate) fn presentation_size(&self, track: i32, size: (u32, u32)) -> (u32, u32) {
         self.display_aspect(track).unwrap_or(size)
     }

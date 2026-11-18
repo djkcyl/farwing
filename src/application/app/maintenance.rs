@@ -209,6 +209,7 @@ fn run(uninstall: bool, launch_arguments: Vec<std::ffi::OsString>) -> Result<()>
                 .with_resizable(false),
             centered: true,
             notification: false,
+            floating: false,
         },
         Box::new(move |ctx, _| {
             super::view::configure_visuals(ctx);

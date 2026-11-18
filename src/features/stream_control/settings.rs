@@ -16,7 +16,7 @@ use super::{
     feature_supported, lock, protocol,
 };
 use crate::media::FrameRateChoice;
-use crate::protocol::capability::FrameQualityCapability;
+use crate::protocol::capability::{FrameQualityCapability, QUALITY_DIMENSIONS};
 use anyhow::{Result, anyhow, bail};
 use prost::Message as _;
 
@@ -413,15 +413,36 @@ pub(super) fn validate_format(
         return Ok(None);
     };
     let requested = quality.capability_quality();
-    let selected = capability.select(if true_color { 3 } else { 1 }, hdr, requested);
-    if selected.result != 0
-        || (!matches!(requested, 0 | 5) && selected.max_frame_quality < requested)
-    {
+    let chroma = if true_color { 3 } else { 1 };
+    let selected = capability.select(chroma, hdr, requested);
+    let color = match (true_color, hdr) {
+        (true, true) => "4:4:4 HDR",
+        (true, false) => "4:4:4",
+        (false, true) => "4:2:0 HDR",
+        (false, false) => "4:2:0",
+    };
+    if selected.result != 0 {
         bail!(
-            "双端能力不支持此色彩下的{}（最高能力档位{}，结果{}）",
+            "{color} 下双端没有共同可用的视频编码，无法使用{}",
+            quality.label()
+        );
+    }
+    if !matches!(requested, 0 | 5) && selected.max_frame_quality < requested {
+        let (width, height) = QUALITY_DIMENSIONS[(requested - 1) as usize];
+        let best = quality_from_capability(selected.max_frame_quality)
+            .map_or("更低档位", StreamQuality::label);
+        let reason = if !capability.hardware(true, chroma, hdr) {
+            "：本机没有可用的硬件解码，只能软件解码"
+        } else if !capability.hardware(false, chroma, hdr) {
+            "：被控端没有可用的硬件编码，只能软件编码"
+        } else {
+            ""
+        };
+        bail!(
+            "{}需要 {width}×{height}，{color} 下双端最高只到 {}×{}（{best}）{reason}",
             quality.label(),
-            selected.max_frame_quality,
-            selected.result
+            selected.max_width,
+            selected.max_height,
         );
     }
     Ok(Some(selected))

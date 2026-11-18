@@ -15,6 +15,17 @@ pub(crate) fn own_message() -> bool {
     unsafe { GetMessageExtraInfo().0 as usize == INPUT_MARKER }
 }
 
+/// A mouse message Windows promoted from a touch or pen contact: its extra
+/// information carries `MI_WP_SIGNATURE` in the low 32 bits.
+pub(crate) fn touch_message(extra: usize) -> bool {
+    extra as u32 & 0xffff_ff00 == 0xff51_5700
+}
+
+/// The message being dispatched is one [`touch_message`] describes.
+pub(crate) fn touch_promoted() -> bool {
+    touch_message(unsafe { GetMessageExtraInfo().0 as usize })
+}
+
 pub(crate) fn send(items: &[INPUT]) -> Result<()> {
     if items.is_empty() {
         return Ok(());

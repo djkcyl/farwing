@@ -3,6 +3,13 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+/// 连接中途没了屏、兜底屏又建不起来时的说法。Linux 的兜底屏靠虚拟显示器辅助程序
+/// 和 niri，不是 Windows 的虚拟显示驱动。
+#[cfg(windows)]
+const FALLBACK_FAILED: &str = "无屏兜底无法建立；请检查虚拟显示驱动或重新连接显示器";
+#[cfg(not(windows))]
+const FALLBACK_FAILED: &str = "本机没有可用的显示器，也无法自动添加兜底屏（需要 niri 与已启用的 openuuyc-vkms）；请重新连接显示器";
+
 pub(super) fn same_source(a: &capture::Screen, b: &capture::Screen) -> bool {
     a.id == b.id && a.identity.is_some() && a.identity == b.identity
 }
@@ -241,7 +248,7 @@ impl Screens {
                 .displays
                 .ensure_fallback(original.clone())
                 .await
-                .context("无屏兜底无法建立；请检查虚拟显示驱动或重新连接显示器")?
+                .context(FALLBACK_FAILED)?
             else {
                 return Ok(());
             };

@@ -23,6 +23,7 @@ pub(crate) mod peer;
 pub(crate) mod power;
 mod protection;
 mod settings;
+pub(crate) mod terminal;
 mod track;
 mod transport;
 pub(crate) mod update_resume;

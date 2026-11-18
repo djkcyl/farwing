@@ -43,7 +43,7 @@ pub(in crate::application::viewer) fn viewer_shortcut(
 }
 
 pub(in crate::application::viewer) struct ThreadedWindowsApp {
-    fullscreen_chrome: super::fullscreen::FullscreenChrome,
+    fullscreen_chrome: crate::application::viewer::fullscreen_chrome::FullscreenChrome,
     drag: Option<crate::application::viewer::windows_drag::WindowDrag>,
     _shortcuts: crate::application::viewer_shortcuts::Watcher,
     pub(in crate::application::viewer) annotation:
@@ -152,7 +152,8 @@ impl ThreadedWindowsApp {
             Arc::clone(&cpu_device),
         )?;
         Ok(Self {
-            fullscreen_chrome: super::fullscreen::FullscreenChrome::default(),
+            fullscreen_chrome:
+                crate::application::viewer::fullscreen_chrome::FullscreenChrome::default(),
             drag: Some(crate::application::viewer::windows_drag::WindowDrag::new(
                 window,
                 &stream_control,
@@ -237,6 +238,30 @@ impl ThreadedWindowsApp {
                     self.refresh_mouse(window, event_loop);
                 }
             }
+            return Ok(());
+        }
+        // A touch on the fullscreen ball or strip belongs to the local bar,
+        // never to the remote: the whole gesture skips egui and the video.
+        if self
+            .fullscreen_chrome
+            .intercept_touch(&self.egui_context, event)
+        {
+            window.request_redraw();
+            return Ok(());
+        }
+        // Native touch passthrough comes next: a contact on the video during
+        // control is remote input, everything else stays with the local UI.
+        if let WindowEvent::Touch(touch) = event
+            && self.mouse.touch(
+                window,
+                &self.egui_context,
+                &self.stream_control,
+                self._session.track_index,
+                &self.renderer.current_video_size,
+                touch,
+            )
+        {
+            window.request_redraw();
             return Ok(());
         }
         let response = self.egui_winit.on_window_event(window, event);
@@ -492,19 +517,30 @@ impl ThreadedWindowsApp {
         let output = self.egui_context.run_ui(input, |ui| {
             let ctx = ui.ctx().clone();
             if fullscreen {
-                chrome_action = self.fullscreen_chrome.show(
-                    &ctx,
-                    PlayerTitleBar {
-                        screens: &mut self.screen_tabs,
-                        window,
-                        title: &self.title,
-                        performance: &self.performance,
-                        stream_control: &self.stream_control,
-                        stream_control_ui: &mut self.stream_control_ui,
-                        plugin_menu_open: &mut self.plugin_menu_open,
-                        move_state: None,
-                    },
-                );
+                let relative = self.stream_control.mouse().relative_mode();
+                if self.fullscreen_chrome.dismisses_menu(&ctx) {
+                    self.stream_control_ui.open = false;
+                    self.plugin_menu_open = false;
+                }
+                let menu_open = self.stream_control_ui.open || self.plugin_menu_open;
+                let pending = self.screen_tabs.is_pending();
+                chrome_action =
+                    self.fullscreen_chrome
+                        .show(&ctx, relative, menu_open, pending, |ui| {
+                            player_title_bar(
+                                ui,
+                                PlayerTitleBar {
+                                    screens: &mut self.screen_tabs,
+                                    window,
+                                    title: &self.title,
+                                    performance: &self.performance,
+                                    stream_control: &self.stream_control,
+                                    stream_control_ui: &mut self.stream_control_ui,
+                                    plugin_menu_open: &mut self.plugin_menu_open,
+                                    move_state: None,
+                                },
+                            )
+                        });
             } else {
                 resize =
                     borderless_resize(ui, window, Some((&mut self.window_resize, resize_aspect)));
@@ -690,7 +726,9 @@ impl ThreadedWindowsApp {
             self.fit_window_to_current_aspect(window);
         }
         self.last_aspect_video_size = current_video_size;
-        if chrome_action.exit_fullscreen && window.fullscreen().is_some() {
+        if chrome_action.toggle_fullscreen
+            || (chrome_action.exit_fullscreen && window.fullscreen().is_some())
+        {
             self.apply_shortcut(window, ViewerShortcut::Fullscreen)?;
         }
         if chrome_action.close {

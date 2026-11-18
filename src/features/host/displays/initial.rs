@@ -68,6 +68,29 @@ impl Session {
 }
 
 impl State {
+    /// 建连前确认机器上有屏。没有的话，Windows 用虚拟显示驱动的常驻兜底屏，
+    /// Linux 借虚拟显示器辅助程序接一路 VKMS 连接器、再让合成器认下它。
+    #[cfg(windows)]
+    fn ensure_fallback_screen(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<Option<capture::Screen>> {
+        fallback::ensure(self.fallback_driver()?, width, height, &[], true)
+    }
+    #[cfg(not(windows))]
+    fn ensure_fallback_screen(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<Option<capture::Screen>> {
+        // 不满足条件（不是 niri、内核太旧、辅助程序没启用）时，原因本身说的是虚拟屏，
+        // 先说清楚真正的问题是本机没有屏。
+        fallback::ensure(&self.journal.token, width, height, true).map_err(|error| {
+            anyhow::anyhow!("本机没有可用的显示器，也无法自动添加兜底屏：{error:#}")
+        })
+    }
+
     fn initial_resolution(
         &mut self,
         target: &Target,
@@ -104,13 +127,29 @@ impl State {
         modes: Vec<(u32, u32)>,
         lease: &Lease,
     ) -> Result<capture::Screen> {
+        #[cfg(windows)]
         if self.fallback_pin.is_none() {
             self.fallback_pin = fallback::pin().unwrap_or_else(|error| {
                 tracing::warn!(error=%format!("{error:#}"), "optional display driver unavailable");
                 None
             });
         }
+        // Linux 上零输出时枚举会直接报错（`capture::screens` 把「一块屏都没有」当
+        // 异常），而兜底屏要的正是这个状态，所以先按拓扑判断有没有屏。
+        let targets = Topology::query(true)?.metadata()?;
+        let has_display = targets.iter().any(|t| {
+            // Linux 的连接但没启用的输出采集不到，不算「有屏」。
+            (t.available && (cfg!(windows) || t.active))
+                && t.virtual_provider != Some(display::topology::VirtualProvider::Uu)
+        });
+        #[cfg(windows)]
         let mut screens = capture::screens()?;
+        #[cfg(not(windows))]
+        let mut screens = if has_display {
+            capture::screens()?
+        } else {
+            Vec::new()
+        };
         tracing::info!(
             screens = screens.len(),
             forced_virtual = options.force_virtual,
@@ -131,49 +170,70 @@ impl State {
         }
         .unwrap_or((1920, 1080));
         let mut automatic = None;
-        let targets = Topology::query(true)?.metadata()?;
         if !options.force_virtual
             && !self.preferences.default_virtual
             && !self.preferences.super_enabled
-            && !targets.iter().any(|t| {
-                t.available && t.virtual_provider != Some(display::topology::VirtualProvider::Uu)
-            })
+            && !has_display
         {
-            automatic = fallback::ensure(
-                self.fallback_driver()?,
-                virtual_size.0,
-                virtual_size.1,
-                &[],
-                true,
-            )?;
+            automatic = self.ensure_fallback_screen(virtual_size.0, virtual_size.1)?;
             screens = capture::screens()?;
         }
         if !options.force_virtual && self.preferences.super_enabled {
             return self.enter_super(virtual_size.0, virtual_size.1, 0, true, lease);
         }
         if options.force_virtual || self.preferences.default_virtual {
-            validate_modes(&[virtual_size])?;
-            let result = self.create(
-                Virtual {
-                    guid: uuid::Uuid::new_v4().to_string(),
-                    identity: None,
-                    width: virtual_size.0,
-                    height: virtual_size.1,
-                    hz: 144,
-                    dpi: 0,
-                    kind: 3,
-                    resolution_type: choice.max(1),
-                    modes,
-                    layout: None,
-                },
-                lease,
-                options.force_virtual || self.preferences.default_virtual,
+            // 「只用虚拟屏启动」在 Linux 上还没做：它要的是本机屏幕不再显示操作内容，
+            // 做不到就照常把物理屏留着等于骗人。主控这次明确要，就带着原因失败；
+            // 本机存下来的偏好只降级处理——那可能是从 Windows 带过来的偏好文件，
+            // 为它把连接挡死会让这台机器再也连不上。
+            #[cfg(not(windows))]
+            ensure!(
+                !options.force_virtual,
+                "Linux 被控端还不支持「只用虚拟屏启动」：物理显示器没法下线，请改用普通连接"
             );
-            if result.is_ok() && options.force_virtual && !self.has_saved_preferences {
-                self.preferences.default_virtual = true;
-                self.save_preferences()?;
+            let result = validate_modes(&[virtual_size]).and_then(|()| {
+                self.create(
+                    Virtual {
+                        guid: uuid::Uuid::new_v4().to_string(),
+                        identity: None,
+                        width: virtual_size.0,
+                        height: virtual_size.1,
+                        hz: 144,
+                        dpi: 0,
+                        kind: 3,
+                        resolution_type: choice.max(1),
+                        modes,
+                        layout: None,
+                    },
+                    lease,
+                    options.force_virtual || self.preferences.default_virtual,
+                )
+            });
+            // 走到这里的在 Linux 上只剩存下来的偏好（主控明确要的上面已经挡掉了）。
+            // 那块屏要靠辅助程序、内核和当时那个合成器，换了桌面（niri 换成 GNOME）
+            // 或者辅助程序没启用就建不出来；和 `restore_virtual` 一样记一条警告、
+            // 退回物理屏接着连，而不是让这台机器从此连不上。Windows 的虚拟屏驱动是
+            // 装好的，建不出来说明环境坏了，照旧报错。
+            #[cfg(not(windows))]
+            let result = match result {
+                Err(error) => {
+                    tracing::warn!(
+                        error = %format!("{error:#}"),
+                        "按保存的偏好在连接时建虚拟屏失败，改用物理显示器"
+                    );
+                    None
+                }
+                created => Some(created),
+            };
+            #[cfg(windows)]
+            let result = Some(result);
+            if let Some(result) = result {
+                if result.is_ok() && options.force_virtual && !self.has_saved_preferences {
+                    self.preferences.default_virtual = true;
+                    self.save_preferences()?;
+                }
+                return result;
             }
-            return result;
         }
         let saved = self.preferences.manual.clone();
         ensure!(
@@ -183,9 +243,8 @@ impl State {
         self.restoring = true;
         let restore = (|| -> Result<()> {
             for mut spec in saved {
-                validate_modes(&[(spec.width, spec.height)])?;
                 spec.identity = None;
-                self.create(spec, lease, false)?;
+                self.restore_virtual(spec, lease)?;
             }
             // Physical modes belong to the current desktop owner. Previous
             // connections may remember virtual resources, but must not replay

@@ -12,6 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 pub(crate) use watcher::Watcher;
+#[cfg(windows)]
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0},
     System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject},
@@ -56,18 +57,27 @@ pub(crate) struct Binding {
 impl Binding {
     pub fn label(self) -> String {
         if self.key >= 96 && self.key <= 111 || self.key >= 186 {
-            use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyNameTextW, MAPVK_VK_TO_VSC};
-            let scan = unsafe { MapVirtualKeyW(u32::from(self.key), MAPVK_VK_TO_VSC) };
-            let mut buffer = [0u16; 64];
-            let count = unsafe { GetKeyNameTextW((scan << 16) as i32, &mut buffer) };
-            if count > 0 {
+            #[cfg(windows)]
+            let name = {
+                use windows::Win32::UI::Input::KeyboardAndMouse::{
+                    GetKeyNameTextW, MAPVK_VK_TO_VSC,
+                };
+                let scan = unsafe { MapVirtualKeyW(u32::from(self.key), MAPVK_VK_TO_VSC) };
+                let mut buffer = [0u16; 64];
+                let count = unsafe { GetKeyNameTextW((scan << 16) as i32, &mut buffer) };
+                (count > 0).then(|| String::from_utf16_lossy(&buffer[..count as usize]))
+            };
+            #[cfg(not(windows))]
+            let name = crate::application::viewer::linux_keyboard::key_name(self.key)
+                .map(ToOwned::to_owned);
+            if let Some(name) = name {
                 let mut names = Vec::new();
                 for (bit, name) in [(1, "Ctrl"), (2, "Shift"), (4, "Alt"), (8, "Win")] {
                     if self.modifiers & bit != 0 {
                         names.push(name.to_owned());
                     }
                 }
-                names.push(String::from_utf16_lossy(&buffer[..count as usize]));
+                names.push(name);
                 return names.join(" + ");
             }
         }
@@ -180,8 +190,26 @@ pub(crate) fn label(action: Action) -> String {
 }
 pub(crate) fn capture_active() -> bool {
     let owner = runtime().capture.load(Ordering::Acquire);
-    owner != 0 && owner == unsafe { GetForegroundWindow().0 as u64 }
+    owner != 0 && owner == foreground_window()
 }
+
+fn foreground_window() -> u64 {
+    #[cfg(windows)]
+    {
+        unsafe { GetForegroundWindow().0 as u64 }
+    }
+    #[cfg(not(windows))]
+    {
+        focused_window()
+    }
+}
+#[cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        reason = "Only the Windows keyboard hook tracks a typing owner."
+    )
+)]
 pub(crate) fn set_text_owner(owner: u64, active: bool) {
     if active {
         runtime().typing.store(owner, Ordering::Release);
@@ -194,11 +222,32 @@ pub(crate) fn set_text_owner(owner: u64, active: bool) {
 pub(crate) fn suspended() -> bool {
     capture_active() || {
         let owner = runtime().typing.load(Ordering::Acquire);
-        owner != 0 && owner == unsafe { GetForegroundWindow().0 as u64 }
+        // A text field claims the shortcuts while its own window has focus.
+        #[cfg(windows)]
+        let focused = unsafe { GetForegroundWindow().0 as u64 };
+        #[cfg(not(windows))]
+        let focused = focused_window();
+        owner != 0 && owner == focused
     }
+}
+
+/// The player publishes its focused window id here; X11 and Wayland do not let
+/// a process ask which window the compositor considers focused.
+#[cfg(not(windows))]
+static FOCUSED: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(not(windows))]
+pub(crate) fn set_focused_window(owner: u64) {
+    FOCUSED.store(owner, Ordering::Release);
+}
+
+#[cfg(not(windows))]
+pub(crate) fn focused_window() -> u64 {
+    FOCUSED.load(Ordering::Acquire)
 }
 pub(crate) fn physical_key(key: winit::keyboard::PhysicalKey) -> Option<u16> {
     use winit::keyboard::{KeyCode, PhysicalKey};
+    #[cfg(windows)]
     use winit::platform::scancode::PhysicalKeyExtScancode;
     let keypad = match key {
         PhysicalKey::Code(k) => match k {
@@ -217,15 +266,30 @@ pub(crate) fn physical_key(key: winit::keyboard::PhysicalKey) -> Option<u16> {
         },
         _ => None,
     };
+    #[cfg(windows)]
     if let Some(vk) = keypad {
         use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyState};
         if unsafe { (GetKeyState(144) & 1 != 0) ^ (GetAsyncKeyState(16) < 0) } {
             return Some(vk);
         }
     }
-    key.to_scancode()
-        .map(|scan| unsafe { MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX) as u16 })
-        .filter(|key| *key != 0)
+    // winit already reports the numeric keypad as its own physical keys, so the
+    // NumLock/Shift dance the Windows scancode path needs does not apply here.
+    #[cfg(not(windows))]
+    if let Some(vk) = keypad {
+        return Some(vk);
+    }
+    #[cfg(windows)]
+    {
+        key.to_scancode()
+            .map(|scan| unsafe { MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX) as u16 })
+            .filter(|key| *key != 0)
+    }
+    #[cfg(not(windows))]
+    {
+        crate::application::viewer::linux_keyboard::physical_virtual_key(key)
+            .filter(|key| *key != 0)
+    }
 }
 pub(crate) fn modifiers(m: winit::keyboard::ModifiersState) -> u8 {
     u8::from(m.control_key())
@@ -234,7 +298,7 @@ pub(crate) fn modifiers(m: winit::keyboard::ModifiersState) -> u8 {
         | (u8::from(m.super_key()) << 3)
 }
 fn path() -> Result<PathBuf> {
-    let base = PathBuf::from(std::env::var_os("LOCALAPPDATA").context("无法确定本地设置目录")?);
+    let base = crate::platform::paths::local_app_data().context("无法确定本地设置目录")?;
     ensure!(base.is_absolute(), "设置目录必须为绝对路径");
     Ok(base.join("OpenUUYC").join("shortcuts.json"))
 }
@@ -297,7 +361,9 @@ fn apply_refresh(state: &Runtime, revision: u64, result: Result<Option<Vec<u8>>>
         Err(e) => cache.error = Some(e.to_string()),
     }
 }
+#[cfg(windows)]
 struct FileGuard(HANDLE);
+#[cfg(windows)]
 impl Drop for FileGuard {
     fn drop(&mut self) {
         unsafe {
@@ -308,21 +374,26 @@ impl Drop for FileGuard {
 }
 fn save(expected: &Option<Vec<u8>>, settings: &Settings) -> Result<()> {
     settings.validate()?;
-    let handle = unsafe {
-        CreateMutexW(
-            None,
-            false,
-            windows::core::w!("Local\\OpenUUYC.Shortcuts.Settings"),
-        )
-    }?;
-    let wait = unsafe { WaitForSingleObject(handle, 3000) };
-    if wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED {
-        unsafe {
-            let _ = CloseHandle(handle);
+    #[cfg(windows)]
+    let _guard = {
+        let handle = unsafe {
+            CreateMutexW(
+                None,
+                false,
+                windows::core::w!("Local\\OpenUUYC.Shortcuts.Settings"),
+            )
+        }?;
+        let wait = unsafe { WaitForSingleObject(handle, 3000) };
+        if wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED {
+            unsafe {
+                let _ = CloseHandle(handle);
+            }
+            bail!("其他窗口正在保存快捷键，请稍后重试");
         }
-        bail!("其他窗口正在保存快捷键，请稍后重试");
-    }
-    let _guard = FileGuard(handle);
+        FileGuard(handle)
+    };
+    #[cfg(not(windows))]
+    let _guard = settings_lock()?;
     let path = path()?;
     ensure!(
         &read(&path)? == expected,
@@ -484,6 +555,7 @@ impl Editor {
                     }
                     self.error = None;
                     let symbol = key.symbol_or_name();
+                    #[cfg(windows)]
                     let vk = if symbol.chars().count() == 1 {
                         let value = unsafe {
                             windows::Win32::UI::Input::KeyboardAndMouse::VkKeyScanW(
@@ -494,8 +566,21 @@ impl Editor {
                     } else {
                         None
                     };
+                    // Without a layout query, only the ASCII names egui reports
+                    // map back to a virtual key.
+                    #[cfg(not(windows))]
+                    let vk = symbol
+                        .chars()
+                        .next()
+                        .filter(|_| symbol.chars().count() == 1)
+                        .and_then(ascii_virtual_key);
+                    #[cfg_attr(
+                        not(windows),
+                        allow(unused_mut, reason = "Keypad disambiguation is Windows-only.")
+                    )]
                     if let Some(mut key) = vk.or_else(|| crate::plugins::hotkeys::key_code(key)) {
                         // egui merges keypad digits into the corresponding textual key.
+                        #[cfg(windows)]
                         if (48..=57).contains(&key)
                             && unsafe {
                                 windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(
@@ -505,6 +590,7 @@ impl Editor {
                         {
                             key += 48;
                         }
+                        #[cfg(windows)]
                         for (regular, keypad) in [(190, 110), (187, 107), (189, 109), (191, 111)] {
                             if key == regular
                                 && unsafe {
@@ -516,6 +602,7 @@ impl Editor {
                                 key = keypad as u16;
                             }
                         }
+                        #[cfg(windows)]
                         let win = self.held_modifiers & 0xc0 != 0
                             || unsafe {
                                 windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(91)
@@ -524,6 +611,8 @@ impl Editor {
                                         92,
                                     ) < 0
                             };
+                        #[cfg(not(windows))]
+                        let win = self.held_modifiers & 0xc0 != 0;
                         let b = Binding {
                             key,
                             modifiers: u8::from(modifiers.ctrl)
@@ -540,8 +629,13 @@ impl Editor {
             }
         }
         if self.recording.is_some() {
+            #[cfg(windows)]
             use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+            #[cfg(windows)]
             let win = unsafe { GetAsyncKeyState(91) < 0 || GetAsyncKeyState(92) < 0 };
+            // egui does not report the Super modifier on Linux.
+            #[cfg(not(windows))]
+            let win = false;
             let (keys_down, mods) = ui.input(|i| (!i.keys_down.is_empty(), i.modifiers));
             if keys_down && let Some(binding) = &mut self.pending_binding {
                 binding.modifiers |= u8::from(mods.ctrl)
@@ -552,9 +646,7 @@ impl Editor {
             let released = !keys_down
                 && !mods.any()
                 && !win
-                && [16, 17, 18]
-                    .into_iter()
-                    .all(|vk| unsafe { GetAsyncKeyState(vk) } >= 0);
+                && [16, 17, 18].into_iter().all(|vk| modifier_released(vk));
             if !released {
                 self.error = None;
             }
@@ -592,7 +684,7 @@ impl Editor {
                         crate::ui::controls::ShortcutRowAction::Edit => {
                             self.cancel_recording();
                             self.recording = Some(action);
-                            self.owner = unsafe { GetForegroundWindow().0 as u64 };
+                            self.owner = foreground_window();
                             runtime().capture.store(self.owner, Ordering::Release);
                             self.error = None;
                         }
@@ -669,4 +761,68 @@ impl Editor {
             });
         });
     }
+}
+
+/// The settings file is shared by every window of every running client, so the
+/// rewrite is serialized with an advisory lock beside the file itself.
+#[cfg(not(windows))]
+fn settings_lock() -> Result<std::fs::File> {
+    let path = path()?.with_extension("lock");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .context("打开快捷键配置锁")?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(anyhow::Error::new(error).context("锁定快捷键配置失败"));
+            }
+        }
+        if Instant::now() >= deadline {
+            bail!("其他窗口正在保存快捷键，请稍后重试");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// egui reports held modifiers itself; a key that is not held cannot be probed.
+#[cfg(not(windows))]
+const fn modifier_released(_key: i32) -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn modifier_released(key: i32) -> bool {
+    unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(key) >= 0 }
+}
+
+/// US-layout virtual keys for the printable characters egui names.
+#[cfg(not(windows))]
+fn ascii_virtual_key(symbol: char) -> Option<u16> {
+    let upper = symbol.to_ascii_uppercase();
+    Some(match upper {
+        'A'..='Z' | '0'..='9' => upper as u16,
+        ' ' => 32,
+        ';' | ':' => 186,
+        '=' | '+' => 187,
+        ',' | '<' => 188,
+        '-' | '_' => 189,
+        '.' | '>' => 190,
+        '/' | '?' => 191,
+        '`' | '~' => 192,
+        '[' | '{' => 219,
+        '\\' | '|' => 220,
+        ']' | '}' => 221,
+        '\'' | '"' => 222,
+        _ => return None,
+    })
 }

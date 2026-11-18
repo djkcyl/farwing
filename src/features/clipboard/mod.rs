@@ -1,8 +1,21 @@
-//! Device-scoped clipboard RPC with a process-wide Windows/OLE adapter.
+//! Device-scoped clipboard RPC with a process-wide platform adapter.
 pub(crate) mod drag;
 mod formats;
+#[cfg(not(windows))]
+#[path = "fuse_linux.rs"]
+mod fuse;
+#[cfg(windows)]
+mod native;
+#[cfg(not(windows))]
+#[path = "native_linux.rs"]
 mod native;
 mod protocol;
+#[cfg(not(windows))]
+#[path = "x11_offer_linux.rs"]
+mod x11_offer;
+#[cfg(not(windows))]
+#[path = "x11_read_linux.rs"]
+mod x11_read;
 use anyhow::{Result, anyhow, bail, ensure};
 pub(crate) use native::{FileOffer, FileSummary};
 use prost::Message;

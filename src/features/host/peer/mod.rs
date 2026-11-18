@@ -31,7 +31,7 @@ use webrtc::{
 };
 
 pub(crate) struct Peer {
-    activity: Option<crate::platform::windows::host_service::activity::Work>,
+    activity: Option<crate::platform::host_service::activity::Work>,
     core: ConnectionCore,
     pub candidates: mpsc::UnboundedReceiver<RTCIceCandidateInit>,
     cancel: CancellationToken,
@@ -137,6 +137,8 @@ impl Peer {
         clipboard_level: i32,
         file_capabilities: crate::features::file_transfer::host::Capabilities,
         data_only: bool,
+        // `CT_TERMINAL`: this session may open a shell on this machine.
+        terminal: bool,
         update_resume: Option<super::update_resume::Context>,
     ) -> Result<Self> {
         let audio_only = deferred.is_some() && !data_only;
@@ -446,16 +448,37 @@ impl Peer {
             input_policy,
             move || super::input::Geometry {
                 current: input_reports.current.load(Ordering::Acquire),
-                screens: lock(&input_reports.catalog)
-                    .iter()
-                    .map(|s| super::input::Screen {
-                        id: s.screen.id,
-                        left: s.screen.left,
-                        top: s.screen.top,
-                        width: s.screen.width,
-                        height: s.screen.height,
-                    })
-                    .collect(),
+                screens: {
+                    // A compositor resolves an absolute pointer position in its
+                    // own layout, which the display server's rectangles are not.
+                    // Only a snapshot is read here: this runs under the input gate.
+                    let layout = crate::platform::display::compositor_layout();
+                    lock(&input_reports.catalog)
+                        .iter()
+                        .map(|s| super::input::Screen {
+                            id: s.screen.id,
+                            left: s.screen.left,
+                            top: s.screen.top,
+                            width: s.screen.width,
+                            height: s.screen.height,
+                            logical: layout
+                                .as_ref()
+                                .and_then(|layout| layout.output(&s.screen.device_name))
+                                .and_then(|output| {
+                                    Some(super::input::Rect {
+                                        left: output.left,
+                                        top: output.top,
+                                        right: output
+                                            .left
+                                            .checked_add(i32::try_from(output.width).ok()?)?,
+                                        bottom: output
+                                            .top
+                                            .checked_add(i32::try_from(output.height).ok()?)?,
+                                    })
+                                }),
+                        })
+                        .collect()
+                },
             },
         )?;
         let microphone =
@@ -723,6 +746,17 @@ impl Peer {
                 }
                 return Box::pin(async {});
             }
+            // The terminal rides the same low-priority BINARY channel the
+            // diagnostics transfer uses; when the controller did not ask for
+            // diagnostics, that channel carries the terminal requests.
+            if terminal && !diagnostics_extension && channel.label() == "BINARY_DATA_CHANNEL" {
+                crate::features::host::terminal::bind(
+                    &channel,
+                    channel_screens.clone(),
+                    channel_cancel.clone(),
+                );
+                return Box::pin(async {});
+            }
             let screens = channel_screens.clone();
             let stop = channel_cancel.clone();
             let kcp = channel_kcp.clone();
@@ -807,7 +841,7 @@ impl Peer {
             }
         });
         let capture_audio = audio.clone();
-        let activity = crate::platform::windows::host_service::activity::Work::new();
+        let activity = crate::platform::host_service::activity::Work::new();
         stream_tasks.push(tokio::spawn(async move {
             if let Err(error) = tokio::task::spawn_blocking(move || {
                 let _activity = activity;
@@ -836,7 +870,10 @@ impl Peer {
             tokio::select! { _=feedback_cancel.cancelled()=>{}, _=feedback_audio.transmitter().feedback(audio_sender)=>{} }
         }));
         let peer_transport = transport.clone();
-        if crate::platform::windows::host_service::resident::is_owner() {
+        // Only the installed Windows service hosts on behalf of a separate
+        // user GUI process.
+        #[cfg(windows)]
+        if crate::platform::host_service::resident::is_owner() {
             let user_cancel = cancel.clone();
             let user_lease = handle.clone();
             stream_tasks.push(tokio::spawn(async move {
@@ -865,7 +902,7 @@ impl Peer {
         }
         construction.disarm();
         Ok(Self {
-            activity: Some(crate::platform::windows::host_service::activity::Work::new()),
+            activity: Some(crate::platform::host_service::activity::Work::new()),
             core,
             candidates,
             cancel,

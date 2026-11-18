@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtcp::packet::Packet as RtcpPacket;
+use webrtc::rtcp::payload_feedbacks::full_intra_request::{FirEntry, FullIntraRequest};
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtcp::transport_feedbacks::transport_layer_nack::{
     TransportLayerNack, nack_pairs_from_sequence_numbers,
@@ -19,6 +20,14 @@ pub(super) const RTP_NACK_PROCESS_INTERVAL: Duration = Duration::from_millis(20)
 pub(super) const RTP_DEFAULT_RTT: Duration = Duration::from_millis(50);
 
 pub(super) const RTP_NACK_MAX_RETRIES: u8 = 17;
+
+/// 首个包之前补发 NACK 的窗口大小。UU 的 macOS host 只在会话开始时下发
+/// 一次 SPS/PPS，且 RTP 订阅建立往往晚于流起点（首包即关键帧中段），/// 需要让支持 RTX 的 host 重传这段订阅前窗口。
+/// 1080p 关键帧约 25-120 个 FU-A 片 + 一个 STAP-A 参数集包：
+/// 窗口必须覆盖整帧，否则 IDR 头部（含 S=1 首片）永远不可恢复。
+/// 128 个条目的 NACK ~600B，仍在单个 RTCP 包内。
+/// 必须与 packets.rs 的 PRE_WINDOW_NACK 保持一致。
+pub(super) const RTP_STARTUP_NACK_WINDOW: u16 = 128;
 
 pub(super) const RTP_NACK_BACKOFF_BASE: f64 = 1.25;
 
@@ -66,8 +75,14 @@ impl RtcpFeedbackBuffer {
         let request_keyframe = std::mem::take(&mut self.request_keyframe);
         let nack_sequences = std::mem::take(&mut self.nack_sequences);
         if request_keyframe {
-            if let Err(error) = send_picture_loss_indication(connection, media_ssrc).await {
+            // 同时发 PLI 与 FIR：部分 host（macOS）只对 FIR 生成关键帧。
+            let pli = send_picture_loss_indication(connection, media_ssrc).await;
+            if let Err(error) = pli {
                 tracing::warn!(%error, "buffered keyframe request failed");
+            }
+            let fir = send_full_intra_request(connection, media_ssrc).await;
+            if let Err(error) = fir {
+                tracing::warn!(%error, "buffered FIR request failed");
             }
         } else if !nack_sequences.is_empty()
             && let Err(error) =
@@ -123,8 +138,19 @@ impl NackRequester {
             if starts_keyframe {
                 self.keyframes.push(sequence_number);
             }
+            // 订阅建立时流的开头（SPS/PPS、关键帧首片）可能已经发出：
+            // 日志里首包常是关键帧的中段 FU-A（S=0）。对首包之前的窗口
+            // 立即补发 NACK，host 的 RTX 重传可补齐这部分包。首包本身就是
+            // 关键帧开头时没有缺口，不去要旧帧的包。
+            if !starts_keyframe {
+                self.add_missing(
+                    sequence_number.wrapping_sub(RTP_STARTUP_NACK_WINDOW),
+                    sequence_number,
+                );
+            }
+            let batch = self.get_batch(NackFilter::Sequence, now);
             return NackReceiveResult {
-                batch: NackBatch::default(),
+                batch,
                 nack_count: 0,
             };
         }
@@ -366,6 +392,40 @@ pub(super) async fn send_picture_loss_indication(
         .write_rtcp(&[pli])
         .await
         .context("send RTCP picture-loss indication")?;
+    Ok(())
+}
+
+/// FIR（RFC 5104 §3.5.1）。部分 host 只对 FIR 生成关键帧，
+/// 因此与 PLI 一起发送。序号按媒体 SSRC 单调递增，host 用它去重；
+/// 所有发送路径共用一个计数，重复的序号会被当作同一请求丢弃。
+pub(super) async fn send_full_intra_request(
+    connection: &RTCPeerConnection,
+    media_ssrc: u32,
+) -> Result<()> {
+    static SEQUENCES: std::sync::LazyLock<std::sync::Mutex<HashMap<u32, u8>>> =
+        std::sync::LazyLock::new(Default::default);
+    let sequence = {
+        let mut sequences = SEQUENCES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let next = sequences.entry(media_ssrc).or_default();
+        let sequence = *next;
+        *next = next.wrapping_add(1);
+        sequence
+    };
+    tracing::debug!(media_ssrc, sequence, "sending RTCP FIR");
+    let fir: Box<dyn RtcpPacket + Send + Sync> = Box::new(FullIntraRequest {
+        sender_ssrc: DEFAULT_RECEIVER_SSRC,
+        media_ssrc,
+        fir: vec![FirEntry {
+            ssrc: media_ssrc,
+            sequence_number: sequence,
+        }],
+    });
+    connection
+        .write_rtcp(&[fir])
+        .await
+        .context("send RTCP full intra request")?;
     Ok(())
 }
 

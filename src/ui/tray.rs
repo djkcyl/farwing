@@ -193,7 +193,10 @@ unsafe extern "system" fn procedure(
                     let _ = DestroyMenu(menu);
                     let request = match selected {
                         1 => Some(super::window_manager::Request::ShowMain),
-                        2 => Some(super::window_manager::Request::Exit),
+                        2 => {
+                            tracing::info!("托盘菜单选择了「退出」");
+                            Some(super::window_manager::Request::Exit)
+                        }
                         _ => None,
                     };
                     if let Some(request) = request {

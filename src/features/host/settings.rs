@@ -29,6 +29,13 @@ struct Record {
     #[serde(default)]
     port_mapping: bool,
     #[serde(default)]
+    terminal: bool,
+    /// Whether a controller with the terminal grant may also see and attach
+    /// to the shells opened on this machine (the sessions page, the command
+    /// line). Off by default and meaningless while `terminal` is off.
+    #[serde(default)]
+    terminal_local: bool,
+    #[serde(default)]
     remote_power: bool,
     #[serde(default)]
     wol: bool,
@@ -73,6 +80,8 @@ impl Store {
         bool,
         bool,
         bool,
+        bool,
+        bool,
     )> {
         let bytes = match self.0.get_secret() {
             Ok(bytes) => bytes,
@@ -86,6 +95,8 @@ impl Store {
                     Default::default(),
                     Default::default(),
                     true,
+                    false,
+                    false,
                     false,
                     false,
                     false,
@@ -111,8 +122,10 @@ impl Store {
             record.clipboard,
             record.file_transfer,
             record.port_mapping,
+            record.terminal,
             record.remote_power,
             record.wol,
+            record.terminal_local,
         ))
     }
     pub fn save(
@@ -126,8 +139,10 @@ impl Store {
         clipboard: super::clipboard::Settings,
         file_transfer: bool,
         port_mapping: bool,
+        terminal: bool,
         remote_power: bool,
         wol: bool,
+        terminal_local: bool,
     ) -> Result<()> {
         encoding.validate()?;
         audio_quality.validate()?;
@@ -147,6 +162,8 @@ impl Store {
                 clipboard,
                 file_transfer,
                 port_mapping,
+                terminal,
+                terminal_local,
                 remote_power,
                 wol,
             })?)

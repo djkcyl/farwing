@@ -8,6 +8,9 @@ use std::collections::VecDeque;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 mod diagnostics;
 mod rust_dxva;
+/// The renderer's D3D11 device, which DXVA decodes into directly.
+pub(crate) type GpuDevice = ID3D11Device;
+
 pub struct WindowsGpuVideoFrame {
     texture: ID3D11Texture2D,
     subresource: u32,

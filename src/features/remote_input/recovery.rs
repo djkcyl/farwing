@@ -63,6 +63,13 @@ impl RemoteInput {
     // Producers retire uncertain input immediately. The sole transport sender
     // takes the release pass before dequeuing any new input, even with no keys
     // held and an otherwise empty queue.
+    #[cfg_attr(
+        not(windows),
+        allow(
+            dead_code,
+            reason = "Only the Windows viewer reads raw input and checks key ordering; winit has neither failure."
+        )
+    )]
     pub(crate) fn pause_for_recovery(&self, reason: &str) {
         let mut s = self.lock();
         if !Self::begin_recovery_locked(&mut s) {
@@ -117,6 +124,9 @@ impl RemoteInput {
                 // pass before future input, not proof of OS input injection.
                 s.remote_keys.clear();
                 s.remote_held = [false; 5];
+                s.remote_gamepads.clear();
+                s.confirmed_gamepads.clear();
+                s.gamepad_feedback.clear();
                 s.transport_recovery.as_mut().unwrap().confirmed = true;
                 tracing::info!(
                     "remote input transport drained; awaiting focused neutral activation"

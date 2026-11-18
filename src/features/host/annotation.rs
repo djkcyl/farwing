@@ -1,5 +1,7 @@
 //! Session-owned Draw execution. Network callbacks never paint or query Windows.
 pub(crate) mod agent;
+// The model only drives the Windows overlay; Linux uses its validation alone.
+#[cfg_attr(not(windows), allow(dead_code))]
 mod model;
 
 use crate::features::stream_control::{annotation::wire::PbDrawRequestKind, publisher};
@@ -77,7 +79,7 @@ impl Receiver {
         }));
         let (input, incoming) = mpsc::sync_channel::<Work>(64);
         let state = binding.clone();
-        let activity = crate::platform::windows::host_service::activity::Work::new();
+        let activity = crate::platform::host_service::activity::Work::new();
         let worker = tokio::task::spawn_blocking(move || {
             let _activity = activity;
             let mut backend = agent::Backend::default();

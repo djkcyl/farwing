@@ -4,7 +4,7 @@ use super::{Lease, lock};
 use crate::protocol::microphone as errors;
 use crate::{
     media::audio::neteq,
-    platform::windows::virtual_audio::{Bridge, State},
+    platform::virtual_audio::{Bridge, State},
 };
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -59,23 +59,7 @@ impl PolicyFailure {
         }
     }
     fn bridge(error: anyhow::Error) -> anyhow::Error {
-        use windows::Win32::Foundation::{
-            ERROR_DEV_NOT_EXIST, ERROR_DEVICE_NOT_CONNECTED, ERROR_FILE_NOT_FOUND,
-            ERROR_PATH_NOT_FOUND,
-        };
-        let unavailable = error
-            .downcast_ref::<windows::core::Error>()
-            .is_some_and(|e| {
-                [
-                    ERROR_FILE_NOT_FOUND,
-                    ERROR_PATH_NOT_FOUND,
-                    ERROR_DEV_NOT_EXIST,
-                    ERROR_DEVICE_NOT_CONNECTED,
-                ]
-                .iter()
-                .any(|code| e.code() == code.to_hresult())
-            });
-        if unavailable {
+        if crate::platform::virtual_audio::unavailable(&error) {
             Self {
                 code: errors::COMPONENT_UNAVAILABLE,
                 detail: format!("{error:#}"),
@@ -364,7 +348,7 @@ impl Playout {
     }
 }
 fn run(shared: Arc<Shared>, commands: mpsc::Receiver<Command>) {
-    let _priority = crate::platform::windows::virtual_audio::AudioPriority::enter()
+    let _priority = crate::platform::virtual_audio::AudioPriority::enter()
         .map_err(|error| {
             tracing::warn!(%error,"virtual microphone multimedia scheduling unavailable");
         })

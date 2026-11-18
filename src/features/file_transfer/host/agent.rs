@@ -1,5 +1,9 @@
 //! Same protocol engine in portable mode and in an ordinary-user service child.
+//!
+//! Linux has no system service yet, so the engine always runs in the desktop
+//! user's own process there (the portable mode).
 use super::*;
+#[cfg(windows)]
 use crate::platform::windows::host_service::{pipe::Pipe, process, vault};
 use std::{
     sync::{
@@ -8,6 +12,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+#[cfg(windows)]
 const PREFIX: &str = r"\\.\pipe\OpenUUYC.Files.";
 #[derive(prost::Message)]
 struct Request {
@@ -54,7 +59,7 @@ impl Backend {
         let cancel = stop.clone();
         let notices = notices::Journal::default();
         let updates = notices.clone();
-        let activity = crate::platform::windows::host_service::activity::Work::new();
+        let activity = crate::platform::host_service::activity::Work::new();
         let worker = tokio::task::spawn_blocking(move || {
             let _activity = activity;
             if let Err(e) = worker(scope, rx, tx, settings, available, cancel, updates) {
@@ -192,11 +197,13 @@ impl Drop for Local {
     }
 }
 
+#[cfg(windows)]
 struct Remote {
     pipe: Pipe,
     agent: crate::platform::windows::host_service::user_backend::Lease,
     session: u32,
 }
+#[cfg(windows)]
 impl Remote {
     fn new(stop: &CancellationToken) -> Result<Self> {
         let session = process::active_session();
@@ -233,6 +240,18 @@ impl Remote {
         .map_err(Into::into)
     }
 }
+/// The SYSTEM service process, which must hand disk work to a user child.
+#[cfg(not(windows))]
+enum Remote {}
+#[cfg(not(windows))]
+impl Remote {
+    fn new(_stop: &CancellationToken) -> Result<Self> {
+        anyhow::bail!("Linux 没有系统服务进程")
+    }
+    fn exchange(&self, _request: &Request, _stop: &CancellationToken) -> Result<Reply> {
+        match *self {}
+    }
+}
 fn worker(
     scope: String,
     mut input: mpsc::Receiver<(u64, Vec<u8>)>,
@@ -242,7 +261,10 @@ fn worker(
     stop: CancellationToken,
     updates: notices::Journal,
 ) -> Result<()> {
+    #[cfg(windows)]
     let system = vault::sid(std::process::id())? == "S-1-5-18";
+    #[cfg(not(windows))]
+    let system = false;
     let mut local = if system {
         None
     } else {
@@ -272,6 +294,7 @@ fn worker(
                 .filter(|(g, _)| *g == revision)
                 .map(|(_, p)| p)
                 .collect();
+            #[cfg(windows)]
             if remote
                 .as_ref()
                 .is_some_and(|r| r.session != process::active_session())
@@ -349,12 +372,15 @@ fn worker(
                 }
             }
         }
-        let Remote { pipe, agent, .. } = remote;
-        // EOF cancels the private job even when the close exchange failed.
-        // Its separate control pipe still confirms real resource teardown.
-        drop(pipe);
-        if let Err(error) = agent.finish() {
-            tracing::debug!(%error, "file user job ended without a clean finish reply");
+        #[cfg(windows)]
+        {
+            let Remote { pipe, agent, .. } = remote;
+            // EOF cancels the private job even when the close exchange failed.
+            // Its separate control pipe still confirms real resource teardown.
+            drop(pipe);
+            if let Err(error) = agent.finish() {
+                tracing::debug!(%error, "file user job ended without a clean finish reply");
+            }
         }
     }
     if let Some(local) = &mut local {
@@ -368,6 +394,7 @@ fn worker(
     drop(local);
     if stop.is_cancelled() { Ok(()) } else { result }
 }
+#[cfg(windows)]
 pub(crate) fn run(name: &str, parent: u32) -> Result<()> {
     ensure!(
         name.starts_with(PREFIX) && name.len() < 150,

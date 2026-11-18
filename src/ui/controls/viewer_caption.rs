@@ -38,6 +38,8 @@ pub(crate) enum ViewerCaptionIcon {
     Microphone,
     Clipboard,
     Quality,
+    Fullscreen,
+    ExitFullscreen,
     Minimize,
     Maximize,
     Restore,
@@ -50,10 +52,18 @@ pub(crate) fn viewer_caption_button(
     selected: bool,
     tooltip: &str,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(theme::VIEWER_CAPTION_BUTTON, theme::VIEWER_CAPTION_BUTTON),
-        egui::Sense::click(),
-    );
+    let size = if matches!(
+        icon,
+        ViewerCaptionIcon::Fullscreen | ViewerCaptionIcon::ExitFullscreen
+    ) {
+        egui::vec2(
+            theme::VIEWER_FULLSCREEN_BUTTON_WIDTH,
+            theme::WINDOW_TITLE_CONTENT_HEIGHT,
+        )
+    } else {
+        egui::Vec2::splat(theme::VIEWER_CAPTION_BUTTON)
+    };
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let fill = if !ui.is_enabled() {
         egui::Color32::TRANSPARENT
     } else if matches!(icon, ViewerCaptionIcon::Close) && response.hovered() {
@@ -83,6 +93,8 @@ pub(crate) fn viewer_caption_button(
                 ui.is_enabled(),
                 match icon {
                     ViewerCaptionIcon::Minimize => "最小化",
+                    ViewerCaptionIcon::Fullscreen => "全屏",
+                    ViewerCaptionIcon::ExitFullscreen => "退出全屏",
                     ViewerCaptionIcon::Close => "关闭",
                     _ => "窗口操作",
                 },
@@ -201,6 +213,25 @@ fn paint_caption_icon(
                     stroke,
                 );
                 painter.circle_filled(egui::pos2(center.x + knob, center.y + offset), 2.0, color);
+            }
+        }
+        ViewerCaptionIcon::Fullscreen | ViewerCaptionIcon::ExitFullscreen => {
+            let exiting = matches!(icon, ViewerCaptionIcon::ExitFullscreen);
+            let (distance, direction) = if exiting {
+                (egui::vec2(3.0, 2.0), 1.0)
+            } else {
+                (egui::vec2(7.0, 6.0), -1.0)
+            };
+            for (x, y) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let corner = center + egui::vec2(x * distance.x, y * distance.y);
+                painter.line(
+                    vec![
+                        corner + egui::vec2(x * 4.0 * direction, 0.0),
+                        corner,
+                        corner + egui::vec2(0.0, y * 4.0 * direction),
+                    ],
+                    stroke,
+                );
             }
         }
         ViewerCaptionIcon::Minimize => {

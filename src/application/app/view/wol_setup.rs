@@ -18,7 +18,7 @@ fn issue_label(error: &str) -> String {
                 "Readback did not confirm ",
             ] {
                 if let Some(key) = error.strip_prefix(prefix) {
-                    let p = crate::platform::windows::wol::setup::Property {
+                    let p = crate::platform::wol::setup::Property {
                         key: key.into(),
                         ..Default::default()
                     };
@@ -163,8 +163,11 @@ impl DeviceCenterApp {
                 ui.add_space(12.);ui.label(RichText::new("2 · 确认开机条件").strong());
                 ui.label("在主板 BIOS 中开启 Wake on LAN / PCI-E 唤醒；若 ErP 会切断网卡待机供电，需按主板说明调整。程序无法代替 BIOS 检查。");
                 ui.label("目标关机后仍需接通电源与网线，并有同网在线协助设备或已配置的 UU 路由器代发唤醒包。");
+                #[cfg(windows)]
                 if status.unattended {ui.label("常驻服务已就绪，Windows 启动后可自动上线。");}
                 else {ui.colored_label(AMBER,"未安装常驻服务：开启时会设置登录自启动，登录 Windows 后才能自动上线。需要登录前被控时请安装常驻服务。");}
+                #[cfg(not(windows))]
+                ui.colored_label(AMBER,"开启时会启用登录自启动（接入 systemd 图形会话的桌面用 systemd 用户服务，其余桌面写入 XDG 自启动条目），登录桌面后才能自动上线。被控要有图形会话，Linux 无法在登录前被控。");
                 ui.add_enabled_ui(!busy,|ui|{ui.checkbox(&mut state.confirmed,"我已了解上述条件，允许本设备被远程开机");});
                 if !allowed{ui.colored_label(AMBER,"请先在连接设置中开启“允许被控”。");}
             });

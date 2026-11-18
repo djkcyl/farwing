@@ -1,0 +1,16 @@
+# 旧版本启用的自启单元名，升级后只转发到 app-openuuyc.service（门户靠那个名字认出
+# 应用）。程序启动时会把启用状态挪过去，这份单元只管迁移之前的那次登录。
+# --no-block：不在这个单元的启动任务里等另一个单元起来。
+[Unit]
+Description=OpenUUYC 远程被控（旧名，转发到 app-openuuyc.service）
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/systemctl --user --no-block start app-openuuyc.service
+ExecStop=/usr/bin/systemctl --user --no-block stop app-openuuyc.service
+
+[Install]
+WantedBy=graphical-session.target

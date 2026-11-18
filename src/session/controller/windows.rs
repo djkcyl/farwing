@@ -115,6 +115,8 @@ pub(crate) async fn shutdown() {
     crate::features::port_mapping::service::shutdown_all().await;
     crate::features::file_transfer::service::shutdown_all().await;
     crate::diagnostics::remote::service::shutdown_all().await;
+    crate::features::terminal::relay::shutdown_all().await;
+    crate::features::terminal::service::shutdown_all().await;
     super::shared::shutdown_all().await;
 }
 pub(crate) fn start(
@@ -180,7 +182,8 @@ pub(crate) fn start(
     };
     tokio::spawn(async move {
         let _done = done.clone().drop_guard();
-        let outcome = super::run_viewer_window(alias, options, id, assist, Some(context)).await;
+        let outcome =
+            super::run_viewer_window(alias, options, id, assist, Some(context), false).await;
         *lock(&job_result) = Some(ViewerEnd::from_result(outcome, options.audio_only));
         done.cancel();
         let _ = information.await;

@@ -1,0 +1,51 @@
+name: Linux auto release
+
+# Cuts a release whenever linux-port reaches a Cargo version that has no
+# release yet: tags the commit v<version>-linux.1 and starts the two
+# workflows that build and attach the packages (linux-deb.yml and
+# linux-release.yml). Later rebuilds of the same version stay manual tags
+# (v<version>-linux.2, ...).
+#
+# A tag pushed with GITHUB_TOKEN does not start other workflows, so they are
+# dispatched on the tag instead; github.ref is then refs/tags/<tag> and their
+# release jobs run as for a pushed tag.
+
+on:
+  push:
+    branches: [linux-port]
+    paths: [Cargo.toml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: linux-auto-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Tag a version that has no release yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          test -n "$version"
+          if [ -n "$(git tag -l "v${version}-linux.*")" ]; then
+            echo "v${version} already has a Linux release; nothing to do"
+            exit 0
+          fi
+          tag="v${version}-linux.1"
+          git tag "$tag" "$GITHUB_SHA"
+          git push origin "refs/tags/$tag"
+          gh workflow run linux-deb.yml --ref "$tag"
+          gh workflow run linux-release.yml --ref "$tag"
+          echo "tagged $GITHUB_SHA as $tag and started the release builds"

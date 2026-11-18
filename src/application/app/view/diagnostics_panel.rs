@@ -8,6 +8,8 @@ enum Tab {
     Device,
     Publication,
     Encoding,
+    // The decode check exercises DXVA11 adapters.
+    #[cfg(windows)]
     Decoding,
     Sessions,
     Wol,
@@ -21,6 +23,15 @@ pub(super) struct ViewState {
     publication_error: Option<String>,
     wol_refresh: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     wol_error: Option<String>,
+    /// 虚拟屏辅助程序的状态。探测要连一次套接字，所以放到后台线程；这个状态是人
+    /// 手动装/启服务改出来的，几秒问一次就够。
+    #[cfg(not(windows))]
+    virtual_display: Option<crate::platform::virtual_display::Availability>,
+    #[cfg(not(windows))]
+    virtual_display_probe:
+        Option<std::sync::mpsc::Receiver<crate::platform::virtual_display::Availability>>,
+    #[cfg(not(windows))]
+    virtual_display_checked: Option<std::time::Instant>,
 }
 
 impl DeviceCenterApp {
@@ -43,6 +54,7 @@ impl DeviceCenterApp {
                     (Tab::Device, "设备概览"),
                     (Tab::Publication, "设备上报"),
                     (Tab::Encoding, "编码能力"),
+                    #[cfg(windows)]
                     (Tab::Decoding, "解码检查"),
                     (Tab::Sessions, "当前会话"),
                     (Tab::Wol, "远程开机"),
@@ -66,6 +78,7 @@ impl DeviceCenterApp {
                         Tab::Device => self.diagnostic_device(ui),
                         Tab::Publication => self.diagnostic_publication(ui),
                         Tab::Encoding => self.diagnostic_encoding(ui),
+                        #[cfg(windows)]
                         Tab::Decoding => self.diagnostic_decoding(ui),
                         Tab::Sessions => self.diagnostic_sessions(ui),
                         Tab::Wol => self.diagnostic_wol(ui),
@@ -114,7 +127,7 @@ impl DeviceCenterApp {
                 state.wol_error = None;
                 let ctx = ui.ctx().clone();
                 std::thread::spawn(move || {
-                    use crate::platform::windows::host_service::resident;
+                    use crate::platform::host_service::resident;
                     let result = if resident::managed() {
                         resident::call(resident::Request::RefreshWol).map(|_| ())
                     } else {
@@ -166,7 +179,7 @@ impl DeviceCenterApp {
         );
     }
 
-    fn diagnostic_device(&self, ui: &mut egui::Ui) {
+    fn diagnostic_device(&mut self, ui: &mut egui::Ui) {
         diagnostics_row(
             ui,
             "显示器",
@@ -180,6 +193,53 @@ impl DeviceCenterApp {
         }
         for value in &self.diagnostics.graphics {
             diagnostics_row(ui, "渲染设备", value);
+        }
+        #[cfg(not(windows))]
+        self.virtual_display_row(ui);
+    }
+
+    /// 「虚拟显示器」这一行：装没装、能不能用、最多几块。
+    ///
+    /// 探活会连一次辅助程序的套接字（必要时把它拉起来），所以不能放在绘制线程里等。
+    #[cfg(not(windows))]
+    fn virtual_display_row(&mut self, ui: &mut egui::Ui) {
+        use crate::platform::virtual_display;
+        let state = &mut self.center_ui.diagnostics;
+        if let Some(rx) = &state.virtual_display_probe {
+            match rx.try_recv() {
+                Ok(availability) => {
+                    state.virtual_display = Some(availability);
+                    state.virtual_display_probe = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    state.virtual_display_probe = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        let due = state
+            .virtual_display_checked
+            .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(5));
+        if due && state.virtual_display_probe.is_none() {
+            state.virtual_display_checked = Some(std::time::Instant::now());
+            let (sender, receiver) = std::sync::mpsc::channel();
+            state.virtual_display_probe = Some(receiver);
+            let context = ui.ctx().clone();
+            std::thread::spawn(move || {
+                let _ = sender.send(virtual_display::availability());
+                context.request_repaint();
+            });
+        }
+        let row = match &state.virtual_display {
+            Some(availability) => diagnostics_row(ui, "虚拟显示器", availability.label()),
+            None => diagnostics_row(ui, "虚拟显示器", "正在读取…"),
+        };
+        if let Some(detail) = state
+            .virtual_display
+            .as_ref()
+            .and_then(|availability| availability.detail())
+        {
+            row.on_hover_text(detail.to_owned());
         }
     }
 
@@ -213,7 +273,7 @@ impl DeviceCenterApp {
                 state.publication_error = None;
                 let context = ui.ctx().clone();
                 std::thread::spawn(move || {
-                    use crate::platform::windows::host_service::resident;
+                    use crate::platform::host_service::resident;
                     let result = if resident::managed() {
                         resident::call(resident::Request::RefreshPublication).map(|_| ())
                     } else {
@@ -424,6 +484,7 @@ impl DeviceCenterApp {
         );
     }
 
+    #[cfg(windows)]
     fn diagnostic_decoding(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let busy = self.diagnostics.busy();
@@ -546,7 +607,7 @@ impl DeviceCenterApp {
             diagnostics_empty(ui, "暂无活动会话 · 连接后显示实际编解码信息");
             return;
         }
-        if let Some(host) = host.filter(|host| host.session_active) {
+        if let Some(host) = host {
             ui.strong("本机被控");
             diagnostics_row(ui, "连接状态", &host.message);
             diagnostics_row(

@@ -134,6 +134,7 @@ impl ControllerConnection {
             cancel,
             takeover,
             crate::session::negotiation::ControlPurpose::PortMapping,
+            false,
         )
         .await
     }
@@ -153,9 +154,33 @@ impl ControllerConnection {
             cancel,
             takeover,
             crate::session::negotiation::ControlPurpose::FileTransfer,
+            false,
         )
         .await
     }
+    /// 终端专用连接。被控端只在 `kind = 8` 的会话上绑定 TERM 帧，所以这条
+    /// 连接不能复用观看会话；它也不进 shared 池，关掉时不会动别人的观看。
+    pub(crate) async fn connect_terminal(
+        client: &AuthenticatedClient,
+        device: &crate::account::api::DeviceInfo,
+        policy: crate::account::feature_ability::FeaturePolicy,
+        options: ConnectionMediaOptions,
+        cancel: &CancellationToken,
+        takeover: Option<takeover::Approval>,
+    ) -> Result<Self> {
+        Self::connect_business(
+            client,
+            device,
+            policy,
+            options,
+            cancel,
+            takeover,
+            crate::session::negotiation::ControlPurpose::Terminal,
+            true,
+        )
+        .await
+    }
+    #[allow(clippy::too_many_arguments)]
     async fn connect_business(
         client: &AuthenticatedClient,
         device: &crate::account::api::DeviceInfo,
@@ -164,6 +189,7 @@ impl ControllerConnection {
         cancel: &CancellationToken,
         takeover: Option<takeover::Approval>,
         purpose: crate::session::negotiation::ControlPurpose,
+        dedicated: bool,
     ) -> Result<Self> {
         let key = shared::key(&client.device_id(), &device.device_id);
         let _gate = shared::acquire_connection(&key, cancel).await?;
@@ -176,7 +202,7 @@ impl ControllerConnection {
             profile.stream_fps = settings.frame_rate.value(display);
             profile.decoder_fps_cap = display.refresh_hz.max(profile.stream_fps);
         }
-        if let Some(session) = shared::get(&key) {
+        if !dedicated && let Some(session) = shared::get(&key) {
             return Self::from_shared(session, profile, false);
         }
         if device.participant_count() > 0 && takeover.is_none() {
@@ -213,7 +239,9 @@ impl ControllerConnection {
             purpose,
         )
         .await?;
-        shared::register(key, &connection.forwarder.session, client.ended());
+        if !dedicated {
+            shared::register(key, &connection.forwarder.session, client.ended());
+        }
         Ok(connection)
     }
     fn from_shared(
@@ -257,6 +285,9 @@ impl ControllerConnection {
     }
     pub(crate) fn port_mapping_transport(&self) -> Arc<crate::features::port_mapping::Transport> {
         self.peer.port_mapping()
+    }
+    pub(crate) fn terminal_transport(&self) -> Arc<crate::features::terminal::client::Transport> {
+        self.peer.terminal_transport()
     }
     pub(crate) async fn wait_port_mapping_ready(&self) -> Result<()> {
         let control = self.stream_control_handle();
@@ -430,6 +461,7 @@ impl ControllerConnection {
                 .collect(),
             transport,
             profile,
+            purpose == crate::session::negotiation::ControlPurpose::Terminal,
         )
         .await
         {

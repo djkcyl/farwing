@@ -8,6 +8,21 @@ use anyhow::Context as _;
 mod displays;
 pub(crate) use displays::{receive_session, screen_states};
 
+/// The terminal session list changed.
+///
+/// The official host broadcasts this empty message when sessions appear,
+/// vanish or are renamed. The controller reacts by sending its own
+/// `listSessionsReq`; it only accepts the first list response after a request
+/// it made, so pushing the list proactively would be dropped.
+pub(crate) fn terminal_session_changed() -> Vec<u8> {
+    PbControlMessage {
+        seq: 0,
+        timestamp: 0,
+        payload: Some(PbPayload::TerminalSessionChanged(Vec::new())),
+    }
+    .encode_to_vec()
+}
+
 pub(crate) struct DrawRequest {
     pub command: super::annotation::wire::PbDrawRequestKind,
     sequence: i64,
@@ -269,7 +284,7 @@ pub(crate) struct CaptureParams {
 
 fn flags() -> PbFeatureFlag {
     PbFeatureFlag {
-        capture_setting: 6,
+        capture_setting: capture_setting(),
         clipboard: 3,
         system_metrics: 1,
         file_transfer_ftp: 2,
@@ -279,6 +294,38 @@ fn flags() -> PbFeatureFlag {
         // driver assertion. RpcRequest 11 retains its no-install support reply.
         virtual_mouse_device: 1,
         ..Default::default()
+    }
+}
+
+/// The capability level this host can honour.
+///
+/// 5 那一档在协议里是一整包「分辨率转换 + DPI 设置 + 虚拟屏」，6 再加 HDR，主控是
+/// 按这一档整体开菜单的（见 `display_topology::support`），没法只开其中一项。Linux
+/// 上有把握的只有虚拟屏：root 辅助程序接一路 VKMS 连接器，niri 认下它就是一块新显
+/// 示器（见 `crates/vkms`）。物理屏的分辨率走 RandR，X11 会话里能用、Wayland 下不
+/// 行；DPI 和超级屏还没有可写的路径。所以报 5 意味着「虚拟屏真的能用，其余几项会带
+/// 着原因失败」，而不是像以前那样把它们全藏起来——藏起来的代价是连虚拟屏都点不了。
+#[cfg(windows)]
+fn capture_setting() -> i32 {
+    6
+}
+
+/// 见上。辅助程序装了、当前桌面接得住新输出、内核的 VKMS 有 configfs 接口，三件事
+/// 都成立才报 5（见 `virtual_display::ready`）。
+///
+/// 只看文件在不在是不够的——deb 包总会把辅助程序装上，于是 GNOME、KDE、sway 和所有
+/// Xorg 会话都会报 5，主控那边「添加虚拟屏」的按钮点亮，点下去必然失败（而且是先插
+/// 一块屏再拔掉，本机用户能看到布局跳一下）；6.19 以前的内核上 niri 也一样。中途装上
+/// 辅助程序要重开程序才会对外改口，这比在握手时去连一个 root 服务（那会顺手把它拉
+/// 起来）划算。
+#[cfg(not(windows))]
+fn capture_setting() -> i32 {
+    use std::sync::OnceLock;
+    static READY: OnceLock<bool> = OnceLock::new();
+    if *READY.get_or_init(crate::platform::virtual_display::ready) {
+        5
+    } else {
+        4
     }
 }
 
