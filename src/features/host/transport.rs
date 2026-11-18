@@ -30,6 +30,178 @@ use webrtc::{
 type Result<T> = std::result::Result<T, Error>;
 type Writer = Arc<dyn RTPWriter + Send + Sync>;
 const FORMAT_EPOCH_ATTRIBUTE: usize = 0x5555_484f_5354_4550;
+
+#[cfg(target_os = "windows")]
+mod timer {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
+        time::Instant,
+    };
+    use tokio::sync::Notify;
+    use windows::Win32::{
+        Foundation::{CloseHandle, HANDLE},
+        System::Threading::{
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CancelWaitableTimer, CloseThreadpoolWait,
+            CreateThreadpoolWait, CreateWaitableTimerExW, PTP_CALLBACK_INSTANCE, PTP_WAIT,
+            SYNCHRONIZATION_SYNCHRONIZE, SetThreadpoolWait, SetWaitableTimerEx, TIMER_MODIFY_STATE,
+            WaitForThreadpoolWaitCallbacks,
+        },
+    };
+
+    struct Callback {
+        wake: Arc<Notify>,
+        epoch: AtomicU64,
+    }
+
+    struct WindowsTimer {
+        timer: HANDLE,
+        wait: PTP_WAIT,
+        callback: Box<Callback>,
+    }
+
+    // Waitable timer handle and threadpool wait are exclusively operated via `&mut self`.
+    unsafe impl Send for WindowsTimer {}
+
+    unsafe extern "system" fn notify(
+        _: PTP_CALLBACK_INSTANCE,
+        context: *mut std::ffi::c_void,
+        _: PTP_WAIT,
+        _: u32,
+    ) {
+        // SAFETY: `WindowsTimer` owns `callback` until `WaitForThreadpoolWaitCallbacks` finishes.
+        let callback = unsafe { &*context.cast::<Callback>() };
+        callback.epoch.fetch_add(1, Ordering::Release);
+        callback.wake.notify_one();
+    }
+
+    impl WindowsTimer {
+        fn new() -> Option<Self> {
+            let timer = unsafe {
+                CreateWaitableTimerExW(
+                    None,
+                    None,
+                    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                    TIMER_MODIFY_STATE.0 | SYNCHRONIZATION_SYNCHRONIZE.0,
+                )
+            }
+            .ok()?;
+            let callback = Box::new(Callback {
+                wake: Arc::new(Notify::new()),
+                epoch: AtomicU64::new(0),
+            });
+            let context = (&*callback as *const Callback).cast_mut().cast();
+            let wait = match unsafe { CreateThreadpoolWait(Some(notify), Some(context), None) } {
+                Ok(wait) => wait,
+                Err(_) => {
+                    unsafe {
+                        let _ = CloseHandle(timer);
+                    }
+                    return None;
+                }
+            };
+            Some(Self {
+                timer,
+                wait,
+                callback,
+            })
+        }
+
+        fn disarm(&mut self) {
+            unsafe {
+                SetThreadpoolWait(self.wait, None, None);
+                let _ = CancelWaitableTimer(self.timer);
+                WaitForThreadpoolWaitCallbacks(self.wait, true);
+            }
+        }
+    }
+
+    impl Drop for WindowsTimer {
+        fn drop(&mut self) {
+            self.disarm();
+            unsafe {
+                CloseThreadpoolWait(self.wait);
+                let _ = CloseHandle(self.timer);
+            }
+        }
+    }
+
+    /// Sub-millisecond waitable timer so Windows pacer and probe bursts do not
+    /// quantize to the default 15.6ms OS tick.
+    pub(super) struct HighResTimer(Option<WindowsTimer>);
+
+    impl Default for HighResTimer {
+        fn default() -> Self {
+            Self(WindowsTimer::new())
+        }
+    }
+
+    impl HighResTimer {
+        pub(super) async fn sleep_until(&mut self, deadline: Instant) {
+            let now = Instant::now();
+            if deadline <= now {
+                return;
+            }
+            let Some(inner) = self.0.as_mut() else {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                return;
+            };
+            inner.disarm();
+            let target = inner.callback.epoch.load(Ordering::Acquire) + 1;
+            let ticks = deadline
+                .saturating_duration_since(now)
+                .as_nanos()
+                .div_ceil(100)
+                .clamp(1, i64::MAX as u128) as i64;
+            let due = -ticks;
+            let armed = unsafe {
+                SetThreadpoolWait(inner.wait, Some(inner.timer), None);
+                SetWaitableTimerEx(inner.timer, &due, 0, None, None, None, 0).is_ok()
+            };
+            if !armed {
+                inner.disarm();
+                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                return;
+            }
+            struct Disarm<'a>(&'a mut WindowsTimer);
+            impl Drop for Disarm<'_> {
+                fn drop(&mut self) {
+                    self.0.disarm();
+                }
+            }
+            let guard = Disarm(inner);
+            loop {
+                let notified = guard.0.callback.wake.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if guard.0.callback.epoch.load(Ordering::Acquire) >= target
+                    || Instant::now() >= deadline
+                {
+                    break;
+                }
+                notified.await;
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+mod timer {
+    use std::time::Instant;
+
+    #[derive(Default)]
+    pub(super) struct HighResTimer;
+
+    impl HighResTimer {
+        pub(super) async fn sleep_until(&mut self, deadline: Instant) {
+            if deadline > Instant::now() {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+            }
+        }
+    }
+}
 fn format_attributes(epoch: u64) -> Attributes {
     let mut attributes = Attributes::new();
     attributes.insert(FORMAT_EPOCH_ATTRIBUTE, epoch as usize);
@@ -144,6 +316,7 @@ struct Network {
     streams: Mutex<Vec<std::sync::Weak<Shared>>>,
     bindings: Mutex<HashMap<u32, std::sync::Weak<Shared>>>,
     allocations: Mutex<BTreeMap<usize, super::parameters::Bounds>>,
+    pacer_timer: Mutex<Option<timer::HighResTimer>>,
 }
 struct Shared {
     connection: Arc<Network>,
@@ -231,6 +404,7 @@ impl Transport {
             streams: Mutex::default(),
             bindings: Mutex::default(),
             allocations: Mutex::new(BTreeMap::from([(0, bounds)])),
+            pacer_timer: Mutex::new(None),
         });
         Self::with_connection(connection, 0)
     }
@@ -723,7 +897,32 @@ impl Transport {
             let delay = Duration::from_secs_f64(pacer.debt / rate);
             drop(pacer);
             drop(egress);
-            tokio::select! {_ = self.0.cancel.cancelled()=>return Err(Error::ErrIoEOF),_=tokio::time::sleep(delay)=>{},_=notified=>{}}
+            let deadline = Instant::now() + delay;
+            struct TimerSlot<'a>(
+                &'a Mutex<Option<timer::HighResTimer>>,
+                Option<timer::HighResTimer>,
+            );
+            impl Drop for TimerSlot<'_> {
+                fn drop(&mut self) {
+                    if let Some(t) = self.1.take() {
+                        *lock(self.0) = Some(t);
+                    }
+                }
+            }
+            let mut slot = TimerSlot(
+                &self.0.pacer_timer,
+                Some(lock(&self.0.pacer_timer).take().unwrap_or_default()),
+            );
+            let wait = slot
+                .1
+                .as_mut()
+                .expect("timer present")
+                .sleep_until(deadline);
+            tokio::select! {
+                _ = self.0.cancel.cancelled() => return Err(Error::ErrIoEOF),
+                _ = wait => {}
+                _ = notified => {}
+            }
         }
     }
     async fn emit(
@@ -1073,21 +1272,36 @@ impl Transport {
     }
     pub(crate) async fn probes(&self) {
         let mut active = None::<(ProbeClusterConfig, Instant, usize, i64)>;
+        let mut timer = timer::HighResTimer::default();
         // Enable openuuyc::features::host=debug for these probe diagnostics.
         while self.active() {
             // Follow the cluster's byte clock. Sleeping another 2ms on every
             // iteration accumulates timer rounding and write time, lowering
             // the measured probe rate (especially with small media packets).
-            let deadline = active
-                .as_ref()
-                .and_then(|(cluster, started, sent, _)| {
-                    let rate = cluster.target_data_rate.bps_or(0);
-                    (rate > 0).then(|| {
-                        *started + Duration::from_micros(*sent as u64 * 8_000_000 / rate as u64)
-                    })
+            let deadline = active.as_ref().and_then(|(cluster, started, sent, _)| {
+                let rate = cluster.target_data_rate.bps_or(0);
+                (rate > 0).then(|| {
+                    *started + Duration::from_micros(*sent as u64 * 8_000_000 / rate as u64)
                 })
-                .unwrap_or_else(|| Instant::now() + Duration::from_millis(2));
-            tokio::select! {_=self.0.cancel.cancelled()=>break,_=tokio::time::sleep_until(tokio::time::Instant::from_std(deadline))=>{}}
+            });
+            if let Some(deadline) = deadline {
+                tokio::select! {
+                    _ = self.0.cancel.cancelled() => break,
+                    _ = timer.sleep_until(deadline) => {}
+                }
+            } else if !lock(&self.0.controller).probes.is_empty() {
+                let next = Instant::now() + Duration::from_millis(2);
+                tokio::select! {
+                    _ = self.0.cancel.cancelled() => break,
+                    _ = timer.sleep_until(next) => {}
+                }
+            } else {
+                tokio::select! {
+                    _ = self.0.cancel.cancelled() => break,
+                    _ = self.0.feedback_wake.notified() => {}
+                    _ = tokio::time::sleep(Duration::from_millis(15)) => {}
+                }
+            }
             let owner = self.streams().into_iter().find(|stream| {
                 stream.0.tcc_id.load(Ordering::Relaxed) != 0
                     && lock(&self.0.allocations).contains_key(&stream.0.index)

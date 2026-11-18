@@ -424,8 +424,8 @@ pub(super) fn capture_loop(
         }) && let Some(active) = encoder.as_mut()
         {
             let rate = crate::features::host::format::Rate {
-                target: bounds.initial.max(300_000),
-                peak: bounds.initial.max(300_000),
+                target: media_rate,
+                peak,
                 fps: wanted.fps,
                 quality: wanted.quality,
                 quality_target,
@@ -463,8 +463,8 @@ pub(super) fn capture_loop(
                     size,
                     wanted.format,
                     crate::features::host::format::Rate {
-                        target: bounds.initial.max(300_000),
-                        peak: bounds.initial.max(300_000),
+                        target: media_rate,
+                        peak,
                         fps: wanted.fps,
                         quality: wanted.quality,
                         quality_target,
@@ -477,8 +477,8 @@ pub(super) fn capture_loop(
                     size,
                     wanted.format,
                     crate::features::host::format::Rate {
-                        target: bounds.initial.max(300_000),
-                        peak: bounds.initial.max(300_000),
+                        target: media_rate,
+                        peak,
                         fps: wanted.fps,
                         quality: wanted.quality,
                         quality_target,
