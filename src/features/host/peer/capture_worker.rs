@@ -243,11 +243,6 @@ pub(super) fn capture_loop(
             std::thread::sleep(Duration::from_millis(20));
             continue;
         }
-        if sender.capacity() == 0 {
-            metrics.backpressure_waits += 1;
-            std::thread::sleep(Duration::from_millis(2));
-            continue;
-        }
         if desktop.is_none() {
             runtime.begin_gpu_work(negotiated.gpu_compatibility);
             desktop = Some(capture::Desktop::open_selected(&screen)?);
@@ -721,7 +716,18 @@ pub(super) fn capture_loop(
             {
                 frame_metadata.pop_first();
             }
-            sender.blocking_send(frame).context("画面发送队列已关闭")?;
+            // 发送端过慢时丢这一帧，让采集/编码继续跑；也不顺手请求关键帧，
+            // 队列已经满的时候再插 IDR 只会让码率越丢越高。
+            match sender.try_send(frame) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(frame)) => {
+                    metrics.send_drops += 1;
+                    drop(frame);
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    anyhow::bail!("画面发送队列已关闭");
+                }
+            }
         }
     }
     Ok(())

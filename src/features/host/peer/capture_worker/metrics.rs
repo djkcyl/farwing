@@ -34,6 +34,7 @@ pub(super) struct Metrics {
     pub admission_drops: u64,
     pub transfer_busy: u64,
     pub backpressure_waits: u64,
+    pub send_drops: u64,
 }
 impl Default for Metrics {
     fn default() -> Self {
@@ -50,6 +51,7 @@ impl Default for Metrics {
             admission_drops: 0,
             transfer_busy: 0,
             backpressure_waits: 0,
+            send_drops: 0,
         }
     }
 }
@@ -73,6 +75,7 @@ impl Metrics {
                 admission_drops = self.admission_drops,
                 transfer_busy = self.transfer_busy,
                 backpressure_waits = self.backpressure_waits,
+                send_drops = self.send_drops,
                 capture_avg_ms = self.capture.average_ms(),
                 capture_max_ms = self.capture.maximum_ms(),
                 transfer_avg_ms = self.transfer.average_ms(),
