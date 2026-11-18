@@ -41,8 +41,6 @@ pub(super) fn capture_loop(
     let mut desktop = None;
     let mut encoder = None::<encoder::Encoder>;
     let mut current: Option<((u32, u32), ((u64, Backend, Format), Color))> = None;
-    let mut next = Instant::now();
-    let mut paced_fps = 0;
     let mut cached = None::<capture::Frame>;
     let mut last_frame = None::<Instant>;
     let mut failed = std::collections::HashSet::new();
@@ -151,11 +149,6 @@ pub(super) fn capture_loop(
         wanted.maximum = candidate.maximum_for(wanted.requested_maximum);
         wanted.fps = wanted.fps.min(candidate.fps).min(screen.fps).max(1);
         metrics.report(wanted.fps, screen.adapter, candidate.capability.adapter);
-        let period = Duration::from_secs_f64(1.0 / f64::from(wanted.fps));
-        if paced_fps != wanted.fps {
-            paced_fps = wanted.fps;
-            next = Instant::now();
-        }
         let maximum_quality = negotiated.maximum_quality(
             wanted.format,
             (screen.width, screen.height),
@@ -247,15 +240,7 @@ pub(super) fn capture_loop(
             }
             last_frame = None;
             keyframe.store(true, Ordering::Release);
-            next = Instant::now();
             std::thread::sleep(Duration::from_millis(20));
-            continue;
-        }
-        if Instant::now() < next {
-            std::thread::sleep(
-                next.saturating_duration_since(Instant::now())
-                    .min(Duration::from_millis(20)),
-            );
             continue;
         }
         if sender.capacity() == 0 {
@@ -287,14 +272,9 @@ pub(super) fn capture_loop(
         }
         let wait_ms = ((1000.0 / f64::from(wanted.fps)).round() as u32).max(1);
         let capture_started = Instant::now();
-        // Advance the planned deadline, not the (usually late) wake-up time.
-        // Otherwise sleep/dispatch overhead is added to every frame period.
-        // A whole missed period resets the clock instead of replaying a backlog.
-        next = if capture_started.saturating_duration_since(next) >= period {
-            capture_started + period
-        } else {
-            next + period
-        };
+        // AcquireNextFrame already blocks until the next desktop present (or
+        // this timeout). Sleeping to a separate deadline first makes the loop
+        // wake just after that present and wait a whole extra refresh.
         let captured = desktop.as_mut().context("缺少采集源")?.next(
             wait_ms,
             wanted.quality,
@@ -370,6 +350,14 @@ pub(super) fn capture_loop(
                 frame
             }
         };
+        // AcquireNextFrame 按桌面刷新率交付，目标帧率更低时在这里按时间戳丢弃，
+        // 不能靠抓帧前 sleep 来限速，否则会稳定错过 vblank。
+        let minimum_interval = Duration::from_secs_f64(1.0 / f64::from(wanted.fps));
+        if last_frame.is_some_and(|at| {
+            frame.captured.saturating_duration_since(at) < minimum_interval.mul_f64(0.9)
+        }) {
+            continue;
+        }
         let peak = transport.media_rate().min(bounds.maximum);
         // A zero/tiny allocation is a transport pause, not an encoder failure.
         // Do not fabricate bandwidth by clamping it back to a quality floor.
@@ -649,7 +637,7 @@ pub(super) fn capture_loop(
                 encode_errors += 1;
                 tracing::warn!(%error,hardware,consecutive=encode_errors,"host encoding failed");
                 keyframe.store(true, Ordering::Release);
-                next = Instant::now() + Duration::from_secs_f64(1.0 / f64::from(wanted.fps));
+                std::thread::sleep(Duration::from_secs_f64(1.0 / f64::from(wanted.fps)));
                 if encode_errors >= 10
                     || error.downcast_ref::<encoder::SwitchCandidate>().is_some()
                     || unsafe { device.GetDeviceRemovedReason() }.is_err()
