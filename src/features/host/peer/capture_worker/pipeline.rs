@@ -283,21 +283,22 @@ mod real {
         let context = unsafe { device.GetImmediateContext()? };
         let mut converter = crate::platform::windows::preprocess::Converter::new(&device)?;
         let mut metadata = BTreeMap::new();
-        // 队列满时丢掉的是已经编好的帧，主控那边看不到 RTP 丢包，只会一直拿到
-        // 引用不到的画面。等队列重新腾出位置再补一个关键帧接回去，而不是在队列
-        // 满的时候猛插 IDR 把码率顶得更高。
-        let mut resync = false;
         while let Ok(mut job) = rx.recv() {
             if cancel.load(Ordering::Acquire) {
                 break;
             }
+            // 发送队列满时在编码前就把这一帧丢掉，而不是编完了再丢：编完再丢会
+            // 丢掉下游正在引用的参考帧，而主控那边没有 RTP 丢包、不会请求关键帧。
+            // 队列只有这个线程往里放，编码期间容量只增不减，所以放行后不会再满。
+            anyhow::ensure!(!sender.is_closed(), "画面发送队列已关闭");
+            if sender.capacity() == 0 {
+                stats.send_drops.fetch_add(1, Ordering::Relaxed);
+                drop(job);
+                continue;
+            }
             job.capture.lease.wait()?;
             let reconfigured = encoder.configure_rate(job.rate)?;
             if reconfigured {
-                keyframe.store(true, Ordering::Release);
-            }
-            if resync && sender.capacity() > 0 {
-                resync = false;
                 keyframe.store(true, Ordering::Release);
             }
             let force = keyframe.swap(false, Ordering::AcqRel);
@@ -393,13 +394,13 @@ mod real {
                 {
                     metadata.pop_first();
                 }
-                // 发送端过慢时丢这一帧，让采集/编码继续跑；关键帧等队列腾出
-                // 位置再补（见上面的 `resync`）。
+                // 前面已经按 capacity 过了闸，这里不该再满；真满了就说明丢掉的是
+                // 别人正在引用的帧，必须马上补关键帧。
                 match sender.try_send(frame) {
                     Ok(()) => {}
                     Err(tokio::sync::mpsc::error::TrySendError::Full(frame)) => {
                         stats.send_drops.fetch_add(1, Ordering::Relaxed);
-                        resync = true;
+                        keyframe.store(true, Ordering::Release);
                         drop(frame);
                     }
                     Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
