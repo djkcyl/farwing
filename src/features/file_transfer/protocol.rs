@@ -365,7 +365,7 @@ pub(crate) struct Request {
     pub header: Option<Header>,
     #[prost(
         oneof = "RequestKind",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
     )]
     pub which: Option<RequestKind>,
 }
@@ -427,6 +427,8 @@ pub(crate) enum RequestKind {
     Other28(bytes::Bytes),
     #[prost(bytes = "bytes", tag = "29")]
     Other29(bytes::Bytes),
+    #[prost(bytes = "bytes", tag = "30")]
+    Other30(bytes::Bytes),
 }
 #[derive(Clone, PartialEq, Message)]
 pub(crate) struct Response {
@@ -434,7 +436,7 @@ pub(crate) struct Response {
     pub header: Option<Header>,
     #[prost(
         oneof = "ResponseKind",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26, 27"
     )]
     pub which: Option<ResponseKind>,
 }
@@ -488,6 +490,8 @@ pub(crate) enum ResponseKind {
     Other24(bytes::Bytes),
     #[prost(bytes = "bytes", tag = "26")]
     Other26(bytes::Bytes),
+    #[prost(bytes = "bytes", tag = "27")]
+    Other27(bytes::Bytes),
 }
 #[derive(Clone, PartialEq, Message)]
 pub(crate) struct Header {

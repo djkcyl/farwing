@@ -641,6 +641,17 @@ async fn write_packets(
 }
 
 async fn connect_socket(request: Request<()>, tls: Arc<rustls::ClientConfig>) -> Result<Socket> {
+    // Read the actual request header; never log authentication/reconnect tokens.
+    let streamer_version = request
+        .headers()
+        .get(super::STREAMER_VERSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("missing")
+        .to_owned();
+    let controlling = request
+        .headers()
+        .get("x-nrd-controlling")
+        .is_some_and(|value| value == "1");
     let host = request
         .uri()
         .host()
@@ -661,8 +672,14 @@ async fn connect_socket(request: Request<()>, tls: Arc<rustls::ClientConfig>) ->
     let tls = timeout(IO_STAGE_TIMEOUT, connector.connect(name, tcp))
         .await
         .context("signaling TLS handshake timed out")??;
-    let (socket, _) = timeout(IO_STAGE_TIMEOUT, client_async(request, tls))
+    let (socket, response) = timeout(IO_STAGE_TIMEOUT, client_async(request, tls))
         .await
         .context("signaling WebSocket opening handshake timed out")??;
+    tracing::info!(
+        %streamer_version,
+        controlling,
+        http_status = response.status().as_u16(),
+        "signaling WebSocket handshake completed"
+    );
     Ok(socket)
 }

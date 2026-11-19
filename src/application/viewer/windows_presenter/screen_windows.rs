@@ -547,6 +547,10 @@ impl ScreenWindows {
         {
             bail!("软解仅允许一个播放窗口，请使用顶部标签切换屏幕");
         }
+        if let Some(app) = source.app.as_ref() {
+            app.stream_control
+                .require_entitlement("multi_window", "多屏独立窗口")?;
+        }
         let target = {
             let window = event_loop.create_window(
                 WindowAttributes::default()

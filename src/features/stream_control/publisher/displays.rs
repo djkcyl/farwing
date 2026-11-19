@@ -178,6 +178,25 @@ pub(crate) async fn receive_session(
                 request_id: h.request_id,
             });
             match request.payload {
+                Some(PbRpcRequestPayload::UserEntitlementSync(request)) => {
+                    anyhow::ensure!(header.is_some(), "权益同步缺少请求头");
+                    let result = session.update_entitlements(
+                        &request.entitlement_data,
+                        request.current_server_time,
+                    );
+                    if let Err(error) = &result {
+                        tracing::warn!(%error, "controller entitlement update rejected");
+                    }
+                    return Ok(response(
+                        &message,
+                        header,
+                        PbRpcResponsePayload::UserEntitlementSyncRsp(
+                            super::super::wire::PbEntitlementSyncResponse {
+                                error_code: i32::from(result.is_err()),
+                            },
+                        ),
+                    ));
+                }
                 Some(PbRpcRequestPayload::MouseSwitch(bytes)) => {
                     #[derive(Clone, PartialEq, prost::Message)]
                     struct Switch {
@@ -602,15 +621,22 @@ async fn apply_setting(
     session.refresh()?;
     let screen = session.info(current_id)?.screen;
     anyhow::ensure!(session.authorization().requested(), "被控许可已失效");
+    let entitlement_quality_limit = session.entitlement_quality_limit();
     let slot = &session.slots[session.active_slot(current_id).unwrap_or(index)];
+    let mut config = lock(&slot.config);
+    let mut next = *config;
+    next.entitlement_quality_limit = entitlement_quality_limit;
     let mut errors = configure_media(
         setting,
         &screen,
         header,
         message,
-        &mut lock(&slot.config),
+        &mut next,
         &slot.negotiated,
     )?;
+    if !errors.iter().any(|e| matches!(e.error_code, -1 | -2)) {
+        *config = next;
+    }
     if conversion {
         errors.push(PbError {
             error_code: -5,

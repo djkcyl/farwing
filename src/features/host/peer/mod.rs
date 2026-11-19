@@ -121,7 +121,7 @@ impl Peer {
         displays: Arc<super::displays::Session>,
         ice_servers: Vec<RTCIceServer>,
         relay: bool,
-        initial: VideoConfig,
+        mut initial: VideoConfig,
         control_screens: bool,
         negotiated: Arc<super::format::Negotiated>,
         network: super::network::Policy,
@@ -138,7 +138,20 @@ impl Peer {
         file_capabilities: crate::features::file_transfer::host::Capabilities,
         data_only: bool,
         update_resume: Option<super::update_resume::Context>,
+        entitlements: Option<crate::protocol::entitlements::Snapshot>,
     ) -> Result<Self> {
+        initial.entitlement_quality_limit = entitlements.as_ref().map_or(2, |e| e.quality_limit());
+        if let Some(snapshot) = &entitlements {
+            tracing::info!(
+                features = snapshot.schedule.features.len(),
+                server_time = snapshot.server_time(),
+                quality_limit = initial.entitlement_quality_limit,
+                "controller entitlements accepted at connection"
+            );
+        }
+        if initial.quality == 5 {
+            initial.auto_quality = initial.auto_quality.min(initial.entitlement_quality_limit);
+        }
         let audio_only = deferred.is_some() && !data_only;
         let handle = owner.with_cancellation(cancel.clone());
         tracing::info!(?network, "host network switch policy");
@@ -434,6 +447,7 @@ impl Peer {
             screen.clone(),
             displays,
             deferred,
+            entitlements,
         )
         .await?;
         let sender = screen_pool.slots[0].sender.clone();

@@ -844,6 +844,13 @@ impl DeviceCenterApp {
         } else {
             &self.account_name
         };
+        let account = self
+            .membership_profile
+            .as_ref()
+            .filter(|_| !self.logout_pending)
+            .and_then(|rx| rx.borrow().and_then(|profile| profile.tier))
+            .map(|tier| format!("{account} · {}", tier.label()))
+            .unwrap_or_else(|| account.to_owned());
         let account_row = egui::Rect::from_min_max(
             egui::pos2(left, bounds.top() + 16.0),
             egui::pos2(right - 34.0, bounds.top() + 44.0),
@@ -855,7 +862,7 @@ impl DeviceCenterApp {
             |ui| {
                 ui.add(
                     egui::Label::new(
-                        RichText::new(account)
+                        RichText::new(&account)
                             .size(crate::ui::theme::BODY)
                             .color(TEXT),
                     )

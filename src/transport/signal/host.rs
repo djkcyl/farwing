@@ -550,6 +550,9 @@ impl Session {
                             options.file_capabilities(),
                             data_only,
                             update_resume,
+                            crate::protocol::entitlements::Schedule::parse(&options.entitlement_data)
+                                .and_then(|data|crate::protocol::entitlements::Snapshot::new(data,options.current_server_time))
+                                .ok(),
                         )
                         .await?;
                         tracing::info!(display_ms, media_ms,

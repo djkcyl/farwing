@@ -58,6 +58,71 @@ impl HostClient {
     pub fn is_guest(&self) -> bool {
         matches!(self.identity, Identity::Guest(_))
     }
+    pub(crate) fn membership(&self) -> Option<&crate::account::membership::Membership> {
+        match &self.identity {
+            Identity::Account(client) => Some(&client.membership),
+            Identity::Guest(_) => None,
+        }
+    }
+    pub(crate) async fn refresh_membership_profile(&self) {
+        let Identity::Account(client) = &self.identity else {
+            return std::future::pending().await;
+        };
+        let mut refresh_after = Some(std::time::Duration::ZERO);
+        let mut rights_updates = client.membership.rights_updates.subscribe();
+        loop {
+            tokio::select! {
+                _ = client.membership.refresh_profile.notified() => {
+                    *client.membership.rights.lock().await = None;
+                }
+                _ = async {
+                    match refresh_after {
+                        Some(delay)=>tokio::time::sleep(delay).await,
+                        None=>std::future::pending().await,
+                    }
+                } => {}
+                changed = rights_updates.changed() => {
+                    if changed.is_err() { return; }
+                    // A connection can recover the query after this worker's
+                    // bounded retries ended. Resume TTL refresh from that table.
+                    refresh_after = rights_updates.borrow_and_update().as_ref()
+                        .map(|table| table.refresh_after().max(std::time::Duration::from_secs(1)));
+                    continue;
+                }
+            }
+            if let Err(error) = client.account_info().await {
+                tracing::warn!(%error, "account membership profile refresh failed");
+            }
+            refresh_after = None;
+            for retry in 0..4 {
+                match client.account_entitlements().await {
+                    Ok(table) => {
+                        tracing::info!(
+                            version = table.version,
+                            features = table.snapshot.schedule.features.len(),
+                            expires_at = table.expired_at,
+                            checkpoint_at = table.checkpoint_at,
+                            "account entitlements verified"
+                        );
+                        refresh_after =
+                            Some(table.refresh_after().max(std::time::Duration::from_secs(1)));
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "account entitlements query failed");
+                        if retry == 3
+                            || error
+                                .downcast_ref::<crate::account::api::ApiFailure>()
+                                .is_some_and(|e| e.invalid_saved_credentials())
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs([1, 2, 4][retry])).await;
+                    }
+                }
+            }
+        }
+    }
     pub(crate) fn controlling_features(
         &self,
     ) -> Option<crate::account::feature_ability::FeatureCatalog> {

@@ -11,6 +11,7 @@ struct End {
 }
 
 pub(super) struct Session {
+    account: String,
     pub peer: Arc<NativePeer>,
     forwarder: Mutex<Option<RtpForwarder>>,
     shutdown: Mutex<Option<oneshot::Sender<()>>>,
@@ -86,6 +87,7 @@ impl Session {
         }
     }
     pub fn new(
+        account: String,
         peer: Arc<NativePeer>,
         forwarder: RtpForwarder,
         shutdown: oneshot::Sender<()>,
@@ -103,6 +105,7 @@ impl Session {
             })));
         });
         let session = Arc::new(Self {
+            account,
             peer,
             forwarder: Mutex::new(Some(forwarder)),
             shutdown: Mutex::new(Some(shutdown)),
@@ -164,6 +167,16 @@ impl Session {
             let _ = tx.send(());
         }
     }
+}
+
+pub(super) fn viewing_count(account: &str) -> usize {
+    lock(jobs())
+        .iter()
+        .filter_map(|(s, _)| s.upgrade())
+        .filter(|s| {
+            s.account == account && s.viewing.load(Ordering::Acquire) && s.ended.borrow().is_none()
+        })
+        .count()
 }
 impl Drop for Session {
     fn drop(&mut self) {

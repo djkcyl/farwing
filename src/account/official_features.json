@@ -2,6 +2,7 @@
   {
     "platform": 1,
     "abilitys": [
+      { "feature": "user_entitlement_sync", "original_version": "4.47.0", "final_version": "" },
       { "feature": "remote_clipboard_v5", "original_version": "4.20.0", "final_version": "" },
       { "feature": "port_mapping", "original_version": "4.21.0", "final_version": "" },
       {
@@ -59,6 +60,8 @@
   {
     "platform": 4,
     "abilitys": [
+      { "feature": "controlled_update", "original_version": "4.48.0", "final_version": "" },
+      { "feature": "user_entitlement_sync", "original_version": "4.46.0", "final_version": "" },
       { "feature": "port_mapping", "original_version": "4.32.0", "final_version": "" },
       {
         "feature": "manual_transfer",

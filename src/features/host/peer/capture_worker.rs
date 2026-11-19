@@ -179,7 +179,7 @@ pub(super) fn capture_loop(
         let budget_size =
             crate::media::geometry::fit_size(screen.width, screen.height, wanted.maximum);
         if let Some(auto) = automatic.as_mut() {
-            auto.limit(maximum_quality);
+            auto.limit(maximum_quality.min(wanted.entitlement_quality_limit));
             let sample = transport.automatic_rates();
             if wanted.sending
                 && wanted.capturing

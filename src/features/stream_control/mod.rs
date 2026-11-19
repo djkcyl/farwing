@@ -8,6 +8,7 @@
 //! known from `ScreenSources`.
 
 mod audio_quality;
+mod entitlements;
 use crate::diagnostics::performance::PerformanceMonitor;
 pub use crate::features::network_control::NetworkControlSnapshot;
 pub use crate::features::remote_cursor::{CursorImage, RemoteCursor};
@@ -20,6 +21,7 @@ pub use display_settings::{
     RemoteDisplayMode,
 };
 pub use display_topology::{DisplayTopologyAction, DisplayTopologyStatus, DisplayTopologySupport};
+pub(crate) use entitlements::constrain_initial;
 use input::expire_cursor_request;
 use prost::Message as _;
 use settings::{
@@ -344,6 +346,7 @@ pub struct StreamControlSnapshot {
 
 #[derive(Clone)]
 pub struct StreamControlHandle {
+    entitlement_connection: tokio::sync::watch::Sender<u64>,
     audio_mode: tokio::sync::watch::Sender<bool>,
     audio_quality: Arc<Mutex<audio_quality::State>>,
     microphone: crate::media::microphone::Microphone,
@@ -422,6 +425,9 @@ struct PendingCapturePreferences {
 }
 
 struct StreamControlState {
+    entitlements:
+        Option<tokio::sync::watch::Receiver<Option<Arc<crate::account::api::Entitlements>>>>,
+    entitlement_sync: Option<(i64, tokio::sync::oneshot::Sender<i32>)>,
     peer_clipboard: i32,
     clipboard_files_allowed: bool,
     remote_upgrade: Option<crate::features::remote_upgrade::RemoteUpgrade>,
@@ -477,6 +483,8 @@ struct StreamControlState {
     last_notice: Option<String>,
     preference_updates: tokio::sync::watch::Sender<Option<ViewingPreferenceUpdate>>,
     confirmed_preferences: StreamControlPreferences,
+    // A temporary account limit must not replace the choice restored next room.
+    entitlement_preferences: Option<StreamControlPreferences>,
     pending_capture_preferences: VecDeque<PendingCapturePreferences>,
     user_settings_requested: bool,
     persistence_error: Option<String>,
@@ -573,6 +581,8 @@ impl StreamControlHandle {
             peer_capture_setting: 0,
             initial_capture_sync_sent: false,
             viewing_enabled: true,
+            entitlements: None,
+            entitlement_sync: None,
             next_sequence: 1,
             pending_sequences: VecDeque::new(),
             last_applied_sequence: None,
@@ -594,6 +604,7 @@ impl StreamControlHandle {
                 auto_frame_quality: VIDEO_QUALITY_GENERAL,
             },
             pending_capture_preferences: VecDeque::new(),
+            entitlement_preferences: None,
             user_settings_requested: false,
             persistence_error: None,
             audio_persistence_error: None,
@@ -607,6 +618,7 @@ impl StreamControlHandle {
         });
         (
             Self {
+                entitlement_connection: tokio::sync::watch::channel(0).0,
                 audio_mode: tokio::sync::watch::channel(profile.audio_only).0,
                 audio_quality: Arc::new(Mutex::new(audio_quality::State::new(profile.audio_only))),
                 microphone: crate::media::microphone::Microphone::new(),
@@ -792,13 +804,16 @@ impl StreamControlHandle {
 
     pub(crate) fn preferences(&self) -> StreamControlPreferences {
         let state = lock(&self.shared);
+        let saved = state
+            .entitlement_preferences
+            .unwrap_or(state.confirmed_preferences);
         StreamControlPreferences {
             device: Some(state.device_preferences),
-            settings: state.confirmed_preferences.settings,
+            settings: saved.settings,
             custom_bitrate_limit: (state.custom_bitrate_limit < MAX_CUSTOM_BITRATE_MBPS)
                 .then_some(state.custom_bitrate_limit),
             audio: Some(self.audio.settings()),
-            auto_frame_quality: state.confirmed_preferences.auto_frame_quality,
+            auto_frame_quality: saved.auto_frame_quality,
         }
     }
     pub(crate) fn network_control(&self) -> crate::features::network_control::NetworkControl {
@@ -862,6 +877,7 @@ impl StreamControlHandle {
         state: &mut StreamControlState,
         outgoing: OutgoingControlMessage,
         target: Option<String>,
+        explicit_settings: bool,
     ) -> Result<i64> {
         let sequence = outgoing.sequence;
         state.latest_requested_sequence = Some(sequence);
@@ -894,7 +910,8 @@ impl StreamControlHandle {
                     auto_frame_quality: state.baseline.auto_frame_quality,
                 },
                 cursor_capture: state.baseline.cursor_capture,
-                persist: state.user_settings_requested,
+                persist: state.user_settings_requested
+                    && (explicit_settings || state.entitlement_preferences.is_none()),
             });
         Ok(sequence)
     }

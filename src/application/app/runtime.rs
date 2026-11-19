@@ -990,6 +990,7 @@ pub(super) async fn gui_worker_loop(
                 let _ = events.send(GuiEvent::Host(
                     catalog_generation,
                     active_client.host.clone(),
+                    Some(active_client.membership.profile()),
                 ));
                 host_signal = Some(ActivePresence::start(Arc::clone(active_client)));
             }

@@ -94,6 +94,12 @@ pub(crate) enum Request {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Snapshot {
     #[serde(default)]
+    pub membership_revision: u64,
+    #[serde(default)]
+    pub membership_profile: Option<crate::account::membership::Profile>,
+    #[serde(default)]
+    pub global_membership_expiration: Option<crate::account::membership::Expiration>,
+    #[serde(default)]
     pub device_changes: Option<crate::account::device_change::relay::Batch>,
     pub assistance: host::assist::Snapshot,
     pub publication: crate::account::reporting::Snapshot,
@@ -795,6 +801,9 @@ async fn run_authorized_account(
                                 Request::Snapshot { ui, device_cursor } => {
                                     if ui { current.host.assistance.touch_ui(); }
                                     Ok(Reply::Snapshot(Box::new(Snapshot {
+                                    membership_revision: current.membership().map_or(0,|m|m.rights_revision()),
+                                    membership_profile: current.membership().and_then(|m| *m.profile().borrow()),
+                                    global_membership_expiration: current.membership().and_then(|m| m.snapshot()),
                                     device_changes: Some(device_changes.read(device_cursor.as_ref())),
                                     assistance: current.host.assistance.snapshot(),
                                     publication: crate::account::reporting::snapshot(),

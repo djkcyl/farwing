@@ -13,6 +13,7 @@ const RELOAD_AFTER: Duration = Duration::from_secs(21_600);
 
 #[derive(Clone, Copy)]
 pub(crate) enum Feature {
+    EntitlementSync,
     Microphone,
     PortMapping,
     FileDrop,
@@ -31,6 +32,7 @@ pub(crate) enum Feature {
 impl Feature {
     fn name(self) -> &'static str {
         match self {
+            Self::EntitlementSync => "user_entitlement_sync",
             Self::Microphone => "device_microphone",
             Self::PortMapping => "port_mapping",
             Self::FileDrop => "remote_clipboard_v5",

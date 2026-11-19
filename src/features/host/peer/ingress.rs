@@ -37,7 +37,7 @@ impl ControlIngress {
         } = self;
         enum ControlWork {
             Response { bytes: Vec<u8>, handshake: bool },
-            DisplayRequest(Vec<u8>),
+            SessionRequest(Vec<u8>),
         }
         let (control_tx, mut control_rx) = mpsc::unbounded_channel::<(u16, u64, ControlWork)>();
         struct DrawWork {
@@ -105,9 +105,9 @@ impl ControlIngress {
                     }
                 }
                 if let Some(operation) =
-                    crate::features::stream_control::publisher::display_request(bytes)?
+                    crate::features::stream_control::publisher::session_request(bytes)?
                 {
-                    tracing::info!(operation, carrier = "CONTROL", "host display RPC received");
+                    tracing::info!(operation, carrier = "CONTROL", "host session RPC received");
                     // KCP delivery is synchronous. Reuse the response worker to
                     // serialize display/settings work without blocking ACK/input
                     // delivery or spawning an unordered task for each request.
@@ -115,9 +115,9 @@ impl ControlIngress {
                         .send((
                             stream_id,
                             generation,
-                            ControlWork::DisplayRequest(bytes.to_vec()),
+                            ControlWork::SessionRequest(bytes.to_vec()),
                         ))
-                        .context("host CONTROL display queue closed")?;
+                        .context("host CONTROL session RPC queue closed")?;
                     return Ok(());
                 }
                 let responses = crate::features::stream_control::publisher::receive(
@@ -189,7 +189,7 @@ impl ControlIngress {
                 }
                 let (messages, setting_response, handshake) = match work {
                     ControlWork::Response { bytes, handshake } => (vec![bytes], false, handshake),
-                    ControlWork::DisplayRequest(bytes) => {
+                    ControlWork::SessionRequest(bytes) => {
                         let mut state = tokio::select! {
                             _ = control_stop.cancelled() => break,
                             state = control_screens.lock() => state,
@@ -208,7 +208,7 @@ impl ControlIngress {
                                 (responses.messages, true, false)
                             }
                             Err(error) => {
-                                tracing::warn!(%error, "host CONTROL display RPC failed");
+                                tracing::warn!(%error, "host CONTROL session RPC failed");
                                 continue;
                             }
                         }

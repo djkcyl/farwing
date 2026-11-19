@@ -73,9 +73,10 @@ impl RemoteUpgrade {
         device_id: String,
         alias: String,
         version: String,
+        platform: i32,
         cancel: &CancellationToken,
     ) -> Self {
-        let policy = client.feature_catalog().policy(1, &version);
+        let policy = client.feature_catalog().policy(platform, &version);
         Self(Arc::new(Inner {
             client,
             device_id,
