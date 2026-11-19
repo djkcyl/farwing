@@ -24,6 +24,7 @@ mod gpu_scheduling;
 pub(crate) mod host_service;
 pub(crate) mod input;
 pub(crate) mod loopback;
+pub(crate) mod mmcss;
 pub(crate) mod notifications;
 pub(crate) mod nvenc;
 pub(crate) mod power_request;

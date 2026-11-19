@@ -1,6 +1,7 @@
 //! Device delivery: same-adapter shared texture or cross-adapter D3D12 heap.
 //! Busy slots drop an input; only an unavailable/failed GPU strategy reads back.
 mod local;
+pub(crate) mod pipeline;
 use super::capture::Frame;
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -22,7 +23,7 @@ use windows::{
     },
     core::{Interface, PCWSTR},
 };
-struct Handle(HANDLE);
+pub(super) struct Handle(HANDLE);
 impl Drop for Handle {
     fn drop(&mut self) {
         unsafe {
@@ -598,7 +599,7 @@ fn retire(slots: &[Arc<Slot>]) {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
-unsafe fn interop(
+pub(super) unsafe fn interop(
     twelve: &ID3D12Device,
     eleven: &ID3D11Device,
     desc: &D3D12_RESOURCE_DESC,
