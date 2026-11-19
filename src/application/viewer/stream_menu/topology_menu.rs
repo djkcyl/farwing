@@ -92,10 +92,10 @@ pub(super) fn entries(
     handle: &StreamControlHandle,
     id: i32,
     local: Option<(u32, u32)>,
-) {
+) -> bool {
     let snapshot = handle.snapshot();
     let Some(screen) = snapshot.screens.iter().find(|s| s.id == id) else {
-        return;
+        return false;
     };
     let ready = snapshot.ready && (!snapshot.topology.pending || snapshot.topology.dismissed);
     let action = if screen.display.screen_type == 2 {
@@ -116,9 +116,10 @@ pub(super) fn entries(
         section_separator(ui);
         if menu_row(ui, label, "", None, ready && enabled, false).clicked() {
             request(ui.ctx(), handle, id, action);
-            ui.close();
+            return true;
         }
     }
+    false
 }
 
 pub(super) fn show(

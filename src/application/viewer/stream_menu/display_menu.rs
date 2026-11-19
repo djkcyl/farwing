@@ -491,6 +491,8 @@ pub(super) fn context_menu(
                 });
         });
     });
-    super::topology_menu::entries(ui, handle, screen_id, local_size);
+    if super::topology_menu::entries(ui, handle, screen_id, local_size) {
+        ui.close();
+    }
     error
 }
