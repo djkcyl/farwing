@@ -262,7 +262,7 @@ impl StreamControlHandle {
             })
     }
 
-    pub(crate) fn topology_frame_presented(&self, screen_id: i32, received_at: Instant) {
+    pub(crate) fn topology_frame_presented(&self, screen_id: i32, received_at: Instant) -> bool {
         let mut state = lock(&self.shared);
         if state.topology.status.pending
             && state.topology.status.reported
@@ -279,6 +279,9 @@ impl StreamControlHandle {
             tracing::info!(screen_id, sequence = ?state.topology.status.sequence, "display topology presentation resumed");
             drop(state);
             self.mouse.repaint();
+            true
+        } else {
+            false
         }
     }
 

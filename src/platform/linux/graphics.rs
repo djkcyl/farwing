@@ -265,13 +265,13 @@ impl UiPresenter {
         height: u32,
         frame: &crate::platform::linux::dmabuf::DmabufFrame,
         transform: [[f32; 4]; 3],
-    ) -> Result<()> {
+    ) -> bool {
         if !self.video.upload_dmabuf(&self.device, frame, width, height) {
             crate::platform::linux::dmabuf::mark_unsupported();
-            return Ok(());
+            return false;
         }
         self.transform = Some(transform);
-        Ok(())
+        true
     }
 
     pub(crate) fn set_video_placement(
