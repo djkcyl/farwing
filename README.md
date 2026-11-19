@@ -12,7 +12,7 @@ OpenUUYC 是用 Rust 编写的 UU 远程第三方 Windows 客户端，支持主�
 
 最新稳定版为 [v1.0.1](https://github.com/djkcyl/farwing/releases/tag/v1.0.1)。
 
-最新测试版为 [v1.0.2-beta.6](https://github.com/djkcyl/farwing/releases/tag/v1.0.2-beta.6)，包含 AMD AV1 编码兼容与软解绿屏修复，以及协助邀请链接、被控托盘提示、观看窗口剪贴板开关、网络参数、单轨切屏和文件时间修正。
+最新测试版为 [v1.0.2-beta.7](https://github.com/djkcyl/farwing/releases/tag/v1.0.2-beta.7)。Windows 被控端支持同卡 NVENC 并行采集与编码，改善高刷屏采集节奏和带宽探测精度。发送拥塞恢复后，即使桌面没有再次重绘，主控也能收到最终画面。
 
 接收测试版更新提醒：在“关于”中开启“允许测试版”（默认关闭）。
 
