@@ -340,6 +340,7 @@ pub(crate) struct Frame {
 /// 未经缩放的 DXGI 帧。纹理已经复制进采集→编码的共享环，`lease` 负责
 /// 让编码线程等 GPU 写入完成。
 pub(crate) struct RawCapture {
+    pub revision: u64,
     pub captured: std::time::Instant,
     pub is_new: bool,
     pub hdr_metadata: Option<crate::media::video_color::HdrMetadata>,
@@ -662,14 +663,11 @@ impl Desktop {
         }
     }
 
-    /// 抓一帧原始桌面纹理，直接复制进 `sender` 的共享环。调用方随后只需把
-    /// 返回的 lease 交给编码线程，采集线程不再做缩放/色彩转换。
     pub fn next_raw(
         &mut self,
         timeout: u32,
-        quality: i32,
-        hdr: bool,
-        maximum: (u32, u32),
+        request: super::preprocess::Request,
+        submitted: Option<u64>,
         sender: &mut super::transfer::pipeline::Sender,
     ) -> Result<Option<RawCapture>> {
         self.cursor = match self.sampler.sample() {
@@ -689,7 +687,7 @@ impl Desktop {
         let Backend::Dxgi(duplication) = &mut self.backend else {
             return Ok(None);
         };
-        let result = duplication.next_raw(timeout, quality, hdr, maximum, sender);
+        let result = duplication.next_raw(timeout, request, submitted, sender);
         match result {
             Ok(raw) => {
                 self.recovery.healthy(std::time::Instant::now());
@@ -732,6 +730,13 @@ struct RecoveryProbe {
     expires: std::time::Instant,
 }
 
+#[derive(Default)]
+struct DesktopUpdate {
+    presented_at: Option<std::time::Instant>,
+    pointer_changed: bool,
+    lease: Option<super::transfer::pipeline::FrameLease>,
+}
+
 struct Duplication {
     pub device: ID3D11Device,
     context: ID3D11DeviceContext,
@@ -739,6 +744,9 @@ struct Duplication {
     frame_acquired: bool,
     repaired_at: Option<std::time::Instant>,
     presented_since_repair: bool,
+    // Same source of pixels for both encoders, always without a composited pointer.
+    latest: Option<(ID3D11Texture2D, D3D11_TEXTURE2D_DESC)>,
+    revision: u64,
     rotation: DXGI_MODE_ROTATION,
     pub screen: Screen,
     converter: super::preprocess::Converter,
@@ -810,6 +818,8 @@ impl Duplication {
                 frame_acquired: false,
                 repaired_at: None,
                 presented_since_repair: false,
+                latest: None,
+                revision: 0,
                 rotation,
                 screen,
                 converter,
@@ -868,26 +878,65 @@ impl Duplication {
         hdr: bool,
         maximum: (u32, u32),
     ) -> Result<Option<Frame>> {
-        let result = self.next_frame(timeout_ms, quality, cursor_capture, hdr, maximum);
-        if let Err(error) = &result
-            && error
-                .downcast_ref::<windows::core::Error>()
-                .is_some_and(|e| e.code() == DXGI_ERROR_ACCESS_LOST)
-            && self.repaired_at.is_none_or(|at| {
-                self.presented_since_repair && at.elapsed() >= std::time::Duration::from_secs(1)
-            })
-        {
-            // A display reset can invalidate only duplication. Keep the owned
-            // textures/device and encoder when the source contract is unchanged.
-            // A repair that never produces a frame, or fails again immediately,
-            // must still reach the outer bounded backend fallback.
-            self.repaired_at = Some(std::time::Instant::now());
-            self.presented_since_repair = false;
-            self.repair()?;
-            tracing::info!(device=%self.screen.device_name, "DXGI capture object restored on the existing graphics device");
-            return self.next_frame(timeout_ms, quality, cursor_capture, hdr, maximum);
+        let update = self.acquire(timeout_ms, None)?;
+        let request = super::preprocess::Request {
+            quality,
+            maximum,
+            hdr,
+        };
+        let changed = update.presented_at.is_some() || (cursor_capture && update.pointer_changed);
+        if !changed && self.quality == Some(request) && self.cursor_capture == cursor_capture {
+            return Ok(None);
         }
-        result
+        let Some((texture, desc)) = &self.latest else {
+            return Ok(None);
+        };
+        let rotation = self.image_rotation(*desc);
+        let captured = update.presented_at.unwrap_or_else(std::time::Instant::now);
+        let texture = self.converter.convert(
+            &self.device,
+            &self.context,
+            texture,
+            *desc,
+            rotation,
+            self.sdr_white,
+            self.source_hdr,
+            request,
+            if cursor_capture {
+                self.cursor.render(self.screen.width, self.screen.height)
+            } else {
+                None
+            },
+        )?;
+        let mut output = D3D11_TEXTURE2D_DESC::default();
+        unsafe {
+            texture.GetDesc(&mut output);
+        }
+        self.quality = Some(request);
+        self.cursor_capture = cursor_capture;
+        Ok(Some(Frame {
+            width: output.Width,
+            height: output.Height,
+            texture,
+            captured,
+            is_new: changed,
+            hdr_metadata: if hdr { self.source_hdr } else { None },
+            _storage: None,
+        }))
+    }
+
+    fn image_rotation(&self, desc: D3D11_TEXTURE2D_DESC) -> DXGI_MODE_ROTATION {
+        // Some IDDs report a quarter turn but already return logical desktop dimensions.
+        if matches!(
+            self.rotation,
+            DXGI_MODE_ROTATION_ROTATE90 | DXGI_MODE_ROTATION_ROTATE270
+        ) && desc.Width != desc.Height
+            && (desc.Width, desc.Height) == (self.screen.width, self.screen.height)
+        {
+            DXGI_MODE_ROTATION_IDENTITY
+        } else {
+            self.rotation
+        }
     }
 
     fn raw_desc(&self) -> Result<(u32, u32, u32)> {
@@ -916,16 +965,50 @@ impl Duplication {
         Ok((width, height, mode.Format.0 as u32))
     }
 
-    /// 与 `next` 相同地应对桌面重置，只是交付的是共享环里的原始纹理。
     fn next_raw(
         &mut self,
         timeout_ms: u32,
-        quality: i32,
-        hdr: bool,
-        maximum: (u32, u32),
+        request: super::preprocess::Request,
+        submitted: Option<u64>,
         sender: &mut super::transfer::pipeline::Sender,
     ) -> Result<Option<RawCapture>> {
-        let result = self.next_raw_frame(timeout_ms, quality, hdr, maximum, sender);
+        let update = self.acquire(timeout_ms, Some(sender))?;
+        // The next serial frame must compose the current snapshot and cursor.
+        self.quality = None;
+        let Some((texture, desc)) = &self.latest else {
+            return Ok(None);
+        };
+        let lease = match update.lease {
+            Some(lease) => lease,
+            None if update.presented_at.is_none()
+                && submitted.is_some_and(|id| id != self.revision) =>
+            {
+                let Some(lease) = sender.send_texture(texture)? else {
+                    return Ok(None);
+                };
+                lease
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(RawCapture {
+            revision: self.revision,
+            captured: update.presented_at.unwrap_or_else(std::time::Instant::now),
+            is_new: update.presented_at.is_some(),
+            hdr_metadata: if request.hdr { self.source_hdr } else { None },
+            rotation: self.image_rotation(*desc),
+            white: self.sdr_white,
+            source_hdr: self.source_hdr,
+            request,
+            lease,
+        }))
+    }
+
+    fn acquire(
+        &mut self,
+        timeout_ms: u32,
+        mut sender: Option<&mut super::transfer::pipeline::Sender>,
+    ) -> Result<DesktopUpdate> {
+        let mut result = self.acquire_frame(timeout_ms, sender.as_deref_mut());
         if let Err(error) = &result
             && error
                 .downcast_ref::<windows::core::Error>()
@@ -936,92 +1019,91 @@ impl Duplication {
         {
             self.repaired_at = Some(std::time::Instant::now());
             self.presented_since_repair = false;
-            self.repair()?;
-            tracing::info!(device=%self.screen.device_name, "DXGI capture object restored on the existing graphics device");
-            return self.next_raw_frame(timeout_ms, quality, hdr, maximum, sender);
+            result = self.repair().and_then(|()| {
+                tracing::info!(device=%self.screen.device_name, "DXGI capture object restored on the existing graphics device");
+                self.acquire_frame(timeout_ms, sender)
+            });
+        }
+        if result.is_err() {
+            self.latest = None;
+            self.quality = None;
         }
         result
     }
 
-    fn next_raw_frame(
+    fn acquire_frame(
         &mut self,
         timeout_ms: u32,
-        quality: i32,
-        hdr: bool,
-        maximum: (u32, u32),
-        sender: &mut super::transfer::pipeline::Sender,
-    ) -> Result<Option<RawCapture>> {
-        let request = super::preprocess::Request {
-            quality,
-            maximum,
-            hdr,
-        };
+        sender: Option<&mut super::transfer::pipeline::Sender>,
+    ) -> Result<DesktopUpdate> {
         unsafe {
-            let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
-            let mut resource = None;
             self.release_frame()?;
             let duplication = self.duplication.as_ref().context("DXGI采集对象缺失")?;
+            let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
+            let mut resource = None;
             match duplication.AcquireNextFrame(timeout_ms.min(50), &mut info, &mut resource) {
                 Ok(()) => self.frame_acquired = true,
-                Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
+                Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => {
+                    return Ok(DesktopUpdate::default());
+                }
                 Err(error) => return Err(error).context("桌面采集失效，需要重建所选屏幕采集"),
             }
-            let captured = std::time::Instant::now();
-            // 只有指针更新的那次抓取没有新画面；串行路径会拿上一张纹理重
-            // 合成，这里没有可复用的输入，交给下一轮。
-            if info.LastPresentTime == 0 {
-                self.release_frame()?;
-                return Ok(None);
+            let result = (|| -> Result<DesktopUpdate> {
+                self.cursor.update(&self.device, duplication, &info)?;
+                let mut update = DesktopUpdate {
+                    pointer_changed: info.LastMouseUpdateTime != 0,
+                    ..Default::default()
+                };
+                // A pointer-only acquisition does not contain a valid desktop image.
+                if info.LastPresentTime == 0 {
+                    return Ok(update);
+                }
+                let texture: ID3D11Texture2D = resource.context("采集未返回纹理")?.cast()?;
+                let mut desc = D3D11_TEXTURE2D_DESC::default();
+                texture.GetDesc(&mut desc);
+                ensure!(
+                    matches!(
+                        desc.Format,
+                        DXGI_FORMAT_B8G8R8A8_UNORM
+                            | DXGI_FORMAT_R8G8B8A8_UNORM
+                            | DXGI_FORMAT_R16G16B16A16_FLOAT
+                    ),
+                    "不支持的采集像素格式：{}",
+                    desc.Format.0
+                );
+                ensure!(
+                    desc.Width > 0
+                        && desc.Height > 0
+                        && desc.Width <= 16384
+                        && desc.Height <= 16384,
+                    "采集纹理尺寸无效"
+                );
+                update.presented_at = Some(std::time::Instant::now());
+                update.lease = sender
+                    .map(|ring| ring.send_texture(&texture))
+                    .transpose()?
+                    .flatten();
+                let snapshot = if let Some(lease) = &update.lease {
+                    // The ring already copied this image on our immediate context.
+                    lease.source_texture().clone()
+                } else {
+                    // All ring slots may be in flight on the final desktop present.
+                    let copy =
+                        self.converter
+                            .snapshot(&self.device, &self.context, &texture, desc)?;
+                    self.context.Flush();
+                    copy
+                };
+                self.latest = Some((snapshot, desc));
+                self.revision = self.revision.wrapping_add(1).max(1);
+                self.presented_since_repair = true;
+                Ok(update)
+            })();
+            let released = self.release_frame();
+            if result.is_ok() {
+                released?;
             }
-            let texture: ID3D11Texture2D = resource.context("采集未返回纹理")?.cast()?;
-            let mut desc = D3D11_TEXTURE2D_DESC::default();
-            texture.GetDesc(&mut desc);
-            ensure!(
-                matches!(
-                    desc.Format,
-                    DXGI_FORMAT_B8G8R8A8_UNORM
-                        | DXGI_FORMAT_R8G8B8A8_UNORM
-                        | DXGI_FORMAT_R16G16B16A16_FLOAT
-                ),
-                "不支持的采集像素格式：{}",
-                desc.Format.0
-            );
-            ensure!(
-                desc.Width > 0 && desc.Height > 0 && desc.Width <= 16384 && desc.Height <= 16384,
-                "采集纹理尺寸无效"
-            );
-            let lease = match sender.send_texture(&texture) {
-                Ok(Some(lease)) => lease,
-                Ok(None) => {
-                    self.release_frame()?;
-                    return Ok(None);
-                }
-                Err(error) => {
-                    let _ = self.release_frame();
-                    return Err(error);
-                }
-            };
-            self.release_frame()?;
-            self.quality = Some(request);
-            self.presented_since_repair = true;
-            // 有些虚拟显示器会把 Rotation 报成 90/270，但 duplication 纹理
-            // 本身已经和 screen 的逻辑尺寸一致；此时再转一次会把 2160x1920
-            // 变成 1920x2160，编码器会拒绝输入。
-            let rotation = if (desc.Width, desc.Height) == (self.screen.width, self.screen.height) {
-                DXGI_MODE_ROTATION_IDENTITY
-            } else {
-                self.rotation
-            };
-            Ok(Some(RawCapture {
-                captured,
-                is_new: true,
-                hdr_metadata: if hdr { self.source_hdr } else { None },
-                rotation,
-                white: self.sdr_white,
-                source_hdr: self.source_hdr,
-                request,
-                lease,
-            }))
+            result
         }
     }
 
@@ -1073,161 +1155,6 @@ impl Duplication {
         );
         self.duplication = Some(duplication);
         Ok(())
-    }
-
-    fn next_frame(
-        &mut self,
-        timeout_ms: u32,
-        quality: i32,
-        cursor_capture: bool,
-        hdr: bool,
-        maximum: (u32, u32),
-    ) -> Result<Option<Frame>> {
-        let request = super::preprocess::Request {
-            quality,
-            maximum,
-            hdr,
-        };
-        unsafe {
-            let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
-            let mut resource = None;
-            // Also covers a frame held by a failed/interrupted prior call.
-            self.release_frame()?;
-            let duplication = self.duplication.as_ref().context("DXGI采集对象缺失")?;
-            match duplication.AcquireNextFrame(timeout_ms.min(50), &mut info, &mut resource) {
-                Ok(()) => self.frame_acquired = true,
-                Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => {
-                    return self.cached_frame(request, cursor_capture, false);
-                }
-                Err(error) => return Err(error).context("桌面采集失效，需要重建所选屏幕采集"),
-            }
-            // Conversion copies into our own texture; no borrowed duplication
-            // surface escapes this call.
-            let captured = std::time::Instant::now();
-            let cursor_update = self.cursor.update(&self.device, duplication, &info);
-            let result = (|| -> Result<Option<Frame>> {
-                cursor_update?;
-                // A successful acquisition can contain only a pointer update.
-                // Its desktop surface is not a newly presented image (and can
-                // be black immediately after duplication creation/recovery).
-                // Keep our last owned desktop; composite the new pointer only
-                // when the viewer requested an embedded cursor.
-                if info.LastPresentTime == 0 {
-                    return self.cached_frame(
-                        request,
-                        cursor_capture,
-                        info.LastMouseUpdateTime != 0,
-                    );
-                }
-                let texture: ID3D11Texture2D = resource.context("采集未返回纹理")?.cast()?;
-                let mut desc = D3D11_TEXTURE2D_DESC::default();
-                texture.GetDesc(&mut desc);
-                ensure!(
-                    matches!(
-                        desc.Format,
-                        DXGI_FORMAT_B8G8R8A8_UNORM
-                            | DXGI_FORMAT_R8G8B8A8_UNORM
-                            | DXGI_FORMAT_R16G16B16A16_FLOAT
-                    ),
-                    "不支持的采集像素格式：{}",
-                    desc.Format.0
-                );
-                ensure!(
-                    desc.Width > 0
-                        && desc.Height > 0
-                        && desc.Width <= 16384
-                        && desc.Height <= 16384,
-                    "采集纹理尺寸无效"
-                );
-                let texture = self.converter.convert(
-                    &self.device,
-                    &self.context,
-                    &texture,
-                    desc,
-                    self.rotation,
-                    self.sdr_white,
-                    self.source_hdr,
-                    request,
-                    if cursor_capture {
-                        self.cursor.render(self.screen.width, self.screen.height)
-                    } else {
-                        None
-                    },
-                )?;
-                texture.GetDesc(&mut desc);
-                self.quality = Some(request);
-                self.cursor_capture = cursor_capture;
-                self.presented_since_repair = true;
-                Ok(Some(Frame {
-                    width: desc.Width,
-                    height: desc.Height,
-                    texture,
-                    captured,
-                    _storage: None,
-                    is_new: true,
-                    hdr_metadata: if hdr { self.source_hdr } else { None },
-                }))
-            })();
-            // Submit the copy before returning the duplication lease. DWM can
-            // then prepare the next image while our owned texture is encoded,
-            // instead of adding that copy/wait after synchronous encoding.
-            self.context.Flush();
-            let released = self.release_frame();
-            if result.is_ok() {
-                released?;
-            }
-            result
-        }
-    }
-
-    fn cached_frame(
-        &mut self,
-        request: super::preprocess::Request,
-        cursor_capture: bool,
-        pointer_changed: bool,
-    ) -> Result<Option<Frame>> {
-        let pointer_changed = cursor_capture && pointer_changed;
-        if self.quality == Some(request)
-            && self.cursor_capture == cursor_capture
-            && !pointer_changed
-        {
-            return Ok(None);
-        }
-        // Quality/cursor changes must also work on an otherwise static desktop.
-        // Before the first real image, there is nothing safe to compose.
-        let Some((texture, desc)) = self.converter.last_input() else {
-            return Ok(None);
-        };
-        let texture = self.converter.convert(
-            &self.device,
-            &self.context,
-            &texture,
-            desc,
-            self.rotation,
-            self.sdr_white,
-            self.source_hdr,
-            request,
-            if cursor_capture {
-                self.cursor.render(self.screen.width, self.screen.height)
-            } else {
-                None
-            },
-        )?;
-        let mut output = D3D11_TEXTURE2D_DESC::default();
-        unsafe {
-            texture.GetDesc(&mut output);
-        }
-        self.quality = Some(request);
-        self.cursor_capture = cursor_capture;
-        Ok(Some(Frame {
-            width: output.Width,
-            height: output.Height,
-            texture,
-            captured: std::time::Instant::now(),
-            is_new: pointer_changed,
-            _storage: None,
-            hdr_metadata: if request.hdr { self.source_hdr } else { None },
-        }))
     }
 
     fn release_frame(&mut self) -> Result<()> {

@@ -10,26 +10,59 @@ pub(crate) struct Request {
     pub hdr: bool,
 }
 
+#[derive(Default)]
+struct InputTexture {
+    layout: (u32, u32, DXGI_FORMAT),
+    resource: Option<(ID3D11Texture2D, ID3D11ShaderResourceView)>,
+}
+impl InputTexture {
+    /// Keep a capture-device snapshot after the duplication surface is released.
+    fn save(
+        &mut self,
+        device: &ID3D11Device,
+        context: &ID3D11DeviceContext,
+        texture: &ID3D11Texture2D,
+        desc: D3D11_TEXTURE2D_DESC,
+    ) -> Result<&(ID3D11Texture2D, ID3D11ShaderResourceView)> {
+        unsafe {
+            if self.layout != (desc.Width, desc.Height, desc.Format) {
+                let mut copy = None;
+                let mut view = None;
+                device.CreateTexture2D(
+                    &D3D11_TEXTURE2D_DESC {
+                        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                        Usage: D3D11_USAGE_DEFAULT,
+                        CPUAccessFlags: 0,
+                        MiscFlags: 0,
+                        ..desc
+                    },
+                    None,
+                    Some(&mut copy),
+                )?;
+                let copy = copy.context("采集shader纹理")?;
+                device.CreateShaderResourceView(&copy, None, Some(&mut view))?;
+                self.resource = Some((copy, view.context("采集shader视图")?));
+                self.layout = (desc.Width, desc.Height, desc.Format);
+            }
+            let input = self.resource.as_ref().context("采集转换输入缺失")?;
+            if input.0 != *texture {
+                context.CopyResource(&input.0, texture);
+            }
+            Ok(input)
+        }
+    }
+}
 pub(crate) struct Converter {
     timing: Option<super::gpu_diagnostics::Timing>,
     vertex: ID3D11VertexShader,
     pixel: ID3D11PixelShader,
     sampler: ID3D11SamplerState,
     params: ID3D11Buffer,
-    input: Option<(ID3D11Texture2D, ID3D11ShaderResourceView)>,
+    input: InputTexture,
     output: Option<(ID3D11Texture2D, ID3D11RenderTargetView)>,
-    source: (u32, u32, DXGI_FORMAT),
     destination: (u32, u32, bool),
 }
 impl Converter {
-    pub(crate) fn last_input(&self) -> Option<(ID3D11Texture2D, D3D11_TEXTURE2D_DESC)> {
-        let texture = self.input.as_ref()?.0.clone();
-        let mut desc = D3D11_TEXTURE2D_DESC::default();
-        unsafe {
-            texture.GetDesc(&mut desc);
-        }
-        Some((texture, desc))
-    }
     pub(crate) fn new(device: &ID3D11Device) -> Result<Self> {
         unsafe {
             let (mut vertex, mut pixel, mut sampler, mut params) = (None, None, None, None);
@@ -62,13 +95,22 @@ impl Converter {
                 pixel: pixel.context("采集pixel shader")?,
                 sampler: sampler.context("采集sampler")?,
                 params: params.context("采集参数buffer")?,
-                input: None,
+                input: InputTexture::default(),
                 output: None,
-                source: (0, 0, DXGI_FORMAT_UNKNOWN),
                 destination: (0, 0, false),
             })
         }
     }
+    pub(super) fn snapshot(
+        &mut self,
+        device: &ID3D11Device,
+        context: &ID3D11DeviceContext,
+        texture: &ID3D11Texture2D,
+        desc: D3D11_TEXTURE2D_DESC,
+    ) -> Result<ID3D11Texture2D> {
+        Ok(self.input.save(device, context, texture, desc)?.0.clone())
+    }
+
     pub(crate) fn convert(
         &mut self,
         device: &ID3D11Device,
@@ -83,25 +125,7 @@ impl Converter {
     ) -> Result<ID3D11Texture2D> {
         let _span = self.timing.as_mut().and_then(|timer| timer.begin());
         unsafe {
-            if self.source != (desc.Width, desc.Height, desc.Format) {
-                let mut copy = None;
-                let mut view = None;
-                device.CreateTexture2D(
-                    &D3D11_TEXTURE2D_DESC {
-                        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
-                        Usage: D3D11_USAGE_DEFAULT,
-                        CPUAccessFlags: 0,
-                        MiscFlags: 0,
-                        ..desc
-                    },
-                    None,
-                    Some(&mut copy),
-                )?;
-                let copy = copy.context("采集shader纹理")?;
-                device.CreateShaderResourceView(&copy, None, Some(&mut view))?;
-                self.input = Some((copy, view.context("采集shader视图")?));
-                self.source = (desc.Width, desc.Height, desc.Format);
-            }
+            let input = self.input.save(device, context, texture, desc)?;
             let rotated = if matches!(
                 rotation,
                 DXGI_MODE_ROTATION_ROTATE90 | DXGI_MODE_ROTATION_ROTATE270
@@ -113,10 +137,6 @@ impl Converter {
             let size = super::output_size(rotated.0, rotated.1, request.quality);
             let size = super::fit_size(size.0, size.1, request.maximum);
             let hdr = request.hdr;
-            let input = self.input.as_ref().context("采集转换输入缺失")?;
-            if input.0 != *texture {
-                context.CopyResource(&input.0, texture);
-            }
             // Encode consumes RGB only (alpha is discarded by every backend).
             // Keep our owned snapshot, never return the duplication resource.
             if size == (desc.Width, desc.Height)
@@ -161,7 +181,6 @@ impl Converter {
                 self.output = Some((output, target.context("采集转换目标")?));
                 self.destination = (size.0, size.1, hdr);
             }
-            let input = self.input.as_ref().context("采集转换输入缺失")?;
             let output = self.output.as_ref().context("采集转换输出缺失")?;
             let mut values = [0f32; 12];
             values[..4].copy_from_slice(&[

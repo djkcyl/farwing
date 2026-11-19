@@ -36,6 +36,9 @@ mod real {
     use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 
     struct Shared {
+        // The last desktop revision admitted to this encoder. Zero requests the latest
+        // snapshot again. An older failed job must not invalidate a newer submission.
+        submitted: AtomicU64,
         encoded: AtomicU64,
         encoded_bytes: AtomicU64,
         keyframes: AtomicU64,
@@ -51,6 +54,7 @@ mod real {
     impl Shared {
         fn new() -> Arc<Self> {
             Arc::new(Self {
+                submitted: AtomicU64::new(0),
                 encoded: AtomicU64::new(0),
                 encoded_bytes: AtomicU64::new(0),
                 keyframes: AtomicU64::new(0),
@@ -63,6 +67,11 @@ mod real {
                 send_drops: AtomicU64::new(0),
                 busy: AtomicU64::new(0),
             })
+        }
+        fn retry(&self, revision: u64) {
+            let _ =
+                self.submitted
+                    .compare_exchange(revision, 0, Ordering::AcqRel, Ordering::Acquire);
         }
     }
 
@@ -78,6 +87,8 @@ mod real {
 
     pub(crate) struct Pipeline {
         ring: crate::platform::transfer::pipeline::Sender,
+        output: tokio::sync::mpsc::Sender<encoder::Encoded>,
+        keyframe: Arc<AtomicBool>,
         tx: Option<SyncSender<Job>>,
         thread: Option<JoinHandle<()>>,
         stats: Arc<Shared>,
@@ -120,6 +131,8 @@ mod real {
             let error = Arc::new(Mutex::new(None));
             let thread_stats = stats.clone();
             let thread_error = error.clone();
+            let output = sender.clone();
+            let keyframe_request = keyframe.clone();
             let thread = std::thread::Builder::new()
                 .name("host-encode".into())
                 .spawn(move || {
@@ -131,13 +144,14 @@ mod real {
                         keyframe,
                         cancel,
                         started,
-                        thread_stats,
+                        thread_stats.clone(),
                         size,
                         format,
                         rate,
                         color,
                     );
                     if let Err(error) = result {
+                        thread_stats.submitted.store(0, Ordering::Release);
                         tracing::warn!(%error, "host encode pipeline thread stopped");
                         let mut slot = thread_error
                             .lock()
@@ -150,6 +164,8 @@ mod real {
             match ready_rx.recv_timeout(Duration::from_secs(10)) {
                 Ok(Ok(ready)) => Ok(Self {
                     ring,
+                    output,
+                    keyframe: keyframe_request,
                     tx: Some(tx),
                     thread: Some(thread),
                     stats,
@@ -181,7 +197,24 @@ mod real {
             hdr: bool,
             maximum: (u32, u32),
         ) -> Result<Option<capture::RawCapture>> {
-            desktop.next_raw(timeout, quality, hdr, maximum, &mut self.ring)
+            anyhow::ensure!(!self.output.is_closed(), "画面发送队列已关闭");
+            let submitted = (self.output.capacity() > 0).then(|| {
+                if self.keyframe.load(Ordering::Acquire) {
+                    0
+                } else {
+                    self.stats.submitted.load(Ordering::Acquire)
+                }
+            });
+            desktop.next_raw(
+                timeout,
+                crate::platform::windows::preprocess::Request {
+                    quality,
+                    hdr,
+                    maximum,
+                },
+                submitted,
+                &mut self.ring,
+            )
         }
 
         pub(crate) fn submit_raw(
@@ -189,10 +222,13 @@ mod real {
             capture: capture::RawCapture,
             rate: Rate,
         ) -> Result<bool> {
+            let revision = capture.revision;
+            self.stats.submitted.store(revision, Ordering::Release);
             let job = Job { capture, rate };
             match self.tx.as_ref().expect("tx until drop").try_send(job) {
                 Ok(()) => Ok(true),
                 Err(std::sync::mpsc::TrySendError::Full(job)) => {
+                    self.stats.retry(job.capture.revision);
                     drop(job);
                     self.stats.busy.fetch_add(1, Ordering::Relaxed);
                     Ok(false)
@@ -293,7 +329,7 @@ mod real {
             anyhow::ensure!(!sender.is_closed(), "画面发送队列已关闭");
             if sender.capacity() == 0 {
                 stats.send_drops.fetch_add(1, Ordering::Relaxed);
-                drop(job);
+                stats.retry(job.capture.revision);
                 continue;
             }
             job.capture.lease.wait()?;
@@ -351,6 +387,12 @@ mod real {
             stats
                 .encoded
                 .fetch_add(encoded.len() as u64, Ordering::Relaxed);
+            if !encoded
+                .iter()
+                .any(|frame| frame.timestamp_100ns == timestamp_100ns)
+            {
+                stats.retry(job.capture.revision);
+            }
             let encode_finished = Instant::now();
             for mut frame in encoded {
                 stats
@@ -400,6 +442,7 @@ mod real {
                     Ok(()) => {}
                     Err(tokio::sync::mpsc::error::TrySendError::Full(frame)) => {
                         stats.send_drops.fetch_add(1, Ordering::Relaxed);
+                        stats.retry(job.capture.revision);
                         keyframe.store(true, Ordering::Release);
                         drop(frame);
                     }

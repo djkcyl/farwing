@@ -150,7 +150,10 @@ impl Sender {
             slot.leased.store(true, Ordering::Release);
             slot.failed.store(true, Ordering::Release);
             slot.abandoned.store(false, Ordering::Release);
-            self.context.CopyResource(&slot.write, image);
+            // A static refresh can reuse the capture side of this very slot.
+            if slot.write != *image {
+                self.context.CopyResource(&slot.write, image);
+            }
             let signalled = self.context.Signal(&slot.ready, value);
             self.context.Flush();
             signalled?;
@@ -174,6 +177,10 @@ impl FrameLease {
         }
         self.waited = true;
         Ok(())
+    }
+
+    pub(crate) fn source_texture(&self) -> &ID3D11Texture2D {
+        &self.slot.write
     }
 
     pub(crate) fn texture(&self) -> &ID3D11Texture2D {

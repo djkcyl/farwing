@@ -351,6 +351,10 @@ pub(super) fn capture_loop(
         if pipeline_target != pipeline_key {
             drop(pipeline.take());
             pipeline_key = None;
+            // Only the capture source knows the latest desktop across encoding modes.
+            cached = None;
+            last_frame = None;
+            next_frame_at = None;
             // 进出流水线都等于换了一个编码器会话：串行那个会话要么让位给流水线，
             // 要么切回来时它的参考帧已经被流水线送出的画面顶掉了，必须重建并从
             // 关键帧起播。
@@ -433,7 +437,13 @@ pub(super) fn capture_loop(
             metrics.capture.record(capture_started.elapsed());
             // 采集源被换掉（分辨率/后端/设备变了）时共享环作废：重建流水线，
             // 别把旧设备的纹理环继续往里灌。
-            if desktop.as_ref().map(|d| d.generation) != Some(generation_before) {
+            let capture_state = desktop.as_ref().context("缺少采集源")?;
+            screen = capture_state.screen.clone();
+            if capture_state.generation != generation_before {
+                generation = capture_state.generation;
+                cached = None;
+                last_frame = None;
+                next_frame_at = None;
                 pipeline = None;
                 pipeline_key = None;
                 encoder = None;
@@ -445,15 +455,11 @@ pub(super) fn capture_loop(
             }
             // 画面不在采集线程合成光标，指针通道必须继续喂；否则内嵌光标关掉
             // 时主控的光标位置会停住。
-            let sampled = desktop.as_ref().context("缺少采集源")?.cursor.clone();
-            *lock(&pointer) = sampled;
-            // 采集源自己刷新过 screen（分辨率/方向变了）时，下一轮的编码尺寸要
-            // 跟着重算，否则流水线会拿旧尺寸的编码器去收新尺寸的画面。
-            screen = desktop.as_ref().context("缺少采集源")?.screen.clone();
+            *lock(&pointer) = capture_state.cursor.clone();
             let Some(raw) = raw? else {
                 continue;
             };
-            metrics.new_frames += 1;
+            metrics.new_frames += u64::from(raw.is_new);
             let size = pipeline_key.context("流水线缺少编码尺寸")?.0;
             // 目标帧率低于刷新率时按截止时间丢帧，截止时间每次只推进一个周期：
             // 144Hz 屏上 60fps 才会 2/3 帧交替取（60fps），而不是每帧都等到
