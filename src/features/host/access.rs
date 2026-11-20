@@ -388,6 +388,22 @@ impl Handle {
         handle.guest = true;
         handle
     }
+    pub(crate) fn self_host(device: &str) -> anyhow::Result<Self> {
+        crate::account::api::validate_device_id(device)?;
+        let handle = Self::load_store(
+            "self-host",
+            device,
+            settings::Store::new("self-host", device),
+        );
+        // The self-host CLI currently exposes desktop video and input only.
+        // Optional file, port, power and wake capabilities stay disabled.
+        handle.set_file_transfer_allowed(false)?;
+        handle.set_port_mapping_allowed(false)?;
+        handle.set_power_allowed(false)?;
+        handle.set_wol_allowed(false)?;
+        handle.set_allowed(true);
+        Ok(handle)
+    }
     pub(crate) fn is_guest(&self) -> bool {
         self.guest
     }

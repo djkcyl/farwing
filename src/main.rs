@@ -152,6 +152,18 @@ enum Commands {
         #[arg(long)]
         transport: Option<media::TransportChoice>,
     },
+    /// Pair with and run a foreground host for a configured self-host service
+    SelfHost {
+        /// Self-host HTTP(S) origin; plain HTTP is accepted only on loopback
+        #[arg(long)]
+        server_url: String,
+        /// Pairing code required only on first use of this server origin
+        #[arg(long)]
+        pair_code: Option<String>,
+        /// Display name sent during first pairing
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -374,6 +386,11 @@ fn main() -> Result<()> {
             }
             tokio::runtime::Runtime::new()?.block_on(connect_device(device, options, device_id))
         }
+        Commands::SelfHost {
+            server_url,
+            pair_code,
+            name,
+        } => openuuyc::application::self_host(server_url, pair_code, name),
     };
     if let Err(error) = &result {
         tracing::error!(target: "openuuyc", error = %format_args!("{error:#}"), "application stopped with an error");

@@ -40,6 +40,16 @@ const RECONNECT_KEY_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 const RECONNECT_KEY_MAX_AGE: Duration = Duration::from_secs(300);
 const RECONNECT_KEY_ACK_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_SDP_BYTES: u64 = 1024 * 1024;
+
+pub(crate) fn is_loopback_host(host: &str) -> bool {
+    use std::net::IpAddr;
+    if let Ok(address) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
+        return address.is_loopback();
+    }
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == "localhost" || host.ends_with(".localhost")
+}
+
 pub(crate) mod host;
 mod tls;
 mod transport;

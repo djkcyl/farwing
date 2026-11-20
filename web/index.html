@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="dark light">
+    <meta name="referrer" content="no-referrer">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' ws: wss:; media-src 'self' blob:; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+    <title>OpenUUYC · 浏览器主控</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="OpenUUYC 浏览器主控首页">
+          <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+          <span class="brand-copy"><strong>OpenUUYC</strong><small>本地远程控制</small></span>
+        </a>
+        <div class="topbar-right">
+          <span class="security-note"><span class="lock-icon" aria-hidden="true"></span>自托管服务</span>
+          <button id="forget-button" class="button button-quiet button-small" type="button" hidden>忘记此浏览器</button>
+        </div>
+      </header>
+
+      <main>
+        <section id="welcome-panel" class="welcome-panel">
+          <div class="welcome-copy">
+            <div class="eyebrow"><span class="eyebrow-dot"></span>浏览器主控</div>
+            <h1>连接 Windows 主机</h1>
+            <p>使用本机自托管服务连接你已授权的 Windows 设备。设备令牌只保存在当前浏览器和站点来源中。</p>
+          </div>
+          <form id="pair-form" class="pair-card" autocomplete="on">
+            <div class="card-heading">
+              <div><span class="step-label">首次使用</span><h2>绑定控制器</h2></div>
+              <span class="card-icon" aria-hidden="true">＋</span>
+            </div>
+            <label for="controller-name">浏览器名称</label>
+            <input id="controller-name" name="name" type="text" maxlength="80" value="浏览器主控" autocomplete="nickname" required>
+            <label for="pair-code">控制器配对码</label>
+            <div class="input-with-icon"><span aria-hidden="true">⌘</span><input id="pair-code" name="code" type="text" inputmode="text" maxlength="128" autocomplete="one-time-code" placeholder="输入本机生成的配对码" required></div>
+            <button class="button button-primary button-full" type="submit"><span>绑定此浏览器</span><span aria-hidden="true">→</span></button>
+            <p class="form-footnote">配对码由运行服务的本机操作员生成，一次有效。</p>
+            <p id="pair-error" class="inline-error" role="alert" hidden></p>
+          </form>
+        </section>
+
+        <section id="devices-panel" class="devices-panel" hidden>
+          <div class="section-heading">
+            <div><div class="eyebrow"><span class="eyebrow-dot"></span>你的设备</div><h2>选择一台设备</h2><p id="device-hint">只显示已授权给此控制器的主机。</p></div>
+            <button id="refresh-button" class="button button-quiet" type="button"><span class="refresh-symbol" aria-hidden="true">↻</span>刷新</button>
+          </div>
+          <div id="devices-list" class="device-list" aria-live="polite"></div>
+          <p id="devices-error" class="inline-error" role="alert" hidden></p>
+        </section>
+
+        <section id="session-panel" class="session-panel" hidden>
+          <div class="session-heading">
+            <div class="session-title"><button id="back-button" class="icon-button" type="button" aria-label="返回设备列表">←</button><div><div class="eyebrow"><span class="eyebrow-dot"></span>远程会话</div><h2 id="session-device-name">连接设备</h2></div></div>
+            <div class="session-actions"><span id="connection-status" class="status-pill" data-state="idle"><span class="status-dot"></span><span class="status-text">未连接</span></span><button id="disconnect-button" class="button button-danger button-small" type="button" disabled>断开连接</button></div>
+          </div>
+          <div class="stage-layout">
+            <div class="stage-column">
+              <div id="video-stage" class="video-stage" tabindex="-1">
+                <div id="stage-placeholder" class="stage-placeholder"><span class="loading-ring" aria-hidden="true"></span><strong>等待连接</strong><span>远端画面会显示在这里</span></div>
+                <video id="remote-video" aria-label="远程桌面画面" playsinline autoplay muted tabindex="0" data-state="idle"></video>
+                <div class="stage-chrome"><span id="video-resolution" class="resolution-chip">等待画面</span></div>
+                <div class="audio-hint" id="audio-hint" hidden>Safari 需要点击声音按钮后播放音频</div>
+              </div>
+              <div class="stage-toolbar">
+                <div class="toolbar-copy"><span class="toolbar-title">控制台</span><span>点按画面定位；点击后发送单击。点击画面再使用键盘。</span></div>
+                <button id="audio-button" class="button button-quiet button-small" type="button" aria-pressed="false" disabled><span class="audio-symbol" aria-hidden="true">◖</span><span>开启声音</span></button>
+              </div>
+              <div class="text-entry">
+                <label class="sr-only" for="keyboard-input">发送文字到远程桌面</label>
+                <input id="keyboard-input" type="text" maxlength="4096" placeholder="输入文字并发送到远程桌面…" autocomplete="off" disabled>
+                <button id="send-text-button" class="button button-primary button-small" type="button" disabled>发送 <span aria-hidden="true">↗</span></button>
+              </div>
+              <p class="keyboard-note"><span class="keycap">⌨</span> 画面聚焦时可发送按键。输入文字请使用上方文字栏。</p>
+            </div>
+            <aside class="session-sidecard">
+              <div class="sidecard-top"><span class="sidecard-icon" aria-hidden="true">◎</span><span class="step-label">连接进度</span></div>
+              <h3 id="stage-state-title">尚未开始</h3>
+              <p id="stage-state-detail">选择连接后，浏览器会协商实时音视频通道。</p>
+              <div class="state-steps" aria-label="连接进度">
+                <div class="state-step" data-step="signaling"><span class="step-check" aria-hidden="true"></span><div><strong>建立信令连接</strong><small>同源 WebSocket</small></div></div>
+                <div class="state-step" data-step="media"><span class="step-check" aria-hidden="true"></span><div><strong>协商音视频与控制</strong><small>H.264 · Opus · 键鼠</small></div></div>
+                <div class="state-step" data-step="frame"><span class="step-check" aria-hidden="true"></span><div><strong>解码远端首帧</strong><small>确认画面已显示</small></div></div>
+              </div>
+              <div class="sidecard-foot"><span class="lock-icon" aria-hidden="true"></span><span>浏览器与远端主机通过 WebRTC 传输音视频和控制数据。</span></div>
+            </aside>
+          </div>
+          <p id="session-error" class="inline-error session-error" role="alert" hidden></p>
+        </section>
+
+      </main>
+
+      <footer class="footer"><span>OpenUUYC · 浏览器主控</span></footer>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>

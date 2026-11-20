@@ -20,6 +20,8 @@ captures/
 !/drivers/README.md
 !/drivers/display/UPSTREAM.md
 !/drivers/audio/UPSTREAM.md
+!/server/README.md
+!/ios/README.md
 !**/LICENSE*.md
 !**/COPYING*.md
 !**/NOTICE*.md

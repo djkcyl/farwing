@@ -254,7 +254,13 @@ pub(super) fn signaling_request(
         Url::parse(&format!("wss://{endpoint}"))
     }
     .map_err(|_| anyhow!("room response contained an invalid signaling endpoint"))?;
-    if url.scheme() != "wss" || url.host_str().is_none() {
+    if url.host_str().is_none()
+        || (url.scheme() != "wss"
+            && !(url.scheme() == "ws"
+                && url
+                    .host_str()
+                    .is_some_and(super::is_loopback_host)))
+    {
         bail!("room response contained an unsupported signaling endpoint");
     }
     if url.path().is_empty() || url.path() == "/" {

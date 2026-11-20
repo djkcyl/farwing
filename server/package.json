@@ -1,0 +1,21 @@
+{
+  "name": "openuuyc-self-host-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "pair": "node cli.js",
+    "test": "node --test --test-timeout=10000"
+  },
+  "dependencies": {
+    "socket.io": "4.8.4",
+    "ws": "8.23.0"
+  },
+  "devDependencies": {
+    "socket.io-client": "4.8.4"
+  }
+}

@@ -8,13 +8,20 @@ use super::negotiation::signaling_request;
 use super::wire::{EnginePacket, SocketPacket, decode, encode_event, resolve_binary_event};
 use super::{PendingBinaryEvent, SignalPushHandler, SignalRole};
 use crate::account::api::RoomSession;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use std::collections::{BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    pin::Pin,
+    task::{Context as TaskContext, Poll},
+};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::{TcpStream, lookup_host};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::{TcpStream, lookup_host},
+};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout};
@@ -27,8 +34,59 @@ use tokio_tungstenite::{WebSocketStream, client_async};
 const IO_STAGE_TIMEOUT: Duration = Duration::from_secs(5);
 const NAMESPACE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
-type Socket = WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>;
+type Socket = WebSocketStream<SignalStream>;
 type Reader = SplitStream<Socket>;
+
+enum SignalStream {
+    Plain(TcpStream),
+    Tls(tokio_rustls::client::TlsStream<TcpStream>),
+}
+
+impl AsyncRead for SignalStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(stream) => Pin::new(stream).poll_read(cx, buffer),
+            Self::Tls(stream) => Pin::new(stream).poll_read(cx, buffer),
+        }
+    }
+}
+
+impl AsyncWrite for SignalStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            Self::Plain(stream) => Pin::new(stream).poll_write(cx, buffer),
+            Self::Tls(stream) => Pin::new(stream).poll_write(cx, buffer),
+        }
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(stream) => Pin::new(stream).poll_flush(cx),
+            Self::Tls(stream) => Pin::new(stream).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(stream) => Pin::new(stream).poll_shutdown(cx),
+            Self::Tls(stream) => Pin::new(stream).poll_shutdown(cx),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SocketState {
@@ -277,9 +335,20 @@ impl Worker {
             .iter()
             .map(|endpoint| endpoint.url.clone())
             .collect::<Vec<_>>();
-        let tls = tokio::task::spawn_blocking(move || super::tls::client_config(&endpoint_roster))
-            .await
-            .context("load signaling TLS roots")??;
+        let tls_roster = endpoint_roster
+            .iter()
+            .filter(|endpoint| endpoint_uses_tls(endpoint))
+            .cloned()
+            .collect::<Vec<_>>();
+        let tls = if tls_roster.is_empty() {
+            None
+        } else {
+            Some(
+                tokio::task::spawn_blocking(move || super::tls::client_config(&tls_roster))
+                    .await
+                    .context("load signaling TLS roots")??,
+            )
+        };
         let max_retries = self.endpoints.len().saturating_mul(2) as u32;
         let initial_delay = self.room.streamer_retry_delta_ms.max(0) as u32;
         let max_delay = initial_delay.max(25_000);
@@ -332,7 +401,7 @@ impl Worker {
                 self.reconnect_key.as_deref(),
             )?;
             tracing::debug!(%endpoint, attempts, controlling = self.controlling, "starting signaling socket connection");
-            let connecting = connect_socket(request, Arc::clone(&tls));
+            let connecting = connect_socket(request, tls.clone());
             tokio::pin!(connecting);
             let result = loop {
                 tokio::select! {
@@ -354,6 +423,9 @@ impl Worker {
             // later namespace ACK (whose endpoint counters are separate).
             attempts = 0;
             match self.connected(socket).await? {
+                SocketEnd::Retry(reason) if self.room.is_local() => {
+                    return Err(SignalFailure::Socket(reason).into());
+                }
                 SocketEnd::Retry(reason) => retry_reason = Some(reason),
                 SocketEnd::Terminal(error) => return Err(error.into()),
                 SocketEnd::Stopped => return Ok(()),
@@ -640,7 +712,19 @@ async fn write_packets(
     Ok(())
 }
 
-async fn connect_socket(request: Request<()>, tls: Arc<rustls::ClientConfig>) -> Result<Socket> {
+fn endpoint_uses_tls(endpoint: &str) -> bool {
+    if endpoint.contains("://") {
+        url::Url::parse(endpoint)
+            .is_ok_and(|url| url.scheme().eq_ignore_ascii_case("wss"))
+    } else {
+        true
+    }
+}
+
+async fn connect_socket(
+    request: Request<()>,
+    tls: Option<Arc<rustls::ClientConfig>>,
+) -> Result<Socket> {
     // Read the actual request header; never log authentication/reconnect tokens.
     let streamer_version = request
         .headers()
@@ -658,7 +742,8 @@ async fn connect_socket(request: Request<()>, tls: Arc<rustls::ClientConfig>) ->
         .context("signaling URL has no host")?
         .trim_matches(['[', ']'])
         .to_owned();
-    let port = request.uri().port_u16().unwrap_or(443);
+    let scheme = request.uri().scheme_str().context("signaling URL has no scheme")?;
+    let port = request.uri().port_u16().unwrap_or(if scheme == "ws" { 80 } else { 443 });
     let addresses = timeout(IO_STAGE_TIMEOUT, lookup_host((host.as_str(), port)))
         .await
         .context("signaling DNS timed out")??
@@ -666,13 +751,22 @@ async fn connect_socket(request: Request<()>, tls: Arc<rustls::ClientConfig>) ->
     let tcp = timeout(IO_STAGE_TIMEOUT, TcpStream::connect(addresses.as_slice()))
         .await
         .context("signaling TCP connect timed out")??;
-    let name = rustls::pki_types::ServerName::try_from(host)
-        .context("invalid signaling TLS server name")?;
-    let connector = tokio_rustls::TlsConnector::from(tls);
-    let tls = timeout(IO_STAGE_TIMEOUT, connector.connect(name, tcp))
-        .await
-        .context("signaling TLS handshake timed out")??;
-    let (socket, response) = timeout(IO_STAGE_TIMEOUT, client_async(request, tls))
+    let stream = match scheme {
+        "ws" if super::is_loopback_host(&host) => SignalStream::Plain(tcp),
+        "wss" => {
+            let name = rustls::pki_types::ServerName::try_from(host)
+                .context("invalid signaling TLS server name")?;
+            let connector = tokio_rustls::TlsConnector::from(
+                tls.context("signaling TLS roots were not loaded")?,
+            );
+            let stream = timeout(IO_STAGE_TIMEOUT, connector.connect(name, tcp))
+                .await
+                .context("signaling TLS handshake timed out")??;
+            SignalStream::Tls(stream)
+        }
+        _ => bail!("unsupported signaling WebSocket scheme"),
+    };
+    let (socket, response) = timeout(IO_STAGE_TIMEOUT, client_async(request, stream))
         .await
         .context("signaling WebSocket opening handshake timed out")??;
     tracing::info!(

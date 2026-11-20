@@ -344,6 +344,14 @@ impl Session {
                         .context("缺少ConnectOptions二进制内容")?
                         .as_slice(),
                 )?;
+                if self.client.is_local() {
+                    anyhow::ensure!(
+                        options.kind == 1
+                            && options.connect_type == 1
+                            && matches!(options.client_type, 1 | 3),
+                        "self-host mode only accepts iOS or web desktop viewing"
+                    );
+                }
                 let file_only = options.kind == 5;
                 let ports_only = options.kind == 9;
                 let data_only = file_only || ports_only;
@@ -368,21 +376,30 @@ impl Session {
                 let audio_control = streamer
                     .get("openuuyc_audio_control")
                     .and_then(Value::as_u64)
-                    == Some(1);
+                    == Some(1)
+                    && !self.client.is_local();
                 let diagnostics_extension =
-                    streamer.get("openuuyc_diagnostics").and_then(Value::as_u64) == Some(1);
+                    streamer.get("openuuyc_diagnostics").and_then(Value::as_u64) == Some(1)
+                        && !self.client.is_local();
                 let annotation_extension =
-                    streamer.get("openuuyc_annotation").and_then(Value::as_u64) == Some(1);
+                    streamer.get("openuuyc_annotation").and_then(Value::as_u64) == Some(1)
+                        && !self.client.is_local();
                 let display_geometry = streamer
                     .get("openuuyc_display_geometry")
                     .and_then(Value::as_u64)
-                    == Some(1);
+                    == Some(1)
+                    && !self.client.is_local();
                 let drag_extension =
-                    streamer.get("openuuyc_drag_drop").and_then(Value::as_u64) == Some(1);
+                    streamer.get("openuuyc_drag_drop").and_then(Value::as_u64) == Some(1)
+                        && !self.client.is_local();
                 let audio_only = streamer
                     .get("openuuyc_audio_only")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
+                anyhow::ensure!(
+                    !self.client.is_local() || !audio_only,
+                    "self-host mode only accepts desktop video"
+                );
                 tracing::info!(client_type=options.client_type,kind=options.kind,connect_type=options.connect_type,
                     decoders=?options.decoders,formats=?remote.video_codec_capability,
                     "host incoming media capabilities");
@@ -438,7 +455,7 @@ impl Session {
                 owner.controller(&options.device_id, &client_id);
                 let cancel = tokio_util::sync::CancellationToken::new();
                 let lease = owner.with_cancellation(cancel.clone());
-                let update_resume = (!audio_only && !data_only)
+                let update_resume = (!self.client.is_local() && !audio_only && !data_only)
                     .then(|| {
                         crate::features::host::update_resume::Context::new(
                             lease.display_scope(),
@@ -457,6 +474,16 @@ impl Session {
                     .unwrap_or(false);
                 let network = crate::features::host::network::Policy::from_signal(value);
                 let configuration_client = self.client.clone();
+                let clipboard_level = if self.client.is_local() {
+                    0
+                } else {
+                    options.clipboard_level()
+                };
+                let file_capabilities = if self.client.is_local() {
+                    crate::features::file_transfer::host::Capabilities::default()
+                } else {
+                    options.file_capabilities()
+                };
                 let task = tokio::spawn(async move {
                     let preparation_started = std::time::Instant::now();
                     let result = async {
@@ -546,8 +573,8 @@ impl Session {
                             crate::protocol::peer_platform::PeerPlatform::from_connect_client_type(
                                 options.client_type,
                             ),
-                            options.clipboard_level(),
-                            options.file_capabilities(),
+                            clipboard_level,
+                            file_capabilities,
                             data_only,
                             update_resume,
                             crate::protocol::entitlements::Schedule::parse(&options.entitlement_data)

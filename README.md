@@ -73,6 +73,29 @@ OpenUUYC 是用 Rust 编写的 UU 远程第三方 Windows 客户端，支持主�
 
 测试启动会降低驱动加载保护，程序不会自动修改这些设置。
 
+## 自托管远程连接
+
+可运行自托管信令服务，让 Windows 主机与浏览器或 iOS 主控连接。先安装 Node.js 22.13 或更新版本，再启动服务：
+
+```sh
+npm --prefix server ci
+npm --prefix server start
+```
+
+服务会在前台运行。另开终端生成一次性主机配对码：
+
+```sh
+node server/cli.js pair-code --role host
+```
+
+如果服务运行在 Windows 主机本机，可首次运行 `OpenUUYC.exe self-host --server-url http://127.0.0.1:8787 --pair-code 配对码 --name 主机名称`。跨设备访问时请将 `--server-url` 改为服务配置的 HTTPS 地址。配对信息会保存到 Windows Credential Manager，之后可省略配对码。主机配对后，用 `node server/cli.js list` 查找设备 ID，再生成绑定该主机的控制器配对码：
+
+```sh
+node server/cli.js pair-code --role controller --host DEVICE_ID
+```
+
+在 Windows 主机上打开服务地址，用浏览器输入控制器配对码即可绑定。跨设备连接时，主机、浏览器和 iOS 控制器都应使用同一已配置的 HTTPS/WSS 地址。iOS 控制器可在「服务端」中填写地址并配对。自托管服务不会访问网易 UU 或其他上游账号服务。详细配置见[服务端说明](server/README.md)和[iOS 控制器说明](ios/README.md)。
+
 ## 构建
 
 需要 Rust stable（MSVC）、Visual Studio C++ 构建工具、Windows SDK、CMake 和 NASM，命令行工具需加入 PATH。H.264 软件编解码和 AV1 软件解码使用项目 Rust 核心及 SIMD 汇编。

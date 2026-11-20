@@ -18,11 +18,16 @@ pub(crate) struct HostClient {
 enum Identity {
     Account(Arc<AuthenticatedClient>),
     Guest(Arc<Guest>),
+    Local(Arc<Local>),
 }
 struct Guest {
     device: DeviceHandle,
     generation: String,
     api: tokio::sync::Mutex<Option<NrdApi>>,
+    ended: CancellationToken,
+}
+struct Local {
+    api: Arc<super::local_host::LocalHostApi>,
     ended: CancellationToken,
 }
 impl Drop for Guest {
@@ -55,13 +60,26 @@ impl HostClient {
             })),
         })
     }
+    pub(crate) fn local(api: Arc<super::local_host::LocalHostApi>) -> Result<Self> {
+        let host = host::Handle::self_host(api.device_id())?;
+        Ok(Self {
+            host,
+            identity: Identity::Local(Arc::new(Local {
+                api,
+                ended: CancellationToken::new(),
+            })),
+        })
+    }
     pub fn is_guest(&self) -> bool {
         matches!(self.identity, Identity::Guest(_))
+    }
+    pub(crate) fn is_local(&self) -> bool {
+        matches!(self.identity, Identity::Local(_))
     }
     pub(crate) fn membership(&self) -> Option<&crate::account::membership::Membership> {
         match &self.identity {
             Identity::Account(client) => Some(&client.membership),
-            Identity::Guest(_) => None,
+            Identity::Guest(_) | Identity::Local(_) => None,
         }
     }
     pub(crate) async fn refresh_membership_profile(&self) {
@@ -128,13 +146,14 @@ impl HostClient {
     ) -> Option<crate::account::feature_ability::FeatureCatalog> {
         match &self.identity {
             Identity::Account(client) => Some(client.controlling_features()),
-            Identity::Guest(_) => None,
+            Identity::Guest(_) | Identity::Local(_) => None,
         }
     }
     pub fn generation(&self) -> String {
         match &self.identity {
             Identity::Account(c) => c.account_generation(),
             Identity::Guest(c) => c.generation.clone(),
+            Identity::Local(c) => format!("self-host:{}", c.api.device_id()),
         }
     }
     pub fn matches_saved(&self, saved: &str) -> bool {
@@ -154,6 +173,7 @@ impl HostClient {
                     .expect("validated device")
                     .device_id
             }
+            Identity::Local(c) => c.api.device_id().to_owned(),
         }
     }
     pub fn presence_key(&self) -> String {
@@ -166,12 +186,14 @@ impl HostClient {
                     .expect("validated installation")
                     .client_id
             }
+            Identity::Local(c) => format!("self-host:{}", c.api.device_id()),
         }
     }
     pub fn ended(&self) -> CancellationToken {
         match &self.identity {
             Identity::Account(c) => c.ended(),
             Identity::Guest(c) => c.ended.clone(),
+            Identity::Local(c) => c.ended.clone(),
         }
     }
     pub fn is_active(&self) -> bool {
@@ -182,12 +204,13 @@ impl HostClient {
         match &self.identity {
             Identity::Account(c) => c.retire(),
             Identity::Guest(c) => c.ended.cancel(),
+            Identity::Local(c) => c.ended.cancel(),
         }
     }
     pub fn clear_saved_generation(&self) -> Result<()> {
         match &self.identity {
             Identity::Account(c) => c.clear_saved_generation(),
-            Identity::Guest(_) => Ok(()),
+            Identity::Guest(_) | Identity::Local(_) => Ok(()),
         }
     }
     pub async fn close(&self) {
@@ -197,12 +220,16 @@ impl HostClient {
                 c.ended.cancel();
                 c.api.lock().await.take();
             }
+            Identity::Local(c) => c.ended.cancel(),
         }
     }
     async fn request<T, F>(&self, request: impl FnOnce(NrdApi) -> F) -> Result<T>
     where
         F: std::future::Future<Output = Result<ApiEnvelope<T>>>,
     {
+        if self.is_local() {
+            bail!("self-host mode does not use the account API");
+        }
         let Identity::Guest(guest) = &self.identity else {
             let Identity::Account(account) = &self.identity else {
                 unreachable!()
@@ -241,7 +268,7 @@ impl HostClient {
         &self,
         info: crate::features::host::wol::packet::LanInfo,
     ) -> Result<bool> {
-        if self.is_guest() {
+        if self.is_guest() || self.is_local() {
             bail!("游客不支持局域网唤醒协助");
         }
         self.request(|api| async move { api.wol_info(info).await })
@@ -249,7 +276,7 @@ impl HostClient {
             .map(|r| r.support_wol)
     }
     pub(crate) async fn wol_enabled(&self) -> Result<bool> {
-        anyhow::ensure!(!self.is_guest(), "请先登录");
+        anyhow::ensure!(!self.is_guest() && !self.is_local(), "当前模式不支持局域网唤醒");
         let devices = self
             .request(|api| async move { api.list_devices().await })
             .await?;
@@ -260,7 +287,7 @@ impl HostClient {
         Ok(devices.current_device.support_wol)
     }
     pub(crate) async fn set_wol_enabled(&self, enabled: bool) -> Result<()> {
-        anyhow::ensure!(!self.is_guest(), "请先登录");
+        anyhow::ensure!(!self.is_guest() && !self.is_local(), "当前模式不支持局域网唤醒");
         self.request(|api| async move { api.set_wol(enabled).await })
             .await
     }
@@ -270,13 +297,16 @@ impl HostClient {
         code: i32,
         message: String,
     ) -> Result<()> {
-        if self.is_guest() {
-            bail!("游客不支持电源操作");
+        if self.is_guest() || self.is_local() {
+            bail!("当前模式不支持远程电源操作");
         }
         self.request(|api| async move { api.host_power_response(call_id, code, message).await })
             .await
     }
     pub async fn create_host_room(&self, interval: i64) -> Result<RoomSession> {
+        if let Identity::Local(local) = &self.identity {
+            return local.api.create_room().await;
+        }
         let guest = self.is_guest();
         let room: RoomSession = self
             .request(|api| async move {
@@ -298,9 +328,11 @@ impl HostClient {
                     .await?;
                 c.device.set_controllable(allowed).await
             }
+            Identity::Local(c) => c.api.set_controllable(allowed).await,
         }
     }
     pub async fn host_assist_identity(&self) -> Result<String> {
+        anyhow::ensure!(!self.is_local(), "self-host mode does not support assistance");
         let value = self
             .request(|api| async move { api.host_assist_identity().await })
             .await?;
@@ -312,6 +344,7 @@ impl HostClient {
         allowed: bool,
         mode: &'static str,
     ) -> Result<()> {
+        anyhow::ensure!(!self.is_local(), "self-host mode does not support assistance");
         self.request(|api| async move { api.host_assist_mode(id, allowed, mode).await })
             .await?;
         Ok(())
@@ -325,6 +358,7 @@ impl HostClient {
         mode: &'static str,
         confirm: bool,
     ) -> Result<()> {
+        anyhow::ensure!(!self.is_local(), "self-host mode does not support assistance");
         self.request(|api| async move {
             api.host_assist_sign(id, allowed, sign, backup, mode, confirm)
                 .await
@@ -333,11 +367,15 @@ impl HostClient {
         Ok(())
     }
     pub async fn host_assist_confirm(&self, id: &str, allowed: bool, password: bool) -> Result<()> {
+        anyhow::ensure!(!self.is_local(), "self-host mode does not support assistance");
         self.request(|api| async move { api.host_assist_confirm(id, allowed, password).await })
             .await?;
         Ok(())
     }
     pub async fn host_input_configuration(&self) -> Result<host::input::config::Configuration> {
+        if self.is_local() {
+            return Ok(host::input::config::Configuration::default());
+        }
         let configs = self
             .request(|api| async move {
                 api.query_configures(&[

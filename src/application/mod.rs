@@ -74,3 +74,14 @@ pub fn purge_machine_data() -> anyhow::Result<()> {
 pub fn display_recovery(token: &str) -> anyhow::Result<()> {
     crate::features::host::displays::recovery::watch(token)
 }
+
+/// Explicitly pair with and serve a configured self-hosted signaling service.
+pub fn self_host(
+    server_url: String,
+    pair_code: Option<String>,
+    name: Option<String>,
+) -> anyhow::Result<()> {
+    tokio::runtime::Runtime::new()?.block_on(crate::session::local_host::run(
+        server_url, pair_code, name,
+    ))
+}

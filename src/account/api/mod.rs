@@ -652,6 +652,8 @@ pub struct CreateRoomRequest {
 pub struct RoomSession {
     #[serde(default)]
     pub(crate) international_connect: bool,
+    #[serde(skip)]
+    local_session: bool,
     token: String,
     pub ws_connect_timeout_ms: i32,
     pub streamer_retry_delta_ms: i32,
@@ -666,6 +668,7 @@ impl RoomSession {
     pub(crate) fn from_assist(reply: &crate::account::assist::JoinReply) -> Self {
         Self {
             international_connect: reply.international_connect,
+            local_session: false,
             token: reply.token.clone(),
             ws_connect_timeout_ms: reply.ws_connect_timeout_ms,
             streamer_retry_delta_ms: reply.streamer_retry_delta_ms,
@@ -673,6 +676,20 @@ impl RoomSession {
             signaling_list: reply.signaling_list.clone(),
             signaling_server: String::new(),
         }
+    }
+    pub(crate) fn from_local(ticket: String, signaling_url: String) -> Result<Self> {
+        let room = Self {
+            international_connect: false,
+            local_session: true,
+            token: ticket,
+            ws_connect_timeout_ms: 10_000,
+            streamer_retry_delta_ms: 1_000,
+            max_reconnect_delta: 300,
+            signaling_list: Vec::new(),
+            signaling_server: signaling_url,
+        };
+        room.validate()?;
+        Ok(room)
     }
     pub fn validate(&self) -> Result<()> {
         if self.token.is_empty() {
@@ -686,6 +703,10 @@ impl RoomSession {
 
     pub(crate) fn token(&self) -> &str {
         &self.token
+    }
+
+    pub(crate) fn is_local(&self) -> bool {
+        self.local_session
     }
 
     pub(crate) fn signaling_endpoints(&self) -> Vec<&str> {
