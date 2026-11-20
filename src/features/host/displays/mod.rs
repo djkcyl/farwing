@@ -822,7 +822,7 @@ impl State {
     fn driver(&mut self) -> Result<&Heartbeat> {
         if self.driver.is_none() {
             let instance = Driver::device_instance()?;
-            let targets = Topology::query(false)?.targets()?;
+            let targets = Topology::query(false)?.metadata()?;
             for target in targets.iter().filter(|t| t.available) {
                 ensure!(!target.adapter_path.is_empty(), "无法核实显示器的驱动归属");
                 let path = target
@@ -923,7 +923,7 @@ impl State {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let target = loop {
             ensure!(lease.requested(), "显示操作已取消");
-            let targets = Topology::query(false)?.targets()?;
+            let targets = Topology::query(false)?.metadata()?;
             if let Some(target) = targets
                 .into_iter()
                 .find(|t| t.adapter == output.adapter && t.target == output.target)

@@ -157,6 +157,7 @@ impl State {
         dpi: &[(String, u32)],
         temporary: bool,
     ) -> Result<Vec<String>> {
+        let started = std::time::Instant::now();
         let current = Topology::query(true)?.snapshot()?;
         let (restore, restored) = plan_restore(&self.journal, baseline, &current, temporary);
         let unchanged = restore.targets.len() == current.targets.len()
@@ -175,7 +176,9 @@ impl State {
                 );
             }
         }
-        let targets = Topology::query(true)?.targets()?;
+        let layout_ms = started.elapsed().as_millis();
+        let started = std::time::Instant::now();
+        let targets = Topology::query(true)?.metadata()?;
         for (identity, original) in dpi {
             let expected = self
                 .journal
@@ -194,6 +197,11 @@ impl State {
                 }
             }
         }
+        tracing::debug!(
+            layout_ms,
+            dpi_ms = started.elapsed().as_millis(),
+            "host display layout restored"
+        );
         Ok(restored)
     }
     pub(super) fn intend_layout(&mut self, layout: &SavedTopology) -> Result<()> {

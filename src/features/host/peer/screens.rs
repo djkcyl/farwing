@@ -5,7 +5,7 @@ use super::{Published, media};
 use crate::features::host::{
     Lease, VideoConfig, capture, format::Negotiated, lock, track::VideoTrack, transport::Transport,
 };
-use crate::platform::display::topology::{Target, Topology};
+use crate::platform::display::topology::{Target, Topology, modes};
 use anyhow::{Context, Result, ensure};
 use std::{
     collections::BTreeMap,
@@ -24,27 +24,74 @@ use webrtc::{
 
 pub(crate) const TRACK_COUNT: usize = 5;
 
+#[derive(Clone, Copy, Debug)]
+pub(super) enum ModeList {
+    Enumerate,
+    Defer,
+}
+
 pub(super) struct Inventory {
-    targets: Vec<Target>,
-    screens: Vec<capture::Screen>,
+    mode_list: ModeList,
+    screens: Vec<(capture::Screen, Option<Target>)>,
     // Restoration bookkeeping needs a complete, identified layout. A transient
     // failure there must not discard an otherwise valid live screen inventory.
     layout: Result<crate::platform::display::topology::SavedTopology>,
 }
 impl Inventory {
-    pub fn read() -> Result<Self> {
-        let topology = Topology::query(false)?;
+    pub fn read(mode_list: ModeList) -> Result<Self> {
+        let started = std::time::Instant::now();
+        let targets = Topology::query(false)?.metadata()?;
+        let metadata_ms = started.elapsed().as_millis();
+        let started = std::time::Instant::now();
+        let mut screens = capture::screens()?
+            .into_iter()
+            .map(|screen| {
+                let target = targets
+                    .iter()
+                    .find(|target| {
+                        screen
+                            .identity
+                            .as_ref()
+                            .map_or(target.source == screen.device_name, |identity| {
+                                *identity == target.identity
+                            })
+                    })
+                    .cloned();
+                (screen, target)
+            })
+            .collect::<Vec<_>>();
+        let capture_ms = started.elapsed().as_millis();
+        let started = std::time::Instant::now();
+        if matches!(mode_list, ModeList::Enumerate) {
+            for (_, target) in &mut screens {
+                if let Some(target) = target.as_mut().filter(|target| !target.source.is_empty()) {
+                    target.modes = modes(&target.source)?;
+                }
+            }
+        }
+        let modes_ms = started.elapsed().as_millis();
+        let started = std::time::Instant::now();
+        let layout = Topology::query(true).and_then(|topology| topology.snapshot());
+        tracing::debug!(
+            ?mode_list,
+            metadata_ms,
+            capture_ms,
+            modes_ms,
+            layout_ms = started.elapsed().as_millis(),
+            screens = screens.len(),
+            "host display inventory read"
+        );
         Ok(Self {
-            targets: topology.targets()?,
-            screens: capture::screens()?,
-            layout: Topology::query(true).and_then(|topology| topology.snapshot()),
+            mode_list,
+            screens,
+            layout,
         })
     }
-    pub async fn collect(cancel: &CancellationToken) -> Result<Option<Self>> {
+    pub async fn collect(cancel: &CancellationToken, mode_list: ModeList) -> Result<Option<Self>> {
         if cancel.is_cancelled() {
             return Ok(None);
         }
-        let mut task = tokio::task::spawn_blocking(Self::read);
+        let mut task = tokio::task::spawn_blocking(move || Self::read(mode_list));
         tokio::select! {
             biased;
             _=cancel.cancelled()=>{let _=task.await;Ok(None)},
@@ -55,6 +102,7 @@ impl Inventory {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ScreenInfo {
+    pub(super) modes_enumerated: bool,
     pub screen: capture::Screen,
     pub initial: capture::Screen,
     pub target: Option<Target>,
@@ -318,7 +366,15 @@ impl Screens {
             before_super: None,
             headless: Default::default(),
         };
-        state.refresh()?;
+        let started = std::time::Instant::now();
+        let inventory = Inventory::collect(&state.cancel, ModeList::Enumerate)
+            .await?
+            .context("初始显示器枚举已取消")?;
+        state.apply_inventory(inventory)?;
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis(),
+            "host initial screen inventory installed"
+        );
         if let Some(selected) = selected {
             state.start_at(0, selected, initial).await?;
         }
@@ -357,14 +413,14 @@ impl Screens {
         self.entitlements.as_ref().map_or(2, |e| e.quality_limit())
     }
     pub(crate) fn refresh(&mut self) -> Result<()> {
-        self.apply_inventory(Inventory::read()?)
+        self.apply_inventory(Inventory::read(ModeList::Enumerate)?)
     }
     pub(super) fn inventory_revision(&self) -> u64 {
         self.inventory_revision
     }
     fn apply_inventory(&mut self, inventory: Inventory) -> Result<()> {
         let Inventory {
-            targets,
+            mode_list,
             screens,
             layout,
         } = inventory;
@@ -387,18 +443,7 @@ impl Screens {
             }
         }
         let mut catalog = Vec::new();
-        for mut screen in screens {
-            let mut target = targets
-                .iter()
-                .find(|target| {
-                    screen
-                        .identity
-                        .as_ref()
-                        .map_or(target.source == screen.device_name, |identity| {
-                            *identity == target.identity
-                        })
-                })
-                .cloned();
+        for (mut screen, mut target) in screens {
             let (kind, resolution_type) = self.displays.annotate(&mut screen, &mut target)?;
             let initial = self
                 .originals
@@ -406,6 +451,7 @@ impl Screens {
                 .or_insert_with(|| self.displays.initial_screen(&screen))
                 .clone();
             catalog.push(ScreenInfo {
+                modes_enumerated: matches!(mode_list, ModeList::Enumerate),
                 screen,
                 initial,
                 target,
@@ -466,6 +512,9 @@ impl Screens {
         );
         let id = self.prepare_video().await?.unwrap_or(id);
         self.refresh()?;
+        self.start_from_catalog(id).await
+    }
+    async fn start_from_catalog(&mut self, id: i32) -> Result<()> {
         let screen = self.info(id)?.screen;
         self.headless.choose(id);
         if let Some(index) = self.active_slot(id) {
@@ -664,7 +713,7 @@ impl Screens {
     pub(super) async fn maintain(&mut self, revision: u64, inventory: Inventory) -> Result<()> {
         // A user-requested layout operation may have completed during the read.
         // Its newer catalog wins over the late periodic result.
-        if revision != self.inventory_revision {
+        if self.cancel.is_cancelled() || revision != self.inventory_revision {
             return Ok(());
         }
         self.apply_inventory(inventory)?;
