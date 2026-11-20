@@ -1,5 +1,5 @@
 //! Desktop media preparation within an already authorized controlled connection.
-use super::{VideoConfig, capture, encoder, format};
+use super::{VideoConfig, capture, encoder::ProbeCache, format};
 use crate::features::stream_control::publisher;
 use crate::protocol::capability::DeviceCapability;
 use anyhow::{Context, Result, ensure};
@@ -13,22 +13,16 @@ pub(crate) struct Capabilities {
 }
 
 #[derive(Default)]
-pub(super) struct Cache(tokio::sync::Mutex<Option<Arc<Capabilities>>>);
+pub(super) struct Cache(Arc<tokio::sync::Mutex<CacheState>>);
 
-fn same_probe_source(a: &capture::Screen, b: &capture::Screen) -> bool {
-    // Placement, label, protocol ID, DPI and display refresh rate do not change
-    // this 720p/30fps encoder check. Keep actual source/graphics/size/HDR bounds.
-    a.identity == b.identity
-        && a.device_name == b.device_name
-        && a.adapter == b.adapter
-        && a.render_adapter == b.render_adapter
-        && a.width == b.width
-        && a.height == b.height
-        && a.hdr == b.hdr
+#[derive(Default)]
+struct CacheState {
+    encoders: ProbeCache,
+    snapshot: Option<Arc<Capabilities>>,
 }
 impl Cache {
     pub fn snapshot(&self) -> Option<Arc<Capabilities>> {
-        self.0.try_lock().ok()?.clone()
+        self.0.try_lock().ok()?.snapshot.clone()
     }
     pub async fn prepare(
         &self,
@@ -36,63 +30,36 @@ impl Cache {
         gpu_compatibility: bool,
         active: impl Fn() -> bool + Send + 'static,
     ) -> Result<Arc<Capabilities>> {
-        let mut cached = self.0.lock().await;
-        ensure!(active(), "媒体准备已取消");
-        let adapters = tokio::task::spawn_blocking(capture::encoding_adapters).await??;
-        ensure!(active(), "媒体准备已取消");
-        if let Some(capabilities) = cached.as_ref()
-            && same_probe_source(&capabilities.screen, &screen)
-            && capabilities.adapters == adapters
-        {
-            let capabilities = Arc::new(Capabilities {
+        let mut cache = self.0.clone().lock_owned().await;
+        crate::lifecycle::blocking(move |cancel| {
+            let active = || active() && !cancel.is_cancelled();
+            ensure!(active(), "媒体准备已取消");
+            let adapters = capture::encoding_adapters()?;
+            let codecs = cache.encoders.prepare(
+                screen.adapter,
+                screen.render_adapter.unwrap_or(screen.adapter),
+                &adapters,
+                gpu_compatibility,
+                active,
+            )?;
+            ensure!(active(), "媒体准备已取消");
+            let snapshot = Arc::new(Capabilities {
                 screen,
-                codecs: capabilities.codecs.clone(),
+                codecs,
                 adapters,
             });
-            *cached = Some(capabilities.clone());
-            tracing::info!("host media capabilities reused");
-            return Ok(capabilities);
-        }
-        let capabilities = Arc::new(probe(screen, adapters, gpu_compatibility, active).await?);
-        *cached = Some(capabilities.clone());
-        Ok(capabilities)
+            cache.snapshot = Some(snapshot.clone());
+            Ok(snapshot)
+        })
+        .await
+        .context("被控能力检查任务中断")?
     }
     pub async fn replace(&self, value: Option<Capabilities>) {
-        *self.0.lock().await = value.map(Arc::new);
+        self.0.lock().await.snapshot = value.map(Arc::new);
     }
     pub async fn invalidate(&self) {
-        self.0.lock().await.take();
+        *self.0.lock().await = CacheState::default();
     }
-}
-
-async fn probe(
-    screen: capture::Screen,
-    adapters: Vec<capture::EncodingAdapter>,
-    gpu_compatibility: bool,
-    active: impl Fn() -> bool + Send + 'static,
-) -> Result<Capabilities> {
-    crate::lifecycle::blocking(move |cancel| {
-        let active = || active() && !cancel.is_cancelled();
-        let started = std::time::Instant::now();
-        ensure!(active(), "媒体准备已取消");
-        let _runtime = encoder::Runtime::with_gpu_compatibility(gpu_compatibility)?;
-        let mut desktop = capture::Desktop::open_selected(&screen)?;
-        let codecs = encoder::probe(&mut desktop, &active)?;
-        ensure!(active(), "媒体准备已取消");
-        tracing::info!(
-            elapsed_ms = started.elapsed().as_millis(),
-            screen_id = screen.id,
-            capabilities = codecs.len(),
-            "host media capabilities prepared"
-        );
-        Ok(Capabilities {
-            screen,
-            codecs,
-            adapters,
-        })
-    })
-    .await
-    .context("被控能力检查任务中断")?
 }
 
 pub(crate) struct Prepared {
