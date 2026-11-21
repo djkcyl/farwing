@@ -33,15 +33,17 @@
           </div>
           <form id="pair-form" class="pair-card" autocomplete="on">
             <div class="card-heading">
-              <div><span class="step-label">首次使用</span><h2>绑定控制器</h2></div>
+              <div><h2>连接自建服务器</h2></div>
               <span class="card-icon" aria-hidden="true">＋</span>
             </div>
             <label for="controller-name">浏览器名称</label>
             <input id="controller-name" name="name" type="text" maxlength="80" value="浏览器主控" autocomplete="nickname" required>
-            <label for="pair-code">控制器配对码</label>
-            <div class="input-with-icon"><span aria-hidden="true">⌘</span><input id="pair-code" name="code" type="text" inputmode="text" maxlength="128" autocomplete="one-time-code" placeholder="输入本机生成的配对码" required></div>
-            <button class="button button-primary button-full" type="submit"><span>绑定此浏览器</span><span aria-hidden="true">→</span></button>
-            <p class="form-footnote">配对码由运行服务的本机操作员生成，一次有效。</p>
+            <button class="button button-primary button-full" type="submit"><span>查看设备</span><span aria-hidden="true">→</span></button>
+            <details>
+              <summary>使用配对码</summary>
+              <label for="pair-code">控制器配对码</label>
+              <div class="input-with-icon"><input id="pair-code" name="code" type="text" maxlength="128" autocomplete="one-time-code"></div>
+            </details>
             <p id="pair-error" class="inline-error" role="alert" hidden></p>
           </form>
         </section>

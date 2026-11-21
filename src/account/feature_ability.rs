@@ -157,6 +157,7 @@ impl Drop for Job {
 #[derive(Clone)]
 pub(crate) struct FeatureCatalog {
     controlling: bool,
+    self_hosted: bool,
     state: Arc<Mutex<State>>,
     job: Arc<Mutex<Job>>,
     stop: CancellationToken,
@@ -170,6 +171,7 @@ impl FeatureCatalog {
     pub(crate) fn new(controlling: bool) -> Self {
         Self {
             controlling,
+            self_hosted: false,
             state: Arc::new(Mutex::new(State {
                 map: embedded(controlling),
                 online: false,
@@ -184,6 +186,10 @@ impl FeatureCatalog {
     }
 }
 impl FeatureCatalog {
+    pub(crate) fn self_hosted(controlling: bool) -> Self {
+        Self { self_hosted: true, ..Self::new(controlling) }
+    }
+
     pub(crate) fn published(
         &self,
         platform: crate::protocol::peer_platform::PeerPlatform,
@@ -303,13 +309,21 @@ impl FeaturePolicy {
     }
 
     pub(crate) fn supports(&self, feature: Feature) -> bool {
+        if self.catalog.self_hosted && matches!(feature, Feature::EntitlementSync | Feature::ControlledUpdate | Feature::Shutdown | Feature::Reboot) {
+            return false;
+        }
+        let version = if self.catalog.self_hosted && self.platform == 1 {
+            crate::protocol::official_version::CLIENT
+        } else {
+            &self.version
+        };
         if matches!(feature, Feature::MultiScreen) && self.platform == 1 {
             // The Windows multi-screen entry uses this explicit minimum;
             // other supported platforms use the runtime feature table.
-            return parse_version(&self.version).is_some_and(|v| v >= [4, 0, 0, 0]);
+            return parse_version(version).is_some_and(|v| v >= [4, 0, 0, 0]);
         }
         let state = self.catalog.state.lock().unwrap_or_else(|e| e.into_inner());
-        let version = feature_version(&self.version);
+        let version = feature_version(version);
         state
             .map
             .get(&(self.platform, feature.name().to_owned()))

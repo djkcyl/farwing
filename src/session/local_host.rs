@@ -185,7 +185,7 @@ impl LocalHostApi {
     }
 }
 
-fn http_client() -> Result<Client> {
+pub(crate) fn http_client() -> Result<Client> {
     Ok(crate::transport::http_client()
         .https_only(false)
         .no_proxy()
@@ -198,7 +198,7 @@ fn http_client() -> Result<Client> {
         .context("build self-host HTTP client")?)
 }
 
-fn api_base(value: &str) -> Result<Url> {
+pub(crate) fn api_base(value: &str) -> Result<Url> {
     let mut url = Url::parse(value).context("self-host server URL must be absolute")?;
     ensure!(
         matches!(url.scheme(), "http" | "https")
@@ -224,7 +224,7 @@ fn api_base(value: &str) -> Result<Url> {
     Ok(url)
 }
 
-fn signaling_url(base: &Url, value: &str) -> Result<String> {
+pub(crate) fn signaling_url(base: &Url, value: &str) -> Result<String> {
     let url = Url::parse(value).context("self-host service returned an invalid signaling URL")?;
     let expected_scheme = if base.scheme() == "https" { "wss" } else { "ws" };
     ensure!(

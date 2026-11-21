@@ -207,6 +207,11 @@ struct DeviceCenterApp {
     login_status: String,
     login_qr: Option<egui::TextureHandle>,
     login_error: Option<String>,
+    server_address: String,
+    server_input: String,
+    server_pending: bool,
+    server_error: Option<String>,
+    show_official_login: bool,
 }
 
 impl DeviceCenterApp {
@@ -267,6 +272,11 @@ impl DeviceCenterApp {
             login_status: String::new(),
             login_qr: None,
             login_error: None,
+            server_address: String::new(),
+            server_input: String::new(),
+            server_pending: false,
+            server_error: None,
+            show_official_login: false,
         }
     }
 
@@ -317,6 +327,35 @@ impl DeviceCenterApp {
                             self.status = StatusMessage::error(error)
                         }
                         Err(_) => (),
+                    }
+                }
+                GuiEvent::ServerLoaded(address) => {
+                    self.server_input = address.clone();
+                    self.server_address = address;
+                }
+                GuiEvent::ServerChanged(generation, result) => {
+                    self.server_pending = false;
+                    match result {
+                        Ok(address) => {
+                            self.show_official_login = address.is_empty();
+                            self.server_input = address.clone();
+                            self.server_address = address;
+                            self.login_generation = generation;
+                            self.cancel_login();
+                            self.phone.clear_private();
+                            self.clear_catalog();
+                            self.devices = None;
+                            self.host = None;
+                            self.selected_device_id = None;
+                            self.presence = PresenceState::Offline;
+                            self.refresh_pending = false;
+                            self.login_error = None;
+                            self.login_restoring = true;
+                            self.startup_stage = StartupStage::Credentials;
+                            self.startup_stage_since = Instant::now();
+                            self.center_ui.backend_changed();
+                        }
+                        Err(error) => self.server_error = Some(error),
                     }
                 }
                 GuiEvent::Startup(generation, stage) => {
@@ -746,6 +785,21 @@ impl DeviceCenterApp {
         {
             let change = self.queued_mutation.take().unwrap();
             self.send_mutation(change);
+        }
+    }
+
+    fn set_server(&mut self, address: String) {
+        if self.server_pending || self.logout_pending || self.has_viewers()
+            || self.mutation_pending || self.center_ui.components.busy()
+            || self.host.as_ref().is_some_and(|host| host.status().connection.is_some())
+        {
+            return;
+        }
+        self.server_error = None;
+        let generation = self.login_generation.wrapping_add(1);
+        match self.worker.commands.send(GuiCommand::SetServer { generation, address }) {
+            Ok(()) => self.server_pending = true,
+            Err(_) => self.server_error = Some("设备后台服务已经停止".into()),
         }
     }
 

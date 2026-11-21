@@ -482,6 +482,7 @@ impl ControllerConnection {
                 .collect(),
             transport,
             profile,
+            account.is_self_hosted(),
         )
         .await
         {

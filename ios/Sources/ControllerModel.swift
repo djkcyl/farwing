@@ -23,7 +23,7 @@ final class ControllerModel: ObservableObject {
     @Published private(set) var isBusy = false
     @Published private(set) var isStartingSession = false
     @Published private(set) var connectionStatus = "尚未连接"
-    @Published private(set) var connectionDetail = "输入 HTTPS 服务端地址后配对。"
+    @Published private(set) var connectionDetail = "输入 HTTPS 服务端地址以加载设备。"
     @Published private(set) var errorMessage: String?
     @Published private(set) var videoTrack: RTCVideoTrack?
     @Published private(set) var videoSize = CGSize.zero
@@ -59,31 +59,35 @@ final class ControllerModel: ObservableObject {
 
     var canDisconnect: Bool { activeClient != nil }
 
-    func pair() async {
+    func connectServer() async {
         clearError()
-        guard !pairCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            errorMessage = "请输入配对码。"
-            return
-        }
-        let name = controllerName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else {
-            errorMessage = "请输入本机名称。"
-            return
-        }
+        let code = pairCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let givenName = controllerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = givenName.isEmpty ? defaultControllerName : givenName
         isBusy = true
-        connectionDetail = "正在向配置的服务端配对…"
+        connectionDetail = "正在连接服务端…"
         defer { isBusy = false }
         do {
             let origin = try ServerAddress.origin(from: serverAddress)
             let backend = BackendClient(origin: origin)
-            let reply = try await backend.pair(
-                code: pairCode.trimmingCharacters(in: .whitespacesAndNewlines),
-                platformName: name
-            )
-            try vault.setCredential(ServerCredential(deviceID: reply.deviceId, token: reply.token), for: origin)
+            let credential: ServerCredential
+            if !code.isEmpty {
+                let reply = try await backend.pair(code: code, platformName: name)
+                credential = ServerCredential(deviceID: reply.deviceId, token: reply.token)
+                try vault.setCredential(credential, for: origin)
+            } else {
+                let saved = try vault.credential(for: origin)
+                credential = try saved ?? ServerCredential.generate()
+                if saved == nil {
+                    try vault.setCredential(credential, for: origin)
+                }
+                if !pairedServers.contains(where: { $0.origin == origin && $0.deviceID == credential.deviceID }) {
+                    try await backend.enroll(with: credential, name: String(name.prefix(80)))
+                }
+            }
             let server = PairedServer(
                 origin: origin,
-                deviceID: reply.deviceId,
+                deviceID: credential.deviceID,
                 name: URL(string: origin)?.host ?? origin,
                 pairedAt: Date()
             )
@@ -93,10 +97,10 @@ final class ControllerModel: ObservableObject {
             selectedServerOrigin = origin
             serverAddress = origin
             pairCode = ""
-            connectionDetail = "配对完成，正在读取主机列表…"
+            connectionDetail = "正在读取设备列表…"
             await refreshHosts()
         } catch {
-            showError(error.localizedDescription, status: "配对失败")
+            showError(error.localizedDescription, status: "服务器连接失败")
         }
     }
 
@@ -114,7 +118,7 @@ final class ControllerModel: ObservableObject {
         clearError()
         guard let server = selectedServer else {
             hosts = []
-            connectionDetail = "请先配对一个服务端。"
+            connectionDetail = "请先连接一个服务端。"
             return
         }
         isBusy = true

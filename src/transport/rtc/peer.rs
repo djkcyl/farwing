@@ -84,13 +84,14 @@ impl NativePeer {
     pub async fn new(ice_servers: Vec<IceServer>, transport: TransportChoice) -> Result<Self> {
         let profile = crate::media::ConnectionMediaOptions::default()
             .resolve(crate::media::LocalDisplayInfo::FALLBACK)?;
-        Self::new_with_profile(ice_servers, transport, profile).await
+        Self::new_with_profile(ice_servers, transport, profile, false).await
     }
 
     pub(crate) async fn new_with_profile(
         mut ice_servers: Vec<IceServer>,
         transport: TransportChoice,
         profile: ConnectionMediaProfile,
+        self_hosted: bool,
     ) -> Result<Self> {
         let configured_ice_servers = ice_servers.clone();
         let mut ice_url_schemes = BTreeMap::<String, usize>::new();
@@ -140,7 +141,7 @@ impl NativePeer {
         let core = ConnectionCore::new(
             media_engine,
             registry,
-            ConnectionCore::settings(),
+            ConnectionCore::settings(self_hosted),
             RTCConfiguration {
                 ice_servers: ice_servers.into_iter().map(Into::into).collect(),
                 ice_transport_policy: if transport == TransportChoice::Relay {

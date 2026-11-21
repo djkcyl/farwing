@@ -55,6 +55,7 @@ mod tls;
 mod transport;
 
 pub struct SignalSession {
+    self_hosted: bool,
     transport: SignalTransport,
     room_info: Value,
     reconnect_key: Option<String>,
@@ -230,6 +231,7 @@ impl SignalSession {
         room.validate()?;
         let connect_timeout = Duration::from_millis(room.ws_connect_timeout_ms.max(100) as u64);
         let mut session = Self {
+            self_hosted: room.is_self_hosted(),
             transport: SignalTransport::spawn(room, role, push),
             room_info: Value::Null,
             reconnect_key: None,
@@ -638,7 +640,7 @@ impl SignalSession {
                     if info.code != 0
                         || info.client_id.is_empty()
                         || info.ice_id.is_empty()
-                        || info.ice_servers.is_empty()
+                        || (!self.self_hosted && info.ice_servers.is_empty())
                     {
                         bail!("control ACK did not contain a usable session configuration");
                     }
@@ -1058,9 +1060,14 @@ impl SignalSession {
     }
 
     fn send_binary_packet(&mut self, header: String, attachment: Vec<u8>) -> Result<()> {
-        let mut packet = Vec::with_capacity(attachment.len() + 1);
-        packet.push(0x04);
-        packet.extend_from_slice(&attachment);
+        let packet = if self.self_hosted {
+            attachment
+        } else {
+            let mut packet = Vec::with_capacity(attachment.len() + 1);
+            packet.push(0x04);
+            packet.extend_from_slice(&attachment);
+            packet
+        };
         self.transport.send(vec![
             Message::Text(header.into()),
             Message::Binary(packet.into()),

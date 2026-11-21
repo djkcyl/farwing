@@ -120,7 +120,7 @@ pub(super) async fn gui_worker_loop(
             let _ = events.send(GuiEvent::Warning(format!("后台启动失败：{error:#}")));
         }
     }
-    let device_runtime = match crate::session::device_session::DeviceRuntime::start() {
+    let mut device_runtime = match crate::session::device_session::DeviceRuntime::start() {
         Ok(runtime) => runtime,
         Err(error) => {
             let _ = events.send(GuiEvent::SessionUnavailable(format!(
@@ -129,6 +129,8 @@ pub(super) async fn gui_worker_loop(
             return;
         }
     };
+    let _ = events.send(GuiEvent::ServerLoaded(device_runtime.handle().self_hosted()
+        .map(|settings| settings.origin.as_str().to_owned()).unwrap_or_default()));
     let _ = events.send(GuiEvent::Startup(0, StartupStage::Credentials));
     let mut startup_last = None;
     let mut startup_media: Option<StartupMedia> = None;
@@ -193,6 +195,48 @@ pub(super) async fn gui_worker_loop(
         }
         if let Some(command) = command {
             match command {
+                GuiCommand::SetServer { generation, address } => {
+                    let configure = || -> Result<_> {
+                        use crate::account::self_hosted;
+                        let origin = (!address.trim().is_empty()).then(|| self_hosted::parse_origin(&address)).transpose()?;
+                        let runtime = crate::session::device_session::DeviceRuntime::start_for(origin.clone())?;
+                        self_hosted::save_origin(origin.as_ref())?;
+                        Ok((runtime, origin.map(|url| url.to_string()).unwrap_or_default()))
+                    };
+                    match configure() {
+                        Ok((runtime, address)) => {
+                            cancel_login_task(&mut login_task).await;
+                            cancel_login_task(&mut sms_login_task).await;
+                            cancel_sms_task(&mut sms_task).await;
+                            cancel_operation(&mut mutation_task).await;
+                            cancel_operation(&mut assist_lists_task).await;
+                            cancel_operation(&mut assist_operation_task).await;
+                            commit_gate = login::LoginCommitGate::default();
+                            sms_gate.cancel();
+                            next_assist_refresh = None;
+                            cancel_startup_media(&mut startup_media).await;
+                            media_ready = None;
+                            device_sync.reset().await;
+                            stop_active_signal(&mut host_signal).await;
+                            if let Some(current) = client.take() {
+                                current.retire();
+                                current.close().await;
+                            }
+                            guest.close().await;
+                            std::mem::replace(&mut device_runtime, runtime).close().await;
+                            catalog_generation = generation;
+                            presence_online = false;
+                            presence_stopped = false;
+                            allow_load = true;
+                            guest_allowed = false;
+                            let _ = events.send(GuiEvent::ServerChanged(generation, Ok(address)));
+                        }
+                        Err(error) => { let _ = events.send(GuiEvent::ServerChanged(generation, Err(format!("{error:#}")))); }
+                    }
+                }
+                GuiCommand::OpenGuestAssist => {
+                    guest_allowed = device_runtime.handle().self_hosted().is_none();
+                }
                 GuiCommand::HostAssist { generation, action } => {
                     if generation == catalog_generation
                         && logout_task.is_none()
@@ -768,7 +812,7 @@ pub(super) async fn gui_worker_loop(
             let result = logout_task.take().expect("finished logout").await;
             match result {
                 Ok(outcome) => {
-                    guest_allowed = outcome.local_error.is_none();
+                    guest_allowed = false;
                     let _ = events.send(GuiEvent::LoggedOut(outcome));
                 }
                 Err(error) => {
@@ -891,7 +935,6 @@ pub(super) async fn gui_worker_loop(
                         .downcast_ref::<crate::account::client::NoSavedSession>()
                         .is_some()
                     {
-                        guest_allowed = true;
                         GuiEvent::SignedOut
                     } else {
                         tracing::warn!(%error, "saved account could not be opened; credentials retained");
@@ -901,7 +944,7 @@ pub(super) async fn gui_worker_loop(
                 }
             }
         }
-        if client.is_none() && guest_allowed && logout_task.is_none() {
+        if client.is_none() && guest_allowed && logout_task.is_none() && device_runtime.handle().self_hosted().is_none() {
             guest
                 .poll(device_runtime.handle(), catalog_generation, &events)
                 .await;
@@ -954,6 +997,7 @@ pub(super) async fn gui_worker_loop(
             }
             let refresh_active = *foreground.borrow();
             if refresh_active
+                && !active_client.is_self_hosted()
                 && assist_lists_task.is_none()
                 && next_assist_refresh.is_some()
                 && logout_task.is_none()
@@ -974,9 +1018,12 @@ pub(super) async fn gui_worker_loop(
                 if active_client.restoration_failed().await {
                     allow_load = false;
                     tracing::warn!(%error, "saved account restoration failed");
-                    let _ = events.send(GuiEvent::SessionUnavailable(format!(
-                        "登录恢复未完成，凭据已保留，可点击登录重试：{error:#}"
-                    )));
+                    let message = if active_client.is_self_hosted() {
+                        format!("自建服务器连接失败：{error:#}")
+                    } else {
+                        format!("登录恢复未完成，凭据已保留，可点击登录重试：{error:#}")
+                    };
+                    let _ = events.send(GuiEvent::SessionUnavailable(message));
                     device_sync.reset().await;
                     client = None;
                     stop_active_signal(&mut host_signal).await;

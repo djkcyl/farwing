@@ -654,6 +654,8 @@ pub struct RoomSession {
     pub(crate) international_connect: bool,
     #[serde(skip)]
     local_session: bool,
+    #[serde(skip)]
+    self_hosted_session: bool,
     token: String,
     pub ws_connect_timeout_ms: i32,
     pub streamer_retry_delta_ms: i32,
@@ -669,6 +671,7 @@ impl RoomSession {
         Self {
             international_connect: reply.international_connect,
             local_session: false,
+            self_hosted_session: false,
             token: reply.token.clone(),
             ws_connect_timeout_ms: reply.ws_connect_timeout_ms,
             streamer_retry_delta_ms: reply.streamer_retry_delta_ms,
@@ -681,6 +684,7 @@ impl RoomSession {
         let room = Self {
             international_connect: false,
             local_session: true,
+            self_hosted_session: true,
             token: ticket,
             ws_connect_timeout_ms: 10_000,
             streamer_retry_delta_ms: 1_000,
@@ -707,6 +711,10 @@ impl RoomSession {
 
     pub(crate) fn is_local(&self) -> bool {
         self.local_session
+    }
+
+    pub(crate) fn is_self_hosted(&self) -> bool {
+        self.self_hosted_session
     }
 
     pub(crate) fn signaling_endpoints(&self) -> Vec<&str> {
@@ -741,7 +749,7 @@ impl fmt::Debug for RoomSession {
 
 #[derive(Clone)]
 pub struct NrdApi {
-    http: crate::account::nrd_http::NrdHttp,
+    backend: Backend,
     identity: ClientIdentity,
     version_name: String,
     channel: String,
@@ -750,18 +758,44 @@ pub struct NrdApi {
     authorization: Option<HeaderValue>,
 }
 
+mod self_hosted;
+
+#[derive(Clone)]
+enum Backend {
+    Official(crate::account::nrd_http::NrdHttp),
+    SelfHosted(self_hosted::DesktopApi),
+}
+
 impl NrdApi {
     pub fn new(identity: ClientIdentity) -> Result<Self> {
-        let http = crate::account::nrd_http::NrdHttp::new()?;
-        Ok(Self {
-            http,
+        Ok(Self::with_backend(identity, Backend::Official(crate::account::nrd_http::NrdHttp::new()?)))
+    }
+
+    pub(crate) fn self_hosted(identity: ClientIdentity, settings: crate::account::self_hosted::SelfHosted) -> Result<Self> {
+        Ok(Self::with_backend(identity, Backend::SelfHosted(self_hosted::DesktopApi::new(settings)?)))
+    }
+
+    fn with_backend(identity: ClientIdentity, backend: Backend) -> Self {
+        Self {
+            backend,
             identity,
             version_name: PROTOCOL_VERSION.to_owned(),
             channel: DEFAULT_CHANNEL.to_owned(),
             user_id: None,
             guest_id: None,
             authorization: None,
-        })
+        }
+    }
+
+    fn official_http(&self) -> Result<&crate::account::nrd_http::NrdHttp> {
+        match &self.backend {
+            Backend::Official(http) => Ok(http),
+            Backend::SelfHosted(_) => bail!("当前自建服务器未提供该功能"),
+        }
+    }
+
+    pub(crate) fn is_self_hosted(&self) -> bool {
+        matches!(self.backend, Backend::SelfHosted(_))
     }
 
     pub fn set_identity(&mut self, identity: ClientIdentity) {
@@ -924,6 +958,11 @@ impl NrdApi {
             .await
     }
 
+    pub(crate) async fn register_self_hosted(&self, name: &str) -> Result<ApiEnvelope<DeviceInitResponse>> {
+        anyhow::ensure!(self.is_self_hosted(), "自建设备注册需要自建服务地址");
+        self.post_json(DEVICE_WINDOWS_INIT, DEVICE_WINDOWS_INIT.path, &serde_json::json!({"name": name})).await
+    }
+
     pub async fn list_devices(&self) -> Result<ApiEnvelope<DeviceList>> {
         self.send(DEVICE_LIST, DEVICE_LIST.path, Vec::new()).await
     }
@@ -987,14 +1026,18 @@ impl NrdApi {
         if last_controlled_interval < -1 {
             bail!("last_controlled_interval must be -1 (never controlled) or elapsed seconds");
         }
-        self.post_json(
+        let mut response = self.post_json::<_, RoomSession>(
             ROOM_CREATE,
             ROOM_CREATE.path,
             &CreateRoomRequest {
                 last_controlled_interval,
             },
         )
-        .await
+        .await?;
+        if let Some(room) = &mut response.data {
+            room.self_hosted_session = self.is_self_hosted();
+        }
+        Ok(response)
     }
 
     pub async fn join_by_device(
@@ -1010,7 +1053,7 @@ impl NrdApi {
             bail!("device_id must be a lowercase alphanumeric identifier");
         }
         let path = format!("{}/{device_id}", ROOM_JOIN_BY_DEVICE.path);
-        self.send(
+        let mut response = self.send::<RoomSession>(
             Contract {
                 // Forcing a join can displace an existing viewer. Preserve
                 // its stronger no-replay boundary even though normal joins
@@ -1025,7 +1068,11 @@ impl NrdApi {
             &path,
             serde_json::to_vec(&JoinByDeviceRequest { force_join })?,
         )
-        .await
+        .await?;
+        if let Some(room) = &mut response.data {
+            room.self_hosted_session = self.is_self_hosted();
+        }
+        Ok(response)
     }
 
     async fn post_json<B, T>(
@@ -1049,6 +1096,9 @@ impl NrdApi {
         if !path.starts_with('/') {
             bail!("API path must start with '/'");
         }
+        if let Backend::SelfHosted(api) = &self.backend {
+            return api.send(contract, path, body).await;
+        }
         let method = match contract.method {
             Method::Get => HttpMethod::GET,
             Method::Post => HttpMethod::POST,
@@ -1065,7 +1115,7 @@ impl NrdApi {
             headers.insert(AUTHORIZATION, value.clone());
         }
         let (status, bytes, _) = self
-            .http
+            .official_http()?
             .send(
                 method,
                 path,

@@ -1,9 +1,21 @@
+import CryptoKit
 import Foundation
 import Security
 
 struct ServerCredential: Codable, Equatable {
     let deviceID: String
     let token: String
+
+    static func generate() throws -> ServerCredential {
+        var random = [UInt8](repeating: 0, count: 32)
+        let status = random.withUnsafeMutableBytes { bytes in
+            SecRandomCopyBytes(kSecRandomDefault, bytes.count, bytes.baseAddress!)
+        }
+        guard status == errSecSuccess else { throw BackendError.keychain(status) }
+        let token = random.map { String(format: "%02x", $0) }.joined()
+        let digest = SHA256.hash(data: Data(token.utf8))
+        return ServerCredential(deviceID: digest.prefix(8).map { String(format: "%02x", $0) }.joined(), token: token)
+    }
 }
 
 struct PairedServer: Codable, Identifiable, Equatable {
@@ -263,6 +275,13 @@ final class BackendClient: NSObject {
             delegate: redirectDelegate,
             delegateQueue: nil
         )
+    }
+
+    func enroll(with credential: ServerCredential, name: String) async throws {
+        struct Reply: Decodable { let device_id: String }
+        let reply = try await request(path: "/v1/desktop/register", method: "POST", token: credential.token,
+                                      body: ["platform": "ios", "name": name], responseType: Reply.self)
+        guard reply.device_id == credential.deviceID else { throw BackendError.invalidResponse }
     }
 
     func pair(code: String, platformName: String) async throws -> PairReply {

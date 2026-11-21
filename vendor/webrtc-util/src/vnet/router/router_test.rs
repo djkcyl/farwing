@@ -17,7 +17,7 @@ struct DummyNic {
 impl Default for DummyNic {
     fn default() -> Self {
         DummyNic {
-            net: Net::Ifs(vec![]),
+            net: Net::new(None),
             on_inbound_chunk_handler: 0,
             cbs0: AtomicI32::new(0),
             done_ch_tx: Arc::new(Mutex::new(None)),

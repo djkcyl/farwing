@@ -86,6 +86,9 @@ impl HostClient {
         let Identity::Account(client) = &self.identity else {
             return std::future::pending().await;
         };
+        if client.is_self_hosted() {
+            return std::future::pending().await;
+        }
         let mut refresh_after = Some(std::time::Duration::ZERO);
         let mut rights_updates = client.membership.rights_updates.subscribe();
         loop {

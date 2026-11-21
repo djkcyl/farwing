@@ -112,9 +112,11 @@ impl DeviceCenterApp {
                         if !guest {
                             let ui = &mut columns[1];
                             ui.label(RichText::new("系统与网络").strong());
-                            ui.checkbox(&mut power, "关机和重启");
                             ui.checkbox(&mut ports, "端口转发");
-                            ui.checkbox(&mut wol, "局域网唤醒协助");
+                            if self.server_address.is_empty() {
+                                ui.checkbox(&mut power, "关机和重启");
+                                ui.checkbox(&mut wol, "局域网唤醒协助");
+                            }
                         }
                     });
                 });
@@ -152,7 +154,11 @@ impl DeviceCenterApp {
         form_row(
             ui,
             "允许被控",
-            "允许授权设备连接本机，远程协助需单独开启",
+            if self.server_address.is_empty() {
+                "允许授权设备连接本机，远程协助需单独开启"
+            } else {
+                "允许同一自建服务器上的授权设备连接本机"
+            },
             |ui| {
                 if ui
                     .add_enabled_ui(host.is_some(), |ui| {
@@ -180,7 +186,7 @@ impl DeviceCenterApp {
                 host.audio_devices_failed();
             }
             self.host_access_settings(ui, host);
-            if !host.is_guest() {
+            if !host.is_guest() && self.server_address.is_empty() {
                 self.wol_setup_entry(ui);
             }
             section(ui, "画面与声音");

@@ -11,7 +11,7 @@ use winapi::um::iptypes::{IP_ADAPTER_ADDRESSES_LH, IP_ADAPTER_PREFIX_XP};
 
 use crate::ifaces::{Interface, Kind};
 
-pub fn ifaces() -> io::Result<Vec<Interface>> {
+pub(crate) fn native_interfaces(include_virtual_adapters: bool) -> io::Result<Vec<Interface>> {
     let mut byte_count = 16_384_u32;
     loop {
         // The SDK struct's alignment union requires eight-byte alignment.
@@ -32,11 +32,14 @@ pub fn ifaces() -> io::Result<Vec<Interface>> {
         if status != ERROR_SUCCESS {
             return Err(io::Error::from_raw_os_error(status as i32));
         }
-        return Ok(unsafe { collect_adapters(adapters) });
+        return Ok(unsafe { collect_adapters(adapters, include_virtual_adapters) });
     }
 }
 
-unsafe fn collect_adapters(mut adapter: *const IP_ADAPTER_ADDRESSES_LH) -> Vec<Interface> {
+unsafe fn collect_adapters(
+    mut adapter: *const IP_ADAPTER_ADDRESSES_LH,
+    include_virtual_adapters: bool,
+) -> Vec<Interface> {
     let mut result = Vec::new();
     let mut network_index = 0_u32;
     while let Some(current) = adapter.as_ref() {
@@ -51,16 +54,10 @@ unsafe fn collect_adapters(mut adapter: *const IP_ADAPTER_ADDRESSES_LH) -> Vec<I
         // UU 78678 -> 79096 -> 7665B. The adapter index still advances for
         // ignored adapters; the normal NetworkManager snapshot excludes them.
         let lower_description = description.to_ascii_lowercase();
-        if [
-            "vmware",
-            "hyper-v",
-            "virtualbox",
-            "vmnet",
-            "parallels",
-            "qemu",
-        ]
-        .iter()
-        .any(|part| lower_description.contains(part))
+        if !include_virtual_adapters
+            && ["vmware", "hyper-v", "virtualbox", "vmnet", "parallels", "qemu"]
+                .iter()
+                .any(|part| lower_description.contains(part))
         {
             continue;
         }

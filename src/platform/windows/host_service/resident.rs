@@ -708,7 +708,8 @@ async fn run_authorized_account(
     incoming: &mut Incoming,
     running: &impl Fn() -> bool,
 ) -> Result<()> {
-    let device = DeviceRuntime::start()?;
+    let origin = crate::account::self_hosted::load_origin()?;
+    let device = DeviceRuntime::start_for(origin.clone())?;
     let store = KeyringSessionStore::new()?;
     let mut client: Option<HostClient> = None;
     let mut presence: Option<ActivePresence> = None;
@@ -725,7 +726,7 @@ async fn run_authorized_account(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let result: Result<()> = async {
         while running() {
-            if !vault::applies()? {break;}
+            if !vault::applies()? || crate::account::self_hosted::load_origin()? != origin {break;}
             if preparation.as_ref().is_some_and(|(_,task)|task.is_finished()) {
                 cancel_preparation(&mut preparation).await;
             }
@@ -893,7 +894,11 @@ async fn run_authorized_account(
                 let _ = reply.send(result.unwrap_or_else(Reply::from_error));
             }
             if paused()? || !vault::applies()? { continue; }
-            let saved = store.load()?.map(|s| s.generation()).unwrap_or_default();
+            let handle = device.handle();
+            let saved = match handle.self_hosted() {
+                Some(settings) => settings.session()?.generation(),
+                None => store.load()?.map(|s| s.generation()).unwrap_or_default(),
+            };
             let desired_identity = if saved.is_empty() {
                 format!("guest:{}",device.handle().identity().client_identity()?.client_id)
             } else { saved.clone() };

@@ -32,7 +32,7 @@ fn digest(bytes: &[u8]) -> String {
 
 impl AuthenticatedClient {
     pub(super) fn schedule_publication(&self) {
-        if resident::managed() {
+        if self.is_self_hosted() || resident::managed() {
             return;
         }
         let Ok(identity) = self.device.identity().client_identity() else {

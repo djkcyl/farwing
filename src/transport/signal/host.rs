@@ -136,7 +136,7 @@ impl Session {
                     Ok(prepared) => prepared.peer.close().await,
                     Err(error) => {
                         tracing::warn!(error=%format!("{error:#}"),"host connection preparation failed");
-                        Self::notify_termination(signal).await;
+                        self.notify_termination(signal).await;
                         if let Some(lease) = &self.authorization {
                             lease.fail(format!("无法建立被控连接：{error:#}"));
                         }
@@ -305,7 +305,7 @@ impl Session {
                 // A controller can still submit a request while the cloud
                 // device list is stale (the official CLI can do this too).
                 // Clear only our disabled host room; do not construct a peer.
-                Self::notify_termination(signal).await;
+                self.notify_termination(signal).await;
                 if let Some(peer) = self.peer.take() {
                     peer.close().await;
                 }
@@ -344,6 +344,12 @@ impl Session {
                         .context("缺少ConnectOptions二进制内容")?
                         .as_slice(),
                 )?;
+                if signal.self_hosted {
+                    anyhow::ensure!(
+                        value.get("controller_device_id").and_then(Value::as_str) == Some(&options.device_id),
+                        "主控设备身份与自建服务器授权不符"
+                    );
+                }
                 if self.client.is_local() {
                     anyhow::ensure!(
                         options.kind == 1
@@ -474,6 +480,7 @@ impl Session {
                     .unwrap_or(false);
                 let network = crate::features::host::network::Policy::from_signal(value);
                 let configuration_client = self.client.clone();
+                let self_hosted = signal.self_hosted;
                 let clipboard_level = if self.client.is_local() {
                     0
                 } else {
@@ -556,6 +563,7 @@ impl Session {
                             displays.clone(),
                             servers,
                             relay,
+                            self_hosted,
                             config,
                             options.control_screen_reports(),
                             negotiated,
@@ -735,22 +743,28 @@ impl Session {
     }
     async fn end_control(&mut self, signal: &mut SignalSession) {
         if self.preparing.is_some() {
-            Self::notify_termination(signal).await;
+            self.notify_termination(signal).await;
             self.cancel_preparation().await;
         }
         let Some(peer) = self.peer.take() else {
             return;
         };
-        Self::notify_termination(signal).await;
+        self.notify_termination(signal).await;
         peer.close().await;
     }
 
-    async fn notify_termination(signal: &mut SignalSession) {
+    async fn notify_termination(&self, signal: &mut SignalSession) {
         // S 2F97E0 -> 313FC0 -> ControlledInterface[13], T AFCAB0 ->
         // AFC830: clear_out (no arguments) precedes local peer destruction.
         // This only clears viewers of our own controlled-device room.
         let submitted = async {
-            let packet = encode_event("clear_out", &[], None)?;
+            let envelope = serde_json::json!({
+                "client_id": self.client_id,
+                "ice_id": self.ice_id,
+                "app_control_id": self.app_control_id,
+            });
+            let args = if signal.self_hosted { std::slice::from_ref(&envelope) } else { &[] };
+            let packet = encode_event("clear_out", args, None)?;
             signal
                 .transport
                 .send_connected(vec![Message::Text(packet.into())])

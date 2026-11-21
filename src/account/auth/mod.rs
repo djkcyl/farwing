@@ -18,20 +18,17 @@ pub(crate) fn enroll_resident() -> Result<()> {
         return Ok(());
     }
     ensure_resident_owner()?;
-    let identity = KeyringIdentityStore::new()?
-        .load_existing()?
-        .context("尚未建立本机身份")?;
-    let session = KeyringSessionStore::new()?
-        .load()?
-        .context("请先登录账号")?;
+    let (identity, session) = active_host_records()?;
+    let identity = identity.context("尚未建立本机身份")?;
+    let session = session.context("请先连接服务器或登录账号")?;
     SecretEntry::new(SERVICE, IDENTITY_ACCOUNT)?.enroll()?;
     SecretEntry::new(SERVICE, SESSION_ACCOUNT)?.enroll()?;
     SecretEntry::new(SERVICE, generation::ACCOUNT)?.enroll()?;
-    crate::features::host::enroll_settings(
-        session.user_id(),
-        &identity.client_identity()?.device_id,
-    )?;
-    crate::features::host::transfer_guest_settings(&identity.client_identity()?.client_id, true)?;
+    super::self_hosted::transfer_credentials(true)?;
+    crate::features::host::enroll_settings(session.user_id(), &identity.client_identity()?.device_id)?;
+    if super::self_hosted::load_origin()?.is_none() {
+        crate::features::host::transfer_guest_settings(&identity.client_identity()?.client_id, true)?;
+    }
     crate::features::host::displays::transfer_preferences(true)?;
     std::fs::write(vault::root()?.join("enabled"), b"OpenUUYC unattended v1\n")?;
     SecretEntry::new(SERVICE, SESSION_ACCOUNT)?.clear_portable()?;
@@ -51,9 +48,8 @@ pub(crate) fn restore_portable() -> Result<()> {
         return Ok(());
     }
     ensure_resident_owner()?;
-    let identity = KeyringIdentityStore::new()?.load_existing()?;
-    let session = KeyringSessionStore::new()?.load()?;
-    if let Some(identity) = &identity {
+    let (identity, session) = active_host_records()?;
+    if let Some(identity) = KeyringIdentityStore::new()?.load_existing()? {
         crate::features::host::transfer_guest_settings(
             &identity.client_identity()?.client_id,
             false,
@@ -68,8 +64,21 @@ pub(crate) fn restore_portable() -> Result<()> {
     SecretEntry::new(SERVICE, IDENTITY_ACCOUNT)?.restore_portable()?;
     SecretEntry::new(SERVICE, SESSION_ACCOUNT)?.restore_portable()?;
     SecretEntry::new(SERVICE, generation::ACCOUNT)?.restore_portable()?;
+    super::self_hosted::transfer_credentials(false)?;
     crate::features::host::displays::transfer_preferences(false)?;
     Ok(())
+}
+
+fn active_host_records() -> Result<(Option<NativeIdentity>, Option<LoginSession>)> {
+    use super::self_hosted::{self, SelfHosted};
+    match self_hosted::load_origin()? {
+        Some(origin) => {
+            let settings = SelfHosted::load(origin)?;
+            let identity = KeyringIdentityStore::for_self_hosted(&settings.device_id)?.load_existing()?;
+            Ok((identity, Some(settings.session()?)))
+        }
+        None => Ok((KeyringIdentityStore::new()?.load_existing()?, KeyringSessionStore::new()?.load()?)),
+    }
 }
 
 use serde::{Deserialize, Serialize};
@@ -300,6 +309,7 @@ pub struct KeyringSessionStore {
 
 pub struct KeyringIdentityStore {
     entry: SecretEntry,
+    self_hosted_device_id: Option<String>,
 }
 
 impl KeyringIdentityStore {
@@ -307,7 +317,17 @@ impl KeyringIdentityStore {
         generation::ensure()?;
         let entry = SecretEntry::new(SERVICE, IDENTITY_ACCOUNT)
             .context("native secure credential store is unavailable")?;
-        Ok(Self { entry })
+        Ok(Self { entry, self_hosted_device_id: None })
+    }
+
+    pub(crate) fn for_self_hosted(id: &str) -> Result<Self> {
+        generation::ensure()?;
+        let entry = SecretEntry::new(SERVICE, &format!("self-hosted-identity-{id}"))?;
+        Ok(Self { entry, self_hosted_device_id: Some(id.to_owned()) })
+    }
+
+    pub(crate) fn transfer(&self, to_resident: bool) -> Result<()> {
+        if to_resident { self.entry.enroll() } else { self.entry.restore_portable() }
     }
 
     pub fn load_or_create(&self) -> Result<NativeIdentity> {
@@ -340,7 +360,10 @@ impl KeyringIdentityStore {
                 Ok(identity)
             }
             Err(KeyringError::NoEntry) => {
-                let identity = NativeIdentity::generate()?;
+                let mut identity = NativeIdentity::generate()?;
+                if let Some(id) = &self.self_hosted_device_id {
+                    identity.complete_registration(id.clone())?;
+                }
                 self.save_unlocked(&identity)?;
                 Ok(identity)
             }
@@ -454,7 +477,7 @@ fn session_store_lock() -> Result<std::fs::File> {
     credential_store_lock("session.lock")
 }
 
-fn credential_store_lock(filename: &str) -> Result<std::fs::File> {
+pub(crate) fn credential_store_lock(filename: &str) -> Result<std::fs::File> {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(std::path::PathBuf::from)
         .context("LOCALAPPDATA is required for session-store coordination")?;

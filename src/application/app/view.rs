@@ -96,6 +96,11 @@ enum EditAction {
 }
 
 impl CenterUi {
+    pub(super) fn backend_changed(&mut self) {
+        self.page = Page::Mine;
+        self.guest_assist_open = false;
+    }
+
     pub(super) fn clear_host_assist(&mut self) {
         self.host_assist_password = None;
         self.host_assist_settings_open = false;
@@ -605,8 +610,10 @@ impl DeviceCenterApp {
     pub(super) fn draw_center(&mut self, ui: &mut egui::Ui) {
         self.center_ui.wallpapers.poll(ui.ctx());
         if self.needs_login() {
-            if self.login_restoring {
+            if self.login_restoring && self.server_address.is_empty() {
                 self.loading_page(ui);
+            } else if !self.server_address.is_empty() || !self.show_official_login {
+                self.server_page(ui);
             } else {
                 self.login_page(ui);
             }
@@ -738,27 +745,29 @@ impl DeviceCenterApp {
                 ) {
                     self.center_ui.page = Page::Management;
                 }
-                ui.add_space(14.0);
-                ui.label(RichText::new("远程协助").small().color(MUTED));
-                if nav_item(
-                    ui,
-                    Icon::Assist,
-                    "开始协助",
-                    None,
-                    self.center_ui.page == Page::Assist,
-                ) {
-                    self.center_ui.page = Page::Assist;
-                    self.request_assist_refresh();
-                }
-                if nav_item(
-                    ui,
-                    Icon::Star,
-                    "收藏设备",
-                    self.assist.lists.as_ref().map(|l| l.favorites.len()),
-                    self.center_ui.page == Page::Favorites,
-                ) {
-                    self.center_ui.page = Page::Favorites;
-                    self.request_assist_refresh();
+                if self.server_address.is_empty() {
+                    ui.add_space(14.0);
+                    ui.label(RichText::new("远程协助").small().color(MUTED));
+                    if nav_item(
+                        ui,
+                        Icon::Assist,
+                        "开始协助",
+                        None,
+                        self.center_ui.page == Page::Assist,
+                    ) {
+                        self.center_ui.page = Page::Assist;
+                        self.request_assist_refresh();
+                    }
+                    if nav_item(
+                        ui,
+                        Icon::Star,
+                        "收藏设备",
+                        self.assist.lists.as_ref().map(|l| l.favorites.len()),
+                        self.center_ui.page == Page::Favorites,
+                    ) {
+                        self.center_ui.page = Page::Favorites;
+                        self.request_assist_refresh();
+                    }
                 }
                 ui.add_space(14.0);
                 ui.separator();
@@ -878,7 +887,7 @@ impl DeviceCenterApp {
         );
         if self.logout_pending {
             egui::Spinner::new().paint_at(ui, exit.shrink(5.0));
-        } else {
+        } else if self.server_address.is_empty() {
             let response = ui
                 .interact(exit, ui.id().with("account-logout"), Sense::click())
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -1210,6 +1219,63 @@ impl DeviceCenterApp {
         });
     }
 
+    fn server_page(&mut self, root: &mut egui::Ui) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(BG).inner_margin(32))
+            .show(root, |ui| {
+                ui.add_space(24.0);
+                ui.heading("连接自建服务器");
+                ui.label(RichText::new("在主控和被控设备上填写同一个地址。").color(MUTED));
+                ui.add_space(18.0);
+                self.server_settings(ui);
+                if self.login_restoring {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("正在连接自建服务器…");
+                    });
+                } else if let Some(error) = &self.login_error {
+                    ui.colored_label(AMBER, error);
+                }
+                if self.server_address.is_empty() && !self.server_pending
+                    && ui.add(crate::ui::controls::secondary("网易账号登录")).clicked()
+                {
+                    self.show_official_login = true;
+                }
+            });
+    }
+
+    fn server_settings(&mut self, ui: &mut egui::Ui) {
+        let available = !self.server_pending && !self.logout_pending && !self.has_viewers()
+            && !self.mutation_pending && !self.center_ui.components.busy()
+            && self.host.as_ref().is_none_or(|host| host.status().connection.is_none());
+        ui.add_enabled_ui(available, |ui| {
+            let response = ui.add(egui::TextEdit::singleline(&mut self.server_input)
+                .hint_text("https://remote.example.com")
+                .desired_width(300.0));
+            let entered = (response.has_focus() || response.lost_focus())
+                && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            ui.horizontal_wrapped(|ui| {
+                let can_connect = !self.server_input.trim().is_empty();
+                if ui.add_enabled(can_connect, crate::ui::controls::primary("连接自建服务器")).clicked()
+                    || (can_connect && entered)
+                {
+                    self.set_server(self.server_input.clone());
+                }
+                if !self.server_address.is_empty()
+                    && ui.add(crate::ui::controls::secondary("使用网易服务")).clicked()
+                {
+                    self.set_server(String::new());
+                }
+            });
+        });
+        if self.server_pending {
+            ui.spinner();
+        }
+        if let Some(error) = &self.server_error {
+            ui.colored_label(AMBER, error);
+        }
+    }
+
     fn settings_page(&mut self, ui: &mut egui::Ui) {
         let original_media = self.media;
         ui.label(
@@ -1220,6 +1286,8 @@ impl DeviceCenterApp {
         ui.add_space(18.0);
         self.alert(ui);
         crate::ui::controls::page_scroll("center-settings-scroll").show(ui, |ui| {
+            section(ui, "自建服务器");
+            self.server_settings(ui);
             self.startup_settings(ui);
             self.host_settings(ui);
             self.notification_settings(ui);
@@ -1691,15 +1759,22 @@ impl DeviceCenterApp {
             .frame(egui::Frame::new().fill(BG).inner_margin(16))
             .show(root, |ui| {
                 ui.vertical_centered(|ui| {
+                    if ui.add(crate::ui::controls::secondary("连接自建服务器")).clicked() {
+                        self.cancel_login();
+                        self.show_official_login = false;
+                    }
                     if ui
                         .add(crate::ui::controls::secondary("无需登录 · 接受远程协助"))
                         .clicked()
                     {
                         self.center_ui.guest_assist_open = true;
+                        let _ = self.worker.commands.send(GuiCommand::OpenGuestAssist);
                     }
                 });
             });
-        let locked = self.login_restoring
+        let locked = !self.show_official_login
+            || self.login_restoring
+            || self.server_pending
             || self.logout_pending
             || self.has_viewers()
             || self.mutation_pending;

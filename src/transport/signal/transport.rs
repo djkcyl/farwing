@@ -565,7 +565,16 @@ impl Worker {
                         }
                         Message::Binary(bytes) => {
                             if let Some(pending) = binary.as_mut() {
-                                pending.attachments.push(bytes.to_vec());
+                                let attachment = if self.room.is_self_hosted() {
+                                    // The shared wire decoder expects the UU binary prefix.
+                                    let mut attachment = Vec::with_capacity(bytes.len() + 1);
+                                    attachment.push(0x04);
+                                    attachment.extend_from_slice(&bytes);
+                                    attachment
+                                } else {
+                                    bytes.to_vec()
+                                };
+                                pending.attachments.push(attachment);
                                 if pending.attachments.len() == pending.expected_attachments {
                                     let pending = binary.take().expect("completed binary event");
                                     match resolve_binary_event(pending.namespace, pending.id, pending.event, pending.args, &pending.attachments) {

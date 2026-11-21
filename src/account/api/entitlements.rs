@@ -58,7 +58,7 @@ impl NrdApi {
         )?;
         headers.insert(AUTHORIZATION, authorization);
         let (status, bytes, headers) = api
-            .http
+            .official_http()?
             .send(
                 HttpMethod::GET,
                 PATH,

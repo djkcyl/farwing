@@ -10,11 +10,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::account::api::{ApiFailure, DeviceInitResponse, NrdApi};
 use crate::account::auth::{KeyringIdentityStore, NativeIdentity};
+use crate::account::self_hosted::{self, SelfHosted};
 
 #[derive(Clone)]
 pub(crate) struct DeviceHandle {
     commands: mpsc::UnboundedSender<Command>,
     identity: watch::Receiver<NativeIdentity>,
+    self_hosted: Option<SelfHosted>,
 }
 
 pub(crate) struct DeviceRuntime {
@@ -58,6 +60,7 @@ struct Initializer {
     identity: NativeIdentity,
     published: watch::Sender<NativeIdentity>,
     identities: KeyringIdentityStore,
+    self_hosted: Option<SelfHosted>,
     waiters: Vec<Completion>,
     initialized: bool,
     date: Option<chrono::NaiveDate>,
@@ -68,7 +71,15 @@ struct Initializer {
 
 impl DeviceRuntime {
     pub(crate) fn start() -> Result<Self> {
-        let identities = KeyringIdentityStore::new()?;
+        Self::start_for(self_hosted::load_origin()?)
+    }
+
+    pub(crate) fn start_for(origin: Option<url::Url>) -> Result<Self> {
+        let self_hosted = origin.map(SelfHosted::load).transpose()?;
+        let identities = match &self_hosted {
+            Some(settings) => KeyringIdentityStore::for_self_hosted(&settings.device_id)?,
+            None => KeyringIdentityStore::new()?,
+        };
         let identity = identities.load_or_create()?;
         let (published, receiver) = watch::channel(identity.clone());
         let (commands, incoming) = mpsc::unbounded_channel();
@@ -77,6 +88,7 @@ impl DeviceRuntime {
             identity,
             published,
             identities,
+            self_hosted: self_hosted.clone(),
             waiters: Vec::new(),
             initialized: false,
             date: None,
@@ -89,6 +101,7 @@ impl DeviceRuntime {
             handle: DeviceHandle {
                 commands,
                 identity: receiver,
+                self_hosted,
             },
             cancel,
             task: Some(task),
@@ -121,6 +134,10 @@ impl Drop for DeviceRuntime {
 }
 
 impl DeviceHandle {
+    pub(crate) fn self_hosted(&self) -> Option<&SelfHosted> {
+        self.self_hosted.as_ref()
+    }
+
     pub(crate) fn identity(&self) -> NativeIdentity {
         self.identity.borrow().clone()
     }
@@ -185,7 +202,7 @@ impl Initializer {
                         let _ = reply.send(std::time::Duration::from_secs(seconds));
                     }
                     Some(Command::Controllable(value, reply)) => {
-                        if crate::platform::windows::host_service::resident::managed() {
+                        if self.self_hosted.is_none() && crate::platform::windows::host_service::resident::managed() {
                             let result = crate::platform::windows::host_service::resident::request(crate::platform::windows::host_service::resident::Request::Controllable(value)).await.map(|_| ());
                             let _ = self.reload(); let _ = reply.send(result); continue;
                         }
@@ -195,7 +212,7 @@ impl Initializer {
                         let _ = reply.send(result);
                     }
                     Some(Command::Name(expected_id, value, reply)) => {
-                        if crate::platform::windows::host_service::resident::managed() {
+                        if self.self_hosted.is_none() && crate::platform::windows::host_service::resident::managed() {
                             let result = crate::platform::windows::host_service::resident::request(crate::platform::windows::host_service::resident::Request::Name { device: expected_id, value }).await.map(|_| ());
                             let _ = self.reload(); let _ = reply.send(result); continue;
                         }
@@ -206,7 +223,7 @@ impl Initializer {
                         let _ = reply.send(result);
                     }
                     Some(Command::Ensure { force, result }) => {
-                        if crate::platform::windows::host_service::resident::managed() {
+                        if self.self_hosted.is_none() && crate::platform::windows::host_service::resident::managed() {
                             use crate::platform::windows::host_service::resident::{self, Request, Reply};
                             let value = match resident::request(Request::Initialize { force }).await {
                                 Ok(Reply::Identity(value)) => { self.identity = *value.clone(); self.published.send_replace(*value.clone()); Ok(*value) }
@@ -266,7 +283,11 @@ impl Initializer {
         let request = (|| -> Result<_> {
             // B16B00 uses the unauthenticated device-registration builder;
             // unlike AE7290 it never calls B85C10 to attach account headers.
-            let api = NrdApi::new(self.identity.client_identity()?)?;
+            let identity = self.identity.client_identity()?;
+            let api = match &self.self_hosted {
+                Some(settings) => NrdApi::self_hosted(identity, settings.clone())?,
+                None => NrdApi::new(identity)?,
+            };
             Ok((api, self.identity.clone()))
         })();
         match request {
@@ -285,6 +306,10 @@ impl Initializer {
                                 crate::platform::windows::device_profile::Hardware::read,
                             )
                             .await??;
+                            if api.is_self_hosted() {
+                                let response = api.register_self_hosted(&hardware.name).await.map_err(registration_error)?;
+                                return Ok((response.into_data()?, identity));
+                            }
                             let body = identity.device_init_request(&hardware)?;
                             crate::account::reporting::update(|s| {
                                 s.hardware = Some(hardware);

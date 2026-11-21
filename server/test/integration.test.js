@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -81,7 +82,7 @@ function nextWebSocketMessage(socket, predicate = () => true, timeoutMs = 1500) 
   });
 }
 
-function connectHost(url, ticket) {
+function connectHost(url, ticket, controlling = false) {
   const signaling = new URL(url);
   const serverOrigin = `${signaling.protocol === 'wss:' ? 'https:' : 'http:'}//${signaling.host}`;
   return connectSocketIo(serverOrigin, {
@@ -92,7 +93,7 @@ function connectHost(url, ticket) {
     transports: ['websocket'],
     extraHeaders: {
       'X-NRD-AUTH': ticket,
-      'X-NRD-CONTROLLING': '0',
+      'X-NRD-CONTROLLING': controlling ? '1' : '0',
     },
   });
 }
@@ -419,4 +420,157 @@ test('rejects browser origins outside the configured public origin and unsafe pu
   });
   assert.match(rejected.message, /403/u);
   assert.throws(() => createServer({ dbPath: join(tmpdir(), 'unused.sqlite'), host: '0.0.0.0' }), /plaintext HTTP may bind only to loopback/u);
+});
+
+async function registerAddressDevice(origin, platform, name, token = randomBytes(32).toString('hex')) {
+  const registration = await api(origin, '/v1/desktop/register', { token, method: 'POST', body: { platform, name } });
+  assert.equal(registration.response.status, 200, JSON.stringify(registration.value));
+  return { id: registration.value.device_id, token };
+}
+
+function emitAck(socket, event, ...args) {
+  return new Promise((resolve, reject) => {
+    socket.timeout(1500).emit(event, ...args, (error, ...result) => {
+      if (error) reject(error);
+      else resolve(result);
+    });
+  });
+}
+
+test('native address enrollment, signaling, reconnection, and takeover', async (t) => {
+  const iceServers = [{ urls: 'stun:stun.example.test:3478', username: '', credential: '' }];
+  const { app, origin } = await fixture(t, { iceServers: JSON.stringify(iceServers) });
+  const host = await registerAddressDevice(origin, 'windows', 'Address host');
+  const client = await registerAddressDevice(origin, 'windows', 'Address client');
+  const replacement = await registerAddressDevice(origin, 'windows', 'Replacement');
+  const paired = await pair(app, 'host', 'windows', 'Legacy paired host');
+  assert.deepEqual(await registerAddressDevice(origin, 'windows', 'Address host', host.token), host);
+  const catalog = (await api(origin, '/v1/desktop/devices', { token: client.token })).value;
+  assert.deepEqual(catalog.my_binded_devices.map((device) => device.device_id).sort(), [host.id, replacement.id].sort());
+  assert.equal(catalog.current_device.device_id, client.id);
+  assert.ok(!catalog.my_binded_devices.some((device) => device.device_id === paired.deviceId));
+  const post = (path, token, body = {}) => api(origin, `/v1/desktop/${path}`, { token, method: 'POST', body });
+  const join = (controller, force = false) => post('join', controller.token, { device_id: host.id, force_join: force });
+  const room = (await post('room', host.token)).value;
+  const openSignal = async (ticket, controlling = false) => {
+    const socket = connectHost(room.signalingUrl, ticket, controlling);
+    t.after(() => socket.close());
+    await connected(socket);
+    assert.deepEqual(await emitAck(socket, 'room_info'), [{ room_id: host.id }]);
+    return socket;
+  };
+  let hostSocket = await openSignal(room.ticket);
+  assert.equal((await join(client)).response.status, 409);
+  assert.equal((await post('controllable', host.token, { controllable: true })).response.status, 200);
+
+  const openNativeSession = async (reservation) => {
+    assert.equal(reservation.response.status, 200, JSON.stringify(reservation.value));
+    const socket = await openSignal(reservation.value.ticket);
+    const appControlId = randomUUID();
+    const appData = Buffer.from([0, 0x31, 0x04, 0xff]);
+    const hostRequest = nextSocketIoEvent(hostSocket, 'be-controlled');
+    const [status, control] = await emitAck(socket, 'control', {
+      app_control_id: appControlId,
+      app_data: appData,
+      streamer_data: '{}',
+    });
+    assert.equal(status, 'success');
+    assert.deepEqual(control.iceServers, iceServers);
+    const [hostSignal] = await hostRequest;
+    assert.equal(hostSignal.app_control_id, appControlId);
+    assert.equal(hostSignal.controller_device_id.length, 16);
+    assert.equal(hostSignal.ice_id, control.ice_id);
+    assert.deepEqual(hostSignal.app_data, appData);
+    return { socket, control, appControlId, ticket: reservation.value.ticket };
+  };
+  const session = await openNativeSession(await join(client));
+  assert.equal((await join(replacement)).response.status, 409);
+  const sdp = gzipSync(Buffer.from('v=0\r\n'));
+  const ids = { app_control_id: session.appControlId, ice_id: session.control.ice_id };
+  const offer = nextSocketIoEvent(hostSocket, 'soac');
+  session.socket.emit('soac', { data: { ...ids, type: 'offer', gzip_sdp: sdp } });
+  assert.deepEqual(await offer, [{ client_id: session.control.client_id, data: { ...ids, type: 'offer', gzip_sdp: sdp } }]);
+
+  const clientClosed = nextSocketIoEvent(session.socket, 'disconnect');
+  session.socket.io.engine.close();
+  await clientClosed;
+  const clientReconnected = await openSignal(session.ticket, true);
+  const hostClosed = nextSocketIoEvent(hostSocket, 'disconnect');
+  hostSocket.io.engine.close();
+  await hostClosed;
+  hostSocket = await openSignal(room.ticket);
+  const answer = nextSocketIoEvent(clientReconnected, 'soac');
+  hostSocket.emit('soac', { client_id: session.control.client_id, data: { ...ids, type: 'answer', gzip_sdp: sdp } });
+  assert.deepEqual(await answer, [{ client_id: session.control.client_id, data: { ...ids, type: 'answer', gzip_sdp: sdp } }]);
+
+  const released = nextSocketIoEvent(hostSocket, 'released');
+  const replaced = nextSocketIoEvent(clientReconnected, 'leave');
+  const takeover = await openNativeSession(await join(replacement, true));
+  assert.equal((await released)[0].ice_id, session.control.ice_id);
+  await replaced;
+
+  const pending = await join(client, true);
+  assert.equal(pending.response.status, 200);
+  const ended = nextSocketIoEvent(takeover.socket, 'leave');
+  assert.equal((await post('controllable', host.token, { controllable: false })).response.status, 200);
+  await ended;
+  await post('controllable', host.token, { controllable: true });
+  const invalidated = connectHost(room.signalingUrl, pending.value.ticket, true);
+  t.after(() => invalidated.close());
+  await assert.rejects(connected(invalidated), /unauthorized/u);
+
+  revokeDevice(app.db, replacement.id);
+  assert.equal((await join(replacement)).response.status, 401);
+  assert.equal((await post('register', replacement.token, { platform: 'windows', name: 'Replacement' })).response.status, 401);
+});
+
+test('address enrollment authorizes iOS and web controllers only on the trusted network', async (t) => {
+  const { origin } = await fixture(t, { desktopClientNetworks: '127.0.0.1/32' });
+  const host = await registerAddressDevice(origin, 'windows', 'Address host');
+  const ios = await registerAddressDevice(origin, 'ios', 'iPad');
+  const web = await registerAddressDevice(origin, 'web', 'Browser');
+  for (const controller of [ios, web]) {
+    const catalog = await api(origin, '/v1/devices', { token: controller.token });
+    assert.deepEqual(catalog.value.devices.map((device) => device.id), [host.id]);
+    assert.equal((await api(origin, '/v1/desktop/room', { token: controller.token, method: 'POST', body: {} })).response.status, 403);
+  }
+  const room = (await api(origin, '/v1/desktop/room', { token: host.token, method: 'POST', body: {} })).value;
+  const hostSocket = connectHost(room.signalingUrl, room.ticket);
+  t.after(() => hostSocket.close());
+  await connected(hostSocket);
+  await api(origin, '/v1/desktop/controllable', { token: host.token, method: 'POST', body: { controllable: true } });
+  for (const controller of [ios, web]) {
+    const reservation = await api(origin, '/v1/sessions', { token: controller.token, method: 'POST', body: { deviceId: host.id } });
+    assert.equal(reservation.response.status, 201, JSON.stringify(reservation.value));
+    const hostRequest = nextSocketIoEvent(hostSocket, 'be-controlled');
+    const socket = await openController(reservation.value.signalingUrl, reservation.value.ticket);
+    t.after(() => socket.close());
+    const [request] = await hostRequest;
+    assert.equal(request.controller_device_id, controller.id);
+    if (controller === ios) {
+      const left = nextSocketIoEvent(hostSocket, 'left');
+      socket.send(JSON.stringify({ type: 'leave' }));
+      await left;
+    } else {
+      const ended = nextWebSocketMessage(socket, (message) => message.type === 'ended');
+      const released = nextSocketIoEvent(hostSocket, 'released');
+      const disabled = await api(origin, '/v1/desktop/controllable', {
+        token: host.token, method: 'POST', body: { controllable: false },
+      });
+      assert.equal(disabled.response.status, 200);
+      assert.equal((await ended).reason, 'host_disabled');
+      assert.equal((await released)[0].ice_id, request.ice_id);
+      const reconnect = await api(origin, '/v1/sessions', {
+        token: controller.token, method: 'POST', body: { deviceId: host.id },
+      });
+      assert.equal(reconnect.response.status, 409);
+    }
+  }
+
+  const denied = await fixture(t, { desktopClientNetworks: '192.0.2.0/24' });
+  const rejection = await api(denied.origin, '/v1/desktop/register', {
+    token: ios.token, method: 'POST', body: { platform: 'ios', name: 'iPad' },
+    headers: { 'X-Forwarded-For': '192.0.2.10' },
+  });
+  assert.equal(rejection.response.status, 403);
 });

@@ -142,32 +142,31 @@ struct ControllerView: View {
 
     private var pairingCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("服务端配对", symbol: "link")
+            sectionTitle("连接自建服务器", symbol: "link")
             TextField("HTTPS 服务端地址，例如 https://192.168.1.10:8443", text: $model.serverAddress)
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
-            TextField("本机名称", text: $model.controllerName)
-                .textFieldStyle(.roundedBorder)
-            SecureField("配对码", text: $model.pairCode)
-                .textContentType(.oneTimeCode)
-                .textFieldStyle(.roundedBorder)
+            DisclosureGroup("本机名称与配对码") {
+                TextField("本机名称", text: $model.controllerName)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("配对码（可选）", text: $model.pairCode)
+                    .textContentType(.oneTimeCode)
+                    .textFieldStyle(.roundedBorder)
+            }
             Button {
-                Task { await model.pair() }
+                Task { await model.connectServer() }
             } label: {
                 if model.isBusy && !model.sessionIsActive {
                     ProgressView().frame(maxWidth: .infinity)
                 } else {
-                    Label("配对此服务端", systemImage: "qrcode")
+                    Label("连接服务器", systemImage: "link")
                         .frame(maxWidth: .infinity)
                 }
             }
             .buttonStyle(.borderedProminent)
             .disabled(model.isBusy || model.sessionIsActive)
-            Text("配对令牌保存在本机 Keychain，并按服务端 origin 隔离。")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
         }
         .padding(14)
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
@@ -176,7 +175,7 @@ struct ControllerView: View {
     private var pairedServersCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                sectionTitle("已配对服务端", symbol: "externaldrive.connected.to.line.below")
+                sectionTitle("已保存的服务器", symbol: "externaldrive.connected.to.line.below")
                 Spacer()
                 if model.selectedServer != nil {
                     Button {
@@ -188,7 +187,7 @@ struct ControllerView: View {
                 }
             }
             if model.pairedServers.isEmpty {
-                Text("完成配对后，服务端会保存在这里。")
+                Text("连接过的服务器会保存在这里。")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {

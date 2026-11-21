@@ -27,7 +27,7 @@ xcodebuild -project OPENUUYCController.xcodeproj \
 
 ## 使用
 
-在「服务端」输入 HTTPS 服务地址、配对码和本机名称，完成配对后选择服务端，再从在线且允许控制的设备中连接。令牌只保存于 iOS Keychain，Keychain 服务使用固定命名空间，账户名为标准化服务端 origin；设备列表只将非机密标识保存到本机偏好设置。
+在「服务端」填写与 Windows 被控端相同的 HTTPS 地址，点击「连接自建服务器」。选择该服务，再从在线且已开启「允许被控」的设备中连接。地址模式无需配对码。仍在使用旧配对流程时，可以展开「使用配对码」。身份凭据按服务器地址保存于 iOS Keychain。
 
 应用进入后台时会先释放当前输入并结束会话。连接界面会显示信令、媒体连接状态、错误和首个视频帧；只有首帧到达后才显示「已连接」。
 
@@ -35,4 +35,4 @@ xcodebuild -project OPENUUYCController.xcodeproj \
 
 ## 验证范围
 
-完整 Xcode 26.3 已通过上面的未签名 `iphoneos` app target 构建命令，WebRTC 158.0.0 包解析和 iOS 源码编译成功。尚未在实体设备或模拟器中运行，也未验证真实服务端配对、视频和输入交互。
+已用 Xcode 26.3 完成 `iphoneos` 构建。服务端集成测试已覆盖 iOS 设备地址登记、获取设备列表和发起会话。iPad 上的视频和输入需在真机验证。

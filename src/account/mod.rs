@@ -13,3 +13,5 @@ pub(crate) mod session_restore;
 
 pub(crate) mod feature_ability;
 pub(crate) mod reporting;
+
+pub(crate) mod self_hosted;

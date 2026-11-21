@@ -406,32 +406,50 @@
     }
   }
 
+  let enrollmentToken;
+
   async function pair(event) {
     event.preventDefault();
     setError(ui.pairError, '');
     const name = ui.pairName.value.trim();
     const code = ui.pairCode.value.trim();
-    if (!name || !code) {
-      setError(ui.pairError, '请填写浏览器名称和控制器配对码。');
+    if (!name) {
+      setError(ui.pairError, '请填写浏览器名称。');
       return;
     }
     ui.pairForm.querySelector('button[type="submit"]').disabled = true;
     try {
-      const result = await request('/v1/pair', {
-        method: 'POST',
-        auth: false,
-        body: { role: 'controller', platform: 'web', name, code },
-      });
-      ui.pairCode.value = '';
-      if (!ALLOWED_TOKEN.test(result.token || '') || !ALLOWED_DEVICE_ID.test(result.deviceId || '')) {
-        throw new Error('配对响应无效。');
+      let token;
+      if (code) {
+        const result = await request('/v1/pair', {
+          method: 'POST',
+          auth: false,
+          body: { role: 'controller', platform: 'web', name, code },
+        });
+        if (!ALLOWED_TOKEN.test(result.token || '') || !ALLOWED_DEVICE_ID.test(result.deviceId || '')) {
+          throw new Error('配对响应无效。');
+        }
+        token = result.token;
+      } else {
+        enrollmentToken ??= Array.from(crypto.getRandomValues(new Uint8Array(32)),
+          (byte) => byte.toString(16).padStart(2, '0')).join('');
+        const result = await request('/v1/desktop/register', {
+          method: 'POST',
+          auth: false,
+          headers: { Authorization: `Bearer ${enrollmentToken}` },
+          body: { platform: 'web', name },
+        });
+        if (!ALLOWED_DEVICE_ID.test(result.device_id || '')) throw new Error('设备注册响应无效。');
+        token = enrollmentToken;
       }
-      const saved = persistToken(result.token);
+      ui.pairCode.value = '';
+      const saved = persistToken(token);
+      enrollmentToken = undefined;
       ui.forget.hidden = false;
       await refreshDevices();
       if (!saved) showToast('授权仅保存在本次页面内，浏览器未允许保存本地令牌。');
     } catch (error) {
-      setError(ui.pairError, `绑定失败：${error.message}`);
+      setError(ui.pairError, `连接服务器失败：${error.message}`);
     } finally {
       ui.pairForm.querySelector('button[type="submit"]').disabled = false;
     }
@@ -656,11 +674,6 @@
     chooseCodec(audio, 'audio', 'audio/opus');
   }
 
-  function rtcConfiguration() {
-    // Self-hosted LAN sessions intentionally do not use STUN or TURN.
-    return { iceServers: [], bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require' };
-  }
-
   function transmitCandidate(candidate, epoch) {
     if (!current(epoch) || !state.socket || state.socket.readyState !== WebSocket.OPEN) return;
     const payload = candidate.toJSON ? candidate.toJSON() : candidate;
@@ -742,24 +755,24 @@
   async function acceptTrack(event, epoch) {
     if (!current(epoch)) return;
     const track = event.track;
-    if (!state.stream) state.stream = event.streams?.[0] || new MediaStream();
-    if (!event.streams?.[0] && !state.stream.getTracks().some((existing) => existing.id === track.id)) {
+    // Hosts advertise audio and video with separate stream IDs.
+    if (!state.stream) {
+      state.stream = new MediaStream([track]);
+      ui.video.srcObject = state.stream;
+    } else {
       state.stream.addTrack(track);
     }
-    if (event.streams?.[0] && state.stream !== event.streams[0]) state.stream = event.streams[0];
-    ui.video.srcObject = state.stream;
+    if (track.kind !== 'video') return;
     ui.video.dataset.state = 'decoding';
     ui.resolution.textContent = '正在等待首帧';
     sessionDetail('媒体通道已建立', '正在等待浏览器解码远端画面的第一帧。');
     showStep('frame', 'active');
+    watchVideoFrames(epoch);
     try {
-      const result = ui.video.play();
-      if (result && typeof result.then === 'function') await result;
+      await ui.video.play();
     } catch {
       if (current(epoch)) ui.audioHint.hidden = false;
     }
-    if (!current(epoch)) return;
-    if (track.kind === 'video') watchVideoFrames(epoch);
   }
 
   function failSession(epoch, message) {
@@ -795,7 +808,7 @@
 
   function makePeer(epoch, iceServers) {
     if (!current(epoch)) return null;
-    const peer = new RTCPeerConnection(rtcConfiguration(iceServers));
+    const peer = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require' });
     state.peer = peer;
     state.currentScreenId = 0;
     state.localCandidates = [];
@@ -839,15 +852,15 @@
     peer.onconnectionstatechange = () => handleConnectionState(epoch);
     peer.oniceconnectionstatechange = () => {
       if (!current(epoch)) return;
-      if (peer.iceConnectionState === 'failed') failSession(epoch, '网络协商失败。请确认浏览器与主机在同一可互通的局域网中。');
+      if (peer.iceConnectionState === 'failed') failSession(epoch, '网络协商失败。请检查浏览器与主机之间的网络或服务器的中继设置。');
     };
     return peer;
   }
 
   async function createOffer(epoch, iceServers) {
-    const peer = makePeer(epoch, iceServers);
-    if (!peer) return;
     try {
+      const peer = makePeer(epoch, iceServers);
+      if (!peer) return;
       const offer = await peer.createOffer();
       if (!current(epoch)) return;
       await peer.setLocalDescription(offer);
@@ -995,7 +1008,7 @@
         }
         catch { failSession(epoch, '无法发送信令认证消息。'); }
       };
-      socket.onmessage = (event) => { void handleSignalMessage(event.data, epoch, []); };
+      socket.onmessage = (event) => { void handleSignalMessage(event.data, epoch, session.iceServers); };
       socket.onerror = () => {
         if (current(epoch)) failSession(epoch, '无法连接同源信令服务。');
       };

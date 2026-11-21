@@ -9,6 +9,8 @@ use crate::session::presence::PresenceState;
 use std::time::Instant;
 
 pub(super) enum GuiCommand {
+    SetServer { generation: u64, address: String },
+    OpenGuestAssist,
     HostAssist {
         generation: u64,
         action: crate::features::host::assist::Action,
@@ -105,6 +107,8 @@ pub(super) enum MutationOutcome {
 }
 
 pub(super) enum GuiEvent {
+    ServerLoaded(String),
+    ServerChanged(u64, std::result::Result<String, String>),
     HostAssistFailed {
         generation: u64,
         error: String,

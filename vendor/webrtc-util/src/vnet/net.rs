@@ -395,7 +395,7 @@ pub struct NetConfig {
 // up to the transport (UDP / TCP) layer.
 pub enum Net {
     VNet(Arc<Mutex<VNet>>),
-    Ifs(Vec<Interface>),
+    Ifs { include_virtual_adapters: bool },
 }
 
 impl Net {
@@ -441,12 +441,21 @@ impl Net {
 
             Net::VNet(Arc::new(Mutex::new(vnet)))
         } else {
-            Net::Ifs(Self::native_interfaces())
+            Net::Ifs {
+                include_virtual_adapters: false,
+            }
         }
     }
 
-    fn native_interfaces_result() -> Result<Vec<Interface>> {
-        let interfaces = ifaces::ifaces()?;
+    /// Use the system network stack with all active adapters eligible for ICE.
+    pub fn with_virtual_adapters() -> Self {
+        Self::Ifs {
+            include_virtual_adapters: true,
+        }
+    }
+
+    fn native_interfaces_result(include_virtual_adapters: bool) -> Result<Vec<Interface>> {
+        let interfaces = ifaces::ffi::native_interfaces(include_virtual_adapters)?;
 
         let mut m: HashMap<String, (Vec<IpNet>, u32)> = HashMap::new();
         for iface in interfaces {
@@ -472,8 +481,8 @@ impl Net {
         Ok(ifs)
     }
 
-    fn native_interfaces() -> Vec<Interface> {
-        match Self::native_interfaces_result() {
+    fn native_interfaces(include_virtual_adapters: bool) -> Vec<Interface> {
+        match Self::native_interfaces_result(include_virtual_adapters) {
             Ok(interfaces) => interfaces,
             Err(error) => {
                 log::warn!("native interface enumeration failed: {error}");
@@ -487,7 +496,9 @@ impl Net {
     pub async fn try_get_interfaces(&self) -> Result<Vec<Interface>> {
         match self {
             Net::VNet(vnet) => Ok(vnet.lock().await.get_interfaces().to_vec()),
-            Net::Ifs(_) => Self::native_interfaces_result(),
+            Net::Ifs {
+                include_virtual_adapters,
+            } => Self::native_interfaces_result(*include_virtual_adapters),
         }
     }
 
@@ -498,7 +509,9 @@ impl Net {
                 let net = vnet.lock().await;
                 net.get_interfaces().to_vec()
             }
-            Net::Ifs(_) => Self::native_interfaces(),
+            Net::Ifs {
+                include_virtual_adapters,
+            } => Self::native_interfaces(*include_virtual_adapters),
         }
     }
 
@@ -509,14 +522,11 @@ impl Net {
                 let net = vnet.lock().await;
                 net.get_interface(ifc_name).await
             }
-            Net::Ifs(_) => {
-                for ifc in Self::native_interfaces() {
-                    if ifc.name == ifc_name {
-                        return Some(ifc.clone());
-                    }
-                }
-                None
-            }
+            Net::Ifs {
+                include_virtual_adapters,
+            } => Self::native_interfaces(*include_virtual_adapters)
+                .into_iter()
+                .find(|ifc| ifc.name == ifc_name),
         }
     }
 
@@ -524,7 +534,7 @@ impl Net {
     pub fn is_virtual(&self) -> bool {
         match self {
             Net::VNet(_) => true,
-            Net::Ifs(_) => false,
+            Net::Ifs { .. } => false,
         }
     }
 
@@ -534,7 +544,7 @@ impl Net {
                 let net = vnet.lock().await;
                 net.resolve_addr(use_ipv4, address).await
             }
-            Net::Ifs(_) => Ok(conn::lookup_host(use_ipv4, address).await?),
+            Net::Ifs { .. } => Ok(conn::lookup_host(use_ipv4, address).await?),
         }
     }
 
@@ -544,7 +554,7 @@ impl Net {
                 let net = vnet.lock().await;
                 net.bind(addr).await
             }
-            Net::Ifs(_) => Ok(Arc::new(UdpSocket::bind(addr).await?)),
+            Net::Ifs { .. } => Ok(Arc::new(UdpSocket::bind(addr).await?)),
         }
     }
 
@@ -558,7 +568,7 @@ impl Net {
                 let net = vnet.lock().await;
                 net.dial(use_ipv4, remote_addr).await
             }
-            Net::Ifs(_) => {
+            Net::Ifs { .. } => {
                 let any_ip = if use_ipv4 {
                     Ipv4Addr::new(0, 0, 0, 0).into()
                 } else {
@@ -577,7 +587,7 @@ impl Net {
     pub fn get_nic(&self) -> Result<Arc<Mutex<dyn Nic + Send + Sync>>> {
         match self {
             Net::VNet(vnet) => Ok(Arc::clone(vnet) as Arc<Mutex<dyn Nic + Send + Sync>>),
-            Net::Ifs(_) => Err(Error::ErrVnetDisabled),
+            Net::Ifs { .. } => Err(Error::ErrVnetDisabled),
         }
     }
 }

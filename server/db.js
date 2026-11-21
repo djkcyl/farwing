@@ -35,6 +35,9 @@ export function openDatabase(dbPath = DEFAULT_DB_PATH) {
       revoked_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS devices_host_idx ON devices(bound_host_id);
+    CREATE TABLE IF NOT EXISTS address_members (
+      device_id TEXT PRIMARY KEY REFERENCES devices(id)
+    );
     CREATE TABLE IF NOT EXISTS pairing_codes (
       code_hash TEXT PRIMARY KEY,
       role TEXT NOT NULL CHECK (role IN ('host', 'controller')),

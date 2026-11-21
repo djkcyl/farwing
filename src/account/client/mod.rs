@@ -38,7 +38,7 @@ pub struct AuthenticatedClient {
     session: LoginSession,
     device: DeviceHandle,
     owned_device: tokio::sync::Mutex<Option<DeviceRuntime>>,
-    session_store: KeyringSessionStore,
+    session_store: Option<KeyringSessionStore>,
     ended: CancellationToken,
     validated: tokio::sync::Mutex<RestoreState>,
     restore_trigger: RestoreTrigger,
@@ -85,12 +85,16 @@ impl AuthenticatedClient {
     }
 
     fn load(device: DeviceHandle, owned_device: Option<DeviceRuntime>) -> Result<Self> {
-        let session_store = KeyringSessionStore::new()?;
-        let session = session_store.load()?.ok_or(NoSavedSession)?;
         let identity = device.identity().client_identity()?;
+        let (session, session_store, mut api) = match device.self_hosted() {
+            Some(settings) => (settings.session()?, None, NrdApi::self_hosted(identity.clone(), settings.clone())?),
+            None => {
+                let store = KeyringSessionStore::new()?;
+                (store.load()?.ok_or(NoSavedSession)?, Some(store), NrdApi::new(identity.clone())?)
+            }
+        };
         let mut host = crate::features::host::Handle::load(session.user_id(), &identity.device_id);
         host.bind_account(session.generation());
-        let mut api = NrdApi::new(identity)?;
         api.set_user_id(Some(session.user_id()))?;
         api.set_bearer_token(Some(session.token()))?;
         let ended = CancellationToken::new();
@@ -103,6 +107,11 @@ impl AuthenticatedClient {
             RestoreTrigger::ExplicitLogin
         };
         let account_name = Mutex::new(session.nickname().to_owned());
+        let feature_catalog = if session_store.is_none() {
+            crate::account::feature_ability::FeatureCatalog::self_hosted
+        } else {
+            crate::account::feature_ability::FeatureCatalog::new
+        };
         Ok(Self {
             membership: Default::default(),
             host,
@@ -120,9 +129,13 @@ impl AuthenticatedClient {
             restore_progress: tokio::sync::watch::channel(RestorationStage::Device).0,
             account_name,
             publication: Mutex::new(publication::Sync::default()),
-            features: crate::account::feature_ability::FeatureCatalog::default(),
-            controlling_features: crate::account::feature_ability::FeatureCatalog::new(true),
+            features: feature_catalog(false),
+            controlling_features: feature_catalog(true),
         })
+    }
+
+    pub(crate) fn is_self_hosted(&self) -> bool {
+        self.session_store.is_none()
     }
 
     pub(crate) fn account_generation(&self) -> String {
@@ -181,7 +194,9 @@ impl AuthenticatedClient {
     }
 
     pub fn clear_saved_generation(&self) -> Result<()> {
-        self.session_store.clear_if_matches(&self.session)?;
+        if let Some(store) = &self.session_store {
+            store.clear_if_matches(&self.session)?;
+        }
         Ok(())
     }
 
@@ -205,7 +220,13 @@ impl AuthenticatedClient {
         let identity = tokio::select! {
             biased;
             _ = self.ended.cancelled() => bail!("account session has ended"),
-            result = session_restore::initialize(device, self.restore_trigger) => result,
+            result = async {
+                if self.is_self_hosted() {
+                    device.ensure(false).await
+                } else {
+                    session_restore::initialize(device, self.restore_trigger).await
+                }
+            } => result,
         };
         let identity = match identity {
             Ok(identity) => identity,
@@ -479,6 +500,9 @@ impl AuthenticatedClient {
     }
 
     pub(crate) fn schedule_feature_refresh(&self, session_create: bool) {
+        if self.is_self_hosted() {
+            return;
+        }
         if let Some(api) = self.api.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             self.features
                 .refresh(api.clone(), self.ended.clone(), session_create);

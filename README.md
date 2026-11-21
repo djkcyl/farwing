@@ -6,6 +6,12 @@ OpenUUYC 是用 Rust 编写的 UU 远程第三方 Windows 客户端，支持主�
 
 后续计划支持 Linux 等其他平台，移植工作请先通过 [Issue](https://github.com/djkcyl/openuuyc/issues) 沟通。
 
+## 自建服务器
+
+在 Windows 主控和被控端的「自建服务器」填入同一个服务地址。被控端开启「允许被控」后，主控端从设备列表连接。网页和 iOS 可使用同一服务地址。
+
+[服务端部署和连接步骤](server/README.md) · [iOS 主控工程](ios/README.md)
+
 ## 下载与使用
 
 从 [Releases](https://github.com/djkcyl/openuuyc/releases) 下载 Windows x64 客户端，扫码或短信登录后连接设备，支持 UU 官方客户端；无需登录也可在登录页开启“接受远程协助”。

@@ -121,6 +121,7 @@ impl Peer {
         displays: Arc<super::displays::Session>,
         ice_servers: Vec<RTCIceServer>,
         relay: bool,
+        self_hosted: bool,
         mut initial: VideoConfig,
         control_screens: bool,
         negotiated: Arc<super::format::Negotiated>,
@@ -385,7 +386,7 @@ impl Peer {
             },
             RTPCodecType::Video,
         )?;
-        let mut settings = ConnectionCore::settings();
+        let mut settings = ConnectionCore::settings(self_hosted);
         settings.enable_sender_rtx(true);
         settings.enable_sender_rsfec(true);
         let core = ConnectionCore::new(

@@ -27,7 +27,7 @@ pub(crate) struct ConnectionCore {
 }
 
 impl ConnectionCore {
-    pub fn settings() -> SettingEngine {
+    pub fn settings(self_hosted: bool) -> SettingEngine {
         let mut settings = SettingEngine::default();
         settings.set_sctp_max_message_size_can_send(SctpMaxMessageSize::Bounded(
             MAX_DATA_CHANNEL_MESSAGE_SIZE,
@@ -36,6 +36,11 @@ impl ConnectionCore {
         settings.set_srtp_replay_protection_window(1024);
         settings.set_srtcp_replay_protection_window(128);
         settings.set_continual_gathering(true);
+        if self_hosted {
+            settings.set_vnet(Some(Arc::new(
+                webrtc::util::vnet::net::Net::with_virtual_adapters(),
+            )));
+        }
         settings
     }
 

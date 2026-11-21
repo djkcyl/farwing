@@ -42,6 +42,7 @@ fn credential(name: &str) -> bool {
             | "signature"
             | "xparamsign"
             | "token"
+            | "ticket"
             | "accesstoken"
             | "refreshtoken"
             | "verificationcode"
@@ -143,7 +144,7 @@ impl Redaction {
         }
         static FIELDS: LazyLock<regex::Regex> = LazyLock::new(|| {
             regex::Regex::new(
-            r#"(?i)([\"']?\b(?:password|passwd|access_token|refresh_token|token|secret|signature|sign|backup_sign|verification_code|verify_code|connect_code|auth_code|authorization|cookie)[\"']?\s*[:=]\s*)(?:\"[^\"]*(?:\"|$)|'[^']*(?:'|$)|[^\s,;}]+)"#).unwrap()
+            r#"(?i)([\"']?\b(?:password|passwd|access_token|refresh_token|token|ticket|secret|signature|sign|backup_sign|verification_code|verify_code|connect_code|auth_code|authorization|cookie)[\"']?\s*[:=]\s*)(?:\"[^\"]*(?:\"|$)|'[^']*(?:'|$)|[^\s,;}]+)"#).unwrap()
         });
         FIELDS.replace_all(&text, "$1\"<redacted>\"").into_owned()
     }
