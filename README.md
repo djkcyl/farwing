@@ -10,7 +10,7 @@ OpenUUYC 是用 Rust 编写的 UU 远程第三方 Windows 客户端，支持主�
 
 在 Windows 主控和被控端的「自建服务器」填入同一个服务地址。被控端开启「允许被控」后，主控端从设备列表连接。网页和 iOS 可使用同一服务地址。
 
-[服务端部署和连接步骤](server/README.md) · [iOS 主控工程](ios/README.md)
+[服务端部署与 Windows 构建](server/README.md) · [iOS 主控工程](ios/README.md) · [自建分支进度](server/PROGRESS.md)
 
 ## 下载与使用
 
@@ -79,7 +79,7 @@ OpenUUYC 是用 Rust 编写的 UU 远程第三方 Windows 客户端，支持主�
 
 测试启动会降低驱动加载保护，程序不会自动修改这些设置。
 
-## 自托管远程连接
+## 旧版命令行配对
 
 可运行自托管信令服务，让 Windows 主机与浏览器或 iOS 主控连接。先安装 Node.js 22.13 或更新版本，再启动服务：
 
@@ -100,7 +100,7 @@ node server/cli.js pair-code --role host
 node server/cli.js pair-code --role controller --host DEVICE_ID
 ```
 
-在 Windows 主机上打开服务地址，用浏览器输入控制器配对码即可绑定。跨设备连接时，主机、浏览器和 iOS 控制器都应使用同一已配置的 HTTPS/WSS 地址。iOS 控制器可在「服务端」中填写地址并配对。自托管服务不会访问网易 UU 或其他上游账号服务。详细配置见[服务端说明](server/README.md)和[iOS 控制器说明](ios/README.md)。
+在 Windows 主机上打开服务地址，用浏览器输入控制器配对码即可绑定。跨设备连接时，主机、浏览器和 iOS 控制器都应使用同一已配置的 HTTPS/WSS 地址。iOS 控制器可展开「高级选项」填写配对码。自托管服务不会访问网易 UU 或其他上游账号服务。详细配置见[服务端说明](server/README.md)和[iOS 控制器说明](ios/README.md)。
 
 ## 构建
 

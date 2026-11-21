@@ -94,7 +94,7 @@ struct ControllerView: View {
     }
 
     private var statusColor: Color {
-        if model.connectionStatus == "已连接" { return .green }
+        if model.connectionStatus == "已连接" || model.connectionStatus == "已连接服务器" { return .green }
         if model.connectionStatus.contains("失败") || model.connectionStatus.contains("异常") { return .red }
         if model.sessionIsActive { return .orange }
         return .primary
@@ -148,7 +148,7 @@ struct ControllerView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
-            DisclosureGroup("本机名称与配对码") {
+            DisclosureGroup("高级选项") {
                 TextField("本机名称", text: $model.controllerName)
                     .textFieldStyle(.roundedBorder)
                 SecureField("配对码（可选）", text: $model.pairCode)
@@ -219,7 +219,7 @@ struct ControllerView: View {
                         }
                         .buttonStyle(.borderless)
                         .accessibilityLabel("忘记 \(server.name)")
-                        .disabled(model.sessionIsActive && model.selectedServerOrigin == server.origin)
+                        .disabled(model.isBusy || (model.sessionIsActive && model.selectedServerOrigin == server.origin))
                     }
                     .padding(.vertical, 4)
                     if server.id != model.pairedServers.last?.id { Divider() }
@@ -234,11 +234,11 @@ struct ControllerView: View {
         VStack(alignment: .leading, spacing: 12) {
             sectionTitle("主机", symbol: "desktopcomputer")
             if model.selectedServer == nil {
-                Text("选择或配对一个服务端后查看主机。")
+                Text("连接服务器后显示主机。")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else if model.hosts.isEmpty {
-                Text("没有已配对主机，或列表尚未刷新。")
+                Text("暂无主机")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {

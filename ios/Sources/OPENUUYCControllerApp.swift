@@ -8,6 +8,11 @@ struct OPENUUYCControllerApp: App {
     var body: some Scene {
         WindowGroup {
             ControllerView(model: model)
+                .task {
+                    if model.selectedServer != nil && !model.isBusy {
+                        await model.refreshHosts()
+                    }
+                }
                 .onChange(of: scenePhase) { phase in
                     if phase == .background {
                         Task { await model.disconnect(fromBackground: true) }

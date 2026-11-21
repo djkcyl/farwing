@@ -25,11 +25,17 @@ node --env-file=server/.env server/index.js
 
 局域网或路由互通的 VPN 通常可以直接建立媒体连接。需要跨 NAT 或仅中继连接时，在 `SELF_HOST_ICE_SERVERS` 配置自有 STUN/TURN。每项填写一个 `urls` 字符串，TURN 项还需要 `username` 和 `credential`。
 
+服务启动后，在主控设备的浏览器打开服务地址下的 `/healthz`，确认 HTTPS 请求返回 `{"status":"ok"}`。
+
+## 构建 Windows 客户端
+
+检出 `self-hosted` 分支，在 Windows 上按[项目构建说明](../README.md#构建)安装工具链，并在项目根目录执行 `cargo dist --native`。Windows x64 可执行文件位于 `target/dist/`。
+
 ## 连接设备
 
 1. 将自建分支的 Windows 可执行文件复制到主控和被控电脑并运行。只在运行服务器的设备上安装 Node.js。在启动页的「自建服务器」，或控制中心的「连接设置」中填同一 HTTPS 地址，点击「连接自建服务器」。
-2. 在被控电脑上开启「允许被控」。在主控的「设备」列表中，选择在线的被控电脑并连接。
-3. 在 iPad 或 iPhone 上，在 Farwing 控制器的「服务端」保存同一个地址。网页主控直接用浏览器打开该地址，按「连接自建服务器」。
+2. 在被控电脑上开启「允许被控」。在主控的「我的设备」列表中，找到在线的被控电脑并点击「连接」。新电脑未显示时，点击「刷新设备」。
+3. 在 iPad 或 iPhone 上，在 Farwing 控制器的「连接自建服务器」填写同一个地址，点击「连接服务器」。网页主控直接用浏览器打开该地址，连接自建服务器后从主机列表发起会话。
 
 地址模式的日常连接无需配对码。设备令牌按服务器地址保存在客户端。使用 `node server/cli.js list` 查看注册设备，使用 `node server/cli.js revoke DEVICE_ID` 撤销设备。使用 Node.js `v23.3.0` 时同样为 CLI 加 `--experimental-sqlite`。
 
@@ -44,3 +50,5 @@ node server/cli.js pair-code --role controller --host DEVICE_ID
 ```
 
 服务默认使用 `server/data/devices.sqlite`，可以用 `OPENUUYC_DB_PATH` 指定存放位置。升级时沿用原数据库可保留设备和撤销记录。地址模式目前覆盖连接所需的设备注册、目录、在线状态、控制开关、会话接管和媒体信令。远程协助码、远程唤醒、电源操作、官方会员和升级服务尚未接入。
+
+各客户端的验收记录见[自建分支进度](PROGRESS.md)。

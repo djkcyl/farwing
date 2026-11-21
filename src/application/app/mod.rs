@@ -340,16 +340,16 @@ impl DeviceCenterApp {
                             self.show_official_login = address.is_empty();
                             self.server_input = address.clone();
                             self.server_address = address;
+                            // The worker already cancelled login and uses this generation for device sync.
                             self.login_generation = generation;
-                            self.cancel_login();
                             self.phone.clear_private();
+                            self.reset_login_ui();
                             self.clear_catalog();
                             self.devices = None;
                             self.host = None;
                             self.selected_device_id = None;
                             self.presence = PresenceState::Offline;
                             self.refresh_pending = false;
-                            self.login_error = None;
                             self.login_restoring = true;
                             self.startup_stage = StartupStage::Credentials;
                             self.startup_stage_since = Instant::now();
@@ -839,13 +839,17 @@ impl DeviceCenterApp {
 
     fn cancel_login(&mut self) {
         self.phone.cancel();
-        self.qr_generation = self.qr_generation.wrapping_add(1);
-        self.qr_running = false;
         self.login_generation = self.login_generation.wrapping_add(1);
         let _ = self
             .worker
             .commands
             .send(GuiCommand::CancelLogin(self.login_generation));
+        self.reset_login_ui();
+    }
+
+    fn reset_login_ui(&mut self) {
+        self.qr_generation = self.qr_generation.wrapping_add(1);
+        self.qr_running = false;
         self.login_restoring = false;
         self.login_running = false;
         self.login_qr = None;

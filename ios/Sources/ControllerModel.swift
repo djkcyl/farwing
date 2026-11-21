@@ -65,7 +65,8 @@ final class ControllerModel: ObservableObject {
         let givenName = controllerName.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = givenName.isEmpty ? defaultControllerName : givenName
         isBusy = true
-        connectionDetail = "正在连接服务端…"
+        connectionStatus = "正在连接服务器…"
+        connectionDetail = "正在验证自建服务器地址。"
         defer { isBusy = false }
         do {
             let origin = try ServerAddress.origin(from: serverAddress)
@@ -94,10 +95,13 @@ final class ControllerModel: ObservableObject {
             pairedServers.removeAll { $0.origin == origin }
             pairedServers.insert(server, at: 0)
             vault.save(pairedServers)
+            if selectedServerOrigin != origin {
+                hosts = []
+                selectedHostID = nil
+            }
             selectedServerOrigin = origin
             serverAddress = origin
             pairCode = ""
-            connectionDetail = "正在读取设备列表…"
             await refreshHosts()
         } catch {
             showError(error.localizedDescription, status: "服务器连接失败")
@@ -118,10 +122,12 @@ final class ControllerModel: ObservableObject {
         clearError()
         guard let server = selectedServer else {
             hosts = []
-            connectionDetail = "请先连接一个服务端。"
+            connectionStatus = "尚未连接"
+            connectionDetail = "输入 HTTPS 服务端地址以加载设备。"
             return
         }
         isBusy = true
+        connectionStatus = "正在读取主机…"
         connectionDetail = "正在读取主机列表…"
         defer { isBusy = false }
         do {
@@ -132,7 +138,8 @@ final class ControllerModel: ObservableObject {
             if !hosts.contains(where: { $0.id == selectedHostID }) {
                 selectedHostID = hosts.first?.id
             }
-            connectionDetail = hosts.isEmpty ? "此服务端暂时没有已配对的主机。" : "主机列表已更新。"
+            connectionStatus = "已连接服务器"
+            connectionDetail = hosts.isEmpty ? "在 Windows 被控端保存同一地址，即可在这里找到它。" : "主机列表已更新。"
         } catch {
             showError(error.localizedDescription, status: "读取主机失败")
         }
@@ -289,7 +296,7 @@ final class ControllerModel: ObservableObject {
                 serverAddress = selectedServerOrigin ?? ""
                 hosts = []
                 selectedHostID = nil
-                if selectedServerOrigin != nil { await refreshHosts() }
+                await refreshHosts()
             }
         } catch {
             errorMessage = error.localizedDescription

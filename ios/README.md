@@ -21,13 +21,13 @@ xcodebuild -project OPENUUYCController.xcodeproj \
   CODE_SIGNING_ALLOWED=NO build
 ```
 
-在 Xcode 中运行时，选择 `OPENUUYCController` scheme 和当前已安装的模拟器或设备平台。实际安装到设备需要配置有效的 Apple 签名。
+在 Xcode 中运行时，选择 `OPENUUYCController` scheme。安装到 iPhone 或 iPad 时，在应用目标的 **Signing & Capabilities** 开启自动管理签名并选择自己的 **Team**，再选择已连接的设备运行。
 
 上游在 [158.0.0 标签的 Package.swift](https://github.com/stasel/WebRTC/blob/158.0.0/Package.swift) 中发布了 `WebRTC-M158.xcframework.zip`，SHA-256 为 `dd26ba28fb9c8dbc82f4be3085e8d112a4e2a4e654e1786a9977a748c24c4912`。M158 头文件包含本项目用到的 PeerConnection、ICE、数据通道、接收端编解码偏好和 Metal 视频渲染 API。控制器将接收编解码偏好限制为 Opus、H.264 和对应 H.264 RTX。项目直接使用该 SPM 包；TLS 证书必须受 iOS 系统信任，组织内部 CA 可以安装到设备后使用。项目保留系统 ATS 和证书校验设置，不会关闭 TLS 验证或放宽 ATS。
 
 ## 使用
 
-在「服务端」填写与 Windows 被控端相同的 HTTPS 地址，点击「连接自建服务器」。选择该服务，再从在线且已开启「允许被控」的设备中连接。地址模式无需配对码。仍在使用旧配对流程时，可以展开「使用配对码」。身份凭据按服务器地址保存于 iOS Keychain。
+在「连接自建服务器」填写与 Windows 被控端相同的 HTTPS 地址，点击「连接服务器」。从主机列表选择在线且已开启「允许被控」的设备。控制器启动时会从已保存的地址加载主机。身份凭据按服务器地址保存在 iOS Keychain。旧版部署的配对码可在「高级选项」填写。
 
 应用进入后台时会先释放当前输入并结束会话。连接界面会显示信令、媒体连接状态、错误和首个视频帧；只有首帧到达后才显示「已连接」。
 
@@ -35,4 +35,4 @@ xcodebuild -project OPENUUYCController.xcodeproj \
 
 ## 验证范围
 
-已用 Xcode 26.3 完成 `iphoneos` 构建。服务端集成测试已覆盖 iOS 设备地址登记、获取设备列表和发起会话。iPad 上的视频和输入需在真机验证。
+已用 Xcode 26.3 完成 `iphoneos` 构建。服务端集成测试已覆盖 iOS 设备地址登记、获取设备列表和发起会话。iPad 上的视频和输入仍待真机验证。完整记录见[自建分支进度](../server/PROGRESS.md)。

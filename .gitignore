@@ -21,6 +21,7 @@ captures/
 !/drivers/display/UPSTREAM.md
 !/drivers/audio/UPSTREAM.md
 !/server/README.md
+!/server/PROGRESS.md
 !/ios/README.md
 !**/LICENSE*.md
 !**/COPYING*.md
@@ -55,6 +56,8 @@ secrets.json
 
 # Signing secrets and local debugging/build output. Public .cer/.cat driver
 # packages under assets/drivers are deliberately versioned.
+.DS_Store
+xcuserdata/
 *.pfx
 *.p12
 *.key
