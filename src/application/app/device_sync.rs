@@ -1,5 +1,6 @@
 //! Account snapshots, push overlays, and user-requested device details.
 use super::*;
+use anyhow::Context;
 use crate::account::api::{DeviceDetail, DeviceGroups};
 use crate::account::device_change::{ChangeKind, DeviceChange};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -60,6 +61,28 @@ impl Default for DeviceSync {
     }
 }
 impl DeviceSync {
+    pub async fn load_initial(client: &AuthenticatedClient) -> Result<Self> {
+        let (list, groups) = tokio::try_join!(
+            async { client.list_devices().await.context("读取设备列表失败") },
+            async { client.device_groups().await.context("读取设备分组失败") },
+        )?;
+        crate::account::api::validate_device_id(&groups.current_device_id)
+            .context("服务器返回的本机设备 ID 无效")?;
+        let catalog = catalog::Catalog::from_groups(
+            groups,
+            None,
+            client.suggested_device_name(),
+            client.feature_catalog(),
+        );
+        Ok(Self {
+            list: Some(list),
+            catalog: Some(catalog),
+            list_requested: false,
+            groups_requested: false,
+            ..Self::default()
+        })
+    }
+
     pub async fn reset(&mut self) {
         if let Some(mut read) = self.list_read.take() {
             read.task.abort();
@@ -104,7 +127,7 @@ impl DeviceSync {
             .find(|(_, d)| d.device_id == id)
             .map(|(_, d)| (d.platform, d.version_name.clone()))
     }
-    fn emit(&self, events: &Sender<GuiEvent>, generation: u64, name: &str) {
+    pub fn emit(&self, events: &Sender<GuiEvent>, generation: u64, name: &str) {
         if let Some(list) = &self.list {
             let _ = events.send(GuiEvent::Devices(generation, list.clone()));
         }

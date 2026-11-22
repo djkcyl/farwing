@@ -11,6 +11,7 @@ impl DeviceCenterApp {
         let settled = self.assist.password_prompt.is_none()
             && !self.assist.busy
             && !self.logout_pending
+            && !self.server_pending
             && !self.login_running
             && !self.login_restoring
             && !self.mutation_pending

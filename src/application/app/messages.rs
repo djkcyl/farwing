@@ -147,7 +147,7 @@ pub(super) enum GuiEvent {
     Error(String),
     SessionUnavailable(String),
     SignedOut,
-    AccountEnded(String),
+    AccountEnded(u64, String),
     LoginProgress(LoginMethod, u64, u64, LoginProgress),
     LoginFinished(LoginMethod, u64, u64, anyhow::Result<()>),
     SmsCooldown(Option<Instant>),

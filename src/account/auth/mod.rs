@@ -326,6 +326,11 @@ impl KeyringIdentityStore {
         Ok(Self { entry, self_hosted_device_id: Some(id.to_owned()) })
     }
 
+    #[cfg(test)]
+    pub(crate) fn clear_test_identity(&self) {
+        let _ = self.entry.delete_credential();
+    }
+
     pub(crate) fn transfer(&self, to_resident: bool) -> Result<()> {
         if to_resident { self.entry.enroll() } else { self.entry.restore_portable() }
     }

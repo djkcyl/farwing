@@ -302,6 +302,7 @@ impl Session {
         }
         if !self.client.host.requested() {
             if event == "be-controlled" {
+                anyhow::ensure!(!signal.self_hosted, "本机未允许被控");
                 // A controller can still submit a request while the cloud
                 // device list is stale (the official CLI can do this too).
                 // Clear only our disabled host room; do not construct a peer.
@@ -349,6 +350,12 @@ impl Session {
                         value.get("controller_device_id").and_then(Value::as_str) == Some(&options.device_id),
                         "主控设备身份与自建服务器授权不符"
                     );
+                    if let Some(connection_type) = value.get("connection_type") {
+                        anyhow::ensure!(
+                            connection_type.as_i64() == Some(i64::from(options.connect_type)),
+                            "连接类型与自建服务器授权不符"
+                        );
+                    }
                 }
                 if self.client.is_local() {
                     anyhow::ensure!(

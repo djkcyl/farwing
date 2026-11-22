@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { DEFAULT_DB_PATH, createPairingCode, listDevices, openDatabase, revokeDevice } from './db.js';
+import { runWithSqliteFlag } from './sqlite-runtime.js';
 
 function parseFlags(values) {
   const result = {};
@@ -39,7 +40,7 @@ function errorText(error) {
 const [command, ...args] = process.argv.slice(2);
 if (!command || command === 'help' || command === '--help' || command === '-h') {
   help();
-} else {
+} else if (!runWithSqliteFlag(import.meta.url)) {
   const dbPath = process.env.OPENUUYC_DB_PATH || DEFAULT_DB_PATH;
   let db;
   try {

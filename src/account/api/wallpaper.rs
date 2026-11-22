@@ -49,22 +49,44 @@ impl NrdApi {
         }
         Ok(())
     }
+
+    pub(crate) async fn upload_wallpaper(
+        &self,
+        grant: WallpaperGrant,
+        image: bytes::Bytes,
+    ) -> Result<UploadedWallpaper> {
+        let origin = match &self.backend {
+            Backend::SelfHosted(api) => Some(api.origin()),
+            Backend::Official(_) => None,
+        };
+        upload_wallpaper(grant, image, origin).await
+    }
+}
+
+fn local_wallpaper_url(origin: &reqwest::Url, url: &reqwest::Url) -> bool {
+    let loopback_pair = origin.host_str().zip(url.host_str()).is_some_and(|(a, b)| {
+        crate::transport::signal::is_loopback_host(a) && crate::transport::signal::is_loopback_host(b)
+    });
+    (url.origin() == origin.origin() || (loopback_pair && url.scheme() == origin.scheme()
+        && url.port_or_known_default() == origin.port_or_known_default()))
+        && url.username().is_empty() && url.password().is_none()
+        && url.query().is_none() && url.fragment().is_none()
 }
 
 /// Raw bytes and the file grant only: no NRD identity, signature or user token.
-pub(crate) async fn upload_wallpaper(
+async fn upload_wallpaper(
     grant: WallpaperGrant,
     image: bytes::Bytes,
+    self_hosted: Option<&reqwest::Url>,
 ) -> Result<UploadedWallpaper> {
     let url = reqwest::Url::parse(&grant.req_url)
         .map_err(|_| anyhow::anyhow!("invalid wallpaper upload URL"))?;
-    if url.scheme() != "https"
-        || url.host_str() != Some("fp.ps.netease.com")
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        bail!("wallpaper upload requires an HTTPS URL without credentials");
-    }
+    let allowed = match self_hosted {
+        Some(origin) => local_wallpaper_url(origin, &url) && url.path() == "/v1/wallpapers/upload",
+        None => url.scheme() == "https" && url.host_str() == Some("fp.ps.netease.com")
+            && url.username().is_empty() && url.password().is_none(),
+    };
+    anyhow::ensure!(allowed, "invalid wallpaper upload endpoint");
     if grant.ttl == 0 || grant.token.is_empty() {
         bail!("wallpaper upload grant is empty or expired");
     }
@@ -79,16 +101,21 @@ pub(crate) async fn upload_wallpaper(
     let mut authorization = HeaderValue::from_str(&grant.token)
         .map_err(|_| anyhow::anyhow!("invalid wallpaper upload token"))?;
     authorization.set_sensitive(true);
-    let client = crate::transport::http_client()
-        .https_only(true)
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30).min(Duration::from_secs(grant.ttl)))
-        .build()?;
+    let client = if self_hosted.is_some() {
+        crate::session::local_host::http_client()?
+    } else {
+        crate::transport::http_client()
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?
+    };
+    let timeout = Duration::from_secs(30).min(Duration::from_secs(grant.ttl));
     let mut response = crate::transport::http::send(
         crate::transport::http::Operation::WallpaperUpload,
         client
             .post(url)
             .header(AUTHORIZATION, authorization)
+            .timeout(timeout)
             .body(image.clone()),
     )
     .await
@@ -132,13 +159,17 @@ pub(crate) async fn upload_wallpaper(
     {
         bail!("invalid uploaded wallpaper metadata");
     }
-    // Some Filepicker deployments return an HTTP publication URL even when
-    // upload used HTTPS. Never request HTTP: verify the HTTPS resource first.
-    url.set_scheme("https")
-        .map_err(|_| anyhow::anyhow!("invalid wallpaper publication scheme"))?;
+    if let Some(origin) = self_hosted {
+        let id = url.path().strip_prefix("/v1/wallpapers/").and_then(|id| uuid::Uuid::parse_str(id).ok());
+        anyhow::ensure!(local_wallpaper_url(origin, &url) && id.is_some(), "invalid self-hosted wallpaper publication URL");
+    } else {
+        // Some Filepicker deployments return an HTTP publication URL.
+        url.set_scheme("https")
+            .map_err(|_| anyhow::anyhow!("invalid wallpaper publication scheme"))?;
+    }
     let mut verification = crate::transport::http::send(
         crate::transport::http::Operation::WallpaperVerify,
-        client.get(url.clone()),
+        client.get(url.clone()).timeout(timeout),
     )
     .await
     .map_err(|_| anyhow::anyhow!("uploaded wallpaper HTTPS verification failed"))?;

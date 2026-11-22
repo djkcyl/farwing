@@ -73,6 +73,7 @@ impl NrdApi {
         if !code.is_empty() {
             response.msg = response.msg.replace(code, "***");
         }
+        self.configure_self_hosted_assist(&mut response)?;
         Ok(response)
     }
     pub(crate) async fn assist_confirm(
@@ -81,12 +82,14 @@ impl NrdApi {
         control_id: &str,
     ) -> Result<ApiEnvelope<JoinReply>> {
         let id = normalize_connect_id(id)?;
-        self.post_json(
+        let mut response = self.post_json(
             CONFIRM,
             CONFIRM.path,
             &serde_json::json!({"connect_id":id,"control_id":control_id}),
         )
-        .await
+        .await?;
+        self.configure_self_hosted_assist(&mut response)?;
+        Ok(response)
     }
     pub(crate) async fn assist_refetch(&self, token: &str) -> Result<ApiEnvelope<JoinReply>> {
         let mut response: ApiEnvelope<JoinReply> = self
@@ -95,7 +98,17 @@ impl NrdApi {
         if !token.is_empty() {
             response.msg = response.msg.replace(token, "***");
         }
+        self.configure_self_hosted_assist(&mut response)?;
         Ok(response)
+    }
+
+    fn configure_self_hosted_assist(&self, response: &mut ApiEnvelope<JoinReply>) -> Result<()> {
+        if let (Backend::SelfHosted(api), Some(reply)) = (&self.backend, &mut response.data)
+            && !reply.token.is_empty()
+        {
+            reply.signaling_list = vec![api.signaling_url()?];
+        }
+        Ok(())
     }
     pub(crate) async fn assist_cancel(&self, id: &str) -> Result<ApiEnvelope<serde_json::Value>> {
         let id = normalize_connect_id(id)?;

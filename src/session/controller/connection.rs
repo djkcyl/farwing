@@ -179,7 +179,7 @@ impl ResolvedConnection {
             if !reply.device_name.is_empty() {
                 self.summary.alias = reply.device_name.clone();
             }
-            RoomSession::from_assist(&reply)
+            RoomSession::from_assist(&reply, self.client.is_self_hosted())
         } else {
             // Consume before dispatch. Neither API failure nor a later room
             // reconnect may reuse this user confirmation.

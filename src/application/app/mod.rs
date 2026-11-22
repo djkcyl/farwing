@@ -87,7 +87,9 @@ pub fn run(options: GuiOptions) -> Result<()> {
         Box::new(move |ctx, graphics| {
             configure_visuals(ctx);
             ctx.request_repaint();
-            let mut app = DeviceCenterApp::new(ctx, local_display, options.media, display_warning);
+            let worker = GuiWorker::spawn();
+            let mut app =
+                DeviceCenterApp::new(ctx, local_display, options.media, display_warning, worker);
             if let Some(graphics) = graphics {
                 app.diagnostics.graphics.push(graphics);
             }
@@ -220,6 +222,7 @@ impl DeviceCenterApp {
         local_display: LocalDisplayInfo,
         media: ConnectionMediaOptions,
         display_warning: Option<String>,
+        worker: GuiWorker,
     ) -> Self {
         Self {
             brand_texture: crate::ui::branding::load_texture(ctx),
@@ -227,7 +230,7 @@ impl DeviceCenterApp {
             center_ui: CenterUi::default(),
             viewers: Default::default(),
             assist: AssistUi::default(),
-            worker: GuiWorker::spawn(),
+            worker,
             devices: None,
             catalog: None,
             catalog_error: None,
@@ -340,7 +343,6 @@ impl DeviceCenterApp {
                             self.show_official_login = address.is_empty();
                             self.server_input = address.clone();
                             self.server_address = address;
-                            // The worker already cancelled login and uses this generation for device sync.
                             self.login_generation = generation;
                             self.phone.clear_private();
                             self.reset_login_ui();
@@ -349,8 +351,9 @@ impl DeviceCenterApp {
                             self.host = None;
                             self.selected_device_id = None;
                             self.presence = PresenceState::Offline;
+                            self.status = StatusMessage::info("");
                             self.refresh_pending = false;
-                            self.login_restoring = true;
+                            self.login_restoring = self.server_address.is_empty();
                             self.startup_stage = StartupStage::Credentials;
                             self.startup_stage_since = Instant::now();
                             self.center_ui.backend_changed();
@@ -428,7 +431,12 @@ impl DeviceCenterApp {
                             self.catalog_error = None;
                             self.login_restoring = false;
                         }
-                        Err(error) => self.catalog_error = Some(error),
+                        Err(error) => {
+                            if self.devices.is_none() && !self.server_address.is_empty() {
+                                self.login_restoring = false;
+                            }
+                            self.catalog_error = Some(error);
+                        }
                     }
                 }
                 GuiEvent::MutationFinished(generation, result) => {
@@ -611,7 +619,10 @@ impl DeviceCenterApp {
                         }
                     }
                 }
-                GuiEvent::AccountEnded(message) => {
+                GuiEvent::AccountEnded(generation, message) => {
+                    if generation != self.login_generation {
+                        continue;
+                    }
                     self.cancel_login();
                     self.phone.clear_private();
                     self.clear_catalog();
@@ -621,9 +632,14 @@ impl DeviceCenterApp {
                     self.devices = None;
                     self.selected_device_id = None;
                     self.presence = PresenceState::Offline;
+                    self.login_status = if self.server_address.is_empty() {
+                        "登录已失效".into()
+                    } else {
+                        self.login_error = Some(message.clone());
+                        "会话已结束".into()
+                    };
                     self.status = StatusMessage::warning(message);
                     self.refresh_pending = false;
-                    self.login_status = "登录已失效".into();
                 }
                 GuiEvent::LoggedOut(outcome) => {
                     self.qr_running = false;

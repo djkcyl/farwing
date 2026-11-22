@@ -279,14 +279,22 @@ fn load(
 
 async fn download(address: &str) -> Result<Vec<u8>> {
     let url = reqwest::Url::parse(address)?;
-    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+    let local_wallpaper = url.scheme() == "http"
+        && url.host_str().is_some_and(crate::transport::signal::is_loopback_host)
+        && url.path().strip_prefix("/v1/wallpapers/").is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+        && url.query().is_none();
+    if (!local_wallpaper && url.scheme() != "https") || !url.username().is_empty() || url.password().is_some() {
         bail!("unsupported wallpaper URL");
     }
-    let client = crate::transport::http_client()
-        .https_only(true)
-        .redirect(reqwest::redirect::Policy::limited(3))
-        .timeout(Duration::from_secs(12))
-        .build()?;
+    let client = if local_wallpaper {
+        crate::session::local_host::http_client()?
+    } else {
+        crate::transport::http_client()
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::limited(3))
+            .timeout(Duration::from_secs(12))
+            .build()?
+    };
     let mut response = crate::transport::http::send(
         crate::transport::http::Operation::WallpaperDownload,
         client.get(url),

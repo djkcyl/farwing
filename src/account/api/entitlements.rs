@@ -19,6 +19,15 @@ struct Table {
     features: BTreeMap<String, serde_json::Value>,
 }
 
+#[derive(Deserialize)]
+struct LocalTable {
+    version: u64,
+    platform: i32,
+    server_time: i64,
+    expired_at: i64,
+    features: BTreeMap<String, serde_json::Value>,
+}
+
 #[derive(Clone)]
 pub(crate) struct Entitlements {
     pub version: u64,
@@ -45,6 +54,21 @@ impl Entitlements {
 
 impl NrdApi {
     pub(crate) async fn query_entitlements(&self) -> Result<Entitlements> {
+        if self.is_self_hosted() {
+            let contract = Contract {
+                path: PATH,
+                timeout: Duration::from_secs(3),
+                ..DEVICE_LIST
+            };
+            let table = self.send::<LocalTable>(contract, PATH, Vec::new()).await?.into_data()?;
+            ensure!(table.platform == 1 && table.expired_at > table.server_time, "自建服务返回了无效的权益表");
+            return Ok(Entitlements {
+                version: table.version,
+                expired_at: table.expired_at,
+                checkpoint_at: None,
+                snapshot: Snapshot::new(Schedule::from_features(table.features)?, table.server_time)?,
+            });
+        }
         let api = self;
         let user = api.user_id.as_deref().context("权益查询需要登录账号")?;
         let authorization = api.authorization.clone().context("权益查询缺少账号凭据")?;

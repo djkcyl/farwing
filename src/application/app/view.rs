@@ -619,6 +619,9 @@ impl DeviceCenterApp {
             }
             return;
         }
+        if self.server_pending {
+            ui.disable();
+        }
         // Reconcile navigation before choosing the panel margins. A removed
         // device must not leave an empty, edge-to-edge detail page behind.
         self.reconcile_device_details();
@@ -745,29 +748,27 @@ impl DeviceCenterApp {
                 ) {
                     self.center_ui.page = Page::Management;
                 }
-                if self.server_address.is_empty() {
-                    ui.add_space(14.0);
-                    ui.label(RichText::new("远程协助").small().color(MUTED));
-                    if nav_item(
-                        ui,
-                        Icon::Assist,
-                        "开始协助",
-                        None,
-                        self.center_ui.page == Page::Assist,
-                    ) {
-                        self.center_ui.page = Page::Assist;
-                        self.request_assist_refresh();
-                    }
-                    if nav_item(
-                        ui,
-                        Icon::Star,
-                        "收藏设备",
-                        self.assist.lists.as_ref().map(|l| l.favorites.len()),
-                        self.center_ui.page == Page::Favorites,
-                    ) {
-                        self.center_ui.page = Page::Favorites;
-                        self.request_assist_refresh();
-                    }
+                ui.add_space(14.0);
+                ui.label(RichText::new("远程协助").small().color(MUTED));
+                if nav_item(
+                    ui,
+                    Icon::Assist,
+                    "开始协助",
+                    None,
+                    self.center_ui.page == Page::Assist,
+                ) {
+                    self.center_ui.page = Page::Assist;
+                    self.request_assist_refresh();
+                }
+                if nav_item(
+                    ui,
+                    Icon::Star,
+                    "收藏设备",
+                    self.assist.lists.as_ref().map(|l| l.favorites.len()),
+                    self.center_ui.page == Page::Favorites,
+                ) {
+                    self.center_ui.page = Page::Favorites;
+                    self.request_assist_refresh();
                 }
                 ui.add_space(14.0);
                 ui.separator();
@@ -1228,13 +1229,15 @@ impl DeviceCenterApp {
                 ui.label(RichText::new("在主控和被控设备上填写同一个地址。").color(MUTED));
                 ui.add_space(18.0);
                 self.server_settings(ui);
-                if self.login_restoring {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("正在连接自建服务器…");
-                    });
-                } else if let Some(error) = &self.login_error {
-                    ui.colored_label(AMBER, error);
+                if !self.server_pending && self.server_error.is_none() {
+                    if self.login_restoring {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("正在连接自建服务器…");
+                        });
+                    } else if let Some(error) = self.login_error.as_ref().or(self.catalog_error.as_ref()) {
+                        ui.colored_label(AMBER, error);
+                    }
                 }
                 if self.server_address.is_empty() && !self.server_pending
                     && ui.add(crate::ui::controls::secondary("网易账号登录")).clicked()
@@ -1250,7 +1253,7 @@ impl DeviceCenterApp {
             && self.host.as_ref().is_none_or(|host| host.status().connection.is_none());
         ui.add_enabled_ui(available, |ui| {
             let response = ui.add(egui::TextEdit::singleline(&mut self.server_input)
-                .hint_text("https://remote.example.com")
+                .hint_text("http://127.0.0.1:8787")
                 .desired_width(300.0));
             let entered = (response.has_focus() || response.lost_focus())
                 && ui.input(|input| input.key_pressed(egui::Key::Enter));
@@ -1269,11 +1272,18 @@ impl DeviceCenterApp {
             });
         });
         if self.server_pending {
-            ui.spinner();
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("正在检查服务器连接…");
+            });
         }
         if let Some(error) = &self.server_error {
             ui.colored_label(AMBER, error);
         }
+        ui.label(
+            RichText::new("本机默认使用 http://127.0.0.1:8787。跨电脑连接请填写服务的 HTTPS 地址。")
+                .color(MUTED),
+        );
     }
 
     fn settings_page(&mut self, ui: &mut egui::Ui) {

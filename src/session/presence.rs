@@ -98,6 +98,9 @@ impl ActivePresence {
 struct Reservation {
     _handle: crate::platform::windows::host_service::pipe::Handle,
 }
+
+#[cfg(test)]
+pub(crate) mod self_hosted_tests;
 unsafe impl Send for Reservation {}
 
 async fn run_presence(
@@ -342,11 +345,14 @@ async fn run_remote(
     events: Sender<PresenceEvent>,
     cancel: CancellationToken,
 ) -> Result<()> {
-    use crate::account::auth::{KeyringSessionStore, SessionStore};
+    use crate::account::{
+        auth::{KeyringSessionStore, LoginSession, SessionStore},
+        self_hosted,
+    };
     use crate::platform::windows::host_service::resident::{self, Reply, Request};
-    // Reuse the credential handle, not its contents: each poll must still see
-    // logout/account changes and portable/resident storage transitions.
-    let sessions = KeyringSessionStore::new()?;
+    let official_sessions = (!client.is_self_hosted_account())
+        .then(KeyringSessionStore::new)
+        .transpose()?;
     let mut device_cursor = None;
     let mut membership_revision = None;
     let mut tick = tokio::time::interval(Duration::from_millis(500));
@@ -356,8 +362,18 @@ async fn run_remote(
         if crate::platform::windows::components::maintaining() {
             continue;
         }
-        let saved = sessions.load()?.map(|s| s.generation());
-        if !client.matches_saved(saved.as_deref().unwrap_or_default()) {
+        let session = match &official_sessions {
+            Some(sessions) => sessions.load()?,
+            None => self_hosted::load_origin()?
+                .map(|origin| self_hosted::SelfHosted::load(origin)?.session())
+                .transpose()?,
+        };
+        let saved = session
+            .as_ref()
+            .map(LoginSession::generation)
+            .unwrap_or_default();
+        if !client.matches_saved(&saved) {
+            tracing::info!("configured account changed; retiring resident client session");
             client.retire();
             break;
         }

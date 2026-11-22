@@ -309,7 +309,7 @@ impl FeaturePolicy {
     }
 
     pub(crate) fn supports(&self, feature: Feature) -> bool {
-        if self.catalog.self_hosted && matches!(feature, Feature::EntitlementSync | Feature::ControlledUpdate | Feature::Shutdown | Feature::Reboot) {
+        if self.catalog.self_hosted && matches!(feature, Feature::ControlledUpdate) {
             return false;
         }
         let version = if self.catalog.self_hosted && self.platform == 1 {

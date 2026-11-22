@@ -1,7 +1,7 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, SQLITE_UNAVAILABLE } from './sqlite-runtime.js';
 
 export const DEFAULT_DB_PATH = resolve(import.meta.dirname, 'data/devices.sqlite');
 
@@ -18,6 +18,7 @@ export function randomDeviceId() {
 }
 
 export function openDatabase(dbPath = DEFAULT_DB_PATH) {
+  if (!DatabaseSync) throw new Error(SQLITE_UNAVAILABLE);
   mkdirSync(dirname(resolve(dbPath)), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(resolve(dbPath));
   chmodSync(resolve(dbPath), 0o600);
@@ -37,6 +38,34 @@ export function openDatabase(dbPath = DEFAULT_DB_PATH) {
     CREATE INDEX IF NOT EXISTS devices_host_idx ON devices(bound_host_id);
     CREATE TABLE IF NOT EXISTS address_members (
       device_id TEXT PRIMARY KEY REFERENCES devices(id)
+    );
+    CREATE TABLE IF NOT EXISTS desktop_devices (
+      device_id TEXT PRIMARY KEY REFERENCES address_members(device_id),
+      version_name TEXT NOT NULL DEFAULT '',
+      connect_id TEXT UNIQUE,
+      support_wol INTEGER NOT NULL DEFAULT 0 CHECK (support_wol IN (0, 1)),
+      lan_info TEXT,
+      wallpaper_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS desktop_wallpapers (
+      id TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL REFERENCES desktop_devices(device_id),
+      mime TEXT NOT NULL,
+      content BLOB NOT NULL,
+      expires_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS desktop_wallpapers_device_idx ON desktop_wallpapers(device_id);
+    CREATE TABLE IF NOT EXISTS desktop_hardware (
+      device_id TEXT PRIMARY KEY REFERENCES address_members(device_id),
+      details TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS desktop_saved_devices (
+      controller_id TEXT NOT NULL REFERENCES devices(id),
+      host_id TEXT NOT NULL REFERENCES devices(id),
+      remark TEXT NOT NULL DEFAULT '',
+      last_connected_at INTEGER,
+      favorited_at INTEGER,
+      PRIMARY KEY (controller_id, host_id)
     );
     CREATE TABLE IF NOT EXISTS pairing_codes (
       code_hash TEXT PRIMARY KEY,
@@ -97,10 +126,16 @@ export function listDevices(db) {
 
 export function revokeDevice(db, deviceId) {
   const now = Date.now();
-  const result = db.prepare('UPDATE devices SET revoked_at = COALESCE(revoked_at, ?), controllable = 0 WHERE id = ?').run(now, deviceId);
-  if (result.changes !== 1) return false;
-  db.prepare('UPDATE room_tickets SET retired_at = COALESCE(retired_at, ?) WHERE device_id = ?').run(now, deviceId);
-  db.prepare(`UPDATE sessions SET ended_at = COALESCE(ended_at, ?), end_reason = COALESCE(end_reason, 'device_revoked')
-    WHERE ended_at IS NULL AND (host_id = ? OR controller_id = ?)`).run(now, deviceId, deviceId);
-  return true;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = db.prepare('UPDATE devices SET revoked_at = COALESCE(revoked_at, ?), controllable = 0 WHERE id = ?').run(now, deviceId);
+    db.prepare('UPDATE room_tickets SET retired_at = COALESCE(retired_at, ?) WHERE device_id = ?').run(now, deviceId);
+    db.prepare(`UPDATE sessions SET ended_at = COALESCE(ended_at, ?), end_reason = COALESCE(end_reason, 'device_revoked')
+      WHERE ended_at IS NULL AND (host_id = ? OR controller_id = ?)`).run(now, deviceId, deviceId);
+    db.exec('COMMIT');
+    return result.changes === 1;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }

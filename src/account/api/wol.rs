@@ -32,6 +32,9 @@ impl NrdApi {
         })
     }
     pub(crate) async fn wol_info(&self, info: LanInfo) -> Result<ApiEnvelope<Registered>> {
+        if self.is_self_hosted() {
+            return self.post_json(INFO, INFO.path, &info).await;
+        }
         let mut api = self.clone();
         api.backend = super::Backend::Official(self.official_http()?.ipv4_route());
         api.send(INFO, INFO.path, serde_json::to_vec(&info)?).await

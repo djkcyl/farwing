@@ -667,11 +667,11 @@ pub struct RoomSession {
 }
 
 impl RoomSession {
-    pub(crate) fn from_assist(reply: &crate::account::assist::JoinReply) -> Self {
+    pub(crate) fn from_assist(reply: &crate::account::assist::JoinReply, self_hosted: bool) -> Self {
         Self {
             international_connect: reply.international_connect,
             local_session: false,
-            self_hosted_session: false,
+            self_hosted_session: self_hosted,
             token: reply.token.clone(),
             ws_connect_timeout_ms: reply.ws_connect_timeout_ms,
             streamer_retry_delta_ms: reply.streamer_retry_delta_ms,
@@ -958,9 +958,20 @@ impl NrdApi {
             .await
     }
 
-    pub(crate) async fn register_self_hosted(&self, name: &str) -> Result<ApiEnvelope<DeviceInitResponse>> {
+    pub(crate) async fn register_self_hosted(
+        &self,
+        hardware: &crate::platform::windows::device_profile::Hardware,
+    ) -> Result<ApiEnvelope<DeviceInitResponse>> {
         anyhow::ensure!(self.is_self_hosted(), "自建设备注册需要自建服务地址");
-        self.post_json(DEVICE_WINDOWS_INIT, DEVICE_WINDOWS_INIT.path, &serde_json::json!({"name": name})).await
+        self.post_json(DEVICE_WINDOWS_INIT, DEVICE_WINDOWS_INIT.path, &serde_json::json!({
+            "name": hardware.name,
+            "os": hardware.os,
+            "cpu": hardware.cpu,
+            "video": hardware.video,
+            "screen": hardware.screen,
+            "memory": hardware.memory,
+            "version_name": crate::protocol::official_version::CLIENT,
+        })).await
     }
 
     pub async fn list_devices(&self) -> Result<ApiEnvelope<DeviceList>> {
@@ -1034,9 +1045,7 @@ impl NrdApi {
             },
         )
         .await?;
-        if let Some(room) = &mut response.data {
-            room.self_hosted_session = self.is_self_hosted();
-        }
+        self.configure_self_hosted_room(&mut response)?;
         Ok(response)
     }
 
@@ -1069,10 +1078,17 @@ impl NrdApi {
             serde_json::to_vec(&JoinByDeviceRequest { force_join })?,
         )
         .await?;
-        if let Some(room) = &mut response.data {
-            room.self_hosted_session = self.is_self_hosted();
-        }
+        self.configure_self_hosted_room(&mut response)?;
         Ok(response)
+    }
+
+    fn configure_self_hosted_room(&self, response: &mut ApiEnvelope<RoomSession>) -> Result<()> {
+        if let (Backend::SelfHosted(api), Some(room)) = (&self.backend, &mut response.data) {
+            room.self_hosted_session = true;
+            room.signaling_list.clear();
+            room.signaling_server = api.signaling_url()?;
+        }
+        Ok(())
     }
 
     async fn post_json<B, T>(

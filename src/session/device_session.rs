@@ -75,7 +75,10 @@ impl DeviceRuntime {
     }
 
     pub(crate) fn start_for(origin: Option<url::Url>) -> Result<Self> {
-        let self_hosted = origin.map(SelfHosted::load).transpose()?;
+        Self::start_configured(origin.map(SelfHosted::load).transpose()?)
+    }
+
+    pub(super) fn start_configured(self_hosted: Option<SelfHosted>) -> Result<Self> {
         let identities = match &self_hosted {
             Some(settings) => KeyringIdentityStore::for_self_hosted(&settings.device_id)?,
             None => KeyringIdentityStore::new()?,
@@ -307,7 +310,11 @@ impl Initializer {
                             )
                             .await??;
                             if api.is_self_hosted() {
-                                let response = api.register_self_hosted(&hardware.name).await.map_err(registration_error)?;
+                                let response = api.register_self_hosted(&hardware).await.map_err(registration_error)?;
+                                crate::account::reporting::update(|s| {
+                                    s.reported_name = hardware.name.clone();
+                                    s.hardware = Some(hardware);
+                                });
                                 return Ok((response.into_data()?, identity));
                             }
                             let body = identity.device_init_request(&hardware)?;

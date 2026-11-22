@@ -29,14 +29,15 @@ fn parse(push: &Value) -> Result<Option<Command>> {
         .get("data")
         .filter(|v| v.is_object())
         .ok_or_else(|| anyhow::anyhow!("电源请求缺少对象数据"))?;
-    if kind == Some("device_reboot") {
+    let reboot = kind == Some("device_reboot");
+    if reboot && data.get("need_response").and_then(Value::as_bool) != Some(true) {
         return Ok(Some(Command {
             action: Action::Reboot,
             call_id: None,
             need_response: false,
         }));
     }
-    if data.get("p").and_then(Value::as_str) != Some("shutdown") {
+    if !reboot && data.get("p").and_then(Value::as_str) != Some("shutdown") {
         return Ok(None);
     }
     let need_response = match data.get("need_response") {
@@ -52,7 +53,7 @@ fn parse(push: &Value) -> Result<Option<Command>> {
     };
     ensure!(!need_response || call_id.is_some(), "电源请求缺少回执标识");
     Ok(Some(Command {
-        action: Action::Shutdown,
+        action: if reboot { Action::Reboot } else { Action::Shutdown },
         call_id,
         need_response,
     }))

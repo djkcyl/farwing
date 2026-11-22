@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node index.js",
     "pair": "node cli.js",
-    "test": "node --test --test-timeout=10000"
+    "test": "node --experimental-sqlite --test --test-timeout=10000"
   },
   "dependencies": {
     "socket.io": "4.8.4",

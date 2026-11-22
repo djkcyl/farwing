@@ -6,14 +6,19 @@ import { resolve, extname, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Server as SocketIoServer } from 'socket.io';
 import { WebSocketServer, WebSocket } from 'ws';
+import { createAssistance } from './assistance.js';
+import { createPower } from './power.js';
+import { createWallpapers } from './wallpaper.js';
+import { DatabaseSync, onShutdown, runWithSqliteFlag, SQLITE_UNAVAILABLE } from './sqlite-runtime.js';
 import {
   DEFAULT_DB_PATH,
   hashSecret,
   openDatabase,
   randomDeviceId,
   randomSecret,
+  revokeDevice,
 } from './db.js';
-import { ADDRESS_TOKEN, addressHost, clientNetworkPolicy, enrollAddressDevice, hostedIceServers } from './desktop.js';
+import { ADDRESS_TOKEN, addressHost, clientNetworkPolicy, enrollAddressDevice, hostedIceServers, nativeDesktopPath, windowsHardwareDetails } from './desktop.js';
 import {
   createConnectOptions,
   createStreamerData,
@@ -31,16 +36,18 @@ const HOST_RECONNECT_GRACE_MS = 15_000;
 const HTTP_BODY_LIMIT = 32 * 1024;
 const WS_MESSAGE_LIMIT = 512 * 1024;
 const ACTIVE_CHECK_MS = 500;
+const MAX_QUEUED_SIGNALS = 64;
 
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code = status === 401 ? 1120 : status) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
-function fail(status, message) {
-  throw new HttpError(status, message);
+function fail(status, message, code) {
+  throw new HttpError(status, message, code);
 }
 
 function isoTime(timestamp) {
@@ -240,6 +247,7 @@ export function createServer(options = {}) {
   }
   const memberNetwork = clientNetworkPolicy(options.desktopClientNetworks ?? process.env.DESKTOP_CLIENT_NETWORKS);
   const iceServers = hostedIceServers(options.iceServers ?? process.env.SELF_HOST_ICE_SERVERS);
+  const canSwitchNetwork = iceServers.some(({ urls }) => /^turns?:/u.test(urls));
   function addressClientsAllowed(request) {
     const address = request.socket.remoteAddress;
     if (memberNetwork) return memberNetwork(address);
@@ -251,11 +259,26 @@ export function createServer(options = {}) {
   const hostRooms = new Map();
   const sessions = new Map();
   const activeSessionsByHost = new Map();
+  const announcedDevices = new Set();
   const pairAttempts = new Map();
   const now = options.now || Date.now;
   let closed = false;
   let boundPort = port;
   const getPublicOrigin = () => publicOriginOption || `${tlsOptions ? 'https' : 'http'}://127.0.0.1:${boundPort}`;
+  const onlineRoomId = (id) => roomIsOnline(id) ? hostRooms.get(id).ticketId : null;
+  const assistance = createAssistance({
+    db, now, fail, pushTo, reserveSession, roomId: onlineRoomId,
+    signalingUrl: () => makeRoomUrl(getPublicOrigin()),
+  });
+  const power = createPower({
+    db, fail, pushTo, announceDevice, roomId: onlineRoomId,
+    connectedPeers: function* () {
+      for (const [id, room] of hostRooms) {
+        if (room.addressMember && room.socket?.connected) yield [id, room.socket.request.socket.remoteAddress];
+      }
+    },
+  });
+  const wallpapers = createWallpapers({ db, now, fail, origin: getPublicOrigin, announceDevice });
 
   const server = tlsOptions
     ? createHttpsServer(tlsOptions, requestHandler)
@@ -319,8 +342,11 @@ export function createServer(options = {}) {
   }
 
   function desktopHosts() {
-    return db.prepare(`SELECT d.id, d.name, d.role, d.controllable FROM address_members a
-      JOIN devices d ON a.device_id = d.id WHERE d.role = 'host' AND d.revoked_at IS NULL ORDER BY d.name, d.id`).all();
+    return db.prepare(`SELECT d.id, d.name, d.role, d.controllable, s.version_name AS versionName,
+        s.support_wol AS supportWol, s.wallpaper_id AS wallpaperId
+      FROM address_members a JOIN devices d ON a.device_id = d.id
+      LEFT JOIN desktop_devices s ON s.device_id = d.id
+      WHERE d.role = 'host' AND d.revoked_at IS NULL ORDER BY d.name, d.id`).all();
   }
 
   function desktopDevice(row) {
@@ -331,7 +357,48 @@ export function createServer(options = {}) {
       platform: 1,
       controllable: Boolean(row.controllable),
       controlled_support: true,
-      participants_info: activeSessionsByHost.get(row.id)?.usedAt ? [{}] : [],
+      support_wol: Boolean(row.supportWol),
+      version_name: row.versionName ?? '',
+      wallpaper_url: row.wallpaperId ? wallpapers.url(row.wallpaperId) : '',
+      participants_info: activeSessionsByHost.get(row.id)?.usedAt != null ? [{}] : [],
+    };
+  }
+
+  function pushTo(deviceId, type, data) {
+    const socket = hostRooms.get(deviceId)?.socket;
+    if (!socket?.connected) return false;
+    socket.emit('bmsg_push', { type, data });
+    return true;
+  }
+
+  function announceDevice(id, type = 'device_info_changed') {
+    const device = type === 'device_unbind' ? null : addressHost(db, id);
+    if (!device && type !== 'device_unbind') return;
+    const data = device ? desktopDevice(device) : { device_id: id };
+    for (const [receiver, room] of hostRooms) {
+      if (room.addressMember) pushTo(receiver, type, data);
+    }
+  }
+
+  function removeDesktopDevice(id) {
+    assistance.cancelForDevice(id);
+    power.cancelForDevice(id);
+    wallpapers.removeDevice(id);
+    announcedDevices.delete(id);
+    announceDevice(id, 'device_unbind');
+    closeHostRoom(id, 'device_revoked');
+    for (const session of sessions.values()) {
+      if (session.controllerId === id) finishSession(session, 'device_revoked');
+    }
+  }
+
+  function roomResponse(ticket, signalingUrl) {
+    return {
+      token: ticket,
+      signaling_server: signalingUrl,
+      ws_connect_timeout_ms: 10_000,
+      streamer_retry_delta_ms: 1_000,
+      max_reconnect_delta: 300,
     };
   }
 
@@ -357,20 +424,26 @@ export function createServer(options = {}) {
 
   function setHostControllable(id, enabled) {
     if (typeof enabled !== 'boolean') fail(400, 'enabled must be a boolean');
-    db.prepare('UPDATE devices SET controllable = ? WHERE id = ?').run(enabled ? 1 : 0, id);
-    if (!enabled) finishHostSessions(id, 'host_disabled');
+    const updated = db.prepare('UPDATE devices SET controllable = ? WHERE id = ? AND revoked_at IS NULL').run(enabled ? 1 : 0, id);
+    if (!updated.changes) fail(401, 'device authentication failed');
+    if (!enabled) {
+      assistance.cancelForDevice(id);
+      power.cancelForDevice(id);
+      finishHostSessions(id, 'host_disabled');
+    }
+    announceDevice(id);
   }
 
-  function reserveSession(controller, hostId, { native = false, force = false } = {}) {
+  function reserveSession(controller, hostId, { native = false, force = false, assistance = false, replacementId = null } = {}) {
     if (controller.id === hostId) fail(400, 'cannot control this device from itself');
     const hostDevice = db.prepare(`SELECT controllable, revoked_at AS revokedAt FROM devices
       WHERE id = ? AND role = 'host'`).get(hostId);
     if (!hostDevice || hostDevice.revokedAt !== null) fail(404, 'host device was not found');
     const room = hostRooms.get(hostId);
-    if (!room?.socket?.connected) fail(409, 'host is offline');
-    if (!hostDevice.controllable) fail(409, 'host is not accepting sessions');
+    if (!room?.socket?.connected) fail(409, 'host is offline', 2006);
+    if (!hostDevice.controllable) fail(409, 'host is not accepting sessions', 2007);
     const previous = activeSessionsByHost.get(hostId);
-    if (previous && !force) fail(409, 'host already has an active controller');
+    if (previous && !force && previous.id !== replacementId) fail(409, 'host already has an active controller', 2002);
     const timestamp = now();
     const ticket = randomSecret(32);
     const session = {
@@ -385,6 +458,11 @@ export function createServer(options = {}) {
       controllerPlatform: controller.platform,
       native,
       force,
+      assistance,
+      replacementId,
+      usedAt: null,
+      toHost: [],
+      toController: [],
       hostRoomId: room.ticketId,
     };
     db.prepare(`INSERT INTO sessions (id, host_id, controller_id, ticket_hash, expires_at, created_at)
@@ -394,65 +472,136 @@ export function createServer(options = {}) {
     return { session, ticket };
   }
 
-  async function desktopRequest(req, res, path) {
-    const body = req.method === 'GET' ? null : await readJson(req);
+  async function desktopRequest(req, res, path, native = false) {
     if (!addressClientsAllowed(req)) fail(403, 'server does not admit devices from this network');
-    const send = (data) => jsonResponse(res, 200, data);
+    const body = req.method === 'GET' ? {} : await readJson(req);
+    const send = (data, code = 0, msg = '') => {
+      if (!res.destroyed) jsonResponse(res, 200, native ? { code, msg, data } : data);
+    };
     if (req.method === 'POST' && path === '/register') {
       const token = bearerToken(req);
       if (!ADDRESS_TOKEN.test(token)) fail(400, 'address credential is invalid');
-      const platform = body.platform ?? 'windows';
+      const platform = native ? 'windows' : body.platform ?? 'windows';
       if (!['windows', 'ios', 'web'].includes(platform)) fail(400, 'invalid device platform');
       const name = normalizeName(body.name);
-      if (!lookupDeviceByToken(token)) rateLimitPair(req);
+      const existing = lookupDeviceByToken(token);
+      if (!existing) rateLimitPair(req);
       const id = enrollAddressDevice(db, token, name, platform, now());
       if (!id) fail(401, 'device credential is revoked or invalid');
+      if (native && typeof body.version_name === 'string' && /^\d+(?:\.\d+){2,3}$/u.test(body.version_name) && body.version_name.length <= 32) {
+        db.prepare(`INSERT INTO desktop_devices (device_id, version_name) VALUES (?, ?)
+          ON CONFLICT(device_id) DO UPDATE SET version_name = excluded.version_name`).run(id, body.version_name);
+      }
+      if (native) {
+        const details = windowsHardwareDetails(body);
+        if (details.length) db.prepare(`INSERT INTO desktop_hardware (device_id, details) VALUES (?, ?)
+          ON CONFLICT(device_id) DO UPDATE SET details = excluded.details`).run(id, JSON.stringify(details));
+      }
+      if (!announcedDevices.has(id) && platform === 'windows') {
+        announcedDevices.add(id);
+        announceDevice(id, 'device_binded');
+      } else if (existing && native) {
+        announceDevice(id);
+      }
       send({ device_id: id });
       return;
     }
     const device = authenticateHttp(req, 'host');
     if (!device.addressMember) fail(403, 'address enrollment required');
+    if (native && await assistance.request(device, req.method, path, body, res, send)) return;
+    if (native && await power.request(device, path, body, req, res, send)) return;
     switch (`${req.method} ${path}`) {
       case 'GET /profile':
         send({ nickname: '自建服务器' });
         return;
       case 'GET /devices':
-        send({ current_device: desktopDevice(device), my_binded_devices: desktopHosts().filter((row) => row.id !== device.id).map(desktopDevice) });
+        send({ current_device: desktopDevice(addressHost(db, device.id)), my_binded_devices: desktopHosts().filter((row) => row.id !== device.id).map(desktopDevice) });
         return;
       case 'GET /groups':
         send({ current_device_id: device.id, desktop_devices: desktopHosts().map(desktopDevice) });
         return;
-      case 'POST /room':
-        send(createHostRoom(device));
+      case 'POST /room': {
+        const room = createHostRoom(device);
+        send(native ? roomResponse(room.ticket, room.signalingUrl) : room);
         return;
+      }
       case 'POST /controllable':
         setHostControllable(device.id, body.controllable);
         send({});
         return;
-      case 'POST /join': {
-        if (typeof body.device_id !== 'string' || !addressHost(db, body.device_id)) fail(404, 'device was not found');
-        if (typeof body.force_join !== 'boolean') fail(400, 'force_join must be a boolean');
-        const { ticket } = reserveSession(device, body.device_id, { native: true, force: body.force_join });
-        send({ ticket, signalingUrl: makeRoomUrl(getPublicOrigin()) });
+      case 'POST /disconnect':
+        assistance.cancelForDevice(device.id);
+        power.cancelForDevice(device.id);
+        db.prepare('UPDATE room_tickets SET retired_at = ? WHERE device_id = ? AND retired_at IS NULL').run(now(), device.id);
+        closeHostRoom(device.id, 'host_disconnected');
+        for (const session of sessions.values()) {
+          if (session.controllerId === device.id) finishSession(session, 'controller_disconnected');
+        }
+        send({});
+        return;
+      case 'POST /configures':
+        if (!Array.isArray(body.configures) || body.configures.length < 1 || body.configures.length > 30
+          || body.configures.some((entry) => typeof entry?.name !== 'string' || typeof entry.version !== 'string')) {
+          fail(400, 'configuration query requires 1 to 30 entries');
+        }
+        send(Object.fromEntries(body.configures.map(({ name }) => {
+          const data = name === 'win_keylock_optimize' ? { enable: true }
+            : name === 'app_white_list' ? { gamewhitelist: [] }
+            : name === 'custom_bitrate_limit' ? { enable: false } : null;
+          return [name, { version: data ? '1' : '', status: data ? 0 : 404, data }];
+        })));
+        return;
+      case 'GET /api/v1/member/entitlements': {
+        const serverTime = Math.floor(now() / 1_000);
+        send({
+          version: 1,
+          platform: 1,
+          server_time: serverTime,
+          expired_at: serverTime + 3600,
+          features: { screen_quality: { periods: [{ start_time: null, end_time: null, grant_type: 0, limit: { quality: null } }] } },
+        });
         return;
       }
-      case 'POST /disconnect':
-        closeHostRoom(device.id, 'host_disconnected');
+      case 'GET /api/v1/tool/fp/token':
+        if (new URL(req.url, getPublicOrigin()).searchParams.get('filetype') !== '1') fail(400, 'unsupported file type');
+        send(wallpapers.grant(device));
+        return;
+      case 'POST /api/v1/device/wallpaper':
+        wallpapers.bind(device, body.wallpaper_url);
         send({});
         return;
       default:
         break;
     }
-    const match = /^\/devices\/([a-f0-9]{16})$/u.exec(path);
-    const target = match && addressHost(db, match[1]);
-    if (!target) fail(404, 'device was not found');
-    if (req.method === 'GET') {
-      send({ details: [['设备名称', target.name], ['平台', 'Windows'], ['设备 ID', target.id]] });
+    if (req.method === 'POST' && (path === '/join' || path.startsWith('/join/'))) {
+      const id = native ? path.slice('/join/'.length) : body.device_id;
+      if (typeof id !== 'string' || !addressHost(db, id)) fail(404, 'device was not found', 4042);
+      if (typeof body.force_join !== 'boolean') fail(400, 'force_join must be a boolean');
+      const { ticket } = reserveSession(device, id, { native: true, force: body.force_join });
+      const signalingUrl = makeRoomUrl(getPublicOrigin());
+      send(native ? roomResponse(ticket, signalingUrl) : { ticket, signalingUrl });
       return;
     }
-    if (req.method === 'PUT') {
+    const match = /^\/devices\/([a-f0-9]{16})(\/(?:unbind|detail))?$/u.exec(path);
+    const target = match && addressHost(db, match[1]);
+    if (!target) fail(404, 'device was not found');
+    if (req.method === 'POST' && match[2] === '/unbind') {
+      if (target.id === device.id) fail(400, 'cannot remove the current device');
+      revokeDevice(db, target.id);
+      removeDesktopDevice(target.id);
+      send({});
+      return;
+    }
+    if (req.method === 'GET' && (native ? match[2] === '/detail' : !match[2])) {
+      const hardware = db.prepare('SELECT details FROM desktop_hardware WHERE device_id = ?').get(target.id);
+      send({ details: [['设备名称', target.name], ['平台', 'Windows'], ['设备 ID', target.id], ...JSON.parse(hardware?.details ?? '[]')] });
+      return;
+    }
+    if (req.method === 'PUT' && !match[2]) {
       const alias = normalizeName(body.alias);
-      db.prepare('UPDATE devices SET name = ? WHERE id = ? AND revoked_at IS NULL').run(alias, target.id);
+      const updated = db.prepare('UPDATE devices SET name = ? WHERE id = ? AND revoked_at IS NULL').run(alias, target.id);
+      if (!updated.changes) fail(404, 'device was not found');
+      announceDevice(target.id);
       send({ device_id: target.id, alias });
       return;
     }
@@ -471,7 +620,13 @@ export function createServer(options = {}) {
     db.prepare(`UPDATE sessions SET ended_at = COALESCE(ended_at, ?), end_reason = COALESCE(end_reason, ?)
       WHERE id = ?`).run(now(), reason, session.id);
     if (session.disconnectTimer) clearTimeout(session.disconnectTimer);
-    if (sendHost && session.appControlId) emitHostRelease(hostRooms.get(session.hostId), session, hostEvent);
+    if (sendHost && session.usedAt !== null) {
+      const room = hostRooms.get(session.hostId);
+      if (room?.ticketId === session.hostRoomId) {
+        if (!room.socket?.connected) room.pendingRelease = { session, event: hostEvent };
+        else emitHostRelease(room, session, hostEvent);
+      }
+    }
     if (session.nativeSocket?.connected) {
       if (sendEnded) session.nativeSocket.emit(reason === 'host_disconnected' ? 'publisher_disconnect' : 'leave');
       session.nativeSocket.disconnect(true);
@@ -482,6 +637,8 @@ export function createServer(options = {}) {
     }
     if (sessions.get(session.id) === session) sessions.delete(session.id);
     if (activeSessionsByHost.get(session.hostId) === session) activeSessionsByHost.delete(session.hostId);
+    if (session.assistance) assistance.ended(session);
+    if (session.usedAt !== null) announceDevice(session.hostId);
   }
 
   function finishHostSessions(deviceId, reason, options) {
@@ -490,20 +647,32 @@ export function createServer(options = {}) {
     }
   }
 
-  function closeHostRoom(deviceId, reason, { emitLeave = false } = {}) {
+  function closeHostRoom(deviceId, reason) {
     const room = hostRooms.get(deviceId);
     if (!room) return;
     if (room.disconnectTimer) clearTimeout(room.disconnectTimer);
     room.disconnectTimer = null;
     finishHostSessions(deviceId, reason);
-    if (emitLeave && room.socket?.connected) room.socket.emit('leave');
-    if (room.socket?.connected) room.socket.disconnect(true);
+    assistance.cancelForDevice(deviceId);
+    power.cancelForDevice(deviceId);
     hostRooms.delete(deviceId);
+    if (room.socket?.connected) room.socket.disconnect(true);
+    announceDevice(deviceId);
   }
 
   function endUnclaimedSession(session, reason) {
-    if (session.usedAt || session.controllerSocket) return;
+    if (session.usedAt !== null) return;
     finishSession(session, reason, { sendHost: true, sendEnded: false });
+  }
+
+  function relayNativeSignal(session, socket, queue, event, payload) {
+    if (socket?.connected) socket.emit(event, payload);
+    else if (queue.length < MAX_QUEUED_SIGNALS) queue.push([event, payload]);
+    else finishSession(session, 'signaling_backlog_exceeded');
+  }
+
+  function flushNativeSignals(socket, queue) {
+    for (const [event, payload] of queue.splice(0)) socket.emit(event, payload);
   }
 
   function rateLimitPair(req) {
@@ -597,11 +766,22 @@ export function createServer(options = {}) {
   }
 
   async function requestHandler(req, res) {
+    let native = false;
     try {
       const pathname = requestPath(req);
+      native = /^\/api\/v[12](?:\/|$)/u.test(pathname);
       if (!originIsAllowed(req.headers.origin, getPublicOrigin)) fail(403, 'origin is not allowed');
       if (req.method === 'GET' && pathname === '/healthz') {
         jsonResponse(res, 200, { status: 'ok' });
+        return;
+      }
+      if (pathname.startsWith('/v1/wallpapers/')) {
+        if (!addressClientsAllowed(req)) fail(403, 'server does not admit devices from this network');
+        if (req.method === 'POST' && pathname === '/v1/wallpapers/upload') {
+          jsonResponse(res, 200, await wallpapers.upload(req));
+        } else {
+          wallpapers.download(req, res, pathname.slice('/v1/wallpapers/'.length));
+        }
         return;
       }
       if (req.method === 'POST' && pathname === '/v1/pair') {
@@ -612,6 +792,10 @@ export function createServer(options = {}) {
       }
       if (pathname.startsWith('/v1/desktop/')) {
         await desktopRequest(req, res, pathname.slice('/v1/desktop'.length));
+        return;
+      }
+      if (native) {
+        await desktopRequest(req, res, nativeDesktopPath(pathname), true);
         return;
       }
       if (req.method === 'POST' && pathname === '/v1/host/room') {
@@ -666,13 +850,15 @@ export function createServer(options = {}) {
       if (await serveStatic(req, res, pathname)) return;
       fail(404, 'not found');
     } catch (error) {
+      if (res.destroyed) return;
       if (res.headersSent) {
         res.destroy();
         return;
       }
       const status = error instanceof HttpError ? error.status : 500;
-      const message = error instanceof HttpError ? error.message : 'internal server error';
-      jsonResponse(res, status, { error: message }, req.method === 'HEAD');
+      const msg = error instanceof HttpError ? error.message : 'internal server error';
+      const code = error instanceof HttpError ? error.code : status;
+      jsonResponse(res, status, native ? { code, msg, data: null } : { error: msg }, req.method === 'HEAD');
     }
   }
 
@@ -691,12 +877,12 @@ export function createServer(options = {}) {
       if (pending) {
         const session = sessions.get(pending.id);
         if (!addressClientsAllowed(socket.request) || !session?.native || session.ended
-          || (!session.usedAt && session.expiresAt <= now())) throw new Error('rejected');
+          || (session.usedAt === null && session.expiresAt <= now())) throw new Error('rejected');
         const controller = addressHost(db, session.controllerId);
         const host = addressHost(db, session.hostId);
         const room = hostRooms.get(session.hostId);
         if (!controller || !host?.controllable || room?.ticketId !== session.hostRoomId
-          || (!session.usedAt && !room.socket?.connected)) throw new Error('rejected');
+          || (session.usedAt === null && !room.socket?.connected)) throw new Error('rejected');
         socket.data.nativeSession = session;
         next();
         return;
@@ -710,7 +896,7 @@ export function createServer(options = {}) {
         throw new Error('rejected');
       }
       if (row.addressMember && !addressClientsAllowed(socket.request)) throw new Error('rejected');
-      socket.data.roomAuth = { ticketId: row.ticketId, deviceId: row.deviceId, expiresAt: row.expiresAt };
+      socket.data.roomAuth = { ticketId: row.ticketId, deviceId: row.deviceId, addressMember: Boolean(row.addressMember) };
       next();
     } catch {
       next(new Error('unauthorized'));
@@ -723,6 +909,7 @@ export function createServer(options = {}) {
     if (session.disconnectTimer) clearTimeout(session.disconnectTimer);
     session.disconnectTimer = null;
     if (previousSocket?.connected) previousSocket.disconnect(true);
+    flushNativeSignals(socket, session.toController);
 
     socket.on('error', () => {});
     socket.on('room_info', (ack) => {
@@ -733,7 +920,7 @@ export function createServer(options = {}) {
     });
     socket.on('control', (payload, ack) => {
       if (typeof ack !== 'function') return;
-      if (session.ended || session.usedAt || session.expiresAt <= now()) return ack('error', {});
+      if (session.ended || session.nativeSocket !== socket || session.usedAt !== null || session.expiresAt <= now()) return ack('error', {});
       const room = hostRooms.get(session.hostId);
       const current = activeSessionsByHost.get(session.hostId);
       const host = addressHost(db, session.hostId);
@@ -741,7 +928,8 @@ export function createServer(options = {}) {
         && Buffer.isBuffer(payload.app_data) && payload.app_data.length > 0 && payload.app_data.length <= 64 * 1024
         && typeof payload.streamer_data === 'string' && payload.streamer_data.length <= 64 * 1024;
       if (!valid || !addressHost(db, session.controllerId) || !host?.controllable || !room?.socket?.connected
-        || room.ticketId !== session.hostRoomId || (current && current !== session && !session.force)) {
+        || room.ticketId !== session.hostRoomId
+        || (current && current !== session && !session.force && current.id !== session.replacementId)) {
         return ack('error', {});
       }
       const timestamp = now();
@@ -752,26 +940,30 @@ export function createServer(options = {}) {
       session.appControlId = payload.app_control_id;
       session.usedAt = timestamp;
       activeSessionsByHost.set(session.hostId, session);
+      if (session.assistance) assistance.started(session);
       const ids = { client_id: session.clientId, ice_id: session.iceId };
       room.socket.emit('be-controlled', {
         ...ids,
         app_control_id: session.appControlId,
         app_data: payload.app_data,
         controller_device_id: session.controllerId,
+        connection_type: session.assistance ? 2 : 1,
         streamer_data: payload.streamer_data,
+        auto_switch_network: canSwitchNetwork,
         iceServers,
         data: { iceServers },
       });
-      ack('success', { code: 0, ...ids, iceServers });
+      ack('success', { code: 0, ...ids, iceServers, auto_switch_network: canSwitchNetwork });
+      announceDevice(session.hostId);
     });
     for (const event of ['soac', 'forward_setting']) {
       socket.on(event, (payload) => {
-        if (session.ended || !session.usedAt || session.nativeSocket !== socket) return;
+        if (session.ended || session.usedAt === null || session.nativeSocket !== socket) return;
         const room = hostRooms.get(session.hostId);
         const data = payload?.data;
         if (!isRecord(data) || room?.ticketId !== session.hostRoomId
           || (event === 'soac' && (data.ice_id !== session.iceId || data.app_control_id !== session.appControlId))) return;
-        room.socket?.emit(event, { client_id: session.clientId, data });
+        relayNativeSignal(session, room.socket, session.toHost, event, { client_id: session.clientId, data });
       });
     }
     socket.on('leave', () => {
@@ -780,10 +972,11 @@ export function createServer(options = {}) {
     socket.on('disconnect', (reason) => {
       if (session.ended || session.nativeSocket !== socket) return;
       session.nativeSocket = null;
-      if (reason === 'client namespace disconnect' || !session.usedAt) {
+      if (reason === 'client namespace disconnect') {
         finishSession(session, 'controller_left', { hostEvent: 'left', sendEnded: false });
         return;
       }
+      if (session.usedAt === null) return;
       session.disconnectTimer = setTimeout(() => {
         finishSession(session, 'controller_disconnected', { hostEvent: 'left', sendEnded: false });
       }, HOST_RECONNECT_GRACE_MS);
@@ -804,12 +997,23 @@ export function createServer(options = {}) {
       room = null;
     }
     if (!room) {
-      room = { deviceId: auth.deviceId, ticketId: auth.ticketId, socket: null, disconnectTimer: null };
+      room = { ticketId: auth.ticketId, addressMember: auth.addressMember, socket: null, disconnectTimer: null, pendingRelease: null };
       hostRooms.set(auth.deviceId, room);
     }
     const previousSocket = room.socket;
     room.socket = socket;
     if (previousSocket && previousSocket !== socket && previousSocket.connected) previousSocket.disconnect(true);
+    if (room.pendingRelease) {
+      emitHostRelease(room, room.pendingRelease.session, room.pendingRelease.event);
+      room.pendingRelease = null;
+    }
+    const current = activeSessionsByHost.get(auth.deviceId);
+    if (current?.native && current.hostRoomId === room.ticketId) flushNativeSignals(socket, current.toHost);
+    if (room.addressMember) {
+      const event = announcedDevices.has(auth.deviceId) ? 'device_info_changed' : 'device_binded';
+      announcedDevices.add(auth.deviceId);
+      announceDevice(auth.deviceId, event);
+    }
 
     socket.on('error', () => {});
     socket.on('room_info', (ack) => {
@@ -829,7 +1033,7 @@ export function createServer(options = {}) {
       const data = payload?.data;
       if (!active || active.ended || payload?.client_id !== active.clientId || !isRecord(data)) return;
       if (active.native) {
-        active.nativeSocket?.emit('forward_setting', payload);
+        relayNativeSignal(active, active.nativeSocket, active.toController, 'forward_setting', payload);
         return;
       }
       if (data.type !== 'device_capability' || !isRecord(data.device_capability)
@@ -842,7 +1046,7 @@ export function createServer(options = {}) {
       if (!active || active.ended || payload?.client_id !== active.clientId || !isRecord(data)
         || data.ice_id !== active.iceId || data.app_control_id !== active.appControlId) return;
       if (active.native) {
-        active.nativeSocket?.emit('soac', payload);
+        relayNativeSignal(active, active.nativeSocket, active.toController, 'soac', payload);
         return;
       }
       try {
@@ -879,9 +1083,13 @@ export function createServer(options = {}) {
     socket.on('disconnect', () => {
       if (room.socket !== socket || hostRooms.get(auth.deviceId) !== room) return;
       room.socket = null;
+      if (closed) return;
+      if (room.addressMember) announceDevice(auth.deviceId);
       room.disconnectTimer = setTimeout(() => {
         if (room.socket || hostRooms.get(auth.deviceId) !== room) return;
         finishHostSessions(auth.deviceId, 'host_disconnected', { sendHost: false });
+        assistance.cancelForDevice(auth.deviceId);
+        power.cancelForDevice(auth.deviceId);
         hostRooms.delete(auth.deviceId);
         room.disconnectTimer = null;
       }, HOST_RECONNECT_GRACE_MS);
@@ -993,9 +1201,11 @@ export function createServer(options = {}) {
           app_control_id: session.appControlId,
           app_data: createConnectOptions(session.controllerId, session.controllerPlatform),
           controller_device_id: session.controllerId,
+          connection_type: 1,
           streamer_data: createStreamerData(session.iceId),
           iceServers,
         });
+        announceDevice(session.hostId);
         return;
       }
       if (session?.ended) return;
@@ -1067,13 +1277,19 @@ export function createServer(options = {}) {
 
   const maintenance = setInterval(() => {
     if (closed) return;
+    assistance.prune();
+    wallpapers.prune();
     const timestamp = now();
     for (const [deviceId, room] of hostRooms) {
       const row = db.prepare(`SELECT rt.expires_at AS expiresAt, rt.retired_at AS retiredAt,
           d.revoked_at AS revokedAt
         FROM room_tickets rt JOIN devices d ON d.id = rt.device_id WHERE rt.id = ?`).get(room.ticketId);
       if (!row || row.retiredAt !== null || row.expiresAt <= timestamp || row.revokedAt !== null) {
-        closeHostRoom(deviceId, row?.revokedAt !== null ? 'host_revoked' : 'host_room_expired');
+        if (row?.revokedAt != null && room.addressMember) removeDesktopDevice(deviceId);
+        else closeHostRoom(deviceId, 'host_room_expired');
+      } else if (room.addressMember && room.socket?.connected && row.expiresAt - timestamp < HOST_ROOM_TTL_MS / 2) {
+        db.prepare('UPDATE room_tickets SET expires_at = ? WHERE id = ? AND retired_at IS NULL')
+          .run(timestamp + HOST_ROOM_TTL_MS, room.ticketId);
       }
     }
     for (const session of [...sessions.values()]) {
@@ -1119,6 +1335,8 @@ export function createServer(options = {}) {
     closed = true;
     clearInterval(heartbeat);
     clearInterval(maintenance);
+    assistance.close();
+    power.close();
     for (const room of hostRooms.values()) {
       if (room.disconnectTimer) clearTimeout(room.disconnectTimer);
       if (room.socket?.connected) room.socket.disconnect(true);
@@ -1151,19 +1369,24 @@ export function createServer(options = {}) {
 }
 
 export async function start() {
+  const envFile = resolve(import.meta.dirname, '.env');
+  if (existsSync(envFile)) process.loadEnvFile(envFile);
   const app = createServer();
   const address = await app.listen();
   const origin = app.publicOrigin();
   process.stdout.write(`OpenUUYC self-host server listening at ${origin} (${typeof address === 'object' ? address.port : ''})\n`);
   const shutdown = () => app.close().finally(() => { process.exitCode = 0; });
-  process.once('SIGINT', shutdown);
-  process.once('SIGTERM', shutdown);
+  onShutdown(shutdown);
   return app;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
+if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)
+  && !runWithSqliteFlag(import.meta.url)) {
   start().catch(() => {
-    process.stderr.write('Server startup failed. Check configuration and database permissions.\n');
+    const message = DatabaseSync
+      ? 'Server startup failed. Check configuration and database permissions.'
+      : SQLITE_UNAVAILABLE;
+    process.stderr.write(`${message}\n`);
     process.exitCode = 1;
   });
 }

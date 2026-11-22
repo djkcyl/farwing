@@ -32,7 +32,7 @@ fn digest(bytes: &[u8]) -> String {
 
 impl AuthenticatedClient {
     pub(super) fn schedule_publication(&self) {
-        if self.is_self_hosted() || resident::managed() {
+        if resident::managed() {
             return;
         }
         let Ok(identity) = self.device.identity().client_identity() else {
@@ -209,14 +209,20 @@ async fn verify_owner(
     }
     let expected = expected.clone();
     let session = session.clone();
+    let self_hosted = device.self_hosted().cloned();
     tokio::task::spawn_blocking(move || {
-        let saved = KeyringIdentityStore::new()?
+        let (identity_store, account) = if let Some(settings) = self_hosted {
+            let origin = crate::account::self_hosted::load_origin()?.context("self-hosted service was disconnected")?;
+            anyhow::ensure!(origin == settings.origin, "self-hosted service changed");
+            let active = crate::account::self_hosted::SelfHosted::load(origin)?;
+            (KeyringIdentityStore::for_self_hosted(&active.device_id)?, active.session()?)
+        } else {
+            (KeyringIdentityStore::new()?, KeyringSessionStore::new()?.load()?.context("wallpaper account ended")?)
+        };
+        let saved = identity_store
             .load_existing()?
             .context("wallpaper identity no longer exists")?
             .client_identity()?;
-        let account = KeyringSessionStore::new()?
-            .load()?
-            .context("wallpaper account ended")?;
         if saved.device_id != expected.device_id
             || saved.client_id != expected.client_id
             || saved.system_id != expected.system_id
@@ -277,7 +283,7 @@ async fn synchronize(
         .map_err(|_| anyhow::anyhow!("wallpaper upload grant request failed"))?;
     verify_owner(&device, &identity, &session).await?;
     reporting::update(|s| s.wallpaper = "正在上传并校验图片".into());
-    let uploaded = crate::account::api::wallpaper::upload_wallpaper(grant, image).await?;
+    let uploaded = api.upload_wallpaper(grant, image).await?;
     verify_owner(&device, &identity, &session).await?;
 
     // This records the desired uploaded image, not a claim that binding succeeded.

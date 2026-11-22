@@ -1,13 +1,17 @@
 //! Device-center asynchronous worker and cancellation ownership.
 mod guest;
+#[cfg(test)]
+mod tests;
 use super::assist::AssistResult;
 use super::messages::{DeviceMutation, GuiCommand, GuiEvent, MutationOutcome};
 use super::phone::LoginMethod;
 use super::{StartupStage, WORKER_TICK, assist, device_sync, power};
 use crate::account::client::AuthenticatedClient;
 use crate::account::login::{self, LoginProgress};
+use crate::account::self_hosted;
+use crate::session::device_session::DeviceRuntime;
 use crate::session::presence::{ActivePresence, PresenceEvent, PresenceState};
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
@@ -106,10 +110,45 @@ async fn cancel_startup_media(task: &mut Option<StartupMedia>) {
     }
 }
 
+struct PreparedServer {
+    origin: Option<url::Url>,
+    runtime: DeviceRuntime,
+    connection: Option<(Arc<AuthenticatedClient>, device_sync::DeviceSync)>,
+}
+
+struct ActiveServerChange {
+    generation: u64,
+    task: JoinHandle<Result<PreparedServer>>,
+}
+
+impl PreparedServer {
+    async fn connect(address: String) -> Result<Self> {
+        let origin = (!address.trim().is_empty())
+            .then(|| self_hosted::parse_origin(&address))
+            .transpose()?;
+        let runtime = DeviceRuntime::start_for(origin.clone()).context("无法打开本机设备身份")?;
+        let connection = if origin.is_some() {
+            let client = Arc::new(
+                AuthenticatedClient::from_saved_session_with_device(runtime.handle())
+                    .context("无法创建自建服务器会话")?,
+            );
+            let sync = device_sync::DeviceSync::load_initial(&client).await?;
+            Some((client, sync))
+        } else {
+            None
+        };
+        Ok(Self {
+            origin,
+            runtime,
+            connection,
+        })
+    }
+}
+
 pub(super) async fn gui_worker_loop(
-    mut commands: mpsc::UnboundedReceiver<GuiCommand>,
+    commands: mpsc::UnboundedReceiver<GuiCommand>,
     events: Sender<GuiEvent>,
-    mut foreground: watch::Receiver<bool>,
+    foreground: watch::Receiver<bool>,
 ) {
     if crate::platform::windows::host_service::resident::managed() {
         if let Err(error) = crate::platform::windows::host_service::resident::request(
@@ -120,7 +159,7 @@ pub(super) async fn gui_worker_loop(
             let _ = events.send(GuiEvent::Warning(format!("后台启动失败：{error:#}")));
         }
     }
-    let mut device_runtime = match crate::session::device_session::DeviceRuntime::start() {
+    let device_runtime = match DeviceRuntime::start() {
         Ok(runtime) => runtime,
         Err(error) => {
             let _ = events.send(GuiEvent::SessionUnavailable(format!(
@@ -129,6 +168,23 @@ pub(super) async fn gui_worker_loop(
             return;
         }
     };
+    run_commands(
+        commands,
+        events,
+        foreground,
+        device_runtime,
+        self_hosted::save_origin,
+    )
+    .await;
+}
+
+async fn run_commands(
+    mut commands: mpsc::UnboundedReceiver<GuiCommand>,
+    events: Sender<GuiEvent>,
+    mut foreground: watch::Receiver<bool>,
+    mut device_runtime: DeviceRuntime,
+    save_origin: impl Fn(Option<&url::Url>) -> Result<()>,
+) {
     let _ = events.send(GuiEvent::ServerLoaded(device_runtime.handle().self_hosted()
         .map(|settings| settings.origin.as_str().to_owned()).unwrap_or_default()));
     let _ = events.send(GuiEvent::Startup(0, StartupStage::Credentials));
@@ -146,6 +202,7 @@ pub(super) async fn gui_worker_loop(
     let mut sms_task: Option<ActiveSmsCode> = None;
     let mut sms_gate = login::sms::SmsGate::default();
     let mut catalog_generation = 0;
+    let mut server_change: Option<ActiveServerChange> = None;
     let mut mutation_task: Option<JoinHandle<Result<MutationOutcome>>> = None;
     let mut mutation_generation = 0;
     let mut logout_task: Option<JoinHandle<crate::account::client::LogoutOutcome>> = None;
@@ -195,45 +252,13 @@ pub(super) async fn gui_worker_loop(
         }
         if let Some(command) = command {
             match command {
-                GuiCommand::SetServer { generation, address } => {
-                    let configure = || -> Result<_> {
-                        use crate::account::self_hosted;
-                        let origin = (!address.trim().is_empty()).then(|| self_hosted::parse_origin(&address)).transpose()?;
-                        let runtime = crate::session::device_session::DeviceRuntime::start_for(origin.clone())?;
-                        self_hosted::save_origin(origin.as_ref())?;
-                        Ok((runtime, origin.map(|url| url.to_string()).unwrap_or_default()))
-                    };
-                    match configure() {
-                        Ok((runtime, address)) => {
-                            cancel_login_task(&mut login_task).await;
-                            cancel_login_task(&mut sms_login_task).await;
-                            cancel_sms_task(&mut sms_task).await;
-                            cancel_operation(&mut mutation_task).await;
-                            cancel_operation(&mut assist_lists_task).await;
-                            cancel_operation(&mut assist_operation_task).await;
-                            commit_gate = login::LoginCommitGate::default();
-                            sms_gate.cancel();
-                            next_assist_refresh = None;
-                            cancel_startup_media(&mut startup_media).await;
-                            media_ready = None;
-                            device_sync.reset().await;
-                            stop_active_signal(&mut host_signal).await;
-                            if let Some(current) = client.take() {
-                                current.retire();
-                                current.close().await;
-                            }
-                            guest.close().await;
-                            std::mem::replace(&mut device_runtime, runtime).close().await;
-                            catalog_generation = generation;
-                            presence_online = false;
-                            presence_stopped = false;
-                            allow_load = true;
-                            guest_allowed = false;
-                            let _ = events.send(GuiEvent::ServerChanged(generation, Ok(address)));
-                        }
-                        Err(error) => { let _ = events.send(GuiEvent::ServerChanged(generation, Err(format!("{error:#}")))); }
-                    }
+                GuiCommand::SetServer { generation, address } if server_change.is_none() => {
+                    server_change = Some(ActiveServerChange {
+                        generation,
+                        task: tokio::spawn(PreparedServer::connect(address)),
+                    });
                 }
+                GuiCommand::SetServer { .. } => {}
                 GuiCommand::OpenGuestAssist => {
                     guest_allowed = device_runtime.handle().self_hosted().is_none();
                 }
@@ -572,6 +597,14 @@ pub(super) async fn gui_worker_loop(
                     }
                 }
                 GuiCommand::PrepareExit => {
+                    if let Some(change) = server_change.take() {
+                        change.task.abort();
+                        let _ = change.task.await;
+                        let _ = events.send(GuiEvent::ServerChanged(
+                            change.generation,
+                            Err("已取消服务器连接".into()),
+                        ));
+                    }
                     let update_exit = super::instance::take_update_exit();
                     let result = if crate::platform::windows::host_service::resident::managed() {
                         crate::platform::windows::host_service::resident::pause_for_exit()
@@ -668,6 +701,68 @@ pub(super) async fn gui_worker_loop(
                     stop_active_signal(&mut host_signal).await;
                 }
                 GuiCommand::Logout => {}
+            }
+        }
+
+        if let Some(ActiveServerChange { generation, task }) =
+            server_change.take_if(|change| change.task.is_finished())
+        {
+            let result = task.await.unwrap_or_else(|error| Err(error.into()));
+            let result = result.and_then(|next| {
+                anyhow::ensure!(
+                    generation == catalog_generation.wrapping_add(1)
+                        && logout_task.is_none()
+                        && mutation_task.is_none(),
+                    "设备或账号状态已改变，请重试"
+                );
+                anyhow::ensure!(
+                    client.as_ref().is_none_or(|current| current.host.status().connection.is_none())
+                        && guest.client.as_ref().is_none_or(|current| current.host.status().connection.is_none()),
+                    "本机有正在进行的被控连接，请在连接结束后重试"
+                );
+                save_origin(next.origin.as_ref()).context("无法保存服务器地址")?;
+                Ok(next)
+            });
+            match result {
+                Ok(PreparedServer { origin, runtime, connection }) => {
+                    cancel_login_task(&mut login_task).await;
+                    cancel_login_task(&mut sms_login_task).await;
+                    cancel_sms_task(&mut sms_task).await;
+                    cancel_operation(&mut assist_lists_task).await;
+                    cancel_operation(&mut assist_operation_task).await;
+                    commit_gate = login::LoginCommitGate::default();
+                    sms_gate.cancel();
+                    cancel_startup_media(&mut startup_media).await;
+                    media_ready = None;
+                    device_sync.reset().await;
+                    stop_active_signal(&mut host_signal).await;
+                    if let Some(current) = client.take() {
+                        current.retire();
+                        current.close().await;
+                    }
+                    guest.close().await;
+                    std::mem::replace(&mut device_runtime, runtime).close().await;
+                    catalog_generation = generation;
+                    presence_online = false;
+                    presence_stopped = false;
+                    allow_load = true;
+                    guest_allowed = false;
+                    let address = origin.map(|url| url.to_string()).unwrap_or_default();
+                    let _ = events.send(GuiEvent::ServerChanged(generation, Ok(address)));
+                    next_assist_refresh = connection.as_ref().map(|_| Instant::now());
+                    if let Some((connected, sync)) = connection {
+                        device_sync = sync;
+                        device_sync.emit(&events, generation, &connected.account_name());
+                        client = Some(connected);
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "server change failed");
+                    let _ = events.send(GuiEvent::ServerChanged(
+                        generation,
+                        Err(format!("服务器连接失败：{error:#}")),
+                    ));
+                }
             }
         }
 
@@ -867,9 +962,12 @@ pub(super) async fn gui_worker_loop(
             presence_online = false;
             client = None;
             allow_load = false;
-            let _ = events.send(GuiEvent::AccountEnded(
-                "本机设备的账号会话已结束，正在关闭观看连接；请重新登录".into(),
-            ));
+            let message = if device_runtime.handle().self_hosted().is_some() {
+                "自建服务器会话已结束，请重新连接"
+            } else {
+                "本机设备的账号会话已结束，正在关闭观看连接；请重新登录"
+            };
+            let _ = events.send(GuiEvent::AccountEnded(catalog_generation, message.into()));
             stop_active_signal(&mut host_signal).await;
         }
 
@@ -997,7 +1095,6 @@ pub(super) async fn gui_worker_loop(
             }
             let refresh_active = *foreground.borrow();
             if refresh_active
-                && !active_client.is_self_hosted()
                 && assist_lists_task.is_none()
                 && next_assist_refresh.is_some()
                 && logout_task.is_none()
@@ -1043,6 +1140,7 @@ pub(super) async fn gui_worker_loop(
             }
         }
     }
+    cancel_operation(&mut server_change.map(|change| change.task)).await;
     cancel_startup_media(&mut startup_media).await;
     cancel_login_task(&mut login_task).await;
     crate::session::controller::windows::shutdown().await;

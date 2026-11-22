@@ -73,6 +73,9 @@ impl HostClient {
     pub fn is_guest(&self) -> bool {
         matches!(self.identity, Identity::Guest(_))
     }
+    pub(crate) fn is_self_hosted_account(&self) -> bool {
+        matches!(&self.identity, Identity::Account(client) if client.is_self_hosted())
+    }
     pub(crate) fn is_local(&self) -> bool {
         matches!(self.identity, Identity::Local(_))
     }

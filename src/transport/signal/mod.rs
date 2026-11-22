@@ -36,6 +36,8 @@ const CONTROL_ACK_ID: u64 = 2;
 const ROOM_INFO_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 const WEBRTC_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
+// Self-hosted peers may still be probing capture and encoders after receiving the offer.
+const SELF_HOSTED_WEBRTC_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const RECONNECT_KEY_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 const RECONNECT_KEY_MAX_AGE: Duration = Duration::from_secs(300);
 const RECONNECT_KEY_ACK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -381,8 +383,13 @@ impl SignalSession {
         self.send_binary_packet(header, attachment)?;
         report_negotiation(reporter, NegotiationEvent::OfferSent);
 
+        let connect_timeout = if self.self_hosted {
+            SELF_HOSTED_WEBRTC_CONNECT_TIMEOUT
+        } else {
+            WEBRTC_CONNECT_TIMEOUT
+        };
         match timeout(
-            WEBRTC_CONNECT_TIMEOUT,
+            connect_timeout,
             self.exchange_ice(info, peer, &mut local_candidates, &mut progress, reporter),
         )
         .await
@@ -400,7 +407,8 @@ impl SignalSession {
                     "WebRTC connection timed out"
                 );
                 Err(SignalFailure::Peer(format!(
-                    "WebRTC did not connect within the official 12-second window (peer: {}, ICE: {}, local candidates sent: {}, remote soac events: {}, answer installed: {}; {})",
+                    "WebRTC did not connect within {} seconds (peer: {}, ICE: {}, local candidates sent: {}, remote soac events: {}, answer installed: {}; {})",
+                    connect_timeout.as_secs(),
                     peer.connection_state(),
                     peer.ice_connection_state(),
                     progress.local_candidates_sent,
@@ -834,6 +842,16 @@ impl SignalSession {
                         Ok(EnginePacket::Message(SocketPacket::Event {event,args,binary,..})) if host.is_some()=>{
                             if let Err(error)=host.as_mut().expect("host session").event(&event,&args,&binary,&mut self).await {
                                 tracing::warn!(%error,"host signaling event rejected");
+                                if self.self_hosted && event == "be-controlled" && let Some(value) = args.first() {
+                                    // Release the reservation that failed admission. Our previous
+                                    // peer's IDs may still be installed on the host runtime.
+                                    let envelope = serde_json::json!({
+                                        "client_id": value.get("client_id"),
+                                        "ice_id": value.get("ice_id"),
+                                        "app_control_id": value.get("app_control_id"),
+                                    });
+                                    let _ = self.send_text(encode_event("clear_out", &[envelope], None)?).await;
+                                }
                             }
                         }
                         Ok(EnginePacket::Message(SocketPacket::Ack { id, args, .. }))

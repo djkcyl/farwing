@@ -8,7 +8,7 @@ import { gzipSync } from 'node:zlib';
 import { io as connectSocketIo } from 'socket.io-client';
 import WebSocket from 'ws';
 import { createServer } from '../index.js';
-import { createPairingCode, revokeDevice } from '../db.js';
+import { createPairingCode, hashSecret, revokeDevice } from '../db.js';
 
 async function fixture(t, options = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'openuuyc-server-'));
@@ -492,9 +492,18 @@ test('native address enrollment, signaling, reconnection, and takeover', async (
   assert.deepEqual(await offer, [{ client_id: session.control.client_id, data: { ...ids, type: 'offer', gzip_sdp: sdp } }]);
 
   const clientClosed = nextSocketIoEvent(session.socket, 'disconnect');
+  const serverSawClose = nextSocketIoEvent(app.io.of('/').sockets.get(session.socket.id), 'disconnect');
   session.socket.io.engine.close();
-  await clientClosed;
-  const clientReconnected = await openSignal(session.ticket, true);
+  await Promise.all([clientClosed, serverSawClose]);
+  const queuedAnswer = { client_id: session.control.client_id, data: { ...ids, type: 'answer', gzip_sdp: sdp } };
+  hostSocket.emit('soac', queuedAnswer);
+  await emitAck(hostSocket, 'room_info');
+  const restoredClient = connectHost(room.signalingUrl, session.ticket, true);
+  t.after(() => restoredClient.close());
+  const queuedForClient = nextSocketIoEvent(restoredClient, 'soac');
+  await connected(restoredClient);
+  assert.deepEqual(await queuedForClient, [queuedAnswer]);
+  const clientReconnected = restoredClient;
   const hostClosed = nextSocketIoEvent(hostSocket, 'disconnect');
   hostSocket.io.engine.close();
   await hostClosed;
@@ -573,4 +582,215 @@ test('address enrollment authorizes iOS and web controllers only on the trusted 
     headers: { 'X-Forwarded-For': '192.0.2.10' },
   });
   assert.equal(rejection.response.status, 403);
+});
+
+async function registerWindows(origin, name) {
+  const token = randomBytes(32).toString('hex');
+  const call = (path, method = 'GET', body) => api(origin, `/api/${path}`, { token, method, body });
+  const { response, value } = await call('v1/device/windows/init', 'POST', {
+    name, platform: 1, version_name: '4.48.1.5606', os: 'Windows 11', memory: 16384,
+  });
+  assert.equal(response.status, 200);
+  assert.equal(value.code, 0);
+  return { token, id: value.data.device_id, call };
+}
+
+async function windowsPresence(t, device) {
+  const { value } = await device.call('v1/room/create', 'POST', { last_controlled_interval: -1 });
+  assert.equal(value.code, 0);
+  const room = value.data;
+  const socket = connectHost(room.signaling_server, room.token);
+  t.after(() => socket.close());
+  await connected(socket);
+  const enabled = await device.call('v1/device/controllable', 'POST', { controllable: true });
+  assert.equal(enabled.value.code, 0);
+  return { room, socket };
+}
+
+function nextPush(socket, type, predicate = () => true) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.off('bmsg_push', onPush);
+      reject(new Error(`timed out waiting for push ${type}`));
+    }, 1500);
+    const onPush = (push) => {
+      if (push.type !== type || !predicate(push.data)) return;
+      clearTimeout(timeout);
+      socket.off('bmsg_push', onPush);
+      resolve(push.data);
+    };
+    socket.on('bmsg_push', onPush);
+  });
+}
+
+test('Windows API contract publishes online status and shares device management changes', async (t) => {
+  const { origin } = await fixture(t);
+  const controller = await registerWindows(origin, 'Native controller');
+  const { socket } = await windowsPresence(t, controller);
+  const bound = nextPush(socket, 'device_binded');
+  const host = await registerWindows(origin, 'Native host');
+  assert.equal((await bound).device_id, host.id);
+  const offline = await controller.call(`v1/room/join/by_device/${host.id}`, 'POST', { force_join: false });
+  assert.equal(offline.value.code, 2006);
+
+  const online = nextPush(socket, 'device_info_changed', (data) => data.device_id === host.id && data.status === 'CONNECTED');
+  const { room } = await windowsPresence(t, host);
+  await online;
+  const rename = nextPush(socket, 'device_info_changed', (data) => data.alias === 'Renamed host');
+  assert.equal((await controller.call(`v1/device/${host.id}`, 'PUT', { alias: 'Renamed host' })).value.code, 0);
+  await rename;
+  const detail = (await controller.call(`v1/device/${host.id}/detail`)).value;
+  assert.ok(detail.data.details.some(([label, value]) => label === '内存' && value === '16.0 GiB'));
+  const groups = (await controller.call('v1/device/groups/of/my')).value.data;
+  const currentHost = groups.desktop_devices.find((device) => device.device_id === host.id);
+  assert.equal(currentHost.alias, 'Renamed host');
+  assert.equal(currentHost.version_name, '4.48.1.5606');
+  assert.equal(currentHost.controllable, true);
+  const rights = (await controller.call('v1/member/entitlements')).value.data;
+  assert.equal(rights.features.screen_quality.periods[0].limit.quality, null);
+  assert.ok(rights.expired_at > rights.server_time);
+  assert.equal((await controller.call(`v1/device/${controller.id}/unbind`, 'POST')).response.status, 400);
+
+  const removed = nextPush(socket, 'device_unbind');
+  assert.equal((await controller.call(`v1/device/${host.id}/unbind`, 'POST')).value.code, 0);
+  assert.deepEqual(await removed, { device_id: host.id });
+  assert.equal((await host.call('v1/user/info')).value.code, 1120);
+  assert.equal((await host.call('v1/device/windows/init', 'POST', { name: 'Native host' })).value.code, 1120);
+  const revokedSocket = connectHost(room.signaling_server, room.token);
+  t.after(() => revokedSocket.close());
+  await assert.rejects(connected(revokedSocket), /unauthorized/u);
+});
+
+test('Windows assistance binds password, local confirmation, history and refetch to the requesting device', async (t) => {
+  const { origin } = await fixture(t);
+  const host = await registerWindows(origin, 'Host');
+  const controller = await registerWindows(origin, 'Controller');
+  const other = await registerWindows(origin, 'Another controller');
+  const { socket } = await windowsPresence(t, host);
+  const share = (await host.call('v1/device/share/info/refresh', 'POST')).value.data;
+  assert.match(share.connect_id, /^\d{9}$/u);
+  assert.deepEqual((await host.call('v1/device/share/info/refresh', 'POST')).value.data, share);
+
+  const modePush = nextPush(socket, 'get_control_mode');
+  const mode = controller.call('v2/room/share/control_mode', 'POST', share);
+  const { control_id } = await modePush;
+  const modeReply = { control_id, allow_control: true, control_mode: 'password_confirmation' };
+  assert.equal((await other.call('v2/room/share/upload_control_mode', 'POST', modeReply)).response.status, 404);
+  assert.equal((await host.call('v2/room/share/upload_control_mode', 'POST', modeReply)).value.code, 0);
+  assert.deepEqual((await mode).value.data, { can_remote_control: true, control_mode: 'password_confirmation' });
+
+  const verifyCode = async (code) => {
+    const push = nextPush(socket, 'remote_control');
+    const join = controller.call('v2/room/join/share/by_code', 'POST', { ...share, connect_code: code });
+    const challenge = await push;
+    await host.call('v2/room/share/upload_sign', 'POST', {
+      control_id: challenge.control_id, can_remote_control: true, control_mode: 'password_confirmation', need_confirmation: true,
+      sign: hashSecret(`${challenge.salt}123456`), backup_sign: hashSecret(`${challenge.salt}custom-code`),
+    });
+    return (await join).value;
+  };
+  assert.equal((await verifyCode('wrong')).code, 1131);
+  const pending = await verifyCode('custom-code');
+  assert.equal(pending.code, 1136);
+  const confirmation = { ...share, control_id: pending.data.control_id };
+  assert.equal((await other.call('v2/room/join/share/by_confirmation', 'POST', confirmation)).value.code, 1133);
+
+  const prompt = nextPush(socket, 'remote_control_by_confirmation');
+  const interrupted = controller.call('v2/room/join/share/by_confirmation', 'POST', confirmation);
+  assert.equal((await prompt).name, 'Controller');
+  const withdrew = nextPush(socket, 'remote_control_by_confirmation_cancel');
+  assert.equal((await controller.call('v2/room/share/cancel_remote_assist', 'POST', share)).value.code, 0);
+  assert.equal((await withdrew).control_id, confirmation.control_id);
+  assert.equal((await interrupted).response.status, 403);
+  assert.equal((await host.call('v2/room/share/confirmation', 'POST', { ...confirmation, allow_control: true })).response.status, 404);
+
+  const retry = await verifyCode('123456');
+  const approved = nextPush(socket, 'remote_control_by_confirmation');
+  const join = controller.call('v2/room/join/share/by_confirmation', 'POST', { ...share, control_id: retry.data.control_id });
+  await approved;
+  await host.call('v2/room/share/confirmation', 'POST', { control_id: retry.data.control_id, allow_control: true, need_password: true });
+  const { value: accepted } = await join;
+  assert.equal(accepted.code, 0);
+  const viewer = connectHost(accepted.data.signaling_list[0], accepted.data.token);
+  t.after(() => viewer.close());
+  await connected(viewer);
+  const controlled = nextSocketIoEvent(socket, 'be-controlled');
+  const [status] = await emitAck(viewer, 'control', { app_control_id: randomUUID(), app_data: Buffer.from([1]), streamer_data: '{}' });
+  assert.equal(status, 'success');
+  assert.equal((await controlled)[0].connection_type, 2);
+
+  const recent = 'v1/device/share/saved/recent';
+  const favorites = 'v1/device/share/saved/favorites';
+  assert.equal((await controller.call(recent)).value.data.saved[0].publisher_device_id, host.id);
+  assert.equal((await other.call(recent)).value.data.saved.length, 0);
+  const saved = (await controller.call(favorites, 'POST', { favorites: [{ ...share, remark: 'My host' }] })).value.data.saved;
+  assert.equal(saved[0].remark, 'My host');
+  assert.equal((await controller.call(`${favorites}/${host.id}`, 'DELETE')).value.code, 0);
+  assert.equal((await controller.call(favorites)).value.data.saved.length, 0);
+  assert.equal((await controller.call(recent)).value.data.saved.length, 1);
+
+  const refresh = 'v1/room/join/refetch';
+  const token = { token: accepted.data.token };
+  assert.equal((await other.call(refresh, 'POST', token)).response.status, 403);
+  const refreshPush = nextPush(socket, 'get_control_mode');
+  const refreshed = controller.call(refresh, 'POST', token);
+  const refreshChallenge = await refreshPush;
+  await host.call('v2/room/share/upload_control_mode', 'POST', { ...modeReply, ...refreshChallenge });
+  assert.notEqual((await refreshed).value.data.token, accepted.data.token);
+  assert.equal((await controller.call(refresh, 'POST', token)).response.status, 403);
+});
+
+test('Windows power operations validate the target and require a receipt from its active host room', async (t) => {
+  const { origin } = await fixture(t);
+  const host = await registerWindows(origin, 'Power target');
+  const controller = await registerWindows(origin, 'Controller');
+  const { socket: hostSocket } = await windowsPresence(t, host);
+  const { socket: helperSocket } = await windowsPresence(t, controller);
+  const setting = 'v1/device/set_support_wol';
+  const info = 'v1/device/wake_on_lan/info';
+  const wake = `v1/device/${host.id}/wake_on_lan/req`;
+  const target = { mac: '02:01:02:03:04:05', inner_ip: '192.168.9.5', subnet_mask: '255.255.255.0' };
+  assert.equal((await host.call(setting, 'POST', { support_wol: true })).response.status, 409);
+  assert.equal((await host.call(info, 'POST', { ...target, subnet_mask: '255.0.255.0' })).response.status, 400);
+  assert.equal((await host.call(info, 'POST', target)).value.code, 0);
+  assert.equal((await controller.call(info, 'POST', { ...target, mac: '02:01:02:03:04:06', inner_ip: '192.168.9.6' })).value.code, 0);
+  assert.equal((await host.call(setting, 'POST', { support_wol: true })).value.code, 0);
+  assert.equal((await controller.call(wake, 'POST')).response.status, 409);
+
+  const verifyPower = async (path, type, code, body) => {
+    const pushed = nextPush(hostSocket, type);
+    const action = controller.call(path, 'POST', body);
+    const { call_id, need_response } = await pushed;
+    assert.equal(need_response, true);
+    assert.equal((await controller.call('v1/transport/rpc/response', 'POST', { call_id, code })).response.status, 404);
+    assert.equal((await host.call('v1/transport/rpc/response', 'POST', { call_id, code })).value.code, 0);
+    return (await action).response.status;
+  };
+  assert.equal(await verifyPower(`v1/device/${host.id}/reboot`, 'device_reboot', -1), 403);
+  assert.equal(await verifyPower(`v1/transport/${host.id}/rpc/request`, 'transport_rpc', 0, { p: 'shutdown' }), 200);
+  assert.equal((await host.call('v1/user/logout', 'POST')).value.code, 0);
+  const pushed = nextPush(helperSocket, 'wake_on_lan');
+  assert.equal((await controller.call(wake, 'POST')).value.data.current_device_in_same_network, true);
+  assert.deepEqual((await pushed).target_device, { ...target, mac: '020102030405' });
+});
+
+test('Windows wallpaper upload is bounded, single-use and bound to the authorized device', async (t) => {
+  const { origin } = await fixture(t);
+  const host = await registerWindows(origin, 'Wallpaper host');
+  const controller = await registerWindows(origin, 'Controller');
+  const { value: { data: grant } } = await host.call('v1/tool/fp/token?filetype=1');
+  const upload = (content) => fetch(grant.req_url, { method: 'POST', headers: { Authorization: grant.token }, body: content });
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a4LsAAAAASUVORK5CYII=', 'base64');
+  assert.equal((await upload('not an image')).status, 415);
+  const response = await upload(png);
+  assert.equal(response.status, 200);
+  const image = await response.json();
+  assert.equal(image.mime, 'image/png');
+  assert.equal((await upload(png)).status, 401);
+  assert.equal((await controller.call('v1/device/wallpaper', 'POST', { wallpaper_url: image.url })).response.status, 404);
+  assert.equal((await host.call('v1/device/wallpaper', 'POST', { wallpaper_url: image.url })).value.code, 0);
+  const list = (await controller.call('v1/device/list')).value.data;
+  assert.equal(list.my_binded_devices[0].wallpaper_url, image.url);
+  const downloaded = await fetch(image.url);
+  assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), png);
 });

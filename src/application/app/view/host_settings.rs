@@ -113,10 +113,8 @@ impl DeviceCenterApp {
                             let ui = &mut columns[1];
                             ui.label(RichText::new("系统与网络").strong());
                             ui.checkbox(&mut ports, "端口转发");
-                            if self.server_address.is_empty() {
-                                ui.checkbox(&mut power, "关机和重启");
-                                ui.checkbox(&mut wol, "局域网唤醒协助");
-                            }
+                            ui.checkbox(&mut power, "关机和重启");
+                            ui.checkbox(&mut wol, "局域网唤醒协助");
                         }
                     });
                 });
@@ -186,7 +184,7 @@ impl DeviceCenterApp {
                 host.audio_devices_failed();
             }
             self.host_access_settings(ui, host);
-            if !host.is_guest() && self.server_address.is_empty() {
+            if !host.is_guest() {
                 self.wol_setup_entry(ui);
             }
             section(ui, "画面与声音");
