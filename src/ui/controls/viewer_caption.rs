@@ -36,10 +36,15 @@ pub(crate) fn viewer_fullscreen_handle(ui: &mut egui::Ui) -> (egui::Response, eg
 
 #[derive(Clone, Copy)]
 pub(crate) enum ViewerCaptionIcon {
+    #[cfg(windows)]
     Plugins,
     Annotation,
     OneToOne,
     Mouse,
+    #[cfg(target_os = "linux")]
+    AskControl,
+    #[cfg(target_os = "linux")]
+    Audio { muted: bool },
     Microphone,
     Quality,
     Participants,
@@ -60,6 +65,21 @@ pub(crate) fn viewer_caption_button(
         egui::Sense::click(),
     );
     paint_caption_button(ui, rect, &response, icon, selected);
+    #[cfg(target_os = "linux")]
+    if !tooltip.is_empty() {
+        response.widget_info(|| match icon {
+            ViewerCaptionIcon::Mouse | ViewerCaptionIcon::Audio { .. } => egui::WidgetInfo::selected(
+                egui::WidgetType::Button,
+                ui.is_enabled(),
+                selected,
+                match icon {
+                    ViewerCaptionIcon::Mouse => t().app.cap_control,
+                    _ => t().viewer.mute,
+                },
+            ),
+            _ => egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tooltip),
+        });
+    }
     if tooltip.is_empty() {
         response.widget_info(|| {
             egui::WidgetInfo::labeled(
@@ -130,6 +150,15 @@ fn paint_caption_button(
         egui::Color32::TRANSPARENT
     };
     ui.painter().rect_filled(rect, theme::CONTROL_RADIUS, fill);
+    #[cfg(target_os = "linux")]
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect,
+            theme::CONTROL_RADIUS,
+            egui::Stroke::new(1.0, theme::BORDER_FOCUS),
+            egui::StrokeKind::Inside,
+        );
+    }
     let color = if !ui.is_enabled() {
         theme::DISABLED
     } else if selected {
@@ -184,9 +213,10 @@ fn paint_caption_icon(
         ViewerCaptionIcon::Annotation => super::annotation::paint_annotation_icon(
             painter,
             egui::Rect::from_center_size(center, egui::vec2(16., 16.)),
-            super::AnnotationIcon::Pen,
+            super::annotation::AnnotationIcon::Pen,
             color,
         ),
+        #[cfg(windows)]
         ViewerCaptionIcon::Plugins => crate::plugins::paint_plugin_icon(painter, rect, color),
         ViewerCaptionIcon::OneToOne => {
             for (x, y) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
@@ -207,23 +237,22 @@ fn paint_caption_icon(
                 egui::StrokeKind::Inside,
             );
         }
-        ViewerCaptionIcon::Mouse => {
-            let body = egui::Rect::from_center_size(center, egui::vec2(11.0, 16.0));
-            painter.rect_stroke(body, 5.0, stroke, egui::StrokeKind::Inside);
-            painter.line_segment(
-                [
-                    center + egui::vec2(0.0, -6.0),
-                    center + egui::vec2(0.0, -2.0),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    center + egui::vec2(-4.5, -1.0),
-                    center + egui::vec2(4.5, -1.0),
-                ],
-                stroke,
-            );
+        ViewerCaptionIcon::Mouse => paint_mouse(painter, center, stroke),
+        #[cfg(target_os = "linux")]
+        ViewerCaptionIcon::AskControl => {
+            paint_mouse(painter, center - egui::vec2(3.0, 0.0), stroke);
+            let plus = center + egui::vec2(7.0, 0.0);
+            for offset in [egui::vec2(3.0, 0.0), egui::vec2(0.0, 3.0)] {
+                painter.line_segment([plus - offset, plus + offset], stroke);
+            }
+        }
+        #[cfg(target_os = "linux")]
+        ViewerCaptionIcon::Audio { muted } => {
+            super::paint_headphones(painter, rect, color);
+            if muted {
+                let slash = egui::vec2(8.0, 8.0);
+                painter.line_segment([center - slash, center + slash], stroke);
+            }
         }
         ViewerCaptionIcon::Quality => {
             for (offset, knob) in [(-5.0, -3.0), (0.0, 4.0), (5.0, -1.0)] {
@@ -310,4 +339,23 @@ fn paint_caption_icon(
             );
         }
     }
+}
+
+fn paint_mouse(painter: &egui::Painter, center: egui::Pos2, stroke: egui::Stroke) {
+    let body = egui::Rect::from_center_size(center, egui::vec2(11.0, 16.0));
+    painter.rect_stroke(body, 5.0, stroke, egui::StrokeKind::Inside);
+    painter.line_segment(
+        [
+            center + egui::vec2(0.0, -6.0),
+            center + egui::vec2(0.0, -2.0),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            center + egui::vec2(-4.5, -1.0),
+            center + egui::vec2(4.5, -1.0),
+        ],
+        stroke,
+    );
 }

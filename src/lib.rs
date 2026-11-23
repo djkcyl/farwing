@@ -44,7 +44,6 @@ pub mod transport;
 
 #[cfg(windows)]
 pub mod plugins;
-#[cfg(windows)]
 mod ui;
 
 mod platform;

@@ -8,9 +8,15 @@ mod present_queue;
 
 use crate::diagnostics::performance::PerformanceMonitor;
 use crate::features::stream_control::{MouseMode, StreamControlHandle};
+use crate::i18n::t;
 use crate::media::video_color::ColorMatrix;
 use crate::media::{ConnectionMediaProfile, VideoCodec};
 use crate::transport::rtc::{EncodedVideoFrame, VideoFrameSink, VideoReceiverFeedback};
+use crate::ui::{
+    branding,
+    controls::{ViewerCaptionIcon, viewer_caption_button},
+    theme,
+};
 use anyhow::Result;
 use decode_pipeline::{DecoderConfig, decoder_manager};
 use egui::{ColorImage, Event, Key, MouseWheelUnit, PointerButton, Rect, TextureHandle};
@@ -114,39 +120,89 @@ impl Playback {
     }
 
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) -> Result<()> {
+        let text = t();
         let state = self.input.snapshot();
-        let mut control = state.mouse_mode != MouseMode::View;
         let audio = self.input.audio();
         let mut settings = audio.settings();
+        if viewer_caption_button(
+            ui,
+            ViewerCaptionIcon::Audio {
+                muted: settings.muted,
+            },
+            settings.muted,
+            if settings.muted {
+                text.viewer.unmute
+            } else {
+                text.viewer.mute
+            },
+        )
+        .clicked()
+        {
+            settings.muted = !settings.muted;
+            audio.set_settings(settings);
+        }
+
+        let mouse = self.input.mouse();
+        let control = state.mouse_mode != MouseMode::View;
+        let hint = if control {
+            text.viewer.shortcut_release_control
+        } else if mouse.keyboard_supported() {
+            text.viewer.control_keyboard_mouse
+        } else {
+            text.viewer.control_mouse
+        };
+        let picture_ready = self.texture.is_some();
         if ui
-            .add_enabled(
-                self.texture.is_some() && !state.mouse_pending,
-                egui::Checkbox::new(&mut control, crate::i18n::t().app.cap_control),
-            )
-            .changed()
+            .add_enabled_ui(picture_ready && !state.mouse_pending, |ui| {
+                viewer_caption_button(ui, ViewerCaptionIcon::Mouse, control, hint)
+            })
+            .inner
+            .on_disabled_hover_text(if !picture_ready {
+                text.session.progress_waiting_picture
+            } else if mouse.transport_recovering() {
+                text.viewer.control_recovering
+            } else {
+                text.viewer.release_all_keys
+            })
+            .clicked()
         {
             self.input.set_mouse_mode(if control {
-                MouseMode::Remote
-            } else {
                 MouseMode::View
+            } else {
+                MouseMode::Remote
             })?;
-        }
-        if !control
+        } else if !control
             && state.remote_notice.as_ref().is_some_and(|(_, _, ask)| *ask)
-            && ui.button(crate::i18n::t().viewer.ask_control).clicked()
+            && viewer_caption_button(
+                ui,
+                ViewerCaptionIcon::AskControl,
+                false,
+                text.viewer.ask_control,
+            )
+            .clicked()
         {
             self.input.ask_control()?;
         }
-        if ui.checkbox(&mut settings.muted, crate::i18n::t().viewer.mute).changed() {
-            audio.set_settings(settings);
-        }
-        if let Some(error) = state.mouse_error.or_else(|| audio.snapshot().error) {
-            ui.label(error);
-        }
-        if let Some((_, notice, _)) = &state.remote_notice {
-            ui.label(notice);
-        }
         Ok(())
+    }
+
+    pub(super) fn notice(&self) -> Option<(String, bool)> {
+        let state = self.input.snapshot();
+        let audio_error = self.input.audio().snapshot().error;
+        let error = state.mouse_error.is_some() || audio_error.is_some();
+        let mut notices = [
+            state.mouse_error,
+            audio_error,
+            state.remote_notice.map(|(_, notice, _)| notice),
+        ]
+        .into_iter()
+        .flatten();
+        let mut message = notices.next()?;
+        for notice in notices {
+            message.push('\n');
+            message.push_str(&notice);
+        }
+        Some((message, error))
     }
 
     pub(super) fn picture(&mut self, ui: &mut egui::Ui) -> Result<()> {
@@ -164,11 +220,11 @@ impl Playback {
                     image,
                     egui::TextureOptions::LINEAR,
                 ));
+                ui.ctx().request_repaint();
             }
         }
         let Some(texture) = &self.texture else {
-            ui.spinner();
-            ui.label(crate::i18n::t().session.progress_waiting_picture);
+            waiting(ui, t().session.progress_waiting_picture);
             return Ok(());
         };
         let available = ui.available_rect_before_wrap();
@@ -282,6 +338,36 @@ impl Playback {
             }
         }
     }
+}
+
+pub(super) fn waiting(ui: &mut egui::Ui, stage: &str) {
+    let bounds = ui.available_rect_before_wrap();
+    let logo = branding::logo_size(theme::LOGO_LOADING);
+    let font = egui::FontId::proportional(theme::BODY);
+    let line_height = ui.fonts_mut(|fonts| fonts.row_height(&font));
+    let spinner_size = theme::SECTION;
+    let gap = 10.0;
+    let height = logo.y + spinner_size + line_height + 2.0 * gap;
+    let rect = Rect::from_center_size(
+        bounds.center(),
+        egui::vec2(bounds.width().min(theme::CONNECTION_CONTENT_WIDTH), height),
+    );
+    let mut content = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Center)),
+    );
+    content.spacing_mut().item_spacing.y = gap;
+    let (logo_rect, _) = content.allocate_exact_size(logo, egui::Sense::hover());
+    branding::paint_logo(
+        content.painter(),
+        logo_rect.left(),
+        logo_rect.center().y,
+        theme::LOGO_LOADING,
+        theme::TEXT,
+    );
+    content.add(egui::Spinner::new().size(spinner_size).color(theme::ACCENT));
+    content.label(egui::RichText::new(stage).font(font).color(theme::MUTED));
 }
 
 impl Drop for Playback {

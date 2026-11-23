@@ -1,10 +1,12 @@
 //! Device-center presentation. Network/account ownership remains in app.rs.
 use super::*;
-use crate::ui::theme::{
-    self, ACCENT as BLUE, AMBER, BG, GREEN, LINE, LOGO_LOADING, LOGO_LOGIN, LOGO_SIDEBAR, MUTED,
-    RED, SIDEBAR, SURFACE, TEXT,
-};
 use crate::i18n::t;
+use crate::ui::center_icon::{Icon, paint_icon};
+use crate::ui::theme::{
+    self, ACCENT as BLUE, AMBER, BG, GREEN, LINE, LOGO_LOADING, LOGO_SIDEBAR, MUTED, RED, SIDEBAR,
+    SURFACE, TEXT,
+};
+use crate::ui::{device_list, device_visuals};
 use egui::{Align, Color32, FontId, RichText, Sense, Stroke, vec2};
 
 mod about;
@@ -19,8 +21,6 @@ mod cards;
 mod components;
 mod connect;
 mod device_details;
-mod device_visuals;
-mod device_list;
 mod devices;
 mod diagnostic_export;
 mod diagnostics_panel;
@@ -153,205 +153,8 @@ impl CenterUi {
     }
 }
 
-#[derive(Clone, Copy)]
-enum Icon {
-    Monitor,
-    Settings,
-    Refresh,
-    Info,
-    Assist,
-    Edit,
-    Logout,
-    Logs,
-    Plugins,
-    Keyboard,
-    Diagnostics,
-    Friends,
-    /// This device and who may connect to it.
-    Host,
-    /// Records: a clock.
-    Records,
-    /// Notifications: a bell.
-    Notices,
-    /// Chat: a speech bubble.
-    Chat,
-}
-
 pub(super) fn configure_visuals(ctx: &egui::Context) {
     theme::configure(ctx);
-}
-
-fn paint_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: Color32) {
-    let c = rect.center();
-    let q = |x, y| c + vec2(x, y);
-    let s = Stroke::new(1.5, color);
-    match icon {
-        Icon::Diagnostics => {
-            p.add(egui::Shape::line(
-                vec![
-                    q(-10.0, 0.0),
-                    q(-5.0, 0.0),
-                    q(-2.0, -8.0),
-                    q(2.0, 8.0),
-                    q(5.0, 0.0),
-                    q(10.0, 0.0),
-                ],
-                s,
-            ));
-        }
-        Icon::Keyboard => crate::ui::controls::paint_keyboard(p, rect, color),
-        Icon::Notices => {
-            p.add(egui::Shape::closed_line(
-                vec![
-                    q(-7.0, 5.0),
-                    q(-5.5, 2.0),
-                    q(-5.5, -3.0),
-                    q(-3.0, -7.0),
-                    q(0.0, -8.0),
-                    q(3.0, -7.0),
-                    q(5.5, -3.0),
-                    q(5.5, 2.0),
-                    q(7.0, 5.0),
-                ],
-                s,
-            ));
-            p.line_segment([q(-2.0, 8.0), q(2.0, 8.0)], s);
-        }
-        Icon::Chat => {
-            p.add(egui::Shape::closed_line(
-                vec![
-                    q(-9.0, -7.0),
-                    q(9.0, -7.0),
-                    q(9.0, 4.0),
-                    q(-1.0, 4.0),
-                    q(-6.0, 8.5),
-                    q(-6.0, 4.0),
-                    q(-9.0, 4.0),
-                ],
-                s,
-            ));
-        }
-        Icon::Records => {
-            p.circle_stroke(c, 8.5, s);
-            p.add(egui::Shape::line(vec![q(0.0, -5.0), q(0.0, 0.0), q(4.0, 3.0)], s));
-        }
-        Icon::Friends => {
-            p.circle_stroke(q(-4.0, -4.0), 3.5, s);
-            p.circle_stroke(q(5.0, -2.0), 3.0, s);
-            p.add(egui::Shape::line(
-                vec![q(-11.0, 8.0), q(-9.0, 2.0), q(-4.0, 1.0), q(1.0, 2.0), q(3.0, 8.0)],
-                s,
-            ));
-            p.add(egui::Shape::line(vec![q(4.0, 3.0), q(8.0, 3.5), q(10.0, 8.0)], s));
-        }
-        Icon::Plugins => {
-            crate::plugins::paint_plugin_icon(p, rect, color);
-        }
-        Icon::Logs => {
-            p.rect_stroke(
-                egui::Rect::from_center_size(c, vec2(15.0, 19.0)),
-                2.0,
-                s,
-                egui::StrokeKind::Inside,
-            );
-            for y in [-5.0, 0.0, 5.0] {
-                p.line_segment([q(-4.0, y), q(4.0, y)], s);
-            }
-        }
-        Icon::Host => {
-            // A shield with a check: who may connect here.
-            p.add(egui::Shape::closed_line(
-                vec![
-                    q(0.0, -10.0),
-                    q(8.0, -7.0),
-                    q(8.0, 0.0),
-                    q(5.0, 6.0),
-                    q(0.0, 10.0),
-                    q(-5.0, 6.0),
-                    q(-8.0, 0.0),
-                    q(-8.0, -7.0),
-                ],
-                s,
-            ));
-            p.add(egui::Shape::line(vec![q(-4.0, 0.0), q(-1.0, 3.5), q(4.5, -3.0)], s));
-        }
-        Icon::Assist => {
-            p.circle_stroke(q(-4.0, -5.0), 3.0, s);
-            p.circle_stroke(q(6.0, -3.0), 2.5, s);
-            p.add(egui::Shape::line(
-                vec![
-                    q(-10.0, 7.0),
-                    q(-8.0, 1.0),
-                    q(-3.0, 0.0),
-                    q(2.0, 3.0),
-                    q(3.0, 7.0),
-                ],
-                s,
-            ));
-            p.add(egui::Shape::line(
-                vec![q(5.0, 2.0), q(9.0, 3.0), q(11.0, 7.0)],
-                s,
-            ));
-        }
-        Icon::Edit => {
-            p.add(egui::Shape::closed_line(
-                vec![
-                    q(-8.0, 8.0),
-                    q(-6.0, 2.0),
-                    q(5.0, -9.0),
-                    q(9.0, -5.0),
-                    q(-2.0, 6.0),
-                ],
-                s,
-            ));
-        }
-        Icon::Monitor => {
-            p.rect_stroke(
-                egui::Rect::from_center_size(q(0.0, -2.0), vec2(20.0, 14.0)),
-                2.0,
-                s,
-                egui::StrokeKind::Inside,
-            );
-            p.line_segment([q(0.0, 5.0), q(0.0, 9.0)], s);
-            p.line_segment([q(-5.0, 9.0), q(5.0, 9.0)], s);
-        }
-        Icon::Settings => {
-            for (y, knob) in [(-6.0, -3.0), (0.0, 4.0), (6.0, -1.0)] {
-                p.line_segment([q(-9.0, y), q(9.0, y)], s);
-                p.circle_filled(q(knob, y), 2.5, color);
-            }
-        }
-        Icon::Refresh => {
-            let points = (0..=32)
-                .map(|i| {
-                    let angle = std::f32::consts::FRAC_PI_4
-                        + i as f32 / 32.0 * (std::f32::consts::TAU - std::f32::consts::FRAC_PI_4);
-                    q(-2.0, 0.0) + vec2(angle.cos(), angle.sin()) * 8.0
-                })
-                .collect();
-            p.add(egui::Shape::line(points, s));
-            p.add(egui::Shape::line(
-                vec![q(2.0, -4.0), q(6.0, 0.0), q(10.0, -4.0)],
-                s,
-            ));
-        }
-        Icon::Info => {
-            p.circle_stroke(c, 8.0, s);
-            p.circle_filled(q(0.0, -3.5), 1.0, color);
-            p.line_segment([q(0.0, 0.0), q(0.0, 4.0)], s);
-        }
-        Icon::Logout => {
-            p.add(egui::Shape::line(
-                vec![q(-1.0, -8.0), q(-8.0, -8.0), q(-8.0, 8.0), q(-1.0, 8.0)],
-                s,
-            ));
-            p.line_segment([q(-2.0, 0.0), q(9.0, 0.0)], s);
-            p.add(egui::Shape::line(
-                vec![q(5.0, -4.0), q(9.0, 0.0), q(5.0, 4.0)],
-                s,
-            ));
-        }
-    }
 }
 
 fn primary(label: &str) -> egui::Button<'_> {
@@ -482,74 +285,6 @@ fn section(ui: &mut egui::Ui, title: &str) {
             .size(crate::ui::theme::SECTION)
             .strong(),
     );
-}
-
-/// The sign-in card: the brand on top, the current step below.
-fn login_card(
-    root: &mut egui::Ui,
-    height: f32,
-    content: impl FnOnce(&mut egui::Ui),
-) {
-    egui::CentralPanel::default()
-        .frame(egui::Frame::new().fill(BG).inner_margin(24))
-        .show(root, |ui| {
-            let bounds = ui.available_rect_before_wrap();
-            // The card ends where its content does, measured on the last
-            // frame; `height` is the first guess.
-            let measured = egui::Id::new("sign-in-content-height");
-            let content_height = ui.ctx().data(|d| d.get_temp::<f32>(measured));
-            let height = content_height.map_or(height, |h| 98.0 + h + 40.0);
-            let card = egui::Rect::from_center_size(
-                bounds.center(),
-                vec2(
-                    460.0_f32.min(bounds.width()),
-                    height.min(bounds.height()),
-                ),
-            );
-            let painter = ui.painter();
-            painter.rect_filled(
-                card.translate(vec2(0.0, 8.0)),
-                theme::PANEL_RADIUS,
-                Color32::from_black_alpha(28),
-            );
-            painter.rect_filled(card, theme::PANEL_RADIUS, crate::ui::theme::SURFACE);
-            painter.rect_stroke(
-                card,
-                theme::PANEL_RADIUS,
-                Stroke::new(1.0, LINE),
-                egui::StrokeKind::Inside,
-            );
-            let logo = crate::ui::branding::logo_size(LOGO_LOGIN);
-            crate::ui::branding::paint_logo(
-                painter,
-                card.center().x - logo.x * 0.5,
-                card.top() + 50.0,
-                LOGO_LOGIN,
-                TEXT,
-            );
-            let column = egui::Rect::from_min_max(
-                egui::pos2(card.left() + 40.0, card.top() + 98.0),
-                egui::pos2(card.right() - 40.0, card.bottom() - 24.0),
-            );
-            let used = ui
-                .scope_builder(
-                    egui::UiBuilder::new()
-                        .id_salt("sign-in")
-                        .max_rect(column)
-                        .layout(egui::Layout::top_down(Align::Min)),
-                    |ui| {
-                        ui.spacing_mut().item_spacing.y = 6.0;
-                        content(ui);
-                    },
-                )
-                .response
-                .rect
-                .height();
-            if content_height.is_none_or(|h| (h - used).abs() > 0.5) {
-                ui.ctx().data_mut(|d| d.insert_temp(measured, used));
-                ui.ctx().request_repaint();
-            }
-        });
 }
 
 /// Signed out, the device center opens on its pages rather than the sign-in
@@ -1395,7 +1130,7 @@ impl DeviceCenterApp {
             LoginStep::Server => 465.0,
             LoginStep::Account => 525.0,
         };
-        login_card(root, height, |ui| match step {
+        crate::ui::login::card(root, height, |ui| match step {
             LoginStep::Server => server_step(ui, &mut self.login_form, busy, &mut action),
             LoginStep::Account => {
                 account_step(ui, &mut self.login_form, busy, can_cancel, &mut action)

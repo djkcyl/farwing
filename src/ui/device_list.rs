@@ -2,11 +2,16 @@
 //! look and behave the same: a toolbar (search on the left, the tab's own
 //! controls on the right), group headings, one row per device, and one
 //! empty state. Rows and groups are spaced by the item spacing alone.
-use super::cards;
-use super::*;
+use super::center_icon::{Icon, paint_icon};
+use super::theme::{self, BG, LINE, MUTED, SURFACE};
+use super::{controls, device_visuals};
+use crate::account::api::{DeviceInfo, DeviceList};
+use crate::application::wallpaper::Wallpapers;
+use crate::i18n::t;
+use egui::{Align, Color32, RichText, Sense, Stroke, vec2};
 
 /// The picture at the start of a row: the same size in every list.
-pub(super) enum Tile<'a> {
+pub(crate) enum Tile<'a> {
     /// The device's desktop, with its system in the corner.
     Wallpaper {
         texture: Option<&'a egui::TextureHandle>,
@@ -20,11 +25,11 @@ pub(super) enum Tile<'a> {
 
 /// A device's wallpaper and system, when this account can see it (this
 /// device, its other devices, friends' shared ones).
-pub(super) type Picture = (Option<egui::TextureHandle>, farwing_protocol::Platform);
+pub(crate) type Picture = (Option<egui::TextureHandle>, farwing_protocol::Platform);
 
-pub(super) fn known_picture(
-    devices: Option<&crate::account::api::DeviceList>,
-    wallpapers: &mut crate::application::wallpaper::Wallpapers,
+pub(crate) fn known_picture(
+    devices: Option<&DeviceList>,
+    wallpapers: &mut Wallpapers,
     ctx: &egui::Context,
     id: &str,
 ) -> Option<Picture> {
@@ -40,14 +45,14 @@ pub(super) fn known_picture(
 }
 
 /// Computers show their desktop; browsers and phones their system.
-pub(super) fn has_desktop(platform: farwing_protocol::Platform) -> bool {
+fn has_desktop(platform: farwing_protocol::Platform) -> bool {
     use farwing_protocol::Platform;
     matches!(platform, Platform::Windows | Platform::Macos | Platform::Linux)
 }
 
 impl<'a> Tile<'a> {
     /// The tile of a device with `texture` as its wallpaper.
-    pub(super) fn of(texture: Option<&'a egui::TextureHandle>, platform: farwing_protocol::Platform) -> Self {
+    pub(crate) fn of(texture: Option<&'a egui::TextureHandle>, platform: farwing_protocol::Platform) -> Self {
         if has_desktop(platform) {
             Tile::Wallpaper { texture, platform }
         } else {
@@ -57,7 +62,7 @@ impl<'a> Tile<'a> {
 
     /// The tile of a [`known_picture`], or `fallback` for a device this
     /// account cannot see.
-    pub(super) fn known(picture: Option<&'a Picture>, fallback: Self) -> Self {
+    pub(crate) fn known(picture: Option<&'a Picture>, fallback: Self) -> Self {
         match picture {
             Some((texture, platform)) => Self::of(texture.as_ref(), *platform),
             None => fallback,
@@ -66,17 +71,18 @@ impl<'a> Tile<'a> {
 }
 
 /// What a row shows; its actions are laid out by the caller.
-pub(super) struct Row<'a> {
+pub(crate) struct Row<'a> {
     pub title: &'a str,
     pub tile: Tile<'a>,
     /// Online, offline, being watched…
     pub status: Option<(&'a str, Color32)>,
     pub chips: &'a [(&'a str, Color32)],
-    /// What the device grants this one, as icons.
-    pub grants: Option<&'a [String]>,
+    /// Additional badges, such as permissions.
+    pub extra_badges: Option<&'a dyn Fn(&mut egui::Ui)>,
     /// One line under the name.
     pub detail: &'a str,
-    pub selected: bool,
+    /// None for informational rows; otherwise whether the row is selected.
+    pub selected: Option<bool>,
 }
 
 const HEIGHT: f32 = 76.0;
@@ -85,12 +91,12 @@ const HEADING: f32 = 28.0;
 
 /// One device. `actions` adds buttons from right to left (the main one
 /// first). Returns whether the row itself (not a button) was clicked.
-pub(super) fn row(ui: &mut egui::Ui, row: &Row, actions: impl FnOnce(&mut egui::Ui)) -> bool {
+pub(crate) fn row(ui: &mut egui::Ui, row: &Row, actions: impl FnOnce(&mut egui::Ui)) -> bool {
     paint_row(ui, row, SURFACE, actions)
 }
 
 /// [`row`] inside a card.
-pub(super) fn inset_row(ui: &mut egui::Ui, row: &Row, actions: impl FnOnce(&mut egui::Ui)) -> bool {
+pub(crate) fn inset_row(ui: &mut egui::Ui, row: &Row, actions: impl FnOnce(&mut egui::Ui)) -> bool {
     paint_row(ui, row, BG, actions)
 }
 
@@ -100,12 +106,13 @@ fn paint_row(
     background: Color32,
     actions: impl FnOnce(&mut egui::Ui),
 ) -> bool {
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), Sense::click());
+    let sense = if row.selected.is_some() { Sense::click() } else { Sense::hover() };
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), sense);
     if ui.is_rect_visible(rect) {
-        let fill = if row.selected {
+        let selected = row.selected == Some(true);
+        let fill = if selected {
             theme::SELECTED
-        } else if response.hovered() {
+        } else if row.selected.is_some() && response.hovered() {
             theme::HOVER
         } else {
             background
@@ -114,7 +121,7 @@ fn paint_row(
         ui.painter().rect_stroke(
             rect,
             8.0,
-            Stroke::new(1.0, if row.selected { theme::BORDER_FOCUS } else { LINE }),
+            Stroke::new(1.0, if selected { theme::BORDER_FOCUS } else { LINE }),
             egui::StrokeKind::Inside,
         );
         let tile = egui::Rect::from_min_size(
@@ -149,10 +156,10 @@ fn paint_row(
                 ui.label(RichText::new(status).size(theme::SMALL).color(color));
             }
             for (text, color) in row.chips {
-                cards::chip(ui, text, *color);
+                controls::chip(ui, text, *color);
             }
-            if let Some(grants) = row.grants {
-                cards::caps_icons(ui, grants, t().center.no_permissions);
+            if let Some(badges) = row.extra_badges {
+                badges(ui);
             }
         });
         text.add(
@@ -164,7 +171,7 @@ fn paint_row(
 
 /// A group's title with its count; actions on the right. Groups after the
 /// first are set apart from the rows above.
-pub(super) fn heading(
+pub(crate) fn heading(
     ui: &mut egui::Ui,
     title: &str,
     count: Option<usize>,
@@ -211,7 +218,7 @@ fn paint_tile(ui: &mut egui::Ui, rect: egui::Rect, tile: &Tile) {
 }
 
 /// Search on the left, the tab's own controls on the right.
-pub(super) fn toolbar(
+pub(crate) fn toolbar(
     ui: &mut egui::Ui,
     search: &mut String,
     controls: impl FnOnce(&mut egui::Ui),
@@ -224,7 +231,7 @@ pub(super) fn toolbar(
             controls(ui);
             ui.add_sized(
                 [ui.available_width(), crate::ui::controls::HEIGHT],
-                singleline_input(search).hint_text(t().center.search_devices),
+                controls::singleline(search, controls::HEIGHT).hint_text(t().center.search_devices),
             );
         },
     );
@@ -232,7 +239,7 @@ pub(super) fn toolbar(
 }
 
 /// Whether `query` (already lower case) is in any of `fields`.
-pub(super) fn matches(query: &str, fields: &[&str]) -> bool {
+pub(crate) fn matches(query: &str, fields: &[&str]) -> bool {
     query.is_empty()
         || fields
             .iter()
@@ -241,7 +248,7 @@ pub(super) fn matches(query: &str, fields: &[&str]) -> bool {
 
 /// Which devices a list shows by their state.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(super) enum StateFilter {
+pub(crate) enum StateFilter {
     #[default]
     All,
     Online,
@@ -257,7 +264,7 @@ impl StateFilter {
         }
     }
 
-    pub(super) fn keeps(self, device: &DeviceInfo) -> bool {
+    pub(crate) fn keeps(self, device: &DeviceInfo) -> bool {
         match self {
             Self::All => true,
             Self::Online => device.is_connected(),
@@ -266,7 +273,7 @@ impl StateFilter {
     }
 
     /// A drop-down with how many devices each choice shows.
-    pub(super) fn combo(ui: &mut egui::Ui, id: &str, value: &mut Self, devices: &[&DeviceInfo]) {
+    pub(crate) fn combo(ui: &mut egui::Ui, id: &str, value: &mut Self, devices: &[&DeviceInfo]) {
         let count = |filter: Self| devices.iter().filter(|d| filter.keeps(d)).count();
         egui::ComboBox::from_id_salt(id)
             .width(110.0)
@@ -285,7 +292,7 @@ impl StateFilter {
 
 /// Name order, or online devices first.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(super) enum Order {
+pub(crate) enum Order {
     OnlineFirst,
     #[default]
     Name,
@@ -299,7 +306,7 @@ impl Order {
         }
     }
 
-    pub(super) fn compare(self, a: &DeviceInfo, b: &DeviceInfo) -> std::cmp::Ordering {
+    pub(crate) fn compare(self, a: &DeviceInfo, b: &DeviceInfo) -> std::cmp::Ordering {
         (if self == Self::OnlineFirst {
             b.is_connected().cmp(&a.is_connected())
         } else {
@@ -308,7 +315,7 @@ impl Order {
         .then_with(|| a.list_order(b))
     }
 
-    pub(super) fn combo(ui: &mut egui::Ui, id: &str, value: &mut Self) {
+    pub(crate) fn combo(ui: &mut egui::Ui, id: &str, value: &mut Self) {
         egui::ComboBox::from_id_salt(id)
             .width(110.0)
             .selected_text(value.label())
@@ -321,8 +328,8 @@ impl Order {
 }
 
 /// An empty list: the same card in every tab.
-pub(super) fn empty(ui: &mut egui::Ui, title: &str) {
-    cards::card().show(ui, |ui| {
+pub(crate) fn empty(ui: &mut egui::Ui, title: &str) {
+    controls::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.add_space(10.0);
         ui.vertical_centered(|ui| {
