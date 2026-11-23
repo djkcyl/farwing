@@ -17,6 +17,7 @@ impl StreamControlHandle {
                 && !state.annotation.enabled
                 && !state.annotation.toggling();
             self.microphone.disconnect();
+            #[cfg(windows)]
             self.clipboard.suspend();
             state.annotation.disconnect();
             state.cursor_sync_needed = false;
@@ -88,8 +89,13 @@ impl StreamControlHandle {
     /// Turn control on, asking the host's user for it in this connection
     /// (after a refusal for lack of the grant).
     pub(crate) fn ask_control(&self) -> Result<()> {
-        let mode = lock(&self.shared).device_preferences.mouse_mode;
-        let mode = if mode == MouseMode::View { MouseMode::Smart } else { mode };
+        #[cfg(windows)]
+        let mode = {
+            let mode = lock(&self.shared).device_preferences.mouse_mode;
+            if mode == MouseMode::View { MouseMode::Smart } else { mode }
+        };
+        #[cfg(target_os = "linux")]
+        let mode = MouseMode::Remote;
         self.change_mouse_mode(mode, true, true)
     }
 
@@ -237,28 +243,30 @@ impl StreamControlHandle {
         if !state.viewing_enabled || self.microphone.needs_cleanup() {
             self.disable_microphone_locked(state);
         }
-        // The exchange runs whenever the session is up (manual "获取被控剪贴板"
-        // works in view mode too); automatic sync needs control.
-        let clipboard_ready = state.viewing_enabled
-            && state.hello_answered
-            && state.text_channel_open
-            && state.peer.has(crate::protocol::peer::feature::CLIPBOARD);
-        self.clipboard.policy(
-            clipboard_ready,
-            clipboard_ready
-                && state.control_channel_open
-                && state.mouse_transport_connected
-                && mode != MouseMode::View,
-            state.peer.has(crate::protocol::peer::feature::CLIPBOARD_FILES)
-                && state.clipboard_files_allowed,
-        );
-        self.drag_drop.enable(
-            state.viewing_enabled
+        #[cfg(windows)]
+        {
+            // The exchange runs whenever the session is up; automatic sync needs control.
+            let clipboard_ready = state.viewing_enabled
                 && state.hello_answered
                 && state.text_channel_open
-                && state.mouse_transport_connected
-                && self.files.allowed(),
-        );
+                && state.peer.has(crate::protocol::peer::feature::CLIPBOARD);
+            self.clipboard.policy(
+                clipboard_ready,
+                clipboard_ready
+                    && state.control_channel_open
+                    && state.mouse_transport_connected
+                    && mode != MouseMode::View,
+                state.peer.has(crate::protocol::peer::feature::CLIPBOARD_FILES)
+                    && state.clipboard_files_allowed,
+            );
+            self.drag_drop.enable(
+                state.viewing_enabled
+                    && state.hello_answered
+                    && state.text_channel_open
+                    && state.mouse_transport_connected
+                    && self.files.allowed(),
+            );
+        }
         if !state.viewing_enabled {
             return;
         }
@@ -293,7 +301,7 @@ pub(super) fn mouse_policy(state: &StreamControlState, mode: MouseMode) -> (bool
     match mode {
         MouseMode::View => (false, true),
         MouseMode::Local => (false, false),
-        MouseMode::Remote => (true, true),
+        MouseMode::Remote => (cfg!(windows), true),
         // Relative while the host hides its cursor (a game took it).
         MouseMode::Smart => (state.remote_cursor.hidden(), false),
     }

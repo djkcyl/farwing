@@ -413,7 +413,7 @@ pub(super) fn ensure_hdr(state: &StreamControlState) -> Result<()> {
         t().features.stream_host_hdr_off
     );
     anyhow::ensure!(
-        crate::platform::display_hdr::any_hdr(),
+        crate::platform::display_supports_hdr(),
         "{}",
         t().features.stream_local_hdr_off
     );

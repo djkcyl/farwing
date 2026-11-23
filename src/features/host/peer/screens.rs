@@ -22,7 +22,7 @@ use webrtc::{
     track::track_local::TrackLocal,
 };
 
-pub(crate) const TRACK_COUNT: usize = 5;
+pub(crate) use crate::transport::rtc::VIDEO_TRACK_COUNT as TRACK_COUNT;
 
 #[derive(Clone)]
 pub(super) struct Inventory {

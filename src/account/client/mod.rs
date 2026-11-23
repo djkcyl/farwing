@@ -31,6 +31,7 @@ impl std::fmt::Display for NoSavedSession {
 impl std::error::Error for NoSavedSession {}
 
 mod assist;
+#[cfg(windows)]
 mod publication;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +42,7 @@ pub(crate) enum RestorationStage {
 }
 
 pub struct AuthenticatedClient {
+    #[cfg(windows)]
     pub(crate) host: crate::features::host::Handle,
     /// A device without an account (guest token): it may only ask hosts to
     /// admit it (`docs/access-model.md` §2.5); nothing account-related.
@@ -58,6 +60,7 @@ pub struct AuthenticatedClient {
     /// or any request since).
     unreachable: tokio::sync::watch::Sender<bool>,
     account_name: Mutex<String>,
+    #[cfg(windows)]
     publication: Mutex<publication::Sync>,
     features: crate::account::feature_ability::FeatureCatalog,
 }
@@ -108,16 +111,20 @@ impl AuthenticatedClient {
             return Err(NoSavedSession.into());
         }
         let identity = device.identity().client_identity()?;
+        #[cfg(windows)]
         let mut host = crate::features::host::Handle::load(session.user_id(), &identity.device_id);
+        #[cfg(windows)]
         host.bind_account(session.generation());
         let mut api = ServerApi::new(&server)?;
         api.set_identity(identity);
         api.set_access_token(Some(session.token()))?;
         let ended = CancellationToken::new();
 
-        let restore_trigger = if owned_device.is_some()
-            || crate::platform::windows::host_service::resident::is_owner()
-        {
+        #[cfg(windows)]
+        let resident = crate::platform::windows::host_service::resident::is_owner();
+        #[cfg(target_os = "linux")]
+        let resident = false;
+        let restore_trigger = if owned_device.is_some() || resident {
             RestoreTrigger::DeviceStartup
         } else {
             RestoreTrigger::ExplicitLogin
@@ -129,6 +136,7 @@ impl AuthenticatedClient {
             session.nickname().to_owned()
         });
         Ok(Self {
+            #[cfg(windows)]
             host,
             guest: false,
             api: Mutex::new(Some(api)),
@@ -145,6 +153,7 @@ impl AuthenticatedClient {
             restore_progress: tokio::sync::watch::channel(RestorationStage::Device).0,
             unreachable: tokio::sync::watch::channel(false).0,
             account_name,
+            #[cfg(windows)]
             publication: Mutex::new(publication::Sync::default()),
             features: crate::account::feature_ability::FeatureCatalog::default(),
         })
@@ -167,6 +176,7 @@ impl AuthenticatedClient {
         let mut api = ServerApi::new(&server)?;
         api.set_identity(identity);
         Ok(Self {
+            #[cfg(windows)]
             host: crate::features::host::Handle::default(),
             guest: true,
             api: Mutex::new(Some(api)),
@@ -183,6 +193,7 @@ impl AuthenticatedClient {
             restore_progress: tokio::sync::watch::channel(RestorationStage::Device).0,
             unreachable: tokio::sync::watch::channel(false).0,
             account_name: Mutex::new(String::new()),
+            #[cfg(windows)]
             publication: Mutex::new(publication::Sync::default()),
             features: crate::account::feature_ability::FeatureCatalog::default(),
         })
@@ -244,6 +255,7 @@ impl AuthenticatedClient {
     ) -> Result<crate::features::port_mapping::store::Store> {
         crate::features::port_mapping::store::Store::new(self.session.user_id(), publisher_id)
     }
+    #[cfg(windows)]
     pub(crate) fn file_transfer_store(
         &self,
         publisher_id: &str,
@@ -264,6 +276,7 @@ impl AuthenticatedClient {
     /// Retire this generation before asynchronous teardown. Late responses
     /// cannot restore its headers or deliver authenticated results.
     pub fn retire(&self) {
+        #[cfg(windows)]
         self.host.retire();
         let mut api = self.api.lock().unwrap_or_else(|error| error.into_inner());
         self.ended.cancel();
@@ -407,6 +420,7 @@ impl AuthenticatedClient {
         drop(active_api);
         validated.ready = true;
         self.restore_progress.send_replace(RestorationStage::Ready);
+        #[cfg(windows)]
         self.schedule_publication();
         Ok(())
     }
@@ -419,15 +433,18 @@ impl AuthenticatedClient {
 
     /// Finish process-owned initialization work without logging out the account.
     pub async fn close(&self) {
-        let publication = self
-            .publication
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .task
-            .take();
-        if let Some(task) = publication {
-            task.abort();
-            let _ = task.await;
+        #[cfg(windows)]
+        {
+            let publication = self
+                .publication
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .task
+                .take();
+            if let Some(task) = publication {
+                task.abort();
+                let _ = task.await;
+            }
         }
         self.close_device_owner().await;
     }
@@ -440,6 +457,7 @@ impl AuthenticatedClient {
     }
 
     pub async fn logout(&self) -> LogoutOutcome {
+        #[cfg(windows)]
         if crate::platform::windows::host_service::resident::managed() {
             let _ = crate::platform::windows::host_service::resident::request(
                 crate::platform::windows::host_service::resident::Request::Retire {
@@ -555,6 +573,7 @@ impl AuthenticatedClient {
 
     /// Cache the friends' devices that may control this one, for admitting
     /// them on direct connections (`docs/access-model.md` §2.2).
+    #[cfg(windows)]
     pub(crate) async fn refresh_friend_access(&self) -> Result<()> {
         if self.guest {
             bail!("{}", t().common.signed_out);
@@ -604,7 +623,9 @@ impl AuthenticatedClient {
         }
         // Direct connections recognise this account's devices by key, also
         // while the server is unreachable (`docs/protocol/v2-design.md` §12.2).
+        #[cfg(windows)]
         crate::transport::direct::store::save_device_list(self.session.user_id(), &list);
+        #[cfg(windows)]
         self.schedule_publication();
         Ok(list)
     }
@@ -854,6 +875,7 @@ impl AuthenticatedClient {
         Ok(t().session.device_removed.into())
     }
 
+    #[cfg(windows)]
     pub(crate) async fn power_owned_device(
         &self,
         expected: &crate::account::api::DeviceInfo,
@@ -970,6 +992,7 @@ fn is_server_failure(error: &anyhow::Error) -> bool {
 
 impl Drop for AuthenticatedClient {
     fn drop(&mut self) {
+        #[cfg(windows)]
         self.host.retire();
         self.ended.cancel();
     }

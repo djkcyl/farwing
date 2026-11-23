@@ -2,11 +2,7 @@ use crate::diagnostics::performance::PerformanceMonitor;
 use crate::features::stream_control::StreamControlHandle;
 use crate::i18n::t;
 use crate::media::VideoCodec;
-use crate::media::decoder::RenderSurface;
-use crate::media::video_color::RenderColor;
-use crate::transport::rtc::{
-    EncodedVideoFrame, FrameSenderTiming, VideoFrameSink, VideoReceiverFeedback,
-};
+use crate::transport::rtc::{EncodedVideoFrame, VideoFrameSink, VideoReceiverFeedback};
 use anyhow::{Context, Result, anyhow, bail};
 use decode_pipeline::{DecodeActivity, DecoderConfig, decoder_manager};
 pub(super) use hud::{PerformancePanelMode, show_performance_overlay};
@@ -52,41 +48,8 @@ pub(crate) fn desktop_input_hook() -> Result<DesktopInputHook> {
 
 mod windows_ui;
 
-const CONNECTION_PROGRESS_STEPS: u8 = 13;
-
-#[derive(Clone, Debug)]
-pub enum ConnectionProgressState {
-    Working,
-    Updating(Instant),
-    Ready,
-    Failed,
-}
-
-#[derive(Clone, Debug)]
-pub struct ConnectionProgress {
-    pub step: u8,
-    pub title: String,
-    pub detail: String,
-    pub state: ConnectionProgressState,
-    /// The other side ended the session (rather than it failing).
-    pub(crate) ended: bool,
-    pub(crate) background: Option<crate::application::wallpaper::Source>,
-    /// An automatic reconnection is waiting; the user may skip the wait.
-    pub(crate) retry: Option<RetryNow>,
-}
-
-/// Ends the current wait of an automatic reconnection ("Retry now").
-#[derive(Clone, Debug, Default)]
-pub(crate) struct RetryNow(std::sync::Arc<tokio::sync::Notify>);
-
-impl RetryNow {
-    pub(crate) fn trigger(&self) {
-        self.0.notify_one();
-    }
-    pub(crate) async fn requested(&self) {
-        self.0.notified().await;
-    }
-}
+pub use crate::connection_progress::{ConnectionProgress, ConnectionProgressState};
+pub(crate) use crate::connection_progress::RetryNow;
 
 #[derive(Clone, Default)]
 pub(crate) struct ViewerDisplayHandle {
@@ -119,84 +82,6 @@ pub(crate) struct PreparedSwapChain {
 // Made on the warm-up thread and handed over once to the render thread; DXGI
 // swap chains are free-threaded and this one is never used concurrently.
 unsafe impl Send for PreparedSwapChain {}
-
-impl ConnectionProgress {
-    pub(crate) fn updating(started: Instant) -> Self {
-        Self {
-            state: ConnectionProgressState::Updating(started),
-            ..Self::working(
-                1,
-                t().viewer.waiting_for_update,
-                t().viewer.waiting_for_update_detail,
-            )
-        }
-    }
-
-    pub fn working(step: u8, title: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self {
-            step,
-            title: title.into(),
-            detail: detail.into(),
-            state: ConnectionProgressState::Working,
-            ended: false,
-            background: None,
-            retry: None,
-        }
-    }
-
-    pub fn ready(detail: impl Into<String>) -> Self {
-        Self {
-            step: CONNECTION_PROGRESS_STEPS,
-            title: t().viewer.connected.to_owned(),
-            detail: detail.into(),
-            state: ConnectionProgressState::Ready,
-            ended: false,
-            background: None,
-            retry: None,
-        }
-    }
-
-    /// The other side ended the session; `reason` says why.
-    pub(crate) fn ended(reason: impl Into<String>) -> Self {
-        Self {
-            title: t().viewer.connection_ended.to_owned(),
-            ended: true,
-            ..Self::failed(reason)
-        }
-    }
-
-    pub fn failed(detail: impl Into<String>) -> Self {
-        Self {
-            step: 0,
-            title: t().viewer.cannot_connect.to_owned(),
-            detail: detail.into(),
-            state: ConnectionProgressState::Failed,
-            ended: false,
-            background: None,
-            retry: None,
-        }
-    }
-
-    /// Offer "Retry now" while this progress is shown.
-    pub(crate) fn with_retry(mut self, retry: &RetryNow) -> Self {
-        self.retry = Some(retry.clone());
-        self
-    }
-
-    /// A failure.
-    pub(crate) fn from_error(error: &anyhow::Error) -> Self {
-        Self::failed(format!("{error:#}"))
-    }
-}
-
-impl ConnectionProgress {
-    pub(crate) fn background(source: crate::application::wallpaper::Source) -> Self {
-        Self {
-            background: Some(source),
-            ..Self::working(0, "", "")
-        }
-    }
-}
 
 fn configure_viewer_visuals(ctx: &egui::Context) {
     crate::ui::theme::configure(ctx);
@@ -311,61 +196,10 @@ impl ConnectionProgressApp {
 
 mod connection_progress;
 
-#[derive(Debug)]
-struct DecodedVideoFrame {
-    is_new_picture: Option<bool>,
-    width: u32,
-    height: u32,
-    surface: RenderSurface,
-    color: RenderColor,
-    received_at: Instant,
-    decoded_at: Instant,
-    assembly_delay: Duration,
-    input_queue_delay: Duration,
-    decode_pipeline_delay: Duration,
-    sender_timing: FrameSenderTiming,
-    rtp_timestamp: u32,
-}
-
-const DECODER_INFLIGHT_LIMIT: usize = 100;
-
+mod frames;
+use frames::*;
 mod present_queue;
 use present_queue::{PresentQueue, catch_up_override};
-
-// Presentation owns the pending decoded pictures (normally one; see
-// `present_queue`). Replacing a picture releases its display lease; the
-// decoder retains its own references.
-type FrameQueue = Arc<Mutex<PresentQueue>>;
-
-/// The presentation clock must not throttle decoding of reference pictures.
-fn take_next_frame(
-    queue: &mut PresentQueue,
-    performance: &PerformanceMonitor,
-) -> Option<DecodedVideoFrame> {
-    let frame = queue.take();
-    performance.set_presentation_queue_frames(queue.len());
-    frame
-}
-
-#[derive(Clone, Default)]
-struct FrameWake {
-    visible: Arc<AtomicBool>,
-
-    render_thread: Arc<Mutex<Option<std::thread::Thread>>>,
-}
-
-impl FrameWake {
-    fn install_render_thread(&self, thread: std::thread::Thread) {
-        *mutex_lock(&self.render_thread) = Some(thread);
-        self.visible.store(true, Ordering::Release);
-    }
-
-    fn notify(&self) {
-        if let Some(thread) = mutex_lock(&self.render_thread).as_ref() {
-            thread.unpark();
-        }
-    }
-}
 
 pub struct NativeViewerSession {
     // A negotiated track may be reassigned after a display topology change.
@@ -731,11 +565,6 @@ impl Drop for NativeViewerSession {
 const COMPACT_HUD_WIDTH: f32 = 140.0;
 const COMPACT_METER_WIDTH: f32 = 37.0;
 const COMPACT_COLUMN_GAP: f32 = 8.0;
-
-fn mutex_lock<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    lock.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 mod decode_pipeline;
 pub(crate) mod dev_video;

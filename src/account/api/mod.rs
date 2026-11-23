@@ -1460,6 +1460,7 @@ impl ServerApi {
         Ok(response.body)
     }
 
+    #[cfg(windows)]
     pub(crate) async fn wol_info(
         &self,
         info: crate::features::host::wol::packet::LanInfo,

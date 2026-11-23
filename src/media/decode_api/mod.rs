@@ -1,4 +1,4 @@
-//! Windows DXVA11 and software video decode contract.
+//! Video decode errors and cancellation, plus Windows backend configuration.
 
 #![allow(unsafe_code)]
 
@@ -6,4 +6,6 @@ mod error;
 mod video;
 
 pub use error::DecodeError;
-pub use video::{DecoderMode, DecoderNotification, VideoDecoderConfig};
+pub use video::DecoderNotification;
+#[cfg(windows)]
+pub use video::{DecoderMode, VideoDecoderConfig};

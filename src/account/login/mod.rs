@@ -59,6 +59,7 @@ impl std::fmt::Debug for Credentials {
 }
 
 /// Command-line login: prompts for anything not given on the command line.
+#[cfg(windows)]
 pub async fn interactive_login(
     server: Option<String>,
     username: Option<String>,
@@ -94,6 +95,7 @@ pub async fn interactive_login(
     .await
 }
 
+#[cfg(windows)]
 fn prompt(label: &str) -> Result<String> {
     use std::io::Write as _;
     print!("{label}");
@@ -105,6 +107,7 @@ fn prompt(label: &str) -> Result<String> {
 
 /// Read a line without echo on a Windows console; falls back to a plain read
 /// when standard input is redirected.
+#[cfg(windows)]
 fn read_hidden(label: &str) -> Result<String> {
     use std::io::Write as _;
     use windows::Win32::System::Console::{

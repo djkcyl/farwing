@@ -1,7 +1,8 @@
-//! Farwing Client: self-hosted remote desktop and streaming, Windows application composition.
+//! Farwing Client: self-hosted remote desktop and streaming.
+#![cfg_attr(target_os = "linux", allow(dead_code, reason = "shared client code includes features exposed by the Windows application"))]
 
-#[cfg(not(windows))]
-compile_error!("Farwing currently supports Windows only");
+#[cfg(not(any(windows, target_os = "linux")))]
+compile_error!("Farwing supports Windows and Linux");
 
 pub mod product;
 
@@ -25,7 +26,13 @@ const fn starts_with(text: &str, prefix: &str) -> bool {
 }
 
 pub mod account;
+#[cfg(windows)]
 pub mod application;
+#[cfg(target_os = "linux")]
+#[path = "application/linux.rs"]
+pub mod application;
+#[path = "application/connection_progress.rs"]
+mod connection_progress;
 pub mod diagnostics;
 pub mod features;
 pub mod i18n;
@@ -35,7 +42,9 @@ pub mod session;
 pub(crate) mod storage;
 pub mod transport;
 
+#[cfg(windows)]
 pub mod plugins;
+#[cfg(windows)]
 mod ui;
 
 mod platform;

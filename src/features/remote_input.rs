@@ -12,7 +12,7 @@ pub(crate) mod polling;
 mod recovery;
 pub(crate) use recovery::{InputRecovery, InputWork};
 
-use crate::platform::windows::input::keyboard;
+use crate::platform::keyboard;
 pub(crate) use crate::protocol::input::SystemCommand;
 
 const MAX_EVENTS: usize = 512;
@@ -306,6 +306,7 @@ struct State {
     transport_recovery: Option<recovery::RecoveryState>,
     throttle: Option<MouseThrottleRate>,
     next_motion_at: Option<Instant>,
+    #[cfg(windows)]
     deadline_timer: Option<crate::platform::windows::input::deadline::Timer>,
     polling_warning: Option<polling::Warning>,
     listeners: Vec<Weak<dyn Fn() + Send + Sync>>,
@@ -333,14 +334,17 @@ impl RemoteInput {
         if s.throttle == throttle {
             return Ok(());
         }
+        #[cfg(windows)]
         if enabled && s.deadline_timer.is_none() {
             s.deadline_timer = Some(crate::platform::windows::input::deadline::Timer::new(
                 self.wake.clone(),
             )?);
         }
+        #[cfg(windows)]
         if let Some(timer) = &mut s.deadline_timer {
             timer.disarm();
         }
+        #[cfg(windows)]
         let retired = if enabled {
             None
         } else {
@@ -354,6 +358,7 @@ impl RemoteInput {
         // Keep pending motion and button order when changing the user's policy.
         drop(s);
         // Joining a retiring callback must never hold the input queue lock.
+        #[cfg(windows)]
         drop(retired);
         self.wake.notify_one();
         self.repaint();
@@ -653,6 +658,7 @@ impl RemoteInput {
     fn advance_epoch(s: &mut State) {
         s.transport_recovery = None;
         s.next_motion_at = None;
+        #[cfg(windows)]
         if let Some(timer) = &mut s.deadline_timer {
             timer.disarm();
         }
@@ -1096,6 +1102,7 @@ impl RemoteInput {
                 }
                 let now = Instant::now();
                 deadline = Self::motion_deadline(&s, now);
+                #[cfg(windows)]
                 if let Some(timer) = &mut s.deadline_timer {
                     if let Some(deadline) = deadline {
                         if let Err(error) = timer.arm(deadline) {
@@ -1164,8 +1171,15 @@ impl RemoteInput {
                     });
                 }
             }
-            // Physical input, cancellation and the one-shot native timer all
-            // use the same wakeup. No periodic work while the queue is empty.
+            // No periodic wakeups while the queue is empty.
+            #[cfg(target_os = "linux")]
+            if let Some(deadline) = deadline {
+                tokio::select! {
+                    _ = &mut wake => {},
+                    _ = tokio::time::sleep_until(deadline.into()) => {},
+                }
+                continue;
+            }
             wake.await;
         }
     }

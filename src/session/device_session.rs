@@ -175,6 +175,7 @@ impl Initializer {
                         let _ = reply.send(std::time::Duration::from_secs(seconds));
                     }
                     Some(Command::Policy(value, reply)) => {
+                        #[cfg(windows)]
                         if crate::platform::windows::host_service::resident::managed() {
                             let result = crate::platform::windows::host_service::resident::request(crate::platform::windows::host_service::resident::Request::Policy(value)).await.map(|_| ());
                             let _ = self.reload(); let _ = reply.send(result); continue;
@@ -186,6 +187,7 @@ impl Initializer {
                         let _ = reply.send(result);
                     }
                     Some(Command::Name(expected_id, value, reply)) => {
+                        #[cfg(windows)]
                         if crate::platform::windows::host_service::resident::managed() {
                             let result = crate::platform::windows::host_service::resident::request(crate::platform::windows::host_service::resident::Request::Name { device: expected_id, value }).await.map(|_| ());
                             let _ = self.reload(); let _ = reply.send(result); continue;
@@ -197,6 +199,7 @@ impl Initializer {
                         let _ = reply.send(result);
                     }
                     Some(Command::Ensure { force, result }) => {
+                        #[cfg(windows)]
                         if crate::platform::windows::host_service::resident::managed() {
                             use crate::platform::windows::host_service::resident::{self, Request, Reply};
                             let value = match resident::request(Request::Initialize { force }).await {
@@ -283,13 +286,26 @@ impl Initializer {
                             crate::account::reporting::update(|s| {
                                 s.registration = "正在读取本机信息".into()
                             });
+                            #[cfg(windows)]
                             let hardware = tokio::task::spawn_blocking(
                                 crate::platform::windows::device_profile::Hardware::read,
                             )
                             .await??;
+                            #[cfg(windows)]
                             let body = identity.device_init_request(&hardware)?;
+                            #[cfg(target_os = "linux")]
+                            let body = {
+                                let profile = tokio::task::spawn_blocking(
+                                    crate::platform::linux::device_profile::DeviceProfile::read,
+                                )
+                                .await??;
+                                identity.device_init_request(&profile)?
+                            };
                             crate::account::reporting::update(|s| {
-                                s.hardware = Some(hardware);
+                                #[cfg(windows)]
+                                {
+                                    s.hardware = Some(hardware);
+                                }
                                 s.reported_name = body.name.clone();
                                 s.client_id = body.installation_id.clone();
                                 s.reported_controllable = body.policy.control;

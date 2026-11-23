@@ -66,7 +66,7 @@ fn jobs() -> &'static Mutex<Vec<(Weak<Session>, CancellationToken)>> {
     static JOBS: OnceLock<Mutex<Vec<(Weak<Session>, CancellationToken)>>> = OnceLock::new();
     JOBS.get_or_init(Mutex::default)
 }
-pub(super) async fn shutdown_all() {
+pub(crate) async fn shutdown_all() {
     let jobs = std::mem::take(&mut *lock(jobs()));
     for (session, _) in &jobs {
         if let Some(session) = session.upgrade() {

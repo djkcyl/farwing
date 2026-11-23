@@ -1,28 +1,35 @@
 use crate::account::api::RealtimeTicket;
 use crate::account::client::AuthenticatedClient;
+#[cfg(windows)]
 use crate::application::viewer::{
     ConnectionProgress, NativeViewerSession, ViewerDisplayHandle, ViewerLaunchConfig,
 };
+#[cfg(target_os = "linux")]
+use crate::connection_progress::ConnectionProgress;
 use crate::features::stream_control::StreamControlHandle;
 use crate::i18n::t;
-use crate::media::{
-    ConnectionMediaOptions, ConnectionMediaProfile, LocalDisplayInfo, VideoCodec,
-    detect_local_display,
-};
+use crate::media::{ConnectionMediaOptions, ConnectionMediaProfile, LocalDisplayInfo, VideoCodec};
+#[cfg(windows)]
+use crate::media::detect_local_display;
 use crate::transport::rtc::{
     ForwardedTrack, IceServer, MediaKind, NativePeer, RtpForwardConfig, RtpForwarder,
 };
 use crate::transport::signal::{NegotiationEvent, SignalFailure, SignalRole, SignalSession};
 use anyhow::{Context, Result, anyhow, bail};
+#[cfg(windows)]
 use connection::ResolvedConnection;
+#[cfg(windows)]
 pub use connection::{connect_saved_alias, connect_saved_alias_with_progress};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
+#[cfg(windows)]
 pub use direct::{DirectRequest, run_direct_viewer_window};
+#[cfg(windows)]
 pub use viewing::{run_assist_viewer_window, run_native_viewer_session, run_saved_viewer_window};
+#[cfg(windows)]
 pub(crate) use assist::target_label as assist_target_label;
 
 pub type ConnectionProgressReporter = Arc<dyn Fn(ConnectionProgress) + Send + Sync>;
@@ -39,10 +46,16 @@ pub(crate) fn gui_connection_activity(
 ) -> Option<LocalConnectionActivity> {
     shared::get(&shared::key(controller, target)).map(|session| session.activity())
 }
+#[cfg(windows)]
 mod assist;
+#[cfg(windows)]
 pub(crate) mod direct;
+#[cfg(windows)]
 mod record;
 mod shared;
+#[cfg(target_os = "linux")]
+pub(crate) use shared::shutdown_all;
+#[cfg(windows)]
 pub(crate) mod windows;
 
 fn report_progress(
@@ -311,7 +324,10 @@ impl ControllerConnection {
     ) -> Result<Self> {
         let key = shared::key(&client.device_id(), &device.device_id);
         let _gate = shared::acquire_connection(&key, cancel).await?;
+        #[cfg(windows)]
         let display = detect_local_display().unwrap_or(LocalDisplayInfo::FALLBACK);
+        #[cfg(target_os = "linux")]
+        let display = LocalDisplayInfo::FALLBACK;
         let mut profile = options.resolve(display)?;
         if let Ok(store) = client.viewing_settings_store(&device.device_id)
             && let Ok(Some(settings)) = store.load().await
@@ -716,6 +732,7 @@ impl ControllerConnection {
         )
     }
 
+    #[cfg(windows)]
     pub(crate) async fn start_native_viewer_with_progress(
         &mut self,
         alias: &str,
@@ -827,8 +844,53 @@ impl ControllerConnection {
         Ok((viewer, summary))
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn start_linux_viewer(
+        &mut self,
+        ctx: egui::Context,
+    ) -> Result<crate::application::viewer::Playback> {
+        let control = self.stream_control_handle();
+        let startup = async {
+            control.wait_media_control().await?;
+            let changed = control.protocol_notifications();
+            loop {
+                let notified = changed.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if let Some(screen) = control.snapshot().screens.into_iter()
+                    .min_by_key(|screen| !screen.primary)
+                {
+                    break Ok::<_, anyhow::Error>(screen.id);
+                }
+                notified.await;
+            }
+        };
+        let screen = tokio::time::timeout(Duration::from_secs(10), startup)
+            .await.context(t().session.error_no_display_list)??;
+        control.set_screen_capture(screen, true).await?;
+        let (track, codec) = self.select_video_track().await?;
+        let playback = crate::application::viewer::Playback::start(
+            ctx,
+            codec,
+            self.profile,
+            self.peer.performance_monitor(),
+            self.forwarder.video_receiver_feedback(),
+            control.clone(),
+            screen,
+        )?;
+        self.forwarder.add_video_sink(playback.sink()).await;
+        self.forwarder.start();
+        control.audio().set_settings(crate::media::audio::AudioSettings { volume: 100, muted: false });
+        if let Err(error) = control.audio().start() {
+            tracing::warn!(%error, "could not start native audio playback");
+        }
+        self.peer.request_keyframe(track.ssrc).await?;
+        Ok(playback)
+    }
+
     /// `dev video`: capture the host's first screen and decode it without a
     /// window. Every decoded frame goes to `observer`.
+    #[cfg(windows)]
     pub(crate) async fn start_headless_video(
         &mut self,
         observer: std::sync::mpsc::Sender<crate::application::viewer::dev_video::DecodedObservation>,
@@ -920,7 +982,9 @@ fn flatten_signal_task(
     result.context("controller signaling task failed")?
 }
 
+#[cfg(windows)]
 mod connection;
+#[cfg(windows)]
 mod viewing;
 
 #[cfg(test)]

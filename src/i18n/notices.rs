@@ -35,7 +35,7 @@ fn caps(d: &Value, key: &str, separator: &str) -> String {
         .map(|list| {
             list.iter()
                 .filter_map(Value::as_str)
-                .map(crate::application::app::friends::cap_label)
+                .map(super::cap_label)
                 .collect::<Vec<_>>()
                 .join(separator)
         })

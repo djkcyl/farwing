@@ -23,6 +23,7 @@ const BLOCK: usize = 480;
 const MAX_SAMPLES: usize = 5_760;
 const MAX_PACKET: usize = 65_535;
 pub(crate) const MAX_VOLUME: u8 = 200;
+pub(crate) const HOST_MICROPHONE_TRACK: &str = "audio_1";
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AudioSettings {
     pub volume: u8,

@@ -1,16 +1,21 @@
 //! Persistent account authorization and stable installation identity.
 //!
 //! Both records are kept in the operating system credential service. There is
-//! deliberately no plaintext fallback: credentials use Windows Credential Manager
-//! through the `keyring` crate.
+//! deliberately no plaintext fallback: portable credentials use `keyring`
+//! (Windows Credential Manager or the Linux desktop's Secret Service).
 
 use std::fmt;
 
 use anyhow::{Context, Result, bail};
 use keyring::{Entry, Error as KeyringError};
+#[cfg(windows)]
 mod secret;
+#[cfg(target_os = "linux")]
+pub(crate) use keyring::Entry as SecretEntry;
+#[cfg(windows)]
 pub(crate) use secret::SecretEntry;
 
+#[cfg(windows)]
 pub(crate) fn enroll_resident() -> Result<()> {
     use crate::platform::windows::host_service::vault;
     if vault::applies()? {
@@ -38,6 +43,7 @@ pub(crate) fn enroll_resident() -> Result<()> {
     SecretEntry::new(&service(), SESSION_ACCOUNT)?.clear_portable()?;
     Ok(())
 }
+#[cfg(windows)]
 fn ensure_resident_owner() -> Result<()> {
     use crate::platform::windows::host_service::vault;
     anyhow::ensure!(
@@ -47,6 +53,7 @@ fn ensure_resident_owner() -> Result<()> {
     );
     Ok(())
 }
+#[cfg(windows)]
 pub(crate) fn restore_portable() -> Result<()> {
     use crate::platform::windows::host_service::vault;
     if !vault::applies()? {
@@ -201,10 +208,13 @@ pub struct NativeIdentity {
     policy: DevicePolicy,
 }
 
-/// Own devices accept control by default (`docs/improvement-proposals.md` §7 #12).
+/// Own devices with a host implementation accept control by default.
 fn default_policy() -> DevicePolicy {
     DevicePolicy {
+        #[cfg(windows)]
         control: true,
+        #[cfg(target_os = "linux")]
+        files: false,
         ..DevicePolicy::default()
     }
 }
@@ -278,26 +288,37 @@ impl NativeIdentity {
 
     pub(crate) fn device_init_request(
         &self,
-        hardware: &crate::platform::windows::device_profile::Hardware,
+        #[cfg(windows)] profile: &crate::platform::windows::device_profile::Hardware,
+        #[cfg(target_os = "linux")] profile: &crate::platform::linux::device_profile::DeviceProfile,
     ) -> Result<DeviceInitRequest> {
         self.validate_schema()?;
         Ok(DeviceInitRequest {
             installation_id: self.client_id.clone(),
-            name: self.name.clone().unwrap_or_else(|| hardware.name.clone()),
+            name: self.name.clone().unwrap_or_else(|| profile.name.clone()),
+            #[cfg(windows)]
             platform: farwing_protocol::Platform::Windows,
-            os: hardware.os.clone(),
+            #[cfg(target_os = "linux")]
+            platform: farwing_protocol::Platform::Linux,
+            os: profile.os.clone(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             capabilities: crate::account::feature_ability::local_capabilities(),
+            #[cfg(windows)]
             policy: self.policy,
+            // Controller-only builds cannot publish a host policy.
+            #[cfg(target_os = "linux")]
+            policy: default_policy(),
+            #[cfg(windows)]
             hardware: Some(farwing_protocol::api::HardwareInfo {
-                cpu: hardware.cpu.clone(),
-                base_board: hardware.base_board.clone(),
-                video: hardware.video.clone(),
+                cpu: profile.cpu.clone(),
+                base_board: profile.base_board.clone(),
+                video: profile.video.clone(),
                 // The local profile counts MiB; the server takes bytes.
-                memory: hardware.memory.saturating_mul(1024 * 1024),
-                screen: hardware.screen.clone(),
-                mac: hardware.mac.clone(),
+                memory: profile.memory.saturating_mul(1024 * 1024),
+                screen: profile.screen.clone(),
+                mac: profile.mac.clone(),
             }),
+            #[cfg(target_os = "linux")]
+            hardware: None,
             // Filled and signed by `ServerApi::init_device`.
             public_key: String::new(),
             timestamp: 0,
@@ -515,14 +536,18 @@ fn session_store_lock() -> Result<std::fs::File> {
     credential_store_lock("session.lock")
 }
 
+fn credential_store_lock_dir() -> Result<std::path::PathBuf> {
+    #[cfg(windows)]
+    if crate::platform::windows::host_service::vault::applies()? {
+        return crate::platform::windows::host_service::vault::root();
+    }
+    Ok(crate::product::local_data_dir()
+        .context("locate profile data for session-store coordination")?
+        .join("locks"))
+}
+
 fn credential_store_lock(filename: &str) -> Result<std::fs::File> {
-    let directory = if crate::platform::windows::host_service::vault::applies()? {
-        crate::platform::windows::host_service::vault::root()?
-    } else {
-        crate::product::local_data_dir()
-            .context("LOCALAPPDATA is required for session-store coordination")?
-            .join("locks")
-    };
+    let directory = credential_store_lock_dir()?;
     std::fs::create_dir_all(&directory).context("create session coordination directory")?;
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
@@ -548,5 +573,39 @@ impl SessionStore for KeyringSessionStore {
     fn clear(&self) -> Result<()> {
         let _lock = session_store_lock()?;
         self.clear_unlocked()
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use crate::platform::linux::device_profile::DeviceProfile;
+
+    #[test]
+    fn linux_registration_describes_a_controller_only_device() {
+        let profile = DeviceProfile {
+            name: "desk.example".to_owned(),
+            os: "Test distribution · Linux 6.12".to_owned(),
+        };
+        let mut identity = NativeIdentity::generate().unwrap();
+        // A stored preference cannot publish hosting permissions on a controller-only build.
+        identity.set_policy(DevicePolicy {
+            control: true,
+            files: true,
+            assist: true,
+            ..DevicePolicy::default()
+        });
+
+        let request = identity.device_init_request(&profile).unwrap();
+        assert_eq!(request.name, "desk.example");
+        assert_eq!(request.os, "Test distribution · Linux 6.12");
+        assert_eq!(
+            request.installation_id,
+            identity.client_identity().unwrap().client_id
+        );
+        assert_eq!(request.platform, farwing_protocol::Platform::Linux);
+        assert!(request.hardware.is_none());
+        assert!(request.capabilities.is_empty());
+        assert!(!request.policy.control && !request.policy.files && !request.policy.assist);
     }
 }

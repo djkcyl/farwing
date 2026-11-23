@@ -9,7 +9,7 @@ use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 
 /// The `audio_1` track's stream id.
-pub(crate) const TRACK: &str = "audio_1";
+pub(crate) use crate::media::audio::HOST_MICROPHONE_TRACK as TRACK;
 
 struct Running {
     microphone: Microphone,

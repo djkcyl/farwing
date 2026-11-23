@@ -209,6 +209,7 @@ pub(super) struct DecoderConfig {
     pub(super) decode_idle: tokio::sync::watch::Sender<u64>,
     pub(super) pause_epoch: Arc<std::sync::atomic::AtomicU64>,
 
+    #[cfg(windows)]
     pub(super) surface_writer: Option<crate::platform::surface::D3D11SurfaceWriter>,
     pub(super) observer: Option<std::sync::mpsc::Sender<DecodedObservation>>,
 }
@@ -332,6 +333,7 @@ pub(super) fn decoder_manager(
                 width,
                 height,
                 extra,
+                #[cfg(windows)]
                 config.surface_writer.clone(),
             );
             match opened {
@@ -621,6 +623,7 @@ pub(super) fn open_decoder_with_metadata(
     width: u32,
     height: u32,
     extra_data: Option<Bytes>,
+    #[cfg(windows)]
     surface_writer: Option<crate::platform::surface::D3D11SurfaceWriter>,
 ) -> Result<NativeVideoDecoder> {
     tracing::debug!(
@@ -632,6 +635,7 @@ pub(super) fn open_decoder_with_metadata(
     );
     let extra = extra_data.unwrap_or_default();
 
+    #[cfg(windows)]
     let opened = match surface_writer {
         Some(surface_writer) => NativeVideoDecoder::open_with_surface_writer(
             codec,
@@ -651,6 +655,15 @@ pub(super) fn open_decoder_with_metadata(
             extra,
         ),
     };
+    #[cfg(target_os = "linux")]
+    let opened = NativeVideoDecoder::open(
+        codec,
+        width,
+        height,
+        config.frame_rate,
+        config.decoder,
+        extra,
+    );
 
     opened
 }

@@ -45,8 +45,11 @@ impl DataChannels {
                 let mapping = Arc::clone(&port_mapping);
                 workers.spawn(async move { mapping.bind(&channel).await });
             }
+            #[cfg(windows)]
             stream_control.file_transfer().bind(channel);
+            #[cfg(windows)]
             stream_control.drag_drop().bind(channel);
+            #[cfg(windows)]
             stream_control.diagnostics().bind(channel);
             Self::install_handlers(
                 channel,
@@ -66,16 +69,19 @@ impl DataChannels {
             .find(|channel| channel.label() == label::SESSION)
             .expect("the Farwing data-channel set always includes the session channel")
             .clone();
-        let bulk_channel = local_channels
-            .iter()
-            .find(|channel| channel.label() == label::BULK)
-            .expect("the Farwing data-channel set always includes the bulk channel")
-            .clone();
-        let clipboard = clipboard_of(&stream_control);
-        let clipboard_channel = text_channel.clone();
-        workers.spawn(async move {
-            clipboard.run_sender(clipboard_channel, bulk_channel).await;
-        });
+        #[cfg(windows)]
+        {
+            let bulk_channel = local_channels
+                .iter()
+                .find(|channel| channel.label() == label::BULK)
+                .expect("the Farwing data-channel set always includes the bulk channel")
+                .clone();
+            let clipboard = clipboard_of(&stream_control);
+            let clipboard_channel = text_channel.clone();
+            workers.spawn(async move {
+                clipboard.run_sender(clipboard_channel, bulk_channel).await;
+            });
+        }
         workers.spawn(send_remote_input(
             control_channel.clone(),
             fct.clone(),
@@ -142,6 +148,7 @@ impl DataChannels {
         let closed_channel = Arc::downgrade(channel);
         let close_mapping = Arc::clone(&port_mapping);
         channel.on_close(Box::new(move || {
+            #[cfg(windows)]
             if matches!(label.as_str(), label::SESSION | label::BULK) {
                 close_stream_control.file_transfer().close();
                 if let Some(channel) = closed_channel.upgrade() {
@@ -208,6 +215,8 @@ async fn route_message(
     mapping: &Arc<crate::features::port_mapping::Transport>,
     channel: Option<Arc<RTCDataChannel>>,
 ) {
+    #[cfg(target_os = "linux")]
+    let _ = channel;
     let header = match peer::decode(data) {
         Ok((header, _)) => header,
         Err(error) => {
@@ -216,6 +225,7 @@ async fn route_message(
         }
     };
     let result = match header.frame_type() {
+        #[cfg(windows)]
         Some(FrameType::Drag) => match channel {
             Some(channel) => stream_control
                 .drag_drop()
@@ -231,6 +241,7 @@ async fn route_message(
             .receive(data)
             .map(drop)
             .map_err(|error| ("port mapping", error)),
+        #[cfg(windows)]
         // Bulk streams belong to the feature named by their kind.
         Some(FrameType::File | FrameType::Transfer | FrameType::Flow) => {
             use crate::transport::transfer::kind;
@@ -260,6 +271,7 @@ async fn route_message(
                 }
             }
         }
+        #[cfg(windows)]
         Some(FrameType::Diagnostics) => stream_control
             .diagnostics()
             .receive(data)
@@ -269,6 +281,7 @@ async fn route_message(
             .receive_datagram(data)
             .map(drop)
             .map_err(|error| ("port mapping", error)),
+        #[cfg(windows)]
         Some(FrameType::Clipboard) => receive_clipboard(stream_control, data),
         Some(
             FrameType::Hello
@@ -299,10 +312,12 @@ async fn route_message(
 
 /// The clipboard exchange of this connection: the viewer's, or the one
 /// `dev clipboard` installed.
+#[cfg(windows)]
 fn clipboard_of(stream_control: &StreamControlHandle) -> crate::features::clipboard::Clipboard {
     crate::features::clipboard::dev_exchange().unwrap_or_else(|| stream_control.clipboard().clone())
 }
 
+#[cfg(windows)]
 fn receive_clipboard(
     stream_control: &StreamControlHandle,
     data: &Bytes,

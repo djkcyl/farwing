@@ -23,10 +23,12 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use webrtc::data_channel::{RTCDataChannel, data_channel_state::RTCDataChannelState};
 
+#[cfg(windows)]
 pub(crate) mod host;
 pub(crate) mod service;
 pub(crate) mod store;
 mod udp;
+#[cfg(windows)]
 pub(crate) mod ui;
 pub(crate) mod wire;
 

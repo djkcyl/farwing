@@ -192,6 +192,7 @@ pub(crate) fn modifier(usage: u32) -> bool {
 
 /// Keys whose virtual key identifies them regardless of layout or of how the
 /// scan code was reported (shared 0x45, media keys sent without a scan code).
+#[cfg(windows)]
 fn fixed(vk: u16) -> Option<u32> {
     Some(match vk {
         0x13 => K | 0x48, // Pause
@@ -221,6 +222,7 @@ fn fixed(vk: u16) -> Option<u32> {
 /// Controller side: the usage of an observed key event. `scan` is the
 /// reported scan code with `0xE000` for extended keys; zero (input injected
 /// without one) falls back to the local layout's code for `vk`.
+#[cfg(windows)]
 pub(crate) fn observed(vk: u16, scan: u16) -> Option<u32> {
     if let Some(usage) = fixed(vk) {
         return Some(usage);
@@ -232,6 +234,7 @@ pub(crate) fn observed(vk: u16, scan: u16) -> Option<u32> {
 }
 
 /// Scan code of a virtual key in the foreground layout, `0xE0xx` when extended.
+#[cfg(windows)]
 pub(crate) fn virtual_scan(key: u16) -> u16 {
     // These logical keys belong to the dedicated navigation cluster. Some
     // Windows layouts return the shared keypad scan without E0 even for
@@ -367,6 +370,7 @@ mod tests {
         assert_eq!(scan(K | 0x48), Some(0x45));
     }
 
+    #[cfg(windows)]
     #[test]
     fn fixed_virtual_keys_win_over_scan_codes() {
         assert_eq!(observed(0x13, 0x45), Some(K | 0x48));

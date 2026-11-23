@@ -227,7 +227,7 @@ pub(super) fn support(state: &StreamControlState) -> DisplayTopologySupport {
         .iter()
         .filter(|s| s.video_track_index >= 0)
         .count()
-        >= crate::features::host::peer::screens::TRACK_COUNT
+        >= crate::transport::rtc::VIDEO_TRACK_COUNT
     {
         Some(t().features.stream_no_video_track)
     } else {

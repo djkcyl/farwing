@@ -14,7 +14,9 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex};
+#[cfg(windows)]
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::sync::Notify;
@@ -395,14 +397,20 @@ impl Drop for Running {
 
 async fn monitor() {
     let _running = Running;
+    #[cfg(windows)]
     let changes = Arc::new(crate::platform::windows::wol::Changes::default());
+    #[cfg(windows)]
     let _watcher = crate::platform::windows::wol::Watcher::new(changes.clone())
         .map_err(|error| tracing::debug!(%error, "NAT discovery without network notifications"))
         .ok();
+    #[cfg(windows)]
+    let change = || changes.notify.notified();
+    #[cfg(target_os = "linux")]
+    let change = std::future::pending::<()>;
     loop {
         refresh().await;
         tokio::select! {
-            _ = changes.notify.notified() => {
+            _ = change() => {
                 // Coalesce the burst of interface/address/route events.
                 tokio::time::sleep(SETTLE).await;
             }

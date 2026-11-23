@@ -1,4 +1,4 @@
-//! Shared account records in portable and explicitly installed modes.
+//! Windows credential management for portable and explicitly installed modes.
 use crate::platform::windows::host_service::vault;
 use keyring::{Entry, Error};
 

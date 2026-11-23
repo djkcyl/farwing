@@ -26,7 +26,9 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 use transport::{Carrier, Incoming, SignalTransport};
-pub(crate) use transport::{SignalFailure, SocketState, connect_socket, realtime_request};
+pub(crate) use transport::{SignalFailure, SocketState};
+#[cfg(windows)]
+pub(crate) use transport::{connect_socket, realtime_request};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
 const CONTROL_TIMEOUT: Duration =
@@ -37,6 +39,7 @@ const CONTROL_TIMEOUT: Duration =
 const WEBRTC_ANSWER_TIMEOUT: Duration = Duration::from_secs(40);
 /// After the answer, the connection itself.
 const WEBRTC_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
+#[cfg(windows)]
 pub(crate) mod host;
 pub(crate) mod identity;
 pub(crate) mod negotiation;
@@ -754,6 +757,7 @@ impl SignalSession {
     /// Run a host session on this connection until `until` completes or the
     /// connection fails. The host session outlives the connection: direct
     /// participants stay while the server connection is replaced.
+    #[cfg(windows)]
     pub(crate) async fn run_host<F: std::future::Future>(
         &mut self,
         host: &mut host::Session,
@@ -817,12 +821,25 @@ impl SignalSession {
         // A local network change (adapter, address or default route) also
         // restarts ICE once it settles: the old path may be gone, or a better
         // one may exist.
+        #[cfg(windows)]
         let network_changes = std::sync::Arc::new(crate::platform::windows::wol::Changes::default());
+        #[cfg(windows)]
         let _network_watcher = peer
             .is_some()
             .then(|| crate::platform::windows::wol::Watcher::new(network_changes.clone()).ok())
             .flatten();
+        #[cfg(windows)]
+        let network_notification = || network_changes.notify.notified();
+        #[cfg(target_os = "linux")]
+        let network_notification = pending::<()>;
+        #[cfg(windows)]
+        let resumed = || crate::platform::windows::host_lifecycle::RESUMED.notified();
+        #[cfg(target_os = "linux")]
+        let resumed = pending::<()>;
+        #[cfg(windows)]
         let watching_network = _network_watcher.is_some();
+        #[cfg(target_os = "linux")]
+        let watching_network = false;
         let mut network_changed = false;
         let mut network_at = watching_network.then(crate::transport::nat::route::fingerprint);
         // A restart that must happen even on the same default path (after
@@ -831,6 +848,7 @@ impl SignalSession {
         // The restart came due while the signaling socket was down: run it
         // once the socket is back.
         let mut restart_on_reopen = false;
+        #[cfg(windows)]
         if peer.is_some() {
             crate::platform::windows::host_lifecycle::watch_resume();
         }
@@ -1039,12 +1057,12 @@ impl SignalSession {
                         }
                     }
                 }
-                _ = crate::platform::windows::host_lifecycle::RESUMED.notified(), if peer.is_some() => {
+                _ = resumed(), if peer.is_some() => {
                     tracing::info!("system resumed; checking the connection");
                     forced_restart = true;
                     ice_restart_at.get_or_insert(tokio::time::Instant::now() + ICE_RESTART_AFTER);
                 }
-                _ = network_changes.notify.notified(), if watching_network => {
+                _ = network_notification(), if watching_network => {
                     // Checked once the burst of notifications settles.
                     network_changed = true;
                     ice_restart_at.get_or_insert(tokio::time::Instant::now() + ICE_RESTART_AFTER);

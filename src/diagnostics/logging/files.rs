@@ -11,13 +11,13 @@ pub const MAX_TOTAL_MIB: u64 = 256;
 pub const RETENTION_DAYS: u64 = 14;
 
 pub(super) fn directories() -> Result<(PathBuf, PathBuf)> {
+    #[cfg(windows)]
     if crate::platform::windows::host_service::vault::applies()? {
         let base = crate::platform::windows::host_service::vault::root()?;
         return Ok((base.clone(), base.join("logs")));
     }
     {
-        let base = crate::product::local_data_dir()
-            .context("LOCALAPPDATA must be an absolute directory")?;
+        let base = crate::product::local_data_dir()?;
         Ok((base.clone(), base.join("logs")))
     }
 }
@@ -47,6 +47,7 @@ fn state_directory(directory: &Path) -> io::Result<PathBuf> {
     let state = directory.join(".state");
     fs::create_dir_all(&state)?;
 
+    #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
         use windows::{
@@ -74,6 +75,7 @@ pub(super) fn save_config(path: &Path, bytes: &[u8]) -> Result<()> {
         file.sync_all()?;
         drop(file);
 
+        #[cfg(windows)]
         {
             use std::os::windows::ffi::OsStrExt;
             use windows::{
@@ -92,6 +94,8 @@ pub(super) fn save_config(path: &Path, bytes: &[u8]) -> Result<()> {
                 )
             }?;
         }
+        #[cfg(target_os = "linux")]
+        fs::rename(&temporary, path)?;
 
         Ok(())
     })();
@@ -101,6 +105,7 @@ pub(super) fn save_config(path: &Path, bytes: &[u8]) -> Result<()> {
     result.context(crate::i18n::t().session.log_settings_save_failed)
 }
 
+#[cfg(windows)]
 pub(super) fn open_directory(directory: &Path) -> Result<()> {
     {
         use std::os::windows::ffi::OsStrExt;

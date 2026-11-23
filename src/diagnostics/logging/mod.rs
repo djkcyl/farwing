@@ -273,6 +273,7 @@ pub fn configure_child(command: &mut std::process::Command) {
         }
     }
 }
+#[cfg(windows)]
 pub fn open_directory() -> Result<()> {
     files::open_directory(&RUNTIME.get().context(crate::i18n::t().session.logging_not_ready)?.directory)
 }
@@ -455,6 +456,7 @@ where
     }
 }
 
+#[cfg(windows)]
 pub(crate) fn open_folder(path: &Path) -> Result<()> {
     files::open_directory(path)
 }

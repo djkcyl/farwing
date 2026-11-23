@@ -87,7 +87,7 @@ fn connect_options(
     }
     .stream();
     // HDR needs a 10-bit decoder and an HDR display here.
-    stream.hdr &= decoders.iter().any(|d| d.bit10) && crate::platform::display_hdr::any_hdr();
+    stream.hdr &= decoders.iter().any(|d| d.bit10) && crate::platform::display_supports_hdr();
     ConnectOptions {
         decoders: decoders.to_vec(),
         display: Some(LocalDisplay {
