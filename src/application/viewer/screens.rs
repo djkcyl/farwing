@@ -135,7 +135,7 @@ impl ScreenPlayback {
                 .values()
                 .cloned()
                 .collect::<Vec<_>>();
-            // Release hidden CPU decoders before resuming the selected one.
+            // Suspend hidden CPU decoders to avoid unnecessary background work.
             // Late RTP for a paused decoder is retired without decoding.
             for session in &sessions {
                 if session.is_software()
@@ -181,22 +181,14 @@ impl ScreenPlayback {
         &self,
         screen_id: i32,
         display: ViewerDisplayHandle,
-        replace: Option<i32>,
         cancelled_pending: Option<i32>,
         ready: impl FnOnce() + Send + 'static,
     ) -> (
         Option<tokio::task::AbortHandle>,
         tokio::sync::oneshot::Receiver<Result<Arc<NativeViewerSession>>>,
     ) {
-        let replace_software = replace.is_some_and(|id| {
-            super::mutex_lock(&self.decoders)
-                .values()
-                .any(|session| session.screen_id() == id && session.is_software())
-        });
         self.visible.send_modify(|visible| {
-            visible.retain(|id| {
-                Some(*id) != cancelled_pending && !(replace_software && Some(*id) == replace)
-            });
+            visible.retain(|id| Some(*id) != cancelled_pending);
             if !visible.contains(&screen_id) {
                 visible.push(screen_id);
             }
@@ -206,7 +198,7 @@ impl ScreenPlayback {
         let task = self
             .tasks
             .spawn_in(self.tasks.shutdown.clone(), async move {
-                let result = factory.open_screen(screen_id, display, replace).await;
+                let result = factory.open_screen(screen_id, display).await;
                 let _ = send.send(result);
                 ready();
             });
@@ -283,27 +275,11 @@ impl ScreenPlayback {
         &self,
         screen_id: i32,
         display: ViewerDisplayHandle,
-        replace: Option<i32>,
     ) -> Result<Arc<NativeViewerSession>> {
         let switch_started = Instant::now();
         let _opening = self.opening.lock().await;
         anyhow::ensure!(!self.tasks.shutdown.is_cancelled(), "观看窗口已关闭");
         let peer = self.peer.upgrade().context("观看连接已关闭")?;
-        let existing_sessions = super::mutex_lock(&self.decoders)
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for session in existing_sessions {
-            if session.is_software()
-                && session.screen_id() != screen_id
-                && (Some(session.screen_id()) == replace
-                    || !self.visible.borrow().contains(&session.screen_id()))
-            {
-                self.visible
-                    .send_modify(|visible| visible.retain(|id| *id != session.screen_id()));
-                session.pause_software().await?;
-            }
-        }
         let track = self.capture_track(&peer, screen_id).await?;
         let screen = self
             .screens()

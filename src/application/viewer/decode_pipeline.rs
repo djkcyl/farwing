@@ -243,7 +243,7 @@ pub(super) fn decoder_manager(
             let epoch = config.pause_epoch.load(Ordering::Acquire);
             let acknowledged = *config.decode_idle.borrow();
             if acknowledged != epoch {
-                pool.take(); // Close the CPU decoder before relinquishing its global slot.
+                pool.take(); // Release the hidden screen's CPU decoder and reference frames.
                 timings.clear();
                 inflight.clear();
                 cutover_state.replace_instance();
@@ -393,10 +393,6 @@ pub(super) fn decoder_manager(
         config
             .software_decode
             .store(pool.is_software(), Ordering::Release);
-        if let Some(reason) = pool.blocked_reason() {
-            *mutex_lock(&fatal_error) = Some(reason.to_owned());
-            break 'decode;
-        }
         if prepared.replaced {
             cutover_state.replace_instance();
             inflight.clear();
@@ -414,10 +410,6 @@ pub(super) fn decoder_manager(
             config
                 .software_decode
                 .store(pool.is_software(), Ordering::Release);
-            if let Some(reason) = pool.blocked_reason() {
-                *mutex_lock(&fatal_error) = Some(reason.to_owned());
-                break 'decode;
-            }
             if transition.replaced {
                 cutover_state.replace_instance();
                 inflight.clear();
@@ -525,10 +517,6 @@ pub(super) fn decoder_manager(
         config
             .software_decode
             .store(pool.is_software(), Ordering::Release);
-        if let Some(reason) = pool.blocked_reason() {
-            *mutex_lock(&fatal_error) = Some(reason.to_owned());
-            break 'decode;
-        }
         if transition.replaced {
             cutover_state.replace_instance();
             inflight.clear();

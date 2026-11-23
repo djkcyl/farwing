@@ -526,7 +526,6 @@ impl DeviceCenterApp {
                 match backend.rows[row].cells[column - 1].status {
                     Status::Passed => theme::GREEN,
                     Status::Failed => theme::RED,
-                    Status::Busy => theme::AMBER,
                     Status::Pending => theme::ACCENT,
                     Status::Unsupported | Status::Unchecked => theme::MUTED,
                 }

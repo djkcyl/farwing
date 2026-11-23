@@ -1,5 +1,4 @@
 //! Exhaustive current-backend checks. No automatic candidate or adapter fallback.
-use super::software_slot::SoftwareSlot;
 use crate::media::decode_api::{DecoderMode, DecoderNotification, VideoDecoderConfig};
 use crate::media::{LocalDisplayInfo, VideoCodec};
 use crate::platform::{
@@ -112,7 +111,6 @@ pub(crate) enum Status {
     Passed,
     Failed,
     Unsupported,
-    Busy,
     Unchecked,
 }
 impl Status {
@@ -122,7 +120,6 @@ impl Status {
             Self::Passed => "通过",
             Self::Failed => "失败",
             Self::Unsupported => "未实现",
-            Self::Busy => "资源占用",
             Self::Unchecked => "未检查",
         }
     }
@@ -259,14 +256,7 @@ pub(crate) fn run(
                                 .push_str("实际解码出帧，尺寸、像素格式及合成图案采样校验通过");
                         }
                         Err(error) => {
-                            cell.status = if error
-                                .downcast_ref::<super::software_slot::SoftwarePlaybackBusy>()
-                                .is_some()
-                            {
-                                Status::Busy
-                            } else {
-                                Status::Failed
-                            };
+                            cell.status = Status::Failed;
                             cell.detail.push_str(&format!("{error:#}"));
                         }
                     }
@@ -352,11 +342,6 @@ fn decode_sample(
         (signature.visible_width, signature.visible_height) == size,
         "样本尺寸与目标不一致"
     );
-    let _slot = if writer.is_none() {
-        Some(SoftwareSlot::acquire()?)
-    } else {
-        None
-    };
     let (w, h) = (signature.visible_width, signature.visible_height);
     let points = [
         (w / 8, h / 8),
