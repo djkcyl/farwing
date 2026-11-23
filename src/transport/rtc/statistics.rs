@@ -356,6 +356,13 @@ pub(super) async fn sample_network_performance(
             .observe_rtt(delay_seconds.map(Duration::from_secs_f64));
         performance.set_measured_media_rtt(rtcp_rtt, rtcp_timing.published_rtt_at());
         for track in tracks.all() {
+            if let Some(report) = rtcp_timing.receive_loss_for(track.metadata.ssrc) {
+                track.performance.record_receive_loss(
+                    report.highest_sequence,
+                    report.lost_packets,
+                    report.observed_at,
+                );
+            }
             let measured = rtcp_timing.rtt_for(track.metadata.ssrc);
             track.performance.set_measured_media_rtt(
                 measured,
@@ -399,7 +406,8 @@ pub(super) async fn sample_network_performance(
                 render_queue_ms = format_args!("{:.1}", snapshot.render_queue_delay_ms),
                 ingress_queue = snapshot.ingress_queue_packets,
                 outstanding_nacks = snapshot.outstanding_nacks,
-                final_loss_percent = format_args!("{:.2}", snapshot.packet_loss_percent),
+                packet_loss_percent = snapshot.packet_loss_percent,
+                abandoned_repair_packets = snapshot.abandoned_repair_packets,
                 predecode_drops = snapshot.predecode_dropped_frames,
                 decoder_queue = snapshot.decoder_queue_frames,
                 frame_buffer = snapshot.frame_buffer_frames,

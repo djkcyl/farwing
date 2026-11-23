@@ -178,12 +178,27 @@ impl NackRequester {
     pub(super) fn clear_pending(&mut self) {
         // Clearing pending repairs preserves RTT, sequence anchors,
         // recovered/keyframe history and cumulative diagnostics.
+        self.final_lost_packets = self
+            .final_lost_packets
+            .saturating_add(self.entries.len() as u64);
         self.entries.clear();
     }
 
+    pub(super) fn reset_after_pause(&mut self) {
+        // A local pause abandons observation, not network delivery. Do not
+        // count its pending requests as loss or reset lifetime diagnostics.
+        let final_lost_packets = self.final_lost_packets;
+        *self = Self::new();
+        self.final_lost_packets = final_lost_packets;
+    }
+
     pub(super) fn clear_up_to(&mut self, sequence_number: u16) {
+        let before = self.entries.len();
         self.entries
             .retain(|sequence, _| sequence_ahead_or_at(*sequence, sequence_number));
+        self.final_lost_packets = self
+            .final_lost_packets
+            .saturating_add((before - self.entries.len()) as u64);
         self.keyframes
             .retain(|sequence| sequence_ahead_or_at(*sequence, sequence_number));
         self.recovered
@@ -204,7 +219,15 @@ impl NackRequester {
         {}
         if self.entries.len().saturating_add(count) > RTP_MAX_NACK_PACKETS {
             let existing = self.entries.len();
-            self.final_lost_packets = self.final_lost_packets.saturating_add(existing as u64);
+            let recovered = self
+                .recovered
+                .iter()
+                .filter(|sequence| usize::from(sequence.wrapping_sub(start)) < count)
+                .count();
+            self.final_lost_packets = self
+                .final_lost_packets
+                .saturating_add(existing as u64)
+                .saturating_add(count.saturating_sub(recovered) as u64);
             self.entries.clear();
             tracing::warn!(
                 max_packets = RTP_MAX_NACK_PACKETS,

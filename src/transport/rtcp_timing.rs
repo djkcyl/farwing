@@ -97,6 +97,7 @@ struct StreamTiming {
     published_rtt_ms: Option<u64>,
     published_rtt_at: Option<Instant>,
     sender_report: Option<SenderClockSample>,
+    receive_loss: Option<ReceiveLossReport>,
 }
 
 struct ReceivedRrtr {
@@ -110,6 +111,13 @@ pub(crate) struct SenderClockSample {
     pub(crate) ntp_time: u64,
     pub(crate) rtp_time: u32,
     pub(crate) received_at: Instant,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ReceiveLossReport {
+    pub(crate) highest_sequence: u32,
+    pub(crate) lost_packets: u32,
+    pub(crate) observed_at: Instant,
 }
 
 impl RtcpTiming {
@@ -145,6 +153,15 @@ impl RtcpTiming {
             .get(&ssrc)?
             .published_rtt_ms
             .map(Duration::from_millis)
+    }
+
+    pub(crate) fn receive_loss_for(&self, ssrc: u32) -> Option<ReceiveLossReport> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .streams
+            .get(&ssrc)?
+            .receive_loss
     }
 
     /// ModuleRtpRtcpImpl2 publishes pending non-sender RTT once per second.
@@ -337,12 +354,22 @@ impl RtcpTiming {
         module_ssrc: Option<u32>,
     ) -> Vec<RtcpPacket> {
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let now = state.ntp(Instant::now());
+        let observed_at = Instant::now();
+        let now = state.ntp(observed_at);
         let mut packets: Vec<RtcpPacket> = Vec::new();
         if let Some(module_ssrc) = module_ssrc {
             let Some(stream) = state.streams.get_mut(&module_ssrc) else {
                 return packets;
             };
+            // A module report can also contain RTX blocks. Observe only the
+            // primary SSRC's original-packet counters, before repair reinjection.
+            if let Some(report) = rr.reports.iter().find(|report| report.ssrc == module_ssrc) {
+                stream.receive_loss = Some(ReceiveLossReport {
+                    highest_sequence: report.last_sequence_number,
+                    lost_packets: report.total_lost,
+                    observed_at,
+                });
+            }
             if let Some(local_ssrc) = stream.local_ssrc {
                 rr.ssrc = local_ssrc;
             } else {
@@ -645,6 +672,7 @@ impl Interceptor for RtcpTiming {
                     published_rtt_ms: None,
                     published_rtt_at: None,
                     sender_report: None,
+                    receive_loss: None,
                 });
             tracing::debug!(
                 media_ssrc = info.ssrc,

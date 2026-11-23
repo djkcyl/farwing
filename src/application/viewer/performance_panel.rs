@@ -217,14 +217,21 @@ fn ms(value: Option<f64>) -> String {
     value.map_or_else(|| "—".into(), |v| format!("{v:.2} ms"))
 }
 fn health_metric(ui: &mut Ui, s: &PerformanceSnapshot, metric: Metric) {
-    controls::metric_pair_colored(
-        ui,
-        metric.label(),
-        s.health
-            .value(metric)
-            .map_or_else(|| "—".into(), |v| metric.format(v)),
-        health_color(s.health.level(metric)),
-    );
+    let row = ui.scope(|ui| {
+        controls::metric_pair_colored(
+            ui,
+            metric.label(),
+            s.health
+                .value(metric)
+                .map_or_else(|| "—".into(), |v| metric.format(v)),
+            health_color(s.health.level(metric)),
+        );
+    });
+    if metric == Metric::Loss {
+        row.response.on_hover_text(
+            "恢复前的接收丢包率，补回的数据仍计入；乱序到达的原始包会修正统计。暂无有效样本时显示 —。",
+        );
+    }
 }
 fn heading(ui: &mut Ui, title: &str) {
     ui.add_space(theme::MENU_GROUP_GAP);
@@ -254,6 +261,11 @@ fn network(ui: &mut Ui, s: &PerformanceSnapshot) {
         ),
     );
     controls::metric_pair(ui, "待恢复 NACK", format!("{} 包", s.outstanding_nacks));
+    controls::metric_pair(
+        ui,
+        "放弃修复累计",
+        format!("{} 包", s.abandoned_repair_packets),
+    );
     controls::metric_pair(
         ui,
         "RTX 累计",
