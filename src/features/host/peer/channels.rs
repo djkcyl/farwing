@@ -1,5 +1,6 @@
 //! Publisher business-channel routing and observed source reporting.
 use super::super::lock;
+use super::screens::{Inventory, ModeList};
 use super::{ReportRoutes, ReportTarget};
 use anyhow::Result;
 use bytes::Bytes;
@@ -425,6 +426,7 @@ pub(super) async fn publish_state(
     let mut revision = None;
     let mut secure_revision = None;
     let mut inventory_error = None::<String>;
+    let mut inventory_reads = tokio::task::JoinSet::new();
     let sequence = &reports.sequence;
     let mut timer = tokio::time::interval(Duration::from_secs(1));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -433,54 +435,48 @@ pub(super) async fn publish_state(
             .try_lock()
             .ok()
             .map_or(Duration::from_secs(1), |s| s.entitlement_delay());
-        let refresh = tokio::select! {
+        let outcome = tokio::select! {
             _=cancel.cancelled()=>break,
-            result=changed.changed()=>{if result.is_err(){break;} false},
-            result=target.changed()=>{if result.is_err(){break;} false},
-            result=mouse_policy.changed()=>{if result.is_err(){break;} false},
-            result=microphone.changed()=>{if result.is_err(){break;} false},
-            _=timer.tick()=>true,
-            _=tokio::time::sleep(entitlement_delay)=>false,
-        };
-        if let Ok(mut state) = screens.try_lock() {
-            state.refresh_entitlement_limits();
-        }
-        let inventory_revision = if refresh {
-            screens
-                .try_lock()
-                .ok()
-                .map(|state| state.inventory_revision())
-        } else {
-            None
-        };
-        if let Some(revision) = inventory_revision {
-            // Driver enumeration must not hold the screen lock or occupy a
-            // network runtime worker. At most one periodic read is in flight.
-            let result = super::screens::Inventory::collect(&cancel).await;
-            let outcome = match result {
-                Ok(None) => break,
-                Ok(Some(inventory)) => {
+            result=changed.changed()=>{if result.is_err(){break;} None},
+            result=target.changed()=>{if result.is_err(){break;} None},
+            result=mouse_policy.changed()=>{if result.is_err(){break;} None},
+            result=microphone.changed()=>{if result.is_err(){break;} None},
+            _=timer.tick()=>{
+                // Enumeration must not delay publication of a new capture source.
+                if inventory_reads.is_empty() && let Ok(state) = screens.try_lock() {
+                    let revision = state.inventory_revision();
+                    inventory_reads.spawn_blocking(move || (revision, Inventory::read(ModeList::Enumerate)));
+                }
+                None
+            },
+            _=tokio::time::sleep(entitlement_delay)=>None,
+            Some(result)=inventory_reads.join_next(), if !inventory_reads.is_empty()=>match result {
+                Ok((revision, Ok(inventory))) => {
                     if let Ok(mut state) = screens.try_lock() {
                         Some(state.maintain(revision, inventory).await)
                     } else {
                         None
                     }
                 }
-                Err(error) => Some(Err(error)),
-            };
-            match outcome {
-                Some(Ok(())) if inventory_error.take().is_some() => {
-                    tracing::info!("host screen inventory refresh recovered");
-                }
-                Some(Err(error)) => {
-                    let message = format!("{error:#}");
-                    if inventory_error.as_ref() != Some(&message) {
-                        tracing::warn!(error = %message, "host screen inventory refresh failed");
-                        inventory_error = Some(message);
-                    }
-                }
-                _ => {}
+                Ok((_, Err(error))) => Some(Err(error)),
+                Err(error) => Some(Err(error.into())),
+            },
+        };
+        if let Ok(mut state) = screens.try_lock() {
+            state.refresh_entitlement_limits();
+        }
+        match outcome {
+            Some(Ok(())) if inventory_error.take().is_some() => {
+                tracing::info!("host screen inventory refresh recovered");
             }
+            Some(Err(error)) => {
+                let message = format!("{error:#}");
+                if inventory_error.as_ref() != Some(&message) {
+                    tracing::warn!(error = %message, "host screen inventory refresh failed");
+                    inventory_error = Some(message);
+                }
+            }
+            _ => {}
         }
         let routes = target.borrow_and_update().clone();
         // S547AF0: initial state is published after the peer answers our PB
@@ -588,6 +584,11 @@ pub(super) async fn publish_state(
                 reports.current.load(Ordering::Acquire),
             )
         };
+        // A capture can restart from topology alone. Publish supported modes
+        // only once enumerated, so viewers never infer a bogus conversion.
+        if catalog.iter().any(|screen| !screen.modes_enumerated) {
+            continue;
+        }
         let current = if catalog.iter().any(|s| s.screen.id == requested) {
             requested
         } else {

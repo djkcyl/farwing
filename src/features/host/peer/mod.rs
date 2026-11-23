@@ -388,6 +388,8 @@ impl Peer {
         let mut settings = ConnectionCore::settings();
         settings.enable_sender_rtx(true);
         settings.enable_sender_rsfec(true);
+        let started = std::time::Instant::now();
+        tracing::debug!("creating host WebRTC core");
         let core = ConnectionCore::new(
             media,
             registry,
@@ -403,6 +405,8 @@ impl Peer {
             },
         )
         .await?;
+        let core_ms = started.elapsed().as_millis();
+        let started = std::time::Instant::now();
         let connection = core.connection.clone();
         // Failed construction cancels role workers; the core owns transport cleanup.
         let construction = cancel.clone().drop_guard();
@@ -428,6 +432,7 @@ impl Peer {
         let audio_sender = connection
             .add_track(audio_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
             .await?;
+        let audio_track_ms = started.elapsed().as_millis();
         let audio = super::audio::Audio::new(
             handle.clone(),
             cancel.clone(),
@@ -436,6 +441,12 @@ impl Peer {
         );
         audio.enable_quality_control(audio_control, audio_only);
         audio.set_media_allowed(!data_only);
+        let started = std::time::Instant::now();
+        tracing::debug!(
+            core_ms,
+            audio_track_ms,
+            "preparing host video tracks and screen inventory"
+        );
         let screen_pool = screens::Screens::new(
             connection.clone(),
             handle.clone(),
@@ -450,6 +461,10 @@ impl Peer {
             entitlements,
         )
         .await?;
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis(),
+            "host video tracks and screen inventory ready"
+        );
         let sender = screen_pool.slots[0].sender.clone();
         let reports = screen_pool.reports.clone();
         let input_reports = reports.clone();

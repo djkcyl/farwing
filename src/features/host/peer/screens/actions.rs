@@ -24,7 +24,6 @@ impl Screens {
         }
     }
     async fn resume(&mut self, running: Running) -> Result<()> {
-        self.refresh()?;
         for (index, id, config) in running.streams {
             if let Ok(info) = self.info(id) {
                 self.start_at(index, info.screen, config).await?;
@@ -39,7 +38,6 @@ impl Screens {
         Ok(())
     }
     async fn fallback(&mut self) -> Result<()> {
-        self.refresh()?;
         if self.slots.iter().any(|s| s.screen.is_some()) {
             if self
                 .active_slot(self.reports.current.load(Ordering::Acquire))
@@ -66,7 +64,8 @@ impl Screens {
                 .map(|s| s.screen.id)
                 .context("没有可用的显示器")?
         };
-        self.start(id).await
+        let id = self.prepare_video().await?.unwrap_or(id);
+        self.start_from_catalog(id).await
     }
     pub(crate) async fn create_virtual(&mut self, resolutions: Vec<(u32, u32)>) -> Result<()> {
         ensure!(
@@ -81,6 +80,7 @@ impl Screens {
                     tracing::error!(%cleanup,"new screen rollback failed");
                 }
             }
+            self.refresh()?;
             self.resume(before).await?;
             return Err(error);
         }
@@ -99,6 +99,7 @@ impl Screens {
         let before = self.running();
         self.stop(id).await?;
         if let Err(error) = self.displays.remove(identity).await {
+            self.refresh()?;
             self.resume(before).await?;
             return Err(error);
         }
@@ -107,6 +108,7 @@ impl Screens {
                 slot.suspended = None;
             }
         }
+        self.refresh()?;
         self.fallback().await
     }
     pub(crate) async fn enter_super(
@@ -123,6 +125,7 @@ impl Screens {
         let screen = match result {
             Ok(screen) => screen,
             Err(error) => {
+                self.refresh()?;
                 self.resume(before).await?;
                 return Err(error);
             }
@@ -136,18 +139,42 @@ impl Screens {
     }
     pub(crate) async fn quit_super(&mut self) -> Result<()> {
         let before = self.running();
+        let started = std::time::Instant::now();
         self.stop(-1).await?;
+        let stop_ms = started.elapsed().as_millis();
+        let started = std::time::Instant::now();
         if let Err(error) = self.displays.quit_super().await {
+            self.refresh()?;
             self.resume(before).await?;
             return Err(error);
         }
+        let restore_ms = started.elapsed().as_millis();
+        let started = std::time::Instant::now();
+        let inventory = Inventory::collect(&self.cancel, ModeList::Defer)
+            .await?
+            .context("恢复显示器清单已取消")?;
+        if inventory.screens.is_empty() {
+            self.refresh()?;
+        } else {
+            self.apply_inventory(inventory)?;
+        }
+        let inventory_ms = started.elapsed().as_millis();
+        let started = std::time::Instant::now();
         for slot in &mut self.slots {
             slot.suspended = None;
         }
         if let Some(before) = self.before_super.take() {
             self.resume(before).await?;
         }
-        self.fallback().await
+        self.fallback().await?;
+        tracing::debug!(
+            stop_ms,
+            restore_ms,
+            inventory_ms,
+            restart_ms = started.elapsed().as_millis(),
+            "host super screen capture restored"
+        );
+        Ok(())
     }
     pub(crate) async fn set_resolution(
         &mut self,
@@ -166,6 +193,7 @@ impl Screens {
         // Resizing the current temporary screen is not a new screen selection.
         self.stop_media(info.screen.id).await?;
         let result = self.displays.set_resolution(target, width, height).await;
+        self.refresh()?;
         self.resume(running).await?;
         Ok(result?.id)
     }
