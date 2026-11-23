@@ -17,6 +17,8 @@ Farwing 是可自建、可独立部署的远程控制与桌面串流软件，定
 
 媒体通过 WebRTC 端到端传输（DTLS-SRTP），中继使用标准 TURN，服务端不接触、不重编码音视频。
 
+项目的目标与方向见 [docs/vision.md](docs/vision.md)。
+
 **当前阶段：第二轮（Farwing Protocol v2）已实现，部分项目待双机验证。** 第一轮（v1，协议与自建服务迁移）的迁移情况和验证结果见 [docs/migration-status.md](docs/migration-status.md)；第二轮的设计、实现状态与待验证项见 [docs/protocol/v2-design.md](docs/protocol/v2-design.md)。Farwing 尚未发布，不提供与旧版本（包括 v1）的兼容：客户端与服务端须使用同一版本，服务端也不迁移旧数据库。
 
 ## 快速开始
