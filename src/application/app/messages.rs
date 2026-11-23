@@ -26,6 +26,7 @@ pub(super) enum GuiCommand {
         device_id: Option<String>,
         assist: Option<crate::account::assist::AssistRequest>,
         options: ConnectionMediaOptions,
+        viewer_window_mode: crate::application::viewer::ViewerWindowMode,
         background: Option<crate::application::wallpaper::Source>,
         takeover: Option<crate::session::controller::takeover::Approval>,
     },

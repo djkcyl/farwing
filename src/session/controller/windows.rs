@@ -24,6 +24,7 @@ pub(super) struct WindowContext {
     pub monitor: watch::Sender<Option<crate::diagnostics::performance::PerformanceMonitor>>,
     pub target: watch::Sender<Option<ViewerTarget>>,
     pub key: String,
+    pub window_mode: crate::application::viewer::ViewerWindowMode,
     pub background: Option<crate::application::wallpaper::Source>,
     pub takeover: Option<super::takeover::Approval>,
 }
@@ -123,6 +124,7 @@ pub(crate) fn start(
     id: Option<String>,
     assist: Option<crate::account::assist::AssistRequest>,
     options: ConnectionMediaOptions,
+    window_mode: crate::application::viewer::ViewerWindowMode,
     background: Option<crate::application::wallpaper::Source>,
     takeover: Option<super::takeover::Approval>,
 ) -> ViewerHandle {
@@ -175,6 +177,7 @@ pub(crate) fn start(
         monitor,
         target,
         key: key.clone(),
+        window_mode,
         background,
         takeover,
     };

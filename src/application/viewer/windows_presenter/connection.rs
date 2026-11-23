@@ -12,9 +12,12 @@ use crate::ui::chrome::{
 };
 use crate::ui::window_manager::{Event as UiEvent, Repaint as UiRepaintEvent};
 use anyhow::{Context, Result, anyhow, bail};
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
+use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
@@ -35,6 +38,10 @@ pub(in crate::application::viewer) fn run(session: NativeViewerSession) -> Resul
         .map_err(|_| anyhow!("queue existing viewer session"))?;
     run_player(
         ConnectingWindowsRunConfig {
+            connection_key: format!("standalone:{alias}"),
+            connection_tabs: crate::application::viewer::connection_tabs::ConnectionTabs::default(),
+            window_mode: crate::application::viewer::ViewerWindowMode::Separate,
+            cancel: CancellationToken::new(),
             alias,
             progress: std_mpsc::channel().1,
             session: receiver,
@@ -45,6 +52,10 @@ pub(in crate::application::viewer) fn run(session: NativeViewerSession) -> Resul
 }
 
 pub(crate) struct ConnectingWindowsRunConfig {
+    pub connection_key: String,
+    pub connection_tabs: crate::application::viewer::connection_tabs::ConnectionTabs,
+    pub window_mode: crate::application::viewer::ViewerWindowMode,
+    pub cancel: CancellationToken,
     pub alias: String,
     pub progress: std_mpsc::Receiver<ConnectionProgress>,
     pub session: std_mpsc::Receiver<ViewerWindowEvent>,
@@ -83,8 +94,13 @@ pub(in crate::application::viewer) fn run_player(
             |error| tracing::warn!(%error, "keyboard hook unavailable; viewing remains available"),
         )
         .ok();
-    let mut runner =
-        ConnectingWindowsRunner::new(config, needs_display, event_loop.create_proxy(), false);
+    let mut runner = ConnectingWindowsRunner::new(
+        config,
+        needs_display,
+        event_loop.create_proxy(),
+        false,
+        None,
+    );
     event_loop
         .run_app(&mut runner)
         .map_err(|error| anyhow!("run Windows connection/player event loop: {error}"))?;
@@ -92,6 +108,15 @@ pub(in crate::application::viewer) fn run_player(
         bail!(error);
     }
     Ok(())
+}
+
+struct ViewerConnectionInput {
+    alias: String,
+    progress: Option<std_mpsc::Receiver<ConnectionProgress>>,
+    session: std_mpsc::Receiver<ViewerWindowEvent>,
+    display: Option<oneshot::Sender<ViewerDisplayHandle>>,
+    cancel: CancellationToken,
+    done: Option<oneshot::Sender<Result<()>>>,
 }
 
 pub(crate) struct ConnectingWindowsRunner {
@@ -105,10 +130,11 @@ pub(crate) struct ConnectingWindowsRunner {
     pub(in crate::application::viewer) close_requested: bool,
     pub(in crate::application::viewer) attributes: WindowAttributes,
     pub(in crate::application::viewer) alias: String,
-    pub(in crate::application::viewer) progress: Option<std_mpsc::Receiver<ConnectionProgress>>,
-    pub(in crate::application::viewer) session: std_mpsc::Receiver<ViewerWindowEvent>,
-    pub(in crate::application::viewer) display_sender:
-        Option<tokio::sync::oneshot::Sender<ViewerDisplayHandle>>,
+    pub(in crate::application::viewer) connection_key: String,
+    pub(in crate::application::viewer) connection_tabs:
+        crate::application::viewer::connection_tabs::ConnectionTabs,
+    connections: HashMap<String, ViewerConnectionInput>,
+    closed_connections: Vec<String>,
     pub(in crate::application::viewer) window: Option<Window>,
     pub(in crate::application::viewer) connecting: Option<WindowsConnectionApp>,
     pub(in crate::application::viewer) playing: Option<ThreadedWindowsApp>,
@@ -128,8 +154,9 @@ impl ApplicationHandler<UiEvent> for ConnectingWindowsRunner {
                 crate::ui::branding::set_taskbar_icon(&window);
                 configure_dwm_window(&window);
                 let progress = self
-                    .progress
-                    .take()
+                    .connections
+                    .get_mut(&self.connection_key)
+                    .and_then(|input| input.progress.take())
                     .expect("connecting window is created only once");
                 self.ui_frame_interval = ui_frame_interval(&window);
                 match WindowsConnectionApp::new(
@@ -148,17 +175,12 @@ impl ApplicationHandler<UiEvent> for ConnectingWindowsRunner {
                             return;
                         }
                         self.last_ui_frame = Some(Instant::now());
-                        if self
-                            .display_sender
-                            .take()
-                            .is_some_and(|sender| sender.send(display).is_err())
+                        if let Some(input) = self.connections.get_mut(&self.connection_key)
+                            && let Some(sender) = input.display.take()
                         {
-                            // The account/connection owner can be cancelled
-                            // before the first window has finished initializing.
-                            // A closed display receiver is not a D3D failure.
-                            self.close_requested = true;
-                            self.exit(event_loop);
-                            return;
+                            let _ = sender.send(ViewerDisplayHandle {
+                                surface_writer: display.surface_writer.clone(),
+                            });
                         }
                         self.window = Some(window);
                         self.connecting = Some(app);
@@ -246,6 +268,19 @@ impl ApplicationHandler<UiEvent> for ConnectingWindowsRunner {
             window.set_visible(false);
         }
         self.screens.take();
+        let completion = self
+            .fatal_error
+            .clone()
+            .map_or(Ok(()), |error| Err(anyhow!(error)));
+        for key in self.connections.keys().cloned().collect::<Vec<_>>() {
+            self.complete_connection(
+                &key,
+                completion
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(|error| anyhow!("{error:#}")),
+            );
+        }
         self.playing.take();
         self.connecting.take();
         self.window.take();
@@ -308,6 +343,7 @@ impl ApplicationHandler<UiEvent> for ConnectingWindowsRunner {
             if !screens.update(event_loop) {
                 self.exit(event_loop);
             }
+            self.finish_closed_connections();
             return;
         }
         if let Some(app) = self.playing.as_mut() {
@@ -366,7 +402,23 @@ impl ConnectingWindowsRunner {
         needs_display: bool,
         proxy: EventLoopProxy<UiEvent>,
         embedded: bool,
+        done: Option<oneshot::Sender<Result<()>>>,
     ) -> Self {
+        let primary_key = config.connection_key.clone();
+        let tabs = config.connection_tabs.clone();
+        tabs.add(primary_key.clone(), config.alias.clone());
+        let mut connections = HashMap::new();
+        connections.insert(
+            primary_key.clone(),
+            ViewerConnectionInput {
+                alias: config.alias.clone(),
+                progress: Some(config.progress),
+                session: config.session,
+                display: needs_display.then_some(config.display_sender),
+                cancel: config.cancel.clone(),
+                done,
+            },
+        );
         Self {
             audio_restore_geometry: None,
             attributes: WindowAttributes::default()
@@ -378,9 +430,10 @@ impl ConnectingWindowsRunner {
                 .with_inner_size(LogicalSize::new(1280.0, 760.0))
                 .with_min_inner_size(LogicalSize::new(760.0, 520.0)),
             alias: config.alias,
-            progress: Some(config.progress),
-            session: config.session,
-            display_sender: needs_display.then_some(config.display_sender),
+            connection_key: primary_key,
+            connection_tabs: tabs,
+            connections,
+            closed_connections: Vec::new(),
             window: None,
             connecting: None,
             playing: None,
@@ -405,6 +458,9 @@ impl ConnectingWindowsRunner {
     pub(crate) fn closed(&self) -> bool {
         self.close_requested
     }
+    pub(crate) fn contains_connection(&self, key: &str) -> bool {
+        self.connections.contains_key(key)
+    }
     pub(crate) fn error(&self) -> Option<String> {
         self.fatal_error.clone()
     }
@@ -420,15 +476,163 @@ impl ConnectingWindowsRunner {
             screens.focus();
         }
     }
+    pub(crate) fn attach_connection(
+        &mut self,
+        config: ConnectingWindowsRunConfig,
+        done: oneshot::Sender<Result<()>>,
+    ) -> Result<()> {
+        let key = config.connection_key.clone();
+        if self.connections.contains_key(&key) {
+            let _ = done.send(Err(anyhow!("观看连接标签已存在")));
+            return Ok(());
+        }
+        let alias = config.alias.clone();
+        let mut input = ViewerConnectionInput {
+            alias,
+            progress: Some(config.progress),
+            session: config.session,
+            display: Some(config.display_sender),
+            cancel: config.cancel,
+            done: Some(done),
+        };
+        let writer = match crate::platform::surface::D3D11SurfaceWriter::new() {
+            Ok(writer) => writer,
+            Err(error) => {
+                input.cancel.cancel();
+                if let Some(done) = input.done.take() {
+                    let _ = done.send(Err(anyhow!("create connection surface writer: {error:#}")));
+                }
+                return Ok(());
+            }
+        };
+        if input
+            .display
+            .take()
+            .expect("new tab display sender")
+            .send(ViewerDisplayHandle {
+                surface_writer: Some(writer),
+            })
+            .is_err()
+        {
+            input.cancel.cancel();
+            if let Some(done) = input.done.take() {
+                let _ = done.send(Err(anyhow!("connection owner cancelled display setup")));
+            }
+            return Ok(());
+        }
+        self.connection_tabs.add(key.clone(), input.alias.clone());
+        self.connections.insert(key, input);
+        Ok(())
+    }
+
+    fn complete_connection(&mut self, key: &str, result: Result<()>) {
+        if let Some(mut input) = self.connections.remove(key) {
+            input.cancel.cancel();
+            self.closed_connections.push(key.to_owned());
+            if let Some(done) = input.done.take() {
+                let _ = done.send(result);
+            }
+        }
+        if self.connections.len() == 1
+            && let Some((key, alias)) = self
+                .connections
+                .iter()
+                .next()
+                .map(|(key, input)| (key.clone(), input.alias.clone()))
+        {
+            self.connection_key = key;
+            self.alias = alias;
+        }
+    }
+
+    fn finish_closed_connections(&mut self) {
+        let keys = self
+            .screens
+            .as_mut()
+            .map(|screens| screens.take_closed_connections())
+            .unwrap_or_default();
+        for key in keys {
+            self.complete_connection(&key, Ok(()));
+        }
+        if self.connections.is_empty() {
+            self.close_requested = true;
+        }
+    }
+
     pub(in crate::application::viewer) fn receive_session_events(&mut self) -> Result<()> {
-        while let Ok(event) = self.session.try_recv() {
+        let keys: Vec<String> = self.connections.keys().cloned().collect();
+        let mut queued = Vec::new();
+        let mut abandoned = Vec::new();
+        for key in &keys {
+            if let Some(input) = self.connections.get_mut(key) {
+                if input.done.as_ref().is_some_and(|done| done.is_closed()) {
+                    abandoned.push(key.clone());
+                    continue;
+                }
+                while let Ok(event) = input.session.try_recv() {
+                    queued.push((key.clone(), event));
+                }
+                while let Some(progress) = input
+                    .progress
+                    .as_ref()
+                    .and_then(|receiver| receiver.try_iter().last())
+                {
+                    match progress.state {
+                        crate::application::viewer::ConnectionProgressState::Ready => {
+                            self.connection_tabs.set_ready(key);
+                        }
+                        crate::application::viewer::ConnectionProgressState::Failed => {
+                            self.connection_tabs.set_failed(key, progress.detail);
+                        }
+                        _ => {
+                            self.connection_tabs.set_progress(key, progress.detail);
+                        }
+                    }
+                }
+            }
+        }
+        for key in abandoned {
+            if let Some(screens) = self.screens.as_mut() {
+                if screens.remove_connection(&key) {
+                    self.close_requested = true;
+                }
+            } else {
+                self.connection_tabs.remove(&key);
+            }
+            self.complete_connection(&key, Ok(()));
+        }
+        for (key, event) in queued {
             if self.close_requested {
                 continue;
             }
             match event {
-                ViewerWindowEvent::Close => self.close_requested = true,
+                ViewerWindowEvent::Close => {
+                    if let Some(screens) = self.screens.as_mut() {
+                        if screens.remove_connection(&key) {
+                            self.close_requested = true;
+                        }
+                    } else {
+                        self.connection_tabs.remove(&key);
+                    }
+                    self.complete_connection(&key, Ok(()));
+                }
                 ViewerWindowEvent::Listening(audio) => {
+                    if (key != self.connection_key && self.connections.len() > 1)
+                        || self.screens.is_some()
+                    {
+                        let error = anyhow!("仅音频模式暂不支持在共享观看窗口中显示");
+                        self.connection_tabs.set_failed(&key, format!("{error:#}"));
+                        if let Some(screens) = self.screens.as_mut()
+                            && screens.remove_connection(&key)
+                        {
+                            self.close_requested = true;
+                        }
+                        self.complete_connection(&key, Err(error));
+                        continue;
+                    }
                     let window = self.window.as_ref().context("音频窗口已关闭")?;
+                    self.connection_tabs.set_alias(&key, self.alias.clone());
+                    self.connection_tabs.select(&key);
                     self.audio_restore_geometry.get_or_insert_with(|| {
                         (
                             window.inner_size(),
@@ -440,53 +644,113 @@ impl ConnectingWindowsRunner {
                     self.connecting.as_mut().context("音频界面尚未准备")?.audio = Some(audio);
                     window.request_redraw();
                 }
-                ViewerWindowEvent::Playing(session) => self.start_playing(*session)?,
+                ViewerWindowEvent::Playing(session) => {
+                    let alias = self
+                        .connections
+                        .get(&key)
+                        .map(|input| input.alias.clone())
+                        .unwrap_or_else(|| self.alias.clone());
+                    self.connection_tabs.set_ready(&key);
+                    if self.screens.is_none() {
+                        self.connection_tabs.select(&key);
+                        self.start_playing(key.clone(), *session)?;
+                    } else if let Some(screens) = self.screens.as_mut()
+                        && let Err(error) = screens.add_connection(key.clone(), alias, *session)
+                    {
+                        self.connection_tabs.set_failed(&key, format!("{error:#}"));
+                        self.complete_connection(&key, Err(error));
+                    }
+                }
                 ViewerWindowEvent::Reconnect {
                     alias,
-                    window: preferred,
+                    window,
                     progress,
                     display,
                 } => {
-                    self.alias = alias;
-                    if let Some(mut screens) = self.screens.take() {
-                        self.window = screens.take_window(preferred);
+                    if window.is_some_and(|window| {
+                        self.screens
+                            .as_ref()
+                            .is_some_and(|screens| screens.owns(window))
+                    }) {
+                        self.focus();
                     }
-                    // Keep the OS window, but join and discard the old room's
-                    // render/decoder owners before attaching a new media peer.
-                    self.playing.take();
-                    self.connecting.take();
-                    self.ui_generation = self.ui_generation.wrapping_add(1);
-                    self.next_repaint = None;
-                    let window = self
-                        .window
-                        .as_ref()
-                        .context("player window closed during reconnect")?;
-                    if !window.is_resizable() {
-                        restore_video_window_constraints(window);
-                        let _ = window.request_inner_size(LogicalSize::new(1280.0, 760.0));
+                    self.connection_tabs.set_alias(&key, alias.clone());
+                    self.connection_tabs.set_progress(&key, "正在重新连接");
+                    if let Some(input) = self.connections.get_mut(&key) {
+                        input.alias = alias.clone();
+                        input.progress = Some(progress);
                     }
-                    window.set_title(&format!("{}{}", crate::VIEWER_TITLE_PREFIX, self.alias));
-                    let (mut app, new_display) = WindowsConnectionApp::new(
-                        window,
-                        self.alias.clone(),
-                        progress,
-                        self.repaint_proxy.clone(),
-                        self.ui_generation,
-                    )?;
-                    app.render(window)?;
-                    self.connecting = Some(app);
-                    display
-                        .send(new_display)
-                        .map_err(|_| anyhow!("connection owner cancelled window reconnect"))?;
-                    window.request_redraw();
+                    if self.connections.len() == 1 && self.connections.contains_key(&key) {
+                        self.connection_key = key.clone();
+                        self.alias = alias.clone();
+                        if let Some(mut screens) = self.screens.take() {
+                            self.window = screens.take_window(window);
+                        }
+                        self.playing.take();
+                        self.connecting.take();
+                        self.ui_generation = self.ui_generation.wrapping_add(1);
+                        self.next_repaint = None;
+                        let window = self.window.as_ref().context("重连时观看窗口已关闭")?;
+                        if !window.is_resizable() {
+                            restore_video_window_constraints(window);
+                            let _ = window.request_inner_size(LogicalSize::new(1280.0, 760.0));
+                        }
+                        let progress = self
+                            .connections
+                            .get_mut(&key)
+                            .and_then(|input| input.progress.take())
+                            .context("重连进度已关闭")?;
+                        let (mut app, new_display) = WindowsConnectionApp::new(
+                            window,
+                            alias.clone(),
+                            progress,
+                            self.repaint_proxy.clone(),
+                            self.ui_generation,
+                        )?;
+                        app.render(window)?;
+                        self.connecting = Some(app);
+                        display
+                            .send(new_display)
+                            .map_err(|_| anyhow!("connection owner cancelled window reconnect"))?;
+                        window.set_title(&format!("{}{}", crate::VIEWER_TITLE_PREFIX, alias));
+                        window.request_redraw();
+                        continue;
+                    }
+                    let writer = match crate::platform::surface::D3D11SurfaceWriter::new() {
+                        Ok(writer) => writer,
+                        Err(error) => {
+                            self.connection_tabs.set_failed(&key, format!("{error:#}"));
+                            self.complete_connection(
+                                &key,
+                                Err(anyhow!("create reconnect surface writer: {error:#}")),
+                            );
+                            continue;
+                        }
+                    };
+                    if display
+                        .send(ViewerDisplayHandle {
+                            surface_writer: Some(writer),
+                        })
+                        .is_err()
+                    {
+                        self.connection_tabs.set_failed(&key, "重连画面交接已取消");
+                        self.complete_connection(
+                            &key,
+                            Err(anyhow!(
+                                "connection owner cancelled reconnect display setup"
+                            )),
+                        );
+                    }
                 }
             }
         }
+        self.finish_closed_connections();
         Ok(())
     }
 
     pub(in crate::application::viewer) fn start_playing(
         &mut self,
+        connection_key: String,
         session: NativeViewerSession,
     ) -> Result<()> {
         let window = self
@@ -510,12 +774,15 @@ impl ConnectingWindowsRunner {
             .connecting
             .take()
             .context("connection UI is unavailable")?;
+        self.connection_tabs.set_ready(&connection_key);
         self.screens = Some(ScreenWindows::new(
             window,
             session,
             connecting,
             self.repaint_proxy.clone(),
             self.ui_generation,
+            connection_key,
+            self.connection_tabs.clone(),
         )?);
         Ok(())
     }

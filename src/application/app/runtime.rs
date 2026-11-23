@@ -245,6 +245,7 @@ pub(super) async fn gui_worker_loop(
                     device_id,
                     assist,
                     options,
+                    viewer_window_mode,
                     background,
                     takeover,
                 } => {
@@ -258,6 +259,7 @@ pub(super) async fn gui_worker_loop(
                                     device_id.clone(),
                                     assist,
                                     options,
+                                    viewer_window_mode,
                                     background,
                                     takeover,
                                 )

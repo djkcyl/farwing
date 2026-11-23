@@ -67,6 +67,18 @@ pub fn run(options: GuiOptions) -> Result<()> {
         (Some(a), Some(b)) => Some(format!("{a}；{b}")),
         (a, b) => a.or(b),
     };
+    let (viewer_window_mode, mode_warning) =
+        match crate::application::viewer::ViewerWindowMode::load() {
+            Ok(mode) => (mode, None),
+            Err(error) => (
+                crate::application::viewer::ViewerWindowMode::default(),
+                Some(format!("读取设备窗口模式失败，暂用共享窗口：{error:#}")),
+            ),
+        };
+    let display_warning = match (display_warning, mode_warning) {
+        (Some(a), Some(b)) => Some(format!("{a}；{b}")),
+        (a, b) => a.or(b),
+    };
     options
         .media
         .resolve(local_display)
@@ -87,7 +99,13 @@ pub fn run(options: GuiOptions) -> Result<()> {
         Box::new(move |ctx, graphics| {
             configure_visuals(ctx);
             ctx.request_repaint();
-            let mut app = DeviceCenterApp::new(ctx, local_display, options.media, display_warning);
+            let mut app = DeviceCenterApp::new(
+                ctx,
+                local_display,
+                options.media,
+                viewer_window_mode,
+                display_warning,
+            );
             if let Some(graphics) = graphics {
                 app.diagnostics.graphics.push(graphics);
             }
@@ -180,6 +198,7 @@ struct DeviceCenterApp {
     selected_device_id: Option<String>,
     local_display: LocalDisplayInfo,
     media: ConnectionMediaOptions,
+    viewer_window_mode: crate::application::viewer::ViewerWindowMode,
     media_inventory: media_preferences::Inventory,
     presence: PresenceState,
     host: Option<crate::features::host::Handle>,
@@ -214,6 +233,7 @@ impl DeviceCenterApp {
         ctx: &egui::Context,
         local_display: LocalDisplayInfo,
         media: ConnectionMediaOptions,
+        viewer_window_mode: crate::application::viewer::ViewerWindowMode,
         display_warning: Option<String>,
     ) -> Self {
         Self {
@@ -238,6 +258,7 @@ impl DeviceCenterApp {
             selected_device_id: None,
             local_display,
             media,
+            viewer_window_mode,
             media_inventory: media_preferences::Inventory::new(),
             presence: PresenceState::Connecting,
             host: None,
@@ -1129,6 +1150,7 @@ impl DeviceCenterApp {
                 alias,
                 device_id,
                 assist: assist_request,
+                viewer_window_mode: self.viewer_window_mode,
                 options: ConnectionMediaOptions {
                     audio_only,
                     ..self.media

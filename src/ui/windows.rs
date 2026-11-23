@@ -528,6 +528,7 @@ impl ApplicationHandler<Event> for Runner {
 
 struct ManagedViewer {
     runner: ConnectingWindowsRunner,
+    mode: crate::application::viewer::ViewerWindowMode,
     done: Option<tokio::sync::oneshot::Sender<Result<()>>>,
 }
 impl ManagedViewer {
@@ -569,7 +570,11 @@ impl Windows {
             window.window.set_visible(true);
             window.window.focus_window();
         }
-        if let Some(viewer) = self.viewers.get(key) {
+        if let Some(viewer) = self.viewers.get(key).or_else(|| {
+            self.viewers
+                .values()
+                .find(|viewer| viewer.runner.contains_connection(key))
+        }) {
             viewer.runner.focus();
         }
     }
@@ -669,9 +674,16 @@ impl ApplicationHandler<Event> for Windows {
                 if done.is_closed() {
                     return;
                 }
-                if self.viewers.contains_key(&key) {
-                    self.focus(&key);
-                    let _ = done.send(Err(anyhow!("观看窗口已打开")));
+                let mode = config.window_mode;
+                if let Some(existing) = self
+                    .viewers
+                    .values_mut()
+                    .find(|viewer| !viewer.runner.closed() && mode.can_share_with(viewer.mode))
+                {
+                    match existing.runner.attach_connection(config, done) {
+                        Ok(()) => existing.runner.focus(),
+                        Err(error) => tracing::warn!(%error, "could not attach viewer tab"),
+                    }
                     return;
                 }
                 let mut viewer = ManagedViewer {
@@ -680,8 +692,10 @@ impl ApplicationHandler<Event> for Windows {
                         true,
                         self.main.proxy.clone(),
                         true,
+                        Some(done),
                     ),
-                    done: Some(done),
+                    mode,
+                    done: None,
                 };
                 viewer.runner.resumed(event_loop);
                 self.viewers.insert(key, viewer);
