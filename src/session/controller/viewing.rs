@@ -35,6 +35,10 @@ pub(super) async fn run_viewer_window(
     let background = hosted.as_ref().and_then(|h| h.background.clone());
     let takeover = hosted.as_mut().and_then(|h| h.takeover.take());
     let window_key = hosted.as_ref().map(|h| h.key.clone());
+    let window_mode = hosted.as_ref().map_or(
+        crate::application::viewer::ViewerWindowMode::Separate,
+        |h| h.window_mode,
+    );
     let (progress_sender, progress_receiver) = std::sync::mpsc::channel();
     let (viewer_sender, viewer_receiver) = std::sync::mpsc::channel();
     let reporter: ConnectionProgressReporter = Arc::new(move |progress| {
@@ -114,8 +118,13 @@ pub(super) async fn run_viewer_window(
 
     let window_result = if let Some(key) = window_key {
         crate::ui::window_manager::viewer(
-            key,
+            key.clone(),
             crate::application::viewer::windows_presenter::ConnectingWindowsRunConfig {
+                connection_key: key.clone(),
+                connection_tabs:
+                    crate::application::viewer::connection_tabs::ConnectionTabs::default(),
+                window_mode,
+                cancel: cancel.clone(),
                 alias,
                 progress: progress_receiver,
                 session: viewer_receiver,

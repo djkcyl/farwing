@@ -228,6 +228,14 @@ struct ScreenWindow {
     window: Window,
 }
 
+struct StoredConnectionScreens {
+    factory: ScreenPlayback,
+    sessions: HashMap<i32, Arc<NativeViewerSession>>,
+    shutdown: Arc<AtomicBool>,
+    catalog: Vec<RemoteScreen>,
+    active_screen: Option<i32>,
+}
+
 pub(super) struct ScreenWindows {
     windows: HashMap<WindowId, ScreenWindow>,
     sessions: HashMap<i32, Arc<NativeViewerSession>>,
@@ -240,6 +248,12 @@ pub(super) struct ScreenWindows {
     topology_sequence: Option<i64>,
     topology_owner: Option<WindowId>,
     topology_focused: Option<i32>,
+    active_screen: Option<i32>,
+    active_connection: String,
+    connections: HashMap<String, StoredConnectionScreens>,
+    connection_tabs: crate::application::viewer::connection_tabs::ConnectionTabs,
+    requested_connection: Option<String>,
+    closed_connections: Vec<String>,
 }
 
 impl ScreenWindows {
@@ -258,6 +272,8 @@ impl ScreenWindows {
         connecting: WindowsConnectionApp,
         proxy: EventLoopProxy<UiEvent>,
         generation: u64,
+        connection_key: String,
+        connection_tabs: crate::application::viewer::connection_tabs::ConnectionTabs,
     ) -> Result<Self> {
         let factory = session
             .take_screen_playback()
@@ -266,7 +282,12 @@ impl ScreenWindows {
         let screen_id = session.screen_id();
         let session = Arc::new(session);
         factory.register(Arc::clone(&session));
-        let app = ThreadedWindowsApp::from_session(&window, Arc::clone(&session), connecting)?;
+        let app = ThreadedWindowsApp::from_session(
+            &window,
+            Arc::clone(&session),
+            connecting,
+            connection_tabs.clone(),
+        )?;
         let catalog = factory.screens();
         let tabs = catalog.iter().map(|screen| screen.id).collect();
         let slot = ScreenWindow {
@@ -293,9 +314,365 @@ impl ScreenWindows {
             topology_sequence: None,
             topology_owner: None,
             topology_focused: None,
+            active_screen: Some(screen_id),
+            active_connection: connection_key,
+            connections: HashMap::new(),
+            connection_tabs,
+            requested_connection: None,
+            closed_connections: Vec::new(),
         };
         group.sync_bars();
         Ok(group)
+    }
+
+    fn connection_state(mut session: NativeViewerSession) -> Result<StoredConnectionScreens> {
+        let factory = session
+            .take_screen_playback()
+            .context("screen playback owner unavailable")?;
+        let shutdown = Arc::clone(&session.shutdown);
+        let active_screen = session.screen_id();
+        let session = Arc::new(session);
+        factory.register(Arc::clone(&session));
+        let catalog = factory.screens();
+        let sessions = HashMap::from([(session.track_index, session)]);
+        Ok(StoredConnectionScreens {
+            factory,
+            sessions,
+            shutdown,
+            catalog,
+            active_screen: Some(active_screen),
+        })
+    }
+
+    pub fn add_connection(
+        &mut self,
+        key: String,
+        alias: String,
+        session: NativeViewerSession,
+    ) -> Result<()> {
+        if key == self.active_connection || self.connections.contains_key(&key) {
+            return self.replace_connection(key, alias, session);
+        }
+        let stored = Self::connection_state(session)?;
+        self.connection_tabs.add(key.clone(), alias);
+        self.connection_tabs.set_ready(&key);
+        self.connections.insert(key.clone(), stored);
+        let should_activate = self.requested_connection.as_deref() == Some(key.as_str())
+            || (self.active_screen.is_none() && self.active_connection == key);
+        if should_activate {
+            self.requested_connection = None;
+            if let Err(error) = self.activate_connection(&key) {
+                if let Some(mut stored) = self.connections.remove(&key) {
+                    for session in stored.sessions.values() {
+                        session.close_handle().close();
+                    }
+                    stored.sessions.clear();
+                    stored.factory.close_decoders();
+                }
+                self.connection_tabs.set_failed(&key, format!("{error:#}"));
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn replace_connection(
+        &mut self,
+        key: String,
+        alias: String,
+        session: NativeViewerSession,
+    ) -> Result<()> {
+        let replacement = Self::connection_state(session)?;
+        self.connection_tabs.add(key.clone(), alias.clone());
+        self.connection_tabs.set_ready(&key);
+        if key == self.active_connection {
+            let screen_id = replacement
+                .active_screen
+                .filter(|id| replacement.catalog.iter().any(|screen| screen.id == *id))
+                .or_else(|| replacement.catalog.first().map(|screen| screen.id))
+                .context("重连设备没有可用显示器")?;
+            let active_session = replacement
+                .catalog
+                .iter()
+                .find(|screen| screen.id == screen_id)
+                .and_then(|screen| replacement.sessions.get(&screen.video_track_index))
+                .cloned()
+                .or_else(|| replacement.sessions.values().next().cloned())
+                .context("重连设备的视频解码器不可用")?;
+            let tabs: Vec<_> = replacement.catalog.iter().map(|screen| screen.id).collect();
+            let root_id = self
+                .windows
+                .iter()
+                .find(|(_, slot)| slot.window.has_focus())
+                .map(|(id, _)| *id)
+                .or_else(|| self.windows.keys().next().copied())
+                .context("观看窗口已关闭")?;
+            {
+                let slot = self.windows.get_mut(&root_id).context("观看窗口已关闭")?;
+                let app = slot.app.as_mut().context("观看窗口播放器不可用")?;
+                if let Err(error) = app.replace_session(&slot.window, active_session) {
+                    for session in replacement.sessions.values() {
+                        session.close_handle().close();
+                    }
+                    replacement.factory.close_decoders();
+                    return Err(error);
+                }
+                slot.tabs = tabs;
+                slot.selected = Some(screen_id);
+                slot.pending.take();
+                slot.window
+                    .set_title(&format!("{}{}", crate::VIEWER_TITLE_PREFIX, alias));
+                slot.window.request_redraw();
+            }
+            let detached: Vec<_> = self
+                .windows
+                .keys()
+                .copied()
+                .filter(|id| *id != root_id)
+                .collect();
+            for id in detached {
+                if let Some(mut slot) = self.windows.remove(&id) {
+                    slot.window.set_visible(false);
+                    slot.pending.take();
+                    if let Some(app) = slot.app.as_mut() {
+                        app.mouse.release(&slot.window);
+                    }
+                    slot.app.take();
+                }
+            }
+            self.factory.close_decoders();
+            for old in self.sessions.values() {
+                old.close_handle().close();
+            }
+            self.sessions.clear();
+            self.factory = replacement.factory;
+            self.sessions = replacement.sessions;
+            self.shutdown = replacement.shutdown;
+            self.catalog = replacement.catalog;
+            self.active_screen = Some(screen_id);
+            self.topology_sequence = None;
+            self.topology_owner = Some(root_id);
+            self.topology_focused = Some(screen_id);
+        } else {
+            if let Some(mut old) = self.connections.remove(&key) {
+                for session in old.sessions.values() {
+                    session.close_handle().close();
+                }
+                old.sessions.clear();
+                old.factory.close_decoders();
+            }
+            self.connections.insert(key.clone(), replacement);
+            if self.requested_connection.as_deref() == Some(key.as_str()) {
+                self.requested_connection = None;
+                self.activate_connection(&key)?;
+            }
+        }
+        self.sync_bars();
+        Ok(())
+    }
+
+    fn store_active_connection(&mut self) {
+        self.factory.set_visible(Vec::new());
+        self.connections.insert(
+            self.active_connection.clone(),
+            StoredConnectionScreens {
+                factory: self.factory.clone(),
+                sessions: std::mem::take(&mut self.sessions),
+                shutdown: Arc::clone(&self.shutdown),
+                catalog: std::mem::take(&mut self.catalog),
+                active_screen: self.active_screen,
+            },
+        );
+    }
+
+    fn activate_connection(&mut self, key: &str) -> Result<()> {
+        if self.active_connection == key {
+            return Ok(());
+        }
+        let target = self.connections.get(key).context("连接已断开")?;
+        let screen_id = target
+            .active_screen
+            .filter(|id| target.catalog.iter().any(|screen| screen.id == *id))
+            .or_else(|| target.catalog.first().map(|screen| screen.id))
+            .context("目标设备没有可用显示器")?;
+        let active_session = target
+            .catalog
+            .iter()
+            .find(|screen| screen.id == screen_id)
+            .and_then(|screen| target.sessions.get(&screen.video_track_index))
+            .cloned()
+            .or_else(|| target.sessions.values().next().cloned())
+            .context("目标设备的视频解码器不可用")?;
+        let target_tabs: Vec<_> = target.catalog.iter().map(|screen| screen.id).collect();
+        let target_factory = target.factory.clone();
+        let target_sessions = target.sessions.clone();
+        let target_shutdown = Arc::clone(&target.shutdown);
+        let target_catalog = target.catalog.clone();
+        let root_id = self
+            .windows
+            .iter()
+            .find(|(_, slot)| slot.window.has_focus())
+            .map(|(id, _)| *id)
+            .or_else(|| self.windows.keys().next().copied())
+            .context("观看窗口已关闭")?;
+        let alias = self
+            .connection_tabs
+            .snapshot()
+            .iter()
+            .find(|tab| tab.key == key)
+            .map_or("设备", |tab| tab.alias.as_str())
+            .to_owned();
+
+        // Validate and swap the render/input session before moving ownership maps.
+        // If D3D setup fails, keep the old window and its old active key intact.
+        {
+            let root = self.windows.get_mut(&root_id).context("观看窗口已关闭")?;
+            let app = root.app.as_mut().context("观看窗口播放器不可用")?;
+            app.replace_session(&root.window, active_session)?;
+            root.pending.take();
+            root.tabs = target_tabs;
+            root.selected = Some(screen_id);
+            root.failed_screen = None;
+            root.close = false;
+            root.window
+                .set_title(&format!("{}{}", crate::VIEWER_TITLE_PREFIX, alias));
+            root.window.request_redraw();
+        }
+        // Device switching reuses one HWND. Detached display windows collapse
+        // back into the workspace; the remote display tabs remain available.
+        let detached: Vec<_> = self
+            .windows
+            .keys()
+            .copied()
+            .filter(|id| *id != root_id)
+            .collect();
+        for id in detached {
+            if let Some(mut slot) = self.windows.remove(&id) {
+                slot.window.set_visible(false);
+                slot.pending.take();
+                if let Some(app) = slot.app.as_mut() {
+                    app.mouse.release(&slot.window);
+                }
+                slot.app.take();
+            }
+        }
+        if !self.sessions.is_empty() {
+            self.store_active_connection();
+        }
+        let _target = self.connections.remove(key).context("连接已断开")?;
+        self.active_connection = key.to_owned();
+        self.active_screen = Some(screen_id);
+        self.factory = target_factory;
+        self.sessions = target_sessions;
+        self.shutdown = target_shutdown;
+        self.catalog = target_catalog;
+        self.topology_sequence = None;
+        self.topology_owner = Some(root_id);
+        self.topology_focused = Some(screen_id);
+        self.connection_tabs.select(key);
+        self.sync_bars();
+        Ok(())
+    }
+
+    /// Returns true when no live connection remains and the workspace should close.
+    pub fn remove_connection(&mut self, key: &str) -> bool {
+        let was_active = key == self.active_connection;
+        let next = self.connection_tabs.remove(key);
+        if was_active {
+            // Prefer a ready session already owned by the workspace. Activate it
+            // first so the HWND never points at a decoder we have just destroyed.
+            if let Some(next_key) = next.as_deref()
+                && self.connection_tabs.snapshot().iter().any(|tab| {
+                    tab.key == next_key
+                        && matches!(
+                            tab.state,
+                            crate::application::viewer::connection_tabs::ConnectionTabState::Ready
+                        )
+                })
+                && self.connections.contains_key(next_key)
+                && self.activate_connection(next_key).is_ok()
+            {
+                if let Some(mut retired) = self.connections.remove(key) {
+                    for session in retired.sessions.values() {
+                        session.close_handle().close();
+                    }
+                    retired.sessions.clear();
+                    retired.factory.close_decoders();
+                }
+                self.closed_connections.push(key.to_owned());
+                self.sync_bars();
+                return false;
+            }
+
+            for session in self.sessions.values() {
+                session.close_handle().close();
+            }
+            self.sessions.clear();
+            self.factory.close_decoders();
+            self.closed_connections.push(key.to_owned());
+
+            if let Some(next_key) = next {
+                // A connecting replacement has no session yet; hold the one
+                // workspace open and show its connection progress until Playing.
+                self.active_connection = next_key.clone();
+                self.active_screen = None;
+                self.topology_sequence = None;
+                self.topology_owner = self.windows.keys().next().copied();
+                self.topology_focused = None;
+                self.shutdown = Arc::new(AtomicBool::new(false));
+                self.catalog.clear();
+                if let Some(mut unusable) = self.connections.remove(&next_key) {
+                    for session in unusable.sessions.values() {
+                        session.close_handle().close();
+                    }
+                    unusable.sessions.clear();
+                    unusable.factory.close_decoders();
+                    self.connection_tabs
+                        .set_failed(&next_key, "切换到该设备失败");
+                }
+                let alias = self
+                    .connection_tabs
+                    .snapshot()
+                    .iter()
+                    .find(|tab| tab.key == next_key)
+                    .map_or("设备", |tab| tab.alias.as_str())
+                    .to_owned();
+                for slot in self.windows.values_mut() {
+                    slot.tabs.clear();
+                    slot.selected = None;
+                    slot.pending.take();
+                    if let Some(app) = slot.app.as_mut() {
+                        app.mouse.release(&slot.window);
+                    }
+                    slot.window
+                        .set_title(&format!("{}{}", crate::VIEWER_TITLE_PREFIX, alias));
+                    slot.window.request_redraw();
+                }
+                self.sync_bars();
+                return false;
+            }
+
+            for (other_key, mut stored) in self.connections.drain() {
+                self.closed_connections.push(other_key);
+                for session in stored.sessions.values() {
+                    session.close_handle().close();
+                }
+                stored.sessions.clear();
+                stored.factory.close_decoders();
+            }
+            return true;
+        }
+
+        if let Some(mut stored) = self.connections.remove(key) {
+            for session in stored.sessions.values() {
+                session.close_handle().close();
+            }
+            stored.sessions.clear();
+            stored.factory.close_decoders();
+        }
+        self.closed_connections.push(key.to_owned());
+        self.sync_bars();
+        false
     }
 
     pub fn take_window(&mut self, preferred: Option<WindowId>) -> Option<Window> {
@@ -309,6 +686,10 @@ impl ScreenWindows {
         slot.app.take();
         slot.pending.take();
         Some(slot.window)
+    }
+
+    pub fn take_closed_connections(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.closed_connections)
     }
 
     pub fn window_event(
@@ -336,6 +717,7 @@ impl ScreenWindows {
         if *event == WindowEvent::Focused(true)
             && let Some(id) = slot.selected
         {
+            self.active_screen = Some(id);
             self.factory.focus(id);
         }
         if *event == WindowEvent::RedrawRequested {
@@ -812,8 +1194,76 @@ impl ScreenWindows {
     }
 
     pub fn update(&mut self, event_loop: &ActiveEventLoop) -> bool {
-        if self.shutdown.load(Ordering::Acquire) || self.windows.is_empty() {
+        if self.connection_tabs.is_empty() || self.windows.is_empty() {
             return false;
+        }
+        if self.shutdown.load(Ordering::Acquire) {
+            let active = self.active_connection.clone();
+            if self.remove_connection(&active) {
+                return false;
+            }
+            if self.connection_tabs.active_key().as_deref() == Some(active.as_str()) {
+                self.connection_tabs.set_failed(&active, "设备会话已断开");
+            }
+        }
+        if let Some(command) = self.connection_tabs.take_command() {
+            match command {
+                crate::application::viewer::connection_tabs::ConnectionTabCommand::Select(key) => {
+                    let stored = self.connections.contains_key(&key);
+                    let action = self.connection_tabs.selection_action(&key, stored);
+                    tracing::info!(
+                        key = %key,
+                        active = %self.active_connection,
+                        stored,
+                        ?action,
+                        "viewer device tab selection requested"
+                    );
+                    match action {
+                        crate::application::viewer::connection_tabs::ConnectionSelection::Activate => {
+                            let previous = self.active_connection.clone();
+                            match self.activate_connection(&key) {
+                                Ok(()) => {
+                                    self.connection_tabs.select(&key);
+                                    self.requested_connection = None;
+                                    tracing::info!(key = %key, "viewer device tab selected");
+                                }
+                                Err(error) => {
+                                    tracing::error!(key = %key, error = %error, "viewer device tab selection failed");
+                                    self.connection_tabs.set_failed(&key, format!("切换失败：{error:#}"));
+                                    self.connection_tabs.select(&previous);
+                                }
+                            }
+                        }
+                        crate::application::viewer::connection_tabs::ConnectionSelection::Defer => {
+                            self.requested_connection = Some(key.clone());
+                            tracing::info!(key = %key, "viewer device tab queued until media session is ready");
+                        }
+                        crate::application::viewer::connection_tabs::ConnectionSelection::Ignore => {}
+                    }
+                }
+                crate::application::viewer::connection_tabs::ConnectionTabCommand::Close(key) => {
+                    if self.remove_connection(&key) {
+                        return false;
+                    }
+                }
+            }
+        }
+        if self.active_screen.is_none() {
+            let ids: Vec<_> = self.windows.keys().copied().collect();
+            for id in ids {
+                let should_close = self.windows.get(&id).is_some_and(|slot| {
+                    slot.close || slot.app.as_ref().is_some_and(|app| app.close_requested)
+                });
+                if should_close {
+                    self.close_window(id);
+                }
+            }
+            if self.windows.is_empty() {
+                return false;
+            }
+            self.sync_bars();
+            event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_refresh));
+            return true;
         }
         let ids: Vec<_> = self.windows.keys().copied().collect();
         for id in &ids {
@@ -854,6 +1304,7 @@ impl ScreenWindows {
                                 &slot.window,
                                 Arc::clone(&session),
                                 pending.connecting.take().expect("screen UI"),
+                                self.connection_tabs.clone(),
                             )
                             .map(|app| {
                                 slot.app = Some(app);
@@ -863,6 +1314,7 @@ impl ScreenWindows {
                             Ok(()) => {
                                 self.sessions.insert(session.track_index, session);
                                 slot.selected = Some(pending.id);
+                                self.active_screen = Some(pending.id);
                                 self.factory.focus(pending.id);
                                 tracing::debug!(screen_id = pending.id, "screen switch bound");
                             }
@@ -972,5 +1424,13 @@ impl Drop for ScreenWindows {
         self.windows.clear();
         self.sessions.clear();
         self.factory.close_decoders();
+        for stored in self.connections.values_mut() {
+            for session in stored.sessions.values() {
+                session.close_handle().close();
+            }
+            stored.sessions.clear();
+            stored.factory.close_decoders();
+        }
+        self.connections.clear();
     }
 }

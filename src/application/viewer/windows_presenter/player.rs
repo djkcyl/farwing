@@ -7,6 +7,7 @@ use super::connection::WindowsConnectionApp;
 use super::screen_windows::ScreenTabBar;
 use super::swapchain::fit_rect;
 use super::worker::{RenderCommand, RenderWorker};
+use crate::application::viewer::connection_tabs::ConnectionTabs;
 use crate::application::viewer::windows_ui::{UiPresenter, UiTimingAudit, VideoWindow};
 use crate::application::viewer::{
     ConnectionProgressApp, NativeViewerSession, PerformancePanelMode, StreamControlUi, mutex_lock,
@@ -68,6 +69,7 @@ pub(in crate::application::viewer) struct ThreadedWindowsApp {
     pub(in crate::application::viewer) performance_mode: PerformancePanelMode,
     pub(in crate::application::viewer) intercept_shortcuts: bool,
     pub(in crate::application::viewer) startup_backdrop: Option<ConnectionProgressApp>,
+    pub(in crate::application::viewer) connection_tabs: ConnectionTabs,
     pub(in crate::application::viewer) last_window_size: PhysicalSize<u32>,
     pub(in crate::application::viewer) pending_aspect_size: Option<PhysicalSize<u32>>,
     pub(in crate::application::viewer) last_aspect_video_size: Option<(u32, u32)>,
@@ -134,6 +136,7 @@ impl ThreadedWindowsApp {
         window: &Window,
         session: Arc<NativeViewerSession>,
         connecting: WindowsConnectionApp,
+        connection_tabs: ConnectionTabs,
     ) -> Result<Self> {
         let title = session.title.clone();
         let performance = session.performance.clone();
@@ -185,6 +188,7 @@ impl ThreadedWindowsApp {
             performance_mode: preferences.performance_mode,
             intercept_shortcuts: preferences.intercept_shortcuts,
             startup_backdrop: Some(connecting.progress),
+            connection_tabs,
             last_window_size: window.inner_size(),
             pending_aspect_size: None,
             last_aspect_video_size: None,
@@ -496,6 +500,7 @@ impl ThreadedWindowsApp {
                     &ctx,
                     PlayerTitleBar {
                         screens: &mut self.screen_tabs,
+                        connections: &self.connection_tabs,
                         window,
                         title: &self.title,
                         performance: &self.performance,
@@ -517,6 +522,7 @@ impl ThreadedWindowsApp {
                             ui,
                             PlayerTitleBar {
                                 screens: &mut self.screen_tabs,
+                                connections: &self.connection_tabs,
                                 window,
                                 title: &self.title,
                                 performance: &self.performance,

@@ -1,6 +1,7 @@
 //! Viewer caption and window geometry.
 use super::screen_windows::ScreenTabBar;
 use crate::application::viewer::StreamControlUi;
+use crate::application::viewer::connection_tabs::{ConnectionTabState, ConnectionTabs};
 use crate::application::viewer_shortcuts::Action as ViewerShortcut;
 use crate::diagnostics::performance::PerformanceMonitor;
 use crate::features::stream_control::StreamControlHandle;
@@ -22,6 +23,7 @@ use winit::window::{ResizeDirection, Window};
 
 pub(in crate::application::viewer) struct PlayerTitleBar<'a> {
     pub(in crate::application::viewer) screens: &'a mut ScreenTabBar,
+    pub(in crate::application::viewer) connections: &'a ConnectionTabs,
     pub(in crate::application::viewer) window: &'a Window,
     pub(in crate::application::viewer) title: &'a str,
     pub(in crate::application::viewer) performance: &'a PerformanceMonitor,
@@ -96,6 +98,21 @@ pub(in crate::application::viewer) fn player_title_bar(
     );
     let tabs_rect =
         egui::Rect::from_min_max(content_rect.min, egui::pos2(metrics_rect.min.x, rect.max.y));
+    let connection_tabs_width = if bar.connections.len() > 1 {
+        (tabs_rect.width() * 0.52)
+            .clamp(105.0, 230.0)
+            .min(tabs_rect.width())
+    } else {
+        0.0
+    };
+    let connection_tabs_rect = egui::Rect::from_min_size(
+        tabs_rect.min,
+        egui::vec2(connection_tabs_width, tabs_rect.height()),
+    );
+    let display_tabs_rect = egui::Rect::from_min_max(
+        egui::pos2(connection_tabs_rect.max.x, tabs_rect.min.y),
+        tabs_rect.max,
+    );
 
     // Register the caption background before the tabs. Actual tab buttons
     // take priority for detach gestures; unused tab space and stream metrics
@@ -156,13 +173,73 @@ pub(in crate::application::viewer) fn player_title_bar(
         ),
     );
 
+    if connection_tabs_width > 0.0 {
+        let mut tabs_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(connection_tabs_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        tabs_ui.set_clip_rect(connection_tabs_rect);
+        egui::ScrollArea::horizontal()
+            .id_salt("connection-tabs")
+            .auto_shrink([false, false])
+            .max_width(connection_tabs_rect.width())
+            .show(&mut tabs_ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    for tab in bar.connections.snapshot() {
+                        let selected =
+                            bar.connections.active_key().as_deref() == Some(tab.key.as_str());
+                        let pending = matches!(tab.state, ConnectionTabState::Connecting { .. });
+                        let label = match &tab.state {
+                            ConnectionTabState::Connecting { .. } => format!("{} · …", tab.alias),
+                            ConnectionTabState::Ready => tab.alias.clone(),
+                            ConnectionTabState::Failed { .. } => format!("{} · !", tab.alias),
+                        };
+                        let (response, close_clicked) = ui
+                            .push_id(("connection-tab", tab.key.as_str()), |ui| {
+                                crate::ui::controls::screen_tab(
+                                    ui, &label, selected, pending, false, true,
+                                )
+                            })
+                            .inner;
+                        if close_clicked {
+                            bar.connections.request_close(tab.key.clone());
+                        } else if response.clicked() {
+                            tracing::info!(
+                                key = %tab.key,
+                                alias = %tab.alias,
+                                pending,
+                                selected,
+                                "viewer device tab clicked"
+                            );
+                            if let Some(error) = bar.connections.failure_detail(&tab.key) {
+                                crate::ui::controls::notice(
+                                    ui.ctx(),
+                                    format!("viewer-connection-tab-error-{}", tab.key),
+                                    &format!("{} 连接失败", tab.alias),
+                                    crate::ui::controls::DialogIcon::Error,
+                                    error,
+                                );
+                            } else {
+                                bar.connections.request_select(tab.key.clone());
+                            }
+                        }
+                        response.on_hover_text(match &tab.state {
+                            ConnectionTabState::Connecting { detail } => detail.as_str(),
+                            ConnectionTabState::Ready => "切换到此设备会话",
+                            ConnectionTabState::Failed { detail } => detail.as_str(),
+                        });
+                    }
+                });
+            });
+    }
     if !bar.screens.tabs.is_empty() {
         let mut tabs = ui.new_child(
             egui::UiBuilder::new()
-                .max_rect(tabs_rect)
+                .max_rect(display_tabs_rect)
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
-        tabs.set_clip_rect(tabs_rect);
+        tabs.set_clip_rect(display_tabs_rect);
         bar.screens.draw(&mut tabs, bar.window, bar.stream_control);
     }
     let codec_info = if stats.video_format.contains("264") || stats.video_format.contains("265") {

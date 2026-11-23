@@ -1212,6 +1212,7 @@ impl DeviceCenterApp {
 
     fn settings_page(&mut self, ui: &mut egui::Ui) {
         let original_media = self.media;
+        let original_window_mode = self.viewer_window_mode;
         ui.label(
             RichText::new("连接设置")
                 .size(crate::ui::theme::TITLE)
@@ -1224,6 +1225,28 @@ impl DeviceCenterApp {
             self.host_settings(ui);
             self.notification_settings(ui);
             section(ui, "本机作为主控");
+            form_row(
+                ui,
+                "设备窗口模式",
+                "仅影响新连接；现有观看窗口保持不变",
+                |ui| {
+                    egui::ComboBox::from_id_salt("viewer-window-mode")
+                        .width(238.0)
+                        .selected_text(self.viewer_window_mode.label())
+                        .show_ui(ui, |ui| {
+                            for mode in [
+                                crate::application::viewer::ViewerWindowMode::Shared,
+                                crate::application::viewer::ViewerWindowMode::Separate,
+                            ] {
+                                ui.selectable_value(
+                                    &mut self.viewer_window_mode,
+                                    mode,
+                                    mode.label(),
+                                );
+                            }
+                        });
+                },
+            );
             form_row(ui, "串流帧率", "以远端实际刷新率为准", |ui| {
                 egui::ComboBox::from_id_salt("center-fps")
                     .width(238.0)
@@ -1356,6 +1379,12 @@ impl DeviceCenterApp {
                 .is_some_and(|h| h.status().session_active);
             self.center_ui.components.management(ui, active);
         });
+        if self.viewer_window_mode != original_window_mode
+            && let Err(error) = self.viewer_window_mode.save()
+        {
+            self.viewer_window_mode = original_window_mode;
+            self.status = StatusMessage::error(format!("保存设备窗口模式失败：{error:#}"));
+        }
         if self.media != original_media {
             if let Err(error) = crate::media::preferences::save(self.media) {
                 self.media = original_media;

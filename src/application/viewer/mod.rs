@@ -7,6 +7,7 @@ use crate::transport::rtc::{
     EncodedVideoFrame, FrameSenderTiming, VideoFrameSink, VideoReceiverFeedback,
 };
 use anyhow::{Context, Result, anyhow, bail};
+use connection_tabs::ConnectionTabs;
 use decode_pipeline::{DecodeActivity, DecoderConfig, decoder_manager};
 pub(super) use hud::{PerformancePanelMode, show_performance_overlay};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,8 +26,11 @@ mod screens;
 mod stream_menu;
 
 mod annotation;
+pub(crate) mod connection_tabs;
 mod display_transition;
 mod polling_warning;
+mod window_mode;
+pub(crate) use window_mode::ViewerWindowMode;
 
 mod windows_cursor;
 
@@ -133,6 +137,10 @@ pub(crate) fn run_connecting_viewer_window(
 ) -> Result<()> {
     {
         windows_presenter::run_connecting(windows_presenter::ConnectingWindowsRunConfig {
+            connection_key: format!("standalone:{alias}"),
+            connection_tabs: ConnectionTabs::default(),
+            window_mode: ViewerWindowMode::Separate,
+            cancel: tokio_util::sync::CancellationToken::new(),
             alias,
             progress,
             session,
