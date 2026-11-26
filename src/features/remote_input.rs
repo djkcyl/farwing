@@ -1,7 +1,9 @@
-//! Typed keyboard/mouse events on UU CONTROL, independent of GUI frame cadence.
+//! Typed remote input on UU CONTROL, independent of GUI frame cadence.
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
+use crate::features::host::input::wire::Point;
+use crate::protocol::gamepad::{GamepadEvent, GamepadState, GamepadVibration, MAX_GAMEPADS};
 use crate::protocol::keyboard::KeyboardKey;
 use anyhow::{Result, bail};
 use std::time::{Duration, Instant};
@@ -9,7 +11,9 @@ use tokio::sync::Notify;
 
 pub(crate) mod polling;
 mod recovery;
+pub(crate) mod touch;
 pub(crate) use recovery::{InputRecovery, InputWork};
+pub(crate) use touch::{Phase, Spot};
 
 const MAX_EVENTS: usize = 512;
 const MOTION_JITTER: Duration = Duration::from_micros(100);
@@ -91,6 +95,18 @@ pub(crate) enum InputEvent {
         lock: Option<u8>,
         interrupt: bool,
     },
+    /// Explicit state assignment; it is not a physical key release and must
+    /// never clear the sender's outstanding Caps Lock release obligation.
+    CapsLock {
+        enabled: bool,
+    },
+    Gamepad(GamepadEvent),
+    /// Native touch, the only binary inhabitant: `kind` plus a full
+    /// contact-set snapshot per the host wire, never JSON.
+    Touch {
+        kind: u8,
+        points: Vec<Point>,
+    },
     Heartbeat,
 }
 
@@ -104,7 +120,13 @@ impl InputEvent {
     fn input_boundary(&self) -> bool {
         matches!(
             self,
-            Self::Button { .. } | Self::Key { .. } | Self::Wheel { .. } | Self::AssistButton { .. }
+            Self::Button { .. }
+                | Self::Key { .. }
+                | Self::CapsLock { .. }
+                | Self::Wheel { .. }
+                | Self::AssistButton { .. }
+                | Self::Gamepad(_)
+                | Self::Touch { .. }
         )
     }
     pub fn send_timeout(&self) -> std::time::Duration {
@@ -120,7 +142,24 @@ impl InputEvent {
             _ => std::time::Duration::from_secs(1),
         }
     }
+    pub(crate) fn release(&self) -> bool {
+        matches!(
+            self,
+            Self::Button { down: false, .. }
+                | Self::Key { down: false, .. }
+                | Self::AssistButton { down: false, .. }
+                | Self::Touch { kind: 3 | 4, .. }
+        ) || matches!(self, Self::Gamepad(event) if event.release())
+    }
     pub(crate) fn encode(&self) -> Vec<u8> {
+        // The host dispatches on the first byte: '{' opens the JSON dialect,
+        // anything else is a protobuf control envelope. Touch is the only
+        // inhabitant that takes the binary path.
+        if let Self::Touch { kind, points } = self {
+            return crate::features::stream_control::encode_touch_input(
+                crate::features::host::input::wire::encode_touch(*kind, points),
+            );
+        }
         let value = match *self {
             Self::Absolute { screen, x, y } => serde_json::json!({
                 "action":"mouse_move_absolute", "screen_id":screen, "abs_x":x, "abs_y":y }),
@@ -140,7 +179,12 @@ impl InputEvent {
                 lock,
                 interrupt,
             } => key.encode(down, lock, interrupt),
+            Self::CapsLock { enabled } => {
+                KeyboardKey::Windows(20).encode(false, Some(if enabled { 128 } else { 0 }), false)
+            }
+            Self::Gamepad(event) => event.json(),
             Self::Heartbeat => serde_json::json!({"heartbeat":"kbd_heartbeat"}),
+            Self::Touch { .. } => unreachable!("touch encodes above"),
         };
         serde_json::to_vec(&value).expect("finite mouse events serialize")
     }
@@ -159,6 +203,16 @@ pub(crate) struct CorrectionBasis {
 
 type AssistOwner = (u64, Arc<dyn Fn() -> bool + Send + Sync>);
 
+// Only the Linux viewer samples controllers so far (SDL2); the Windows
+// controller has no collector yet, see README's 功能矩阵.
+#[cfg_attr(windows, allow(dead_code))]
+struct GamepadFeedback {
+    owner: u64,
+    epoch: u64,
+    // UU sends strength changes, not an effect duration or keepalive.
+    motors: (u16, u16),
+}
+
 #[derive(Default)]
 struct State {
     assists: BTreeMap<u64, AssistOwner>,
@@ -172,6 +226,12 @@ struct State {
     stopping: bool,
     mode: MouseMode,
     relative: bool,
+    /// Set once a window failed to take the pointer. Relative motion is only
+    /// meaningful while this client owns the pointer exclusively; without that
+    /// grab the local pointer keeps moving on its own and the deltas drift away
+    /// from wherever the remote one ended up. Stored as the refusal so the
+    /// derived `Default` starts out permitting it.
+    relative_denied: bool,
     owner: Option<u64>,
     drag_hold: Option<(u64, u64)>,
     drag_serial: u64,
@@ -181,6 +241,11 @@ struct State {
     remote_held: [bool; 5],
     keys: BTreeMap<u16, Option<u8>>,
     remote_keys: BTreeMap<KeyboardKey, Option<u8>>,
+    gamepads: BTreeMap<u8, GamepadState>,
+    // Marked before handing CONNECT to transport, just like remote key presses.
+    remote_gamepads: BTreeSet<u8>,
+    confirmed_gamepads: BTreeSet<u8>,
+    gamepad_feedback: BTreeMap<u8, GamepadFeedback>,
     // Transport acceptance of UP is not acknowledgement of host injection.
     // Keep keys retired at an ownership boundary for session reconciliation.
     release_checkpoint: BTreeSet<KeyboardKey>,
@@ -190,6 +255,7 @@ struct State {
     keyboard_platform: i32,
     accept_host_input: bool,
     queue: VecDeque<InputEvent>,
+    touch: touch::Forwarder,
     in_flight: bool,
     in_flight_assist: Option<u64>,
     epoch: u64,
@@ -199,7 +265,7 @@ struct State {
     transport_recovery: Option<recovery::RecoveryState>,
     throttle: Option<MouseThrottleRate>,
     next_motion_at: Option<Instant>,
-    deadline_timer: Option<crate::platform::windows::input::deadline::Timer>,
+    deadline_timer: Option<crate::platform::deadline::Timer>,
     polling_warning: Option<polling::Warning>,
     listeners: Vec<Weak<dyn Fn() + Send + Sync>>,
 }
@@ -227,9 +293,7 @@ impl RemoteInput {
             return Ok(());
         }
         if enabled && s.deadline_timer.is_none() {
-            s.deadline_timer = Some(crate::platform::windows::input::deadline::Timer::new(
-                self.wake.clone(),
-            )?);
+            s.deadline_timer = Some(crate::platform::deadline::Timer::new(self.wake.clone())?);
         }
         if let Some(timer) = &mut s.deadline_timer {
             timer.disarm();
@@ -355,6 +419,25 @@ impl RemoteInput {
 
     /// Native adapters supply local Windows VKs; the protocol owns target codes.
     pub fn key(&self, owner: u64, key: u16, down: bool, lock: Option<u8>) -> bool {
+        self.key_event(owner, key, down, lock, None)
+    }
+
+    /// Linux has no portable Caps Lock query. When a letter reveals its local
+    /// state, put an explicit Windows lock-state update before that press in
+    /// the same owner, queue and epoch. Never guess a Mac's toggle state.
+    #[cfg(not(windows))]
+    pub(crate) fn key_with_caps_lock(&self, owner: u64, key: u16, caps_lock: Option<bool>) -> bool {
+        self.key_event(owner, key, true, None, caps_lock)
+    }
+
+    fn key_event(
+        &self,
+        owner: u64,
+        key: u16,
+        down: bool,
+        lock: Option<u8>,
+        caps_lock: Option<bool>,
+    ) -> bool {
         let mut s = self.lock();
         let Some(remote_key) = KeyboardKey::from_windows_vk(s.keyboard_platform, key) else {
             return false;
@@ -371,15 +454,28 @@ impl RemoteInput {
             return true;
         }
         let lock = lock.filter(|v| matches!(key, 20 | 144 | 145) && matches!(v, 0 | 128));
-        let accepted = Self::push(
-            &mut s,
-            InputEvent::Key {
-                key: remote_key,
-                down,
-                lock,
-                interrupt: true,
-            },
-        );
+        let synchronized = if down
+            && (65..=90).contains(&key)
+            && s.keyboard_platform == 1
+            && let Some(enabled) = caps_lock
+        {
+            // This is an idempotent state assignment, not an extra Caps Lock
+            // press. Correct before each known letter in case the host's user
+            // changed the state, or focus/control changed since the last key.
+            Self::push(&mut s, InputEvent::CapsLock { enabled })
+        } else {
+            true
+        };
+        let accepted = synchronized
+            && Self::push(
+                &mut s,
+                InputEvent::Key {
+                    key: remote_key,
+                    down,
+                    lock,
+                    interrupt: true,
+                },
+            );
         if accepted {
             if down {
                 s.keys.insert(key, lock);
@@ -404,6 +500,151 @@ impl RemoteInput {
             drop(s);
             self.wake.notify_one();
         }
+    }
+
+    /// Full gamepad states share the keyboard/mouse owner and reliable epoch.
+    // Only the Linux viewer samples controllers so far (SDL2); the Windows
+    // controller has no collector yet, see README's 功能矩阵.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn gamepad(&self, owner: u64, event: GamepadEvent) -> bool {
+        let index = event.index();
+        if index >= MAX_GAMEPADS {
+            return false;
+        }
+        let mut s = self.lock();
+        let accepted = match event {
+            GamepadEvent::Connect { .. } => {
+                if !Self::claim(&mut s, owner) {
+                    return false;
+                }
+                if s.gamepads.contains_key(&index) {
+                    return true;
+                }
+                let accepted = Self::push(&mut s, InputEvent::Gamepad(event));
+                if accepted {
+                    s.gamepads.insert(index, GamepadState::default());
+                }
+                accepted
+            }
+            GamepadEvent::Update { state, .. } => {
+                if s.owner != Some(owner)
+                    || !s.gamepads.contains_key(&index)
+                    || !Self::claim(&mut s, owner)
+                {
+                    return false;
+                }
+                if s.gamepads.get(&index) == Some(&state) {
+                    return true;
+                }
+                let accepted = if let Some(InputEvent::Gamepad(GamepadEvent::Update {
+                    index: previous,
+                    state: previous_state,
+                })) = s.queue.back_mut()
+                    && *previous == index
+                    && previous_state.coalesces_with(state)
+                    && (*previous_state == GamepadState::default())
+                        == (state == GamepadState::default())
+                {
+                    *previous_state = state;
+                    true
+                } else {
+                    Self::push(&mut s, InputEvent::Gamepad(event))
+                };
+                if accepted {
+                    s.gamepads.insert(index, state);
+                }
+                accepted
+            }
+            GamepadEvent::Disconnect { .. } => {
+                // A collector can drop after pause_owner already retired it.
+                // Never claim the current owner merely to repeat a disconnect.
+                if s.owner != Some(owner) {
+                    return s.owner.is_none() && !s.gamepads.contains_key(&index);
+                }
+                if s.gamepads.remove(&index).is_none() {
+                    return true;
+                }
+                s.confirmed_gamepads.remove(&index);
+                s.gamepad_feedback.remove(&index);
+                s.queue.retain(|queued| !matches!(queued, InputEvent::Gamepad(value) if value.index() == index));
+                if s.remote_gamepads.contains(&index) {
+                    Self::queue_gamepad_release(&mut s, index);
+                }
+                true
+            }
+        };
+        drop(s);
+        if accepted {
+            self.wake.notify_one();
+        }
+        accepted
+    }
+
+    /// Gamepad slots and vibration belong to one reliable epoch; a collector
+    /// that sees it change starts over instead of replaying the old slots.
+    pub(crate) fn gamepad_epoch(&self) -> u64 {
+        self.lock().epoch
+    }
+
+    pub(crate) fn receive_gamepad_vibration(&self, value: GamepadVibration) {
+        let epoch = self.gamepad_epoch();
+        self.receive_gamepad_vibration_in_epoch(epoch, value);
+    }
+
+    /// Async receivers capture the epoch before dispatching a feedback callback.
+    pub(crate) fn receive_gamepad_vibration_in_epoch(
+        &self,
+        epoch: u64,
+        value: GamepadVibration,
+    ) -> bool {
+        let mut s = self.lock();
+        let Some(owner) = s.owner else {
+            return false;
+        };
+        if value.index >= MAX_GAMEPADS
+            || s.epoch != epoch
+            || !s.ready
+            || s.stopping
+            || s.mode == MouseMode::View
+            || s.waiting_for_neutral
+            || !s.gamepads.contains_key(&value.index)
+            || !s.confirmed_gamepads.contains(&value.index)
+        {
+            return false;
+        }
+        s.gamepad_feedback.insert(
+            value.index,
+            GamepadFeedback {
+                owner,
+                epoch,
+                motors: value.motors(),
+            },
+        );
+        true
+    }
+
+    // Only the Linux viewer samples controllers so far (SDL2); the Windows
+    // controller has no collector yet, see README's 功能矩阵.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn gamepad_vibration(&self, owner: u64, index: u8) -> Option<(u16, u16)> {
+        let s = self.lock();
+        if index >= MAX_GAMEPADS
+            || s.owner != Some(owner)
+            || !s.ready
+            || s.stopping
+            || s.mode == MouseMode::View
+            || s.waiting_for_neutral
+            || !s.gamepads.contains_key(&index)
+            || !s.confirmed_gamepads.contains(&index)
+        {
+            return None;
+        }
+        Some(
+            s.gamepad_feedback
+                .get(&index)
+                .filter(|feedback| feedback.owner == owner && feedback.epoch == s.epoch)
+                .map_or((0, 0), |feedback| feedback.motors),
+        )
     }
 
     pub fn subscribe(
@@ -437,6 +678,24 @@ impl RemoteInput {
     }
     pub fn relative_mode(&self) -> bool {
         self.lock().relative
+    }
+    pub fn relative_available(&self) -> bool {
+        !self.lock().relative_denied
+    }
+    /// Reported by the window that tried to take the pointer. It stays off for
+    /// the rest of the session: whatever holds the pointer is outside this
+    /// process, and retrying would only swing the mode back and forth.
+    /// Only an X11/Wayland pointer grab can be refused by another client;
+    /// the Windows player's raw-input capture has no such failure.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub fn set_relative_available(&self, available: bool) {
+        let mut s = self.lock();
+        if s.relative_denied != available {
+            return;
+        }
+        s.relative_denied = !available;
+        drop(s);
+        self.repaint();
     }
     pub fn set_relative_mode(&self, relative: bool) {
         let mut s = self.lock();
@@ -472,6 +731,8 @@ impl RemoteInput {
             s.owner = None;
             s.held = [false; 5];
             s.keys.clear();
+            // Transport is gone; the host's own engine release lifts touches.
+            s.touch.clear();
             s.keyboard_generation = s.keyboard_generation.wrapping_add(1);
             s.queue.clear();
             s.in_flight = false;
@@ -533,6 +794,30 @@ impl RemoteInput {
         s.in_flight = false;
         s.in_flight_motion = false;
         s.in_flight_assist = None;
+        s.gamepads.clear();
+        s.confirmed_gamepads.clear();
+        s.gamepad_feedback.clear();
+    }
+
+    fn queue_gamepad_release(s: &mut State, index: u8) {
+        // This finite release pass bypasses ordinary producer backpressure.
+        s.queue.push_back(InputEvent::Gamepad(GamepadEvent::Update {
+            index,
+            state: GamepadState::default(),
+        }));
+        s.queue
+            .push_back(InputEvent::Gamepad(GamepadEvent::Disconnect { index }));
+    }
+
+    fn release_gamepads_locked(s: &mut State) {
+        s.gamepads.clear();
+        s.confirmed_gamepads.clear();
+        s.gamepad_feedback.clear();
+        s.queue
+            .retain(|event| !matches!(event, InputEvent::Gamepad(_)));
+        for index in s.remote_gamepads.iter().copied().collect::<Vec<_>>() {
+            Self::queue_gamepad_release(s, index);
+        }
     }
 
     fn release_locked(s: &mut State) {
@@ -569,6 +854,13 @@ impl RemoteInput {
             }
         }
         s.held = [false; 5];
+        // Lift remote touches like held buttons; the frame is a release
+        // obligation and bypasses backpressure, so a finger never stays
+        // pressed after control is lost.
+        if let Some((kind, points)) = s.touch.clear() {
+            s.queue.push_back(InputEvent::Touch { kind, points });
+        }
+        Self::release_gamepads_locked(s);
         s.owner = None;
     }
 
@@ -611,6 +903,13 @@ impl RemoteInput {
                     s.held[index] = false;
                 }
             }
+            // After the clear above, so the lift is never dropped with it.
+            if let Some((kind, points)) = s.touch.clear() {
+                s.queue.push_back(InputEvent::Touch { kind, points });
+            }
+            // A file drag keeps only its submitted left-button hold, never
+            // a controller or vibration owned by the window losing focus.
+            Self::release_gamepads_locked(&mut s);
         } else {
             Self::release_locked(&mut s);
         }
@@ -829,6 +1128,82 @@ impl RemoteInput {
         self.wake.notify_one();
     }
 
+    /// Forwards one touchscreen contact: as a native frame when `native`
+    /// (decided by the gesture's first contact), otherwise as the emulated
+    /// left button. Returns false when the event belongs to the local UI or
+    /// control is unavailable, leaving it for egui to handle.
+    pub fn touch(
+        &self,
+        owner: u64,
+        phase: Phase,
+        id: u32,
+        pressure: f64,
+        spot: Option<Spot>,
+        native: bool,
+    ) -> bool {
+        let mut s = self.lock();
+        let mut next = s.touch.clone();
+        let mut step = next.step(phase, id, pressure, spot, native);
+        if step == touch::Step::Local {
+            return false;
+        }
+        if s.owner != Some(owner) {
+            // Only a new contact takes control over. Claiming lifts the
+            // previous owner's contacts, so step again on what is left.
+            if phase != Phase::Start || !Self::claim(&mut s, owner) {
+                return false;
+            }
+            next = s.touch.clone();
+            step = next.step(phase, id, pressure, spot, native);
+        } else if !matches!(
+            step,
+            touch::Step::Frame(3 | 4, _)
+                | touch::Step::Pointer {
+                    button: Some(false),
+                    ..
+                }
+        ) && !Self::claim(&mut s, owner)
+        {
+            // Lifts are release obligations; everything else needs control.
+            return false;
+        }
+        s.touch = next;
+        match step {
+            touch::Step::Local => return false,
+            touch::Step::Held => {}
+            touch::Step::Frame(kind, points) => {
+                // Kind 2 snapshots supersede each other; every other kind is
+                // an edge that must never be folded away. Lifts queue
+                // unconditionally as release obligations, like key and
+                // button UPs.
+                if kind == 2
+                    && let Some(InputEvent::Touch {
+                        kind: 2,
+                        points: old,
+                    }) = s.queue.back_mut()
+                {
+                    *old = points;
+                } else if matches!(kind, 3 | 4) {
+                    s.queue.push_back(InputEvent::Touch { kind, points });
+                } else {
+                    Self::push(&mut s, InputEvent::Touch { kind, points });
+                }
+                drop(s);
+                self.wake.notify_one();
+            }
+            touch::Step::Pointer { at, button } => {
+                drop(s);
+                if let Some((screen, x, y)) = at {
+                    self.absolute(owner, screen, x, y);
+                }
+                if let Some(down) = button {
+                    self.button(owner, 1, down);
+                }
+            }
+        }
+        true
+    }
+
     pub fn wheel(&self, owner: u64, delta: i32, horizontal: bool) {
         if delta == 0 {
             return;
@@ -919,6 +1294,10 @@ impl RemoteInput {
                         s.remote_keys.insert(key, lock);
                         s.release_checkpoint.remove(&key);
                     }
+                    if let InputEvent::Gamepad(GamepadEvent::Connect { index }) = event {
+                        s.remote_gamepads.insert(index);
+                        s.confirmed_gamepads.remove(&index);
+                    }
                     return InputWork::Event(QueuedInputEvent {
                         epoch: s.epoch,
                         event,
@@ -975,6 +1354,14 @@ impl RemoteInput {
                 s.owner == Some(*owner)
                     && (!down || (guard() && std::time::Instant::now() <= expires))
             }),
+            InputEvent::Gamepad(GamepadEvent::Connect { index }) => s.gamepads.contains_key(&index),
+            InputEvent::Gamepad(GamepadEvent::Update { index, state }) => {
+                s.gamepads.contains_key(&index)
+                    || (state == GamepadState::default() && s.remote_gamepads.contains(&index))
+            }
+            InputEvent::Gamepad(GamepadEvent::Disconnect { index }) => {
+                s.remote_gamepads.contains(&index)
+            }
             _ => true,
         }
     }
@@ -1012,6 +1399,30 @@ impl RemoteInput {
                     *y = ny;
                 }
                 (InputEvent::Heartbeat, Some(InputEvent::Heartbeat)) => {}
+                (
+                    InputEvent::Touch { kind, points },
+                    Some(InputEvent::Touch {
+                        kind: next_kind,
+                        points: next_points,
+                    }),
+                ) if *kind == 2 && *next_kind == 2 => {
+                    // Full snapshots: the newest frame alone decides the
+                    // contact set; an intermediate one is redundant.
+                    *points = next_points.clone();
+                }
+                (
+                    InputEvent::Gamepad(GamepadEvent::Update { index, state }),
+                    Some(InputEvent::Gamepad(GamepadEvent::Update {
+                        index: next,
+                        state: latest,
+                    })),
+                ) if *index == *next
+                    && state.coalesces_with(*latest)
+                    && (*state == GamepadState::default())
+                        == (*latest == GamepadState::default()) =>
+                {
+                    *state = *latest;
+                }
                 _ => break,
             }
             s.queue.pop_front();
@@ -1239,6 +1650,19 @@ impl RemoteInput {
         }
         match result {
             Ok(()) => {
+                if let InputEvent::Gamepad(event) = event.event {
+                    match event {
+                        GamepadEvent::Connect { index } => {
+                            s.confirmed_gamepads.insert(index);
+                        }
+                        GamepadEvent::Disconnect { index } => {
+                            s.remote_gamepads.remove(&index);
+                            s.confirmed_gamepads.remove(&index);
+                            s.gamepad_feedback.remove(&index);
+                        }
+                        GamepadEvent::Update { .. } => {}
+                    }
+                }
                 if let InputEvent::Key {
                     key, down: false, ..
                 } = event.event
@@ -1425,5 +1849,791 @@ impl DragHoldInner {
 impl Drop for DragHoldInner {
     fn drop(&mut self) {
         self.cancel();
+    }
+}
+
+#[cfg(test)]
+mod gamepad_tests {
+    use super::*;
+
+    fn controlling() -> RemoteInput {
+        let input = RemoteInput::default();
+        input.set_ready(true);
+        input.enable(MouseMode::Remote, false).unwrap();
+        input.confirm_neutral(input.activation_generation());
+        input
+    }
+
+    async fn event(input: &RemoteInput) -> QueuedInputEvent {
+        match tokio::time::timeout(Duration::from_secs(1), input.next())
+            .await
+            .unwrap()
+        {
+            InputWork::Event(event) => event,
+            InputWork::Recovery(_) => panic!("unexpected recovery"),
+        }
+    }
+
+    async fn connected(input: &RemoteInput, owner: u64, index: u8) {
+        assert!(input.gamepad(owner, GamepadEvent::Connect { index }));
+        let next = event(input).await;
+        assert!(
+            matches!(next.event, InputEvent::Gamepad(GamepadEvent::Connect { index: value }) if value == index)
+        );
+        input.complete(&next, Ok(()));
+    }
+
+    async fn release_pair(input: &RemoteInput, index: u8) {
+        let neutral = event(input).await;
+        assert!(
+            matches!(neutral.event, InputEvent::Gamepad(GamepadEvent::Update { index: value, state }) if value == index && state == GamepadState::default())
+        );
+        assert!(neutral.event.release());
+        input.complete(&neutral, Ok(()));
+        let disconnect = event(input).await;
+        assert!(
+            matches!(disconnect.event, InputEvent::Gamepad(GamepadEvent::Disconnect { index: value }) if value == index)
+        );
+        assert!(disconnect.event.release());
+        input.complete(&disconnect, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn connection_precedes_state_and_updates_coalesce_before_submission() {
+        let input = controlling();
+        let pressed = GamepadState {
+            buttons: 0x1000,
+            left_thumb_x: 4000,
+            ..Default::default()
+        };
+        assert!(!input.gamepad(
+            1,
+            GamepadEvent::Update {
+                index: 0,
+                state: pressed
+            }
+        ));
+        assert!(!input.gamepad(
+            1,
+            GamepadEvent::Connect {
+                index: MAX_GAMEPADS
+            }
+        ));
+        assert!(input.gamepad(1, GamepadEvent::Connect { index: 0 }));
+        for axis in 4000..4500 {
+            let state = GamepadState {
+                left_thumb_x: axis,
+                ..pressed
+            };
+            assert!(input.gamepad(1, GamepadEvent::Update { index: 0, state }));
+            assert!(input.gamepad(1, GamepadEvent::Update { index: 0, state }));
+        }
+        assert_eq!(input.lock().queue.len(), 2);
+        let connect = event(&input).await;
+        assert!(input.lock().remote_gamepads.contains(&0));
+        assert!(!input.lock().confirmed_gamepads.contains(&0));
+        input.complete(&connect, Ok(()));
+        let update = event(&input).await;
+        assert!(
+            matches!(update.event, InputEvent::Gamepad(GamepadEvent::Update { state, .. }) if state.left_thumb_x == 4499)
+        );
+        input.complete(&update, Ok(()));
+        assert!(input.lock().queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn backpressure_refresh_does_not_cross_a_release_boundary_or_slot() {
+        let input = controlling();
+        connected(&input, 1, 0).await;
+        let state = |axis| GamepadState {
+            left_thumb_x: axis,
+            ..Default::default()
+        };
+        assert!(input.gamepad(
+            1,
+            GamepadEvent::Update {
+                index: 0,
+                state: state(1)
+            }
+        ));
+        let mut pending = event(&input).await;
+        assert!(input.gamepad(
+            1,
+            GamepadEvent::Update {
+                index: 0,
+                state: state(2)
+            }
+        ));
+        assert!(input.refresh_pending(&mut pending));
+        assert!(
+            matches!(pending.event, InputEvent::Gamepad(GamepadEvent::Update { state, .. }) if state.left_thumb_x == 2)
+        );
+        assert!(input.gamepad(
+            1,
+            GamepadEvent::Update {
+                index: 0,
+                state: GamepadState::default()
+            }
+        ));
+        assert!(input.refresh_pending(&mut pending));
+        assert!(!pending.event.release());
+        input.complete(&pending, Ok(()));
+        let neutral = event(&input).await;
+        assert!(neutral.event.release());
+        input.complete(&neutral, Ok(()));
+
+        let held = GamepadState {
+            buttons: 0x1000,
+            ..Default::default()
+        };
+        assert!(input.gamepad(
+            1,
+            GamepadEvent::Update {
+                index: 0,
+                state: held
+            }
+        ));
+        let mut pending = event(&input).await;
+        let moved = GamepadState {
+            left_thumb_x: 1000,
+            ..held
+        };
+        assert!(input.gamepad(
+            1,
+            GamepadEvent::Update {
+                index: 0,
+                state: moved
+            }
+        ));
+        assert!(input.refresh_pending(&mut pending));
+        assert!(
+            matches!(pending.event, InputEvent::Gamepad(GamepadEvent::Update { state, .. }) if state == moved)
+        );
+        let other_button = GamepadState {
+            buttons: 0x2000,
+            ..moved
+        };
+        assert!(input.gamepad(
+            1,
+            GamepadEvent::Update {
+                index: 0,
+                state: other_button
+            }
+        ));
+        assert!(input.gamepad(
+            1,
+            GamepadEvent::Update {
+                index: 0,
+                state: GamepadState::default()
+            }
+        ));
+        assert!(input.refresh_pending(&mut pending));
+        assert!(
+            matches!(pending.event, InputEvent::Gamepad(GamepadEvent::Update { state, .. }) if state == moved)
+        );
+        input.complete(&pending, Ok(()));
+        let switched = event(&input).await;
+        assert!(
+            matches!(switched.event, InputEvent::Gamepad(GamepadEvent::Update { state, .. }) if state == other_button)
+        );
+        input.complete(&switched, Ok(()));
+        let released = event(&input).await;
+        assert!(released.event.release());
+        input.complete(&released, Ok(()));
+
+        connected(&input, 1, 1).await;
+        assert!(input.gamepad(
+            1,
+            GamepadEvent::Update {
+                index: 0,
+                state: state(3)
+            }
+        ));
+        let mut pending = event(&input).await;
+        assert!(input.gamepad(
+            1,
+            GamepadEvent::Update {
+                index: 1,
+                state: state(4)
+            }
+        ));
+        assert!(input.gamepad(
+            1,
+            GamepadEvent::Update {
+                index: 0,
+                state: state(5)
+            }
+        ));
+        assert!(input.refresh_pending(&mut pending));
+        assert!(
+            matches!(pending.event, InputEvent::Gamepad(GamepadEvent::Update { index: 0, state }) if state.left_thumb_x == 3)
+        );
+        input.complete(&pending, Ok(()));
+        for (index, axis) in [(1, 4), (0, 5)] {
+            let next = event(&input).await;
+            assert!(
+                matches!(next.event, InputEvent::Gamepad(GamepadEvent::Update { index: value, state }) if value == index && state.left_thumb_x == axis)
+            );
+            input.complete(&next, Ok(()));
+        }
+    }
+
+    #[tokio::test]
+    async fn short_button_presses_and_trigger_edges_remain_ordered() {
+        let input = controlling();
+        connected(&input, 1, 0).await;
+        let a = GamepadState {
+            buttons: 0x1000,
+            ..Default::default()
+        };
+        let b = GamepadState {
+            buttons: 0x2000,
+            ..Default::default()
+        };
+        let b_trigger = GamepadState {
+            left_trigger: 20,
+            ..b
+        };
+        for state in [
+            a,
+            GamepadState::default(),
+            b,
+            GamepadState {
+                left_trigger: 10,
+                ..b
+            },
+            b_trigger,
+            b,
+        ] {
+            assert!(input.gamepad(1, GamepadEvent::Update { index: 0, state }));
+        }
+        for expected in [a, GamepadState::default(), b, b_trigger, b] {
+            let next = event(&input).await;
+            assert!(
+                matches!(next.event, InputEvent::Gamepad(GamepadEvent::Update { state, .. }) if state == expected)
+            );
+            input.complete(&next, Ok(()));
+        }
+        assert!(input.lock().queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn focus_loss_cancels_pending_connect_but_releases_in_flight_connect() {
+        let input = controlling();
+        assert!(input.gamepad(1, GamepadEvent::Connect { index: 0 }));
+        input.pause_owner(1);
+        assert!(input.lock().queue.is_empty());
+        assert!(input.gamepad(1, GamepadEvent::Disconnect { index: 0 }));
+        assert!(input.lock().owner.is_none());
+        assert!(input.gamepad(1, GamepadEvent::Connect { index: 0 }));
+        let in_flight = event(&input).await;
+        input.pause_owner(1);
+        assert!(!input.is_current(&in_flight));
+        input.complete(&in_flight, Ok(()));
+        assert!(input.lock().confirmed_gamepads.is_empty());
+        release_pair(&input, 0).await;
+        assert!(input.lock().remote_gamepads.is_empty());
+        assert!(input.lock().queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconnection_keeps_an_unfinished_disconnect_as_a_release_obligation() {
+        let input = controlling();
+        connected(&input, 1, 0).await;
+        assert!(input.gamepad(1, GamepadEvent::Disconnect { index: 0 }));
+        let neutral = event(&input).await;
+        input.complete(&neutral, Ok(()));
+        let in_flight_disconnect = event(&input).await;
+        input.set_ready(false);
+        input.set_ready(true);
+        input.complete(&in_flight_disconnect, Ok(()));
+        assert!(input.lock().remote_gamepads.contains(&0));
+        release_pair(&input, 0).await;
+        assert!(input.lock().remote_gamepads.is_empty());
+    }
+
+    #[tokio::test]
+    async fn transport_failure_never_replays_the_previous_axis_state() {
+        let input = controlling();
+        connected(&input, 1, 0).await;
+        let pressed = GamepadState {
+            buttons: 0x1000,
+            right_thumb_y: 20000,
+            ..Default::default()
+        };
+        assert!(input.gamepad(
+            1,
+            GamepadEvent::Update {
+                index: 0,
+                state: pressed
+            }
+        ));
+        let failed = event(&input).await;
+        let recovery = input.pause_transport(&failed).unwrap();
+        assert_eq!(recovery.releases.len(), 2);
+        assert!(recovery.releases.iter().all(InputEvent::release));
+        assert!(
+            matches!(recovery.releases[0], InputEvent::Gamepad(GamepadEvent::Update { state, .. }) if state == GamepadState::default())
+        );
+        assert!(!input.gamepad(
+            1,
+            GamepadEvent::Update {
+                index: 0,
+                state: pressed
+            }
+        ));
+        input.finish_transport_recovery(recovery.epoch, Ok(()));
+        assert!(input.lock().remote_gamepads.is_empty());
+        assert!(input.lock().gamepads.is_empty());
+        assert!(input.lock().queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn vibration_holds_until_replaced_and_old_owner_or_epoch_cannot_restore_it() {
+        let input = controlling();
+        connected(&input, 1, 0).await;
+        let old_epoch = input.gamepad_epoch();
+        let vibration = GamepadVibration {
+            index: 0,
+            left_motor: 255,
+            right_motor: 128,
+        };
+        assert!(input.receive_gamepad_vibration_in_epoch(old_epoch, vibration));
+        assert_eq!(input.gamepad_vibration(1, 0), Some((65535, 32896)));
+        // The wire has no duration: a single nonzero message can describe a
+        // sustained effect longer than the old one-second local timeout.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(input.gamepad_vibration(1, 0), Some((65535, 32896)));
+        input.receive_gamepad_vibration(GamepadVibration {
+            index: 0,
+            left_motor: 0,
+            right_motor: 0,
+        });
+        assert_eq!(input.gamepad_vibration(1, 0), Some((0, 0)));
+        assert_eq!(input.gamepad_vibration(2, 0), None);
+        input.receive_gamepad_vibration(vibration);
+        assert_eq!(input.gamepad_vibration(1, 0), Some((65535, 32896)));
+        input.pause_owner(1);
+        assert_eq!(input.gamepad_vibration(1, 0), None);
+        release_pair(&input, 0).await;
+        connected(&input, 2, 0).await;
+        assert!(!input.receive_gamepad_vibration_in_epoch(old_epoch, vibration));
+        assert_eq!(input.gamepad_vibration(2, 0), Some((0, 0)));
+        assert!(!input.gamepad(1, GamepadEvent::Disconnect { index: 0 }));
+        assert!(input.lock().gamepads.contains_key(&0));
+        assert!(!input.receive_gamepad_vibration_in_epoch(
+            input.gamepad_epoch(),
+            GamepadVibration {
+                index: MAX_GAMEPADS,
+                ..vibration
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn file_handoff_preserves_only_the_mouse_hold_not_the_controller() {
+        let input = controlling();
+        input.button(1, 1, true);
+        let press = event(&input).await;
+        input.complete(&press, Ok(()));
+        let hold = input.hold_drag(1).unwrap();
+        connected(&input, 1, 0).await;
+        input.pause_owner(1);
+        assert!(hold.current());
+        assert!(input.owner_holds_left(1));
+        assert!(input.lock().gamepads.is_empty());
+        release_pair(&input, 0).await;
+        assert!(hold.current());
+        hold.cancel();
+        assert!(!hold.current());
+    }
+}
+
+#[cfg(test)]
+mod touch_tests {
+    use super::*;
+
+    fn controlling() -> RemoteInput {
+        let input = RemoteInput::default();
+        input.set_ready(true);
+        input.enable(MouseMode::Remote, false).unwrap();
+        input.confirm_neutral(input.activation_generation());
+        input
+    }
+
+    async fn event(input: &RemoteInput) -> QueuedInputEvent {
+        match tokio::time::timeout(Duration::from_secs(1), input.next())
+            .await
+            .unwrap()
+        {
+            InputWork::Event(event) => event,
+            InputWork::Recovery(_) => panic!("unexpected recovery"),
+        }
+    }
+
+    fn contacts(points: &[Point]) -> Vec<(u32, f64, f64)> {
+        points.iter().map(|p| (p.id, p.x, p.y)).collect()
+    }
+
+    /// Encoded bytes through the exact host receive path: protobuf envelope,
+    /// then the inner touch frame.
+    fn decode(bytes: &[u8]) -> (u8, Vec<(u32, f64, f64)>) {
+        let inner = crate::features::stream_control::publisher::input_event(bytes)
+            .expect("protobuf envelope decodes")
+            .expect("is an input event");
+        match crate::features::host::input::wire::touch(inner.as_slice())
+            .expect("touch frame decodes")
+            .expect("is a touch event")
+        {
+            crate::features::host::input::wire::Event::Touch { kind, points } => {
+                (kind, contacts(&points))
+            }
+            _ => panic!("expected a touch event"),
+        }
+    }
+
+    fn touch(
+        input: &RemoteInput,
+        owner: u64,
+        phase: Phase,
+        id: u32,
+        at: Option<(f64, f64)>,
+    ) -> bool {
+        input.touch(owner, phase, id, 0.5, at.map(|(x, y)| (0, x, y)), true)
+    }
+
+    #[tokio::test]
+    async fn frames_travel_the_binary_channel_and_decode() {
+        let input = controlling();
+        assert!(touch(&input, 1, Phase::Start, 4, Some((0.25, 0.75))));
+        let first = event(&input).await;
+        assert!(!first.event.release());
+        let bytes = first.event.encode();
+        assert_ne!(bytes.first(), Some(&b'{'));
+        assert_eq!(decode(&bytes), (1, vec![(4, 0.25, 0.75)]));
+        // A second finger joins as a full snapshot with both contacts.
+        assert!(touch(&input, 1, Phase::Start, 9, Some((0.5, 0.5))));
+        let second = event(&input).await;
+        assert_eq!(
+            decode(&second.event.encode()),
+            (2, vec![(4, 0.25, 0.75), (9, 0.5, 0.5)])
+        );
+        // One finger lifts into a snapshot without it, the last lift is kind 3.
+        assert!(touch(&input, 1, Phase::End, 4, Some((0.3, 0.7))));
+        let partial = event(&input).await;
+        assert_eq!(decode(&partial.event.encode()), (2, vec![(9, 0.5, 0.5)]));
+        assert!(touch(&input, 1, Phase::End, 9, None));
+        let lift = event(&input).await;
+        assert!(lift.event.release());
+        assert_eq!(decode(&lift.event.encode()), (3, vec![]));
+    }
+
+    #[tokio::test]
+    async fn snapshots_coalesce_before_submission() {
+        let input = controlling();
+        touch(&input, 1, Phase::Start, 4, Some((0.1, 0.1)));
+        let press = event(&input).await;
+        input.complete(&press, Ok(()));
+        // The first move frame is in flight; later snapshots fold into it.
+        touch(&input, 1, Phase::Move, 4, Some((0.2, 0.2)));
+        let mut pending = event(&input).await;
+        for i in 0..50 {
+            assert!(touch(
+                &input,
+                1,
+                Phase::Move,
+                4,
+                Some((0.2 + f64::from(i) * 0.001, 0.2))
+            ));
+        }
+        assert_eq!(input.lock().queue.len(), 1);
+        assert!(input.refresh_pending(&mut pending));
+        assert!(input.lock().queue.is_empty());
+        // The wire carries f32; 0.249 rounds the way f32 rounds it.
+        assert_eq!(
+            decode(&pending.event.encode()),
+            (2, vec![(4, f64::from(0.249_f32), f64::from(0.2_f32))])
+        );
+        input.complete(&pending, Ok(()));
+        // Edges never fold: the lift stays a frame of its own.
+        touch(&input, 1, Phase::End, 4, None);
+        assert_eq!(input.lock().queue.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn losing_control_lifts_held_touches() {
+        let input = controlling();
+        touch(&input, 1, Phase::Start, 4, Some((0.5, 0.5)));
+        let press = event(&input).await;
+        input.complete(&press, Ok(()));
+        input.enable(MouseMode::View, false).unwrap();
+        let lift = event(&input).await;
+        assert!(lift.event.release());
+        assert_eq!(decode(&lift.event.encode()), (3, vec![]));
+        // The gesture tail neither forwards nor revives the contact.
+        assert!(!touch(&input, 1, Phase::Move, 4, Some((0.6, 0.6))));
+        assert!(!touch(&input, 1, Phase::End, 4, None));
+    }
+
+    #[tokio::test]
+    async fn another_window_takes_over_without_reviving_contacts() {
+        let input = controlling();
+        touch(&input, 1, Phase::Start, 4, Some((0.5, 0.5)));
+        let press = event(&input).await;
+        input.complete(&press, Ok(()));
+        // A move from a window that does not own input is refused.
+        assert!(!touch(&input, 2, Phase::Move, 4, Some((0.6, 0.6))));
+        // A new contact there takes over: window 1's finger lifts first,
+        // then the new gesture opens with only its own contact.
+        assert!(touch(&input, 2, Phase::Start, 7, Some((0.25, 0.25))));
+        let lift = event(&input).await;
+        assert_eq!(decode(&lift.event.encode()), (3, vec![]));
+        input.complete(&lift, Ok(()));
+        let open = event(&input).await;
+        assert_eq!(decode(&open.event.encode()), (1, vec![(7, 0.25, 0.25)]));
+    }
+
+    #[tokio::test]
+    async fn emulated_gesture_drives_the_left_button() {
+        let input = controlling();
+        assert!(input.touch(1, Phase::Start, 4, 0.5, Some((3, 0.25, 0.5)), false));
+        let moved = event(&input).await;
+        assert!(matches!(
+            moved.event,
+            InputEvent::Absolute {
+                screen: 3,
+                x: 0.25,
+                y: 0.5
+            }
+        ));
+        input.complete(&moved, Ok(()));
+        let press = event(&input).await;
+        assert!(matches!(
+            press.event,
+            InputEvent::Button {
+                button: 1,
+                down: true
+            }
+        ));
+        input.complete(&press, Ok(()));
+        // A second finger is consumed without reaching the remote.
+        assert!(input.touch(1, Phase::Start, 5, 0.5, Some((3, 0.75, 0.5)), true));
+        assert!(input.lock().queue.is_empty());
+        assert!(input.touch(1, Phase::End, 4, 0.0, None, false));
+        let release = event(&input).await;
+        assert!(matches!(
+            release.event,
+            InputEvent::Button {
+                button: 1,
+                down: false
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn local_ui_contacts_are_not_consumed() {
+        let input = controlling();
+        assert!(!touch(&input, 1, Phase::Start, 4, None));
+        assert!(!touch(&input, 1, Phase::Move, 4, Some((0.5, 0.5))));
+        assert_eq!(input.lock().queue.len(), 0);
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod caps_lock_tests {
+    use super::*;
+    use crate::features::host::input::wire;
+
+    const OWNER: u64 = 42;
+
+    fn controlling(platform: i32) -> RemoteInput {
+        let input = RemoteInput::default();
+        input.set_keyboard_platform(platform);
+        input.set_ready(true);
+        input.enable(MouseMode::Local, false).unwrap();
+        input.confirm_neutral(input.activation_generation());
+        input
+    }
+
+    async fn submitted(input: &RemoteInput) -> InputEvent {
+        let InputWork::Event(event) = tokio::time::timeout(Duration::from_secs(1), input.next())
+            .await
+            .expect("input is queued")
+        else {
+            panic!("unexpected recovery")
+        };
+        let result = event.event.clone();
+        input.complete(&event, Ok(()));
+        result
+    }
+
+    #[tokio::test]
+    async fn a_mismatched_caps_state_is_assigned_before_the_first_letter() {
+        for caps in [false, true] {
+            let input = controlling(1);
+            assert!(input.key_with_caps_lock(OWNER, 65, Some(caps)));
+            let sync = submitted(&input).await;
+            let encoded = sync.encode();
+            let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(json["action"], "kbd_release");
+            assert_eq!(json["key"], 20);
+            assert_eq!(json["status_key_value"], if caps { 128 } else { 0 });
+            assert!(json.get("interrept").is_none());
+            // The actual receive-side parser recognizes an explicit assignment,
+            // not a blind Caps Lock toggle or an extra ordinary key release.
+            assert!(
+                matches!(wire::json(&encoded).unwrap(), Some(wire::Event::Key {
+                key: 20, down: false, toggle: Some(wanted), ..
+            }) if wanted == caps)
+            );
+            assert!(matches!(
+                submitted(&input).await,
+                InputEvent::Key {
+                    key: KeyboardKey::Windows(65),
+                    down: true,
+                    lock: None,
+                    ..
+                }
+            ));
+            assert!(!input.owner_holds_key(OWNER, 20));
+            assert!(input.owner_holds_key(OWNER, 65));
+            assert!(input.key(OWNER, 65, false, None));
+            assert!(matches!(
+                submitted(&input).await,
+                InputEvent::Key {
+                    key: KeyboardKey::Windows(65),
+                    down: false,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn state_is_rechecked_after_host_changes_and_control_resumes() {
+        let input = controlling(1);
+        for caps in [true, false, true] {
+            assert!(input.key_with_caps_lock(OWNER, 65, Some(caps)));
+            assert!(
+                matches!(submitted(&input).await, InputEvent::CapsLock { enabled } if enabled == caps)
+            );
+            submitted(&input).await;
+            input.pause_owner(OWNER);
+            assert!(matches!(
+                submitted(&input).await,
+                InputEvent::Key {
+                    key: KeyboardKey::Windows(65),
+                    down: false,
+                    lock: None,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn repeats_and_releases_keep_the_original_key_order_without_extra_toggles() {
+        let input = controlling(1);
+        assert!(input.key_with_caps_lock(OWNER, 65, Some(true)));
+        for _ in 0..3 {
+            assert!(input.key(OWNER, 65, true, None));
+        }
+        assert!(input.key(OWNER, 65, false, None));
+        assert!(matches!(
+            submitted(&input).await,
+            InputEvent::CapsLock { enabled: true }
+        ));
+        for down in [true, true, true, true, false] {
+            assert!(matches!(submitted(&input).await, InputEvent::Key {
+                key: KeyboardKey::Windows(65), down: actual, lock: None, ..
+            } if actual == down));
+        }
+        assert!(input.lock().queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lock_state_sync_does_not_retire_a_caps_key_that_is_physically_held() {
+        let input = controlling(1);
+        assert!(input.key(OWNER, 20, true, None));
+        submitted(&input).await;
+        assert!(input.key_with_caps_lock(OWNER, 65, Some(true)));
+        submitted(&input).await;
+        assert!(
+            input
+                .lock()
+                .remote_keys
+                .contains_key(&KeyboardKey::Windows(20)),
+            "a state assignment must not acknowledge a physical Caps Lock release"
+        );
+        input.pause_owner(OWNER);
+        assert!(matches!(
+            submitted(&input).await,
+            InputEvent::Key {
+                key: KeyboardKey::Windows(20),
+                down: false,
+                lock: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn control_gates_and_cancellation_apply_to_both_the_sync_and_the_letter() {
+        let input = RemoteInput::default();
+        input.set_keyboard_platform(1);
+        assert!(!input.key_with_caps_lock(OWNER, 65, Some(true)));
+        input.set_ready(true);
+        assert!(!input.key_with_caps_lock(OWNER, 65, Some(true)));
+        input.enable(MouseMode::Local, false).unwrap();
+        assert!(!input.key_with_caps_lock(OWNER, 65, Some(true)));
+        input.confirm_neutral(input.activation_generation());
+        assert!(input.key_with_caps_lock(OWNER, 65, Some(true)));
+        assert_eq!(input.lock().queue.len(), 2);
+        input.disable();
+        assert!(input.lock().queue.is_empty());
+        assert!(!input.owner_holds_key(OWNER, 65));
+    }
+
+    #[test]
+    fn queue_pressure_drops_the_pair_and_enters_recovery() {
+        let input = controlling(1);
+        {
+            let mut s = input.lock();
+            s.owner = Some(OWNER);
+            s.queue
+                .extend(std::iter::repeat_n(InputEvent::Heartbeat, MAX_EVENTS - 1));
+        }
+        assert!(!input.key_with_caps_lock(OWNER, 65, Some(true)));
+        assert!(input.transport_recovering());
+        assert!(input.lock().queue.is_empty());
+        assert!(!input.owner_holds_key(OWNER, 65));
+    }
+
+    #[tokio::test]
+    async fn mac_peers_do_not_receive_an_unsupported_caps_state_assignment() {
+        let input = controlling(4);
+        assert!(input.key_with_caps_lock(OWNER, 65, Some(true)));
+        assert!(matches!(
+            submitted(&input).await,
+            InputEvent::Key {
+                key: KeyboardKey::Mac(0),
+                down: true,
+                lock: None,
+                ..
+            }
+        ));
+        assert!(input.lock().queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unknown_case_and_nonletters_do_not_send_a_caps_command() {
+        let input = controlling(1);
+        for (key, caps) in [(65, None), (49, Some(true)), (20, None)] {
+            assert!(input.key_with_caps_lock(OWNER, key, caps));
+            assert!(matches!(submitted(&input).await, InputEvent::Key {
+                key: KeyboardKey::Windows(actual), down: true, lock: None, ..
+            } if actual == key));
+            assert!(input.lock().queue.is_empty());
+        }
     }
 }

@@ -5,13 +5,35 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 mod settings;
+mod version;
+use version::ReleaseVersion;
 
 // Repository identity survives the OpenUUYC -> Farwing rename. Name-based API
 // URLs return 301, while this client deliberately does not follow redirects.
+#[cfg(not(target_os = "linux"))]
 const LATEST_RELEASE: &str = "https://api.github.com/repositories/1364197594/releases/latest";
+#[cfg(not(target_os = "linux"))]
 const RELEASE_LIST: &str = "https://api.github.com/repositories/1364197594/releases";
-const RELEASES: &str = "https://github.com/djkcyl/farwing/releases";
+#[cfg(not(target_os = "linux"))]
+pub(super) const PROJECT: &str = "https://github.com/djkcyl/farwing";
+#[cfg(not(target_os = "linux"))]
+pub(super) const RELEASES: &str = "https://github.com/djkcyl/farwing/releases";
+#[cfg(target_os = "linux")]
+const LATEST_RELEASE: &str = "https://api.github.com/repositories/1374243181/releases/latest";
+#[cfg(target_os = "linux")]
+const RELEASE_LIST: &str = "https://api.github.com/repositories/1374243181/releases";
+#[cfg(target_os = "linux")]
+pub(super) const PROJECT: &str = "https://github.com/DoyoDia/openuuyc-linux";
+#[cfg(target_os = "linux")]
+pub(super) const RELEASES: &str = "https://github.com/DoyoDia/openuuyc-linux/releases";
 const RETRY_INTERVAL: Duration = Duration::from_secs(10);
+
+pub(super) fn version_label() -> &'static str {
+    let version = option_env!("OPENUUYC_RELEASE_TAG")
+        .filter(|tag| !tag.is_empty())
+        .unwrap_or(env!("CARGO_PKG_VERSION"));
+    version.strip_prefix('v').unwrap_or(version)
+}
 
 #[derive(Debug)]
 pub(super) enum State {
@@ -202,7 +224,7 @@ async fn latest(allow_prerelease: bool) -> Result<State> {
         .context("无法创建更新检查连接")?;
     if !allow_prerelease {
         return match fetch(&client, LATEST_RELEASE, 512 * 1024).await? {
-            Some(body) => release_state(&body, env!("CARGO_PKG_VERSION")),
+            Some(body) => release_state(&body, version_label()),
             None => Ok(State::NoRelease),
         };
     }
@@ -223,7 +245,7 @@ async fn latest(allow_prerelease: bool) -> Result<State> {
         let complete = batch.len() < 100;
         releases.extend(batch);
         if complete {
-            return select_release(releases, env!("CARGO_PKG_VERSION"), true);
+            return select_release(releases, version_label(), true);
         }
     }
     bail!("GitHub 版本列表过长，未完成检查")
@@ -277,14 +299,9 @@ fn select_release(releases: Vec<Release>, current: &str, allow_prerelease: bool)
             if release.draft || release.published_at.is_none() {
                 return None;
             }
-            let version = semver::Version::parse(
-                release
-                    .tag_name
-                    .strip_prefix('v')
-                    .unwrap_or(&release.tag_name),
-            )
-            .ok()?;
-            if !allow_prerelease && (release.prerelease || !version.pre.is_empty()) {
+            let version =
+                ReleaseVersion::parse(&release.tag_name, cfg!(target_os = "linux")).ok()?;
+            if !allow_prerelease && (release.prerelease || !version.base.pre.is_empty()) {
                 return None;
             }
             Some((version, release))
@@ -305,19 +322,15 @@ fn release_state(body: &[u8], current: &str) -> Result<State> {
         !release.draft && !release.prerelease,
         "GitHub 未返回正式版本"
     );
-    let version = semver::Version::parse(
-        release
-            .tag_name
-            .strip_prefix('v')
-            .unwrap_or(&release.tag_name),
-    )
-    .context("GitHub 正式版本号格式不正确")?;
-    ensure!(version.pre.is_empty(), "GitHub 最新版本不是正式版本");
+    let version = ReleaseVersion::parse(&release.tag_name, cfg!(target_os = "linux"))
+        .context("GitHub 正式版本号格式不正确")?;
+    ensure!(version.base.pre.is_empty(), "GitHub 最新版本不是正式版本");
     state_for_release(release, version, current)
 }
 
-fn state_for_release(release: Release, version: semver::Version, current: &str) -> Result<State> {
-    let current = semver::Version::parse(current).context("当前程序版本号格式不正确")?;
+fn state_for_release(release: Release, version: ReleaseVersion, current: &str) -> Result<State> {
+    let current = ReleaseVersion::current(current, cfg!(target_os = "linux"))
+        .context("当前程序版本号格式不正确")?;
     match version.cmp_precedence(&current) {
         std::cmp::Ordering::Equal => Ok(State::Current),
         std::cmp::Ordering::Less => Ok(State::Ahead),
@@ -328,8 +341,12 @@ fn state_for_release(release: Release, version: semver::Version, current: &str) 
                 .push("tag")
                 .push(&release.tag_name);
             Ok(State::Available {
-                prerelease: release.prerelease || !version.pre.is_empty(),
-                version: version.to_string(),
+                prerelease: release.prerelease || !version.base.pre.is_empty(),
+                version: release
+                    .tag_name
+                    .strip_prefix('v')
+                    .unwrap_or(&release.tag_name)
+                    .to_owned(),
                 url: url.to_string(),
                 notes: release.body.unwrap_or_default(),
                 published: release.published_at.and_then(|value| {
@@ -339,5 +356,111 @@ fn state_for_release(release: Release, version: semver::Version, current: &str) 
                 }),
             })
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    fn release(tag: &str, prerelease: bool) -> Release {
+        Release {
+            tag_name: tag.to_owned(),
+            draft: false,
+            prerelease,
+            body: Some("release notes".into()),
+            published_at: Some("2026-10-31T00:00:00Z".into()),
+        }
+    }
+
+    #[test]
+    fn same_linux_build_does_not_prompt_to_update() {
+        let state = select_release(
+            vec![release("v1.0.2-beta.5-linux.10", true)],
+            "1.0.2-beta.5-linux.10",
+            true,
+        )
+        .unwrap();
+        assert!(matches!(state, State::Current));
+    }
+
+    #[test]
+    fn next_linux_build_is_selected_numerically() {
+        let state = select_release(
+            vec![
+                release("v1.0.2-beta.5-linux.10", true),
+                release("v1.0.2-beta.5-linux.9", true),
+                release("v9.0.0", false),
+            ],
+            "1.0.2-beta.5-linux.9",
+            true,
+        )
+        .unwrap();
+        let State::Available {
+            version,
+            url,
+            prerelease,
+            ..
+        } = state
+        else {
+            panic!("expected a Linux update");
+        };
+        assert_eq!(version, "1.0.2-beta.5-linux.10");
+        assert_eq!(
+            url,
+            "https://github.com/DoyoDia/openuuyc-linux/releases/tag/v1.0.2-beta.5-linux.10"
+        );
+        assert!(prerelease);
+    }
+
+    #[test]
+    fn stable_linux_release_is_available_on_stable_channel() {
+        let state = select_release(
+            vec![release("v1.0.3-linux.1", false)],
+            "1.0.2-beta.5-linux.10",
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            state,
+            State::Available {
+                prerelease: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stable_endpoint_accepts_linux_build_suffix() {
+        let body = br#"{"tag_name":"v1.0.3-linux.1","draft":false,"prerelease":false,"published_at":"2026-10-31T00:00:00Z"}"#;
+        assert!(matches!(
+            release_state(body, "1.0.2-beta.5-linux.10").unwrap(),
+            State::Available {
+                prerelease: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stable_channel_excludes_linux_betas() {
+        let state = select_release(
+            vec![release("v1.0.3-beta.1-linux.1", true)],
+            "1.0.2-linux.1",
+            false,
+        )
+        .unwrap();
+        assert!(matches!(state, State::NoRelease));
+    }
+
+    #[test]
+    fn older_linux_build_does_not_request_a_downgrade() {
+        let state = select_release(
+            vec![release("v1.0.2-beta.5-linux.9", true)],
+            "1.0.2-beta.5-linux.10",
+            true,
+        )
+        .unwrap();
+        assert!(matches!(state, State::Ahead));
     }
 }

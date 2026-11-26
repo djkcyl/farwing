@@ -1,5 +1,5 @@
 //! Shared account records in portable and explicitly installed modes.
-use crate::platform::windows::host_service::vault;
+use crate::platform::host_service::vault;
 use keyring::{Entry, Error};
 
 pub(crate) struct SecretEntry {

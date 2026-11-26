@@ -279,19 +279,19 @@ pub(super) fn receive(
                 ClipboardFormatListRequestKind::OleDrop(action)=>{
                     let point=Point{screen:action.screen_id,x:action.target_x,y:action.target_y};
                     ensure!(point.valid(),"拖放落点无效");
-                    let screens=crate::platform::windows::capture::screens()?;
+                    let screens=crate::platform::capture::screens()?;
                     let screen=screens.iter().find(|s|s.id==point.screen && s.width>0 && s.height>0).ok_or_else(||anyhow!("拖放显示器已断开"))?;
-                    let position=crate::platform::windows::drag_drop::Position {
+                    let position=crate::platform::drag_drop::Position {
                         x:i32::try_from(i64::from(screen.left)+(point.x*f64::from(screen.width)).round().clamp(0.,f64::from(screen.width-1)) as i64)?,
                         y:i32::try_from(i64::from(screen.top)+(point.y*f64::from(screen.height)).round().clamp(0.,f64::from(screen.height-1)) as i64)?,
                     };
                     let (tx,rx)=std::sync::mpsc::channel();
                     let permitted=offer.clone();let file=offer.clone();
                     offer.dragging(true);
-                    let drag=crate::platform::windows::drag_drop::Session::start(position,
+                    let drag=crate::platform::drag_drop::Session::start(position,
                         Arc::new(move ||permitted.valid() && crate::features::host::clipboard::agent::desktop_available()),
                         move ||file.object(),Arc::new(move |event|{
-                            if matches!(event,crate::platform::windows::drag_drop::Event::Released)
+                            if matches!(event,crate::platform::drag_drop::Event::Released)
                                 && let Some(pointer)=&pointer {pointer.release();}
                             let _=tx.send(event);
                         }))?;
@@ -299,11 +299,11 @@ pub(super) fn receive(
                     loop {
                         ensure!(offer.valid() && Instant::now()<deadline,"拖放已取消或目标未响应");
                         match rx.recv_timeout(Duration::from_millis(50)) {
-                            Ok(crate::platform::windows::drag_drop::Event::Feedback(effect)) if !committed=>{
+                            Ok(crate::platform::drag_drop::Event::Feedback(effect)) if !committed=>{
                                 ensure!(effect & 1 != 0,"落点不能接收文件");
                                 offer.dragging(false);drag.commit(position)?;committed=true;
                             }
-                            Ok(crate::platform::windows::drag_drop::Event::Finished{accepted,error,..})=>{
+                            Ok(crate::platform::drag_drop::Event::Finished{accepted,error,..})=>{
                                 ensure!(accepted,"{}",error.unwrap_or_else(||"目标未接收文件".into()));break;
                             }
                             Ok(_)|Err(std::sync::mpsc::RecvTimeoutError::Timeout)=>{},

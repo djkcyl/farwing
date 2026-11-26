@@ -33,12 +33,16 @@ struct Sps {
     parent: i32,
     format: Option<VideoFormatSignature>,
     out_of_band: Option<Vec<u8>>,
+    /// 带内（单 NAL 包）收到的裸 SPS；与 out_of_band 一样用于关键帧前拼接。
+    in_band: Option<Vec<u8>>,
 }
 
 #[derive(Default)]
 struct Pps {
     sps: i32,
     out_of_band: Option<Vec<u8>>,
+    /// 带内（单 NAL 包）收到的裸 PPS。
+    in_band: Option<Vec<u8>>,
 }
 
 #[derive(Default)]
@@ -88,6 +92,7 @@ impl ParameterTracker {
             Pps {
                 sps: parent,
                 out_of_band: Some(pps),
+                in_band: None,
             },
         );
         tracing::debug!(
@@ -97,12 +102,71 @@ impl ParameterTracker {
         );
     }
 
+    /// 把载荷里带内下发的 SPS/PPS 裸 NAL（不含起始码）记入跟踪表。
+    fn store_in_band_parameters(
+        sps_map: &mut HashMap<i32, Sps>,
+        pps_map: &mut HashMap<i32, Pps>,
+        payload: &[u8],
+    ) {
+        for unit in annexb_units(payload) {
+            match unit.first().map(|byte| byte & 31) {
+                Some(7) => {
+                    if let Some(header) = h264_sps_header(unit) {
+                        sps_map.entry(header.id).or_default().in_band = Some(unit.to_vec());
+                    }
+                }
+                Some(8) => {
+                    if let Some((pps_id, sps_id)) = h264_pps_full_ids(unit) {
+                        let entry = pps_map.entry(pps_id).or_default();
+                        entry.in_band = Some(unit.to_vec());
+                        entry.sps = sps_id;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 查找 PPS 对应的 SPS，并确认成对字节可用（带内或带外）。
+    pub(crate) fn h264_pair_for(&self, pps_id: i32) -> Option<(i32, i32)> {
+        let pps = self.h264_pps.get(&pps_id)?;
+        if pps.in_band.is_none() && pps.out_of_band.is_none() {
+            return None;
+        }
+        let sps = self.h264_sps.get(&pps.sps)?;
+        if sps.in_band.is_none() && sps.out_of_band.is_none() {
+            return None;
+        }
+        Some((pps.sps, pps_id))
+    }
+
+    /// SPS/PPS 成对的 annexb 字节（带起始码），用于帧级前拼接。
+    pub(crate) fn h264_pair_annexb(&self, sps_id: i32, pps_id: i32) -> Option<Vec<u8>> {
+        let sps = self.h264_sps.get(&sps_id)?;
+        let sps = sps.in_band.as_ref().or_else(|| sps.out_of_band.as_ref())?;
+        let pps = self.h264_pps.get(&pps_id)?;
+        let pps = pps.in_band.as_ref().or_else(|| pps.out_of_band.as_ref())?;
+        let mut output = Vec::with_capacity(sps.len() + pps.len() + 8);
+        output.extend_from_slice(&[0, 0, 0, 1]);
+        output.extend_from_slice(sps);
+        output.extend_from_slice(&[0, 0, 0, 1]);
+        output.extend_from_slice(pps);
+        Some(output)
+    }
+
     pub(crate) fn h264(
         &mut self,
         nalus: &mut Vec<NaluInfo>,
         first: bool,
         payload: &mut Vec<u8>,
     ) -> Result<Option<VideoFormatSignature>, &'static str> {
+        // 先记录带内 SPS/PPS。部分 host（macOS）用单独的单 NAL 包下发参数集，
+        // 关键帧本身不再携带；libwebrtc 接收端同样会把先收到的参数集拼到
+        // 关键帧前面，否则解码器拿不到 extradata。
+        // Only packets that carry one are scanned: this runs for every packet.
+        if nalus.iter().any(|n| matches!(n.kind, 7 | 8)) {
+            Self::store_in_band_parameters(&mut self.h264_sps, &mut self.h264_pps, payload);
+        }
         let mut format = None;
         let mut prefix_pair = None;
         for nalu in nalus.iter() {
@@ -126,7 +190,12 @@ impl ParameterTracker {
                         .get(&pps.sps)
                         .ok_or("H.264 PPS references missing SPS")?;
                     format = sps.format;
-                    if sps.out_of_band.is_some() && pps.out_of_band.is_some() {
+                    let packet_carries_parameters =
+                        nalus.iter().any(|n| n.kind == 7) && nalus.iter().any(|n| n.kind == 8);
+                    if !packet_carries_parameters
+                        && (sps.in_band.is_some() || sps.out_of_band.is_some())
+                        && (pps.in_band.is_some() || pps.out_of_band.is_some())
+                    {
                         prefix_pair = Some((pps.sps, nalu.pps));
                     }
                 }
@@ -135,13 +204,15 @@ impl ParameterTracker {
         }
         if let Some((sps_id, pps_id)) = prefix_pair {
             let sps = self.h264_sps[&sps_id]
-                .out_of_band
+                .in_band
                 .as_ref()
-                .expect("checked out-of-band SPS");
+                .or(self.h264_sps[&sps_id].out_of_band.as_ref())
+                .expect("checked stored SPS");
             let pps = self.h264_pps[&pps_id]
-                .out_of_band
+                .in_band
                 .as_ref()
-                .expect("checked out-of-band PPS");
+                .or(self.h264_pps[&pps_id].out_of_band.as_ref())
+                .expect("checked stored PPS");
             let mut output = Vec::with_capacity(sps.len() + pps.len() + payload.len() + 8);
             output.extend_from_slice(&[0, 0, 0, 1]);
             output.extend_from_slice(sps);
@@ -206,6 +277,35 @@ impl ParameterTracker {
         // Do not invent a sprop-vps/sps/pps wire capability or raw-NAL cache.
         Ok(format)
     }
+}
+
+/// 按 Annex-B 起始码切分载荷，返回各 NAL 的裸字节（不含起始码）。
+fn annexb_units(payload: &[u8]) -> Vec<&[u8]> {
+    let mut units = Vec::new();
+    let mut cursor = 0usize;
+    while cursor + 3 <= payload.len() {
+        let header_len = if payload[cursor..].starts_with(&[0, 0, 0, 1]) {
+            4
+        } else if payload[cursor..].starts_with(&[0, 0, 1]) {
+            3
+        } else {
+            cursor += 1;
+            continue;
+        };
+        let start = cursor + header_len;
+        let mut end = start;
+        while end + 3 <= payload.len() && !payload[end..].starts_with(&[0, 0, 1]) {
+            end += 1;
+        }
+        if end + 3 > payload.len() {
+            end = payload.len();
+        }
+        if start < end {
+            units.push(&payload[start..end]);
+        }
+        cursor = end;
+    }
+    units
 }
 
 pub(crate) fn h264_nalu_info(unit: &[u8], fragmented: bool) -> NaluInfo {

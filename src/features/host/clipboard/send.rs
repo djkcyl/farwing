@@ -5,7 +5,7 @@ use crate::{
         Clipboard,
         drag::{Submission, SubmissionState},
     },
-    platform::windows::drag_drop::send_target::{Action, ActionKind, Model, Row, SendTarget},
+    platform::drag_drop::send_target::{Action, ActionKind, Model, Row, SendTarget},
 };
 use std::{
     path::PathBuf,

@@ -1,6 +1,6 @@
 //! Default-device COM calls and recovery journal IO never run in the PCM feeder.
 use super::{Shared, lock};
-use crate::platform::windows::virtual_audio::Routing;
+use crate::platform::virtual_audio::Routing;
 use anyhow::{Context, Result};
 use std::{
     sync::{Arc, mpsc},

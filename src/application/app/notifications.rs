@@ -24,7 +24,10 @@ impl Mode {
     pub fn label(self) -> &'static str {
         match self {
             Self::Gui => "程序浮窗",
-            Self::Windows => "Windows 通知",
+            // The variant keeps its stored name; Linux delivers it through
+            // the desktop's notification service.
+            Self::Windows if cfg!(windows) => "Windows 通知",
+            Self::Windows => "系统通知",
             Self::Both => "两者同时",
         }
     }
@@ -52,6 +55,10 @@ pub(crate) struct Card {
     pub confirmation: bool,
     pub busy: bool,
     pub connected: bool,
+    /// The connection is a terminal, not a screen; see `ConnectionInfo`.
+    pub terminal: bool,
+    /// That terminal is in a shell the local user opened on this machine.
+    pub local_terminal: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Verb {
@@ -243,7 +250,7 @@ fn clean(s: &str) -> String {
 impl Center {
     pub fn new(ctx: &egui::Context) -> Self {
         let (sender, events) = mpsc::channel();
-        crate::platform::windows::notifications::set_activation_sink(Some(sender.clone()));
+        crate::platform::notifications::set_activation_sink(Some(sender.clone()));
         Self {
             mode: Mode::Gui,
             error: None,
@@ -384,6 +391,8 @@ impl Center {
                         confirmation: true,
                         busy: p.responding,
                         connected: false,
+                        terminal: false,
+                        local_terminal: false,
                         transfer: None,
                     },
                     Some(p),
@@ -405,6 +414,8 @@ impl Center {
                         confirmation: false,
                         busy: false,
                         connected: false,
+                        terminal: false,
+                        local_terminal: false,
                         transfer: None,
                     },
                     None,
@@ -417,16 +428,32 @@ impl Center {
                     .as_ref()
                     .map(|c| format!("active:{}:{}:{}", c.client_id, c.device_id, c.session_id))
                     .unwrap_or_else(|| "active".into());
+                let terminal = status.connection.as_ref().is_some_and(|c| c.terminal);
+                let local_terminal =
+                    terminal && status.connection.as_ref().is_some_and(|c| c.local_terminal);
                 let title = if status
                     .connection
                     .as_ref()
                     .is_some_and(|c| c.observation_lost)
                 {
                     "正在确认被控状态"
+                } else if status.connected && local_terminal {
+                    "对方接入了你本机的终端会话"
+                } else if status.connected && terminal {
+                    "正在被远程访问终端"
                 } else if status.connected {
                     "正在被远程访问"
                 } else {
                     "远程连接暂时中断"
+                };
+                // A terminal is not a screen being watched: say what the
+                // other side can do, next to how long it has been connected.
+                let detail = if local_terminal {
+                    format!("对方能看到并操作你在本机打开的终端 · {}", caption.duration)
+                } else if terminal {
+                    format!("终端访问，对方可在本机执行命令 · {}", caption.duration)
+                } else {
+                    caption.duration
                 };
                 if status.connected
                     && !status
@@ -443,11 +470,13 @@ impl Center {
                         ticket: String::new(),
                         title: title.into(),
                         body: clean(&caption.source),
-                        detail: caption.duration,
+                        detail,
                         expires_at: 0,
                         confirmation: false,
                         busy: false,
                         connected: status.connected,
+                        terminal,
+                        local_terminal,
                         transfer: None,
                     },
                     None,
@@ -478,6 +507,8 @@ impl Center {
                     confirmation: false,
                     busy: false,
                     connected: false,
+                    terminal: false,
+                    local_terminal: false,
                     transfer: None,
                 },
                 None,
@@ -545,6 +576,7 @@ impl Center {
                             .with_visible(true),
                         centered: false,
                         notification: true,
+                        floating: false,
                     },
                     factory: Box::new(move |ctx, _| {
                         theme::configure(ctx);
@@ -573,7 +605,7 @@ impl Drop for Opening {
 impl Drop for Center {
     fn drop(&mut self) {
         lock(&self.view).clear();
-        crate::platform::windows::notifications::set_activation_sink(None);
+        crate::platform::notifications::set_activation_sink(None);
     }
 }
 struct Popup {
@@ -665,6 +697,7 @@ impl DeviceCenterApp {
             .and_then(|s| s.ended_connection.clone())
             .map(|end| {
                 let seconds = end.connection.elapsed_seconds.unwrap_or(0);
+                let terminal = end.connection.terminal;
                 let peer = format!(
                     "active:{}:{}:{}",
                     end.connection.client_id, end.connection.device_id, end.connection.session_id
@@ -689,7 +722,12 @@ impl DeviceCenterApp {
                     card: Card {
                         disconnect: None,
                         ticket: String::new(),
-                        title: "远程连接已结束".into(),
+                        title: if terminal {
+                            "终端连接已结束"
+                        } else {
+                            "远程连接已结束"
+                        }
+                        .into(),
                         body: clean(&source),
                         detail: format!(
                             "本次连接 {}",
@@ -699,6 +737,8 @@ impl DeviceCenterApp {
                         confirmation: false,
                         busy: false,
                         connected: false,
+                        terminal: false,
+                        local_terminal: false,
                         transfer: None,
                     },
                 }

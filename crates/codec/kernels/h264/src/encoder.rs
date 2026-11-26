@@ -38,6 +38,22 @@ impl From<crate::Error> for EncodeError {
     }
 }
 pub type Result<T> = std::result::Result<T, EncodeError>;
+
+/// The Annex B SPS and PPS this encoder's configuration implies.
+///
+/// A hardware encoder driven through VA-API has to supply these itself: the
+/// i965 driver writes only the slice, and its packed-header support expects the
+/// parameter sets to arrive as bytes rather than generated on request. Emitting
+/// them from the same code that builds the software encoder's headers keeps the
+/// two paths bit-identical in syntax, which matters because the driver's slice
+/// has to match whatever this SPS declares.
+pub fn parameter_sets(cfg: Config) -> Result<Vec<u8>> {
+    cfg.validate()?;
+    let mut out = Vec::new();
+    syntax::parameters(cfg, &mut out);
+    Ok(out)
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
     pub width: u32,

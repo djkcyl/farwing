@@ -1,5 +1,6 @@
 use super::process::lock;
 use super::*;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::{
     process::{Child, Command, Stdio},
@@ -171,9 +172,7 @@ pub fn host() -> Result<()> {
         let dir = manifest.path.parent().context("plugin directory")?;
         let path = manifest.path.clone();
         ensure!(path.starts_with(dir), "video library outside module");
-        let library: libloading::Library =
-            unsafe { libloading::os::windows::Library::load_with_flags(&path, 0x100 | 0x800) }?
-                .into();
+        let library: libloading::Library = unsafe { super::load_plugin_library(&path) }?;
         let query: libloading::Symbol<sdk::VideoNodeQuery> =
             unsafe { library.get(b"openuuyc_video_node_query_v1\0") }?;
         let api = unsafe { query(sdk::ABI_VERSION, type_id.as_ptr(), type_id.len()) };
@@ -243,10 +242,11 @@ impl Loader {
                     let mut command = Command::new(std::env::current_exe()?);
                     command
                         .arg("plugin-video-host")
-                        .creation_flags(0x08000000)
                         .stdin(Stdio::piped())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::null());
+                    #[cfg(windows)]
+                    command.creation_flags(0x08000000);
                     crate::diagnostics::logging::configure_child(&mut command);
                     let mut spawned = command.spawn()?;
                     let job = match super::process::Job::attach(&spawned) {

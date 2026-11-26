@@ -6,6 +6,7 @@ enum Glyph {
     Headphones,
     PortMapping,
     Files,
+    Terminal,
     Diagnostics,
     Power,
     Restart,
@@ -238,6 +239,7 @@ fn paint_glyph(p: &egui::Painter, r: egui::Rect, g: Glyph, color: Color32) {
         Glyph::PortMapping => crate::ui::controls::paint_port_mapping_icon(p, r, color),
         Glyph::Diagnostics => crate::ui::controls::paint_file_icon(p, r, color, false),
         Glyph::Files => crate::ui::controls::paint_file_icon(p, r, color, true),
+        Glyph::Terminal => paint_icon(p, r, Icon::Terminal, color),
         Glyph::Edit => paint_icon(p, r, Icon::Edit, color),
         Glyph::System => {
             for y in [-7.0, 1.0] {
@@ -390,6 +392,8 @@ impl DeviceCenterApp {
         let mut refresh = false;
         let mut ports = false;
         let mut files = false;
+        let mut terminal_start = false;
+        let mut terminal_retry = false;
         let mut diagnostics = false;
         let controller_id = self
             .devices
@@ -679,7 +683,7 @@ impl DeviceCenterApp {
                 crate::account::power::PowerAction::Reboot,
             ];
             let power_count = if has_power { power_actions.len() } else { 0 };
-            let action_count = power_count + 2 * usize::from(has_ports) + usize::from(viewing);
+            let action_count = power_count + 3 * usize::from(has_ports) + usize::from(viewing);
             let gap = 16.0;
             let button_w = (card.width() - action_count.saturating_sub(1) as f32 * gap)
                 / action_count.max(1) as f32;
@@ -739,6 +743,195 @@ impl DeviceCenterApp {
                     },
                 )
                 .clicked();
+                let terminal_rect = egui::Rect::from_min_size(
+                    at(pad + (power_count + 2) as f32 * (button_w + gap), power_y),
+                    vec2(button_w, theme::CONTROL_HEIGHT),
+                );
+                let mut terminal_ui = ui.new_child(egui::UiBuilder::new().max_rect(terminal_rect));
+                let viewer_open = self.viewer_for_device(&id).is_some();
+                let terminal_button = detail_button(
+                    &mut terminal_ui,
+                    "终端",
+                    Glyph::Terminal,
+                    !self.logout_pending
+                        && device.is_connected()
+                        && device.controllable
+                        && device.controlled_support
+                        && !viewer_open,
+                    terminal_rect.size(),
+                    ButtonTone::Normal,
+                );
+                let terminal_button = if viewer_open {
+                    terminal_button.on_disabled_hover_text("请先关闭该设备的观看窗口")
+                } else {
+                    terminal_button
+                };
+                if terminal_button.clicked() {
+                    terminal_start = true;
+                    self.center_ui.terminal_auto_target = None;
+                    self.center_ui.terminal_popup_target = None;
+                    self.center_ui.terminal_last_touch = None;
+                }
+                let popup_id = egui::Id::new(("terminal-popup", &id));
+                let state = crate::features::terminal::service::snapshot(&controller_id, &id);
+                let empty_ready = state.as_ref().is_some_and(|state| {
+                    state.phase == crate::features::terminal::service::Phase::Ready
+                        && state.listed
+                        && !state
+                            .sessions
+                            .iter()
+                            .any(|session| session.state != "exited")
+                });
+                let mut launch_session = None;
+                let mut manual_new = false;
+                let mut retry = false;
+                egui::Popup::from_toggle_button_response(&terminal_button)
+                    .id(popup_id)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| {
+                        ui.set_width(360.0);
+                        ui.ctx().request_repaint_after(Duration::from_millis(500));
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("远端终端")
+                                    .size(theme::SECTION)
+                                    .strong(),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if crate::ui::controls::close_button(
+                                        ui,
+                                        "收起面板",
+                                        crate::ui::controls::COMPACT_HEIGHT,
+                                    )
+                                    .clicked()
+                                    {
+                                        ui.close();
+                                    }
+                                },
+                            );
+                        });
+                        ui.separator();
+                        match &state {
+                            Some(state)
+                                if state.phase
+                                    == crate::features::terminal::service::Phase::Failed =>
+                            {
+                                ui.label(
+                                    egui::RichText::new(
+                                        state.error.as_deref().unwrap_or("连接终端服务失败"),
+                                    )
+                                    .small()
+                                    .color(RED),
+                                );
+                                if ui.button("重试").clicked() {
+                                    retry = true;
+                                }
+                            }
+                            Some(state)
+                                if state.phase
+                                    == crate::features::terminal::service::Phase::Ready
+                                    && state.listed =>
+                            {
+                                if state.sessions.is_empty() {
+                                    ui.label(
+                                        egui::RichText::new("对端没有活跃终端会话")
+                                            .small()
+                                            .color(MUTED),
+                                    );
+                                }
+                                for session in &state.sessions {
+                                    let (state_label, color) = match session.state.as_str() {
+                                        "running" => ("运行中", GREEN),
+                                        "detached" => ("已分离", MUTED),
+                                        "exited" => ("已退出", RED),
+                                        _ => ("未知", MUTED),
+                                    };
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(if session.name.is_empty() {
+                                                "未命名"
+                                            } else {
+                                                &session.name
+                                            })
+                                            .strong(),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(state_label).small().color(color),
+                                        );
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui
+                                                    .add_enabled(
+                                                        session.state != "exited",
+                                                        crate::ui::controls::secondary("连接"),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    launch_session = Some(session.session_id);
+                                                }
+                                            },
+                                        );
+                                    });
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} · 编号 {}",
+                                            if session.shell.is_empty() {
+                                                "未知 shell"
+                                            } else {
+                                                &session.shell
+                                            },
+                                            session.session_id
+                                        ))
+                                        .small()
+                                        .color(MUTED),
+                                    );
+                                }
+                                ui.separator();
+                                if ui.add(crate::ui::controls::secondary("新建终端")).clicked()
+                                {
+                                    manual_new = true;
+                                }
+                            }
+                            _ => {
+                                ui.horizontal(|ui| {
+                                    ui.add(egui::Spinner::new().size(16.0));
+                                    ui.label("正在读取对端终端列表…");
+                                });
+                                ui.ctx().request_repaint_after(Duration::from_millis(200));
+                            }
+                        }
+                    });
+                let popup_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+                if popup_open && state.is_some() {
+                    self.center_ui.terminal_popup_target = Some(id.clone());
+                    if self
+                        .center_ui
+                        .terminal_last_touch
+                        .is_none_or(|touched| touched.elapsed() >= Duration::from_secs(2))
+                    {
+                        self.center_ui.terminal_last_touch = Some(Instant::now());
+                        crate::features::terminal::service::touch(&controller_id, &id);
+                    }
+                } else if !popup_open {
+                    self.center_ui.terminal_popup_target = None;
+                    self.center_ui.terminal_last_touch = None;
+                }
+                let auto_target = self.center_ui.terminal_auto_target.as_deref();
+                if manual_new || (popup_open && empty_ready && auto_target != Some(id.as_str())) {
+                    self.center_ui.terminal_auto_target = Some(id.clone());
+                    self.launch_remote_terminal(&id, None);
+                } else if !popup_open && auto_target == Some(id.as_str()) {
+                    self.center_ui.terminal_auto_target = None;
+                }
+                if let Some(session) = launch_session {
+                    self.center_ui.terminal_auto_target = Some(id.clone());
+                    self.launch_remote_terminal(&id, Some(session));
+                }
+                terminal_retry |= retry;
                 let rect = egui::Rect::from_min_size(
                     at(pad + power_count as f32 * (button_w + gap), power_y),
                     vec2(button_w, theme::CONTROL_HEIGHT),
@@ -775,7 +968,7 @@ impl DeviceCenterApp {
             if viewing {
                 let rect = egui::Rect::from_min_size(
                     at(
-                        pad + (power_count + 2 * usize::from(has_ports)) as f32 * (button_w + gap),
+                        pad + (power_count + 3 * usize::from(has_ports)) as f32 * (button_w + gap),
                         power_y,
                     ),
                     vec2(button_w, theme::CONTROL_HEIGHT),
@@ -977,6 +1170,15 @@ impl DeviceCenterApp {
         }
         if files {
             self.open_file_transfer(id.clone());
+        }
+        if terminal_start {
+            self.start_terminal_service(device.clone());
+        }
+        if terminal_retry {
+            crate::features::terminal::service::stop(&controller_id, &id);
+            self.center_ui.terminal_popup_target = None;
+            self.center_ui.terminal_last_touch = None;
+            self.start_terminal_service(device.clone());
         }
         if connect || audio_only {
             self.selected_device_id = Some(id);

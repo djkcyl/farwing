@@ -1,4 +1,5 @@
 //! D3D11 egui composition shared by the device center and playback windows.
+use crate::ui::gfx::nonzero_size;
 use anyhow::{Context, Result, bail};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::HWND;
@@ -54,7 +55,12 @@ pub(crate) struct UiPresenter {
 }
 
 impl UiPresenter {
-    pub(crate) fn new(
+    pub(crate) fn new(window: std::sync::Arc<Window>, graphics: &Graphics) -> Result<Self> {
+        Self::from_device(&window, graphics.device.clone(), graphics.context.clone())
+    }
+
+    /// The player already owns a device shared with its decoder surfaces.
+    pub(crate) fn from_device(
         window: &Window,
         device: ID3D11Device,
         context: ID3D11DeviceContext,
@@ -285,77 +291,34 @@ impl Drop for UiPresenter {
     }
 }
 
-/// Opt-in, aggregated UI-only diagnostics. No RTP hot-path counters or HUD.
-pub(crate) struct UiTimingAudit {
-    since: Instant,
-    previous: Option<(Instant, bool)>,
-    frames: u32,
-    presented: u32,
-    following_immediate: u32,
-    immediate_gap: Duration,
-    max_immediate_gap: Duration,
-    max_layout: Duration,
-    max_submit: Duration,
+/// Win32 hides a window in place (`can_hide` is always true), so the control
+/// center never destroys its window while it lives in the tray: the updater
+/// and notification activation find the process by that HWND, and the
+/// presenter's composition tree stays bound to it. No drawing resources ever
+/// outlive their window here, hence an uninhabited type.
+pub(crate) enum Retained {}
+
+impl Retained {
+    pub(crate) fn take(_presenter: UiPresenter) -> Self {
+        unreachable!("Windows hides the control center instead of destroying its window")
+    }
+
+    pub(crate) fn reuse(
+        self,
+        _window: std::sync::Arc<Window>,
+        _graphics: &Graphics,
+    ) -> Result<UiPresenter> {
+        match self {}
+    }
+
+    pub(crate) fn defer_output(&mut self, _output: egui_directx11::RendererOutput) {
+        match *self {}
+    }
 }
 
-impl UiTimingAudit {
-    pub(crate) fn active(slot: &mut Option<Self>, at: Instant) -> Option<&mut Self> {
-        if tracing::enabled!(target: "openuuyc::ui_timing", tracing::Level::DEBUG) {
-            Some(slot.get_or_insert_with(|| Self::new(at)))
-        } else {
-            *slot = None;
-            None
-        }
-    }
-
-    fn new(since: Instant) -> Self {
-        Self {
-            since,
-            previous: None,
-            frames: 0,
-            presented: 0,
-            following_immediate: 0,
-            immediate_gap: Duration::ZERO,
-            max_immediate_gap: Duration::ZERO,
-            max_layout: Duration::ZERO,
-            max_submit: Duration::ZERO,
-        }
-    }
-
-    pub(crate) fn record(
-        &mut self,
-        at: Instant,
-        layout: Duration,
-        submit: Duration,
-        immediate: bool,
-        presented: bool,
-    ) {
-        self.frames += 1;
-        self.presented += u32::from(presented);
-        if let Some((previous, true)) = self.previous {
-            let gap = at.saturating_duration_since(previous);
-            self.following_immediate += 1;
-            self.immediate_gap += gap;
-            self.max_immediate_gap = self.max_immediate_gap.max(gap);
-        }
-        self.previous = Some((at, immediate));
-        self.max_layout = self.max_layout.max(layout);
-        self.max_submit = self.max_submit.max(submit);
-        if at.duration_since(self.since) >= Duration::from_secs(5) {
-            tracing::debug!(target: "openuuyc::ui_timing",
-                frames = self.frames, presented = self.presented,
-                seconds = at.duration_since(self.since).as_secs_f64(),
-                animation_intervals = self.following_immediate,
-                animation_avg_ms = self.immediate_gap.as_secs_f64() * 1000.0 / f64::from(self.following_immediate.max(1)),
-                animation_max_ms = self.max_immediate_gap.as_secs_f64() * 1000.0,
-                layout_max_ms = self.max_layout.as_secs_f64() * 1000.0,
-                submit_max_ms = self.max_submit.as_secs_f64() * 1000.0,
-                "UI refresh audit");
-            let previous = self.previous;
-            *self = Self::new(at);
-            self.previous = previous;
-        }
-    }
+/// `set_visible(false)` takes a Win32 window off screen.
+pub(crate) fn can_hide(_window: &Window) -> bool {
+    true
 }
 
 pub(crate) fn window_hwnd(window: &Window) -> Result<HWND> {
@@ -384,6 +347,86 @@ pub(crate) fn create_backbuffer(
     ))
 }
 
-pub(crate) fn nonzero_size(size: PhysicalSize<u32>) -> PhysicalSize<u32> {
-    PhysicalSize::new(size.width.max(1), size.height.max(1))
+/// The D3D11 device behind each shell window.
+pub(crate) use device::{Graphics, create_device};
+/// egui output for the presenter, kept apart from what the platform consumes.
+pub(crate) use egui_directx11::split_output;
+
+mod device {
+    use anyhow::{Context, Result, anyhow};
+    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::Graphics::Direct3D::{
+        D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_10_0,
+        D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0,
+    };
+    use windows::Win32::Graphics::Direct3D11::*;
+    use windows::Win32::Graphics::Dxgi::{IDXGIAdapter1, IDXGIDevice};
+    use windows::core::Interface;
+
+    pub(crate) struct Graphics {
+        pub(crate) device: ID3D11Device,
+        pub(crate) context: ID3D11DeviceContext,
+        label: String,
+    }
+
+    impl Graphics {
+        pub(crate) fn label(&self) -> &str {
+            &self.label
+        }
+    }
+
+    /// Same shape as the Linux device, which is picked to suit the first
+    /// window; a D3D11 device presents to any window through DXGI.
+    pub(crate) fn create_device(
+        _event_loop: &winit::event_loop::ActiveEventLoop,
+        _window: &winit::window::Window,
+    ) -> Result<Graphics> {
+        let mut last_error = None;
+        for driver in [D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP] {
+            let mut device = None;
+            let mut context = None;
+            let result = unsafe {
+                D3D11CreateDevice(
+                    None,
+                    driver,
+                    HMODULE::default(),
+                    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                    Some(&[
+                        D3D_FEATURE_LEVEL_11_0,
+                        D3D_FEATURE_LEVEL_10_1,
+                        D3D_FEATURE_LEVEL_10_0,
+                    ]),
+                    D3D11_SDK_VERSION,
+                    Some(&mut device),
+                    None,
+                    Some(&mut context),
+                )
+            };
+            match result {
+                Ok(()) => {
+                    let device = device.context("D3D11 did not return a GUI device")?;
+                    let context = context.context("D3D11 did not return a GUI context")?;
+                    let adapter: IDXGIAdapter1 =
+                        unsafe { device.cast::<IDXGIDevice>()?.GetAdapter() }?.cast()?;
+                    let desc = unsafe { adapter.GetDesc1() }?;
+                    let length = desc
+                        .Description
+                        .iter()
+                        .position(|value| *value == 0)
+                        .unwrap_or(desc.Description.len());
+                    let label = format!(
+                        "{} · D3D11",
+                        String::from_utf16_lossy(&desc.Description[..length])
+                    );
+                    return Ok(Graphics {
+                        device,
+                        context,
+                        label,
+                    });
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(anyhow!("create GUI D3D11 device: {:?}", last_error))
+    }
 }

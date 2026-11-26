@@ -27,13 +27,14 @@ pub(crate) fn open(
             viewport,
             centered: true,
             notification: false,
+            floating: false,
         },
         factory: Box::new(move |ctx, _| {
             theme::configure(ctx);
             let _enter = runtime.enter();
             let handle = super::service::start(client.clone(), device.clone(), options);
             let previous = handle.snapshot();
-            let home = super::storage::known_folder(&windows::Win32::UI::Shell::FOLDERID_Downloads)
+            let home = super::storage::known_folder(super::storage::KnownFolder::Downloads)
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|| ":/".into());
             let local = if !previous.local.path.is_empty() {

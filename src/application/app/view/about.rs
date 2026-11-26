@@ -35,8 +35,12 @@ impl DeviceCenterApp {
                     ui.label(
                         RichText::new(format!(
                             "v{}  ·  {} {}",
-                            env!("CARGO_PKG_VERSION"),
-                            "Windows",
+                            super::super::updates::version_label(),
+                            if cfg!(target_os = "linux") {
+                                "Linux"
+                            } else {
+                                "Windows"
+                            },
                             std::env::consts::ARCH
                         ))
                         .size(crate::ui::theme::SMALL)
@@ -60,9 +64,9 @@ impl DeviceCenterApp {
             );
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
-                ui.hyperlink_to("GitHub 项目", "https://github.com/djkcyl/openuuyc");
+                ui.hyperlink_to("GitHub 项目", super::super::updates::PROJECT);
                 ui.add_space(16.0);
-                ui.hyperlink_to("版本发布", "https://github.com/djkcyl/openuuyc/releases");
+                ui.hyperlink_to("版本发布", super::super::updates::RELEASES);
             });
 
             ui.add_space(28.0);

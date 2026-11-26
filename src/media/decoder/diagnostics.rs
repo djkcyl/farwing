@@ -1,6 +1,17 @@
 //! Exhaustive current-backend checks. No automatic candidate or adapter fallback.
+// The report types are shared, but only Windows has a check to fill them in
+// (it drives DXVA11 adapters), so elsewhere most of this module goes unused.
+#![cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        unused_imports,
+        reason = "The DXVA11 check is Windows-only."
+    )
+)]
 use crate::media::decode_api::{DecoderMode, DecoderNotification, VideoDecoderConfig};
 use crate::media::{LocalDisplayInfo, VideoCodec};
+#[cfg(windows)]
 use crate::platform::{
     decoder::{WindowsDecodedFrame, WindowsVideoDecoder},
     surface::D3D11SurfaceWriter,
@@ -150,6 +161,18 @@ pub(crate) enum Event {
     Finished(String),
 }
 
+/// The check drives DXVA11 adapters one by one; VA-API has no counterpart yet,
+/// so there is nothing to report here rather than a partial matrix.
+#[cfg(not(windows))]
+pub(crate) fn run(
+    _display: LocalDisplayInfo,
+    _tx: &Sender<Event>,
+    _cancel: Arc<AtomicBool>,
+) -> Result<()> {
+    anyhow::bail!("解码检查目前只覆盖 Windows 的 DXVA11")
+}
+
+#[cfg(windows)]
 pub(crate) fn run(
     display: LocalDisplayInfo,
     tx: &Sender<Event>,
@@ -293,6 +316,7 @@ pub(crate) fn run(
 
 /// Fixtures contain multiple access units; submit the first complete picture,
 /// including all its parameter sets and slices, not the whole stream as one frame.
+#[cfg(windows)]
 fn first_picture(format: Format, data: &[u8]) -> Vec<u8> {
     if format.codec == VideoCodec::Av1 {
         return data.to_vec();
@@ -324,6 +348,7 @@ fn first_picture(format: Format, data: &[u8]) -> Vec<u8> {
     }
     out
 }
+#[cfg(windows)]
 fn decode_sample(
     format: Format,
     size: (u32, u32),
@@ -485,6 +510,7 @@ fn decode_sample(
     }
 }
 
+#[cfg(windows)]
 fn check_pattern(pixels: &[[u16; 3]]) -> Result<()> {
     for (index, actual) in pixels.iter().enumerate() {
         let expected = [if index == 2 { 192 } else { 64 }, 96, 160];
@@ -502,6 +528,7 @@ fn check_pattern(pixels: &[[u16; 3]]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
 fn check_codec_pattern(
     format: Format,
     (w, h): (u32, u32),

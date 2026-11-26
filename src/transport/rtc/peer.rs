@@ -1,7 +1,7 @@
 use super::channels::{DATA_CHANNEL_LABELS, DataChannels, official_data_channel_init};
 use super::clock::{RemoteNtpEstimator, observe_remote_ntp};
 use super::core::ConnectionCore;
-use super::feedback::{RTP_DEFAULT_RTT, send_picture_loss_indication};
+use super::feedback::{RTP_DEFAULT_RTT, send_full_intra_request, send_picture_loss_indication};
 use super::negotiation::{
     UU_LOCAL_SEND_START_BPS, candidate_is_relay, negotiated_mixed_kcp_version, register_uu_codecs,
     register_uu_header_extensions, remove_relay_candidates_from_sdp,
@@ -84,13 +84,14 @@ impl NativePeer {
     pub async fn new(ice_servers: Vec<IceServer>, transport: TransportChoice) -> Result<Self> {
         let profile = crate::media::ConnectionMediaOptions::default()
             .resolve(crate::media::LocalDisplayInfo::FALLBACK)?;
-        Self::new_with_profile(ice_servers, transport, profile).await
+        Self::new_with_profile(ice_servers, transport, profile, false).await
     }
 
     pub(crate) async fn new_with_profile(
         mut ice_servers: Vec<IceServer>,
         transport: TransportChoice,
         profile: ConnectionMediaProfile,
+        terminal: bool,
     ) -> Result<Self> {
         let configured_ice_servers = ice_servers.clone();
         let mut ice_url_schemes = BTreeMap::<String, usize>::new();
@@ -216,6 +217,7 @@ impl NativePeer {
             profile,
             core.control.clone(),
             Arc::downgrade(&connection),
+            terminal,
         );
         let microphone = data_channels.stream_control.microphone().clone();
         data_channels.workers.spawn(async move {
@@ -331,6 +333,10 @@ impl NativePeer {
 
     pub(crate) fn stream_control_handle(&self) -> StreamControlHandle {
         self.data_channels.stream_control.clone()
+    }
+
+    pub(crate) fn terminal_transport(&self) -> Arc<crate::features::terminal::client::Transport> {
+        Arc::clone(&self.data_channels.terminal)
     }
 
     pub(crate) fn set_stream_video_stream(&self, codec: VideoCodec, video_track_index: i32) {
@@ -570,7 +576,10 @@ impl NativePeer {
     }
 
     pub async fn request_keyframe(&self, media_ssrc: u32) -> Result<()> {
-        send_picture_loss_indication(&self.core.connection, media_ssrc).await
+        // 同时发 PLI 与 FIR：部分 host（macOS）只对 FIR 生成关键帧。
+        let pli = send_picture_loss_indication(&self.core.connection, media_ssrc).await;
+        let fir = send_full_intra_request(&self.core.connection, media_ssrc).await;
+        pli.and(fir)
     }
 
     pub async fn next_connection_state(&self) -> Option<RTCPeerConnectionState> {
@@ -923,6 +932,7 @@ impl NativePeer {
         self.data_channels.stream_control.diagnostics().close();
         self.data_channels.stream_control.clipboard().suspend();
         self.data_channels.port_mapping.close();
+        self.data_channels.terminal.close();
         self.data_channels.stream_control.mouse().close().await;
         self.data_channels.workers.close().await;
         self.data_channels.stream_control.audio().close().await;
@@ -934,6 +944,7 @@ impl Drop for NativePeer {
     fn drop(&mut self) {
         self.data_channels.stream_control.microphone().stop();
         self.data_channels.stream_control.diagnostics().close();
+        self.data_channels.terminal.close();
         self.data_channels.stream_control.clipboard().suspend();
         self.data_channels.stream_control.mouse().set_ready(false);
         // Normal paths await close(). This also retires application tasks on

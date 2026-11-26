@@ -60,6 +60,15 @@ pub(crate) struct ConnectionInfo {
     pub client_id: String,
     pub elapsed_seconds: Option<u64>,
     pub observation_lost: bool,
+    /// A terminal connection (`kind = 8`): the controller runs a shell here
+    /// rather than watching the screen, and the access notice says so.
+    #[serde(default)]
+    pub terminal: bool,
+    /// The terminal connection is attached to a shell opened on this machine
+    /// (see `Handle::terminal_local_allowed`), so the notice says the other
+    /// side is in the local user's own terminal.
+    #[serde(default)]
+    pub local_terminal: bool,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -122,6 +131,8 @@ struct Ownership {
     clipboard: super::clipboard::Settings,
     file_transfer: bool,
     port_mapping: bool,
+    terminal: bool,
+    terminal_local: bool,
     remote_power: bool,
     wol: bool,
     power_executing: bool,
@@ -176,6 +187,8 @@ impl Default for Handle {
                 clipboard: Default::default(),
                 file_transfer: true,
                 port_mapping: false,
+                terminal: false,
+                terminal_local: false,
                 remote_power: false,
                 wol: false,
                 power_executing: false,
@@ -293,6 +306,9 @@ impl Handle {
         }
         Ok(())
     }
+    // Only the installed Windows service's resident owner cancels an update;
+    // a desktop client's update exit never returns.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn cancel_update(&self) {
         lock(&self.ownership).updating = false;
         if let Err(error) = super::update_resume::clear(&self.scope) {
@@ -307,7 +323,7 @@ impl Handle {
     }
     pub(crate) async fn apply_remote(
         &self,
-        snapshot: crate::platform::windows::host_service::resident::Snapshot,
+        snapshot: crate::platform::host_service::resident::Snapshot,
     ) {
         self.media.replace(snapshot.capabilities).await;
         let mut state = lock(&self.ownership);
@@ -330,6 +346,8 @@ impl Handle {
         state.clipboard = snapshot.clipboard;
         state.file_transfer = snapshot.file_transfer;
         state.port_mapping = snapshot.port_mapping;
+        state.terminal = snapshot.terminal;
+        state.terminal_local = snapshot.terminal && snapshot.terminal_local;
         state.remote_power = snapshot.remote_power;
         state.wol = snapshot.wol;
         state.status = snapshot.status;
@@ -354,10 +372,17 @@ impl Handle {
         &self,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<()> {
-        if crate::platform::windows::host_service::resident::managed() {
+        if crate::platform::host_service::resident::managed() {
             return Ok(());
         }
         tokio::task::spawn_blocking(super::displays::recovery::recover_abandoned).await??;
+        if capture::needs_consent() {
+            // Opening capture would ask the local user to share the screen
+            // (the ScreenCast portal before its first grant); login must not
+            // wait on that. An authorized incoming session prepares media.
+            tracing::info!("host media probe deferred until an authorized incoming session");
+            return Ok(());
+        }
         let screens = capture::screens()?;
         let Some(screen) = screens
             .iter()
@@ -410,8 +435,10 @@ impl Handle {
                 clipboard,
                 file_transfer,
                 port_mapping,
+                terminal,
                 remote_power,
                 wol,
+                terminal_local,
             )) => {
                 let _ = handle.assistance.configure(assistance);
                 handle.set_allowed(allowed);
@@ -427,6 +454,8 @@ impl Handle {
                 state.clipboard = clipboard;
                 state.file_transfer = file_transfer;
                 state.port_mapping = port_mapping;
+                state.terminal = terminal;
+                state.terminal_local = terminal && terminal_local;
                 state.remote_power = remote_power;
                 state.wol = wol;
                 state.dirty = false;
@@ -471,7 +500,7 @@ impl Handle {
     }
     pub(crate) fn wol_setup_action(&self, action: super::wol::setup::Action) -> anyhow::Result<()> {
         anyhow::ensure!(!self.guest && lock(&self.ownership).active, "请先登录");
-        use crate::platform::windows::host_service::resident;
+        use crate::platform::host_service::resident;
         if resident::managed() {
             resident::call(resident::Request::WolSetup {
                 account: self.account.clone(),
@@ -562,6 +591,66 @@ impl Handle {
     }
     pub(crate) fn port_mapping_allowed(&self) -> bool {
         lock(&self.ownership).port_mapping
+    }
+    /// Whether the controller may open a shell on this machine.
+    ///
+    /// Off by default: a terminal is an interactive shell, so it is a larger
+    /// grant than screen control and must be turned on deliberately.
+    pub(crate) fn terminal_allowed(&self) -> bool {
+        lock(&self.ownership).terminal
+    }
+    pub(crate) fn set_terminal_allowed(&self, allowed: bool) -> anyhow::Result<()> {
+        {
+            let mut state = lock(&self.ownership);
+            anyhow::ensure!(state.active, "账号会话已结束");
+            if state.terminal != allowed {
+                state.terminal = allowed;
+                // The local-session grant hangs off this one. It does not
+                // come back by itself when the terminal is turned on again:
+                // that asks for its own confirmation.
+                if !allowed {
+                    state.terminal_local = false;
+                }
+                state.settings_revision = state.settings_revision.wrapping_add(1);
+                state.dirty = true;
+                state.status.saving = true;
+                state.status.settings_error = None;
+            }
+        }
+        // Turning the terminal off ends the shells it granted, connected or
+        // not; the live terminal connection closes on its next pump tick.
+        if !allowed {
+            super::terminal::end_login(&self.account);
+        }
+        Ok(())
+    }
+    /// Whether a controller may also see and attach to the shells the local
+    /// user opened on this machine (the sessions page, `OpenUUYC terminal`).
+    ///
+    /// A second switch under the terminal, off by default: the terminal
+    /// grant lets the controller run commands, this one lets it watch and
+    /// type into a terminal the local user is working in. Only effective
+    /// while the terminal itself is allowed.
+    pub(crate) fn terminal_local_allowed(&self) -> bool {
+        let state = lock(&self.ownership);
+        state.terminal && state.terminal_local
+    }
+    pub(crate) fn set_terminal_local_allowed(&self, allowed: bool) -> anyhow::Result<()> {
+        let mut state = lock(&self.ownership);
+        anyhow::ensure!(state.active, "账号会话已结束");
+        // Cannot be on without the terminal it extends.
+        let allowed = allowed && state.terminal;
+        if state.terminal_local != allowed {
+            state.terminal_local = allowed;
+            state.settings_revision = state.settings_revision.wrapping_add(1);
+            state.dirty = true;
+            state.status.saving = true;
+            state.status.settings_error = None;
+        }
+        // Turning it off leaves the local shells running (they are the local
+        // user's); every terminal connection lets go of them on its next
+        // pump tick (`terminal::bind`).
+        Ok(())
     }
     pub(crate) fn set_port_mapping_allowed(&self, allowed: bool) -> anyhow::Result<()> {
         let mut state = lock(&self.ownership);
@@ -673,7 +762,7 @@ impl Handle {
     pub(crate) async fn refresh_audio_devices(&self) {
         let result =
             tokio::task::spawn_blocking(|| -> anyhow::Result<Vec<super::audio::Device>> {
-                let devices = crate::platform::windows::loopback::Devices::new()?;
+                let devices = crate::platform::loopback::Devices::new()?;
                 let mut result: Vec<_> = devices
                     .list()?
                     .into_iter()
@@ -723,8 +812,10 @@ impl Handle {
     }
     pub(crate) fn set_allowed(&self, allowed: bool) {
         if !allowed {
+            // A shell is remote control too; it does not outlive the switch.
+            super::terminal::end_login(&self.account);
             self.power.invalidate();
-            if !crate::platform::windows::host_service::resident::managed() {
+            if !crate::platform::host_service::resident::managed() {
                 if let Err(error) = super::update_resume::clear(&self.scope) {
                     tracing::warn!(%error, "revoked update media handoff cleanup failed");
                 }
@@ -780,8 +871,10 @@ impl Handle {
                 clipboard,
                 file_transfer,
                 port_mapping,
+                terminal,
                 remote_power,
                 wol,
+                terminal_local,
             ) = {
                 let state = lock(&self.ownership);
                 if !state.dirty {
@@ -798,13 +891,15 @@ impl Handle {
                     state.clipboard,
                     state.file_transfer,
                     state.port_mapping,
+                    state.terminal,
                     state.remote_power,
                     state.wol,
+                    state.terminal_local,
                 )
             };
-            let result = if crate::platform::windows::host_service::resident::managed() {
-                crate::platform::windows::host_service::resident::request(
-                    crate::platform::windows::host_service::resident::Request::Settings {
+            let result = if crate::platform::host_service::resident::managed() {
+                crate::platform::host_service::resident::request(
+                    crate::platform::host_service::resident::Request::Settings {
                         account: self.account.clone(),
                         allowed,
                         encoding,
@@ -815,6 +910,8 @@ impl Handle {
                         clipboard,
                         file_transfer,
                         port_mapping,
+                        terminal,
+                        terminal_local,
                         remote_power,
                         wol,
                     },
@@ -833,8 +930,10 @@ impl Handle {
                         clipboard,
                         file_transfer,
                         port_mapping,
+                        terminal,
                         remote_power,
                         wol,
+                        terminal_local,
                     )
                 })
                 .await
@@ -854,7 +953,7 @@ impl Handle {
         }
     }
     pub(crate) fn retry(&self) {
-        if crate::platform::windows::host_service::resident::managed() {
+        if crate::platform::host_service::resident::managed() {
             lock(&self.ownership).remote_action = Some(RemoteAction::Retry);
             return;
         }
@@ -876,8 +975,7 @@ impl Handle {
         self.power.invalidate();
         self.assistance.unavailable();
         let mut state = lock(&self.ownership);
-        let clear_update =
-            !state.updating && !crate::platform::windows::host_service::resident::managed();
+        let clear_update = !state.updating && !crate::platform::host_service::resident::managed();
         state.active = false;
         state.permission = state.permission.wrapping_add(1);
         finish_session(&mut state);
@@ -885,6 +983,10 @@ impl Handle {
         state.status.message = "本机离线".into();
         self.desired.send_replace(None);
         drop(state);
+        // Every way a login generation ends (sign-out, another account,
+        // unbinding, an expired credential) comes through here; its shells
+        // end with it rather than outliving the login that opened them.
+        super::terminal::end_login(&self.account);
         if clear_update {
             if let Err(error) = super::update_resume::clear(&self.scope) {
                 tracing::warn!(%error, "retired update media handoff cleanup failed");
@@ -914,8 +1016,13 @@ impl Handle {
         }
     }
     pub(crate) fn disconnect_session(&self, session: &str) -> bool {
-        let managed = crate::platform::windows::host_service::resident::managed();
-        disconnect_session(&mut lock(&self.ownership), session, managed)
+        let managed = crate::platform::host_service::resident::managed();
+        let disconnected = disconnect_session(&mut lock(&self.ownership), session, managed);
+        // The local user sent the controller away; its shells go with it.
+        if disconnected {
+            super::terminal::end_login(&self.account);
+        }
+        disconnected
     }
     pub(crate) fn requested(&self) -> bool {
         let state = lock(&self.ownership);
@@ -989,7 +1096,7 @@ impl Drop for SessionLease {
     }
 }
 impl Lease {
-    pub(crate) fn controller(&self, device_id: &str, client_id: &str) {
+    pub(crate) fn controller(&self, device_id: &str, client_id: &str, terminal: bool) {
         self.modify(|state| {
             let session_id = state
                 .status
@@ -1005,6 +1112,7 @@ impl Lease {
                     String::new()
                 },
                 client_id: client_id.to_owned(),
+                terminal,
                 ..Default::default()
             });
         });
@@ -1044,6 +1152,11 @@ impl Lease {
     }
     pub(crate) fn display_scope(&self) -> &str {
         &self.handle.scope
+    }
+    /// The account this lease acts for. Terminal sessions are scoped to it so
+    /// a second account controlling the same machine cannot reach them.
+    pub(crate) fn account(&self) -> &str {
+        &self.handle.account
     }
     pub(crate) fn begin_stream(&self, track: usize) -> anyhow::Result<Self> {
         let mut state = lock(&self.handle.ownership);
@@ -1195,6 +1308,34 @@ impl Lease {
             state.port_revision,
         )
     }
+    /// Whether this lease may open a shell on the controlled machine.
+    ///
+    /// A terminal is a shell, so it is refused for guest assistance and for
+    /// a controller that is not currently the active one, exactly like the
+    /// other privileged grants.
+    pub(crate) fn terminal_allowed(&self) -> bool {
+        let state = lock(&self.handle.ownership);
+        self.current(&state) && self.assistance.is_none() && !self.handle.guest && state.terminal
+    }
+    /// Whether this lease may also reach the shells opened on this machine;
+    /// see [`Handle::terminal_local_allowed`].
+    pub(crate) fn terminal_local_allowed(&self) -> bool {
+        let state = lock(&self.handle.ownership);
+        self.current(&state)
+            && self.assistance.is_none()
+            && !self.handle.guest
+            && state.terminal
+            && state.terminal_local
+    }
+    /// Records whether this terminal connection is attached to a shell opened
+    /// on this machine, for the access notice.
+    pub(crate) fn terminal_on_local(&self, attached: bool) {
+        self.modify(|state| {
+            if let Some(connection) = state.status.connection.as_mut() {
+                connection.local_terminal = attached;
+            }
+        });
+    }
     pub(crate) fn port_status(&self, status: crate::features::port_mapping::host::Status) {
         self.modify(|s| s.status.ports = status);
     }
@@ -1261,6 +1402,18 @@ impl Lease {
     }
     pub(crate) fn input_status(&self, backend: Option<&str>, error: Option<String>) {
         self.modify(|state| {
+            // Input failures otherwise only change a status field; record each
+            // transition so a controller that "cannot move anything" can be
+            // explained from the log.
+            if state.status.input_backend.as_deref() != backend {
+                tracing::info!(backend, "host input backend");
+            }
+            if state.status.input_error != error {
+                match &error {
+                    Some(error) => tracing::warn!(backend, %error, "host input failed"),
+                    None => tracing::info!(backend, "host input recovered"),
+                }
+            }
             state.status.input_backend = backend.map(str::to_owned);
             state.status.input_error = error;
         });

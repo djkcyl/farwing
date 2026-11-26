@@ -84,6 +84,15 @@ pub(crate) struct DualCapability {
     pub frame_quality_capability: Vec<FrameQualityCapability>,
     #[serde(skip)]
     preferred_hardware: Vec<FrameQualityCapability>,
+    /// Both sides' raw rows, kept to explain a quality limit to the user.
+    #[serde(skip)]
+    local_codecs: Vec<CodecCapability>,
+    #[serde(skip)]
+    remote_codecs: Vec<CodecCapability>,
+    /// The host is OpenUUYC: every release advertising SDR10 also takes
+    /// native touch from a desktop controller.
+    #[serde(skip)]
+    pub openuuyc_host: bool,
 }
 
 impl DualCapability {
@@ -181,6 +190,7 @@ impl DualCapability {
             }
         }
         Self {
+            openuuyc_host: remote.openuuyc_sdr_10bit,
             preferred_codec: local
                 .preferred_codec
                 .filter(|c| matches!(c, 1 | 2 | 5))
@@ -189,7 +199,25 @@ impl DualCapability {
             local_display_info: local.display_info.clone(),
             frame_quality_capability: rows,
             preferred_hardware,
+            local_codecs: local.video_codec_capability.clone(),
+            remote_codecs: remote.video_codec_capability,
         }
+    }
+
+    /// Whether this side (`local` = the decoder here, otherwise the peer's
+    /// encoder) offers the colour format in hardware. Software rows
+    /// (implementation 5 encodes, 37 decodes) stop at 1080p.
+    pub(crate) fn hardware(&self, local: bool, chroma: u8, hdr: bool) -> bool {
+        let caps = if local {
+            &self.local_codecs
+        } else {
+            &self.remote_codecs
+        };
+        caps.iter().any(|cap| {
+            cap.chroma_sampling == chroma
+                && (cap.bit_depth >= 10) == hdr
+                && !matches!(cap.codec_impl, 5 | 37)
+        })
     }
 
     pub(crate) fn exact(
@@ -266,5 +294,49 @@ impl DualCapability {
                 max_frame_quality: 0,
                 result: -3,
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(width: i32, height: i32, chroma_sampling: u8, codec_impl: i32) -> CodecCapability {
+        CodecCapability {
+            video_codec: 1,
+            width,
+            height,
+            chroma_sampling,
+            bit_depth: 8,
+            codec_impl,
+        }
+    }
+
+    fn device(rows: Vec<CodecCapability>) -> DeviceCapability {
+        DeviceCapability {
+            video_codec_capability: rows,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn software_decoder_explains_the_1080p_ceiling() {
+        let local = device(vec![row(1920, 1080, 1, 37), row(1920, 1080, 3, 37)]);
+        let remote = device(vec![row(3840, 2160, 1, 0), row(3840, 2160, 3, 0)]);
+        let dual = DualCapability::negotiate(&local, remote);
+        let selected = dual.select(1, false, 3);
+        assert_eq!((selected.result, selected.max_frame_quality), (0, 2));
+        assert!(!dual.hardware(true, 1, false));
+        assert!(dual.hardware(false, 1, false));
+    }
+
+    #[test]
+    fn hardware_decoder_reaches_the_encoder_limit() {
+        let local = device(vec![row(3840, 2160, 1, 32), row(1920, 1080, 3, 37)]);
+        let remote = device(vec![row(3840, 2160, 1, 0), row(3840, 2160, 3, 0)]);
+        let dual = DualCapability::negotiate(&local, remote);
+        assert_eq!(dual.select(1, false, 3).max_frame_quality, 4);
+        assert!(dual.hardware(true, 1, false));
+        assert!(!dual.hardware(true, 3, false));
     }
 }

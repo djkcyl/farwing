@@ -167,7 +167,7 @@ impl Request {
             "远程电源许可已撤销"
         );
         self.claim()?;
-        let result = crate::platform::windows::system_power::execute(self.command.action);
+        let result = crate::platform::system_power::execute(self.command.action);
         if result.is_err() {
             let mut s = super::lock(&self.owner.0);
             if s.binding == self.binding && s.epoch == self.epoch {
@@ -235,7 +235,7 @@ async fn prepare(request: Request, client: &HostClient) -> Result<Request> {
         && client.is_active()
         && client.host.power_permitted();
     let ready = if permitted {
-        tokio::task::spawn_blocking(crate::platform::windows::system_power::probe)
+        tokio::task::spawn_blocking(crate::platform::system_power::probe)
             .await
             .map_err(|_| anyhow::anyhow!("读取关机权限失败"))
             .and_then(|r| r)

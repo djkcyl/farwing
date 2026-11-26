@@ -30,9 +30,14 @@ pub const CONNECTION_WALLPAPER_DIM: u8 = 166;
 pub const CONNECTION_WALLPAPER_DETAIL_DIM: u8 = 212;
 
 pub const BODY: f32 = 14.0;
+// The file send target window exists on Windows only.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const FILE_SEND_WIDTH: f32 = 380.0;
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const FILE_SEND_HEIGHT: f32 = 78.0;
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const FILE_SEND_ROW_HEIGHT: f32 = 26.0;
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const FILE_SEND_VISIBLE_ROWS: usize = 5;
 pub const COMPACT_TEXT: f32 = 13.0;
 pub const DIAGNOSTIC_POPUP_WIDTH: f32 = 320.0;
@@ -42,13 +47,20 @@ pub const TINY: f32 = 11.0;
 pub const ICON_STROKE: f32 = 1.35;
 pub const VIEWER_CAPTION_BUTTON: f32 = 30.0;
 /// 标题栏右侧动作区的固定宽度：每个按钮 VIEWER_CAPTION_BUTTON 再加 4px 间距，
-/// 两头各留 4px。这是抢标题和屏标签地方换来的，加减按钮时要跟着改，
-/// 不然排在最左边（最后添加）的按钮会被裁掉。
-pub const VIEWER_ACTIONS_WIDTH: f32 = 248.0;
+/// 全屏按钮宽 VIEWER_FULLSCREEN_BUTTON_WIDTH，两头各留 4px。这是抢标题和屏标签
+/// 地方换来的，加减按钮时要跟着改，不然排在最左边（最后添加）的按钮会被裁掉。
+pub const VIEWER_ACTIONS_WIDTH: f32 = 248.0 + VIEWER_FULLSCREEN_BUTTON_WIDTH + 4.0;
+/// 全屏按钮比其他按钮宽，触屏上好点。
+pub const VIEWER_FULLSCREEN_BUTTON_WIDTH: f32 = 44.0;
 pub const VIEWER_FLOATING_WIDTH: f32 = 1100.0;
-pub const VIEWER_FULLSCREEN_HANDLE_HIT_SIZE: egui::Vec2 = egui::vec2(340.0, 14.0);
-pub const VIEWER_FULLSCREEN_HANDLE_SIZE: egui::Vec2 = egui::vec2(280.0, 4.0);
-pub const VIEWER_FULLSCREEN_HANDLE_CENTER_Y: f32 = 10.0;
+/// The collapsed fullscreen control is deliberately small. It is click-to-open
+/// so moving the remote pointer across the top edge does not steal the input.
+pub const VIEWER_FULLSCREEN_HANDLE_HIT_SIZE: egui::Vec2 = egui::vec2(96.0, 12.0);
+pub const VIEWER_FULLSCREEN_HANDLE_SIZE: egui::Vec2 = egui::vec2(64.0, 3.0);
+pub const VIEWER_FULLSCREEN_HANDLE_CENTER_Y: f32 = 8.0;
+/// A finger cannot hit the small pointer strip, so a tap on the collapsed
+/// handle keeps the original, wider top-edge target.
+pub const VIEWER_FULLSCREEN_HANDLE_TOUCH_SIZE: egui::Vec2 = egui::vec2(340.0, 14.0);
 pub const SESSION_STATUS_WIDTH: f32 = 280.0;
 pub const INPUT_WARNING_WIDTH: f32 = 360.0;
 pub const INPUT_WARNING_MARGIN: f32 = 12.0;

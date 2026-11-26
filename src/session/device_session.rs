@@ -185,8 +185,8 @@ impl Initializer {
                         let _ = reply.send(std::time::Duration::from_secs(seconds));
                     }
                     Some(Command::Controllable(value, reply)) => {
-                        if crate::platform::windows::host_service::resident::managed() {
-                            let result = crate::platform::windows::host_service::resident::request(crate::platform::windows::host_service::resident::Request::Controllable(value)).await.map(|_| ());
+                        if crate::platform::host_service::resident::managed() {
+                            let result = crate::platform::host_service::resident::request(crate::platform::host_service::resident::Request::Controllable(value)).await.map(|_| ());
                             let _ = self.reload(); let _ = reply.send(result); continue;
                         }
                         let result = self.reload().and_then(|()| {
@@ -195,8 +195,8 @@ impl Initializer {
                         let _ = reply.send(result);
                     }
                     Some(Command::Name(expected_id, value, reply)) => {
-                        if crate::platform::windows::host_service::resident::managed() {
-                            let result = crate::platform::windows::host_service::resident::request(crate::platform::windows::host_service::resident::Request::Name { device: expected_id, value }).await.map(|_| ());
+                        if crate::platform::host_service::resident::managed() {
+                            let result = crate::platform::host_service::resident::request(crate::platform::host_service::resident::Request::Name { device: expected_id, value }).await.map(|_| ());
                             let _ = self.reload(); let _ = reply.send(result); continue;
                         }
                         let result = self.reload().and_then(|()| {
@@ -206,8 +206,8 @@ impl Initializer {
                         let _ = reply.send(result);
                     }
                     Some(Command::Ensure { force, result }) => {
-                        if crate::platform::windows::host_service::resident::managed() {
-                            use crate::platform::windows::host_service::resident::{self, Request, Reply};
+                        if crate::platform::host_service::resident::managed() {
+                            use crate::platform::host_service::resident::{self, Request, Reply};
                             let value = match resident::request(Request::Initialize { force }).await {
                                 Ok(Reply::Identity(value)) => { self.identity = *value.clone(); self.published.send_replace(*value.clone()); Ok(*value) }
                                 Ok(_) => Err(anyhow::anyhow!("后台设备响应无效")),
@@ -282,7 +282,7 @@ impl Initializer {
                                 s.registration = "正在读取本机信息".into()
                             });
                             let hardware = tokio::task::spawn_blocking(
-                                crate::platform::windows::device_profile::Hardware::read,
+                                crate::platform::device_profile::Hardware::read,
                             )
                             .await??;
                             let body = identity.device_init_request(&hardware)?;

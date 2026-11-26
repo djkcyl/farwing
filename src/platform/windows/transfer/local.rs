@@ -153,7 +153,7 @@ impl Transfer {
             // Poison before submission: any failure must replace the bridge,
             // never reuse a surface with an untracked in-flight write/read.
             slot.failed.store(true, Ordering::Release);
-            slot.source.CopyResource(&slot.write, &frame.texture);
+            slot.source.CopyResource(&slot.write, &frame.image);
             let signalled = slot.source.Signal(&slot.ready, value);
             slot.source.Flush();
             signalled?;
@@ -161,7 +161,7 @@ impl Transfer {
             slot.failed.store(false, Ordering::Release);
             slot.leased.store(true, Ordering::Release);
             let mut output = frame.clone();
-            output.texture = slot.read.clone();
+            output.image = slot.read.clone();
             Ok(Some(Delivery {
                 frame: output,
                 retire: None,

@@ -29,6 +29,7 @@ pub const DATA_CHANNEL_LABELS: [&str; 5] = [
 #[derive(Clone)]
 pub(super) struct DataChannels {
     pub(super) port_mapping: Arc<crate::features::port_mapping::Transport>,
+    pub(super) terminal: Arc<crate::features::terminal::client::Transport>,
     pub(super) _local_channels: Arc<Vec<Arc<RTCDataChannel>>>,
     pub(super) incoming_channels: Arc<std::sync::Mutex<Vec<Arc<RTCDataChannel>>>>,
     pub(super) performance: PerformanceMonitor,
@@ -45,16 +46,22 @@ impl DataChannels {
         profile: ConnectionMediaProfile,
         uu_kcp: UuKcpControl,
         connection: Weak<RTCPeerConnection>,
+        terminal: bool,
     ) -> Self {
         let workers = SessionWorkers::new("RTC peer");
         let streamer_sender_started = Arc::new(AtomicBool::new(false));
         let (stream_control, control_messages, echo_responses) =
             StreamControlHandle::new(profile, performance.clone());
         let port_mapping = Arc::new(crate::features::port_mapping::Transport::default());
+        let terminal_transport = Arc::new(crate::features::terminal::client::Transport::default());
         for channel in &local_channels {
             if channel.label() == crate::diagnostics::remote::CHANNEL {
                 uu_kcp.bind_stream(channel.id(), false);
-                stream_control.diagnostics().bind(channel);
+                if terminal {
+                    terminal_transport.bind(channel);
+                } else {
+                    stream_control.diagnostics().bind(channel);
+                }
                 continue;
             }
             stream_control.file_transfer().bind(channel);
@@ -120,6 +127,7 @@ impl DataChannels {
         Self {
             _local_channels: Arc::new(local_channels),
             port_mapping,
+            terminal: terminal_transport,
             incoming_channels: Arc::new(std::sync::Mutex::new(Vec::new())),
             performance,
             streamer_sender_started,
@@ -439,7 +447,7 @@ pub(super) async fn send_remote_input(
             _ = mouse.epoch_cancelled(epoch) => Err(anyhow::anyhow!("鼠标连接代次已变更")),
             result = tokio::time::timeout(event.event.send_timeout(),
                 async {
-                    let release=matches!(event.event,crate::features::remote_input::InputEvent::Button{down:false,..}|crate::features::remote_input::InputEvent::Key{down:false,..}|crate::features::remote_input::InputEvent::AssistButton{down:false,..});
+                    let release=event.event.release();
                     if !release {
                         if kcp.is_negotiated() {
                             kcp.wait_input_capacity().await?;
@@ -477,12 +485,15 @@ pub(super) async fn send_remote_input(
             use crate::features::remote_input::InputEvent;
             let kind = match event.event {
                 InputEvent::Key { .. } => "keyboard",
+                InputEvent::CapsLock { .. } => "keyboard_lock_state",
                 InputEvent::Button { .. } | InputEvent::AssistButton { .. } => "button",
                 InputEvent::Relative { .. }
                 | InputEvent::Absolute { .. }
                 | InputEvent::Correction { .. } => "movement",
                 InputEvent::Wheel { .. } => "wheel",
+                InputEvent::Touch { .. } => "touch",
                 InputEvent::Heartbeat => "keyboard_heartbeat",
+                InputEvent::Gamepad(_) => "gamepad",
             };
             tracing::warn!(target: "openuuyc::transport::rtc::input", %error, input_kind=kind,
                 carrier=if kcp.is_negotiated(){"mixed_kcp"}else{"sctp"},

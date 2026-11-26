@@ -1,7 +1,12 @@
 //! Clipboard permission and TEXT-channel ownership. Native work never runs on media/input threads.
 pub(crate) mod agent;
+#[cfg(windows)]
 mod frame;
 mod send;
+#[cfg(windows)]
+mod wake;
+#[cfg(not(windows))]
+#[path = "clipboard/wake_linux.rs"]
 mod wake;
 
 use crate::features::clipboard::Clipboard;

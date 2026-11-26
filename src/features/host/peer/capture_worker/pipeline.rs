@@ -300,7 +300,15 @@ mod real {
         color: Color,
     ) -> Result<()> {
         let mut encoder =
-            match encoder::Encoder::hardware_format(&device, size, format, rate, color) {
+            // The pipeline is only built for NVENC (see `pipeline_target`).
+            match encoder::Encoder::hardware_format(
+                &device,
+                crate::features::host::format::Backend::Nvidia,
+                size,
+                format,
+                rate,
+                color,
+            ) {
                 Ok(encoder) => encoder,
                 Err(error) => {
                     let _ = ready.send(Err(format!("{error:#}")));
@@ -458,3 +466,65 @@ mod real {
 
 #[cfg(windows)]
 pub(crate) use real::Pipeline;
+
+/// Linux encodes every frame on the capture thread: there is no shared
+/// texture ring to hand frames to an encode thread, so this pipeline cannot
+/// exist. `capture::Desktop::raw_desc` is always `None` there, and the loop
+/// never asks for one.
+#[cfg(not(windows))]
+pub(crate) enum Pipeline {}
+
+#[cfg(not(windows))]
+#[allow(clippy::too_many_arguments)]
+impl Pipeline {
+    pub(crate) fn new(
+        _source: &capture::Device,
+        _destination: capture::Device,
+        _desc: (u32, u32, u32),
+        _size: (u32, u32),
+        _format: Format,
+        _rate: Rate,
+        _color: Color,
+        _sender: tokio::sync::mpsc::Sender<encoder::Encoded>,
+        _keyframe: Arc<AtomicBool>,
+        _cancel: Arc<AtomicBool>,
+        _started: Instant,
+    ) -> Result<Self> {
+        anyhow::bail!("这个平台没有独立线程的编码流水线")
+    }
+
+    pub(crate) fn next_raw(
+        &mut self,
+        _desktop: &mut capture::Desktop,
+        _timeout: u32,
+        _quality: i32,
+        _hdr: bool,
+        _maximum: (u32, u32),
+    ) -> Result<Option<capture::RawCapture>> {
+        match *self {}
+    }
+
+    pub(crate) fn submit_raw(
+        &mut self,
+        _capture: capture::RawCapture,
+        _rate: Rate,
+    ) -> Result<bool> {
+        match *self {}
+    }
+
+    pub(crate) fn stats(&mut self) -> Stats {
+        match *self {}
+    }
+
+    pub(crate) fn error(&self) -> Option<String> {
+        match *self {}
+    }
+
+    pub(crate) fn maximum_size(&self) -> (u32, u32) {
+        match *self {}
+    }
+
+    pub(crate) fn implementation(&self) -> i32 {
+        match *self {}
+    }
+}

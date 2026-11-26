@@ -30,6 +30,7 @@ mod diagnostics;
 pub(crate) mod notifications;
 
 pub mod instance;
+#[cfg(windows)]
 pub(crate) mod maintenance;
 mod phone;
 mod power;
@@ -47,13 +48,28 @@ pub struct GuiOptions {
 }
 
 pub fn run(options: GuiOptions) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    crate::platform::linux::gamescope::prepare_wallet();
+    // Login startup enabled by an earlier version moves to the unit name the
+    // portal recognizes. It runs systemctl, so it does not hold up startup.
+    #[cfg(target_os = "linux")]
+    std::thread::spawn(crate::platform::host_service::startup::migrate);
+    // The installed Windows service's user-side backend and its migration
+    // recovery; Linux has no installed service.
+    #[cfg(windows)]
     let _user_backend = crate::platform::windows::host_service::user_backend::Server::start()?;
+    #[cfg(windows)]
     let _migration = crate::platform::windows::components::migration::UserRecovery::start();
     // 接管过 `uuremote://` 的话，把注册的命令改回当前这份程序（更新或换目录之后
     // 路径会变）。没接管过就什么都不做，不能因为启动一次就去抢别人的协议。
+    // Linux 的协议登记在安装包的 .desktop 里，路径不随程序走。
+    #[cfg(windows)]
     crate::platform::windows::assist_link::retarget_on_start();
     let _shortcuts = crate::application::viewer_shortcuts::Watcher::new()?;
     crate::features::host::displays::fallback::start_background();
+    // 终端会话由这个进程托管。把表建起来，`gui --background` 这种连窗口都
+    // 不建的实例也要能提供本机 attach 的 socket。
+    crate::features::host::terminal::shared();
     let (local_display, display_warning) = match detect_local_display() {
         Ok(display) => (display, None),
         Err(error) => (
@@ -83,6 +99,7 @@ pub fn run(options: GuiOptions) -> Result<()> {
             viewport,
             centered: true,
             notification: false,
+            floating: false,
         },
         Box::new(move |ctx, graphics| {
             configure_visuals(ctx);
@@ -99,6 +116,9 @@ pub fn run(options: GuiOptions) -> Result<()> {
         }),
     )
 }
+/// A Windows toast button relaunches the program with its protocol URI; Linux
+/// desktop notifications report their actions to the running process.
+#[cfg(windows)]
 pub fn notification_activation(uri: &str) -> Result<()> {
     notifications::Action::parse(uri)?;
     instance::deliver_uri(uri)
@@ -750,7 +770,7 @@ impl DeviceCenterApp {
     }
 
     fn begin_login(&mut self) {
-        if self.center_ui.components.busy()
+        if self.maintenance_busy()
             || self.logout_pending
             || self.has_viewers()
             || self.mutation_pending
@@ -825,7 +845,7 @@ impl DeviceCenterApp {
     }
 
     fn logout(&mut self) {
-        if self.center_ui.components.busy()
+        if self.maintenance_busy()
             || self.mutation_pending
             || (self.assist.busy && !self.assist.querying)
         {
@@ -1142,12 +1162,19 @@ impl DeviceCenterApp {
             self.status = StatusMessage::error("设备后台服务已停止");
         }
     }
-    fn prepare_exit(&mut self) {
-        if !self.exit_requested
-            || self.exit_pending
-            || self.exit_ready
-            || self.center_ui.components.busy()
+    /// An install, update or uninstall of the Windows components is running.
+    pub(super) fn maintenance_busy(&self) -> bool {
+        #[cfg(windows)]
         {
+            self.center_ui.components.busy()
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
+    fn prepare_exit(&mut self) {
+        if !self.exit_requested || self.exit_pending || self.exit_ready || self.maintenance_busy() {
             return;
         }
         self.exit_pending = self.worker.commands.send(GuiCommand::PrepareExit).is_ok();
@@ -1183,6 +1210,11 @@ impl crate::ui::App for DeviceCenterApp {
         self.exit_ready
     }
     fn on_close_requested(&mut self) -> bool {
+        if !self.exit_requested {
+            // 所有退出路径（托盘「退出」、信号、没有托盘时关窗口）都经过这里；
+            // 来源各自另记一条，日志里只有这一条时就是关了窗口。
+            tracing::info!(target: "openuuyc", "control center exit requested");
+        }
         self.exit_requested = true;
         self.prepare_exit();
         self.exit_ready
@@ -1210,6 +1242,7 @@ impl crate::ui::App for DeviceCenterApp {
         self.tick_power();
         self.draw_center(ui);
         self.draw_dialogs(&ctx);
+        #[cfg(windows)]
         self.component_dialogs(&ctx);
         self.prepare_exit();
         if !self.exit_requested && !self.login_restoring && !self.login_running {
@@ -1219,6 +1252,8 @@ impl crate::ui::App for DeviceCenterApp {
     }
 
     fn on_exit(&mut self) {
+        // 先说一声要退出了：之后的会话收尾不必再为无屏去建兜底屏。
+        crate::features::host::displays::fallback::exiting();
         for session in &self.viewers.active {
             session.handle.request_close();
         }

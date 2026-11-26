@@ -12,8 +12,9 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use super::windows_presenter::title_bar_height_pixels;
+pub(super) use crate::platform::graphics::UiPresenter;
 use crate::platform::graphics::window_hwnd;
-pub(super) use crate::platform::graphics::{UiPresenter, UiTimingAudit};
+pub(super) use crate::ui::gfx::UiTimingAudit;
 
 fn video_window_class() -> Result<()> {
     static REGISTERED: std::sync::OnceLock<std::result::Result<(), u32>> =

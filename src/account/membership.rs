@@ -1,7 +1,6 @@
 //! Account-scoped revocations from the authenticated presence channel.
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
-use windows::Win32::System::Performance::QueryPerformanceCounter;
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum MemberTier {
@@ -26,12 +25,28 @@ pub(crate) struct Profile {
     observed_at: i64,
 }
 
-/// Both the resident owner and its GUI read the same Windows monotonic counter.
-/// It only orders local room opens and push delivery, never subscription dates.
+/// Both the resident owner and its GUI read the same monotonic counter
+/// (Windows QPC, `CLOCK_MONOTONIC` elsewhere; both are system-wide for one
+/// boot). It only orders local room opens and push delivery, never
+/// subscription dates, so the unit does not matter.
+#[cfg(windows)]
 pub(super) fn local_counter() -> i64 {
     let mut value = 0;
-    unsafe { QueryPerformanceCounter(&mut value) }.expect("Windows performance counter");
+    unsafe { windows::Win32::System::Performance::QueryPerformanceCounter(&mut value) }
+        .expect("Windows performance counter");
     value
+}
+
+#[cfg(not(windows))]
+pub(super) fn local_counter() -> i64 {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: writes into a local timespec; CLOCK_MONOTONIC always exists.
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) };
+    assert_eq!(result, 0, "CLOCK_MONOTONIC");
+    now.tv_sec * 1_000_000_000 + now.tv_nsec
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -151,6 +166,9 @@ impl Membership {
         }
     }
 
+    // Read by the Windows resident service to hand the GUI its latest
+    // expiration; Linux has no resident service.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn snapshot(&self) -> Option<Expiration> {
         *self.last.borrow()
     }

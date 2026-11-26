@@ -69,11 +69,13 @@ pub(super) fn depacketize_h265(
             output.extend_from_slice(unit);
         }
     }
+    let packet_idr = nalus.iter().any(|n| (19..=21).contains(&n.kind));
     parsed_packet(
         packet,
         VideoCodecKind::H265,
         first,
         packet_keyframe,
+        packet_idr,
         nalus,
         output,
         received_at,
@@ -86,6 +88,7 @@ pub(super) fn parsed_packet(
     codec: VideoCodecKind,
     first: bool,
     packet_keyframe: bool,
+    packet_idr: bool,
     mut nalus: Vec<NaluInfo>,
     payload: Vec<u8>,
     received_at: Instant,
@@ -112,13 +115,16 @@ pub(super) fn parsed_packet(
         is_first_packet_in_frame: first,
         sps: nalus.iter().any(|n| n.kind == sps_kind && n.sps >= 0),
         pps: nalus.iter().any(|n| n.kind == pps_kind),
-        idr: nalus.iter().any(|n| {
-            if codec == VideoCodecKind::H264 {
-                n.kind == 5
-            } else {
-                (19..=21).contains(&n.kind)
-            }
-        }),
+        // H.264 的 IDR 由 FU-A 原始类型（5）直接判定，避免关键帧首片早于
+        // 接收窗口时漏判；H.265/AV1 仍按 NALU 类型。
+        idr: packet_idr
+            || nalus.iter().any(|n| {
+                if codec == VideoCodecKind::H264 {
+                    n.kind == 5
+                } else {
+                    (19..=21).contains(&n.kind)
+                }
+            }),
         packet_keyframe,
         nalus,
         parameter_format,
@@ -151,6 +157,7 @@ pub(super) fn depacketize_av1(
         packet,
         VideoCodecKind::Av1,
         h & 0x80 == 0,
+        h & 8 != 0,
         h & 8 != 0,
         Vec::new(),
         payload,
@@ -190,6 +197,10 @@ pub(super) fn depacketize_h264(
     let mut nalus = Vec::new();
     let mut output = Vec::new();
     let mut packet_keyframe = false;
+    // libwebrtc 从 FU-A 的原始 NAL 类型判定关键帧，不依赖 S 位。部分 host
+    // （macOS）的关键帧首片可能早于接收窗口，S=1 永远不会出现，只靠 NALU
+    // 列表会漏掉整帧 IDR。
+    let mut packet_idr = false;
     if kind == 28 {
         if payload.len() < 2 {
             return None;
@@ -197,6 +208,7 @@ pub(super) fn depacketize_h264(
         first = payload[1] & 0x80 != 0;
         let original = payload[1] & 31;
         packet_keyframe = original == 5;
+        packet_idr = original == 5;
         if first {
             let mut unit = vec![(payload[0] & 0xe0) | original];
             unit.extend_from_slice(&payload[2..]);
@@ -233,6 +245,7 @@ pub(super) fn depacketize_h264(
                 return None;
             }
             packet_keyframe |= matches!(info.kind, 5 | 7);
+            packet_idr |= info.kind == 5;
             if info.kind == 7
                 && let Some(rewritten) = rewrite_h264_sps(unit)
             {
@@ -260,6 +273,7 @@ pub(super) fn depacketize_h264(
         VideoCodecKind::H264,
         first,
         packet_keyframe,
+        packet_idr,
         nalus,
         output,
         received_at,

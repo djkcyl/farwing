@@ -209,6 +209,20 @@ pub(in crate::application::viewer) fn player_title_bar(
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
     actions.spacing_mut().item_spacing.x = 4.0;
+    // Rightmost, so it stays reachable without a keyboard; the Linux player
+    // has the same button in the same place.
+    let fullscreen = bar.window.fullscreen().is_some();
+    action.toggle_fullscreen = title_icon_button(
+        &mut actions,
+        if fullscreen {
+            TitleIcon::ExitFullscreen
+        } else {
+            TitleIcon::Fullscreen
+        },
+        fullscreen,
+        if fullscreen { "退出全屏" } else { "全屏" },
+    )
+    .clicked();
     let quality_button = title_icon_button(
         &mut actions,
         TitleIcon::Quality,
@@ -400,6 +414,7 @@ pub(in crate::application::viewer) fn player_title_bar(
 #[derive(Clone, Copy, Debug, Default)]
 pub(in crate::application::viewer) struct PlayerChromeAction {
     pub(in crate::application::viewer) exit_fullscreen: bool,
+    pub(in crate::application::viewer) toggle_fullscreen: bool,
     pub(in crate::application::viewer) close: bool,
     pub(in crate::application::viewer) one_to_one: bool,
     pub(in crate::application::viewer) toggle_mouse: bool,

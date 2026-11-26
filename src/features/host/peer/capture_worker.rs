@@ -35,9 +35,9 @@ pub(super) fn capture_loop(
     transport: crate::features::host::transport::Transport,
     negotiated: Arc<crate::features::host::format::Negotiated>,
     publication: tokio::sync::watch::Sender<Published>,
-    pointer: Arc<Mutex<Option<crate::platform::windows::cursor_shape::Snapshot>>>,
+    pointer: Arc<Mutex<Option<crate::platform::cursor_shape::Snapshot>>>,
 ) -> Result<()> {
-    let _activity = crate::platform::windows::host_service::activity::Work::new();
+    let _activity = crate::platform::host_service::activity::Work::new();
     let mut runtime = encoder::Runtime::new()?;
     let mut desktop = None;
     let mut encoder = None::<encoder::Encoder>;
@@ -51,7 +51,7 @@ pub(super) fn capture_loop(
     let mut initial_auto = true;
     let mut admission = crate::features::host::parameters::WindowAdmission::default();
     let mut generation = 0;
-    let mut encoding_device = None::<(u64, windows::Win32::Graphics::Direct3D11::ID3D11Device)>;
+    let mut encoding_device = None::<(u64, capture::Device)>;
     let mut transfer = None::<crate::features::host::transfer::Transfer>;
     let mut frame_metadata = std::collections::BTreeMap::new();
     let mut last_diagnostics = None;
@@ -294,7 +294,7 @@ pub(super) fn capture_loop(
         // 里被换掉（GDI↔DXGI 恢复），所以每次都要拿当时的采集源重算一次。
         let isolated_nvenc = hardware
             && candidate.capability.backend == crate::features::host::format::Backend::Nvidia;
-        type Device = windows::Win32::Graphics::Direct3D11::ID3D11Device;
+        type Device = capture::Device;
         let select_device = |source: &Device,
                              source_adapter: u64,
                              encoding_device: &mut Option<(u64, Device)>|
@@ -732,6 +732,7 @@ pub(super) fn capture_loop(
             let created = if hardware {
                 encoder::Encoder::hardware_format(
                     &device,
+                    candidate.capability.backend,
                     size,
                     wanted.format,
                     crate::features::host::format::Rate {
@@ -850,9 +851,7 @@ pub(super) fn capture_loop(
                 frame_metadata.pop_first();
             }
             let encoded = active_encoder.encode_cancellable(
-                delivery
-                    .as_ref()
-                    .map_or(&frame.texture, |d| &d.frame.texture),
+                delivery.as_ref().map_or(&frame.image, |d| &d.frame.image),
                 timestamp,
                 force,
                 &encode_cancel,
@@ -898,7 +897,7 @@ pub(super) fn capture_loop(
                 encoded
             }
             Err(error) => {
-                if unsafe { source_device.GetDeviceRemovedReason() }.is_err() {
+                if capture::device_lost(&source_device) {
                     tracing::warn!(%error,"capture graphics device was removed; recreating selected source");
                     encoder = None;
                     pipeline = None;
@@ -927,7 +926,7 @@ pub(super) fn capture_loop(
                 std::thread::sleep(Duration::from_secs_f64(1.0 / f64::from(wanted.fps)));
                 if encode_errors >= 10
                     || error.downcast_ref::<encoder::SwitchCandidate>().is_some()
-                    || unsafe { device.GetDeviceRemovedReason() }.is_err()
+                    || capture::device_lost(&device)
                 {
                     // T C2C610: disable the failed candidate. Do not endlessly
                     // reopen that same encoder after its consecutive failures.

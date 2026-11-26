@@ -58,6 +58,26 @@ impl StreamControlHandle {
         Some((screen.id, screen.width, screen.height))
     }
 
+    /// Forwards one touchscreen contact on `track`'s picture. Touch frames
+    /// carry no screen, so the host puts them on its current screen; only
+    /// there, and only on an OpenUUYC host (the official host's handling of
+    /// a desktop controller's touch is unverified), does a gesture go out
+    /// natively. Elsewhere its first contact drives the left button.
+    pub(crate) fn touch(
+        &self,
+        owner: u64,
+        phase: crate::features::remote_input::Phase,
+        id: u32,
+        pressure: f64,
+        spot: Option<crate::features::remote_input::Spot>,
+    ) -> bool {
+        let native = spot.is_some_and(|(screen, ..)| {
+            let s = lock(&self.shared);
+            s.current_screen_id == screen && s.capability.as_ref().is_some_and(|c| c.openuuyc_host)
+        });
+        self.mouse().touch(owner, phase, id, pressure, spot, native)
+    }
+
     pub(crate) fn take_mouse_restore_point(&self, track: i32) -> Option<[f64; 2]> {
         let mut s = lock(&self.shared);
         let screen = s
@@ -80,6 +100,15 @@ impl StreamControlHandle {
 
     pub(crate) fn remote_cursor_hidden(&self) -> bool {
         self.cursor.hidden()
+    }
+
+    /// Whether the host is drawing its own pointer into the captured frames.
+    /// While it is not, nothing but this client can put a pointer on screen.
+    /// The Linux player draws the remote pointer itself and asks; the Windows
+    /// player shows it as the system cursor, which needs no such check.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn remote_cursor_captured(&self) -> bool {
+        lock(&self.shared).baseline.cursor_capture
     }
 
     pub fn set_mouse_mode(&self, mode: MouseMode) -> Result<()> {
@@ -244,6 +273,10 @@ impl StreamControlHandle {
         }
         anyhow::ensure!(payload.len() <= 16 * 1024, "mouse command too large");
         let value: serde_json::Value = serde_json::from_slice(payload)?;
+        if let Some(vibration) = crate::protocol::gamepad::GamepadVibration::parse(&value)? {
+            self.mouse().receive_gamepad_vibration(vibration);
+            return Ok(());
+        }
         if value.get("action").and_then(|v| v.as_str()) != Some("special_game_mouse") {
             return Ok(());
         }
@@ -312,14 +345,32 @@ impl StreamControlHandle {
         if !state.viewing_enabled || mode == MouseMode::View || self.microphone.needs_cleanup() {
             self.disable_microphone_locked(state);
         }
+        let clipboard_ready = state.viewing_enabled
+            && state.pb_connected
+            && state.control_channel_open
+            && state.text_channel_open
+            && state.mouse_transport_connected
+            && state.peer_clipboard >= 1
+            && mode != MouseMode::View;
+        // Clipboard sync is gated on seven separate conditions, and a session
+        // that never syncs looks identical whichever one is missing.
+        if clipboard_ready != state.clipboard_ready_reported {
+            state.clipboard_ready_reported = clipboard_ready;
+            tracing::debug!(
+                ready = clipboard_ready,
+                viewing = state.viewing_enabled,
+                pb = state.pb_connected,
+                control = state.control_channel_open,
+                text = state.text_channel_open,
+                mouse_transport = state.mouse_transport_connected,
+                peer = state.peer_clipboard,
+                mode = ?mode,
+                files_allowed = state.clipboard_files_allowed,
+                "剪贴板同步条件"
+            );
+        }
         self.clipboard.policy(
-            state.viewing_enabled
-                && state.pb_connected
-                && state.control_channel_open
-                && state.text_channel_open
-                && state.mouse_transport_connected
-                && state.peer_clipboard >= 1
-                && mode != MouseMode::View,
+            clipboard_ready,
             state.peer_clipboard >= 2 && state.clipboard_files_allowed,
         );
         self.drag_drop.enable(
@@ -333,6 +384,10 @@ impl StreamControlHandle {
             return;
         }
         let (relative, wanted) = mouse_policy(state, mode);
+        // Relative motion is only correct while this client holds the pointer.
+        // A window that could not take it says so, and absolute positioning is
+        // then the only honest way to aim, whatever the policy would prefer.
+        let relative = relative && state.mouse.relative_available();
         if mode == MouseMode::Smart && state.mouse.relative_mode() != relative {
             state.mouse.set_relative_mode(relative);
         }
@@ -367,7 +422,15 @@ pub(super) fn mouse_policy(state: &StreamControlState, mode: MouseMode) -> (bool
         MouseMode::Smart => match state.peer_mouse_relative {
             Some(true) => (true, true),
             Some(false) => (false, false),
-            None => (state.remote_cursor.hidden(), false),
+            // The host says a game took the mouse with `special_game_mouse`,
+            // and that report is what pairs relative input with the host
+            // drawing its own pointer into the picture. Until it arrives,
+            // absolute positioning is the only coherent choice: inferring
+            // relative input from a hidden cursor fires on an ordinary desktop
+            // -- Windows hides the pointer for anyone typing, for as long as
+            // they type -- and leaves the client sending deltas while nothing
+            // draws a pointer to aim with.
+            None => (false, false),
         },
     }
 }

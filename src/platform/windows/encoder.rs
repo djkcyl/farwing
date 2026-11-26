@@ -95,7 +95,7 @@ pub(crate) fn probe(
                     fps: 30,
                 },
             };
-            let sample_device: ID3D11Device = unsafe { frame.texture.GetDevice()? };
+            let sample_device: ID3D11Device = unsafe { frame.image.GetDevice()? };
             let mut transfer = if device != sample_device {
                 Some(super::transfer::Transfer::new(
                     &sample_device,
@@ -110,6 +110,7 @@ pub(crate) fn probe(
             } else {
                 Encoder::hardware_format(
                     &device,
+                    backend,
                     (frame.width, frame.height),
                     format,
                     rate,
@@ -137,9 +138,7 @@ pub(crate) fn probe(
                     None
                 };
                 let frames = encoder.encode(
-                    delivery
-                        .as_ref()
-                        .map_or(&frame.texture, |d| &d.frame.texture),
+                    delivery.as_ref().map_or(&frame.image, |d| &d.frame.image),
                     i * 333333,
                     true,
                 )?;
@@ -208,6 +207,9 @@ pub(super) fn retry_pause(attempt: usize) {
     }
 }
 
+/// Whether the host settings offer the GPU scheduling choice.
+pub(crate) const GPU_SCHEDULING: bool = true;
+
 pub(crate) struct Runtime {
     _scheduling: Option<super::gpu_scheduling::Lease>,
 }
@@ -267,8 +269,12 @@ impl Encoder {
             _ => Ok(false),
         }
     }
+    /// The adapter's vendor picks the encoder; `_backend`, the candidate's,
+    /// was derived from that same adapter. Linux needs it to choose between
+    /// NVENC and VA-API on one display.
     pub(crate) fn hardware_format(
         device: &ID3D11Device,
+        _backend: super::format::Backend,
         size: (u32, u32),
         format: super::format::Format,
         rate: super::format::Rate,

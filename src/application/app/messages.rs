@@ -44,6 +44,11 @@ pub(super) enum GuiCommand {
         device: DeviceInfo,
         options: ConnectionMediaOptions,
     },
+    /// 设备详情页打开远端终端列表时启动观察连接。
+    Terminal {
+        generation: u64,
+        device: DeviceInfo,
+    },
     Refresh,
     Login {
         generation: u64,

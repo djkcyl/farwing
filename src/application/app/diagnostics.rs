@@ -153,7 +153,7 @@ impl LocalDiagnostics {
 }
 
 fn hardware() -> Vec<(String, String)> {
-    match crate::platform::windows::device_profile::Hardware::read() {
+    match crate::platform::device_profile::Hardware::read() {
         Ok(hardware) => {
             let mut rows = vec![
                 ("设备名称".into(), hardware.name),

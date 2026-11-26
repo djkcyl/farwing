@@ -1,0 +1,296 @@
+//! winit physical keys expressed as Windows virtual-key codes.
+//!
+//! The UU protocol carries Windows VK codes because the controlled device runs
+//! Windows. On Windows the codes come from `MapVirtualKeyW`, which follows the
+//! active layout; X11 and Wayland have no such call, so the positional mapping
+//! lives here. It is keyed by physical position (US layout names in winit),
+//! which is what a remote desktop wants: the remote applies its own layout.
+#![cfg(not(windows))]
+use winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey};
+
+/// Winit exposes the layout-resolved letter and the same key with all
+/// modifiers removed on both X11 and Wayland. For an ordinary Latin letter,
+/// case is Shift XOR Caps Lock. Ignore alternate levels, dead keys and IME
+/// text rather than guessing a lock state from an unrelated symbol.
+pub(crate) fn caps_lock_from_key(
+    logical: &Key,
+    unmodified: &Key,
+    modifiers: ModifiersState,
+) -> Option<bool> {
+    // The host applies the state by synthesizing Caps Lock if needed. Do not
+    // turn a remote Ctrl/Alt/Super shortcut into a modified Caps Lock chord.
+    if modifiers.control_key() || modifiers.alt_key() || modifiers.super_key() {
+        return None;
+    }
+    let (Key::Character(logical), Key::Character(unmodified)) = (logical, unmodified) else {
+        return None;
+    };
+    if logical.len() != 1 || unmodified.len() != 1 {
+        return None;
+    }
+    let letter = logical.as_bytes()[0];
+    let base = unmodified.as_bytes()[0];
+    if !base.is_ascii_lowercase() || letter.to_ascii_lowercase() != base {
+        return None;
+    }
+    Some(letter.is_ascii_uppercase() ^ modifiers.shift_key())
+}
+
+pub(crate) fn physical_virtual_key(key: PhysicalKey) -> Option<u16> {
+    let PhysicalKey::Code(code) = key else {
+        return None;
+    };
+    virtual_key(code)
+}
+
+#[allow(clippy::too_many_lines, reason = "One arm per key on the keyboard.")]
+pub(crate) const fn virtual_key(code: KeyCode) -> Option<u16> {
+    Some(match code {
+        KeyCode::Backquote => 192,
+        KeyCode::Backslash => 220,
+        KeyCode::BracketLeft => 219,
+        KeyCode::BracketRight => 221,
+        KeyCode::Comma => 188,
+        KeyCode::Digit0 => 48,
+        KeyCode::Digit1 => 49,
+        KeyCode::Digit2 => 50,
+        KeyCode::Digit3 => 51,
+        KeyCode::Digit4 => 52,
+        KeyCode::Digit5 => 53,
+        KeyCode::Digit6 => 54,
+        KeyCode::Digit7 => 55,
+        KeyCode::Digit8 => 56,
+        KeyCode::Digit9 => 57,
+        KeyCode::Equal => 187,
+        // The extra key on 102-key ISO keyboards.
+        KeyCode::IntlBackslash => 226,
+        KeyCode::IntlRo => 193,
+        KeyCode::IntlYen => 255,
+        KeyCode::KeyA => 65,
+        KeyCode::KeyB => 66,
+        KeyCode::KeyC => 67,
+        KeyCode::KeyD => 68,
+        KeyCode::KeyE => 69,
+        KeyCode::KeyF => 70,
+        KeyCode::KeyG => 71,
+        KeyCode::KeyH => 72,
+        KeyCode::KeyI => 73,
+        KeyCode::KeyJ => 74,
+        KeyCode::KeyK => 75,
+        KeyCode::KeyL => 76,
+        KeyCode::KeyM => 77,
+        KeyCode::KeyN => 78,
+        KeyCode::KeyO => 79,
+        KeyCode::KeyP => 80,
+        KeyCode::KeyQ => 81,
+        KeyCode::KeyR => 82,
+        KeyCode::KeyS => 83,
+        KeyCode::KeyT => 84,
+        KeyCode::KeyU => 85,
+        KeyCode::KeyV => 86,
+        KeyCode::KeyW => 87,
+        KeyCode::KeyX => 88,
+        KeyCode::KeyY => 89,
+        KeyCode::KeyZ => 90,
+        KeyCode::Minus => 189,
+        KeyCode::Period => 190,
+        KeyCode::Quote => 222,
+        KeyCode::Semicolon => 186,
+        KeyCode::Slash => 191,
+        KeyCode::AltLeft => 164,
+        KeyCode::AltRight => 165,
+        KeyCode::Backspace => 8,
+        KeyCode::CapsLock => 20,
+        KeyCode::ContextMenu => 93,
+        KeyCode::ControlLeft => 162,
+        KeyCode::ControlRight => 163,
+        KeyCode::Enter => 13,
+        KeyCode::SuperLeft => 91,
+        KeyCode::SuperRight => 92,
+        KeyCode::ShiftLeft => 160,
+        KeyCode::ShiftRight => 161,
+        KeyCode::Space => 32,
+        KeyCode::Tab => 9,
+        KeyCode::Convert => 28,
+        KeyCode::KanaMode => 21,
+        KeyCode::Lang1 => 21,
+        KeyCode::Lang2 => 25,
+        KeyCode::NonConvert => 29,
+        KeyCode::Delete => 46,
+        KeyCode::End => 35,
+        KeyCode::Help => 47,
+        KeyCode::Home => 36,
+        KeyCode::Insert => 45,
+        KeyCode::PageDown => 34,
+        KeyCode::PageUp => 33,
+        KeyCode::ArrowDown => 40,
+        KeyCode::ArrowLeft => 37,
+        KeyCode::ArrowRight => 39,
+        KeyCode::ArrowUp => 38,
+        KeyCode::NumLock => 144,
+        KeyCode::Numpad0 => 96,
+        KeyCode::Numpad1 => 97,
+        KeyCode::Numpad2 => 98,
+        KeyCode::Numpad3 => 99,
+        KeyCode::Numpad4 => 100,
+        KeyCode::Numpad5 => 101,
+        KeyCode::Numpad6 => 102,
+        KeyCode::Numpad7 => 103,
+        KeyCode::Numpad8 => 104,
+        KeyCode::Numpad9 => 105,
+        KeyCode::NumpadAdd => 107,
+        KeyCode::NumpadComma => 194,
+        KeyCode::NumpadDecimal => 110,
+        KeyCode::NumpadDivide => 111,
+        KeyCode::NumpadEnter => 13,
+        KeyCode::NumpadMultiply => 106,
+        KeyCode::NumpadSubtract => 109,
+        KeyCode::Escape => 27,
+        KeyCode::PrintScreen => 44,
+        KeyCode::ScrollLock => 145,
+        KeyCode::Pause => 19,
+        KeyCode::BrowserBack => 166,
+        KeyCode::BrowserFavorites => 171,
+        KeyCode::BrowserForward => 167,
+        KeyCode::BrowserHome => 172,
+        KeyCode::BrowserRefresh => 168,
+        KeyCode::BrowserSearch => 170,
+        KeyCode::BrowserStop => 169,
+        KeyCode::LaunchApp1 => 182,
+        KeyCode::LaunchApp2 => 183,
+        KeyCode::LaunchMail => 180,
+        KeyCode::MediaPlayPause => 179,
+        KeyCode::MediaSelect => 181,
+        KeyCode::MediaStop => 178,
+        KeyCode::MediaTrackNext => 176,
+        KeyCode::MediaTrackPrevious => 177,
+        KeyCode::Power => 0,
+        KeyCode::Sleep => 95,
+        KeyCode::AudioVolumeDown => 174,
+        KeyCode::AudioVolumeMute => 173,
+        KeyCode::AudioVolumeUp => 175,
+        KeyCode::WakeUp => 0,
+        KeyCode::F1 => 112,
+        KeyCode::F2 => 113,
+        KeyCode::F3 => 114,
+        KeyCode::F4 => 115,
+        KeyCode::F5 => 116,
+        KeyCode::F6 => 117,
+        KeyCode::F7 => 118,
+        KeyCode::F8 => 119,
+        KeyCode::F9 => 120,
+        KeyCode::F10 => 121,
+        KeyCode::F11 => 122,
+        KeyCode::F12 => 123,
+        KeyCode::F13 => 124,
+        KeyCode::F14 => 125,
+        KeyCode::F15 => 126,
+        KeyCode::F16 => 127,
+        KeyCode::F17 => 128,
+        KeyCode::F18 => 129,
+        KeyCode::F19 => 130,
+        KeyCode::F20 => 131,
+        KeyCode::F21 => 132,
+        KeyCode::F22 => 133,
+        KeyCode::F23 => 134,
+        KeyCode::F24 => 135,
+        _ => return None,
+    })
+}
+
+/// Names for the keys whose labels Windows would ask `GetKeyNameTextW` for.
+pub(crate) const fn key_name(key: u16) -> Option<&'static str> {
+    Some(match key {
+        96..=105 => match key {
+            96 => "小键盘 0",
+            97 => "小键盘 1",
+            98 => "小键盘 2",
+            99 => "小键盘 3",
+            100 => "小键盘 4",
+            101 => "小键盘 5",
+            102 => "小键盘 6",
+            103 => "小键盘 7",
+            104 => "小键盘 8",
+            _ => "小键盘 9",
+        },
+        106 => "小键盘 *",
+        107 => "小键盘 +",
+        109 => "小键盘 -",
+        110 => "小键盘 .",
+        111 => "小键盘 /",
+        186 => ";",
+        187 => "=",
+        188 => ",",
+        189 => "-",
+        190 => ".",
+        191 => "/",
+        192 => "`",
+        219 => "[",
+        220 => "\\",
+        221 => "]",
+        222 => "'",
+        226 => "\\ (ISO)",
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn character(value: &str) -> Key {
+        Key::Character(value.into())
+    }
+
+    #[test]
+    fn caps_lock_accounts_for_shift_and_does_not_modify_control_shortcuts() {
+        for (letter, shifted, caps) in [
+            ("a", false, false),
+            ("A", false, true),
+            ("A", true, false),
+            ("a", true, true),
+        ] {
+            for control in [false, true] {
+                let mut modifiers = ModifiersState::empty();
+                modifiers.set(ModifiersState::SHIFT, shifted);
+                modifiers.set(ModifiersState::CONTROL, control);
+                assert_eq!(
+                    caps_lock_from_key(&character(letter), &character("a"), modifiers),
+                    (!control).then_some(caps)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn other_layout_levels_and_composed_text_do_not_guess_caps_lock() {
+        for (logical, base, modifiers) in [
+            (character("ä"), character("a"), ModifiersState::ALT),
+            (character("A"), character("a"), ModifiersState::SUPER),
+            (character("q"), character("a"), ModifiersState::empty()),
+            (character("AA"), character("a"), ModifiersState::empty()),
+            (character("1"), character("1"), ModifiersState::empty()),
+            (character("é"), character("é"), ModifiersState::empty()),
+            (
+                Key::Dead(Some('^')),
+                character("a"),
+                ModifiersState::empty(),
+            ),
+            (
+                Key::Named(winit::keyboard::NamedKey::CapsLock),
+                Key::Named(winit::keyboard::NamedKey::CapsLock),
+                ModifiersState::empty(),
+            ),
+        ] {
+            assert_eq!(caps_lock_from_key(&logical, &base, modifiers), None);
+        }
+    }
+
+    #[test]
+    fn case_uses_the_active_layout_instead_of_the_us_physical_letter() {
+        assert_eq!(
+            caps_lock_from_key(&character("Q"), &character("q"), ModifiersState::empty()),
+            Some(true)
+        );
+    }
+}
