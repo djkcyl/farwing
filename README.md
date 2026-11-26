@@ -110,7 +110,7 @@ OpenUUYC 是用 Rust 编写的 UU 远程第三方客户端，支持 Windows 和 
 | 自定义 / 全局快捷键 | ✅ | — | ⚠️ 仅播放窗口有焦点时 | — | — |
 | 凭据存储 | ✅ 凭据管理器 | ✅ 装服务后由服务保管 | ✅ Secret Service，无明文回退 | ✅ 同左 | ✅ 同左 |
 | 安装服务 / 驱动 | ✅ | ✅ 服务、输入与显示驱动 | ❌ 用 deb / AUR 包 | ❌ | ❌ |
-| 更新 | ✅ 提醒、更新并打开、命令行 | ✅ 同左 | ⚠️ 仅提醒，指向上游 Release | ⚠️ 同左 | ⚠️ 同左 |
+| 更新 | ✅ 提醒、更新并打开、命令行 | ✅ 同左 | ⚠️ 仅提醒，查本 fork 的 Linux Release | ⚠️ 同左 | ⚠️ 同左 |
 
 ## 安装与服务
 
@@ -253,7 +253,7 @@ sudo pacman -S --needed xdg-desktop-portal-gnome   # KDE 为 xdg-desktop-portal-
   - **本机会话对主控的可见性**：本机开的会话默认不对主控可见，主控看不到、也接不上。要让主控接入，在「终端」下再打开「允许主控接入本机终端会话」，打开时会再确认一次，关闭终端开关时它一并关闭。主控接入本机会话时访问通知会写明；关掉这一项后主控立即断开这些会话，shell 留给本机。
 - **主控终端**：设备详情的「终端」按钮对每台对端开一条专用终端连接，列表和所有本机终端窗口共用它；该设备的观看窗口开着时按钮不可用，对端正被占用时面板只报错、可重试，不能在这里确认接管。终端窗口用系统终端模拟器打开（`$TERMINAL` 优先，再找 `xdg-terminal-exec`、foot、alacritty、kitty、konsole、ghostty、wezterm、gnome-terminal、xterm），窗口里的 `OpenUUYC terminal` 经 `$XDG_RUNTIME_DIR/openuuyc/terminal-controller.json` 里的本机端口和令牌接到控制中心；没有 `XDG_RUNTIME_DIR` 时不开这个通道，只能在控制中心没运行时用命令行直连。面板关着时不轮询列表，没有窗口、面板也关了 10 秒后断开。
 - **远程开机**：配置网卡需要 root，程序内不提供，请用 `sudo ethtool -s <网卡> wol g`。远程关机与重启经 systemd-logind，受 polkit 约束。
-- **更新**：「关于」页的更新提醒指向上游的 Windows Release；Linux 版请从本 fork 的 Release 或 deb / AUR 包更新。下面的「命令行更新」只适用于 Windows。
+- **更新**：「关于」页检查本 fork 的 Release，按基础版本再按 `linux.N` 构建号比较，有新版时打开发布页，由你下载 deb / AUR 包更新，不自动安装。发版构建的「关于」页显示完整 tag（如 `1.0.2-beta.5-linux.11`）；自己编译或 `openuuyc-git` 没有构建号，同一基础版本的任何发布都会提示更新。下面的「命令行更新」只适用于 Windows。
 - **Gamescope**：在 SteamOS 游戏模式中，将原生程序添加为非 Steam 游戏即可，无需指定兼容性工具。启动时处理显示连接与缩放，控制中心匹配当前屏幕尺寸；保留手动设置的缩放比例。登录凭据使用系统配置的 Secret Service，锁定时先请求解锁；KWallet 解锁窗口会关联到当前 Steam 应用。
 - **手柄**：Linux 主控通过系统 SDL2 2.0.6 及以上读取标准手柄（Arch 安装 `sdl2-compat`，Debian / Ubuntu 安装 `libsdl2-2.0-0`），支持双摇杆、十字键、按钮和双扳机，震动回传还需要 SDL2 2.0.9 及以上版本和兼容手柄。SteamDeck 的 Steam Input 选择手柄布局（例如「支持视角控制的手柄」）。开启远控输入、将焦点留在播放窗口并松开已有按键后开始转发；失焦、操作本地菜单、拔出或断开连接时释放远端状态并停止震动。
 - **环境变量**：`OPENUUYC_CAPTURE` 指定采集后端顺序（如 `nvfbc`、`wlr`、`x11,portal`）；`OPENUUYC_ZEROCOPY=1` 让 VA-API 解码画面以 dmabuf 直接交给渲染器（只在 Intel 上验证过）；`OPENUUYC_CAPTURE_DMABUF=1` 与 `OPENUUYC_GPU_CONVERT=1` 是门户采集的试验开关；`OPENUUYC_BACKEND=gl|vulkan` 指定界面后端。
