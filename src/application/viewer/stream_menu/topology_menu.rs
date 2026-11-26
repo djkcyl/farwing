@@ -9,18 +9,23 @@ struct Confirmation {
     action: Action,
     origin: i32,
     generation: u64,
-    handle: StreamControlHandle,
+    mouse: crate::features::remote_input::RemoteInput,
     target: RemoteScreen,
 }
 
-fn confirmation_id() -> egui::Id {
-    egui::Id::new("display-topology-confirmation")
+fn confirmation_id(viewport: egui::ViewportId) -> egui::Id {
+    viewport_key(viewport, "display-topology-confirmation")
+}
+
+fn local_error_id(viewport: egui::ViewportId) -> egui::Id {
+    viewport_key(viewport, "display-topology-local-error")
 }
 
 pub(in crate::application::viewer) fn owns_input(ctx: &egui::Context) -> bool {
+    let viewport = ctx.viewport_id();
     ctx.data(|d| {
-        d.get_temp::<Confirmation>(confirmation_id()).is_some()
-            || d.get_temp::<String>(egui::Id::new("display-topology-local-error"))
+        d.get_temp::<Confirmation>(confirmation_id(viewport)).is_some()
+            || d.get_temp::<String>(local_error_id(viewport))
                 .is_some()
     })
 }
@@ -37,14 +42,15 @@ pub(in crate::application::viewer) fn request(
         .into_iter()
         .find(|s| s.id == origin)
     {
+        let id = confirmation_id(ctx.viewport_id());
         ctx.data_mut(|d| {
             d.insert_temp(
-                confirmation_id(),
+                id,
                 Confirmation {
                     action,
                     origin,
                     generation: handle.handshake_status().generation,
-                    handle: handle.clone(),
+                    mouse: handle.mouse().clone(),
                     target,
                 },
             )
@@ -130,11 +136,13 @@ pub(super) fn show(
     handle: &StreamControlHandle,
     local_size: Option<(u32, u32)>,
 ) {
-    let pending = ctx.data(|d| d.get_temp::<Confirmation>(confirmation_id()));
+    let viewport = ctx.viewport_id();
+    let id = confirmation_id(viewport);
+    let pending = ctx.data(|d| d.get_temp::<Confirmation>(id));
     let Some(pending) = pending else { return };
     let snapshot = handle.snapshot();
     let valid = snapshot.ready
-        && pending.handle.mouse().same_session(handle.mouse())
+        && pending.mouse.same_session(handle.mouse())
         && pending.generation == handle.handshake_status().generation
         && snapshot.screens.iter().any(|s| {
             s.id == pending.target.id
@@ -142,7 +150,7 @@ pub(super) fn show(
                 && s.display.kind == pending.target.display.kind
         });
     let mut close = false;
-    egui::Modal::new(egui::Id::new("display-topology-modal")).frame(crate::ui::controls::dialog_frame()).show(ctx, |ui| {
+    egui::Modal::new(viewport_key(viewport, "display-topology-modal")).frame(crate::ui::controls::dialog_frame()).show(ctx, |ui| {
         crate::ui::controls::configure(ui.style_mut(), crate::ui::theme::CONTROL_HEIGHT);
         ui.set_width(340.0);
         close = crate::ui::controls::dialog_header(ui,pending.action.label(),crate::ui::controls::DialogIcon::Warning,true);
@@ -169,7 +177,7 @@ pub(super) fn show(
                             action => action,
                         }
                     }) {
-                    ctx.data_mut(|d| d.insert_temp(egui::Id::new("display-topology-local-error"), error.to_string()));
+                    ctx.data_mut(|d| d.insert_temp(local_error_id(viewport), error.to_string()));
                 }
                 close = true;
             }
@@ -179,20 +187,21 @@ pub(super) fn show(
         close = true;
     }
     if close {
-        ctx.data_mut(|d| d.remove::<Confirmation>(confirmation_id()));
+        ctx.data_mut(|d| d.remove::<Confirmation>(id));
     }
 }
 
 pub(super) fn show_error(ctx: &egui::Context, handle: &StreamControlHandle) {
     let status = handle.snapshot().topology;
-    let local_id = egui::Id::new("display-topology-local-error");
+    let viewport = ctx.viewport_id();
+    let local_id = local_error_id(viewport);
     let local: Option<String> = ctx.data(|d| d.get_temp(local_id));
     let error = local.as_deref().or_else(|| {
         (status.error && !status.dismissed && ctx.input(|i| i.viewport().focused.unwrap_or(false)))
             .then_some(status.message.as_str())
     });
     if let Some(error) = error {
-        egui::Modal::new(egui::Id::new("display-topology-error"))
+        egui::Modal::new(viewport_key(viewport, "display-topology-error"))
             .frame(crate::ui::controls::dialog_frame())
             .show(ctx, |ui| {
                 ui.set_width(340.0);

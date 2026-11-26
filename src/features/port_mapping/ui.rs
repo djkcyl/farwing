@@ -2,25 +2,26 @@ use super::{
     Rule,
     service::{Command, Handle, new_id},
 };
-use crate::ui::{controls, theme, window_manager};
+use crate::account::{api::DeviceInfo, client::AuthenticatedClient};
 use crate::i18n::t;
+use crate::media::ConnectionMediaOptions;
+use crate::ui::{controls, theme};
+#[cfg(windows)]
+use crate::ui::window_manager;
 use anyhow::{Context, Result};
 use egui::{RichText, vec2};
 use std::sync::Arc;
 
+#[cfg(windows)]
 pub(crate) fn open(
-    client: Arc<crate::account::client::AuthenticatedClient>,
-    device: crate::account::api::DeviceInfo,
-    options: crate::media::ConnectionMediaOptions,
+    client: Arc<AuthenticatedClient>,
+    device: DeviceInfo,
+    options: ConnectionMediaOptions,
 ) -> Result<()> {
     crate::account::api::validate_device_id(&device.device_id)?;
     let runtime = tokio::runtime::Handle::current();
     let key = format!("ports:{}:{}", client.device_id(), device.device_id);
-    let viewport = egui::ViewportBuilder::default()
-        .with_title(format!("{} · {} · {}", crate::APP_NAME, device.alias, t().features.mapping_title))
-        .with_icon(crate::ui::branding::icon())
-        .with_inner_size(theme::MAPPING_WINDOW_SIZE)
-        .with_min_inner_size(theme::MAPPING_WINDOW_MIN);
+    let viewport = viewport(&device.alias);
     window_manager::send(window_manager::Request::Open {
         key,
         config: crate::ui::WindowConfig {
@@ -31,28 +32,90 @@ pub(crate) fn open(
         factory: Box::new(move |ctx, _| {
             theme::configure(ctx);
             let _enter = runtime.enter();
-            let handle = super::service::start(Arc::clone(&client), device.clone(), options);
-            Box::new(PortWindow {
-                client,
-                alias: device.alias,
-                handle,
-                editor: Editor::default(),
-            })
+            Box::new(PortWindow::start(client, device, options))
         }),
     })
 }
-struct PortWindow {
-    client: Arc<crate::account::client::AuthenticatedClient>,
+
+fn viewport(alias: &str) -> egui::ViewportBuilder {
+    egui::ViewportBuilder::default()
+        .with_title(format!(
+            "{} · {} · {}",
+            crate::APP_NAME,
+            alias,
+            t().features.mapping_title
+        ))
+        .with_icon(crate::ui::branding::icon())
+        .with_inner_size(theme::MAPPING_WINDOW_SIZE)
+        .with_min_inner_size(theme::MAPPING_WINDOW_MIN)
+}
+
+pub(crate) struct PortWindow {
+    #[cfg(target_os = "linux")]
+    id: egui::ViewportId,
+    client: Arc<AuthenticatedClient>,
     alias: String,
     handle: Handle,
     editor: Editor,
 }
-impl crate::ui::App for PortWindow {
-    fn ui(&mut self, ui: &mut egui::Ui) {
-        if !self.client.is_active() {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-            return;
+
+impl PortWindow {
+    fn start(
+        client: Arc<AuthenticatedClient>,
+        device: DeviceInfo,
+        options: ConnectionMediaOptions,
+    ) -> Self {
+        #[cfg(target_os = "linux")]
+        let id = egui::ViewportId::from_hash_of(("ports", client.device_id(), &device.device_id));
+        let alias = device.alias.clone();
+        let handle = super::service::start(Arc::clone(&client), device, options);
+        Self {
+            #[cfg(target_os = "linux")]
+            id,
+            client,
+            alias,
+            handle,
+            editor: Editor::default(),
         }
+    }
+
+    /// Call from the device center with its Tokio runtime entered.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn open(
+        client: Arc<AuthenticatedClient>,
+        device: DeviceInfo,
+        options: ConnectionMediaOptions,
+    ) -> Result<Self> {
+        crate::account::api::validate_device_id(&device.device_id)?;
+        Ok(Self::start(client, device, options))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn focus(&self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd_to(self.id, egui::ViewportCommand::Focus);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn show(&mut self, ctx: &egui::Context) -> bool {
+        if !self.client.is_active() {
+            return false;
+        }
+        let open = ctx.show_viewport_immediate(self.id, viewport(&self.alias), |ui, class| {
+            if class == egui::ViewportClass::EmbeddedWindow || ui.input(|i| i.viewport().close_requested()) {
+                return false;
+            }
+            self.draw(ui);
+            controls::show_notices(ui.ctx());
+            true
+        });
+        if !open {
+            // Stop declaring the child on the next parent frame.
+            ctx.request_repaint();
+        }
+        open
+    }
+
+    fn draw(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -66,6 +129,18 @@ impl crate::ui::App for PortWindow {
             .request_repaint_after(std::time::Duration::from_millis(200));
     }
 }
+
+#[cfg(windows)]
+impl crate::ui::App for PortWindow {
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        if !self.client.is_active() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        self.draw(ui);
+    }
+}
+
 #[derive(Default)]
 struct Editor {
     form: Option<Form>,

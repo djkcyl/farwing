@@ -1,7 +1,7 @@
 use crate::account::{login::Credentials, server::ServerConfig};
 use crate::i18n::t;
 use crate::ui::{controls, login, theme};
-use anyhow::{Result, ensure};
+use anyhow::Result;
 use egui::{Align, Layout, RichText};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -37,12 +37,17 @@ impl LoginScreen {
         &self.server
     }
 
+    pub(super) fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+
     pub(super) fn show(
         &mut self,
         root: &mut egui::Ui,
-        busy: bool,
+        progress: Option<&str>,
         error: &mut Option<String>,
     ) -> Option<Result<(ServerConfig, Credentials)>> {
+        let busy = progress.is_some();
         let step = self.step;
         let height = match step {
             Step::Server => 350.0,
@@ -52,7 +57,7 @@ impl LoginScreen {
         login::card(root, height, |ui| {
             attempt = match self.step {
                 Step::Server => self.server_step(ui, busy).err().map(Err),
-                Step::Account => self.account_step(ui, busy),
+                Step::Account => self.account_step(ui, progress),
             };
             if self.step != step {
                 *error = None;
@@ -108,8 +113,9 @@ impl LoginScreen {
     fn account_step(
         &mut self,
         ui: &mut egui::Ui,
-        busy: bool,
+        progress: Option<&str>,
     ) -> Option<Result<(ServerConfig, Credentials)>> {
+        let busy = progress.is_some();
         let text = t();
         let size = [ui.available_width(), theme::CONTROL_HEIGHT];
         step_title(ui, text.center.sign_in_title);
@@ -119,7 +125,10 @@ impl LoginScreen {
                 Layout::right_to_left(Align::Center),
                 |ui| {
                     let change = ui
-                        .add_enabled(!busy, egui::Link::new(text.center.change))
+                        .add_enabled(
+                            !busy && !ServerConfig::overridden(),
+                            egui::Link::new(text.center.change),
+                        )
                         .clicked();
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.label(RichText::new(text.center.server).color(theme::MUTED));
@@ -157,15 +166,7 @@ impl LoginScreen {
             .inner;
         ui.add_space(14.0);
         let ready = !busy && !self.username.trim().is_empty() && !self.password.is_empty();
-        let submit = primary_action(
-            ui,
-            ready,
-            if busy {
-                text.center.signing_in
-            } else {
-                text.common.sign_in
-            },
-        );
+        let submit = primary_action(ui, ready, progress.unwrap_or(text.common.sign_in));
         if change {
             self.step = Step::Server;
             ui.ctx().request_repaint();
@@ -182,11 +183,20 @@ impl LoginScreen {
     }
 
     fn credentials(&mut self) -> Result<(ServerConfig, Credentials)> {
-        let config = self.server_config()?;
-        ensure!(
-            !ServerConfig::overridden(),
-            "Unset FARWING_SERVER_URL to change the configured server"
-        );
+        let config = if ServerConfig::overridden() {
+            ServerConfig::require()?
+        } else {
+            match ServerConfig::load().ok().flatten() {
+                Some(config)
+                    if config.origin() == self.server
+                        && config.pinned_fingerprint().as_deref().unwrap_or_default()
+                            == self.fingerprint =>
+                {
+                    config
+                }
+                _ => self.server_config()?,
+            }
+        };
         let credentials = Credentials::new(&self.username, self.password.clone())?;
         self.password.clear();
         Ok((config, credentials))

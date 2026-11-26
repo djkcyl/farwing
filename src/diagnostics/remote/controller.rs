@@ -224,10 +224,14 @@ async fn download(
     let temporary = path.with_extension("zip.partial");
     let (partial, file) = tokio::task::spawn_blocking(move || -> Result<_> {
         std::fs::create_dir_all(&directory)?;
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&temporary)?;
         // If the awaiting task is cancelled, the returned guard still cleans up.
         Ok((Partial(temporary), file))
     })

@@ -891,7 +891,6 @@ impl NativePeer {
         self.data_channels.stream_control.microphone().close().await;
         #[cfg(windows)]
         self.data_channels.stream_control.file_transfer().close();
-        #[cfg(windows)]
         self.data_channels.stream_control.diagnostics().close();
         #[cfg(windows)]
         self.data_channels.stream_control.clipboard().suspend();
@@ -906,7 +905,6 @@ impl NativePeer {
 impl Drop for NativePeer {
     fn drop(&mut self) {
         self.data_channels.stream_control.microphone().stop();
-        #[cfg(windows)]
         self.data_channels.stream_control.diagnostics().close();
         #[cfg(windows)]
         self.data_channels.stream_control.clipboard().suspend();

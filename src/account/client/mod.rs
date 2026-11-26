@@ -875,7 +875,6 @@ impl AuthenticatedClient {
         Ok(t().session.device_removed.into())
     }
 
-    #[cfg(windows)]
     pub(crate) async fn power_owned_device(
         &self,
         expected: &crate::account::api::DeviceInfo,
@@ -906,7 +905,10 @@ impl AuthenticatedClient {
             .request(|api| async move { api.device_power(id, action).await })
             .await;
         match result {
-            Ok(mut receipt) => {
+            Ok(receipt) => {
+                #[cfg(windows)]
+                let mut receipt = receipt;
+                #[cfg(windows)]
                 if action == crate::account::power::PowerAction::Wake
                     && receipt.current_device_in_same_network == Some(true)
                     && let Some(target) = &receipt.target

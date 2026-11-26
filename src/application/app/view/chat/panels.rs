@@ -7,7 +7,9 @@ use crate::features::chat::state::{Answer, ChatState};
 use crate::i18n::t;
 use crate::ui::theme::{HOVER, LINE, MUTED, TEXT};
 use egui::{Rect, RichText, Sense, Stroke, vec2};
-use farwing_protocol::chat::{Channel, GroupState, Id, Member, Message, Notify, Status};
+#[cfg(windows)]
+use farwing_protocol::chat::Id;
+use farwing_protocol::chat::{Channel, GroupState, Member, Message, Notify, Status};
 use reqwest::Method;
 
 pub(crate) fn bytes(n: u64) -> String {
@@ -42,7 +44,11 @@ fn panel_header(ui: &mut egui::Ui, glyph: Glyph, title: &str) -> bool {
     close
 }
 
-pub(super) fn members(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi) {
+pub(super) fn members(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi, compact: bool) {
+    if compact && panel_header(ui, Glyph::People, t().chat.members) {
+        chat_ui.members = false;
+        return;
+    }
     let Some(g) = chat_ui.group.and_then(|g| state.group(g)) else { return };
     let Some(list) = state.members.get(&g.group.id) else {
         chat.load_members(g.group.id);
@@ -366,6 +372,7 @@ pub(super) fn user_card(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState
     }
 }
 
+#[cfg(windows)]
 /// A voice participant's card: their volume here, and a moderator's mute
 /// and disconnect.
 pub(super) fn voice_card(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi) {

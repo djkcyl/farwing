@@ -24,11 +24,11 @@ struct State {
     results: HashMap<Id, bool>,
     progress: HashMap<Id, u64>,
 }
-fn state_id() -> Id {
-    Id::new("operation-notices")
+fn state_id(ctx: &Context) -> Id {
+    Id::new(("operation-notices", ctx.viewport_id()))
 }
-fn modal_id() -> Id {
-    Id::new("operation-notice-modal")
+fn modal_id(ctx: &Context) -> Id {
+    Id::new(("operation-notice-modal", ctx.viewport_id()))
 }
 
 /// Use for an explicit operation result; an identical result from a later user
@@ -77,8 +77,9 @@ pub(crate) fn notice_with_action(
 /// a dismissal; `None` until answered.
 pub(crate) fn notice_answer(ctx: &Context, source: impl egui::AsId) -> Option<bool> {
     let source = Id::new(source);
+    let state_id = state_id(ctx);
     ctx.data_mut(|d| {
-        d.get_temp_mut_or_default::<State>(state_id())
+        d.get_temp_mut_or_default::<State>(state_id)
             .results
             .remove(&source)
     })
@@ -98,19 +99,21 @@ fn publish(
         return;
     }
     let frame = ctx.cumulative_frame_nr();
+    let state_id = state_id(ctx);
+    let modal_id = modal_id(ctx);
     let parent = if nested {
-        ctx.data_mut(|d| d.get_temp_mut_or_default::<State>(state_id()).dialog)
+        ctx.data_mut(|d| d.get_temp_mut_or_default::<State>(state_id).dialog)
             .filter(|(seen, _)| *seen == frame)
             .map(|(_, layer)| layer)
             .or_else(|| {
                 ctx.memory(|m| m.top_modal_layer())
-                    .filter(|layer| layer.id != modal_id())
+                    .filter(|layer| layer.id != modal_id)
             })
     } else {
         None
     };
     ctx.data_mut(|d| {
-        let state = d.get_temp_mut_or_default::<State>(state_id());
+        let state = d.get_temp_mut_or_default::<State>(state_id);
         if let Some(existing) = state.pending.iter_mut().find(|n| n.source == source) {
             existing.message = message;
             existing.title = title.into();
@@ -163,8 +166,9 @@ pub(crate) fn observe_notice_action(
 ) -> Option<bool> {
     let source = Id::new(source);
     observe(ctx, source, title, icon, message, Some(action), true, false);
+    let state_id = state_id(ctx);
     ctx.data_mut(|d| {
-        d.get_temp_mut_or_default::<State>(state_id())
+        d.get_temp_mut_or_default::<State>(state_id)
             .results
             .remove(&source)
     })
@@ -180,8 +184,9 @@ fn observe(
     report: bool,
     nested: bool,
 ) {
+    let state_id = state_id(ctx);
     let changed = ctx.data_mut(|d| {
-        let state = d.get_temp_mut_or_default::<State>(state_id());
+        let state = d.get_temp_mut_or_default::<State>(state_id);
         match message.filter(|s| !s.trim().is_empty()) {
             Some(message) if state.observed.get(&source).is_none_or(|old| old != message) => {
                 state.observed.insert(source, message.into());
@@ -210,8 +215,10 @@ fn observe(
 
 pub(crate) fn show_notices(ctx: &Context) {
     let frame = ctx.cumulative_frame_nr();
+    let state_id = state_id(ctx);
+    let modal_id = modal_id(ctx);
     ctx.data_mut(|d| {
-        let state = d.get_temp_mut_or_default::<State>(state_id());
+        let state = d.get_temp_mut_or_default::<State>(state_id);
         let finished = state
             .progress
             .iter()
@@ -225,13 +232,13 @@ pub(crate) fn show_notices(ctx: &Context) {
         }
     });
     let parent = ctx
-        .data_mut(|d| d.get_temp_mut_or_default::<State>(state_id()).dialog)
+        .data_mut(|d| d.get_temp_mut_or_default::<State>(state_id).dialog)
         .filter(|(seen, _)| *seen == frame)
         .map(|(_, layer)| layer);
     let current = ctx.data_mut(|d| {
-        let state = d.get_temp_mut_or_default::<State>(state_id());
+        let state = d.get_temp_mut_or_default::<State>(state_id);
         let eligible = |notice: &&Notice| {
-            parent.is_none_or(|layer| layer.id == modal_id() || notice.parent == Some(layer))
+            parent.is_none_or(|layer| layer.id == modal_id || notice.parent == Some(layer))
         };
         // Keep a visible message stable until acknowledgement. A form validation
         // message may pass queued background failures that are waiting for that form.
@@ -249,7 +256,7 @@ pub(crate) fn show_notices(ctx: &Context) {
     };
     let mut closed = false;
     let mut accepted = false;
-    let response = egui::Modal::new(modal_id())
+    let response = egui::Modal::new(modal_id)
         .frame(dialog_frame())
         .show(ctx, |ui| {
             ui.set_width(
@@ -278,7 +285,7 @@ pub(crate) fn show_notices(ctx: &Context) {
         });
     if accepted || closed || response.should_close() {
         ctx.data_mut(|d| {
-            let state = d.get_temp_mut_or_default::<State>(state_id());
+            let state = d.get_temp_mut_or_default::<State>(state_id);
             if let Some(index) = state
                 .pending
                 .iter()
@@ -301,8 +308,9 @@ pub(crate) fn clear_notice(ctx: &Context, source: impl egui::AsId) {
 }
 
 fn clear_by_id(ctx: &Context, source: Id) {
+    let state_id = state_id(ctx);
     ctx.data_mut(|d| {
-        let state = d.get_temp_mut_or_default::<State>(state_id());
+        let state = d.get_temp_mut_or_default::<State>(state_id);
         state.pending.retain(|n| n.source != source);
         state.observed.remove(&source);
         state.results.remove(&source);
@@ -329,8 +337,9 @@ pub(crate) fn progress_notice(
             false,
         );
         let frame = ctx.cumulative_frame_nr();
+        let state_id = state_id(ctx);
         ctx.data_mut(|d| {
-            d.get_temp_mut_or_default::<State>(state_id())
+            d.get_temp_mut_or_default::<State>(state_id)
                 .progress
                 .insert(source, frame);
         });
@@ -361,11 +370,12 @@ pub(crate) fn observe_form_notice(
 // Header registration also sees newly opened forms in this frame; egui's
 // top_modal_layer reports only the previous frame.
 pub(super) fn register_dialog(ctx: &Context, layer: egui::LayerId) {
-    if layer.id == modal_id() {
+    if layer.id == modal_id(ctx) {
         return;
     }
     let frame = ctx.cumulative_frame_nr();
+    let state_id = state_id(ctx);
     ctx.data_mut(|d| {
-        d.get_temp_mut_or_default::<State>(state_id()).dialog = Some((frame, layer));
+        d.get_temp_mut_or_default::<State>(state_id).dialog = Some((frame, layer));
     });
 }

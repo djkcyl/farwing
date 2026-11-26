@@ -67,6 +67,16 @@ fn preview_card(ui: &mut egui::Ui, chat: &ChatService, g: &GroupPreview, note: O
 pub(super) fn show(ctx: &egui::Context, chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi) {
     dialog(ctx, chat, state, chat_ui);
     settle(chat, state, chat_ui);
+    if let Some(picker) = &mut chat_ui.settings.avatar_pick
+        && let Some(paths) = picker.poll(ctx)
+    {
+        chat_ui.settings.avatar_pick = None;
+        if let Some(path) = paths.into_iter().next()
+            && let Ok(bytes) = std::fs::read(path)
+        {
+            chat.upload_square("/api/v2/me/avatar".into(), bytes);
+        }
+    }
 }
 
 fn dialog(ctx: &egui::Context, chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi) {
@@ -283,6 +293,7 @@ fn dialog(ctx: &egui::Context, chat: &ChatService, state: &ChatState, chat_ui: &
             });
             keep &= !response.should_close();
         }
+        #[cfg(windows)]
         Dialog::Share(draft) => {
             let v = &t().voice;
             let sharing = state.my_voice.as_ref().and_then(|m| m.screen.clone());
@@ -373,29 +384,35 @@ fn dialog(ctx: &egui::Context, chat: &ChatService, state: &ChatState, chat_ui: &
             let mut prefs: Prefs = snap.prefs.clone();
             let before = prefs.clone();
             let response = egui::Modal::new(egui::Id::new("chat-me")).frame(dialog_frame()).show(ctx, |ui| {
+                #[cfg(windows)]
                 ui.set_width(if chat_ui.me_tab == 1 { 710.0 } else { 420.0 });
+                #[cfg(target_os = "linux")]
+                ui.set_width(420.0);
                 if dialog_header(ui, c.settings, DialogIcon::Edit, true) {
                     keep = false;
                 }
-                ui.horizontal(|ui| {
-                    for (tab, label) in [(0u8, c.settings), (1, t().voice.settings)] {
-                        if ui.selectable_label(chat_ui.me_tab == tab, label).clicked() {
-                            chat_ui.me_tab = tab;
+                #[cfg(windows)]
+                {
+                    ui.horizontal(|ui| {
+                        for (tab, label) in [(0u8, c.settings), (1, t().voice.settings)] {
+                            if ui.selectable_label(chat_ui.me_tab == tab, label).clicked() {
+                                chat_ui.me_tab = tab;
+                            }
                         }
+                    });
+                    ui.separator();
+                    if chat_ui.me_tab == 1 {
+                        voice_settings(ui, chat, chat_ui);
+                        let (_, close) = dialog_actions(ui, None, Some(t().common.close));
+                        keep &= !close;
+                        return;
                     }
-                });
-                ui.separator();
-                if chat_ui.me_tab == 1 {
-                    voice_settings(ui, chat, chat_ui);
-                    let (_, close) = dialog_actions(ui, None, Some(t().common.close));
-                    keep &= !close;
-                    return;
                 }
                 ui.horizontal(|ui| {
                     parts::avatar(ui, chat, &snap.me, 54.0, None);
                     ui.vertical(|ui| {
-                        if ui.button(c.change_avatar).clicked() && chat_ui.files.is_none() {
-                            chat_ui.settings.avatar_pick = Some(crate::platform::windows::file_dialog::pick_files(c.change_avatar.into()));
+                        if ui.button(c.change_avatar).clicked() && chat_ui.settings.avatar_pick.is_none() {
+                            chat_ui.settings.avatar_pick = Some(super::file_picker::FilePicker::open(c.change_avatar));
                         }
                         if !snap.me.avatar.is_empty() && ui.button(c.remove_avatar).clicked() {
                             chat.fire(Method::DELETE, "/api/v2/me/avatar".into(), None);
@@ -516,6 +533,7 @@ fn settle(chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi) {
         chat.forget("open_dm");
     }
     // A call from the friends page: the direct message opens and rings.
+    #[cfg(windows)]
     if let Some(Answer::Done(v)) = answer(state, "call_dm")
         && let Some(id) = v["channel"]["id"].as_str().and_then(|s| s.parse().ok())
     {
@@ -523,17 +541,6 @@ fn settle(chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi) {
         chat_ui.select_channel(Id(id));
         chat.forget("call_dm");
         chat.start_call(Id(id));
-    }
-    // The avatar file chosen.
-    if let Some(rx) = &chat_ui.settings.avatar_pick
-        && let Ok(paths) = rx.try_recv()
-    {
-        chat_ui.settings.avatar_pick = None;
-        if let Some(p) = paths.into_iter().next()
-            && let Ok(bytes) = std::fs::read(p)
-        {
-            chat.upload_square("/api/v2/me/avatar".into(), bytes);
-        }
     }
 }
 
@@ -580,6 +587,7 @@ pub(super) fn image_viewer(ctx: &egui::Context, chat: &ChatService, chat_ui: &mu
     }
 }
 
+#[cfg(windows)]
 /// The voice settings: devices, processing, how speaking starts, volume.
 fn voice_settings(ui: &mut egui::Ui, chat: &ChatService, chat_ui: &mut ChatUi) {
     use crate::features::voice::capture::{Noise, endpoints};

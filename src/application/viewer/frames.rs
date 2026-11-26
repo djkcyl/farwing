@@ -48,15 +48,15 @@ pub(super) struct FrameWake {
     pub(super) visible: Arc<AtomicBool>,
     pub(super) render_thread: Arc<Mutex<Option<std::thread::Thread>>>,
     #[cfg(target_os = "linux")]
-    repaint: Option<egui::Context>,
+    repaint: Option<(egui::Context, egui::ViewportId)>,
 }
 
 impl FrameWake {
     #[cfg(target_os = "linux")]
-    pub(super) fn for_egui(context: egui::Context) -> Self {
+    pub(super) fn for_egui(context: egui::Context, viewport: egui::ViewportId) -> Self {
         Self {
             visible: Arc::new(AtomicBool::new(true)),
-            repaint: Some(context),
+            repaint: Some((context, viewport)),
             ..Self::default()
         }
     }
@@ -68,8 +68,8 @@ impl FrameWake {
 
     pub(super) fn notify(&self) {
         #[cfg(target_os = "linux")]
-        if let Some(context) = &self.repaint {
-            context.request_repaint();
+        if let Some((context, viewport)) = &self.repaint {
+            context.request_repaint_of(*viewport);
         }
         if let Some(thread) = mutex_lock(&self.render_thread).as_ref() {
             thread.unpark();

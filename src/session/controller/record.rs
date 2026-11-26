@@ -116,7 +116,7 @@ struct Bound {
 }
 
 /// One visit's summary, sampled from the window's current connection.
-pub(super) struct VisitRecord {
+pub(crate) struct VisitRecord {
     tally: Arc<Mutex<Tally>>,
     control: Arc<Mutex<Option<StreamControlHandle>>>,
     bound: Mutex<Option<Bound>>,
@@ -124,7 +124,7 @@ pub(super) struct VisitRecord {
 }
 
 impl VisitRecord {
-    pub(super) fn start(
+    pub(crate) fn start(
         mut monitor: watch::Receiver<Option<PerformanceMonitor>>,
     ) -> Self {
         let tally = Arc::new(Mutex::new(Tally::default()));
@@ -167,26 +167,37 @@ impl VisitRecord {
     }
 
     /// The session now playing.
-    pub(super) fn connected(&self, control: &StreamControlHandle) {
+    pub(crate) fn connected(&self, control: &StreamControlHandle) {
         *lock(&self.control) = Some(control.clone());
     }
 
     /// The connection was lost and is being rebuilt.
-    pub(super) fn reconnecting(&self) {
+    pub(crate) fn reconnecting(&self) {
         lock(&self.tally).reconnects += 1;
     }
 
     /// Who the summary is sent as and about: the visit, both devices, and
     /// for a connection without the server, what the record needs.
-    pub(super) fn bind(
+    pub(crate) fn bind(
         &self,
         client: Option<Arc<AuthenticatedClient>>,
         visit: &str,
         host_device_id: &str,
         controller_device_id: &str,
-        direct: Option<DirectRecord>,
+        mut direct: Option<DirectRecord>,
     ) {
-        *lock(&self.bound) = Some(Bound {
+        let mut bound = lock(&self.bound);
+        if let Some(next) = &mut direct
+            && let Some(previous) = bound.as_ref().filter(|previous| {
+                previous.report.visit == visit
+                    && previous.report.host_device_id == host_device_id
+                    && previous.report.controller_device_id == controller_device_id
+            })
+            && let Some(previous) = &previous.report.direct
+        {
+            next.started_at = previous.started_at;
+        }
+        *bound = Some(Bound {
             client,
             report: RecordReport {
                 visit: visit.to_owned(),
@@ -199,7 +210,7 @@ impl VisitRecord {
     }
 
     /// Send the summary (a window that showed nothing sends none).
-    pub(super) async fn finish(self) {
+    pub(crate) async fn finish(&self) {
         self.task.abort();
         let viewer = lock(&self.tally).report();
         let Some(Bound { client, mut report }) = lock(&self.bound).take() else {

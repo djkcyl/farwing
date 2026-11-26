@@ -1,8 +1,16 @@
-use super::*;
+use super::{
+    ConnectionProgressReporter, ConnectionSummary, ControllerConnection, cancellable,
+    connection::ResolvedConnection, report_progress,
+};
 use crate::account::api::{ApiFailure, AssistJoined, ErrorCode};
-use farwing_protocol::crypto;
-use crate::account::assist::AssistRequest;
+use crate::account::assist::{AssistRequest, is_short_number};
+use crate::account::client::AuthenticatedClient;
 use crate::i18n::t;
+use crate::media::{ConnectionMediaOptions, LocalDisplayInfo};
+use anyhow::{Context as _, Result, anyhow, bail};
+use farwing_protocol::crypto;
+use std::{sync::Arc, time::Duration};
+use tokio_util::sync::CancellationToken;
 
 pub(super) struct AssistConnection {
     request: AssistRequest,
@@ -29,10 +37,11 @@ impl AssistConnection {
                 .clone()
                 .context(t().session.error_cannot_resume)?;
             match cancellable(cancel, client.assist_refetch(&session_id)).await {
-                Ok(ticket) => AssistJoined {
-                    ticket,
-                    ..previous.clone()
-                },
+                Ok(ticket) => {
+                    let resumed = AssistJoined { ticket, ..previous.clone() };
+                    check_target(&self.request, &resumed, controller_id)?;
+                    resumed
+                }
                 // The server session ended with the host (restart, sleep):
                 // ask the same verified device again with this session's code.
                 Err(error) if session_ended(&error) => {
@@ -41,22 +50,13 @@ impl AssistConnection {
                     self.request
                         .expected_publisher_id
                         .get_or_insert_with(|| previous.host.device_id.clone());
-                    authorize(client, &self.request, visit, reporter, cancel).await?
+                    authorize(client, &self.request, controller_id, visit, reporter, cancel).await?
                 }
                 Err(error) => return Err(error),
             }
         } else {
-            authorize(client, &self.request, visit, reporter, cancel).await?
+            authorize(client, &self.request, controller_id, visit, reporter, cancel).await?
         };
-        reply.validate(controller_id)?;
-        if self
-            .request
-            .expected_publisher_id
-            .as_ref()
-            .is_some_and(|id| id != &reply.host.device_id)
-        {
-            bail!("{}", t().session.error_entry_identity_changed);
-        }
         if reply.host.alias.trim().is_empty() {
             reply.host.alias = target_label(&self.request.target);
         }
@@ -72,7 +72,7 @@ impl AssistConnection {
 
     pub(super) async fn remember_success(&mut self, client: &AuthenticatedClient) -> Result<()> {
         // The code stays with the session: recovery may need to authorize again.
-        if self.remembered || !self.request.has_code() {
+        if client.is_guest() || self.remembered || !self.request.has_code() {
             return Ok(());
         }
         let room = self.room.as_ref().context(t().session.error_no_connected_session)?;
@@ -88,9 +88,22 @@ impl AssistConnection {
     }
 }
 
+fn check_target(request: &AssistRequest, reply: &AssistJoined, controller_id: &str) -> Result<()> {
+    reply.validate(controller_id)?;
+    crate::transport::signal::identity::check_key(&reply.host.device_id, &reply.host.public_key)?;
+    anyhow::ensure!(
+        (is_short_number(&request.target) || request.target == reply.host.device_id)
+            && request.expected_publisher_id.as_deref()
+                .is_none_or(|id| id == reply.host.device_id),
+        "{}",
+        t().session.error_entry_identity_changed
+    );
+    Ok(())
+}
+
 /// How a host reached through the server is called before its name is known.
 pub(crate) fn target_label(target: &str) -> String {
-    if crate::account::assist::is_short_number(target) {
+    if is_short_number(target) {
         (t().session.target_short_number)(target)
     } else {
         (t().session.target_device)(&crate::account::api::device_id_text(target))
@@ -124,14 +137,17 @@ pub(super) async fn resolve(
     }
     let controller_device_id = client.device_id();
     crate::account::api::validate_device_id(&controller_device_id)?;
-    let display = detect_local_display().unwrap_or_else(|error| {
+    #[cfg(windows)]
+    let display = crate::media::detect_local_display().unwrap_or_else(|error| {
         tracing::warn!(%error, "local display not detected; using 1080p60");
         LocalDisplayInfo::FALLBACK
     });
+    #[cfg(target_os = "linux")]
+    let display = LocalDisplayInfo::FALLBACK;
     let profile = options.resolve(display)?;
     Ok(ResolvedConnection {
         client,
-        visit: super::record::new_visit(),
+        visit: uuid::Uuid::new_v4().simple().to_string(),
         target_device_id: String::new(),
         controller_device_id,
         profile,
@@ -148,14 +164,67 @@ pub(super) async fn resolve(
         preferences: None,
         audio_preferences: None,
         target_platform: farwing_protocol::Platform::Unknown,
+        #[cfg(windows)]
         refresh_after_upgrade: false,
+        #[cfg(windows)]
         background: None,
     })
 }
 
+#[cfg(target_os = "linux")]
+impl ControllerConnection {
+    /// Open an authorised assistance session for the Linux viewer.
+    pub(crate) async fn connect_assistance(
+        client: Arc<AuthenticatedClient>,
+        mut request: AssistRequest,
+        options: ConnectionMediaOptions,
+        visit: &str,
+        record: &super::record::VisitRecord,
+        reporter: Option<&ConnectionProgressReporter>,
+        cancel: &CancellationToken,
+    ) -> Result<(Self, String)> {
+        if !client.is_guest() {
+            let (code, publisher_id) = cancellable(
+                cancel,
+                client.resolve_assist_code(
+                    request.target.clone(),
+                    std::mem::take(&mut request.connect_code),
+                    request.expected_publisher_id.take(),
+                ),
+            )
+            .await?;
+            request.connect_code = code;
+            request.expected_publisher_id = publisher_id;
+        }
+        let label = target_label(&request.target);
+        let mut resolved = cancellable(
+            cancel,
+            resolve(Arc::clone(&client), &label, options, request, reporter),
+        )
+        .await?;
+        resolved.visit = visit.to_owned();
+        let mut retries = 0;
+        let connection = resolved.connect(reporter, cancel, &mut retries).await?;
+        if !cancel.is_cancelled()
+            && let Some(assist) = &mut resolved.assist
+            && let Err(error) = assist.remember_success(&client).await
+        {
+            tracing::warn!(%error, "connected assistance code was not saved");
+        }
+        record.bind(
+            Some(client),
+            &resolved.visit,
+            &resolved.target_device_id,
+            &resolved.controller_device_id,
+            None,
+        );
+        Ok((connection, resolved.summary.alias))
+    }
+}
 async fn authorize(
     client: &AuthenticatedClient,
     request: &AssistRequest,
+    controller_id: &str,
     visit: &str,
     reporter: Option<&ConnectionProgressReporter>,
     cancel: &CancellationToken,
@@ -233,7 +302,7 @@ async fn authorize(
             .unwrap_or_default();
         let mut joined =
             cancellable(cancel, client.assist_accept(&pending.request_id, confirm, visit)).await?;
-        crate::transport::signal::identity::check_key(&joined.host.device_id, &joined.host.public_key)?;
+        check_target(request, &joined, controller_id)?;
         joined.pake_key = key;
         // Listed under "最近与收藏", and reached without a code next time
         // when the host trusts this device.
@@ -242,7 +311,7 @@ async fn authorize(
             public_key: joined.host.public_key.clone(),
             name: joined.host.alias.clone(),
             address: String::new(),
-            connect_id: if crate::account::assist::is_short_number(&request.target) {
+            connect_id: if is_short_number(&request.target) {
                 request.target.clone()
             } else {
                 String::new()

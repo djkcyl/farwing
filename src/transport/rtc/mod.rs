@@ -25,7 +25,6 @@ pub use peer::{IceServer, NativePeer};
 pub(crate) use tracks::{
     EncodedVideoFrame, FrameSenderTiming, PlayoutDelay, VideoFrameSink, VideoReceiverFeedback,
 };
-#[cfg(windows)]
 pub(crate) use tracks::VideoTrackSource;
 pub use tracks::{ForwardedTrack, MediaKind, RtpForwardConfig, RtpForwarder};
 

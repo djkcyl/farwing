@@ -10,7 +10,6 @@
 pub(crate) mod client;
 #[cfg(windows)]
 pub(crate) mod host;
-#[cfg(windows)]
 pub(crate) mod lan;
 #[cfg(windows)]
 pub(crate) mod managed;
@@ -116,6 +115,7 @@ impl Target {
                 None if tail.is_empty() => default,
                 None => bail!("{}", t().session.ipv6_address_format),
             };
+            ensure!(port != 0, "{}", t().session.port_invalid);
             return Ok(Self {
                 host: host.to_owned(),
                 port,
@@ -418,6 +418,7 @@ mod tests {
         assert!(Target::parse("http://x").is_err());
         assert!(Target::parse("a b").is_err());
         assert!(Target::parse("host:0").is_err());
+        assert!(Target::parse("[::1]:0").is_err());
     }
 
     #[test]

@@ -27,7 +27,6 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 use transport::{Carrier, Incoming, SignalTransport};
 pub(crate) use transport::{SignalFailure, SocketState};
-#[cfg(windows)]
 pub(crate) use transport::{connect_socket, realtime_request};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
@@ -61,6 +60,8 @@ pub struct SignalSession {
     /// a host behind a router that forwards them (§12.3).
     dialed: Option<std::net::IpAddr>,
     derived: std::collections::HashSet<(std::net::IpAddr, u16)>,
+    /// A host already authenticated by the assist grant or direct TLS handshake.
+    expected_host: Option<(String, String)>,
     /// Request IDs are unique on the socket: sessions carried by one
     /// presence connection each have their own prefix.
     request_prefix: String,
@@ -238,6 +239,7 @@ impl SignalSession {
             router: None,
             dialed: None,
             derived: Default::default(),
+            expected_host: None,
             request_prefix: "c-".to_owned(),
             visit: String::new(),
         }
@@ -246,6 +248,10 @@ impl SignalSession {
     /// The visit this controller's session belongs to (direct connections).
     pub(crate) fn set_visit(&mut self, visit: &str) {
         visit.clone_into(&mut self.visit);
+    }
+
+    pub(crate) fn expect_host(&mut self, device_id: &str, public_key: &str) {
+        self.expected_host = Some((device_id.to_owned(), public_key.to_owned()));
     }
 
     /// Offer this presence connection to controller sessions of the same
@@ -434,6 +440,13 @@ impl SignalSession {
         );
         crate::account::api::validate_device_id(&started.host.device_id)
             .context("session.start ack did not identify the host")?;
+        anyhow::ensure!(
+            self.expected_host.as_ref().is_none_or(|(device_id, public_key)| {
+                device_id == &started.host.device_id && public_key == &started.host.public_key
+            }),
+            "{}",
+            crate::i18n::t().session.error_entry_identity_changed
+        );
         let binding = identity::Binding {
             local,
             role: identity::Role::Controller,

@@ -258,7 +258,6 @@ pub struct StreamControlHandle {
     drag_drop: crate::features::drag_drop::controller::Controller,
     #[cfg(windows)]
     files: Arc<crate::features::file_transfer::Transport>,
-    #[cfg(windows)]
     diagnostics: crate::diagnostics::remote::Controller,
     mouse: crate::features::remote_input::RemoteInput,
     cursor: crate::features::remote_cursor::RemoteCursorState,
@@ -514,7 +513,6 @@ impl StreamControlHandle {
                 drag_drop: Default::default(),
                 #[cfg(windows)]
                 files: Arc::new(crate::features::file_transfer::Transport::default()),
-                #[cfg(windows)]
                 diagnostics: Default::default(),
                 mouse,
                 cursor,
@@ -619,7 +617,6 @@ impl StreamControlHandle {
         &self.files
     }
 
-    #[cfg(windows)]
     pub(crate) fn diagnostics(&self) -> &crate::diagnostics::remote::Controller {
         &self.diagnostics
     }

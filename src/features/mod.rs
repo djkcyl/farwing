@@ -1,6 +1,5 @@
 //! Features ownership and module boundaries.
 
-#[cfg(windows)]
 pub(crate) mod chat;
 #[cfg(windows)]
 pub(crate) mod voice;

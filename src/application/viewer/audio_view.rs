@@ -7,6 +7,7 @@ use crate::{
 use egui::{Align, Align2, FontId, Layout, Rect, RichText, Sense, Stroke, pos2, vec2};
 use std::time::{Duration, Instant};
 
+#[path = "audio_view/waveform.rs"]
 mod waveform;
 
 pub(crate) struct AudioView {

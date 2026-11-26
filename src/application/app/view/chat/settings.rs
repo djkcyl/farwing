@@ -42,8 +42,8 @@ pub(super) struct SettingsUi {
     member_query: String,
     ban: Option<(String, String, String, u32)>,
     transfer_to: Option<String>,
-    pub(super) avatar_pick: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
-    icon_pick: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
+    pub(super) avatar_pick: Option<super::file_picker::FilePicker>,
+    icon_pick: Option<super::file_picker::FilePicker>,
 }
 
 impl SettingsUi {
@@ -186,8 +186,8 @@ pub(super) fn show(ctx: &egui::Context, chat: &ChatService, state: &ChatState, c
     if close || response.should_close() {
         chat_ui.dialog = None;
     }
-    if let Some(rx) = &chat_ui.settings.icon_pick
-        && let Ok(paths) = rx.try_recv()
+    if let Some(picker) = &mut chat_ui.settings.icon_pick
+        && let Some(paths) = picker.poll(ctx)
     {
         chat_ui.settings.icon_pick = None;
         if let Some(path) = paths.into_iter().next()
@@ -209,7 +209,7 @@ fn overview(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &
         if manage {
             ui.vertical(|ui| {
                 if ui.button(c.change_icon).clicked() && s.icon_pick.is_none() {
-                    s.icon_pick = Some(crate::platform::windows::file_dialog::pick_files(c.change_icon.into()));
+                    s.icon_pick = Some(super::file_picker::FilePicker::open(c.change_icon));
                 }
                 if !g.group.icon.is_empty() && ui.button(c.remove_icon).clicked() {
                     chat.fire(Method::DELETE, format!("/api/v2/chat/groups/{id}/icon"), None);

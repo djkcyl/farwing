@@ -49,7 +49,6 @@ impl DataChannels {
             stream_control.file_transfer().bind(channel);
             #[cfg(windows)]
             stream_control.drag_drop().bind(channel);
-            #[cfg(windows)]
             stream_control.diagnostics().bind(channel);
             Self::install_handlers(
                 channel,
@@ -241,18 +240,25 @@ async fn route_message(
             .receive(data)
             .map(drop)
             .map_err(|error| ("port mapping", error)),
-        #[cfg(windows)]
         // Bulk streams belong to the feature named by their kind.
         Some(FrameType::File | FrameType::Transfer | FrameType::Flow) => {
             use crate::transport::transfer::kind;
             match crate::transport::transfer::kind_of(data) {
+                Some(kind::DIAGNOSTICS) => stream_control
+                    .diagnostics()
+                    .receive(data)
+                    .map(drop)
+                    .map_err(|error| ("diagnostics", error)),
+                #[cfg(windows)]
                 Some(kind::FILE) | None => stream_control
                     .file_transfer()
                     .receive(data)
                     .await
                     .map(|_| ())
                     .map_err(|error| ("file transfer", error)),
+                #[cfg(windows)]
                 Some(kind::CLIPBOARD) => receive_clipboard(stream_control, data),
+                #[cfg(windows)]
                 Some(kind::DRAG) => match channel {
                     Some(channel) => stream_control
                         .drag_drop()
@@ -260,18 +266,14 @@ async fn route_message(
                         .map_err(|error| ("native drag", error)),
                     None => Ok(()),
                 },
-                Some(kind::DIAGNOSTICS) => stream_control
-                    .diagnostics()
-                    .receive(data)
-                    .map(drop)
-                    .map_err(|error| ("diagnostics", error)),
+                #[cfg(target_os = "linux")]
+                None => Ok(()),
                 Some(other) => {
                     tracing::debug!(kind = other, "ignored bulk stream without a controller owner");
                     Ok(())
                 }
             }
         }
-        #[cfg(windows)]
         Some(FrameType::Diagnostics) => stream_control
             .diagnostics()
             .receive(data)

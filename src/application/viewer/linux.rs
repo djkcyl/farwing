@@ -6,20 +6,16 @@ mod frames;
 #[path = "present_queue.rs"]
 mod present_queue;
 
-use crate::diagnostics::performance::PerformanceMonitor;
-use crate::features::stream_control::{MouseMode, StreamControlHandle};
+use crate::diagnostics::performance::{PerformanceMonitor, RenderedFrameTiming};
+use crate::features::stream_control::{RemoteScreen, StreamControlHandle};
 use crate::i18n::t;
 use crate::media::video_color::ColorMatrix;
 use crate::media::{ConnectionMediaProfile, VideoCodec};
-use crate::transport::rtc::{EncodedVideoFrame, VideoFrameSink, VideoReceiverFeedback};
-use crate::ui::{
-    branding,
-    controls::{ViewerCaptionIcon, viewer_caption_button},
-    theme,
-};
+use crate::transport::rtc::{EncodedVideoFrame, VideoFrameSink, VideoTrackSource};
+use crate::ui::{branding, theme};
 use anyhow::Result;
 use decode_pipeline::{DecoderConfig, decoder_manager};
-use egui::{ColorImage, Event, Key, MouseWheelUnit, PointerButton, Rect, TextureHandle};
+use egui::{ColorImage, Key, Rect, TextureHandle};
 use frames::*;
 use present_queue::PresentQueue;
 use std::sync::{
@@ -29,11 +25,34 @@ use std::sync::{
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-const INPUT_OWNER: u64 = 1;
+#[path = "linux_view.rs"]
+mod linux_view;
+pub(crate) use linux_view::{Playback, ViewerWindow, viewport_builder};
+#[path = "linux_screens.rs"]
+mod linux_screens;
+pub(crate) use linux_screens::ScreenStreams;
+#[path = "annotation.rs"]
+mod annotation;
+#[path = "audio_view.rs"]
+mod audio_view;
+#[path = "hud.rs"]
+mod hud;
+#[path = "participants.rs"]
+mod participants;
+#[path = "performance_alerts.rs"]
+mod performance_alerts;
+#[path = "performance_panel.rs"]
+mod performance_panel;
+#[path = "stream_menu.rs"]
+mod stream_menu;
 
-pub(crate) struct Playback {
-    input: StreamControlHandle,
-    screen: i32,
+const COMPACT_HUD_WIDTH: f32 = 140.0;
+const COMPACT_METER_WIDTH: f32 = 37.0;
+const COMPACT_COLUMN_GAP: f32 = 8.0;
+
+pub(crate) struct VideoPicture {
+    pub(super) track: i32,
+    pub(super) binding: u64,
     frames: FrameQueue,
     performance: PerformanceMonitor,
     error: Arc<Mutex<Option<String>>>,
@@ -41,27 +60,31 @@ pub(crate) struct Playback {
     shutdown: Arc<AtomicBool>,
     decoder: Option<std::thread::JoinHandle<()>>,
     texture: Option<TextureHandle>,
-    modifiers: [bool; 4],
+    pending: Option<(std::time::Instant, RenderedFrameTiming)>,
 }
 
-impl Playback {
+impl VideoPicture {
     pub(crate) fn start(
         ctx: egui::Context,
-        codec: VideoCodec,
+        viewport: egui::ViewportId,
         profile: ConnectionMediaProfile,
-        performance: PerformanceMonitor,
-        feedback: mpsc::UnboundedSender<VideoReceiverFeedback>,
-        input: StreamControlHandle,
-        screen: i32,
+        track: &VideoTrackSource,
+        screen: &RemoteScreen,
     ) -> Result<Self> {
+        let codec = match track.metadata.codec.to_ascii_lowercase().as_str() {
+            "video/h264" => VideoCodec::H264,
+            value => anyhow::bail!((t().viewer.unsupported_video_codec)(value)),
+        };
+        let performance = track.performance.clone();
+        let feedback = track.feedback.clone();
         let (sender, receiver) = mpsc::unbounded_channel();
         let frames = Arc::new(Mutex::new(PresentQueue::default()));
         let shutdown = Arc::new(AtomicBool::new(false));
         let error = Arc::new(Mutex::new(None));
         let config = DecoderConfig {
             codec,
-            width: profile.local_display.width,
-            height: profile.local_display.height,
+            width: screen.width,
+            height: screen.height,
             frame_rate: profile.stream_fps,
             decoder: profile.decoder,
             software_decode: Arc::new(AtomicBool::new(true)),
@@ -78,7 +101,7 @@ impl Playback {
             std::thread::Builder::new()
                 .name("farwing-video-decoder".into())
                 .spawn(move || {
-                    let wake = FrameWake::for_egui(ctx.clone());
+                    let wake = FrameWake::for_egui(ctx.clone(), viewport);
                     decoder_manager(
                         config,
                         receiver,
@@ -90,12 +113,12 @@ impl Playback {
                         feedback,
                         None,
                     );
-                    ctx.request_repaint();
+                    ctx.request_repaint_of(viewport);
                 })?
         };
         Ok(Self {
-            input,
-            screen,
+            track: track.index,
+            binding: screen.binding(),
             frames,
             performance,
             error,
@@ -103,7 +126,7 @@ impl Playback {
             shutdown,
             decoder: Some(decoder),
             texture: None,
-            modifiers: [false; 4],
+            pending: None,
         })
     }
 
@@ -119,99 +142,40 @@ impl Playback {
         }
     }
 
-    pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) -> Result<()> {
-        let text = t();
-        let state = self.input.snapshot();
-        let audio = self.input.audio();
-        let mut settings = audio.settings();
-        if viewer_caption_button(
-            ui,
-            ViewerCaptionIcon::Audio {
-                muted: settings.muted,
-            },
-            settings.muted,
-            if settings.muted {
-                text.viewer.unmute
-            } else {
-                text.viewer.mute
-            },
-        )
-        .clicked()
-        {
-            settings.muted = !settings.muted;
-            audio.set_settings(settings);
-        }
-
-        let mouse = self.input.mouse();
-        let control = state.mouse_mode != MouseMode::View;
-        let hint = if control {
-            text.viewer.shortcut_release_control
-        } else if mouse.keyboard_supported() {
-            text.viewer.control_keyboard_mouse
-        } else {
-            text.viewer.control_mouse
-        };
-        let picture_ready = self.texture.is_some();
-        if ui
-            .add_enabled_ui(picture_ready && !state.mouse_pending, |ui| {
-                viewer_caption_button(ui, ViewerCaptionIcon::Mouse, control, hint)
-            })
-            .inner
-            .on_disabled_hover_text(if !picture_ready {
-                text.session.progress_waiting_picture
-            } else if mouse.transport_recovering() {
-                text.viewer.control_recovering
-            } else {
-                text.viewer.release_all_keys
-            })
-            .clicked()
-        {
-            self.input.set_mouse_mode(if control {
-                MouseMode::View
-            } else {
-                MouseMode::Remote
-            })?;
-        } else if !control
-            && state.remote_notice.as_ref().is_some_and(|(_, _, ask)| *ask)
-            && viewer_caption_button(
-                ui,
-                ViewerCaptionIcon::AskControl,
-                false,
-                text.viewer.ask_control,
-            )
-            .clicked()
-        {
-            self.input.ask_control()?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn notice(&self) -> Option<(String, bool)> {
-        let state = self.input.snapshot();
-        let audio_error = self.input.audio().snapshot().error;
-        let error = state.mouse_error.is_some() || audio_error.is_some();
-        let mut notices = [
-            state.mouse_error,
-            audio_error,
-            state.remote_notice.map(|(_, notice, _)| notice),
-        ]
-        .into_iter()
-        .flatten();
-        let mut message = notices.next()?;
-        for notice in notices {
-            message.push('\n');
-            message.push_str(&notice);
-        }
-        Some((message, error))
-    }
-
-    pub(super) fn picture(&mut self, ui: &mut egui::Ui) -> Result<()> {
+    pub(super) fn paint(
+        &mut self,
+        ui: &mut egui::Ui,
+        control: &StreamControlHandle,
+        screen: i32,
+    ) -> Result<Option<Rect>> {
         if let Some(error) = mutex_lock(&self.error).take() {
             anyhow::bail!(error);
         }
         let frame = take_next_frame(&mut mutex_lock(&self.frames), &self.performance);
         if let Some(frame) = frame {
             let image = image(&frame)?;
+            self.pending = Some((
+                frame.received_at,
+                RenderedFrameTiming {
+                    is_new_picture: frame.is_new_picture,
+                    width: frame.width,
+                    height: frame.height,
+                    local: Duration::ZERO,
+                    surface_transfer: Duration::ZERO,
+                    present_wait: Duration::ZERO,
+                    render_queue: Duration::ZERO,
+                    decoded_at: frame.decoded_at,
+                    assembly: frame.assembly_delay,
+                    input_queue: frame.input_queue_delay,
+                    decode_pipeline: frame.decode_pipeline_delay,
+                    sender_capture_at: frame.sender_timing.capture_at,
+                    sender_capture: frame.sender_timing.capture_delay,
+                    sender_encode: frame.sender_timing.encode_delay,
+                    sender_pacer: frame.sender_timing.pacer_delay,
+                    sender_total: frame.sender_timing.sending_delay,
+                    transport: frame.sender_timing.transport_delay,
+                },
+            ));
             if let Some(texture) = &mut self.texture {
                 texture.set(image, egui::TextureOptions::LINEAR);
             } else {
@@ -225,118 +189,66 @@ impl Playback {
         }
         let Some(texture) = &self.texture else {
             waiting(ui, t().session.progress_waiting_picture);
-            return Ok(());
+            return Ok(None);
         };
         let available = ui.available_rect_before_wrap();
-        let size = texture.size_vec2();
+        if !available.is_positive() {
+            return Ok(None);
+        }
+        let orientation = control.orientation(self.track);
+        let [width, height] = texture.size().map(|size| size as u32);
+        let (width, height) =
+            control.presentation_size(self.track, orientation.turned((width, height)));
+        let size = egui::vec2(width as f32, height as f32);
         let fitted = size * (available.width() / size.x).min(available.height() / size.y);
         let rect = Rect::from_center_size(available.center(), fitted);
-        ui.painter().image(
-            texture.id(),
-            rect,
-            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            egui::Color32::WHITE,
-        );
-        self.input(ui, rect);
-        if self.input.snapshot().mouse_pending {
-            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        let uv = [
+            egui::pos2(0.0, 0.0),
+            egui::pos2(1.0, 0.0),
+            egui::pos2(1.0, 1.0),
+            egui::pos2(0.0, 1.0),
+        ];
+        let corners = [
+            rect.left_top(),
+            rect.right_top(),
+            rect.right_bottom(),
+            rect.left_bottom(),
+        ];
+        let mut mesh = egui::Mesh::with_texture(texture.id());
+        for (pos, source) in corners.into_iter().zip(orientation.source_corners()) {
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos,
+                uv: uv[source],
+                color: egui::Color32::WHITE,
+            });
         }
-        Ok(())
+        mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+        ui.painter().add(egui::Shape::mesh(mesh));
+        if let Some((received_at, timing)) = self.pending.take() {
+            let performance = self.performance.clone();
+            let control = control.clone();
+            ui.painter().add(egui::PaintCallback {
+                rect,
+                callback: Arc::new(eframe::egui_glow::CallbackFn::new(move |_, _| {
+                    performance.record_rendered_frame(RenderedFrameTiming {
+                        local: received_at.elapsed(),
+                        render_queue: timing.decoded_at.elapsed(),
+                        ..timing
+                    });
+                    control.topology_frame_presented(screen, received_at);
+                })),
+            });
+        }
+        Ok(Some(rect))
     }
 
-    fn input(&mut self, ui: &egui::Ui, rect: Rect) {
-        let mouse = self.input.mouse();
-        let state = self.input.snapshot();
-        let (focused, mods, pointer, neutral, events) = ui.input(|i| {
-            (
-                i.focused,
-                i.modifiers,
-                i.pointer.hover_pos(),
-                i.keys_down.is_empty() && !i.pointer.any_down() && i.modifiers.is_none(),
-                i.events.clone(),
-            )
-        });
-        if !focused || state.mouse_mode == MouseMode::View || mouse.transport_recovering() {
-            mouse.pause_owner(INPUT_OWNER);
-            self.modifiers = [false; 4];
-            return;
-        }
-        let Some(screen) = state
-            .remote_display
-            .filter(|screen| screen.screen_id == self.screen)
-        else {
-            mouse.pause_owner(INPUT_OWNER);
-            self.modifiers = [false; 4];
-            return;
-        };
-        if mouse.waiting_for_neutral() {
-            if neutral {
-                mouse.confirm_neutral(mouse.activation_generation());
-            }
-            return;
-        }
-        let in_picture = pointer.is_some_and(|pos| rect.contains(pos));
-        let move_to = |pos: egui::Pos2| {
-            let p = (pos - rect.min) / rect.size();
-            mouse.absolute(
-                INPUT_OWNER,
-                screen.screen_id,
-                f64::from(p.x.clamp(0.0, 0.999_999)),
-                f64::from(p.y.clamp(0.0, 0.999_999)),
-            );
-        };
-        let modifiers = [mods.ctrl, mods.shift, mods.alt, mods.mac_cmd];
-        for (i, (held, next)) in self.modifiers.iter_mut().zip(modifiers).enumerate() {
-            if *held != next && (!next || in_picture) {
-                mouse.key(INPUT_OWNER, 0x0007_00e0 + i as u32, next);
-                *held = next;
-            }
-        }
-        for event in events {
-            match event {
-                Event::PointerMoved(pos) if rect.contains(pos) => move_to(pos),
-                Event::PointerButton {
-                    pos,
-                    button,
-                    pressed,
-                    ..
-                } if !pressed || rect.contains(pos) => {
-                    if rect.contains(pos) {
-                        move_to(pos);
-                    }
-                    let button = match button {
-                        PointerButton::Primary => 1,
-                        PointerButton::Secondary => 2,
-                        PointerButton::Middle => 16,
-                        PointerButton::Extra1 => 32,
-                        PointerButton::Extra2 => 64,
-                    };
-                    mouse.button(INPUT_OWNER, button, pressed);
-                }
-                Event::Key {
-                    physical_key: Some(physical),
-                    pressed,
-                    ..
-                } if !pressed || in_picture => {
-                    if let Some(usage) = key_usage(physical) {
-                        mouse.key(INPUT_OWNER, usage, pressed);
-                    }
-                }
-                Event::MouseWheel { unit, delta, .. } if in_picture => {
-                    let scale = match unit {
-                        MouseWheelUnit::Point => 1.0,
-                        MouseWheelUnit::Line => 120.0,
-                        MouseWheelUnit::Page => 360.0,
-                    };
-                    mouse.wheel(
-                        INPUT_OWNER,
-                        (delta.x * scale).round() as i32,
-                        (delta.y * scale).round() as i32,
-                    );
-                }
-                _ => {}
-            }
-        }
+    pub(super) fn native_size(&self, control: &StreamControlHandle) -> Option<(u32, u32)> {
+        let [w, h] = self.texture.as_ref()?.size().map(|s| s as u32);
+        Some(control.orientation(self.track).turned((w, h)))
+    }
+
+    pub(super) fn performance(&self) -> &PerformanceMonitor {
+        &self.performance
     }
 }
 
@@ -370,9 +282,8 @@ pub(super) fn waiting(ui: &mut egui::Ui, stage: &str) {
     content.label(egui::RichText::new(stage).font(font).color(theme::MUTED));
 }
 
-impl Drop for Playback {
+impl Drop for VideoPicture {
     fn drop(&mut self) {
-        self.input.mouse().pause_owner(INPUT_OWNER);
         self.shutdown.store(true, Ordering::Release);
         if let Some(decoder) = self.decoder.take() {
             decoder.thread().unpark();

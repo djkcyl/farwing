@@ -3,6 +3,7 @@
 //! makes, images (emoji, avatars, icons, thumbnails) as textures, and the
 //! local cache. Everything runs on the worker's runtime; the page reads an
 //! immutable view each frame.
+#[cfg(windows)]
 use super::cache::Cache;
 use super::state::{Answer, ChatState, Connection, Entry, Notice};
 use crate::account::client::AuthenticatedClient;
@@ -66,6 +67,7 @@ struct Inner {
     stop: CancellationToken,
     take_over: Notify,
     outgoing: mpsc::UnboundedSender<Envelope>,
+    #[cfg(windows)]
     cache: Option<Cache>,
     images: Mutex<HashMap<ImageKey, Slot>>,
     notices: Mutex<Vec<Notice>>,
@@ -78,16 +80,23 @@ struct Inner {
     members_loading: Mutex<std::collections::HashSet<Id>>,
     counter: AtomicU64,
     /// The voice channel or call this device is in.
+    #[cfg(windows)]
     voice: Mutex<Option<voice_link::Active>>,
+    #[cfg(windows)]
     voice_settings: Mutex<crate::features::voice::settings::VoiceSettings>,
+    #[cfg(windows)]
     voice_keys: Mutex<Option<Arc<crate::features::voice::keys::DeviceKeys>>>,
     /// The channel being joined and its pushes until the session is up.
+    #[cfg(windows)]
     voice_joining: Mutex<Option<(Id, Vec<(String, Value)>)>>,
     /// Mute and deafen chosen last (they hold when joining).
+    #[cfg(windows)]
     voice_self: Mutex<(bool, bool)>,
     /// What the voice sounds last saw.
+    #[cfg(windows)]
     sounds: Mutex<voice_link::SoundState>,
     /// The microphone for the voice settings, outside a session.
+    #[cfg(windows)]
     preview: Mutex<Option<voice_link::Preview>>,
 }
 
@@ -100,6 +109,7 @@ impl ChatService {
     /// Start chat for the signed-in account.
     pub(crate) fn start(client: Arc<AuthenticatedClient>, runtime: tokio::runtime::Handle, ctx: egui::Context) -> Self {
         let (outgoing, rx) = mpsc::unbounded_channel();
+        #[cfg(windows)]
         let cache = client.server_config().and_then(|server| {
             crate::product::local_data_dir()
                 .ok()
@@ -113,6 +123,7 @@ impl ChatService {
             stop: CancellationToken::new(),
             take_over: Notify::new(),
             outgoing,
+            #[cfg(windows)]
             cache,
             images: Mutex::new(HashMap::new()),
             notices: Mutex::new(Vec::new()),
@@ -123,12 +134,19 @@ impl ChatService {
             typing_sent: Mutex::new(HashMap::new()),
             members_loading: Mutex::new(std::collections::HashSet::new()),
             counter: AtomicU64::new(1),
+            #[cfg(windows)]
             voice: Mutex::new(None),
+            #[cfg(windows)]
             voice_settings: Mutex::new(crate::features::voice::settings::load()),
+            #[cfg(windows)]
             voice_keys: Mutex::new(None),
+            #[cfg(windows)]
             voice_joining: Mutex::new(None),
+            #[cfg(windows)]
             voice_self: Mutex::new((false, false)),
+            #[cfg(windows)]
             sounds: Mutex::new(Default::default()),
+            #[cfg(windows)]
             preview: Mutex::new(None),
         });
         runtime.spawn(run(Arc::clone(&inner), rx));
@@ -148,6 +166,7 @@ impl ChatService {
 
     pub(crate) fn stop(&self) {
         self.inner.stop.cancel();
+        #[cfg(windows)]
         if let Some(active) = lock(&self.inner.voice).take() {
             self.inner.runtime.spawn(async move { active.close(true).await });
         }
@@ -172,9 +191,12 @@ impl ChatService {
     }
 
     pub(crate) fn take_errors(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        update(&self.inner, |s| out = std::mem::take(&mut s.errors));
-        out
+        let mut state = lock(&self.inner.state);
+        if state.errors.is_empty() {
+            Vec::new()
+        } else {
+            std::mem::take(&mut Arc::make_mut(&mut state).errors)
+        }
     }
 
     pub(crate) fn uploads(&self, channel: Id) -> Vec<Upload> {
@@ -230,6 +252,7 @@ impl ChatService {
         if view.messages.get(&channel).is_some_and(|b| b.loading) {
             return;
         }
+        #[cfg(windows)]
         let cached = if view.messages.contains_key(&channel) {
             None
         } else {
@@ -237,6 +260,7 @@ impl ChatService {
         };
         update(&self.inner, |s| {
             let b = s.messages.entry(channel).or_default();
+            #[cfg(windows)]
             if let Some(list) = cached {
                 b.list = list.into_iter().map(entry).collect();
                 b.cached = true;
@@ -247,6 +271,7 @@ impl ChatService {
             let path = format!("/api/v2/chat/channels/{channel}/messages?limit={PAGE}");
             match get::<MessagePage>(&inner, &path).await {
                 Ok(page) => {
+                    #[cfg(windows)]
                     if let Some(cache) = &inner.cache {
                         cache.store(channel, &page.messages);
                     }
@@ -773,11 +798,21 @@ async fn fetch_image(inner: &Inner, key: &ImageKey, path: &str) -> Option<egui::
     Some(inner.ctx.load_texture(format!("chat-{key:?}"), image, egui::TextureOptions::LINEAR))
 }
 
+#[cfg(windows)]
 fn downloads_dir() -> std::path::PathBuf {
     std::env::var_os("USERPROFILE")
         .map(|p| std::path::PathBuf::from(p).join("Downloads"))
         .filter(|p| p.is_dir())
         .unwrap_or_else(std::env::temp_dir)
+}
+
+#[cfg(target_os = "linux")]
+fn downloads_dir() -> std::path::PathBuf {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return std::env::temp_dir();
+    };
+    let downloads = home.join("Downloads");
+    if downloads.is_dir() { downloads } else { home }
 }
 
 fn unique(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
@@ -946,6 +981,7 @@ async fn connect(inner: &Arc<Inner>, outgoing: &mut mpsc::UnboundedReceiver<Enve
                             }
                             rt::PONG | rt::ACK | rt::ERROR => {}
                             kind => {
+                                #[cfg(windows)]
                                 if kind.starts_with("voice.") || kind.starts_with("call.") {
                                     voice_link::push(inner, kind, &env.data);
                                 }
@@ -989,7 +1025,10 @@ async fn load_member_pages(inner: &Arc<Inner>, group: Id) -> Option<Vec<farwing_
     }
 }
 
+#[cfg(windows)]
 #[path = "voice_link.rs"]
 mod voice_link;
+#[cfg(windows)]
 pub(crate) use voice_link::ShareTarget;
+#[cfg(windows)]
 pub(crate) use voice_link::MicTest;

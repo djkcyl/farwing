@@ -5,9 +5,8 @@ use egui::{Color32, FontId, RichText, Sense, Stroke, vec2};
 mod audio_quality;
 mod diagnostics;
 #[cfg(windows)]
-pub(crate) use audio_quality::{
-    audio_quality, audio_quality_segments, remote_audio_quality, remote_audio_quality_inline,
-};
+pub(crate) use audio_quality::audio_quality;
+pub(crate) use audio_quality::{audio_quality_segments, remote_audio_quality, remote_audio_quality_inline};
 mod dialogs;
 #[cfg(windows)]
 pub(crate) use diagnostics::{
@@ -23,13 +22,13 @@ mod input_rate;
 pub(crate) use input_rate::input_rate_warning;
 mod notices;
 pub(crate) use inputs::{number_input, singleline};
-pub(crate) use notices::observe_notice;
-#[cfg(windows)]
+pub(crate) use notices::{notice, observe_notice, show_notices};
 pub(crate) use notices::{
-    clear_notice, notice, notice_answer, notice_with_action, observe_form_notice,
-    observe_notice_action,
-    progress_notice, show_notices,
+    clear_notice, notice_answer, notice_with_action, observe_notice_action,
+    progress_notice,
 };
+#[cfg(windows)]
+pub(crate) use notices::observe_form_notice;
 pub(crate) mod file_icons;
 pub(crate) mod files;
 pub(crate) use dialogs::{DialogAction, DialogIcon, dialog_actions, dialog_header};
@@ -37,11 +36,9 @@ mod mapping;
 mod performance;
 mod updates;
 mod viewer_caption;
-#[cfg(windows)]
 pub(crate) use mapping::{
     MappingRow, MappingRowAction, mapping_empty, mapping_row, mapping_table_header,
 };
-#[cfg(windows)]
 pub(crate) use performance::{
     PerformanceTrace, metric_pair, metric_pair_colored, performance_frame, performance_header,
     performance_trace,
@@ -49,7 +46,6 @@ pub(crate) use performance::{
 #[cfg(windows)]
 pub(crate) use updates::update_actions;
 pub(crate) use viewer_caption::{ViewerCaptionIcon, viewer_caption_button};
-#[cfg(windows)]
 pub(crate) use viewer_caption::{viewer_fullscreen_handle, viewer_participants_button};
 
 pub const HEIGHT: f32 = theme::CONTROL_HEIGHT;
@@ -1426,12 +1422,13 @@ pub fn setting_row(
 }
 mod annotation;
 mod annotation_color;
-#[cfg(windows)]
 pub(crate) use annotation::{
     AnnotationIcon, annotation_board, annotation_button, annotation_clear_dialog, annotation_color,
     annotation_frame, annotation_header, annotation_tool_button, annotation_tool_frame,
-    annotation_width, paint_annotation_icon,
+    annotation_width,
 };
+#[cfg(windows)]
+pub(crate) use annotation::paint_annotation_icon;
 
 mod task_status;
 #[cfg(windows)]
