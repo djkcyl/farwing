@@ -6,7 +6,35 @@
 //! lives here. It is keyed by physical position (US layout names in winit),
 //! which is what a remote desktop wants: the remote applies its own layout.
 #![cfg(not(windows))]
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey};
+
+/// Winit exposes the layout-resolved letter and the same key with all
+/// modifiers removed on both X11 and Wayland. For an ordinary Latin letter,
+/// case is Shift XOR Caps Lock. Ignore alternate levels, dead keys and IME
+/// text rather than guessing a lock state from an unrelated symbol.
+pub(crate) fn caps_lock_from_key(
+    logical: &Key,
+    unmodified: &Key,
+    modifiers: ModifiersState,
+) -> Option<bool> {
+    // The host applies the state by synthesizing Caps Lock if needed. Do not
+    // turn a remote Ctrl/Alt/Super shortcut into a modified Caps Lock chord.
+    if modifiers.control_key() || modifiers.alt_key() || modifiers.super_key() {
+        return None;
+    }
+    let (Key::Character(logical), Key::Character(unmodified)) = (logical, unmodified) else {
+        return None;
+    };
+    if logical.len() != 1 || unmodified.len() != 1 {
+        return None;
+    }
+    let letter = logical.as_bytes()[0];
+    let base = unmodified.as_bytes()[0];
+    if !base.is_ascii_lowercase() || letter.to_ascii_lowercase() != base {
+        return None;
+    }
+    Some(letter.is_ascii_uppercase() ^ modifiers.shift_key())
+}
 
 pub(crate) fn physical_virtual_key(key: PhysicalKey) -> Option<u16> {
     let PhysicalKey::Code(code) = key else {
@@ -204,4 +232,65 @@ pub(crate) const fn key_name(key: u16) -> Option<&'static str> {
         226 => "\\ (ISO)",
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn character(value: &str) -> Key {
+        Key::Character(value.into())
+    }
+
+    #[test]
+    fn caps_lock_accounts_for_shift_and_does_not_modify_control_shortcuts() {
+        for (letter, shifted, caps) in [
+            ("a", false, false),
+            ("A", false, true),
+            ("A", true, false),
+            ("a", true, true),
+        ] {
+            for control in [false, true] {
+                let mut modifiers = ModifiersState::empty();
+                modifiers.set(ModifiersState::SHIFT, shifted);
+                modifiers.set(ModifiersState::CONTROL, control);
+                assert_eq!(
+                    caps_lock_from_key(&character(letter), &character("a"), modifiers),
+                    (!control).then_some(caps)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn other_layout_levels_and_composed_text_do_not_guess_caps_lock() {
+        for (logical, base, modifiers) in [
+            (character("ä"), character("a"), ModifiersState::ALT),
+            (character("A"), character("a"), ModifiersState::SUPER),
+            (character("q"), character("a"), ModifiersState::empty()),
+            (character("AA"), character("a"), ModifiersState::empty()),
+            (character("1"), character("1"), ModifiersState::empty()),
+            (character("é"), character("é"), ModifiersState::empty()),
+            (
+                Key::Dead(Some('^')),
+                character("a"),
+                ModifiersState::empty(),
+            ),
+            (
+                Key::Named(winit::keyboard::NamedKey::CapsLock),
+                Key::Named(winit::keyboard::NamedKey::CapsLock),
+                ModifiersState::empty(),
+            ),
+        ] {
+            assert_eq!(caps_lock_from_key(&logical, &base, modifiers), None);
+        }
+    }
+
+    #[test]
+    fn case_uses_the_active_layout_instead_of_the_us_physical_letter() {
+        assert_eq!(
+            caps_lock_from_key(&character("Q"), &character("q"), ModifiersState::empty()),
+            Some(true)
+        );
+    }
 }

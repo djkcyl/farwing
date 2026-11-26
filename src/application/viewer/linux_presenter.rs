@@ -3336,8 +3336,19 @@ impl Player {
                     self.run_shortcut(action, window);
                     return true;
                 }
-                let accepted =
-                    forward_key(self.input(), self.owner, key, true, false, consumed_by_ui);
+                use winit::platform::modifier_supplement::KeyEventExtModifierSupplement as _;
+                let caps_lock = super::linux_keyboard::caps_lock_from_key(
+                    &event.logical_key,
+                    &event.key_without_modifiers(),
+                    self.modifiers,
+                );
+                let accepted = forward_key_with_caps_lock(
+                    self.input(),
+                    self.owner,
+                    key,
+                    caps_lock,
+                    consumed_by_ui,
+                );
                 if accepted {
                     if !self.held_keys.contains(&key) {
                         self.held_keys.push(key);
@@ -3656,6 +3667,19 @@ fn forward_key(
     input.key(owner, key, down, None)
 }
 
+fn forward_key_with_caps_lock(
+    input: &crate::features::remote_input::RemoteInput,
+    owner: u64,
+    key: u16,
+    caps_lock: Option<bool>,
+    consumed_by_ui: bool,
+) -> bool {
+    if consumed_by_ui && key != 9 {
+        return false;
+    }
+    input.key_with_caps_lock(owner, key, caps_lock)
+}
+
 fn forward_repeat_key(
     input: &crate::features::remote_input::RemoteInput,
     owner: u64,
@@ -3696,6 +3720,21 @@ mod input_tests {
         let event = queued.event.clone();
         input.complete(&queued, Ok(()));
         event
+    }
+
+    #[test]
+    fn local_ui_does_not_send_lock_sync_or_claim_a_letter() {
+        let input = ready_input();
+        assert!(!forward_key_with_caps_lock(
+            &input,
+            OWNER,
+            65,
+            Some(true),
+            true
+        ));
+        assert!(!input.owner_holds_key(OWNER, 65));
+        // A repeat must not turn a UI-rejected press into remote input.
+        assert!(!forward_repeat_key(&input, OWNER, 65, false, false));
     }
 
     #[tokio::test]

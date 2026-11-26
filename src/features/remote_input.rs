@@ -95,6 +95,11 @@ pub(crate) enum InputEvent {
         lock: Option<u8>,
         interrupt: bool,
     },
+    /// Explicit state assignment; it is not a physical key release and must
+    /// never clear the sender's outstanding Caps Lock release obligation.
+    CapsLock {
+        enabled: bool,
+    },
     Gamepad(GamepadEvent),
     /// Native touch, the only binary inhabitant: `kind` plus a full
     /// contact-set snapshot per the host wire, never JSON.
@@ -117,6 +122,7 @@ impl InputEvent {
             self,
             Self::Button { .. }
                 | Self::Key { .. }
+                | Self::CapsLock { .. }
                 | Self::Wheel { .. }
                 | Self::AssistButton { .. }
                 | Self::Gamepad(_)
@@ -173,6 +179,9 @@ impl InputEvent {
                 lock,
                 interrupt,
             } => key.encode(down, lock, interrupt),
+            Self::CapsLock { enabled } => {
+                KeyboardKey::Windows(20).encode(false, Some(if enabled { 128 } else { 0 }), false)
+            }
             Self::Gamepad(event) => event.json(),
             Self::Heartbeat => serde_json::json!({"heartbeat":"kbd_heartbeat"}),
             Self::Touch { .. } => unreachable!("touch encodes above"),
@@ -410,6 +419,25 @@ impl RemoteInput {
 
     /// Native adapters supply local Windows VKs; the protocol owns target codes.
     pub fn key(&self, owner: u64, key: u16, down: bool, lock: Option<u8>) -> bool {
+        self.key_event(owner, key, down, lock, None)
+    }
+
+    /// Linux has no portable Caps Lock query. When a letter reveals its local
+    /// state, put an explicit Windows lock-state update before that press in
+    /// the same owner, queue and epoch. Never guess a Mac's toggle state.
+    #[cfg(not(windows))]
+    pub(crate) fn key_with_caps_lock(&self, owner: u64, key: u16, caps_lock: Option<bool>) -> bool {
+        self.key_event(owner, key, true, None, caps_lock)
+    }
+
+    fn key_event(
+        &self,
+        owner: u64,
+        key: u16,
+        down: bool,
+        lock: Option<u8>,
+        caps_lock: Option<bool>,
+    ) -> bool {
         let mut s = self.lock();
         let Some(remote_key) = KeyboardKey::from_windows_vk(s.keyboard_platform, key) else {
             return false;
@@ -426,15 +454,28 @@ impl RemoteInput {
             return true;
         }
         let lock = lock.filter(|v| matches!(key, 20 | 144 | 145) && matches!(v, 0 | 128));
-        let accepted = Self::push(
-            &mut s,
-            InputEvent::Key {
-                key: remote_key,
-                down,
-                lock,
-                interrupt: true,
-            },
-        );
+        let synchronized = if down
+            && (65..=90).contains(&key)
+            && s.keyboard_platform == 1
+            && let Some(enabled) = caps_lock
+        {
+            // This is an idempotent state assignment, not an extra Caps Lock
+            // press. Correct before each known letter in case the host's user
+            // changed the state, or focus/control changed since the last key.
+            Self::push(&mut s, InputEvent::CapsLock { enabled })
+        } else {
+            true
+        };
+        let accepted = synchronized
+            && Self::push(
+                &mut s,
+                InputEvent::Key {
+                    key: remote_key,
+                    down,
+                    lock,
+                    interrupt: true,
+                },
+            );
         if accepted {
             if down {
                 s.keys.insert(key, lock);
@@ -2395,5 +2436,204 @@ mod touch_tests {
         assert!(!touch(&input, 1, Phase::Start, 4, None));
         assert!(!touch(&input, 1, Phase::Move, 4, Some((0.5, 0.5))));
         assert_eq!(input.lock().queue.len(), 0);
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod caps_lock_tests {
+    use super::*;
+    use crate::features::host::input::wire;
+
+    const OWNER: u64 = 42;
+
+    fn controlling(platform: i32) -> RemoteInput {
+        let input = RemoteInput::default();
+        input.set_keyboard_platform(platform);
+        input.set_ready(true);
+        input.enable(MouseMode::Local, false).unwrap();
+        input.confirm_neutral(input.activation_generation());
+        input
+    }
+
+    async fn submitted(input: &RemoteInput) -> InputEvent {
+        let InputWork::Event(event) = tokio::time::timeout(Duration::from_secs(1), input.next())
+            .await
+            .expect("input is queued")
+        else {
+            panic!("unexpected recovery")
+        };
+        let result = event.event.clone();
+        input.complete(&event, Ok(()));
+        result
+    }
+
+    #[tokio::test]
+    async fn a_mismatched_caps_state_is_assigned_before_the_first_letter() {
+        for caps in [false, true] {
+            let input = controlling(1);
+            assert!(input.key_with_caps_lock(OWNER, 65, Some(caps)));
+            let sync = submitted(&input).await;
+            let encoded = sync.encode();
+            let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(json["action"], "kbd_release");
+            assert_eq!(json["key"], 20);
+            assert_eq!(json["status_key_value"], if caps { 128 } else { 0 });
+            assert!(json.get("interrept").is_none());
+            // The actual receive-side parser recognizes an explicit assignment,
+            // not a blind Caps Lock toggle or an extra ordinary key release.
+            assert!(
+                matches!(wire::json(&encoded).unwrap(), Some(wire::Event::Key {
+                key: 20, down: false, toggle: Some(wanted), ..
+            }) if wanted == caps)
+            );
+            assert!(matches!(
+                submitted(&input).await,
+                InputEvent::Key {
+                    key: KeyboardKey::Windows(65),
+                    down: true,
+                    lock: None,
+                    ..
+                }
+            ));
+            assert!(!input.owner_holds_key(OWNER, 20));
+            assert!(input.owner_holds_key(OWNER, 65));
+            assert!(input.key(OWNER, 65, false, None));
+            assert!(matches!(
+                submitted(&input).await,
+                InputEvent::Key {
+                    key: KeyboardKey::Windows(65),
+                    down: false,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn state_is_rechecked_after_host_changes_and_control_resumes() {
+        let input = controlling(1);
+        for caps in [true, false, true] {
+            assert!(input.key_with_caps_lock(OWNER, 65, Some(caps)));
+            assert!(
+                matches!(submitted(&input).await, InputEvent::CapsLock { enabled } if enabled == caps)
+            );
+            submitted(&input).await;
+            input.pause_owner(OWNER);
+            assert!(matches!(
+                submitted(&input).await,
+                InputEvent::Key {
+                    key: KeyboardKey::Windows(65),
+                    down: false,
+                    lock: None,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn repeats_and_releases_keep_the_original_key_order_without_extra_toggles() {
+        let input = controlling(1);
+        assert!(input.key_with_caps_lock(OWNER, 65, Some(true)));
+        for _ in 0..3 {
+            assert!(input.key(OWNER, 65, true, None));
+        }
+        assert!(input.key(OWNER, 65, false, None));
+        assert!(matches!(
+            submitted(&input).await,
+            InputEvent::CapsLock { enabled: true }
+        ));
+        for down in [true, true, true, true, false] {
+            assert!(matches!(submitted(&input).await, InputEvent::Key {
+                key: KeyboardKey::Windows(65), down: actual, lock: None, ..
+            } if actual == down));
+        }
+        assert!(input.lock().queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lock_state_sync_does_not_retire_a_caps_key_that_is_physically_held() {
+        let input = controlling(1);
+        assert!(input.key(OWNER, 20, true, None));
+        submitted(&input).await;
+        assert!(input.key_with_caps_lock(OWNER, 65, Some(true)));
+        submitted(&input).await;
+        assert!(
+            input
+                .lock()
+                .remote_keys
+                .contains_key(&KeyboardKey::Windows(20)),
+            "a state assignment must not acknowledge a physical Caps Lock release"
+        );
+        input.pause_owner(OWNER);
+        assert!(matches!(
+            submitted(&input).await,
+            InputEvent::Key {
+                key: KeyboardKey::Windows(20),
+                down: false,
+                lock: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn control_gates_and_cancellation_apply_to_both_the_sync_and_the_letter() {
+        let input = RemoteInput::default();
+        input.set_keyboard_platform(1);
+        assert!(!input.key_with_caps_lock(OWNER, 65, Some(true)));
+        input.set_ready(true);
+        assert!(!input.key_with_caps_lock(OWNER, 65, Some(true)));
+        input.enable(MouseMode::Local, false).unwrap();
+        assert!(!input.key_with_caps_lock(OWNER, 65, Some(true)));
+        input.confirm_neutral(input.activation_generation());
+        assert!(input.key_with_caps_lock(OWNER, 65, Some(true)));
+        assert_eq!(input.lock().queue.len(), 2);
+        input.disable();
+        assert!(input.lock().queue.is_empty());
+        assert!(!input.owner_holds_key(OWNER, 65));
+    }
+
+    #[test]
+    fn queue_pressure_drops_the_pair_and_enters_recovery() {
+        let input = controlling(1);
+        {
+            let mut s = input.lock();
+            s.owner = Some(OWNER);
+            s.queue
+                .extend(std::iter::repeat_n(InputEvent::Heartbeat, MAX_EVENTS - 1));
+        }
+        assert!(!input.key_with_caps_lock(OWNER, 65, Some(true)));
+        assert!(input.transport_recovering());
+        assert!(input.lock().queue.is_empty());
+        assert!(!input.owner_holds_key(OWNER, 65));
+    }
+
+    #[tokio::test]
+    async fn mac_peers_do_not_receive_an_unsupported_caps_state_assignment() {
+        let input = controlling(4);
+        assert!(input.key_with_caps_lock(OWNER, 65, Some(true)));
+        assert!(matches!(
+            submitted(&input).await,
+            InputEvent::Key {
+                key: KeyboardKey::Mac(0),
+                down: true,
+                lock: None,
+                ..
+            }
+        ));
+        assert!(input.lock().queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unknown_case_and_nonletters_do_not_send_a_caps_command() {
+        let input = controlling(1);
+        for (key, caps) in [(65, None), (49, Some(true)), (20, None)] {
+            assert!(input.key_with_caps_lock(OWNER, key, caps));
+            assert!(matches!(submitted(&input).await, InputEvent::Key {
+                key: KeyboardKey::Windows(actual), down: true, lock: None, ..
+            } if actual == key));
+            assert!(input.lock().queue.is_empty());
+        }
     }
 }

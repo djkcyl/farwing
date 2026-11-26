@@ -45,8 +45,6 @@ impl FullscreenChrome {
             ..Self::default()
         };
         if active && !ball_enabled {
-            self.expanded = true;
-            self.last_used = Some(Instant::now());
             self.hint_until = Some(Instant::now() + ENTRY_HINT);
         }
     }
@@ -96,7 +94,13 @@ impl FullscreenChrome {
         }
         let position =
             egui::pos2(touch.location.x as f32, touch.location.y as f32) / ctx.pixels_per_point();
-        let activation = self.ball_rect.is_some_and(|rect| rect.contains(position));
+        let activation = self.ball_rect.is_some_and(|rect| {
+            if self.ball_enabled {
+                rect.contains(position)
+            } else {
+                touch_target(rect).contains(position)
+            }
+        });
         let dismiss = !self.ball_enabled && self.touch_opened && outside_controls(ctx, position);
         if self.active && touch.phase == TouchPhase::Started && (activation || dismiss) {
             if self.touches.is_empty() {
@@ -301,7 +305,10 @@ impl FullscreenChrome {
                     // explicitly narrow top-edge activation strip.
                     let inside =
                         ctx.input(|i| i.pointer.hover_pos().is_some_and(|p| hit_rect.contains(p)));
-                    if !relative && inside && (expand.hovered() || expand.clicked()) {
+                    // Keep the collapsed handle genuinely immersive: moving the
+                    // pointer across the top edge must not open the toolbar.
+                    // A click is deliberate and still works with local input.
+                    if !relative && inside && expand.clicked() {
                         self.expanded = true;
                         self.last_used = Some(now);
                         ctx.request_repaint();
@@ -321,10 +328,20 @@ fn floating_width(ctx: &egui::Context) -> f32 {
     (ctx.content_rect().width() - 24.0).clamp(32.0, theme::VIEWER_FLOATING_WIDTH)
 }
 
+/// The collapsed handle's touch target: as wide as the strip was before it
+/// became click-to-open, centred on the handle and flush with the top edge.
+fn touch_target(handle: egui::Rect) -> egui::Rect {
+    let size = theme::VIEWER_FULLSCREEN_HANDLE_TOUCH_SIZE;
+    egui::Rect::from_min_size(
+        egui::pos2(handle.center().x - size.x / 2.0, handle.top()),
+        size,
+    )
+}
+
 fn show_hint(ctx: &egui::Context, top: f32) {
     let fullscreen = viewer_shortcuts::label(Action::Fullscreen);
     let release = viewer_shortcuts::label(Action::ReleaseMouse);
-    let mut text = String::from("已进入全屏 · 鼠标移至顶部横条可展开操作栏并退出全屏");
+    let mut text = String::from("已进入全屏 · 点击顶部短条展开操作栏并退出全屏");
     if fullscreen != "未绑定" {
         text.push_str(&format!("\n退出全屏：{fullscreen}"));
     }
@@ -411,7 +428,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut chrome = FullscreenChrome::default();
         chrome.sync_mode(true, false);
-        assert!(chrome.expanded);
+        assert!(!chrome.expanded);
         assert!(!chrome.ball_enabled);
         chrome.expanded = false;
         chrome.ball_rect = Some(egui::Rect::from_min_size(
@@ -435,9 +452,104 @@ mod tests {
         assert!(chrome.ball_rect.is_none());
         assert!(!chrome.touch_opened);
         chrome.sync_mode(true, false);
-        assert!(chrome.expanded);
+        assert!(!chrome.expanded);
         assert!(!chrome.ball_enabled);
     }
+    #[test]
+    fn entering_fullscreen_starts_collapsed_and_hovering_does_not_expand() {
+        let ctx = egui::Context::default();
+        let mut chrome = FullscreenChrome::default();
+        chrome.sync_mode(true, false);
+        assert!(!chrome.expanded);
+        for _ in 0..3 {
+            draw_strip(
+                &ctx,
+                &mut chrome,
+                vec![egui::Event::PointerMoved(egui::pos2(400.0, 5.0))],
+                false,
+            );
+            assert!(!chrome.expanded);
+        }
+        assert!(chrome.ball_rect.unwrap().width() <= 96.0);
+        assert!(!chrome.ball_rect.unwrap().contains(egui::pos2(500.0, 5.0)));
+    }
+
+    fn draw_strip(
+        ctx: &egui::Context,
+        chrome: &mut FullscreenChrome,
+        events: Vec<egui::Event>,
+        relative: bool,
+    ) {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                chrome.show(ui.ctx(), relative, false, false, |ui| {
+                    ui.label("toolbar");
+                });
+            },
+        );
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn only_a_deliberate_click_expands_the_handle_with_an_unlocked_pointer() {
+        for relative in [false, true] {
+            let ctx = egui::Context::default();
+            let mut chrome = FullscreenChrome::default();
+            chrome.sync_mode(true, false);
+            let at = egui::pos2(400.0, 5.0);
+            for _ in 0..3 {
+                draw_strip(
+                    &ctx,
+                    &mut chrome,
+                    vec![egui::Event::PointerMoved(at)],
+                    relative,
+                );
+            }
+            for pressed in [true, false] {
+                draw_strip(
+                    &ctx,
+                    &mut chrome,
+                    vec![egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    relative,
+                );
+            }
+            assert_eq!(chrome.expanded, !relative);
+        }
+    }
+
+    #[test]
+    fn a_tap_keeps_the_wide_touch_target_on_the_small_handle() {
+        let ctx = egui::Context::default();
+        let mut chrome = FullscreenChrome::default();
+        chrome.sync_mode(true, false);
+        draw_strip(&ctx, &mut chrome, Vec::new(), false);
+        let handle = chrome.ball_rect.unwrap();
+        // Outside the 96-point pointer strip, inside the 340-point touch target.
+        let x = handle.center().x + 150.0;
+        assert!(!handle.contains(egui::pos2(x, 5.0)));
+        assert!(chrome.intercept_touch(&ctx, &touch(1, TouchPhase::Started, x as f64, 5.0)));
+        assert!(chrome.expanded);
+        assert!(chrome.intercept_touch(&ctx, &touch(1, TouchPhase::Ended, x as f64, 5.0)));
+        // Below the strip's 14 points a tap still reaches the remote.
+        chrome.expanded = false;
+        chrome.touch_opened = false;
+        assert!(!chrome.intercept_touch(&ctx, &touch(2, TouchPhase::Started, x as f64, 30.0)));
+        assert!(!chrome.expanded);
+    }
+
     #[test]
     fn a_press_on_the_video_closes_menus_but_not_one_on_the_controls() {
         fn menu(ui: &mut egui::Ui) {

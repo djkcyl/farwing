@@ -485,6 +485,7 @@ pub(super) async fn send_remote_input(
             use crate::features::remote_input::InputEvent;
             let kind = match event.event {
                 InputEvent::Key { .. } => "keyboard",
+                InputEvent::CapsLock { .. } => "keyboard_lock_state",
                 InputEvent::Button { .. } | InputEvent::AssistButton { .. } => "button",
                 InputEvent::Relative { .. }
                 | InputEvent::Absolute { .. }
