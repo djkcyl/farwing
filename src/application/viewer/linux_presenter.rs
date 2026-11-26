@@ -263,16 +263,20 @@ impl Shell {
     /// video's frame rate, until an allocation finally fails. The frame is
     /// still taken, to keep the decoder's queue from growing instead.
     fn show_frame(&mut self, player: &mut Player, drawing: bool) -> Result<()> {
+        let screen_id = player.session.screen_id();
         if let Some(frame) = player.take_frame() {
             let upload = Instant::now();
             if drawing {
-                match &frame.surface {
-                    RenderSurface::CpuNv12 { data, color } => self.presenter.upload_video_nv12(
-                        frame.width,
-                        frame.height,
-                        data,
-                        color.transform(8),
-                    )?,
+                let uploaded = match &frame.surface {
+                    RenderSurface::CpuNv12 { data, color } => {
+                        self.presenter.upload_video_nv12(
+                            frame.width,
+                            frame.height,
+                            data,
+                            color.transform(8),
+                        )?;
+                        true
+                    }
                     RenderSurface::Dmabuf {
                         frame: dmabuf,
                         color,
@@ -281,14 +285,20 @@ impl Shell {
                         frame.height,
                         dmabuf,
                         color.transform(8),
-                    )?,
-                    RenderSurface::CpuRgba8(pixels) => self.presenter.upload_video(
-                        frame.width,
-                        frame.height,
-                        bytemuck::cast_slice(pixels),
-                    )?,
+                    ),
+                    RenderSurface::CpuRgba8(pixels) => {
+                        self.presenter.upload_video(
+                            frame.width,
+                            frame.height,
+                            bytemuck::cast_slice(pixels),
+                        )?;
+                        true
+                    }
                     // The D3D11 surface type is uninhabited off Windows.
                     RenderSurface::D3D11(surface) => match *surface {},
+                };
+                if uploaded {
+                    player.unpresented_video = Some((screen_id, frame.received_at));
                 }
             }
             player.publish(&frame, upload.elapsed());
@@ -306,10 +316,14 @@ impl Shell {
         &mut self,
         window: &Arc<Window>,
         output: egui::FullOutput,
+        mut player: Option<&mut Player>,
         placement: Option<VideoPlacement>,
         drawing: bool,
         started: Instant,
     ) -> Result<PresentedFrame> {
+        if let Some(player) = player.as_deref_mut() {
+            self.show_frame(player, drawing)?;
+        }
         let placement = placement.filter(|_| self.presenter.has_video());
         self.presenter.set_video_placement(placement);
         let (ui_output, platform, viewports) = split_output(output);
@@ -334,6 +348,21 @@ impl Shell {
                 .presented();
             if presented && window.is_visible() == Some(false) {
                 window.set_visible(true);
+            }
+            if presented && let Some(player) = player {
+                if placement.is_some()
+                    && let Some((screen_id, received_at)) = player.unpresented_video.take()
+                {
+                    if player
+                        .control()
+                        .topology_frame_presented(screen_id, received_at)
+                    {
+                        self.context.request_repaint();
+                    }
+                } else if player.unpresented_video.is_some() {
+                    // The first upload may arrive after the layout pass decided to show no video.
+                    self.context.request_repaint();
+                }
             }
         }
         Ok(PresentedFrame {
@@ -907,6 +936,7 @@ impl ConnectingWindowsRunner {
                 // 队列取帧，否则两个窗口会互相抢帧，两边都停住。
                 player.frame_paused = true;
                 player.current = None;
+                player.unpresented_video = None;
                 player.video_size = None;
                 player.video_rect = None;
                 if let Some(next) = player.tabs.first().copied()
@@ -1061,10 +1091,11 @@ impl ConnectingWindowsRunner {
             crate::ui::controls::show_notices(ui.ctx());
         });
         let drawing = window.is_minimized() != Some(true);
-        if let DetachedStage::Playing(player) = stage {
-            shell.show_frame(player, drawing)?;
-        }
-        let frame = shell.present(&window, output, placement, drawing, started)?;
+        let player = match stage {
+            DetachedStage::Playing(player) => Some(&mut **player),
+            DetachedStage::Opening(_) => None,
+        };
+        let frame = shell.present(&window, output, player, placement, drawing, started)?;
         close_requested |= frame.close;
         let repaint_at = frame.repaint_at;
         if close_requested {
@@ -1265,10 +1296,11 @@ impl ConnectingWindowsRunner {
             configure_audio_window(&window, compact);
         }
         let drawing = window.is_minimized() != Some(true);
-        if let Stage::Playing(player) = &mut self.stage {
-            shell.show_frame(player, drawing)?;
-        }
-        let frame = shell.present(&window, output, placement, drawing, started)?;
+        let player = match stage {
+            Stage::Playing(player) => Some(&mut **player),
+            _ => None,
+        };
+        let frame = shell.present(&window, output, player, placement, drawing, started)?;
         close_requested |= frame.close;
         let repaint_at = frame.repaint_at;
         if let Some(audit) = UiTimingAudit::active(&mut shell.timing_audit, started) {
@@ -1668,6 +1700,8 @@ struct Player {
     performance_mode: PerformancePanelMode,
     intercept_shortcuts: bool,
     current: Option<DecodedVideoFrame>,
+    /// The uploaded picture to acknowledge once it is drawn to the window.
+    unpresented_video: Option<(i32, Instant)>,
     video_size: Option<(u32, u32, u16)>,
     /// The device's local display aspect, which stretches the video and the
     /// pointer mapping with it; `None` keeps the picture's own aspect.
@@ -1794,6 +1828,7 @@ impl Player {
             performance_mode: PerformancePanelMode::Compact,
             intercept_shortcuts: true,
             current: None,
+            unpresented_video: None,
             video_size: None,
             display_aspect: None,
             fullscreen: false,
@@ -1967,6 +2002,7 @@ impl Player {
         self.frame_paused = false;
         self.pending = None;
         self.current = None;
+        self.unpresented_video = None;
         self.video_size = None;
         self.video_rect = None;
         self.cursor = None;
