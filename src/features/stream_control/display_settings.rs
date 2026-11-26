@@ -193,52 +193,6 @@ pub(super) fn refusal_text(reason: &str) -> String {
     .into()
 }
 
-/// Take in the host's display list (a push, or the answer to a request);
-/// an older list than the one in effect is dropped.
-pub(super) fn apply_displays(state: &mut StreamControlState, list: wire::Displays) {
-    if list.revision < state.displays_revision {
-        return;
-    }
-    state.displays_revision = list.revision;
-    let previous_screens = std::mem::take(&mut state.screens);
-    state.screens_generation = state.screens_generation.wrapping_add(1);
-    state.current_screen_id = list.active;
-    state.screens = list
-        .displays
-        .into_iter()
-        .filter_map(|display| {
-            Some(ScreenBaseline {
-                display: RemoteDisplayInfo::of(&display)?,
-                id: display.id,
-                name: display.name,
-                primary: display.primary,
-                video_track_index: display.track,
-                fps: display.refresh_hz,
-                width: display.width,
-                height: display.height,
-            })
-        })
-        .collect();
-    if previous_screens.iter().any(|old| {
-        !state.screens.iter().any(|new| {
-            old.id == new.id
-                && old.video_track_index == new.video_track_index
-                && old.display.kind == new.display.kind
-        })
-    }) {
-        state.mouse.pause_layout();
-    }
-    for screen in &state.screens {
-        tracing::debug!(screen_id = screen.id, name = %screen.name,
-            kind = ?screen.display.kind, primary = screen.primary,
-            track = screen.video_track_index, width = screen.width, height = screen.height,
-            preferred = ?screen.display.preferred, "remote screen mapping");
-    }
-    state.topology.observe(&state.screens);
-    state.display_changes.observe(&state.screens);
-    super::settings::refresh_active_screen(state);
-}
-
 /// The host's displays can be changed in this session: its own kind of
 /// device, and the `display` capability in effect.
 pub(super) fn supported(state: &StreamControlState) -> bool {
@@ -255,6 +209,52 @@ pub(super) fn supported(state: &StreamControlState) -> bool {
 pub(super) const DISPLAY_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl StreamControlHandle {
+    /// Apply a push or request answer, ignoring lists older than the current one.
+    pub(super) fn apply_displays(&self, state: &mut StreamControlState, list: wire::Displays) {
+        if list.revision < state.displays_revision {
+            return;
+        }
+        state.displays_revision = list.revision;
+        let previous_screens = std::mem::take(&mut state.screens);
+        state.screens_generation = state.screens_generation.wrapping_add(1);
+        state.current_screen_id = list.active;
+        state.screens = list
+            .displays
+            .into_iter()
+            .filter_map(|display| {
+                Some(ScreenBaseline {
+                    display: RemoteDisplayInfo::of(&display)?,
+                    id: display.id,
+                    name: display.name,
+                    primary: display.primary,
+                    video_track_index: display.track,
+                    fps: display.refresh_hz,
+                    width: display.width,
+                    height: display.height,
+                })
+            })
+            .collect();
+        if previous_screens.iter().any(|old| {
+            !state.screens.iter().any(|new| {
+                old.id == new.id
+                    && old.video_track_index == new.video_track_index
+                    && old.display.kind == new.display.kind
+            })
+        }) {
+            state.mouse.pause_layout();
+        }
+        for screen in &state.screens {
+            tracing::debug!(screen_id = screen.id, name = %screen.name,
+                kind = ?screen.display.kind, primary = screen.primary,
+                track = screen.video_track_index, width = screen.width, height = screen.height,
+                preferred = ?screen.display.preferred, "remote screen mapping");
+        }
+        state.topology.observe(&state.screens);
+        state.display_changes.observe(&state.screens);
+        super::settings::refresh_active_screen(state);
+        self.protocol_changed.notify_waiters();
+    }
+
     pub(crate) fn display_change_pending(&self, screen_id: i32) -> bool {
         lock(&self.shared)
             .display_changes
@@ -417,5 +417,39 @@ mod tests {
         assert!(info(DisplayKind::Virtual).shows(local));
         assert!(info(DisplayKind::Exclusive).shows(local));
         assert!(!info(DisplayKind::Fallback).shows(local));
+    }
+
+    #[test]
+    fn pushed_display_list_wakes_playback() {
+        use std::task::{Context, Poll, Waker};
+
+        let profile = crate::media::ConnectionMediaOptions::default()
+            .resolve(LocalDisplayInfo::FALLBACK)
+            .unwrap();
+        let (control, _, _) = StreamControlHandle::new(profile, PerformanceMonitor::new(""));
+        let changed = control.protocol_notifications();
+        let mut handshake = std::pin::pin!(changed.notified());
+        let mut playback = std::pin::pin!(changed.notified());
+        let mut cx = Context::from_waker(Waker::noop());
+        assert_eq!(handshake.as_mut().poll(&mut cx), Poll::Pending);
+        assert_eq!(playback.as_mut().poll(&mut cx), Poll::Pending);
+        assert!(control.snapshot().screens.is_empty());
+
+        control
+            .handle_protocol_message(&wire::push(SessionBody::Displays(wire::Displays {
+                revision: 1,
+                active: 7,
+                displays: vec![wire::Display {
+                    id: 7,
+                    primary: true,
+                    width: 1920,
+                    height: 1080,
+                    ..Default::default()
+                }],
+            })))
+            .unwrap();
+
+        assert_eq!(control.snapshot().screens[0].id, 7);
+        assert_eq!(playback.as_mut().poll(&mut cx), Poll::Ready(()));
     }
 }

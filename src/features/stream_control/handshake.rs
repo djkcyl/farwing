@@ -211,9 +211,7 @@ impl StreamControlHandle {
             // The answer carries the display list or the stream state the
             // request left, or nothing.
             match received.body {
-                Some(SessionBody::Displays(list)) => {
-                    super::display_settings::apply_displays(&mut state, list)
-                }
+                Some(SessionBody::Displays(list)) => self.apply_displays(&mut state, list),
                 Some(SessionBody::Stream(stream)) => apply_stream_state(&mut state, stream),
                 Some(SessionBody::Cameras(list)) => state.cameras.list = list.cameras,
                 _ => {}
@@ -237,7 +235,7 @@ impl StreamControlHandle {
                 state.clipboard_files_allowed = permission.enabled;
             }
             SessionBody::Stream(stream) => apply_stream_state(&mut state, stream),
-            SessionBody::Displays(list) => super::display_settings::apply_displays(&mut state, list),
+            SessionBody::Displays(list) => self.apply_displays(&mut state, list),
             SessionBody::Cameras(list) => state.cameras.list = list.cameras,
             other if response => {
                 tracing::debug!(message = other.name(), "unmatched session response")

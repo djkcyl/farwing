@@ -256,7 +256,7 @@ impl Playback {
                 i.events.clone(),
             )
         });
-        if !focused || state.mouse_mode == MouseMode::View || state.mouse_pending {
+        if !focused || state.mouse_mode == MouseMode::View || mouse.transport_recovering() {
             mouse.pause_owner(INPUT_OWNER);
             self.modifiers = [false; 4];
             return;
