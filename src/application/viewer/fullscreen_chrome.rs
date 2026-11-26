@@ -94,7 +94,13 @@ impl FullscreenChrome {
         }
         let position =
             egui::pos2(touch.location.x as f32, touch.location.y as f32) / ctx.pixels_per_point();
-        let activation = self.ball_rect.is_some_and(|rect| rect.contains(position));
+        let activation = self.ball_rect.is_some_and(|rect| {
+            if self.ball_enabled {
+                rect.contains(position)
+            } else {
+                touch_target(rect).contains(position)
+            }
+        });
         let dismiss = !self.ball_enabled && self.touch_opened && outside_controls(ctx, position);
         if self.active && touch.phase == TouchPhase::Started && (activation || dismiss) {
             if self.touches.is_empty() {
@@ -322,6 +328,16 @@ fn floating_width(ctx: &egui::Context) -> f32 {
     (ctx.content_rect().width() - 24.0).clamp(32.0, theme::VIEWER_FLOATING_WIDTH)
 }
 
+/// The collapsed handle's touch target: as wide as the strip was before it
+/// became click-to-open, centred on the handle and flush with the top edge.
+fn touch_target(handle: egui::Rect) -> egui::Rect {
+    let size = theme::VIEWER_FULLSCREEN_HANDLE_TOUCH_SIZE;
+    egui::Rect::from_min_size(
+        egui::pos2(handle.center().x - size.x / 2.0, handle.top()),
+        size,
+    )
+}
+
 fn show_hint(ctx: &egui::Context, top: f32) {
     let fullscreen = viewer_shortcuts::label(Action::Fullscreen);
     let release = viewer_shortcuts::label(Action::ReleaseMouse);
@@ -512,6 +528,26 @@ mod tests {
             }
             assert_eq!(chrome.expanded, !relative);
         }
+    }
+
+    #[test]
+    fn a_tap_keeps_the_wide_touch_target_on_the_small_handle() {
+        let ctx = egui::Context::default();
+        let mut chrome = FullscreenChrome::default();
+        chrome.sync_mode(true, false);
+        draw_strip(&ctx, &mut chrome, Vec::new(), false);
+        let handle = chrome.ball_rect.unwrap();
+        // Outside the 96-point pointer strip, inside the 340-point touch target.
+        let x = handle.center().x + 150.0;
+        assert!(!handle.contains(egui::pos2(x, 5.0)));
+        assert!(chrome.intercept_touch(&ctx, &touch(1, TouchPhase::Started, x as f64, 5.0)));
+        assert!(chrome.expanded);
+        assert!(chrome.intercept_touch(&ctx, &touch(1, TouchPhase::Ended, x as f64, 5.0)));
+        // Below the strip's 14 points a tap still reaches the remote.
+        chrome.expanded = false;
+        chrome.touch_opened = false;
+        assert!(!chrome.intercept_touch(&ctx, &touch(2, TouchPhase::Started, x as f64, 30.0)));
+        assert!(!chrome.expanded);
     }
 
     #[test]

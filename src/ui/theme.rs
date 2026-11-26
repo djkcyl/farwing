@@ -58,6 +58,9 @@ pub const VIEWER_FLOATING_WIDTH: f32 = 1100.0;
 pub const VIEWER_FULLSCREEN_HANDLE_HIT_SIZE: egui::Vec2 = egui::vec2(96.0, 12.0);
 pub const VIEWER_FULLSCREEN_HANDLE_SIZE: egui::Vec2 = egui::vec2(64.0, 3.0);
 pub const VIEWER_FULLSCREEN_HANDLE_CENTER_Y: f32 = 8.0;
+/// A finger cannot hit the small pointer strip, so a tap on the collapsed
+/// handle keeps the original, wider top-edge target.
+pub const VIEWER_FULLSCREEN_HANDLE_TOUCH_SIZE: egui::Vec2 = egui::vec2(340.0, 14.0);
 pub const SESSION_STATUS_WIDTH: f32 = 280.0;
 pub const INPUT_WARNING_WIDTH: f32 = 360.0;
 pub const INPUT_WARNING_MARGIN: f32 = 12.0;
