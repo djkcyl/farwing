@@ -69,6 +69,12 @@ pub(crate) enum Request {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Snapshot {
     #[serde(default)]
+    pub membership_revision: u64,
+    #[serde(default)]
+    pub membership_profile: Option<crate::account::membership::Profile>,
+    #[serde(default)]
+    pub global_membership_expiration: Option<crate::account::membership::Expiration>,
+    #[serde(default)]
     pub device_changes: Option<crate::account::device_change::relay::Batch>,
     pub assistance: host::assist::Snapshot,
     pub publication: crate::account::reporting::Snapshot,

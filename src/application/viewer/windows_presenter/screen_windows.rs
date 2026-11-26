@@ -21,7 +21,6 @@ pub(super) struct ScreenTabBar {
     pending: Option<i32>,
     error: Option<String>,
     command: Option<TabCommand>,
-    software_only: bool,
 }
 
 impl ScreenTabBar {
@@ -69,12 +68,7 @@ impl ScreenTabBar {
                         let (response, close_clicked) = ui
                             .push_id(("screen-tab", *id), |ui| {
                                 crate::ui::controls::screen_tab(
-                                    ui,
-                                    name,
-                                    selected,
-                                    pending,
-                                    !self.software_only,
-                                    closable,
+                                    ui, name, selected, pending, true, closable,
                                 )
                             })
                             .inner;
@@ -110,10 +104,9 @@ impl ScreenTabBar {
                                 "在独立窗口打开",
                                 "",
                                 None,
-                                !self.software_only,
+                                true,
                                 false,
                             )
-                            .on_disabled_hover_text("软解仅允许一个播放窗口，请使用标签切换屏幕")
                             .clicked()
                             {
                                 if let Ok(origin) = window.outer_position() {
@@ -468,13 +461,11 @@ impl ScreenWindows {
             .map(|app| app.egui_context.clone())
             .or_else(|| connecting.as_ref().map(|app| app.egui_context.clone()))
             .expect("screen window UI context");
-        let (task, result) = self.factory.open(
-            screen_id,
-            display,
-            slot.selected,
-            cancelled_pending,
-            move || repaint.request_repaint(),
-        );
+        let (task, result) = self
+            .factory
+            .open(screen_id, display, cancelled_pending, move || {
+                repaint.request_repaint()
+            });
         slot.pending = Some(PendingScreen {
             id: screen_id,
             task,
@@ -540,12 +531,9 @@ impl ScreenWindows {
             source.window.set_outer_position(position);
             return Ok(());
         }
-        if source
-            .app
-            .as_ref()
-            .is_some_and(|app| app._session.is_software())
-        {
-            bail!("软解仅允许一个播放窗口，请使用顶部标签切换屏幕");
+        if let Some(app) = source.app.as_ref() {
+            app.stream_control
+                .require_entitlement("multi_window", "多屏独立窗口")?;
         }
         let target = {
             let window = event_loop.create_window(
@@ -633,7 +621,6 @@ impl ScreenWindows {
         for slot in self.windows.values_mut() {
             if let Some(app) = slot.app.as_mut() {
                 app.screen_tabs.device_switch = self.factory.device_switch.clone();
-                app.screen_tabs.software_only = app._session.is_software();
                 app.screen_tabs.tabs = slot
                     .tabs
                     .iter()
@@ -649,13 +636,6 @@ impl ScreenWindows {
             .values()
             .flat_map(|slot| {
                 slot.selected
-                    .filter(|_| {
-                        !(slot.pending.is_some()
-                            && slot
-                                .app
-                                .as_ref()
-                                .is_some_and(|app| app._session.is_software()))
-                    })
                     .into_iter()
                     .chain(slot.pending.as_ref().map(|pending| pending.id))
             })

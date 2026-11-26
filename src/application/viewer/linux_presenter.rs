@@ -829,10 +829,11 @@ impl ConnectingWindowsRunner {
         };
         anyhow::ensure!(player.tabs.contains(&screen_id), "显示器不在这个窗口里");
         anyhow::ensure!(player.tabs.len() > 1, "这个窗口只剩一块显示器，不能再拖出");
-        anyhow::ensure!(
-            !player.session.is_software(),
-            "软解仅允许一个播放窗口，请使用标签切换屏幕"
-        );
+        // The same account right the Windows viewer checks before a tab
+        // leaves its window.
+        player
+            .control()
+            .require_entitlement("multi_window", "多屏独立窗口")?;
         anyhow::ensure!(
             !self
                 .detached
@@ -895,13 +896,7 @@ impl ConnectingWindowsRunner {
                 when: Instant::now(),
             }));
         };
-        let (task, result) = screens.open(
-            screen_id,
-            ViewerDisplayHandle::default(),
-            None,
-            None,
-            repaint,
-        );
+        let (task, result) = screens.open(screen_id, ViewerDisplayHandle::default(), None, repaint);
         self.detached.push(DetachedWindow {
             stage: DetachedStage::Opening(Box::new(app)),
             pending: Some(DetachedPending {
@@ -1972,7 +1967,6 @@ impl Player {
         let (task, result) = self.screens.open(
             screen_id,
             ViewerDisplayHandle::default(),
-            Some(self.session.screen_id()),
             cancelled,
             repaint,
         );

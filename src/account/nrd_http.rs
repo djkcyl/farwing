@@ -86,7 +86,7 @@ impl NrdHttp {
         body: Vec<u8>,
         timeout: Duration,
         retry: RetryPolicy,
-    ) -> Result<(StatusCode, Bytes)> {
+    ) -> Result<(StatusCode, Bytes, HeaderMap)> {
         static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
         let request_group = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
         let deadline = Instant::now() + timeout;
@@ -133,6 +133,7 @@ impl NrdHttp {
             let outcome = match response {
                 Ok(response) => {
                     let status = response.status();
+                    let response_headers = response.headers().clone();
                     match response.bytes().instrument(span).await {
                         Ok(bytes) => {
                             if status == StatusCode::NOT_FOUND {
@@ -155,7 +156,7 @@ impl NrdHttp {
                             } else {
                                 self.succeeded(selected);
                             }
-                            return Ok((status, bytes));
+                            return Ok((status, bytes, response_headers));
                         }
                         Err(error) => (error, false),
                     }

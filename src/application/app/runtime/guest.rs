@@ -69,7 +69,7 @@ impl Guest {
         if let Some(client) = &self.client {
             client.host.assistance.touch_ui();
             if self.shown != Some(generation) {
-                let _ = events.send(GuiEvent::Host(generation, client.host.clone()));
+                let _ = events.send(GuiEvent::Host(generation, client.host.clone(), None));
                 self.shown = Some(generation);
             }
         }

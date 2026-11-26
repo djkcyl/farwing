@@ -1,7 +1,7 @@
 //! AV1 low-overhead OBUs and AOM RTP payloads. No decoder or GPU ownership.
 use anyhow::{Context, Result, ensure};
 use bytes::Bytes;
-use openuuyc_codec::syntax::av1::{Chroma, Sequence, obu::Units};
+use openuuyc_codec::syntax::av1::{Chroma, Sequence, obu::Units, visible};
 
 pub(crate) fn leb(data: &[u8], at: &mut usize) -> Result<usize> {
     Ok(openuuyc_codec::syntax::av1::obu::leb128(data, at)?)
@@ -41,12 +41,14 @@ pub(crate) fn format(data: &[u8]) -> Option<super::video_format::VideoFormatSign
     let s = sequence?;
     let w = s.max_width;
     let h = s.max_height;
+    // AV1 cannot crop; an aligned-only encoder declares its unpadded size.
+    let (visible_width, visible_height) = visible::clamp(visible::declared(data).flatten(), (w, h));
     Some(super::video_format::VideoFormatSignature {
         profile_idc: s.profile,
         coded_width: w,
         coded_height: h,
-        visible_width: w,
-        visible_height: h,
+        visible_width,
+        visible_height,
         crop_left: 0,
         crop_top: 0,
         chroma_format_idc: match s.chroma {

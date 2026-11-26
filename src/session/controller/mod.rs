@@ -222,8 +222,13 @@ impl ControllerConnection {
                     error
                 }
             })?;
+        let expiration = room
+            .international_connect
+            .then(|| client.membership.cross_border_room());
         let connection = Self::establish(
             room,
+            expiration,
+            client,
             &client.device_id(),
             profile,
             policy,
@@ -368,17 +373,60 @@ impl ControllerConnection {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn establish(
         room: RoomSession,
+        mut expiration: Option<crate::account::membership::RoomExpiration>,
+        account: &AuthenticatedClient,
         controller_device_id: &str,
-        profile: ConnectionMediaProfile,
+        mut profile: ConnectionMediaProfile,
         features: crate::account::feature_ability::FeaturePolicy,
         connect_type: crate::session::negotiation::ControlConnectType,
         transport: crate::media::TransportChoice,
-        preferences: Option<crate::features::stream_control::StreamControlPreferences>,
+        mut preferences: Option<crate::features::stream_control::StreamControlPreferences>,
         audio_settings: crate::media::audio::AudioSettings,
         reporter: Option<&ConnectionProgressReporter>,
         cancel: &CancellationToken,
         purpose: crate::session::negotiation::ControlPurpose,
     ) -> Result<Self> {
+        let saved_preferences = preferences;
+        let _membership_slot = cancellable(cancel, async {
+            Ok(account.membership.connecting.lock().await)
+        })
+        .await?;
+        if let Err(error) = cancellable(cancel, account.account_entitlements()).await {
+            if cancel.is_cancelled() {
+                return Err(error);
+            }
+            tracing::warn!(%error, "account rights unavailable for connection");
+        }
+        let rights = account.membership.rights_updates.subscribe();
+        let initial_rights = rights.borrow().clone();
+        let initial_snapshot = initial_rights
+            .as_ref()
+            .map(|t| t.snapshot.clone())
+            .unwrap_or_else(|| {
+                crate::protocol::entitlements::Snapshot::new(
+                    crate::protocol::entitlements::Schedule::builtin_free(),
+                    0,
+                )
+                .expect("static rights")
+            });
+        if let Some(table) = &initial_rights {
+            if matches!(
+                purpose,
+                crate::session::negotiation::ControlPurpose::Viewing
+                    | crate::session::negotiation::ControlPurpose::Audio
+            ) && shared::viewing_count(&account.account_generation()) > 0
+            {
+                anyhow::ensure!(
+                    table.allows("multi_channel", None),
+                    "当前账号权益不支持同时连接多台设备"
+                );
+            }
+            crate::features::stream_control::constrain_initial(
+                table,
+                &mut profile,
+                &mut preferences,
+            )?;
+        }
         tracing::info!(?profile, ?transport, "establishing controller connection");
         report_progress(
             reporter,
@@ -405,14 +453,18 @@ impl ControllerConnection {
                 profile.codec.label()
             ),
         );
-        let control = match cancellable(
-            cancel,
-            signal.start_control(
-                controller_device_id,
-                profile,
-                connect_type,
-                preferences,
-                purpose,
+        let control = match crate::account::membership::RoomExpiration::during(
+            &mut expiration,
+            cancellable(
+                cancel,
+                signal.start_control(
+                    controller_device_id,
+                    profile,
+                    connect_type,
+                    preferences,
+                    purpose,
+                    Some(&initial_snapshot),
+                ),
             ),
         )
         .await
@@ -472,11 +524,12 @@ impl ControllerConnection {
             }
         };
         peer.stream_control_handle().set_feature_policy(features);
+        peer.stream_control_handle().bind_entitlements(rights);
         peer.stream_control_handle()
             .set_viewing_enabled(purpose == crate::session::negotiation::ControlPurpose::Viewing);
         peer.stream_control_handle()
             .set_display_connection_type(connect_type);
-        if let Some(preferences) = preferences
+        if let Some(preferences) = saved_preferences
             && let Err(error) = peer
                 .stream_control_handle()
                 .restore_preferences(preferences)
@@ -571,9 +624,12 @@ impl ControllerConnection {
                 "ICE 候选对、DTLS 握手与 SRTP 密钥协商均已完成",
             ),
         };
-        if let Err(error) = cancellable(
-            cancel,
-            signal.negotiate(&control, &peer, Some(&negotiation_progress)),
+        if let Err(error) = crate::account::membership::RoomExpiration::during(
+            &mut expiration,
+            cancellable(
+                cancel,
+                signal.negotiate(&control, &peer, Some(&negotiation_progress)),
+            ),
         )
         .await
         {
@@ -592,13 +648,34 @@ impl ControllerConnection {
         let (signal_shutdown, signal_shutdown_receiver) = oneshot::channel();
         let signal_peer = Arc::clone(&peer);
         let signal_control = control.clone();
-        let signal_task = tokio::spawn(signal.keep_alive(
-            signal_shutdown_receiver,
+        let shutdown = async move {
+            crate::account::membership::RoomExpiration::during(&mut expiration, async {
+                let _ = signal_shutdown_receiver.await;
+                Ok(())
+            })
+            .await
+        };
+        let signal_task = tokio::spawn(signal.keep_alive_until(
+            shutdown,
             Some(signal_peer),
             Some(signal_control),
         ));
         tracing::info!("controller WebRTC negotiation complete");
-        let session = shared::Session::new(peer, forwarder, signal_shutdown, signal_task);
+        let session = shared::Session::new(
+            account.account_generation(),
+            peer,
+            forwarder,
+            signal_shutdown,
+            signal_task,
+        );
+        let sync = session.peer.stream_control_handle();
+        let ended = session.end_waiter();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = ended => {}
+                _ = sync.synchronize_entitlements() => {}
+            }
+        });
         Self::from_shared(
             session,
             profile,

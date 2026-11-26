@@ -9,7 +9,6 @@ use crate::protocol::capability::{CodecCapability, DeviceCapability, QUALITY_DIM
 use crate::transport::rtc::EncodedVideoFrame;
 
 pub(crate) mod diagnostics;
-pub(crate) mod software_slot;
 
 use crate::platform::surface as windows_surface;
 
@@ -122,8 +121,6 @@ pub(crate) struct NativeVideoDecoder {
     frame_reader: FrameReader,
     candidate: DecoderCandidate,
     label: String,
-
-    software_slot: Option<std::rc::Rc<software_slot::SoftwareSlot>>,
 }
 
 /// Local implementation choices, never serialized as invented UU decoder IDs.
@@ -250,7 +247,6 @@ impl NativeVideoDecoder {
                 frame_rate,
                 extra_data.clone(),
                 surface_writer.clone(),
-                None,
             ) {
                 Ok(mut decoder) => {
                     decoder.describe_selection(preference, last_error.is_some());
@@ -281,7 +277,6 @@ impl NativeVideoDecoder {
         frame_rate: u32,
         extra_data: Bytes,
         surface_writer: Option<windows_surface::D3D11SurfaceWriter>,
-        software_slot: Option<std::rc::Rc<software_slot::SoftwareSlot>>,
     ) -> Result<Self> {
         if width == 0 || height == 0 || frame_rate == 0 {
             return Err(DecodeError::InvalidInput.into());
@@ -306,7 +301,6 @@ impl NativeVideoDecoder {
                     frame_reader: FrameReader::Cpu,
                     candidate,
                     label: format!("{} 硬解", platform_label()),
-                    software_slot: None,
                 })
             }
             #[cfg(windows)]
@@ -344,8 +338,6 @@ impl NativeVideoDecoder {
                 {
                     return Err(DecodeError::Unsupported.into());
                 }
-                let software_slot =
-                    Some(software_slot.map_or_else(software_slot::SoftwareSlot::acquire, Ok)?);
                 let config = decoder_config(
                     codec,
                     width,
@@ -376,8 +368,6 @@ impl NativeVideoDecoder {
                     frame_reader,
                     candidate,
                     label: "OpenUUYC 软件解码".to_owned(),
-
-                    software_slot,
                 })
             }
         }
@@ -414,11 +404,7 @@ impl NativeVideoDecoder {
     }
 
     pub(crate) fn is_software(&self) -> bool {
-        self.software_slot.is_some()
-    }
-
-    pub(crate) fn software_slot(&self) -> Option<std::rc::Rc<software_slot::SoftwareSlot>> {
-        self.software_slot.clone()
+        self.candidate == DecoderCandidate::Software
     }
 
     pub(crate) fn surface_writer(&self) -> Option<windows_surface::D3D11SurfaceWriter> {
@@ -464,7 +450,6 @@ impl NativeVideoDecoder {
                     .and_then(|items| items.into_iter().find(|a| a.luid == adapter))
                     .map_or_else(|| platform_label().into(), |a| a.name)
             ),
-            software_slot: None,
         })
     }
 
@@ -629,14 +614,15 @@ pub(crate) fn detect_native_decoder_support(
                 }
             }
         }
+        // Software decoders support the full set of product quality tiers.
+        // Advertised dimensions describe format support, not a frame-rate promise.
+        let (software_width, software_height) = QUALITY_DIMENSIONS[QUALITY_DIMENSIONS.len() - 1];
         if profile.decoder.mode.software() && profile.codec.accepts(VideoCodec::H264) {
-            // streamer 958290: this is the advertised software ceiling, not
-            // an arbitrary decoder rejection of a larger hardware-fallback AU.
             for chroma_sampling in [1, 3] {
                 capabilities.push(CodecCapability {
                     video_codec: 1,
-                    width: 1920,
-                    height: 1080,
+                    width: software_width,
+                    height: software_height,
                     chroma_sampling,
                     bit_depth: 8,
                     codec_impl: 37,
@@ -649,8 +635,8 @@ pub(crate) fn detect_native_decoder_support(
         if profile.decoder.mode.software() && profile.codec.accepts(VideoCodec::Av1) {
             capabilities.push(CodecCapability {
                 video_codec: 5,
-                width: 1920,
-                height: 1080,
+                width: software_width,
+                height: software_height,
                 chroma_sampling: 1,
                 bit_depth: 8,
                 codec_impl: 37,
@@ -668,8 +654,8 @@ pub(crate) fn detect_native_decoder_support(
                         if writer.supports_software_av1(depth, chroma) {
                             capabilities.push(CodecCapability {
                                 video_codec: 5,
-                                width: 1920,
-                                height: 1080,
+                                width: software_width,
+                                height: software_height,
                                 chroma_sampling: chroma,
                                 bit_depth: depth,
                                 codec_impl: 37,
@@ -687,6 +673,7 @@ pub(crate) fn detect_native_decoder_support(
         Ok(DeviceCapability {
             preferred_codec: profile.codec.preferred(),
             openuuyc_sdr_10bit: true,
+            openuuyc_av1_visible_size: true,
             ice_id: String::new(),
             display_info: crate::platform::display_hdr::capabilities(
                 profile.local_display.refresh_hz,

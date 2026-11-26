@@ -9,7 +9,7 @@
 # then commit. See packaging/aur/README.md.
 
 pkgname=openuuyc-bin
-pkgver=1.0.2_beta.5.11
+pkgver=1.0.2_beta.10.1
 pkgrel=1
 # Releases are tagged v<Cargo version>-linux.<n>. pkgver may not contain a
 # hyphen: it is the Cargo version with `-` as `_`, then `.<n>`, so that

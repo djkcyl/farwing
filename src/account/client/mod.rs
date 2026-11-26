@@ -32,6 +32,7 @@ pub(crate) enum RestorationStage {
 }
 
 pub struct AuthenticatedClient {
+    pub(crate) membership: crate::account::membership::Membership,
     pub(crate) host: crate::features::host::Handle,
     api: Mutex<Option<NrdApi>>,
     session: LoginSession,
@@ -102,6 +103,7 @@ impl AuthenticatedClient {
             };
         let account_name = Mutex::new(session.nickname().to_owned());
         Ok(Self {
+            membership: Default::default(),
             host,
             api: Mutex::new(Some(api)),
             session,
@@ -225,6 +227,7 @@ impl AuthenticatedClient {
         api.set_identity(identity.client_identity()?);
         self.restore_progress
             .send_replace(RestorationStage::Account);
+        let observed_at = crate::account::membership::local_counter();
         let response = tokio::select! {
             biased;
             _ = self.ended.cancelled() => bail!("account session has ended"),
@@ -232,6 +235,8 @@ impl AuthenticatedClient {
         };
         match response {
             Ok(info) => {
+                self.membership
+                    .read_profile(&info, self.session.user_id(), observed_at);
                 if let Some(name) = info.get("nickname").and_then(serde_json::Value::as_str) {
                     *self.account_name.lock().unwrap_or_else(|e| e.into_inner()) = name.to_owned();
                 }
@@ -408,11 +413,60 @@ impl AuthenticatedClient {
     }
 
     pub async fn account_info(&self) -> Result<serde_json::Value> {
+        let observed_at = crate::account::membership::local_counter();
         let info = self
             .request(|api| async move { api.get_user_info().await })
             .await?;
+        self.membership
+            .read_profile(&info, self.session.user_id(), observed_at);
         self.schedule_feature_refresh(false);
         Ok(info)
+    }
+
+    pub(crate) async fn account_entitlements(&self) -> Result<crate::account::api::Entitlements> {
+        let mut stored = self.membership.rights.lock().await;
+        anyhow::ensure!(self.is_active(), "账号会话已结束");
+        let revision = self.membership.rights_revision();
+        if let Some((_, table)) = stored
+            .as_ref()
+            .filter(|(seen, table)| *seen == revision && !table.refresh_after().is_zero())
+        {
+            return Ok(table.clone());
+        }
+        let result = self
+            .request(|api| async move {
+                Ok(ApiEnvelope {
+                    code: 0,
+                    msg: String::new(),
+                    data: Some(api.query_entitlements().await?),
+                })
+            })
+            .await;
+        let table = match result {
+            Ok(table) => table,
+            Err(error) => {
+                if stored
+                    .as_ref()
+                    .is_none_or(|(_, table)| table.refresh_after().is_zero())
+                {
+                    self.membership.rights_updates.send_replace(None);
+                }
+                return Err(error);
+            }
+        };
+        anyhow::ensure!(
+            revision == self.membership.rights_revision(),
+            "权益查询期间账号权益已变化"
+        );
+        anyhow::ensure!(
+            table.version >= self.membership.minimum_version(),
+            "服务端权益版本尚未更新"
+        );
+        *stored = Some((revision, table.clone()));
+        self.membership
+            .rights_updates
+            .send_replace(Some(std::sync::Arc::new(table.clone())));
+        Ok(table)
     }
 
     pub(crate) fn feature_catalog(&self) -> crate::account::feature_ability::FeatureCatalog {
@@ -602,7 +656,7 @@ impl AuthenticatedClient {
             .iter()
             .find(|device| device.device_id == device_id)
             .context("设备已不在当前账号中，未发送更新请求")?;
-        if device.platform != 1
+        if !matches!(device.platform, 1 | 4)
             || !device.is_connected()
             || !device.controlled_support
             || !device.controllable

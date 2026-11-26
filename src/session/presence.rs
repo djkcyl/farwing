@@ -51,11 +51,17 @@ impl ActivePresence {
         let (events, receiver) = mpsc::channel();
         let task = tokio::spawn(async move {
             let ended = client.ended();
-            let run = async {
+            let presence = async {
                 if crate::platform::host_service::resident::managed() {
                     run_remote(client.clone(), events.clone(), task_cancel.clone()).await
                 } else {
                     run_presence(client.clone(), events.clone(), task_cancel.clone()).await
+                }
+            };
+            let run = async {
+                tokio::select! {
+                    result=presence=>result,
+                    _=client.refresh_membership_profile()=>Ok(()),
                 }
             };
             tokio::pin!(run);
@@ -172,6 +178,9 @@ async fn run_presence(
             }
             if push_client.is_guest() {
                 return;
+            }
+            if let Some(membership) = push_client.membership() {
+                membership.account_push(push);
             }
             if push.get("type").and_then(|v| v.as_str()) == Some("wake_on_lan") {
                 if push_client.host.wol_permitted() {
@@ -318,6 +327,7 @@ async fn run_remote(
     // logout/account changes and portable/resident storage transitions.
     let sessions = KeyringSessionStore::new()?;
     let mut device_cursor = None;
+    let mut membership_revision = None;
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     while !cancel.is_cancelled() {
@@ -351,6 +361,22 @@ async fn run_remote(
         .await
         {
             Ok(Reply::Snapshot(mut snapshot)) if snapshot.account == client.generation() => {
+                if membership_revision != Some(snapshot.membership_revision) {
+                    if let Some(member) = client.membership() {
+                        member.invalidate_rights();
+                    }
+                    membership_revision = Some(snapshot.membership_revision);
+                }
+                if let (Some(membership), Some(profile)) =
+                    (client.membership(), snapshot.membership_profile)
+                {
+                    membership.observe_profile(profile);
+                }
+                if let (Some(membership), Some(event)) =
+                    (client.membership(), snapshot.global_membership_expiration)
+                {
+                    membership.observe(event);
+                }
                 crate::account::reporting::replace(snapshot.publication.clone());
                 let _ = events.send(PresenceEvent::State(snapshot.online.clone()));
                 if let Some(batch) = snapshot.device_changes.take() {
@@ -365,6 +391,7 @@ async fn run_remote(
                 client.host.apply_remote(*snapshot).await;
             }
             Ok(Reply::Snapshot(_)) => {
+                membership_revision = None;
                 device_cursor = None;
                 let _ = events.send(PresenceEvent::State(PresenceState::Connecting));
             }

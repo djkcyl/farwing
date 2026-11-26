@@ -115,7 +115,11 @@ pub(super) enum GuiEvent {
         error: String,
     },
     ExitReady(std::result::Result<(), String>),
-    Host(u64, crate::features::host::Handle),
+    Host(
+        u64,
+        crate::features::host::Handle,
+        Option<tokio::sync::watch::Receiver<Option<crate::account::membership::Profile>>>,
+    ),
     Viewer(
         u64,
         super::viewing::Key,

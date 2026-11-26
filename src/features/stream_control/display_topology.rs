@@ -340,6 +340,7 @@ impl StreamControlHandle {
         let mut rollback = None;
         match action {
             DisplayTopologyAction::Create { width, height } => {
+                super::entitlements::require(&state, "screen_virtual", None, "虚拟屏")?;
                 anyhow::ensure!(
                     capabilities.create,
                     "{}",
@@ -371,6 +372,7 @@ impl StreamControlHandle {
                 ));
             }
             DisplayTopologyAction::Enter { width, height, dpi } => {
+                super::entitlements::require(&state, "screen_super", None, "超级屏")?;
                 anyhow::ensure!(capabilities.enter, "当前会话不能手动进入超级屏");
                 request.payload = Some(PbRpcRequestPayload::EnterSuperScreen(PbEnterSuperScreen {
                     reason: 1,
@@ -384,6 +386,7 @@ impl StreamControlHandle {
                 request.payload = Some(PbRpcRequestPayload::QuitSuperScreen(PbQuitSuperScreen {}));
             }
             DisplayTopologyAction::Resolution { screen_id, choice } => {
+                super::entitlements::require(&state, "screen_super", None, "超级屏")?;
                 let screen = state
                     .screens
                     .iter()
@@ -410,6 +413,15 @@ impl StreamControlHandle {
                     capabilities.fps_conversion,
                     "当前会话不能通过帧率切换超级屏"
                 );
+                super::entitlements::require(&state, "screen_super", None, "超级屏")?;
+                super::entitlements::require(
+                    &state,
+                    "screen_refresh_rate",
+                    Some(serde_json::json!(
+                        settings.frame_rate.value(state.local_display)
+                    )),
+                    "所选帧率",
+                )?;
                 let target = resolution(width, height)?;
                 let dpi = i32::try_from(dpi)?;
                 // Confirmation may remain open while another window changes quality.

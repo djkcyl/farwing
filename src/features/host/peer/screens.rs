@@ -13,6 +13,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicI32, Ordering},
     },
+    time::Duration,
 };
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -109,6 +110,7 @@ pub(crate) struct Slot {
     awaiting_source: bool,
 }
 pub(crate) struct Screens {
+    entitlements: Option<crate::protocol::entitlements::Snapshot>,
     inventory_revision: u64,
     layout_error: Option<String>,
     pub displays: Arc<crate::features::host::displays::Session>,
@@ -268,6 +270,7 @@ impl Screens {
         selected: Option<capture::Screen>,
         displays: Arc<crate::features::host::displays::Session>,
         deferred: Option<Deferred>,
+        entitlements: Option<crate::protocol::entitlements::Snapshot>,
     ) -> Result<Self> {
         let reports = Arc::new(Reports {
             media_ready: Arc::new(AtomicBool::new(false)),
@@ -315,6 +318,7 @@ impl Screens {
             });
         }
         let mut state = Self {
+            entitlements,
             inventory_revision: 0,
             layout_error: None,
             displays,
@@ -339,6 +343,38 @@ impl Screens {
             state.start_at(0, selected, initial).await?;
         }
         Ok(state)
+    }
+
+    pub fn update_entitlements(&mut self, data: &str, server_time: i64) -> Result<()> {
+        let snapshot = crate::protocol::entitlements::Schedule::parse(data).and_then(|schedule| {
+            crate::protocol::entitlements::Snapshot::new(schedule, server_time)
+        });
+        self.entitlements = snapshot.as_ref().ok().cloned();
+        self.refresh_entitlement_limits();
+        if let Ok(snapshot) = &snapshot {
+            tracing::info!(
+                features = snapshot.schedule.features.len(),
+                server_time = snapshot.server_time(),
+                quality_limit = snapshot.quality_limit(),
+                "controller entitlements synchronized"
+            );
+        }
+        snapshot.map(|_| ())
+    }
+    pub fn entitlement_delay(&self) -> Duration {
+        self.entitlements
+            .as_ref()
+            .map_or(Duration::from_secs(86400), |e| e.until_transition())
+    }
+
+    pub fn refresh_entitlement_limits(&mut self) {
+        // 4.48.1 preserves the running capture on an entitlement update or
+        // period boundary. A new capture/settings request resolves the current
+        // limit; the transition notification itself does not reconfigure video.
+        self.base.entitlement_quality_limit = self.entitlement_quality_limit();
+    }
+    pub(crate) fn entitlement_quality_limit(&self) -> i32 {
+        self.entitlements.as_ref().map_or(2, |e| e.quality_limit())
     }
     pub(crate) fn refresh(&mut self) -> Result<()> {
         self.apply_inventory(Inventory::read()?)
@@ -515,6 +551,7 @@ impl Screens {
         screen: capture::Screen,
         mut config: VideoConfig,
     ) -> Result<()> {
+        config.entitlement_quality_limit = self.entitlement_quality_limit();
         ensure!(
             self.lease.requested() && !self.cancel.is_cancelled(),
             "被控许可已失效"

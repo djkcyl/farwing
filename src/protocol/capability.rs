@@ -42,6 +42,10 @@ pub(crate) struct DeviceCapability {
     /// Decoder AND presentation support SDR10 independently from HDR.
     /// Older receivers advertised ten-bit decode but rendered it as PQ.
     pub openuuyc_sdr_10bit: bool,
+    /// The receiver presents AV1 at a declared visible size. AV1 has no
+    /// cropping syntax, and encoders limited to aligned pictures (AMD VCN4)
+    /// pad instead; older receivers would show that padding.
+    pub openuuyc_av1_visible_size: bool,
     pub ice_id: String,
     pub display_info: Vec<DisplayCapability>,
     pub video_codec_capability: Vec<CodecCapability>,

@@ -39,6 +39,8 @@ struct D3D11Shared {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     reported_format: Mutex<Option<windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT>>,
+    /// CPU-writable copy reused by `upload_planes` for software-decoded frames.
+    upload_staging: Mutex<Option<ID3D11Texture2D>>,
 }
 
 pub(crate) fn acquire_texture_sync(sync: &IDXGIKeyedMutex, timeout_ms: u32) -> Result<()> {
@@ -239,6 +241,7 @@ impl D3D11SurfaceWriter {
                 device,
                 context,
                 reported_format: Mutex::new(None),
+                upload_staging: Mutex::new(None),
             }),
         })
     }
@@ -332,20 +335,28 @@ impl D3D11SurfaceWriter {
             BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
             ..Default::default()
         };
-        let input = D3D11_SUBRESOURCE_DATA {
-            pSysMem: frame.data.as_ptr().cast(),
-            SysMemPitch: pitch,
-            SysMemSlicePitch: 0,
+        let texture = if planar {
+            // Initial data for planar formats is driver dependent: AMD
+            // integrated graphics create the texture and leave it zeroed, which
+            // presents as a green picture. Mapped rows have one layout everywhere.
+            self.upload_planes(&desc, &frame.data, pitch as usize)?
+        } else {
+            let input = D3D11_SUBRESOURCE_DATA {
+                pSysMem: frame.data.as_ptr().cast(),
+                SysMemPitch: pitch,
+                SysMemSlicePitch: 0,
+            };
+            let mut texture = None;
+            unsafe {
+                self.shared
+                    .device
+                    .CreateTexture2D(&desc, Some(&input), Some(&mut texture))
+            }
+            .context("upload software decoded video")?;
+            texture.context("missing uploaded video texture")?
         };
-        let mut texture = None;
-        unsafe {
-            self.shared
-                .device
-                .CreateTexture2D(&desc, Some(&input), Some(&mut texture))
-        }
-        .context("upload software decoded video")?;
         Ok(D3D11Surface {
-            texture: texture.context("missing uploaded video texture")?,
+            texture,
             subresource: 0,
             desc,
             pixel_format: format,
@@ -354,6 +365,73 @@ impl D3D11SurfaceWriter {
             visible_origin: (0, 0),
             shared: Arc::clone(&self.shared),
         })
+    }
+
+    /// Fills a planar texture through a mapped staging copy. `data` holds the
+    /// luma rows followed by the chroma rows, all `pitch` bytes long.
+    fn upload_planes(
+        &self,
+        desc: &D3D11_TEXTURE2D_DESC,
+        data: &[u8],
+        pitch: usize,
+    ) -> Result<ID3D11Texture2D> {
+        use windows::Win32::Graphics::Direct3D11::{
+            D3D11_CPU_ACCESS_WRITE, D3D11_MAP_WRITE, D3D11_MAPPED_SUBRESOURCE, D3D11_USAGE_STAGING,
+        };
+        let (device, context) = (&self.shared.device, &self.shared.context);
+        let mut texture = None;
+        unsafe { device.CreateTexture2D(desc, None, Some(&mut texture)) }
+            .context("create software decoded video texture")?;
+        let texture = texture.context("missing uploaded video texture")?;
+        // One staging copy per device; the lock also orders its reuse.
+        let mut cached = self
+            .shared
+            .upload_staging
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let reusable = cached.as_ref().is_some_and(|staging| {
+            let mut current = D3D11_TEXTURE2D_DESC::default();
+            unsafe { staging.GetDesc(&raw mut current) };
+            (current.Width, current.Height, current.Format)
+                == (desc.Width, desc.Height, desc.Format)
+        });
+        if !reusable {
+            let staging_desc = D3D11_TEXTURE2D_DESC {
+                Usage: D3D11_USAGE_STAGING,
+                BindFlags: 0,
+                CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
+                ..*desc
+            };
+            let mut staging = None;
+            unsafe { device.CreateTexture2D(&staging_desc, None, Some(&mut staging)) }
+                .context("create software video staging texture")?;
+            *cached = staging;
+        }
+        let staging = cached
+            .as_ref()
+            .context("missing software video staging texture")?;
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        unsafe { context.Map(staging, 0, D3D11_MAP_WRITE, 0, Some(&mut mapped)) }
+            .context("map software video staging texture")?;
+        let row_pitch = mapped.RowPitch as usize;
+        let valid = !mapped.pData.is_null() && row_pitch >= pitch;
+        if valid {
+            let target = mapped.pData.cast::<u8>();
+            for (row, source) in data.chunks_exact(pitch).enumerate() {
+                // The chroma plane follows the luma plane at the mapped stride.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        source.as_ptr(),
+                        target.add(row * row_pitch),
+                        pitch,
+                    )
+                };
+            }
+        }
+        unsafe { context.Unmap(staging, 0) };
+        anyhow::ensure!(valid, "invalid software video staging stride");
+        unsafe { context.CopyResource(&texture, staging) };
+        Ok(texture)
     }
 
     pub(crate) fn wrap_decoded_surface(&self, frame: WindowsGpuVideoFrame) -> Result<D3D11Surface> {

@@ -335,7 +335,7 @@ pub(super) async fn forward_official_video_track(
         if !*forwarding_ready.borrow() {
             pending_media.clear();
             receiver.reset_after_pause();
-            nack_requester = NackRequester::new();
+            nack_requester.reset_after_pause();
             fec_receiver = rsfec_config
                 .map(|c| RsFecReceiver::new(track.ssrc(), c.max_k, mutable_extensions.clone()));
             flexfec_receiver = FlexFecReceiver::new(track.ssrc(), mutable_extensions.clone());
@@ -345,7 +345,7 @@ pub(super) async fn forward_official_video_track(
             last_keyframe_packet_at = None;
             last_keyframe_timestamp = None;
             performance.set_frame_buffer_frames(0);
-            performance.set_nack_state(0, 0);
+            performance.set_nack_state(0, nack_requester.final_lost_packets());
             while !*forwarding_ready.borrow() {
                 tokio::select! {
                     _ = stop.cancelled() => return,

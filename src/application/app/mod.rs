@@ -190,6 +190,8 @@ struct DeviceCenterApp {
     >,
     detail_pending: Option<String>,
     account_name: String,
+    membership_profile:
+        Option<tokio::sync::watch::Receiver<Option<crate::account::membership::Profile>>>,
     diagnostics: diagnostics::LocalDiagnostics,
     mutation_pending: bool,
     queued_mutation: Option<DeviceMutation>,
@@ -247,6 +249,7 @@ impl DeviceCenterApp {
             extra_details: Default::default(),
             detail_pending: None,
             account_name: String::new(),
+            membership_profile: None,
             diagnostics: diagnostics::LocalDiagnostics::start(),
             mutation_pending: false,
             queued_mutation: None,
@@ -347,9 +350,10 @@ impl DeviceCenterApp {
                     }
                 }
                 GuiEvent::Presence(presence) => self.presence = presence,
-                GuiEvent::Host(generation, host) => {
+                GuiEvent::Host(generation, host, profile) => {
                     if generation == self.login_generation {
                         self.host = Some(host);
+                        self.membership_profile = profile;
                     }
                 }
                 GuiEvent::PowerDispatched(generation, id, action) => {
@@ -912,6 +916,7 @@ impl DeviceCenterApp {
         self.catalog = None;
         self.catalog_error = None;
         self.account_name.clear();
+        self.membership_profile = None;
         self.center_ui.close_details();
     }
 

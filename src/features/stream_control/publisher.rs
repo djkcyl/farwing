@@ -75,9 +75,8 @@ impl DrawRequest {
     }
 }
 
-/// Display RPC semantics and authorization belong to the session, not the
-/// incoming carrier. Replies use the same TEXT RPC response path on both.
-pub(crate) fn display_request(bytes: &[u8]) -> Result<Option<&'static str>> {
+/// Session RPCs received on CONTROL share the TEXT response path.
+pub(crate) fn session_request(bytes: &[u8]) -> Result<Option<&'static str>> {
     if bytes.first() == Some(&b'{') {
         return Ok(None);
     }
@@ -85,6 +84,7 @@ pub(crate) fn display_request(bytes: &[u8]) -> Result<Option<&'static str>> {
         return Ok(None);
     };
     Ok(match PbRpcRequest::decode(bytes.as_slice())?.payload {
+        Some(PbRpcRequestPayload::UserEntitlementSync(_)) => Some("UserEntitlementSync"),
         Some(PbRpcRequestPayload::CaptureSetting(_)) => Some("CaptureSetting"),
         Some(PbRpcRequestPayload::CreateVirtualDisplay(_)) => Some("CreateVirtualDisplay"),
         Some(PbRpcRequestPayload::RemoveVirtualDisplay(_)) => Some("RemoveVirtualDisplay"),
@@ -187,6 +187,12 @@ pub(crate) struct ConnectOptions {
     pub connect_type: i32,
     #[prost(message, optional, tag = "11")]
     features: Option<PbFeatureFlag>,
+    #[prost(string, tag = "12")]
+    pub version: String,
+    #[prost(string, tag = "13")]
+    pub entitlement_data: String,
+    #[prost(int64, tag = "14")]
+    pub current_server_time: i64,
 }
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct Resolution {

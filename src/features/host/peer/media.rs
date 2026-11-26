@@ -198,8 +198,9 @@ impl Worker {
                 }
             }
         });
-        // A frame must be consumed before capturing another. There is no historical frame backlog.
-        let (frames_tx, mut frames) = mpsc::channel::<encoder::Encoded>(1);
+        // One frame in the sender plus one queued; the producer drops stale
+        // frames instead of blocking capture on the network pacer.
+        let (frames_tx, mut frames) = mpsc::channel::<encoder::Encoded>(2);
         let owner_cancel = cancel.clone();
         let owner_handle = handle.clone();
         let owner_keyframe = keyframe.clone();

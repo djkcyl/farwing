@@ -288,6 +288,7 @@ impl SignalSession {
         connect_type: crate::session::negotiation::ControlConnectType,
         preferences: Option<crate::features::stream_control::StreamControlPreferences>,
         purpose: crate::session::negotiation::ControlPurpose,
+        entitlements: Option<&crate::protocol::entitlements::Snapshot>,
     ) -> Result<ControlSessionInfo> {
         tracing::debug!(?profile, "starting control handshake");
         let decoder_support =
@@ -306,6 +307,7 @@ impl SignalSession {
             connect_type,
             preferences,
             purpose,
+            entitlements,
         )?;
         let app_control_id = frames.app_control_id;
         self.send_binary_packet(frames.header, frames.attachment)?;
@@ -647,6 +649,23 @@ impl SignalSession {
         peer: Option<std::sync::Arc<NativePeer>>,
         control: Option<ControlSessionInfo>,
     ) -> Result<()> {
+        self.keep_alive_until(
+            async {
+                let _ = shutdown.await;
+                Ok(())
+            },
+            peer,
+            control,
+        )
+        .await
+    }
+
+    pub(crate) async fn keep_alive_until(
+        self,
+        shutdown: impl Future<Output = Result<()>>,
+        peer: Option<std::sync::Arc<NativePeer>>,
+        control: Option<ControlSessionInfo>,
+    ) -> Result<()> {
         self.keep_alive_inner(shutdown, peer, control, None).await
     }
 
@@ -655,13 +674,21 @@ impl SignalSession {
         shutdown: oneshot::Receiver<()>,
         client: crate::session::host_client::HostClient,
     ) -> Result<()> {
-        self.keep_alive_inner(shutdown, None, None, Some(host::Session::new(client)))
-            .await
+        self.keep_alive_inner(
+            async {
+                let _ = shutdown.await;
+                Ok(())
+            },
+            None,
+            None,
+            Some(host::Session::new(client)),
+        )
+        .await
     }
 
     async fn keep_alive_inner(
         mut self,
-        mut shutdown: oneshot::Receiver<()>,
+        shutdown: impl Future<Output = Result<()>>,
         peer: Option<std::sync::Arc<NativePeer>>,
         control: Option<ControlSessionInfo>,
         mut host: Option<host::Session>,
@@ -684,7 +711,7 @@ impl SignalSession {
         network_switch_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let signal_result = tokio::select! {
             biased;
-            _ = &mut shutdown => Ok(()),
+            result = shutdown => result,
             result = async {
             if peer.is_some() != control.is_some() { bail!("controller signaling lifecycle is incomplete"); }
             loop {

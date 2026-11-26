@@ -17,6 +17,7 @@ pub struct NetworkControlSnapshot {
 
 #[derive(Default)]
 struct State {
+    entitlements: Option<watch::Receiver<Option<Arc<crate::account::api::Entitlements>>>>,
     view: NetworkControlSnapshot,
     connected: bool,
     round_trip: Option<(Duration, Instant)>,
@@ -34,6 +35,15 @@ pub(crate) struct NetworkControl {
 }
 
 impl NetworkControl {
+    pub(crate) fn bind_entitlements(
+        &self,
+        rights: watch::Receiver<Option<Arc<crate::account::api::Entitlements>>>,
+    ) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entitlements = Some(rights);
+    }
     pub(crate) fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(State::default())),
@@ -92,6 +102,17 @@ impl NetworkControl {
 
     pub(crate) fn request(&self, relay: bool) -> Result<()> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if relay
+            && let Some(table) = state
+                .entitlements
+                .as_ref()
+                .and_then(|rx| rx.borrow().clone())
+        {
+            anyhow::ensure!(
+                table.allows("relay_connection", None),
+                "当前账号权益不支持手动切换中转"
+            );
+        }
         if state.view.pending {
             bail!("正在切换线路");
         }

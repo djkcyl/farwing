@@ -306,6 +306,15 @@ impl Backend {
 }
 
 /// A capture of one monitor, kept open between frames.
+/// What the Windows encode pipeline captures into its shared texture ring.
+/// Linux has no ring, so one is never made: [`Desktop::raw_desc`] is always
+/// `None` and the capture loop stays on the serial path.
+pub(crate) struct RawCapture {
+    pub captured: Instant,
+    pub is_new: bool,
+    _never: std::convert::Infallible,
+}
+
 pub(crate) struct Desktop {
     pub device: Device,
     pub screen: Screen,
@@ -318,6 +327,10 @@ pub(crate) struct Desktop {
     /// The last system-memory picture, which X11 compares against.
     last: Option<Arc<Vec<u8>>>,
     last_size: (u32, u32),
+    /// When X11 was last read. X11 cannot wait for the next present, so it is
+    /// polled at the refresh rate, the rate Windows' `AcquireNextFrame`
+    /// delivers at; the capture loop drops frames down to the target rate.
+    polled: Option<Instant>,
     refreshed: Instant,
     /// Keeps the display on and the machine awake while captured. Declared
     /// last so it outlives the capture resources, as on Windows.
@@ -325,6 +338,12 @@ pub(crate) struct Desktop {
 }
 
 impl Desktop {
+    /// The source texture description the Windows encode pipeline sizes its
+    /// ring from; Linux has none, so the pipeline is never built.
+    pub fn raw_desc(&self) -> Option<(u32, u32, u32)> {
+        None
+    }
+
     pub fn open_selected(selected: &Screen) -> Result<Self> {
         // Unlike Windows, a desktop without the idle-inhibit interface does
         // not stop the capture; the session works, the screen may blank.
@@ -347,6 +366,7 @@ impl Desktop {
             backend,
             last: None,
             last_size: (0, 0),
+            polled: None,
             refreshed: Instant::now(),
             _power: power,
         })
@@ -453,6 +473,16 @@ impl Desktop {
                 };
             }
             Backend::X11(grab) => loop {
+                let period = Duration::from_secs_f64(1.0 / f64::from(self.screen.fps.max(1)));
+                if let Some(due) = self.polled.map(|at| at + period) {
+                    let now = Instant::now();
+                    if due > deadline {
+                        std::thread::sleep(deadline.saturating_duration_since(now));
+                        break Ok(None);
+                    }
+                    std::thread::sleep(due.saturating_duration_since(now));
+                }
+                self.polled = Some(Instant::now());
                 if let Err(error) = grab.grab(&self.screen, cursor) {
                     break Err(error);
                 }
@@ -467,11 +497,9 @@ impl Desktop {
                 {
                     break Ok(Some((size, image)));
                 }
-                let now = Instant::now();
-                if now >= deadline {
+                if Instant::now() >= deadline {
                     break Ok(None);
                 }
-                std::thread::sleep((deadline - now).min(Duration::from_millis(8)));
             },
             // The compositor answers a copy request only when it next draws,
             // so a still desktop reports no picture.

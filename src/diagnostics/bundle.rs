@@ -298,7 +298,15 @@ fn export(
         }
         input.summary["components"] = components.into();
     }
-    input.summary["application"] = json!({"version":env!("CARGO_PKG_VERSION"),"architecture":std::env::consts::ARCH,"logging":snapshot.settings,"dropped_logs":snapshot.dropped});
+    use crate::protocol::official_version;
+    input.summary["application"] = json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "architecture": std::env::consts::ARCH,
+        "logging": snapshot.settings,
+        "dropped_logs": snapshot.dropped,
+        "official_reference": {"client": official_version::REFERENCE_CLIENT, "streamer": official_version::REFERENCE_SDK},
+        "advertised_protocol": {"client": official_version::CLIENT, "streamer": official_version::SDK}
+    });
     for key in ["USERNAME", "USERPROFILE", "USER", "HOME"] {
         if let Ok(value) = std::env::var(key) {
             input.private_values.push(value);

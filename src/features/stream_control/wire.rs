@@ -278,7 +278,7 @@ pub(super) struct PbRpcRequest {
     pub(super) request_header: Option<PbRequestHeader>,
     #[prost(
         oneof = "PbRpcRequestPayload",
-        tags = "2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29"
+        tags = "2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30"
     )]
     pub(super) payload: Option<PbRpcRequestPayload>,
 }
@@ -343,6 +343,22 @@ pub(super) enum PbRpcRequestPayload {
     TerminalCheck(Vec<u8>),
     #[prost(bytes, tag = "29")]
     TerminalRename(Vec<u8>),
+    #[prost(message, tag = "30")]
+    UserEntitlementSync(PbEntitlementSync),
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub(super) struct PbEntitlementSync {
+    #[prost(string, tag = "1")]
+    pub(super) entitlement_data: String,
+    #[prost(int64, tag = "2")]
+    pub(super) current_server_time: i64,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub(super) struct PbEntitlementSyncResponse {
+    #[prost(int32, tag = "1")]
+    pub(super) error_code: i32,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -366,7 +382,7 @@ pub(super) struct PbRpcResponse {
         // The list has to name every tag the oneof can carry. 25 is skipped
         // in the reference schema, so 26 has to be spelled out here too or
         // prost rejects the variant.
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26, 27"
     )]
     pub(super) payload: Option<PbRpcResponsePayload>,
 }
@@ -425,6 +441,8 @@ pub(super) enum PbRpcResponsePayload {
     // 26, not 25: a reply on a field the client does not know is dropped.
     #[prost(bytes, tag = "26")]
     TerminalRenameSessionRsp(Vec<u8>),
+    #[prost(message, tag = "27")]
+    UserEntitlementSyncRsp(PbEntitlementSyncResponse),
 }
 
 #[derive(Clone, PartialEq, prost::Message)]

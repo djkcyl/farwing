@@ -18,6 +18,8 @@ pub struct Av1 {
     parser: Parser,
     refs: [Option<Picture>; 8],
     fresh: bool,
+    /// Unpadded size declared with the sequence; AV1 itself cannot crop.
+    visible: Option<(u32, u32)>,
 }
 impl Av1 {
     pub fn new(device: ID3D11Device) -> Self {
@@ -27,12 +29,23 @@ impl Av1 {
             parser: Parser::default(),
             refs: Default::default(),
             fresh: true,
+            visible: None,
         }
     }
     pub fn reset(&mut self) {
         self.refs = Default::default();
         self.fresh = true;
         self.parser = Parser::default();
+        self.visible = None;
+    }
+    /// References keep the coded size the accelerator predicts from; only the
+    /// presented copy excludes the encoder's right/bottom padding.
+    fn present(&self, mut picture: Picture) -> Picture {
+        (picture.width, picture.height) = openuuyc_codec::syntax::av1::visible::clamp(
+            self.visible,
+            (picture.width, picture.height),
+        );
+        picture
     }
     pub fn decode(&mut self, data: &[u8], cancel: &AtomicBool) -> Result<Option<Picture>> {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -46,6 +59,9 @@ impl Av1 {
     }
     fn decode_inner(&mut self, data: &[u8], cancel: &AtomicBool) -> Result<Option<Picture>> {
         ensure!(!cancel.load(Ordering::Acquire), "decode cancelled");
+        if let Some(visible) = openuuyc_codec::syntax::av1::visible::declared(data) {
+            self.visible = visible;
+        }
         // Parse one temporal unit transactionally. Never commit references after
         // failed GPU submission; the caller will request a new sequence/keyframe.
         let mut header = None;
@@ -113,7 +129,7 @@ impl Av1 {
             if h.frame_type == FrameType::KeyFrame {
                 self.refs.fill(Some(picture.clone()));
             }
-            return Ok(Some(picture));
+            return Ok(Some(self.present(picture)));
         }
         let s = self
             .parser
@@ -202,7 +218,7 @@ impl Av1 {
             }
         }
         self.fresh = false;
-        Ok(Some(picture))
+        Ok(Some(self.present(picture)))
     }
 }
 fn params(

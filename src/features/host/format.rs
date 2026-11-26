@@ -32,6 +32,8 @@ pub(crate) struct Negotiated {
     codecs: AtomicU8,
     encoder_true_color: bool,
     sdr_10bit: bool,
+    /// The receiver crops the padding of an aligned-only AV1 encoder.
+    pub av1_visible_size: bool,
     pub preferred_gpu: Option<u64>,
     pub gpu_compatibility: bool,
     source_gpu: AtomicU64,
@@ -48,6 +50,7 @@ impl Negotiated {
             codecs: AtomicU8::new(15),
             encoder_true_color: false,
             sdr_10bit: false,
+            av1_visible_size: false,
             preferred_gpu: None,
             gpu_compatibility: false,
             source_gpu: AtomicU64::new(0),
@@ -61,6 +64,7 @@ impl Negotiated {
             codecs: AtomicU8::new(15),
             encoder_true_color: self.encoder_true_color,
             sdr_10bit: self.sdr_10bit,
+            av1_visible_size: self.av1_visible_size,
             preferred_gpu: self.preferred_gpu,
             gpu_compatibility: self.gpu_compatibility,
             source_gpu: AtomicU64::new(self.source_gpu.load(Ordering::Relaxed)),
@@ -170,6 +174,7 @@ impl Negotiated {
             // S543170 computes this from local encoder caps before intersection.
             encoder_true_color: local.iter().any(|c| c.format.chroma == 3),
             sdr_10bit: remote.openuuyc_sdr_10bit,
+            av1_visible_size: remote.openuuyc_av1_visible_size,
             preferred_gpu: crate::media::selection::resolve_gpu(requested_gpu),
             gpu_compatibility: settings.gpu_compatibility,
             source_gpu: AtomicU64::new(source_gpu),

@@ -35,6 +35,10 @@ impl StreamControlHandle {
             self.disconnect_audio_quality();
         }
         let mut state = lock(&self.shared);
+        let membership_before = (
+            state.protocol_generation,
+            state.pb_connected && state.text_channel_open,
+        );
         match label {
             "CONTROL_DATA_CHANNEL" => {
                 if state.control_channel_open != open {
@@ -53,6 +57,7 @@ impl StreamControlHandle {
             _ => return,
         }
         if !open {
+            state.entitlement_sync = None;
             state.restore_input_pending = state.device_preferences.control_enabled
                 && state.viewing_enabled
                 && !state.annotation.enabled
@@ -93,6 +98,15 @@ impl StreamControlHandle {
             && state.text_channel_open
         {
             state.mouse.set_ready(state.mouse_transport_connected);
+        }
+        let membership_changed = membership_before
+            != (
+                state.protocol_generation,
+                state.pb_connected && state.text_channel_open,
+            );
+        if membership_changed {
+            self.entitlement_connection
+                .send_modify(|n| *n = n.wrapping_add(1));
         }
         drop(state);
         if !open {
@@ -251,6 +265,7 @@ impl StreamControlHandle {
         let mut echo_response = None;
         let mut handshake_changed = false;
         let mut state = lock(&self.shared);
+        let membership_ready_before = state.pb_connected && state.text_channel_open;
         match message.payload {
             Some(PbPayload::SimpleAction(action)) if matches!(action.action, 23..=27) => {
                 self.microphone.event(action.action);
@@ -305,7 +320,7 @@ impl StreamControlHandle {
                     }
                 }
                 // Upgrade notifications are attached only to a normal owned
-                // Windows viewing session; they never execute an inbound updater.
+                // computer viewing session; they never execute an inbound updater.
                 if report.error_code == -9 {
                     state.remote_notice = Some((
                         Instant::now(),
@@ -327,6 +342,7 @@ impl StreamControlHandle {
                     if state.confirmed_preferences.settings == state.settings
                         && state.pending_capture_preferences.is_empty()
                         && state.confirmed_preferences.auto_frame_quality != auto_quality
+                        && super::entitlements::can_save_auto_quality(&state)
                     {
                         state.confirmed_preferences.auto_frame_quality = auto_quality;
                         let update = if state.user_settings_requested {
@@ -362,6 +378,16 @@ impl StreamControlHandle {
                         response.payload.as_ref(),
                     ) {
                         match response.payload {
+                            Some(PbRpcResponsePayload::UserEntitlementSyncRsp(reply)) => {
+                                if state
+                                    .entitlement_sync
+                                    .as_ref()
+                                    .is_some_and(|(id, _)| *id == header.request_id)
+                                {
+                                    let (_, sender) = state.entitlement_sync.take().unwrap();
+                                    let _ = sender.send(reply.error_code);
+                                }
+                            }
                             Some(PbRpcResponsePayload::VirtualAudioDriverPolicyRsp(bytes)) => {
                                 let response =
                                     microphone::PolicyResponse::decode(bytes.as_slice())?;
@@ -411,6 +437,12 @@ impl StreamControlHandle {
         self.maybe_send_initial_capture_sync(&mut state);
         self.drive_display_changes(&mut state);
         self.refresh_mouse_policy(&mut state);
+        let membership_changed =
+            membership_ready_before != (state.pb_connected && state.text_channel_open);
+        if membership_changed {
+            self.entitlement_connection
+                .send_modify(|n| *n = n.wrapping_add(1));
+        }
         drop(state);
         if handshake_changed {
             self.protocol_changed.notify_one();
@@ -437,6 +469,6 @@ impl StreamControlHandle {
                 return;
             }
         };
-        let _ = self.send_locked(state, outgoing, None);
+        let _ = self.send_locked(state, outgoing, None, false);
     }
 }

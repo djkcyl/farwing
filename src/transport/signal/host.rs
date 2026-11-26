@@ -566,6 +566,9 @@ impl Session {
                             data_only,
                             terminal_only,
                             update_resume,
+                            crate::protocol::entitlements::Schedule::parse(&options.entitlement_data)
+                                .and_then(|data|crate::protocol::entitlements::Snapshot::new(data,options.current_server_time))
+                                .ok(),
                         )
                         .await?;
                         tracing::info!(display_ms, media_ms,
@@ -755,6 +758,7 @@ impl Session {
         let capability = crate::protocol::capability::DeviceCapability {
             preferred_codec: self.preferred_codec,
             openuuyc_sdr_10bit: true,
+            openuuyc_av1_visible_size: true,
             ice_id: self.ice_id.clone(),
             display_info: self.peer.as_ref().context("缺少被控会话")?.displays(),
             video_codec_capability: self.capabilities.iter().map(|c| c.wire()).collect(),

@@ -254,6 +254,7 @@ impl StreamControlHandle {
                 }
                 .into(),
             ),
+            false,
         );
         if let Err(error) = &result {
             fail_cursor_request(state, sequence, error.to_string());

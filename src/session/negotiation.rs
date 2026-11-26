@@ -47,6 +47,7 @@ pub(crate) fn build_control_frames(
     connect_type: ControlConnectType,
     preferences: Option<crate::features::stream_control::StreamControlPreferences>,
     purpose: ControlPurpose,
+    entitlements: Option<&crate::protocol::entitlements::Snapshot>,
 ) -> Result<ControlFrames> {
     build_control_frames_with_id(
         controller_device_id,
@@ -57,6 +58,7 @@ pub(crate) fn build_control_frames(
         connect_type,
         preferences,
         purpose,
+        entitlements,
     )
 }
 
@@ -69,6 +71,7 @@ fn build_control_frames_with_id(
     connect_type: ControlConnectType,
     preferences: Option<crate::features::stream_control::StreamControlPreferences>,
     purpose: ControlPurpose,
+    entitlements: Option<&crate::protocol::entitlements::Snapshot>,
 ) -> Result<ControlFrames> {
     if controller_device_id.len() != 16
         || !controller_device_id
@@ -112,6 +115,7 @@ fn build_control_frames_with_id(
             connect_type,
             preferences,
             purpose,
+            entitlements,
         )?,
         app_control_id: app_control_id.to_owned(),
     })
@@ -124,6 +128,7 @@ fn encode_connect_options(
     connect_type: ControlConnectType,
     preferences: Option<crate::features::stream_control::StreamControlPreferences>,
     purpose: ControlPurpose,
+    entitlements: Option<&crate::protocol::entitlements::Snapshot>,
 ) -> Result<Vec<u8>> {
     let mut capture = Vec::new();
     let fps_level = match profile.stream_fps {
@@ -248,6 +253,11 @@ fn encode_connect_options(
     let feature_flag = crate::features::stream_control::encode_read_only_feature_flags();
     push_bytes_field(&mut options, 11, &feature_flag);
     push_bytes_field(&mut options, 12, PROTOCOL_VERSION.as_bytes());
+    if let Some(snapshot) = entitlements {
+        let (data, time) = snapshot.wire()?;
+        push_bytes_field(&mut options, 13, data.as_bytes());
+        push_varint_field(&mut options, 14, time as u64);
+    }
     Ok(options)
 }
 

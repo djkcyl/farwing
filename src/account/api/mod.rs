@@ -37,6 +37,8 @@ enum IdentityScope {
 
 type HmacSha256 = Hmac<Sha256>;
 mod assist;
+mod entitlements;
+pub(crate) use entitlements::Entitlements;
 pub(crate) mod guest;
 mod host_assist;
 mod power;
@@ -1041,7 +1043,7 @@ impl NrdApi {
         {
             headers.insert(AUTHORIZATION, value.clone());
         }
-        let (status, bytes) = self
+        let (status, bytes, _) = self
             .http
             .send(
                 method,
@@ -1104,11 +1106,25 @@ impl NrdApi {
         body: &[u8],
         scope: IdentityScope,
     ) -> Result<HeaderMap> {
+        self.signed_headers_with_nonce(method, path, body, scope, None)
+    }
+
+    fn signed_headers_with_nonce(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        scope: IdentityScope,
+        nonce: Option<&str>,
+    ) -> Result<HeaderMap> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .context("system clock is before the Unix epoch")?
             .as_secs();
-        let pairs = self.common_header_pairs(timestamp, scope);
+        let mut pairs = self.common_header_pairs(timestamp, scope);
+        if let Some(nonce) = nonce {
+            pairs.push(("X-Param-Nonce".into(), nonce.into()));
+        }
         let signature = make_signature(method, path, &pairs, body)?;
         let mut headers = HeaderMap::new();
         for (name, value) in pairs {

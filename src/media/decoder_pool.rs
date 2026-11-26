@@ -27,9 +27,6 @@ pub(crate) struct DecoderPool {
     error_count: u32,
     notification: crate::media::decode_api::DecoderNotification,
     callback_result: Option<VideoDecodeResult>,
-    blocked_reason: Option<String>,
-
-    software_slot: Option<std::rc::Rc<crate::media::decoder::software_slot::SoftwareSlot>>,
 
     writer: Option<crate::platform::surface::D3D11SurfaceWriter>,
 }
@@ -64,8 +61,6 @@ impl DecoderPool {
             .position(|entry| entry.kind == decoder.candidate())
             .expect("opened decoder belongs to the configured candidate list");
         Self {
-            software_slot: decoder.software_slot(),
-
             writer: decoder.surface_writer(),
             decoder: Some(decoder),
             candidates,
@@ -80,7 +75,6 @@ impl DecoderPool {
             error_count: 0,
             notification: crate::media::decode_api::DecoderNotification::default(),
             callback_result: None,
-            blocked_reason: None,
         }
     }
 
@@ -98,10 +92,6 @@ impl DecoderPool {
         self.decoder
             .as_ref()
             .is_some_and(NativeVideoDecoder::is_software)
-    }
-
-    pub(crate) fn blocked_reason(&self) -> Option<&str> {
-        self.blocked_reason.as_deref()
     }
 
     pub(crate) fn set_notification(
@@ -291,7 +281,6 @@ impl DecoderPool {
         format: Option<VideoFormatSignature>,
     ) -> bool {
         self.error_count = 0;
-        self.blocked_reason = None;
         for index in indices {
             let entry = &self.candidates[index];
             if !entry.enabled {
@@ -343,16 +332,12 @@ impl DecoderPool {
                 self.frame_rate,
                 self.extra_data.clone(),
                 self.writer.clone(),
-                self.software_slot.clone(),
             ) {
                 Ok(mut decoder) => {
                     decoder.describe_selection(
                         self.preference,
                         self.candidates.iter().any(|c| !c.enabled),
                     );
-                    {
-                        self.software_slot = decoder.software_slot();
-                    }
                     decoder.set_notification(self.notification.clone());
 
                     if let Some(writer) = decoder.surface_writer() {
@@ -363,18 +348,12 @@ impl DecoderPool {
                     return true;
                 }
                 Err(error) => {
-                    if error.is::<crate::media::decoder::software_slot::SoftwarePlaybackBusy>() {
-                        self.blocked_reason = Some(error.to_string());
-                    }
                     tracing::warn!(candidate = ?entry.kind, %error,
                         width, height, "decoder candidate rejected current configuration");
                 }
             }
         }
 
-        {
-            self.software_slot = None;
-        }
         false
     }
 }

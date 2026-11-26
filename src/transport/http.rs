@@ -292,6 +292,9 @@ impl Response {
     pub(crate) fn status(&self) -> StatusCode {
         self.inner.status()
     }
+    pub(crate) fn headers(&self) -> &HeaderMap {
+        self.inner.headers()
+    }
     pub(crate) fn content_length(&self) -> Option<u64> {
         self.inner.content_length()
     }

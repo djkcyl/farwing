@@ -429,6 +429,10 @@ pub(super) async fn publish_state(
     let mut timer = tokio::time::interval(Duration::from_secs(1));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
+        let entitlement_delay = screens
+            .try_lock()
+            .ok()
+            .map_or(Duration::from_secs(1), |s| s.entitlement_delay());
         let refresh = tokio::select! {
             _=cancel.cancelled()=>break,
             result=changed.changed()=>{if result.is_err(){break;} false},
@@ -436,7 +440,11 @@ pub(super) async fn publish_state(
             result=mouse_policy.changed()=>{if result.is_err(){break;} false},
             result=microphone.changed()=>{if result.is_err(){break;} false},
             _=timer.tick()=>true,
+            _=tokio::time::sleep(entitlement_delay)=>false,
         };
+        if let Ok(mut state) = screens.try_lock() {
+            state.refresh_entitlement_limits();
+        }
         let inventory_revision = if refresh {
             screens
                 .try_lock()

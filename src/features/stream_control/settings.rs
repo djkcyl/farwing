@@ -29,9 +29,21 @@ impl StreamControlHandle {
         state.custom_bitrate_limit = preferences
             .custom_bitrate_limit
             .unwrap_or(MAX_CUSTOM_BITRATE_MBPS);
-        set_requested_settings(&mut state, preferences.settings)?;
+        let mut effective = Some(preferences);
+        if let Some(table) = state.entitlements.as_ref().and_then(|r| r.borrow().clone()) {
+            let mut profile = crate::media::ConnectionMediaOptions {
+                frame_rate: preferences.settings.frame_rate,
+                ..Default::default()
+            }
+            .resolve(state.local_display)?;
+            super::entitlements::constrain_initial(&table, &mut profile, &mut effective)?;
+        }
+        let effective = effective.expect("initial preferences");
+        set_requested_settings(&mut state, effective.settings)?;
         state.baseline.auto_frame_quality = preferences.auto_frame_quality;
-        state.confirmed_preferences = preferences;
+        state.entitlement_preferences =
+            (effective.settings != preferences.settings).then_some(preferences);
+        state.confirmed_preferences = effective;
         if let Some(audio) = preferences.audio {
             self.audio.set_settings(audio);
         }
@@ -111,6 +123,7 @@ impl StreamControlHandle {
         {
             expire_cursor_request(&mut state);
             ensure_ready(&state)?;
+            super::entitlements::settings(state, settings)?;
             let active_protocol = protocol(&state);
             if matches!(settings.quality, StreamQuality::Custom)
                 && !custom_bitrate_supported(&state)
@@ -216,7 +229,7 @@ impl StreamControlHandle {
                 settings.frame_rate.label(state.local_display)
             );
             state.user_settings_requested = true;
-            let sent = self.send_locked(&mut state, outgoing, Some(switch_target))?;
+            let sent = self.send_locked(&mut state, outgoing, Some(switch_target), true)?;
             Ok(sent)
         }
     }
@@ -700,7 +713,7 @@ pub(super) fn apply_reported_color(state: &mut StreamControlState, enabled: bool
     {
         apply_codec_limits(state, selected);
     }
-    if changed && persist {
+    if changed && persist && state.entitlement_preferences.is_none() {
         state
             .preference_updates
             .send_replace(Some(ViewingPreferenceUpdate::Settings(
@@ -803,7 +816,9 @@ pub(super) fn finish_request(
         {
             state.cursor_pending = None;
         }
-        let settings_changed = state.confirmed_preferences.saved() != completed.preferences.saved();
+        let replaced_retained = completed.persist && state.entitlement_preferences.take().is_some();
+        let settings_changed = replaced_retained
+            || state.confirmed_preferences.saved() != completed.preferences.saved();
         state.confirmed_preferences = completed.preferences;
         // Reapplying a confirmed choice must repair a failed local save even
         // when it equals the in-memory default restored after a read failure.
