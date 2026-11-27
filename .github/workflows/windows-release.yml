@@ -1,0 +1,85 @@
+name: Windows release
+
+# Builds the native Windows x86_64 release on a Windows runner (MSVC) with
+# `cargo dist` (xtask): the single-file self-extracting EXE, including the
+# manifest and startup checks that only run on Windows. Attaches it to the
+# GitHub Release for the pushed tag, next to the archives linux-release.yml
+# and linux-deb.yml attach to the same release. Tags are v<Cargo version>-linux.<n>.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # CMake and the MSVC tools are preinstalled; NASM assembles the AV1 and
+      # H.264 kernels' SIMD assembly and is not on the image.
+      - name: Install NASM
+        run: choco install -y nasm
+
+      # cargo dist (xtask alias): builds the native EXE, wraps it in the
+      # self-extracting launcher, then verifies the embedded manifest bytes
+      # and a `--version` startup run on this Windows host.
+      - name: Build and verify the release EXE
+        run: cargo dist
+
+      - name: Checksum
+        run: |
+          $exe = Get-ChildItem target/dist/OpenUUYC-v*-windows-*.exe
+          $hash = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLower()
+          "$hash  $($exe.Name)" | Out-File -Encoding ascii "$($exe.FullName).sha256"
+          Get-Content "$($exe.FullName).sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: openuuyc-windows
+          path: |
+            target/dist/OpenUUYC-v*-windows-*.exe
+            target/dist/OpenUUYC-v*-windows-*.exe.sha256
+          if-no-files-found: error
+
+  release:
+    needs: windows
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # linux-release.yml and linux-deb.yml also publish to this tag; the shared
+    # group serializes them so a later run updates the existing release
+    # instead of racing it.
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: openuuyc-windows
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            OpenUUYC-v*-windows-*.exe
+            OpenUUYC-v*-windows-*.exe.sha256
+          # v<version>-linux.<n>: the Cargo version names the release, and an
+          # alpha, beta or rc version is published as a pre-release like upstream.
+          name: OpenUUYC ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+      - uses: actions/checkout@v7
+        with:
+          path: source
+          sparse-checkout: .github/scripts
+      - name: List the downloads in the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: source/.github/scripts/release-downloads.sh "${{ github.ref_name }}"

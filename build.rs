@@ -9,7 +9,25 @@ fn main() {
         println!("cargo:rerun-if-changed=assets/windows.rc");
         println!("cargo:rerun-if-changed=assets/windows.manifest");
         println!("cargo:rerun-if-changed=assets/icon.ico");
-        embed_resource::compile_for("assets/windows.rc", ["OpenUUYC"], embed_resource::NONE)
+        // rc.exe runs with the package root as CWD, so the crate-root-relative
+        // paths inside windows.rc resolve; llvm-rc (cross builds from Linux)
+        // instead uses the .rc's own directory. Stage the three files side by
+        // side so both working directories work; the manifest bytes xtask
+        // verifies are copied unchanged.
+        #[cfg(not(windows))]
+        let resource = {
+            let out =
+                std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("rc-stage");
+            std::fs::create_dir_all(out.join("assets")).unwrap();
+            std::fs::copy("assets/windows.rc", out.join("windows.rc")).unwrap();
+            std::fs::copy("assets/icon.ico", out.join("assets/icon.ico")).unwrap();
+            std::fs::copy("assets/windows.manifest", out.join("assets/windows.manifest"))
+                .unwrap();
+            out.join("windows.rc").to_str().unwrap().to_string()
+        };
+        #[cfg(windows)]
+        let resource = "assets/windows.rc".to_string();
+        embed_resource::compile_for(&resource, ["OpenUUYC"], embed_resource::NONE)
             .manifest_required()
             .expect("compile Windows application icon");
     }
