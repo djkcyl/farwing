@@ -2,9 +2,11 @@ use super::{
     ScreenStreams, VideoPicture, annotation::AnnotationUi, audio_view::AudioView,
     frames::mutex_lock, hud, key_usage, participants, stream_menu, waiting,
 };
+use crate::application::viewer_shortcuts::{self, Action, WindowShortcuts};
 use crate::connection_progress::{ConnectionProgress, ConnectionProgressState};
-use crate::features::stream_control::DisplayTopologyAction;
-use crate::features::stream_control::{MouseMode, RemoteScreen, StreamControlHandle};
+use crate::features::stream_control::{
+    CursorImage, DisplayTopologyAction, MouseMode, RemoteScreen, StreamControlHandle,
+};
 use crate::i18n::t;
 use crate::ui::controls::{ViewerCaptionIcon as Icon, viewer_caption_button as button};
 use crate::ui::{branding, controls, theme};
@@ -58,7 +60,22 @@ pub(crate) struct ViewerWindow {
 }
 
 impl ViewerWindow {
-    pub(crate) fn show(&mut self, root: &mut egui::Ui, parent: ViewportId) {
+    pub(crate) fn is_presenting(&self) -> bool {
+        match &self.playback {
+            Some(Playback::Video(screens)) => screens.main.picture.as_ref().is_some_and(|picture| {
+                picture.native_size(screens.streams.control()).is_some()
+            }),
+            Some(Playback::Audio(_)) => true,
+            None => false,
+        }
+    }
+
+    pub(crate) fn show(
+        &mut self,
+        root: &mut egui::Ui,
+        parent: ViewportId,
+        switcher: impl FnOnce(&mut egui::Ui),
+    ) {
         if root.input(|i| i.viewport().close_requested()) {
             self.cancel.cancel();
         }
@@ -67,10 +84,11 @@ impl ViewerWindow {
             root.ctx().request_repaint_of(parent);
             return;
         }
+        let waiting_for_picture = !self.is_presenting();
         let close = match self.playback.as_mut() {
-            Some(Playback::Video(screens)) => screens.show(root, &self.alias),
+            Some(Playback::Video(screens)) => screens.show(root, &self.alias, switcher),
             Some(Playback::Audio(audio)) => {
-                let close = caption(root, &self.alias, |_| {});
+                let close = caption(root, &self.alias, switcher);
                 let disconnect = audio.show(root);
                 if let Some(compact) = audio.take_layout_change() {
                     let min = if compact {
@@ -90,7 +108,7 @@ impl ViewerWindow {
                 close || disconnect
             }
             None => {
-                let close = caption(root, &self.alias, |_| {});
+                let close = caption(root, &self.alias, switcher);
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(theme::BG))
                     .show(root, |ui| {
@@ -113,6 +131,9 @@ impl ViewerWindow {
             }
         };
         controls::show_notices(root.ctx());
+        if waiting_for_picture && self.is_presenting() {
+            root.ctx().request_repaint_of(parent);
+        }
         if close {
             self.cancel.cancel();
             self.playback = None;
@@ -130,7 +151,12 @@ pub(crate) struct Screens {
 }
 
 impl Screens {
-    fn show(&mut self, root: &mut egui::Ui, alias: &str) -> bool {
+    fn show(
+        &mut self,
+        root: &mut egui::Ui,
+        alias: &str,
+        switcher: impl FnOnce(&mut egui::Ui),
+    ) -> bool {
         let ctx = root.ctx().clone();
         let snapshot = self.streams.control().snapshot();
         let displays = &snapshot.screens;
@@ -162,6 +188,7 @@ impl Screens {
         let close = self
             .main
             .show(root, alias, &self.streams, &self.runtime, |ui, pane| {
+                switcher(ui);
                 if displays.len() <= 1 && !snapshot.topology_support.create_visible {
                     return;
                 }
@@ -378,6 +405,8 @@ struct Pane {
     annotating: bool,
     presence: participants::Presence,
     modifiers: [bool; 4],
+    shortcuts: WindowShortcuts,
+    cursor: Option<(Arc<CursorImage>, Option<egui::TextureHandle>)>,
     _repaint: Arc<dyn Fn() + Send + Sync>,
 }
 
@@ -403,6 +432,8 @@ impl Pane {
             annotating: false,
             presence: participants::Presence::new(control, ctx),
             modifiers: [false; 4],
+            shortcuts: WindowShortcuts::new(),
+            cursor: None,
             _repaint: control
                 .mouse()
                 .subscribe(move || context.request_repaint_of(viewport)),
@@ -492,6 +523,25 @@ impl Pane {
         let text = t();
         let focused = ctx.input(|i| i.focused);
         let fullscreen = ctx.input(|i| i.viewport().fullscreen == Some(true));
+        let mut toggle_performance = false;
+        for action in self.shortcuts.take(&ctx) {
+            match action {
+                Action::ReleaseMouse => {
+                    control.mouse().pause_owner(self.owner());
+                    self.modifiers = [false; 4];
+                    self.menu.local_error = control
+                        .set_mouse_mode(MouseMode::View)
+                        .err()
+                        .map(|e| format!("{e:#}"));
+                }
+                Action::Fullscreen => {
+                    self.menu.open = false;
+                    ctx.send_viewport_cmd(WindowCommand::Fullscreen(!fullscreen));
+                }
+                Action::Close => return true,
+                Action::Performance => toggle_performance = !toggle_performance,
+            }
+        }
         let screen = streams.screen(self.screen);
         let camera = screen
             .as_ref()
@@ -560,15 +610,18 @@ impl Pane {
                     }
                     let active = state.mouse_mode != MouseMode::View;
                     let hint = if active {
-                        text.viewer.shortcut_release_control
+                        viewer_shortcuts::bound(Action::ReleaseMouse).map_or_else(
+                            || text.viewer.shortcut_release_control.to_owned(),
+                            |key| format!("{} ({key})", text.viewer.shortcut_release_control),
+                        )
                     } else if control.mouse().keyboard_supported() {
-                        text.viewer.control_keyboard_mouse
+                        text.viewer.control_keyboard_mouse.to_owned()
                     } else {
-                        text.viewer.control_mouse
+                        text.viewer.control_mouse.to_owned()
                     };
                     if ui
                         .add_enabled_ui(size.is_some() && !state.mouse_pending, |ui| {
-                            button(ui, Icon::Mouse, active, hint)
+                            button(ui, Icon::Mouse, active, &hint)
                         })
                         .inner
                         .clicked()
@@ -577,7 +630,7 @@ impl Pane {
                             .set_mouse_mode(if active {
                                 MouseMode::View
                             } else {
-                                MouseMode::Remote
+                                MouseMode::Local
                             })
                             .err()
                             .map(|e| format!("{e:#}"));
@@ -619,14 +672,9 @@ impl Pane {
                 }
                 selectors(ui, self);
             });
-        if !ctx.egui_wants_keyboard_input()
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F11))
-        {
-            ctx.send_viewport_cmd(WindowCommand::Fullscreen(!fullscreen));
-        }
         let mut options = stream_menu::LocalViewSettings {
             performance_mode: preferences.performance_mode,
-            performance_always_visible: preferences.performance_always_visible,
+            performance_always_visible: preferences.performance_always_visible ^ toggle_performance,
             intercept_shortcuts: false,
             system_command: None,
         };
@@ -755,6 +803,9 @@ impl Pane {
                 i.events.clone(),
             )
         });
+        if let Some(pos) = pointer.filter(|_| ui.rect_contains_pointer(rect)) {
+            self.paint_cursor(ui, control, rect, pos);
+        }
         if mouse.waiting_for_neutral() {
             if neutral {
                 mouse.confirm_neutral(mouse.activation_generation());
@@ -835,6 +886,60 @@ impl Pane {
             ui.ctx().request_repaint_after(Duration::from_millis(250));
         }
     }
+
+    fn paint_cursor(
+        &mut self,
+        ui: &egui::Ui,
+        control: &StreamControlHandle,
+        rect: Rect,
+        pos: egui::Pos2,
+    ) {
+        use egui::CursorIcon;
+
+        let ctx = ui.ctx();
+        if control.remote_cursor_hidden() {
+            ctx.set_cursor_icon(CursorIcon::None);
+            return;
+        }
+        let Some(cursor) = control.remote_cursor() else {
+            return;
+        };
+        if self.cursor.as_ref().is_none_or(|(image, _)| !Arc::ptr_eq(image, &cursor.image)) {
+            let texture = load_cursor_texture(ctx, &cursor.image)
+                .inspect_err(|error| tracing::warn!(%error, "remote cursor image unavailable"))
+                .ok()
+                .flatten();
+            self.cursor = Some((cursor.image.clone(), texture));
+        }
+        if let Some((image, Some(texture))) = &self.cursor {
+            let pixels = ctx.pixels_per_point();
+            let hotspot = vec2(image.hotspot[0] as f32, image.hotspot[1] as f32) / pixels;
+            let size = vec2(image.width as f32, image.height as f32) / pixels;
+            ctx.set_cursor_icon(CursorIcon::None);
+            ui.painter().with_clip_rect(rect).image(
+                texture.id(),
+                Rect::from_min_size(pos - hotspot, size),
+                Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        } else {
+            ctx.set_cursor_icon(match cursor.image.system_type {
+                32513 => CursorIcon::Text,
+                32514 => CursorIcon::Wait,
+                32515 => CursorIcon::Crosshair,
+                32642 => CursorIcon::ResizeNwSe,
+                32643 => CursorIcon::ResizeNeSw,
+                32644 => CursorIcon::ResizeHorizontal,
+                32645 => CursorIcon::ResizeVertical,
+                32646 => CursorIcon::Move,
+                32648 => CursorIcon::NotAllowed,
+                32649 => CursorIcon::PointingHand,
+                32650 => CursorIcon::Progress,
+                32651 => CursorIcon::Help,
+                _ => CursorIcon::Default,
+            });
+        }
+    }
 }
 
 impl Drop for Pane {
@@ -842,6 +947,37 @@ impl Drop for Pane {
         self.control.mouse().pause_owner(self.owner());
         self.reset_picture();
     }
+}
+
+fn load_cursor_texture(
+    ctx: &egui::Context,
+    cursor: &CursorImage,
+) -> Result<Option<egui::TextureHandle>> {
+    if cursor.png.is_empty() {
+        return Ok(None);
+    }
+    let mut reader = image::ImageReader::with_format(
+        std::io::Cursor::new(&cursor.png),
+        image::ImageFormat::Png,
+    );
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(cursor.width);
+    limits.max_image_height = Some(cursor.height);
+    limits.max_alloc = Some(32 * 1024 * 1024);
+    reader.limits(limits);
+    let pixels = reader.decode()?.into_rgba8();
+    anyhow::ensure!(
+        pixels.dimensions() == (cursor.width, cursor.height),
+        "remote cursor dimensions mismatch"
+    );
+    Ok(Some(ctx.load_texture(
+        "remote-cursor",
+        egui::ColorImage::from_rgba_unmultiplied(
+            [cursor.width as usize, cursor.height as usize],
+            pixels.as_raw(),
+        ),
+        egui::TextureOptions::LINEAR,
+    )))
 }
 
 fn local_monitor_size(ctx: &egui::Context) -> Option<(u32, u32)> {

@@ -5,8 +5,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use anyhow::{Context, Result};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
+#[cfg(windows)]
 use winit::window::WindowId;
 
 use crate::i18n::t;
@@ -18,6 +20,7 @@ use crate::ui::{controls, theme};
 const DISCONNECT_GRACE: Duration = Duration::from_secs(21);
 
 pub(crate) const UPDATE_PROBE_INTERVAL: Duration = Duration::from_secs(1);
+pub(crate) const UPDATE_WAIT_LIMIT: Duration = Duration::from_secs(120);
 
 /// Device-list online state is a hint, not proof that a new media peer exists.
 /// Prefer an observed unavailable -> ready transition. When a fast restart's
@@ -41,6 +44,35 @@ impl UpdateReadiness {
     }
 }
 
+pub(crate) async fn wait_for_update_readiness<F>(
+    deadline: tokio::time::Instant,
+    cancel: &CancellationToken,
+    mut probe: impl FnMut() -> F,
+    on_wait: impl Fn(),
+) -> Result<()>
+where
+    F: Future<Output = Result<bool>>,
+{
+    let operation = async {
+        let mut readiness = UpdateReadiness::default();
+        loop {
+            if readiness.observe(probe().await?, Instant::now()) {
+                tracing::info!("updated target advertises readiness; attempting media connection");
+                return Ok(());
+            }
+            on_wait();
+            tokio::time::sleep(UPDATE_PROBE_INTERVAL).await;
+        }
+    };
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => anyhow::bail!("connection cancelled"),
+        result = tokio::time::timeout_at(deadline, operation) => {
+            result.context(t().session.error_update_wait_timeout)?
+        }
+    }
+}
+
 #[derive(Default)]
 struct State {
     started: Option<Instant>,
@@ -56,11 +88,11 @@ struct Inner {
 pub(crate) struct RemoteUpgrade(Arc<Inner>);
 
 impl RemoteUpgrade {
-    pub(crate) fn new(cancel: &CancellationToken) -> Self {
+    pub(crate) fn new(cancel: CancellationToken) -> Self {
         Self(Arc::new(Inner {
             state: Mutex::new(State::default()),
             changed: Notify::new(),
-            cancel: cancel.child_token(),
+            cancel,
         }))
     }
 
@@ -76,6 +108,12 @@ impl RemoteUpgrade {
         self.state().started
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn clear_announcement(&self) {
+        self.state().started = None;
+    }
+
+    #[cfg(windows)]
     pub(crate) fn owns_input(&self, _window: WindowId) -> bool {
         self.state().started.is_some()
     }
@@ -93,20 +131,25 @@ impl RemoteUpgrade {
         self.0.changed.notify_waiters();
     }
 
-    pub(crate) async fn wait_for_disconnect_grace(&self) {
+    pub(crate) async fn wait_for_announcement(&self) -> Instant {
         loop {
             let notified = self.0.changed.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
             let started = self.state().started;
             if let Some(started) = started {
-                tokio::time::sleep(DISCONNECT_GRACE.saturating_sub(started.elapsed())).await;
-                return;
+                return started;
             }
             notified.await;
         }
     }
 
+    pub(crate) async fn wait_for_disconnect_grace(&self) {
+        let started = self.wait_for_announcement().await;
+        tokio::time::sleep(DISCONNECT_GRACE.saturating_sub(started.elapsed())).await;
+    }
+
+    #[cfg(windows)]
     pub(crate) fn show(&self, ctx: &egui::Context) {
         if let Some(started) = self.state().started {
             if progress_prompt(ctx, started) {

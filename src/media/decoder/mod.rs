@@ -10,8 +10,8 @@ mod windows;
 
 #[cfg(target_os = "linux")]
 pub(crate) use linux::{
-    CpuVideoFrame, DecoderCandidate, NativeVideoDecoder, detect_native_decoder_support,
-    prepare_native_decoder_support,
+    CpuVideoFrame, DecoderCandidate, NativeVideoDecoder, codec_preferences,
+    detect_native_decoder_support, prepare_native_decoder_support,
 };
 #[cfg(windows)]
 pub(crate) use windows::{

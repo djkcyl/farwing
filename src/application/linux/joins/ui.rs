@@ -1,9 +1,12 @@
-use super::{AssistAccount, JoinRequest, device_id};
-use crate::account::{api::device_id_text, server::ServerConfig};
+use super::{AssistAccount, ConnectTarget, JoinAction, JoinRequest, device_id};
+use crate::account::{
+    api::{DeviceInfo, DeviceList, device_id_text},
+    server::ServerConfig,
+};
 use crate::i18n::t;
 use crate::transport::direct::{self, Target, lan, store};
-use crate::ui::{controls, theme};
-use anyhow::Result;
+use crate::ui::{controls, device_list, theme};
+use anyhow::{Result, bail};
 use egui::RichText;
 use std::time::{Duration, Instant};
 use tokio::{
@@ -15,9 +18,18 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Mode {
     #[default]
-    Assist,
-    Direct,
+    Connect,
     Pair,
+}
+
+enum Route<'a> {
+    Account(&'a DeviceInfo),
+    Assist(String),
+    Direct {
+        address: String,
+        expected: Option<String>,
+        name: Option<String>,
+    },
 }
 
 #[derive(Default)]
@@ -25,8 +37,9 @@ pub(in super::super) struct JoinUi {
     open: bool,
     mode: Mode,
     target: String,
-    address: String,
     expected: String,
+    name: Option<String>,
+    publisher_id: Option<String>,
     code: String,
     ask: bool,
     // A signed-out installation may need to configure its first server.
@@ -44,37 +57,39 @@ impl JoinUi {
         &mut self,
         ui: &mut egui::Ui,
         runtime: &Handle,
-        signed_in: bool,
-        server: &str,
-        fingerprint: &str,
-    ) -> Option<Result<JoinRequest>> {
+        devices: Option<&DeviceList>,
+    ) -> Option<JoinAction> {
         let text = t();
-        let label = if signed_in {
-            text.center.connect_to_device
-        } else {
-            text.center.without_account
-        };
-        if ui.add(controls::secondary(label)).clicked() {
-            self.open = true;
-            self.error = None;
-            self.message = None;
-            self.server = server.to_owned();
-            self.fingerprint = fingerprint.to_owned();
-            if !signed_in {
-                match ServerConfig::load() {
-                    Ok(config) => self.configured_server = config,
-                    Err(error) => {
-                        self.configured_server = None;
-                        self.error = Some(format!("{error:#}"));
-                    }
-                }
-                if self.configured_server.is_none() && self.server.trim().is_empty() {
-                    self.mode = Mode::Direct;
-                }
+        let signed_in = devices.is_some();
+        ui.horizontal(|ui| {
+            let input = ui.add_sized(
+                [
+                    (ui.available_width() - 210.0).max(120.0),
+                    controls::HEIGHT,
+                ],
+                controls::singleline(&mut self.target, controls::HEIGHT)
+                    .id_salt("linux-connect-target")
+                    .hint_text(text.center.target_hint)
+                    .char_limit(256),
+            );
+            if input.changed() {
+                self.clear_target_identity();
             }
-        }
+            let enter = input.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            if ui.add(controls::primary(text.common.connect)).clicked() || enter {
+                self.open(Mode::Connect);
+            }
+            if ui.add(controls::secondary(text.center.pair)).clicked() {
+                self.open(Mode::Pair);
+            }
+        });
         if !self.open {
             return None;
+        }
+        if self.mode == Mode::Connect
+            && matches!(ConnectTarget::parse(&self.target), Ok(ConnectTarget::DeviceId(_)))
+        {
+            self.nearby.poll(ui, runtime);
         }
         self.poll_pairing();
         let modal = egui::Modal::new(egui::Id::new("linux-join-dialog"))
@@ -85,77 +100,66 @@ impl JoinUi {
                     pairing.show(ui);
                     return (false, None);
                 }
-                ui.heading(text.center.connect_to_device);
-                let previous_mode = self.mode;
-                ui.horizontal_wrapped(|ui| {
-                    ui.selectable_value(&mut self.mode, Mode::Assist, text.center.via_server);
-                    ui.selectable_value(&mut self.mode, Mode::Direct, text.center.without_server);
-                    ui.selectable_value(&mut self.mode, Mode::Pair, text.center.pair);
-                });
-                if previous_mode != self.mode {
-                    self.code.clear();
+                let title = match self.mode {
+                    Mode::Pair => text.center.pair,
+                    Mode::Connect if !signed_in => text.center.without_account,
+                    Mode::Connect => text.center.connect_to_device,
+                };
+                let dismiss = controls::dialog_header(
+                    ui,
+                    title,
+                    controls::DialogIcon::Info,
+                    true,
+                );
+                let (label, hint) = if self.mode == Mode::Pair {
+                    (text.session.address_required, "192.168.1.2:28890")
+                } else {
+                    (text.center.enter_target, text.center.target_hint)
+                };
+                if field(ui, label, &mut self.target, hint, false, 256).changed() {
+                    self.clear_target_identity();
                     self.error = None;
-                    self.message = None;
                 }
-                ui.add_space(8.0);
-                match self.mode {
-                    Mode::Assist => {
-                        if !signed_in {
-                            if let Some(config) = &self.configured_server {
-                                ui.label(RichText::new(config.origin()).color(theme::MUTED));
-                            } else {
-                                field(
-                                    ui,
-                                    text.center.server_address,
-                                    &mut self.server,
-                                    text.center.server_address_hint,
-                                    false,
-                                    256,
-                                );
-                                field(
-                                    ui,
-                                    text.center.fingerprint_optional,
-                                    &mut self.fingerprint,
-                                    "SHA-256",
-                                    false,
-                                    128,
-                                );
-                            }
-                        }
-                        field(
-                            ui,
-                            text.center.enter_target,
-                            &mut self.target,
-                            text.session.assist_target_required,
-                            false,
-                            64,
-                        );
-                    }
-                    Mode::Direct | Mode::Pair => {
-                        field(
-                            ui,
-                            text.session.address_required,
-                            &mut self.address,
-                            "192.168.1.2:28890",
-                            false,
-                            256,
-                        );
+                let route = (self.mode == Mode::Connect).then(|| self.route(devices));
+                let direct = matches!(&route, Some(Ok(Route::Direct { .. })));
+                let address = matches!(ConnectTarget::parse(&self.target), Ok(ConnectTarget::Address(_)));
+                if self.mode == Mode::Pair || (direct && address) {
+                    let pinned = self.name.is_some() && !self.expected.is_empty();
+                    ui.add_enabled_ui(!pinned, |ui| {
                         field(
                             ui,
                             text.center.device_id,
                             &mut self.expected,
-                            if self.mode == Mode::Direct {
-                                text.common.optional
-                            } else {
-                                ""
-                            },
+                            if self.mode == Mode::Pair { "" } else { text.common.optional },
                             false,
                             64,
                         );
-                    }
+                    });
                 }
-                if self.mode != Mode::Pair {
-                    ui.add_enabled_ui(self.mode != Mode::Direct || !self.ask, |ui| {
+                if self.mode == Mode::Connect {
+                    if !signed_in && matches!(&route, Some(Ok(Route::Assist(_)))) {
+                        if let Some(config) = &self.configured_server {
+                            ui.label(RichText::new(config.origin()).color(theme::MUTED));
+                        } else {
+                            field(
+                                ui,
+                                text.center.server_address,
+                                &mut self.server,
+                                text.center.server_address_hint,
+                                false,
+                                256,
+                            );
+                            field(
+                                ui,
+                                text.center.fingerprint_optional,
+                                &mut self.fingerprint,
+                                "SHA-256",
+                                false,
+                                128,
+                            );
+                        }
+                    }
+                    ui.add_enabled_ui(!direct || !self.ask, |ui| {
                         field(
                             ui,
                             text.center.access_code,
@@ -165,22 +169,11 @@ impl JoinUi {
                             256,
                         );
                     });
-                    if self.mode == Mode::Direct
-                        && ui
-                            .checkbox(&mut self.ask, text.center.ask_for_approval)
-                            .changed()
+                    if direct
+                        && ui.checkbox(&mut self.ask, text.center.ask_for_approval).changed()
                         && self.ask
                     {
                         self.code.clear();
-                    }
-                }
-                if self.mode != Mode::Assist {
-                    ui.add_space(6.0);
-                    if let Some(host) = self.nearby.show(ui, runtime) {
-                        self.address = host.target().to_string();
-                        self.expected = host.announce.device_id;
-                        self.code.clear();
-                        self.error = None;
                     }
                 }
                 if let Some(message) = &self.message {
@@ -189,32 +182,35 @@ impl JoinUi {
                 if let Some(error) = &self.error {
                     ui.colored_label(theme::RED, error);
                 }
-                let mut result = None;
-                let mut close = false;
-                ui.horizontal(|ui| {
-                    close = ui.add(controls::secondary(text.common.cancel)).clicked();
-                    let submit = if self.mode == Mode::Pair {
-                        text.center.pair
-                    } else {
-                        text.common.connect
+                let submit = if self.mode == Mode::Pair {
+                    text.center.pair
+                } else {
+                    text.common.connect
+                };
+                let (accept, cancel) = controls::dialog_actions(
+                    ui,
+                    Some(controls::DialogAction::new(submit)),
+                    Some(text.common.cancel),
+                );
+                if dismiss || cancel {
+                    return (true, None);
+                }
+                if accept {
+                    self.error = None;
+                    self.message = None;
+                    let action = match self.mode {
+                        Mode::Pair => self.start_pairing(ui.ctx(), runtime).map(|_| None),
+                        Mode::Connect => self.request(devices).map(Some),
                     };
-                    if ui.add(controls::primary(submit)).clicked() {
-                        self.error = None;
-                        self.message = None;
-                        let action = match self.mode {
-                            Mode::Pair => self.start_pairing(ui.ctx(), runtime).map(|_| None),
-                            _ => self.request(signed_in).map(Some),
-                        };
-                        match action {
-                            Ok(request) => result = request,
-                            Err(error) => self.error = Some(format!("{error:#}")),
-                        }
+                    match action {
+                        Ok(action) => return (false, action),
+                        Err(error) => self.error = Some(format!("{error:#}")),
                     }
-                });
-                (close, result)
+                }
+                (false, None)
             });
         let dismiss = modal.should_close();
-        let (close, request) = modal.inner;
+        let (close, action) = modal.inner;
         if close || dismiss {
             if let Some(pairing) = &self.pairing {
                 pairing.cancel.cancel();
@@ -224,10 +220,108 @@ impl JoinUi {
             }
             return None;
         }
-        if request.is_some() {
+        if action.is_some() {
             self.close();
         }
-        request.map(Ok)
+        action
+    }
+
+    pub(in super::super) fn open_target(
+        &mut self,
+        target: String,
+        expected: Option<String>,
+        name: Option<String>,
+    ) {
+        self.target = target;
+        self.clear_target_identity();
+        self.expected = expected.unwrap_or_default();
+        self.name = name;
+        self.open(Mode::Connect);
+    }
+
+    pub(in super::super) fn open_saved(&mut self, device: &crate::account::assist::SavedDevice) {
+        self.open_target(device.connect_id.clone(), None, None);
+        self.publisher_id = (!device.publisher_device_id.is_empty())
+            .then(|| device.publisher_device_id.clone());
+    }
+
+    pub(in super::super) fn refresh_nearby(&mut self) {
+        self.nearby.next_scan = None;
+    }
+
+    pub(in super::super) fn show_nearby(&mut self, ui: &mut egui::Ui, runtime: &Handle) {
+        self.nearby.poll(ui, runtime);
+        let text = &t().center;
+        if let Some(error) = &self.nearby.error {
+            ui.colored_label(theme::AMBER, error);
+        }
+        if self.nearby.found.is_empty() && self.nearby.error.is_none() {
+            device_list::empty(
+                ui,
+                if self.nearby.scan.is_some() {
+                    text.searching_lan
+                } else {
+                    text.no_nearby_devices
+                },
+            );
+        }
+        let mut selected = None;
+        for host in &self.nearby.found {
+            let id = device_id_text(&host.announce.device_id);
+            let detail = format!("ID {id} · {}", (text.address_line)(&host.target().to_string()));
+            let mut mode = None;
+            ui.push_id(&host.announce.device_id, |ui| {
+                device_list::row(
+                    ui,
+                    &device_list::Row {
+                        title: &host.announce.name,
+                        tile: device_list::Tile::Generic,
+                        status: None,
+                        chips: &[],
+                        extra_badges: None,
+                        detail: &detail,
+                        selected: None,
+                    },
+                    |ui| {
+                        if ui.add(controls::primary(t().common.connect)).clicked() {
+                            mode = Some(Mode::Connect);
+                        }
+                        if ui.add(controls::secondary(text.pair)).clicked() {
+                            mode = Some(Mode::Pair);
+                        }
+                    },
+                );
+            });
+            if let Some(mode) = mode {
+                selected = Some((host, mode));
+            }
+        }
+        if let Some((host, mode)) = selected {
+            let target = host.target().to_string();
+            let expected = host.announce.device_id.clone();
+            let name = host.announce.name.clone();
+            self.open_target(target, Some(expected), Some(name));
+            self.mode = mode;
+            ui.ctx().request_repaint();
+        }
+    }
+
+    fn open(&mut self, mode: Mode) {
+        self.open = true;
+        self.mode = mode;
+        self.code.clear();
+        self.ask = false;
+        self.error = None;
+        self.message = None;
+        self.server.clear();
+        self.fingerprint.clear();
+        self.configured_server = match ServerConfig::load() {
+            Ok(config) => config,
+            Err(error) => {
+                self.error = Some(format!("{error:#}"));
+                None
+            }
+        };
     }
 
     fn close(&mut self) {
@@ -236,49 +330,104 @@ impl JoinUi {
         self.ask = false;
     }
 
-    fn request(&self, signed_in: bool) -> Result<JoinRequest> {
+    fn clear_target_identity(&mut self) {
+        self.expected.clear();
+        self.name = None;
+        self.publisher_id = None;
+        self.code.clear();
+        self.ask = false;
+    }
+
+    fn route<'a>(&self, devices: Option<&'a DeviceList>) -> Result<Route<'a>> {
+        Ok(match ConnectTarget::parse(&self.target)? {
+            ConnectTarget::ShortNumber(number) => Route::Assist(number),
+            ConnectTarget::Address(address) => Route::Direct {
+                address: address.to_string(),
+                expected: (!self.expected.trim().is_empty()).then(|| self.expected.clone()),
+                name: self.name.clone(),
+            },
+            ConnectTarget::DeviceId(id) => {
+                if self.code.trim().is_empty()
+                    && !self.ask
+                    && let Some(device) = devices
+                        .into_iter()
+                        .flat_map(|devices| devices.devices.iter().chain(&devices.shared))
+                        .find(|device| device.device_id == id)
+                {
+                    anyhow::ensure!(
+                        super::super::center::can_view(device),
+                        "{}",
+                        t().center.no_permissions
+                    );
+                    return Ok(Route::Account(device));
+                }
+                if let Some(host) = self.nearby.found.iter().find(|h| h.announce.device_id == id) {
+                    return Ok(Route::Direct {
+                        address: host.target().to_string(),
+                        expected: Some(id),
+                        name: Some(host.announce.name.clone()),
+                    });
+                }
+                if devices.is_none()
+                    && self.configured_server.is_none()
+                    && self.server.trim().is_empty()
+                    && let Some(host) = store::known_host(&id).filter(|host| !host.address.is_empty())
+                {
+                    return Ok(Route::Direct {
+                        address: host.address,
+                        expected: Some(id),
+                        name: Some(host.name),
+                    });
+                }
+                Route::Assist(id)
+            }
+        })
+    }
+
+    fn request(&self, devices: Option<&DeviceList>) -> Result<JoinAction> {
         let code = self.code.trim();
-        match self.mode {
-            Mode::Assist => {
-                let account = if signed_in {
+        Ok(match self.route(devices)? {
+            Route::Account(device) => JoinAction::Account(device.clone()),
+            Route::Assist(target) => {
+                let account = if devices.is_some() {
                     AssistAccount::SignedIn
                 } else if let Some(config) = &self.configured_server {
                     AssistAccount::Guest(Some(config.clone()))
                 } else {
+                    if self.server.trim().is_empty() {
+                        if super::is_short_number(&target) {
+                            bail!("{}", t().center.short_number_needs_server);
+                        }
+                        bail!("{}", t().center.status_no_server);
+                    }
                     AssistAccount::Guest(Some(ServerConfig::new(
                         &self.server,
                         Some(&self.fingerprint),
                         None,
                     )?))
                 };
-                JoinRequest::assist(&self.target, code.to_owned(), account)
+                JoinAction::Join(JoinRequest::assist(
+                    &target,
+                    code.to_owned(),
+                    account,
+                    self.publisher_id.as_deref(),
+                )?)
             }
-            Mode::Direct => JoinRequest::direct(
-                &self.address,
+            Route::Direct { address, expected, name } => JoinAction::Join(JoinRequest::direct(
+                &address,
                 (!self.ask && !code.is_empty()).then(|| code.to_owned()),
                 self.ask,
-                (!self.expected.trim().is_empty()).then_some(self.expected.as_str()),
-                self.nearby
-                    .found
-                    .iter()
-                    .find(|host| host.announce.device_id == self.expected)
-                    .map(|host| host.announce.name.as_str()),
-            ),
-            Mode::Pair => unreachable!("pairing does not start a viewing session"),
-        }
+                expected.as_deref(),
+                name.as_deref(),
+            )?),
+        })
     }
 
     fn start_pairing(&mut self, ctx: &egui::Context, runtime: &Handle) -> Result<()> {
-        let target = Target::parse(&self.address)?;
+        let target = Target::parse(&self.target)?;
         let expected = device_id(&self.expected)?;
-        let known_name = self
-            .nearby
-            .found
-            .iter()
-            .find(|host| host.announce.device_id == expected)
-            .map(|host| host.announce.name.as_str());
         let id = device_id_text(&expected);
-        let name = (t().center.name_with_id)(known_name.unwrap_or(&self.address), &id);
+        let name = (t().center.name_with_id)(self.name.as_deref().unwrap_or(&self.target), &id);
         self.pairing = Some(Pairing::start(ctx, runtime, target, expected, name));
         Ok(())
     }
@@ -300,7 +449,7 @@ impl JoinUi {
         match result {
             Ok(name) => {
                 self.message = Some((t().center.paired_with)(&name));
-                self.mode = Mode::Direct;
+                self.mode = Mode::Connect;
                 self.code.clear();
                 self.ask = false;
             }
@@ -325,7 +474,7 @@ fn field(
     hint: &str,
     password: bool,
     limit: usize,
-) {
+) -> egui::Response {
     ui.label(RichText::new(label).color(theme::MUTED));
     ui.add_sized(
         [ui.available_width(), controls::HEIGHT],
@@ -334,7 +483,7 @@ fn field(
             .hint_text(hint)
             .password(password)
             .char_limit(limit),
-    );
+    )
 }
 
 #[derive(Default)]
@@ -346,7 +495,7 @@ struct Nearby {
 }
 
 impl Nearby {
-    fn show(&mut self, ui: &mut egui::Ui, runtime: &Handle) -> Option<lan::Found> {
+    fn poll(&mut self, ui: &egui::Ui, runtime: &Handle) {
         if let Some(scan) = &mut self.scan {
             let result = match scan.try_recv() {
                 Ok(result) => Some(result),
@@ -396,43 +545,6 @@ impl Nearby {
                 ui.ctx().request_repaint_after(delay);
             }
         }
-        let text = &t().center;
-        ui.label(RichText::new(text.tab_nearby).strong());
-        if let Some(error) = &self.error {
-            ui.colored_label(theme::AMBER, error);
-        }
-        if self.found.is_empty() && self.error.is_none() {
-            ui.label(
-                RichText::new(if self.scan.is_some() {
-                    text.searching_lan
-                } else {
-                    text.no_nearby_devices
-                })
-                .color(theme::MUTED),
-            );
-        }
-        let mut selected = None;
-        egui::ScrollArea::vertical()
-            .id_salt("join-nearby")
-            .max_height(130.0)
-            .show(ui, |ui| {
-                for host in &self.found {
-                    ui.push_id(&host.announce.device_id, |ui| {
-                        let label = (text.name_with_id)(
-                            &host.announce.name,
-                            &device_id_text(&host.announce.device_id),
-                        );
-                        if ui
-                            .add(controls::secondary(&label))
-                            .on_hover_text(host.address.to_string())
-                            .clicked()
-                        {
-                            selected = Some(host.clone());
-                        }
-                    });
-                }
-            });
-        selected
     }
 }
 

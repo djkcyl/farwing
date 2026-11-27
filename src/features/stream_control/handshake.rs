@@ -286,6 +286,8 @@ impl StreamControlHandle {
                 if let Some(upgrade) = &state.remote_upgrade {
                     upgrade.host_updating();
                 }
+                #[cfg(target_os = "linux")]
+                state.remote_upgrade.host_updating();
                 state.mouse.disable();
                 state.annotation.disconnect();
             }
@@ -391,4 +393,38 @@ impl StreamControlHandle {
         Ok(())
     }
 
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::StreamControlHandle;
+    use crate::diagnostics::performance::PerformanceMonitor;
+    use crate::media::{ConnectionMediaOptions, LocalDisplayInfo};
+    use crate::protocol::host_event::{self, kind};
+    use std::task::{Context, Poll, Waker};
+
+    #[test]
+    fn host_update_frame_wakes_linux_viewer() {
+        let profile = ConnectionMediaOptions::default()
+            .resolve(LocalDisplayInfo::FALLBACK)
+            .unwrap();
+        let (control, _outgoing, _echo) =
+            StreamControlHandle::new(profile, PerformanceMonitor::new(""));
+        let upgrade = control.remote_upgrade();
+        let mut announced = std::pin::pin!(upgrade.wait_for_announcement());
+        let mut cx = Context::from_waker(Waker::noop());
+
+        control
+            .handle_protocol_message(&host_event::encode(kind::RESTARTING, ""))
+            .unwrap();
+        assert_eq!(announced.as_mut().poll(&mut cx), Poll::Pending);
+
+        control
+            .handle_protocol_message(&host_event::encode(kind::UPDATING, ""))
+            .unwrap();
+        let Poll::Ready(started) = announced.as_mut().poll(&mut cx) else {
+            panic!("the Linux viewer did not observe the host update");
+        };
+        assert_eq!(upgrade.started_at(), Some(started));
+    }
 }

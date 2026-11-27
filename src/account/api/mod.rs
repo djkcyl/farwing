@@ -1044,7 +1044,7 @@ impl ServerApi {
     }
 
     pub(crate) async fn latest_release(&self, channel: &str) -> Result<Option<ReleaseInfo>> {
-        let path = format!("{}?channel={channel}", path::updates(Platform::Windows.as_str()));
+        let path = format!("{}?channel={channel}", path::updates(std::env::consts::OS));
         let info: wire::UpdateInfo = self
             .call(Method::GET, &path, Body::None, REQUEST_TIMEOUT, Auth::None)
             .await?;

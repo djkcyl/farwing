@@ -70,7 +70,7 @@ impl DeviceCenter {
                     {
                         connect = Some(Some(ConnectionMediaOptions {
                             audio_only: true,
-                            ..Default::default()
+                            ..self.media
                         }));
                     }
                 }
@@ -87,7 +87,7 @@ impl DeviceCenter {
                 {
                     connect = Some(Some(ConnectionMediaOptions {
                         camera_only: true,
-                        ..Default::default()
+                        ..self.media
                     }));
                 }
                 if !current
@@ -210,7 +210,7 @@ impl DeviceCenter {
                     crate::features::port_mapping::ui::PortWindow::open(
                         client.clone(),
                         device.clone(),
-                        ConnectionMediaOptions::default(),
+                        self.media,
                     )
                 };
                 match result {
@@ -223,7 +223,9 @@ impl DeviceCenter {
         }
         if let Some(connect) = connect {
             match connect {
-                Some(options) => self.connect_media(client.clone(), device.clone(), options),
+                Some(options) => {
+                    self.connect_media(client.clone(), device.clone(), options);
+                }
                 None => self.connect(client.clone(), device.clone()),
             }
         }

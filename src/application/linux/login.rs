@@ -4,6 +4,49 @@ use crate::ui::{controls, login, theme};
 use anyhow::Result;
 use egui::{Align, Layout, RichText};
 
+impl super::DeviceCenter {
+    pub(super) fn open_login(&mut self) {
+        self.error = None;
+        match ServerConfig::load() {
+            Ok(Some(config)) => {
+                self.sign_in.server = config.origin().to_owned();
+                self.sign_in.fingerprint = config.pinned_fingerprint().unwrap_or_default();
+                self.sign_in.step = Step::Account;
+            }
+            Ok(None) => self.sign_in.edit_server(),
+            Err(error) => {
+                self.sign_in.edit_server();
+                self.show_error(error);
+            }
+        }
+        self.login_open = true;
+    }
+
+    pub(super) fn login_page(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::top("linux-login-navigation")
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::same(12)))
+            .show(ui, |ui| {
+                if ui
+                    .add_enabled(!self.busy, controls::secondary(t().common.cancel))
+                    .clicked()
+                {
+                    self.login_open = false;
+                    self.sign_in.password.clear();
+                    self.error = None;
+                }
+            });
+        if !self.login_open {
+            return;
+        }
+        match self.sign_in.show(ui, self.login_status, &mut self.error) {
+            Some(Ok(login)) => self.account(Some(login)),
+            Some(Err(error)) => self.show_error(error),
+            None => {}
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Step {
     Server,
@@ -37,8 +80,9 @@ impl LoginScreen {
         &self.server
     }
 
-    pub(super) fn fingerprint(&self) -> &str {
-        &self.fingerprint
+    pub(super) fn edit_server(&mut self) {
+        self.step = Step::Server;
+        self.password.clear();
     }
 
     pub(super) fn show(

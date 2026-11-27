@@ -31,7 +31,7 @@ pub(crate) fn default_settings(profile: ConnectionMediaProfile) -> StreamControl
     StreamControlSettings {
         true_color: false,
         hdr: false,
-        quality: StreamQuality::Auto,
+        quality: profile.quality,
         frame_rate: frame_rate_choice(profile.stream_fps),
         custom_bitrate_mbps: DEFAULT_CUSTOM_BITRATE_MBPS,
     }
@@ -312,6 +312,10 @@ struct StreamControlState {
     clipboard_files_allowed: bool,
     #[cfg(windows)]
     remote_upgrade: Option<crate::features::remote_upgrade::RemoteUpgrade>,
+    // Capture Linux notices as soon as the session channel can deliver them,
+    // even when the viewer has not started its media yet.
+    #[cfg(target_os = "linux")]
+    remote_upgrade: crate::features::remote_upgrade::RemoteUpgrade,
     annotation: annotation::Annotation,
     features: Option<crate::account::feature_ability::FeaturePolicy>,
     remote_notice: Option<(Instant, u64, String, bool)>,
@@ -411,7 +415,7 @@ impl StreamControlHandle {
     ) {
         let (outgoing, receiver) = mpsc::unbounded_channel();
         let (echo_responses, echo_receiver) = mpsc::unbounded_channel();
-        let frame_rate = frame_rate_choice(profile.stream_fps);
+        let settings = default_settings(profile);
         let mouse = crate::features::remote_input::RemoteInput::default();
         let cursor = crate::features::remote_cursor::RemoteCursorState::default();
         let state = StreamControlState {
@@ -419,6 +423,10 @@ impl StreamControlHandle {
             clipboard_files_allowed: true,
             #[cfg(windows)]
             remote_upgrade: None,
+            #[cfg(target_os = "linux")]
+            remote_upgrade: crate::features::remote_upgrade::RemoteUpgrade::new(
+                tokio_util::sync::CancellationToken::new(),
+            ),
             annotation: Default::default(),
             features: None,
             device_preferences: crate::features::viewing_settings::DevicePreferences {
@@ -453,13 +461,7 @@ impl StreamControlHandle {
             display_changes: Default::default(),
             topology: Default::default(),
 
-            settings: StreamControlSettings {
-                true_color: false,
-                hdr: false,
-                frame_rate,
-                quality: StreamQuality::Auto,
-                custom_bitrate_mbps: DEFAULT_CUSTOM_BITRATE_MBPS,
-            },
+            settings,
             held: None,
             stream_state: None,
             pending_stream: None,
@@ -480,13 +482,7 @@ impl StreamControlHandle {
             preference_updates: tokio::sync::watch::channel(None).0,
             confirmed_preferences: StreamControlPreferences {
                 device: None,
-                settings: StreamControlSettings {
-                    true_color: false,
-                    hdr: false,
-                    frame_rate,
-                    quality: StreamQuality::Auto,
-                    custom_bitrate_mbps: DEFAULT_CUSTOM_BITRATE_MBPS,
-                },
+                settings,
                 audio: None,
             },
             user_settings_requested: false,
@@ -773,6 +769,11 @@ impl StreamControlHandle {
 
     #[cfg(windows)]
     pub(crate) fn remote_upgrade(&self) -> Option<crate::features::remote_upgrade::RemoteUpgrade> {
+        lock(&self.shared).remote_upgrade.clone()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn remote_upgrade(&self) -> crate::features::remote_upgrade::RemoteUpgrade {
         lock(&self.shared).remote_upgrade.clone()
     }
 

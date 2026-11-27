@@ -1,15 +1,19 @@
 #[path = "activity.rs"]
 mod activity;
+#[path = "center_connections.rs"]
+mod connections;
 #[path = "device_details.rs"]
 mod device_details;
 #[path = "friends.rs"]
 mod friends;
 
+use self::connections::DeviceTab;
 use super::{DeviceCenter, Event};
 use crate::account::api::{
     DeviceDetail, DeviceGroups, DeviceInfo, DeviceList, device_id_text, platform_label,
 };
 use crate::account::client::AuthenticatedClient;
+use crate::account::server::ServerConfig;
 use crate::i18n::t;
 use crate::ui::center_icon::{Icon, paint_icon};
 use crate::ui::controls::{self, DialogAction, DialogIcon};
@@ -17,7 +21,11 @@ use crate::ui::{branding, device_list, theme};
 use anyhow::Result;
 use egui::{Align, Layout, RichText, Sense, vec2};
 use farwing_protocol::api::{AuthSession, Me};
-use std::{future::Future, sync::Arc};
+use std::{
+    future::Future,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Page {
@@ -28,6 +36,7 @@ enum Page {
     Records,
     Notices,
     Chat,
+    Settings,
 }
 
 impl Page {
@@ -39,6 +48,7 @@ impl Page {
             Self::Records => t().records.page,
             Self::Notices => t().notices.page,
             Self::Chat => t().chat.page,
+            Self::Settings => t().common.settings,
         }
     }
 }
@@ -47,6 +57,11 @@ impl Page {
 pub(super) struct State {
     page: Page,
     load: bool,
+    device_tab: Option<DeviceTab>,
+    connections: connections::State,
+    server_origin: Option<(Instant, Option<String>)>,
+    restore_unreachable: bool,
+    reconnecting: bool,
     search: String,
     detail: Option<device_details::Details>,
     friends: friends::State,
@@ -65,6 +80,10 @@ pub(super) enum Update {
     Friends(friends::Update),
     Activity(activity::Update),
     Account(Me, Vec<AuthSession>),
+    Saved {
+        lists: Result<crate::account::assist::SavedLists>,
+        mutation: Option<Result<&'static str>>,
+    },
     Revoked(String),
     Renamed(String, String, String),
     Removed(String, String),
@@ -174,6 +193,7 @@ impl DeviceCenter {
                 self.center.activity.finish(update);
             }
             Ok(Update::Account(me, sessions)) => self.center.account = Some((me, sessions)),
+            Ok(Update::Saved { lists, mutation }) => self.finish_saved(lists, mutation),
             Ok(Update::Revoked(id)) => {
                 if let Some((_, sessions)) = &mut self.center.account {
                     sessions.retain(|session| session.device_id != id);
@@ -250,7 +270,16 @@ impl DeviceCenter {
         self.center.ports.retain(|_, window| window.show(ctx));
     }
 
+    pub(super) fn start_chat(&mut self, client: &Arc<AuthenticatedClient>) {
+        self.center.chat = Some(super::chat::LinuxChat::new(
+            Arc::clone(client), self.runtime.clone(), self.ctx.clone(),
+        ));
+    }
+
     fn navigate(&mut self, page: Page) {
+        if self.center.page == Page::Settings && page != Page::Settings {
+            self.settings.leave();
+        }
         if page != Page::Chat && let Some(chat) = &self.center.chat {
             chat.set_visible(false);
         }
@@ -271,7 +300,7 @@ impl DeviceCenter {
         self.error = None;
     }
 
-    fn refresh_page(&mut self, client: &Arc<AuthenticatedClient>) {
+    fn refresh_page(&mut self) {
         if let Some(id) = self.center.detail.as_ref().map(|d| d.id.clone()) {
             self.wallpapers.refresh(&id);
             self.request_center(move |client| async move {
@@ -283,11 +312,10 @@ impl DeviceCenter {
             return;
         }
         match self.center.page {
-            Page::Devices => self.refresh(client.clone()),
             Page::Friends => self.refresh_friends(),
             Page::Records => self.refresh_records(None),
             Page::Notices => self.refresh_notices(None),
-            Page::Chat => {}
+            Page::Devices | Page::Chat | Page::Settings => {}
             Page::Account => self.request_center(|client| async move {
                 let (me, sessions) =
                     tokio::try_join!(client.account_info(), client.auth_sessions())?;
@@ -296,14 +324,87 @@ impl DeviceCenter {
         }
     }
 
-    pub(super) fn devices_page(&mut self, root: &mut egui::Ui) {
-        let Some((client, devices)) = self.account.as_ref() else {
-            return;
+    fn device_tab(&self) -> DeviceTab {
+        self.center.device_tab.unwrap_or(if self.account.is_some() {
+            DeviceTab::Mine
+        } else {
+            DeviceTab::Nearby
+        })
+    }
+
+    fn refresh_visible(&mut self, client: Option<&Arc<AuthenticatedClient>>) {
+        if self.center.page == Page::Devices && self.center.detail.is_none() {
+            match self.device_tab() {
+                DeviceTab::Nearby => self.joins.refresh_nearby(),
+                DeviceTab::Recent if client.is_some() => self.refresh_saved(),
+                DeviceTab::Recent => {}
+                DeviceTab::Mine => {
+                    if let Some(client) = client {
+                        self.refresh(client.clone());
+                    }
+                }
+            }
+        } else if client.is_some() {
+            self.refresh_page();
+        }
+    }
+
+    pub(super) fn finish_account_check(
+        &mut self,
+        result: &Result<Option<(Arc<AuthenticatedClient>, DeviceList)>>,
+    ) {
+        self.center.server_origin = None;
+        self.center.restore_unreachable = !self.login_open
+            && result
+                .as_ref()
+                .err()
+                .and_then(crate::account::api::failure_code)
+                .is_some_and(crate::account::session_restore::out_of_reach);
+        if matches!(result, Ok(Some(_))) {
+            self.center.load = self.center.page != Page::Devices
+                || self.center.device_tab == Some(DeviceTab::Recent);
+        }
+    }
+
+    pub(super) fn finish_server_check(&mut self, connected: bool) {
+        self.center.reconnecting = false;
+        if connected {
+            self.center.restore_unreachable = false;
+        }
+    }
+
+    fn status_bar(&mut self, root: &mut egui::Ui, client: Option<&Arc<AuthenticatedClient>>) {
+        // Display the configured server, not the unsaved address in the login form.
+        // Guest connections can configure the first server on their own.
+        if self.center.server_origin.as_ref().is_none_or(|(at, _)| {
+            at.elapsed() >= Duration::from_secs(2)
+        }) {
+            self.center.server_origin = Some((
+                Instant::now(),
+                ServerConfig::load().ok().flatten().map(|server| server.origin().to_owned()),
+            ));
+        }
+        let origin = self
+            .center
+            .server_origin
+            .as_ref()
+            .and_then(|(_, origin)| origin.clone());
+        let unreachable = client.map_or(self.center.restore_unreachable, |client| {
+            client.server_unreachable()
+        });
+        let checking = self.center.reconnecting || self.login_status.is_some();
+        let text = &t().center;
+        let (label, color) = if checking {
+            (text.status_connecting, theme::ACCENT)
+        } else if unreachable {
+            (text.status_unreachable, theme::AMBER)
+        } else if client.is_some_and(|client| client.is_active()) {
+            (text.status_online, theme::GREEN)
+        } else if origin.is_some() {
+            (t().common.signed_out, theme::MUTED)
+        } else {
+            (text.status_no_server, theme::MUTED)
         };
-        let (client, devices) = (client.clone(), devices.clone());
-        self.check_notices(&client);
-        let text = t();
-        let origin = self.sign_in.server();
         egui::Panel::bottom("linux-device-status")
             .resizable(false)
             .frame(
@@ -313,24 +414,63 @@ impl DeviceCenter {
             )
             .show(root, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(text.center.server)
-                            .small()
-                            .color(theme::MUTED),
-                    );
+                    let (dot, _) = ui.allocate_exact_size(vec2(6.0, 6.0), Sense::hover());
+                    ui.painter().circle_filled(dot.center(), 3.0, color);
+                    ui.label(RichText::new(label).small());
+                    if !checking && unreachable {
+                        if ui
+                            .add_enabled(!self.busy, egui::Link::new(text.reconnect_now))
+                            .clicked()
+                        {
+                            if let Some(client) = client {
+                                self.center.reconnecting = true;
+                                self.refresh(client.clone());
+                            } else {
+                                self.account(None);
+                            }
+                        }
+                    } else if !checking
+                        && client.is_none()
+                        && origin.is_none()
+                        && ui
+                            .add_enabled(!self.busy, egui::Link::new(text.status_set_up_server))
+                            .clicked()
+                    {
+                        self.open_login();
+                    }
+                    if let Some(origin) = &origin {
+                        ui.add(egui::Label::new(RichText::new(origin).small()).truncate())
+                            .on_hover_text(origin);
+                    }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
                             RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
                                 .small()
                                 .color(theme::MUTED),
                         );
-                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                            ui.add(egui::Label::new(RichText::new(origin).small()).truncate())
-                                .on_hover_text(origin);
-                        });
                     });
                 });
             });
+    }
+
+    fn sign_in_prompt(&mut self, ui: &mut egui::Ui) {
+        device_list::empty(ui, t().common.signed_out);
+        if ui
+            .add_enabled(!self.busy, controls::primary(t().common.sign_in))
+            .clicked()
+        {
+            self.open_login();
+        }
+    }
+
+    pub(super) fn devices_page(&mut self, root: &mut egui::Ui) {
+        let account = self.account.clone();
+        let client = account.as_ref().map(|(client, _)| client);
+        if let Some(client) = client {
+            self.check_notices(client);
+        }
+        let text = t();
+        self.status_bar(root, client);
         egui::Panel::left("linux-device-navigation")
             .resizable(false)
             .exact_size(theme::SIDEBAR_WIDTH)
@@ -339,11 +479,18 @@ impl DeviceCenter {
                     .fill(theme::SIDEBAR)
                     .inner_margin(egui::Margin::symmetric(12, 18)),
             )
-            .show(root, |ui| self.navigation(ui, &client));
+            .show(root, |ui| self.navigation(ui, client));
+        if let Some(chat) = &self.center.chat {
+            chat.set_visible(
+                self.center.page == Page::Chat
+                    && self.center.detail.is_none()
+                    && root.input(|input| input.focused && input.viewport().minimized != Some(true)),
+            );
+        }
 
         if self.center.load && !self.busy {
             self.center.load = false;
-            self.refresh_page(&client);
+            self.refresh_visible(client);
         }
         egui::CentralPanel::default()
             .frame(
@@ -357,9 +504,8 @@ impl DeviceCenter {
                     }),
             )
             .show(root, |ui| {
-                let is_details = self.center.detail.is_some();
                 ui.horizontal(|ui| {
-                    if is_details
+                    if self.center.detail.is_some()
                         && controls::back_button(
                             ui,
                             &(text.center.back_to)(self.center.page.title()),
@@ -370,6 +516,7 @@ impl DeviceCenter {
                         self.error = None;
                         self.center.message = None;
                     }
+                    let is_details = self.center.detail.is_some();
                     ui.heading(if is_details {
                         text.center.page_device_details
                     } else {
@@ -379,24 +526,41 @@ impl DeviceCenter {
                         if self.busy {
                             ui.spinner();
                         }
-                        if !is_details && self.center.page == Page::Devices {
-                            self.show_join(ui);
-                        }
-                        if (is_details || self.center.page != Page::Chat)
-                            && ui.add_enabled(
-                                !self.busy,
-                                controls::secondary(if is_details {
-                                    text.center.refresh_details
-                                } else {
-                                    text.common.refresh
-                                }),
-                            )
-                            .clicked()
+                        let local_refresh = !is_details
+                            && self.center.page == Page::Devices
+                            && self.device_tab() == DeviceTab::Nearby;
+                        if (local_refresh || (client.is_some() && !matches!(self.center.page, Page::Chat | Page::Settings)))
+                            && ui
+                                .add_enabled(
+                                    !self.busy || local_refresh,
+                                    controls::secondary(if is_details {
+                                        text.center.refresh_details
+                                    } else {
+                                        text.common.refresh
+                                    }),
+                                )
+                                .clicked()
                         {
-                            self.refresh_page(&client);
+                            self.refresh_visible(client);
                         }
                     });
                 });
+                let is_details = self.center.detail.is_some();
+                if !is_details && self.center.page == Page::Devices {
+                    self.show_join(ui);
+                    ui.horizontal_wrapped(|ui| {
+                        for tab in [DeviceTab::Mine, DeviceTab::Nearby, DeviceTab::Recent] {
+                            if tab == DeviceTab::Mine && account.is_none() {
+                                continue;
+                            }
+                            if ui.selectable_label(self.device_tab() == tab, tab.title()).clicked() {
+                                self.center.device_tab = Some(tab);
+                                self.center.load = true;
+                                ui.ctx().request_repaint();
+                            }
+                        }
+                    });
+                }
                 if let Some(error) = &self.error {
                     ui.colored_label(theme::RED, error);
                 }
@@ -404,11 +568,21 @@ impl DeviceCenter {
                     ui.colored_label(theme::GREEN, message);
                 }
                 ui.add_space(10.0);
-                if !is_details && self.center.page == Page::Chat {
-                    let page = self.center.chat.get_or_insert_with(|| {
-                        super::chat::LinuxChat::new(client.clone(), self.runtime.clone(), self.ctx.clone())
-                    });
-                    if let Some(device) = page.show_with_devices(ui, Some(&devices)) {
+                if (is_details || self.center.page != Page::Chat)
+                    && self.center.chat.as_mut().is_some_and(|chat| chat.show_notice(ui))
+                {
+                    self.navigate(Page::Chat);
+                }
+                let is_details = self.center.detail.is_some();
+                if !is_details && self.center.page == Page::Settings {
+                    self.settings_page(ui);
+                    return;
+                }
+                if !is_details && self.center.page == Page::Chat
+                    && let Some((client, devices)) = &account
+                    && let Some(page) = &mut self.center.chat
+                {
+                    if let Some(device) = page.show_with_devices(ui, Some(devices)) {
                         self.connect(client.clone(), device);
                     }
                     return;
@@ -419,26 +593,42 @@ impl DeviceCenter {
                         self.center.detail.as_ref().map(|detail| &detail.id),
                     ))
                     .show(ui, |ui| {
-                        if self.center.detail.is_some() {
-                            self.details_page(ui, &client, &devices);
-                        } else {
+                        if self.center.page == Page::Devices && !is_details {
+                            match self.device_tab() {
+                                DeviceTab::Nearby => self.joins.show_nearby(ui, &self.runtime),
+                                DeviceTab::Recent => self.recent_connections(ui),
+                                DeviceTab::Mine => {
+                                    if let Some((client, devices)) = &account {
+                                        self.device_groups(ui, client, devices);
+                                    }
+                                }
+                            }
+                        } else if let Some((client, devices)) = &account {
+                            if is_details {
+                                self.details_page(ui, client, devices);
+                                return;
+                            }
                             match self.center.page {
-                                Page::Devices => self.device_groups(ui, &client, &devices),
-                                Page::Friends => self.friends_page(ui, &client, &devices),
-                                Page::Account => self.account_page(ui, &client),
+                                Page::Friends => self.friends_page(ui, client, devices),
+                                Page::Account => self.account_page(ui, client),
                                 Page::Records => self.records_page(ui),
                                 Page::Notices => self.notices_page(ui),
-                                Page::Chat => {}
+                                Page::Devices | Page::Chat | Page::Settings => {}
                             }
+                        } else {
+                            self.sign_in_prompt(ui);
                         }
                     });
             });
-        if let Some(dialog) = self.center.dialog.take() {
-            self.center_dialog(root.ctx(), &client, &devices, dialog);
+        self.saved_dialog(root.ctx());
+        if let Some((client, devices)) = &account
+            && let Some(dialog) = self.center.dialog.take()
+        {
+            self.center_dialog(root.ctx(), client, devices, dialog);
         }
     }
 
-    fn navigation(&mut self, ui: &mut egui::Ui, client: &Arc<AuthenticatedClient>) {
+    fn navigation(&mut self, ui: &mut egui::Ui, client: Option<&Arc<AuthenticatedClient>>) {
         let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
         let logo = branding::logo_size(theme::LOGO_SIDEBAR);
         branding::paint_logo(
@@ -456,10 +646,12 @@ impl DeviceCenter {
             (Page::Records, Icon::Records),
             (Page::Notices, Icon::Notices),
             (Page::Account, Icon::Info),
+            (Page::Settings, Icon::Settings),
         ] {
+            let enabled = !self.busy || client.is_none();
             let selected = self.center.page == page;
             let (row, response) = ui
-                .add_enabled_ui(!self.busy, |ui| {
+                .add_enabled_ui(enabled, |ui| {
                     ui.allocate_exact_size(
                         vec2(ui.available_width(), theme::NAV_HEIGHT),
                         Sense::click(),
@@ -470,7 +662,7 @@ impl DeviceCenter {
             response.widget_info(|| {
                 egui::WidgetInfo::selected(
                     egui::WidgetType::SelectableLabel,
-                    !self.busy,
+                    enabled,
                     selected,
                     page.title(),
                 )
@@ -503,11 +695,16 @@ impl DeviceCenter {
                 egui::FontId::proportional(theme::BODY),
                 theme::TEXT,
             );
-            if page == Page::Notices && self.center.unread > 0 {
+            let unread = match page {
+                Page::Notices => self.center.unread as usize,
+                Page::Chat => self.center.chat.as_ref().map_or(0, |chat| chat.unread_count()),
+                _ => 0,
+            };
+            if unread > 0 {
                 ui.painter().text(
                     row.right_center() - vec2(10.0, 0.0),
                     egui::Align2::RIGHT_CENTER,
-                    self.center.unread.to_string(),
+                    unread.to_string(),
                     egui::FontId::proportional(theme::SMALL),
                     theme::ACCENT,
                 );
@@ -517,6 +714,17 @@ impl DeviceCenter {
             }
         }
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+            let Some(client) = client else {
+                if ui
+                    .add_enabled(!self.busy, controls::secondary(t().common.sign_in))
+                    .clicked()
+                {
+                    self.open_login();
+                }
+                ui.label(RichText::new(t().common.signed_out).color(theme::MUTED));
+                ui.separator();
+                return;
+            };
             ui.allocate_ui_with_layout(
                 vec2(ui.available_width(), theme::VIEWER_CAPTION_BUTTON),
                 Layout::right_to_left(Align::Center),
@@ -810,7 +1018,7 @@ impl DeviceCenter {
     }
 }
 
-fn can_view(device: &DeviceInfo) -> bool {
+pub(super) fn can_view(device: &DeviceInfo) -> bool {
     device.platform.is_desktop()
         && device.controlled_support
         && device.controllable

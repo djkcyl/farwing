@@ -1,13 +1,14 @@
 //! Entry points for server-assisted and direct connections from the Linux client.
 use crate::account::{
-    api::{device_id_text, parse_device_id},
-    assist::{AssistRequest, is_short_number},
+    api::{DeviceInfo, device_id_text, parse_device_id},
+    assist::{AssistRequest, is_short_number, normalize_connect_id},
     client::{AuthenticatedClient, NoSavedSession},
     server::ServerConfig,
 };
 use crate::i18n::t;
 use crate::media::ConnectionMediaOptions;
 use crate::session::controller::{ConnectionProgressReporter, ControllerConnection, direct};
+use crate::transport::direct::Target;
 use anyhow::{Result, ensure};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -15,6 +16,32 @@ use tokio_util::sync::CancellationToken;
 #[path = "joins/ui.rs"]
 mod ui;
 pub(super) use ui::JoinUi;
+
+pub(super) enum JoinAction {
+    Account(DeviceInfo),
+    Join(JoinRequest),
+}
+
+enum ConnectTarget {
+    ShortNumber(String),
+    DeviceId(String),
+    Address(Target),
+}
+
+impl ConnectTarget {
+    fn parse(text: &str) -> Result<Self> {
+        ensure!(!text.trim().is_empty(), "{}", t().center.enter_target);
+        if let Ok(number) = normalize_connect_id(text) {
+            return Ok(Self::ShortNumber(number));
+        }
+        if let Some(id) = parse_device_id(text) {
+            return Ok(Self::DeviceId(id));
+        }
+        Target::parse(text)
+            .map(Self::Address)
+            .map_err(|_| anyhow::anyhow!("{}", t().center.unrecognized_target))
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct JoinRequest(Destination);
@@ -36,11 +63,15 @@ enum AssistAccount {
 }
 
 impl JoinRequest {
-    fn assist(target: &str, code: String, account: AssistAccount) -> Result<Self> {
-        Ok(Self(Destination::Assist(
-            AssistRequest::new(target, code)?,
-            account,
-        )))
+    fn assist(
+        target: &str,
+        code: String,
+        account: AssistAccount,
+        publisher_id: Option<&str>,
+    ) -> Result<Self> {
+        let mut request = AssistRequest::new(target, code)?;
+        request.expected_publisher_id = publisher_id.map(str::to_owned);
+        Ok(Self(Destination::Assist(request, account)))
     }
 
     fn direct(
@@ -189,7 +220,7 @@ impl Command {
                 } else {
                     AssistAccount::SavedOrGuest
                 };
-                JoinRequest::assist(&target, code.unwrap_or_default(), account)
+                JoinRequest::assist(&target, code.unwrap_or_default(), account, None)
             }
             Self::Connect {
                 direct,
@@ -210,6 +241,24 @@ mod tests {
     struct Cli {
         #[command(subcommand)]
         command: Command,
+    }
+
+    #[test]
+    fn unified_target_prefers_server_identifiers_over_hostnames() {
+        // Both unformatted identifiers would also parse as direct hostnames.
+        assert!(matches!(
+            ConnectTarget::parse("123456789").unwrap(),
+            ConnectTarget::ShortNumber(number) if number == "123456789"
+        ));
+        assert!(matches!(
+            ConnectTarget::parse("ABCD-EFGH-IJKL-MNOP").unwrap(),
+            ConnectTarget::DeviceId(id) if id == "abcdefghijklmnop"
+        ));
+        assert!(matches!(
+            ConnectTarget::parse("[::1]:9000").unwrap(),
+            ConnectTarget::Address(address) if address.to_string() == "[::1]:9000"
+        ));
+        assert!(ConnectTarget::parse("https://example.org").is_err());
     }
 
     #[test]

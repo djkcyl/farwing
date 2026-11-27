@@ -21,6 +21,7 @@ pub(crate) mod device_list;
 pub(crate) mod device_visuals;
 pub(crate) mod fonts;
 pub(crate) mod login;
+pub(crate) mod log_settings;
 pub(crate) mod theme;
 #[cfg(windows)]
 pub(crate) mod video_textures;

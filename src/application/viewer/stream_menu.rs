@@ -34,7 +34,6 @@ use crate::ui::theme::{ACCENT, HOVER, LINE, MUTED, TEXT};
 enum Page {
     #[default]
     Quality,
-    #[cfg(windows)]
     Codec,
     WeakNetwork,
     Custom,
@@ -54,7 +53,6 @@ impl Page {
         let t = &t().viewer;
         match self {
             Self::Quality => t.quality,
-            #[cfg(windows)]
             Self::Codec => t.page_codec,
             Self::WeakNetwork => t.page_weak_network,
             Self::Custom => t.custom_bitrate,
@@ -838,7 +836,6 @@ pub(super) fn show_stream_control_window(
                                     );
                                     section_separator(ui);
                                 }
-                                #[cfg(windows)]
                                 if menu_row(ui, t().viewer.page_codec, preferences.codec.map_or(t().viewer.follow_global, |value| value.label()), None, !locked, true).clicked() {
                                     state.page = Page::Codec;
                                 }
@@ -1104,11 +1101,15 @@ pub(super) fn show_stream_control_window(
                                 audio.set_settings(audio_settings);
                             });
                     }
-                    #[cfg(windows)]
                     Page::Codec => {
                         let codec = handle.device_preferences().codec;
+                        #[cfg(windows)]
+                        let choices = crate::media::CodecPreference::PREFERRED.into_iter();
+                        #[cfg(target_os = "linux")]
+                        let choices = crate::media::decoder::codec_preferences()
+                            .filter(|choice| !choice.restricted());
                         for value in std::iter::once(None)
-                            .chain(crate::media::CodecPreference::PREFERRED.into_iter().map(Some)) {
+                            .chain(choices.map(Some)) {
                             if menu_row(ui, value.map_or(t().viewer.follow_global, |value| value.label()), "", Some(codec == value), true, false).clicked()
                                 && codec != value
                                 && let Err(error) = handle.set_codec_preference(value)

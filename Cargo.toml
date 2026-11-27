@@ -167,6 +167,7 @@ windows = { version = "0.62.2", default-features = false, features = [
 
 [target.'cfg(target_os = "linux")'.dependencies]
 eframe = { version = "0.36.1", default-features = false, features = ["glow", "wayland", "x11"] }
+libc = "0.2"
 yuv = "0.8.17"
 
 [patch.crates-io]

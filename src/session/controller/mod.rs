@@ -177,7 +177,7 @@ fn assist_recovery(error: &anyhow::Error) -> Recovery {
 }
 
 /// How a lost session of this kind recovers.
-fn recovery_for(error: &anyhow::Error, assist: bool) -> Recovery {
+pub(crate) fn recovery_for(error: &anyhow::Error, assist: bool) -> Recovery {
     if assist { assist_recovery(error) } else { recovery(error) }
 }
 

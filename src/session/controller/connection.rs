@@ -47,10 +47,12 @@ impl ResolvedConnection {
         // Only a previously authenticated ReportError(-6) enables this wait.
         // It polls ownership/readiness and never reissues an installation.
         // Closing the retained viewer cancels the wait immediately.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
-        let operation = async {
-            let mut readiness = crate::features::remote_upgrade::UpdateReadiness::default();
-            loop {
+        use crate::features::remote_upgrade::{UPDATE_WAIT_LIMIT, wait_for_update_readiness};
+
+        wait_for_update_readiness(
+            tokio::time::Instant::now() + UPDATE_WAIT_LIMIT,
+            cancel,
+            || async {
                 let devices = self.client.list_devices().await?;
                 let device = devices
                     .devices
@@ -58,25 +60,15 @@ impl ResolvedConnection {
                     .find(|d| d.device_id == self.target_device_id)
                     .context(t().session.error_updated_device_missing)?;
                 device.validated_device_id()?;
-                anyhow::ensure!(device.platform == farwing_protocol::Platform::Windows, "{}", t().session.error_updated_platform_changed);
-                if readiness.observe(
-                    device.is_connected() && device.controlled_support && device.controllable,
-                    std::time::Instant::now(),
-                ) {
-                    tracing::info!(
-                        "updated target advertises readiness; attempting media connection"
-                    );
-                    return Ok(());
-                }
-                report_progress(reporter, 1, t().session.progress_waiting_update, "");
-                tokio::time::sleep(crate::features::remote_upgrade::UPDATE_PROBE_INTERVAL).await;
-            }
-        };
-        cancellable(cancel, async {
-            tokio::time::timeout_at(deadline, operation)
-                .await
-                .context(t().session.error_update_wait_timeout)?
-        })
+                anyhow::ensure!(
+                    device.platform == farwing_protocol::Platform::Windows,
+                    "{}",
+                    t().session.error_updated_platform_changed
+                );
+                Ok(device.is_connected() && device.controlled_support && device.controllable)
+            },
+            || report_progress(reporter, 1, t().session.progress_waiting_update, ""),
+        )
         .await
     }
     pub(super) async fn connect(
@@ -129,7 +121,9 @@ impl ResolvedConnection {
                 );
                 #[cfg(windows)]
                 if self.target_platform == farwing_protocol::Platform::Windows {
-                    handle.set_remote_upgrade(crate::features::remote_upgrade::RemoteUpgrade::new(cancel));
+                    handle.set_remote_upgrade(crate::features::remote_upgrade::RemoteUpgrade::new(
+                        cancel.child_token(),
+                    ));
                 }
                 store.restore_device(&handle).await;
                 connection.preference_writer = Some(store.clone().bind(handle.clone()));
@@ -364,7 +358,9 @@ impl ResolvedConnection {
         }
         #[cfg(windows)]
         if self.assist.is_none() && self.target_platform == farwing_protocol::Platform::Windows {
-            handle.set_remote_upgrade(crate::features::remote_upgrade::RemoteUpgrade::new(cancel));
+            handle.set_remote_upgrade(crate::features::remote_upgrade::RemoteUpgrade::new(
+                cancel.child_token(),
+            ));
         }
         handle.mouse().set_keyboard_platform(self.target_platform);
         #[cfg(target_os = "linux")]

@@ -10,17 +10,27 @@ use farwing_protocol::session;
 use super::{DecodedBatch, DecodedFrame, DecoderOutputIssue};
 use crate::media::decode_api::{DecodeError, DecoderNotification};
 use crate::media::selection::{DecoderPreference, ProcessingMode};
+use crate::media::video_color::{ColorMatrix, RenderColor};
 use crate::media::video_format::{VideoFormatSignature, parse_stream_format};
-use crate::media::{ConnectionMediaProfile, VideoCodec};
+use crate::media::{CodecPreference, ConnectionMediaProfile, VideoCodec};
 use crate::transport::rtc::EncodedVideoFrame;
 
-/// An owning NV12 picture, cropped to visible size and tightly packed. Color
-/// interpretation comes from the Farwing frame's RTP color metadata.
+/// Owning software-codec output. The visible picture starts in the upper
+/// left, but AV1 can have larger storage strides and an aligned height.
 #[derive(Debug)]
 pub(crate) struct CpuVideoFrame {
     width: u32,
     height: u32,
-    data: Bytes,
+    coded_width: u32,
+    coded_height: u32,
+    pixels: CpuPixels,
+}
+
+#[derive(Debug)]
+enum CpuPixels {
+    Nv12(Bytes),
+    /// The shared codec's packed AYUV uses V, U, Y, A byte order.
+    Vuya(Bytes),
 }
 
 impl CpuVideoFrame {
@@ -28,11 +38,62 @@ impl CpuVideoFrame {
         (self.width, self.height)
     }
 
-    /// Full-resolution Y, then interleaved U/V at half resolution. Each plane
-    /// has a byte stride of `width`.
-    pub(crate) fn planes(&self) -> (&[u8], &[u8]) {
-        self.data
-            .split_at(self.width as usize * self.height as usize)
+    fn nv12_planes<'a>(&self, data: &'a [u8]) -> (&'a [u8], &'a [u8]) {
+        data.split_at(self.coded_width as usize * self.coded_height as usize)
+    }
+
+    pub(crate) fn rgba(&self, color: RenderColor) -> Result<Vec<u8>> {
+        let (width, height) = self.size();
+        let range = if color.full_range {
+            yuv::YuvRange::Full
+        } else {
+            yuv::YuvRange::Limited
+        };
+        let matrix = match color.matrix {
+            ColorMatrix::Bt601 => yuv::YuvStandardMatrix::Bt601,
+            ColorMatrix::Bt709 => yuv::YuvStandardMatrix::Bt709,
+            ColorMatrix::Bt2020 => yuv::YuvStandardMatrix::Bt2020,
+        };
+        let mut pixels = vec![0; width as usize * height as usize * 4];
+        match &self.pixels {
+            CpuPixels::Nv12(data) => {
+                let (y, uv) = self.nv12_planes(data);
+                // The converter derives a final odd row from the plane
+                // lengths, so keep coded strides but exclude bottom padding.
+                let stride = self.coded_width as usize;
+                yuv::yuv_nv12_to_rgba(
+                    &yuv::YuvBiPlanarImage {
+                        y_plane: &y[..stride * height as usize],
+                        y_stride: self.coded_width,
+                        uv_plane: &uv[..stride * height.div_ceil(2) as usize],
+                        uv_stride: self.coded_width,
+                        width,
+                        height,
+                    },
+                    &mut pixels,
+                    width * 4,
+                    range,
+                    matrix,
+                    yuv::YuvConversionMode::Balanced,
+                )?;
+            }
+            CpuPixels::Vuya(data) => {
+                yuv::vyua_to_rgba(
+                    &yuv::YuvPackedImage {
+                        yuy: data,
+                        yuy_stride: self.coded_width * 4,
+                        width,
+                        height,
+                    },
+                    &mut pixels,
+                    width * 4,
+                    range,
+                    matrix,
+                    false,
+                )?;
+            }
+        }
+        Ok(pixels)
     }
 
     pub(crate) fn luma_hash(&self, width: u32, height: u32) -> Result<u64> {
@@ -41,8 +102,24 @@ impl CpuVideoFrame {
             "visible area outside the frame"
         );
         let mut hasher = DefaultHasher::new();
-        for row in self.planes().0.chunks_exact(width as usize) {
-            hasher.write(row);
+        let (width, height) = (width as usize, height as usize);
+        let stride = self.coded_width as usize;
+        match &self.pixels {
+            CpuPixels::Nv12(data) => {
+                let (y, _) = self.nv12_planes(data);
+                for row in y.chunks_exact(stride).take(height) {
+                    hasher.write(&row[..width]);
+                }
+            }
+            CpuPixels::Vuya(data) => {
+                let mut luma = vec![0; width];
+                for row in data.chunks_exact(stride * 4).take(height) {
+                    for (y, pixel) in luma.iter_mut().zip(row.chunks_exact(4)) {
+                        *y = pixel[2];
+                    }
+                    hasher.write(&luma);
+                }
+            }
         }
         Ok(hasher.finish())
     }
@@ -55,7 +132,7 @@ pub(crate) enum DecoderCandidate {
 
 impl DecoderCandidate {
     pub(crate) fn preferred(codec: VideoCodec, preference: DecoderPreference) -> Vec<Self> {
-        if codec == VideoCodec::H264 && preference.mode.software() {
+        if supports_software_format(codec, 1, 8) && preference.mode.software() {
             vec![Self::Software]
         } else {
             Vec::new()
@@ -63,11 +140,41 @@ impl DecoderCandidate {
     }
 
     pub(crate) fn supports_format(self, codec: VideoCodec, format: VideoFormatSignature) -> bool {
-        codec == VideoCodec::H264
-            && format.chroma_format_idc == 1
-            && format.bit_depth_luma == 8
-            && format.bit_depth_chroma == 8
+        format.bit_depth_luma == format.bit_depth_chroma
+            && supports_software_format(codec, format.chroma_format_idc, format.bit_depth_luma)
     }
+}
+
+const SOFTWARE_CODECS: [(VideoCodec, session::Codec); 2] = [
+    (VideoCodec::H264, session::Codec::H264),
+    (VideoCodec::Av1, session::Codec::Av1),
+];
+
+fn supports_software_format(codec: VideoCodec, chroma: u8, depth: u8) -> bool {
+    // Linux presents 8-bit SDR. The host treats a bit10 decoder offer as
+    // eligible for HDR, so do not offer the shared AV1 core's 10-bit output.
+    depth == 8
+        && farwing_codec::Format {
+            codec,
+            chroma,
+            depth,
+        }
+        .can_decode()
+}
+
+/// Codec choices with a Linux backend. Device menus keep preferences only;
+/// global settings may also restrict negotiation to one codec.
+pub(crate) fn codec_preferences() -> impl Iterator<Item = CodecPreference> {
+    CodecPreference::PREFERRED
+        .into_iter()
+        .chain(CodecPreference::ONLY)
+        .filter(|choice| {
+            choice.preferred().is_none_or(|chosen| {
+                SOFTWARE_CODECS.iter().any(|&(codec, offered)| {
+                    offered == chosen && supports_software_format(codec, 1, 8)
+                })
+            })
+        })
 }
 
 pub(crate) struct NativeVideoDecoder {
@@ -103,7 +210,7 @@ impl NativeVideoDecoder {
             DecodeError::InvalidInput
         );
         ensure!(
-            codec == VideoCodec::H264
+            supports_software_format(codec, 1, 8)
                 && parse_stream_format(codec, &extra_data)
                     .is_none_or(|format| candidate.supports_format(codec, format)),
             DecodeError::Unsupported
@@ -147,6 +254,8 @@ impl NativeVideoDecoder {
             .push(data, decode_token)
             .map_err(software_error)
         {
+            // Submission is synchronous and low-delay: no picture for this
+            // token (e.g. an AV1 sequence header alone) will appear in poll.
             Ok(frames) if frames.is_empty() => {
                 batch
                     .output_issues
@@ -154,13 +263,17 @@ impl NativeVideoDecoder {
             }
             Ok(frames) => {
                 for frame in frames {
-                    if frame.format != PixelFormat::Nv12 {
-                        batch.output_issues.push(DecoderOutputIssue::Failed {
-                            token: Some(frame.pts),
-                            error: DecodeError::Unsupported.into(),
-                        });
-                        continue;
-                    }
+                    let pixels = match frame.format {
+                        PixelFormat::Nv12 => CpuPixels::Nv12(frame.data),
+                        PixelFormat::Ayuv => CpuPixels::Vuya(frame.data),
+                        _ => {
+                            batch.output_issues.push(DecoderOutputIssue::Failed {
+                                token: Some(frame.pts),
+                                error: DecodeError::Unsupported.into(),
+                            });
+                            continue;
+                        }
+                    };
                     batch.frames.push(DecodedFrame {
                         pts: frame.pts,
                         width: frame.width,
@@ -169,7 +282,9 @@ impl NativeVideoDecoder {
                         surface: CpuVideoFrame {
                             width: frame.width,
                             height: frame.height,
-                            data: frame.data,
+                            coded_width: frame.coded_width,
+                            coded_height: frame.coded_height,
+                            pixels,
                         },
                     });
                 }
@@ -207,20 +322,33 @@ pub(crate) fn prepare_native_decoder_support(_mode: ProcessingMode, _delay: Dura
 pub(crate) fn detect_native_decoder_support(
     profile: ConnectionMediaProfile,
 ) -> Result<Vec<session::Decoder>> {
-    if !profile.decoder.mode.software() || !profile.codec.accepts(VideoCodec::H264) {
+    let mut capabilities = Vec::new();
+    if profile.decoder.mode.software() {
+        for (codec, wire) in SOFTWARE_CODECS {
+            if !profile.codec.accepts(codec) {
+                continue;
+            }
+            for chroma in [1, 3] {
+                if supports_software_format(codec, chroma, 8) {
+                    capabilities.push(session::Decoder {
+                        codec: wire,
+                        chroma444: chroma == 3,
+                        bit10: false,
+                        // Match Farwing's software decoder offer ceiling, not
+                        // the storage geometry of any individual picture.
+                        width: 1920,
+                        height: 1080,
+                        hardware: false,
+                        av1_visible_size: codec == VideoCodec::Av1,
+                    });
+                }
+            }
+        }
+    }
+    if capabilities.is_empty() {
         bail!("no decoder supports the selected codec and decoding mode");
     }
-    Ok(vec![session::Decoder {
-        codec: session::Codec::H264,
-        chroma444: false,
-        bit10: false,
-        // Match Farwing's software H.264 offer ceiling. The decoder itself
-        // uses the actual SPS and does not allocate based on this offer size.
-        width: 1920,
-        height: 1080,
-        hardware: false,
-        av1_visible_size: false,
-    }])
+    Ok(capabilities)
 }
 
 #[cfg(test)]
@@ -228,7 +356,7 @@ mod tests {
     use super::*;
     use crate::media::decoder_pool::DecoderPool;
     use crate::media::decoder_result::VideoDecodeResult;
-    use crate::media::{CodecPreference, ConnectionMediaOptions, LocalDisplayInfo};
+    use crate::media::{ConnectionMediaOptions, LocalDisplayInfo};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -242,26 +370,41 @@ mod tests {
         frame
     }
 
+    fn assert_rgba_pixel(rgba: &[u8], width: usize, x: usize, y: usize, expected: [u8; 4]) {
+        let at = (y * width + x) * 4;
+        let actual = &rgba[at..at + 4];
+        assert_eq!(actual[3], expected[3]);
+        // Allow minor rounding differences between yuv's kernels and FFmpeg.
+        assert!(
+            actual[..3]
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual.abs_diff(expected) <= 3),
+            "pixel ({x},{y}): {actual:?}, expected {expected:?}"
+        );
+    }
+
     #[test]
-    fn software_h264_offer_matches_cropped_nv12_output() {
-        let options = ConnectionMediaOptions::default();
+    fn software_h264_offer_matches_cropped_nv12_and_vuya_output() {
+        let options = ConnectionMediaOptions {
+            codec: CodecPreference::H264,
+            ..ConnectionMediaOptions::default()
+        };
         let profile = options.resolve(LocalDisplayInfo::FALLBACK).unwrap();
         let caps = detect_native_decoder_support(profile).unwrap();
-        assert_eq!(
-            caps,
-            [session::Decoder {
-                codec: session::Codec::H264,
-                chroma444: false,
-                bit10: false,
-                width: 1920,
-                height: 1080,
-                hardware: false,
-                av1_visible_size: false,
-            }]
-        );
+        let nv12 = session::Decoder {
+            codec: session::Codec::H264,
+            chroma444: false,
+            bit10: false,
+            width: 1920,
+            height: 1080,
+            hardware: false,
+            av1_visible_size: false,
+        };
+        assert_eq!(caps, [nv12, session::Decoder { chroma444: true, ..nv12 }]);
         assert!(
             detect_native_decoder_support(ConnectionMediaProfile {
-                codec: CodecPreference::Av1,
+                codec: CodecPreference::H265,
                 ..profile
             })
             .is_err()
@@ -292,7 +435,10 @@ mod tests {
         let frame = take_picture(decoder.push_packet(au, 0x4000_0000_0001), 0x4000_0000_0001);
         assert_eq!((frame.width, frame.height), (1920, 1080));
         assert_eq!(frame.surface.size(), (1920, 1080));
-        let (y, uv) = frame.surface.planes();
+        let CpuPixels::Nv12(data) = &frame.surface.pixels else {
+            panic!("H.264 4:2:0 must remain NV12");
+        };
+        let (y, uv) = frame.surface.nv12_planes(data);
         assert_eq!(y.len(), 2_073_600);
         assert_eq!(uv.len(), 1_036_800);
         // FFmpeg's NV12 output has an inset light rectangle with flat
@@ -300,6 +446,201 @@ mod tests {
         assert_eq!([y[0], y[539 * 1920 + 959], y[2_073_599]], [64, 192, 64]);
         assert!(uv.chunks_exact(2).all(|pair| pair == [96, 160]));
         assert!(decoder.poll().frames.is_empty());
+
+        let au = include_bytes!("fixtures/matrix/h264_444_1280x720.annexb");
+        let format = parse_stream_format(VideoCodec::H264, au).unwrap();
+        assert_eq!(format.chroma_format_idc, 3);
+        assert!(
+            decoder
+                .candidate()
+                .supports_format(VideoCodec::H264, format)
+        );
+        let mut decoder =
+            NativeVideoDecoder::open(VideoCodec::H264, 1280, 720, 60, profile.decoder, Bytes::new())
+                .unwrap();
+        let frame = take_picture(decoder.push_packet(au, 0x4000_0000_0002), 0x4000_0000_0002);
+        assert_eq!(frame.surface.size(), (1280, 720));
+        let CpuPixels::Vuya(data) = &frame.surface.pixels else {
+            panic!("H.264 4:4:4 must preserve full chroma");
+        };
+        assert_eq!(&data[..4], &[160, 96, 64, 255]);
+        let rgba = frame.surface.rgba(RenderColor::default()).unwrap();
+        assert_rgba_pixel(&rgba, 1280, 0, 0, [107, 42, 0, 255]);
+        assert_rgba_pixel(&rgba, 1280, 639, 359, [255, 191, 140, 255]);
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn software_av1_groups_rtp_and_presents_visible_size_after_reset() {
+        use crate::media::av1;
+        use farwing_codec::syntax::av1::visible;
+
+        let options = ConnectionMediaOptions {
+            codec: CodecPreference::Av1,
+            ..ConnectionMediaOptions::default()
+        };
+        let profile = options.resolve(LocalDisplayInfo::FALLBACK).unwrap();
+        let nv12 = session::Decoder {
+            codec: session::Codec::Av1,
+            chroma444: false,
+            bit10: false,
+            width: 1920,
+            height: 1080,
+            hardware: false,
+            av1_visible_size: true,
+        };
+        assert_eq!(
+            detect_native_decoder_support(profile).unwrap(),
+            [nv12, session::Decoder { chroma444: true, ..nv12 }]
+        );
+        let sdr_10_bit = include_bytes!("fixtures/matrix/av1_10_1280x720.obu");
+        let result = NativeVideoDecoder::open(
+            VideoCodec::Av1,
+            1280,
+            720,
+            60,
+            profile.decoder,
+            av1::parameters(sdr_10_bit).unwrap(),
+        );
+        assert_eq!(
+            result.err().unwrap().downcast_ref(),
+            Some(&DecodeError::Unsupported)
+        );
+
+        const VISIBLE: (u32, u32) = (1269, 715);
+        let h264 =
+            NativeVideoDecoder::open(VideoCodec::H264, 1280, 720, 60, profile.decoder, Bytes::new())
+                .unwrap();
+        let mut pool = DecoderPool::new(
+            h264,
+            VideoCodec::H264,
+            1280,
+            720,
+            60,
+            profile.decoder,
+            Bytes::new(),
+        );
+        for (fixture, chroma, first_pixel, inner_pixel, last_pixel) in [
+            (
+                include_bytes!("fixtures/matrix/av1_8_1280x720.obu").as_slice(),
+                1,
+                [64, 64, 64, 255],
+                [192, 192, 192, 255],
+                [64, 64, 64, 255],
+            ),
+            (
+                include_bytes!("fixtures/matrix/av1_444_8_1280x720.obu").as_slice(),
+                3,
+                [13, 109, 0, 255],
+                [141, 237, 95, 255],
+                [115, 19, 161, 255],
+            ),
+        ] {
+            let payloads =
+                av1::payloads(39, &visible::declare(fixture.to_vec(), VISIBLE), true).unwrap();
+            let mut records = Vec::new();
+            for payload in &payloads {
+                records.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                records.extend_from_slice(payload);
+            }
+            // The last record contains the end of a fragmented picture OBU.
+            let last = records.len() - payloads.last().unwrap().len() - 4;
+            assert!(av1::assemble(&records[..last]).is_err());
+            let assembled = av1::assemble(&records).unwrap();
+            let format = parse_stream_format(VideoCodec::Av1, &assembled).unwrap();
+            assert_eq!((format.visible_width, format.visible_height), VISIBLE);
+            assert_eq!((format.coded_width, format.coded_height), (1280, 720));
+            assert_eq!(format.chroma_format_idc, chroma);
+            let parameters = av1::parameters(&assembled).unwrap();
+            let transition = pool.prepare(VideoCodec::Av1, Some(format), true, parameters.clone());
+            assert!(transition.replaced);
+            assert_eq!(transition.result, None);
+            let decoder = pool.decoder().unwrap();
+
+            let no_picture = decoder.push_packet(&parameters, 0x1_0000_0001);
+            assert!(
+                no_picture.input_error.is_none(),
+                "{:?}", no_picture.input_error
+            );
+            assert!(no_picture.frames.is_empty());
+            assert!(matches!(
+                no_picture.output_issues.as_slice(),
+                [DecoderOutputIssue::Dropped(0x1_0000_0001)]
+            ));
+            assert!(decoder.poll().frames.is_empty());
+
+            let first = take_picture(decoder.push_packet(&assembled, 0x1_0000_0002), 0x1_0000_0002);
+            let first_hash = first.surface.luma_hash(VISIBLE.0, VISIBLE.1).unwrap();
+            assert_eq!((first.width, first.height), VISIBLE);
+            let rgba = first.surface.rgba(RenderColor::default()).unwrap();
+            assert_eq!(rgba.len(), VISIBLE.0 as usize * VISIBLE.1 as usize * 4);
+            assert_rgba_pixel(&rgba, VISIBLE.0 as usize, 0, 0, first_pixel);
+            assert_rgba_pixel(&rgba, VISIBLE.0 as usize, 639, 359, inner_pixel);
+            assert_rgba_pixel(&rgba, VISIBLE.0 as usize, 1268, 714, last_pixel);
+
+            let picture_obu = av1::units(&assembled)
+                .unwrap()
+                .map(|unit| unit.unwrap())
+                .find(|unit| unit.kind == 6)
+                .expect("fixture has a single frame OBU")
+                .bytes;
+            // Reset must preserve the sequence and visible-size declaration,
+            // even when the next keyframe has only a frame OBU.
+            decoder.reset_for_keyframe().unwrap();
+            let recovered = take_picture(
+                decoder.push_packet(picture_obu, 0x2_0000_0001),
+                0x2_0000_0001,
+            );
+            assert_eq!((recovered.width, recovered.height), VISIBLE);
+            assert_eq!(
+                recovered.surface.luma_hash(VISIBLE.0, VISIBLE.1).unwrap(),
+                first_hash
+            );
+        }
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn software_av1_rejects_multiple_pictures_per_token_and_loses_references_on_reset() {
+        // Two 32x32 black pictures encoded with libaom in low-delay mode:
+        // `-lag-in-frames 0 -g 120 -f obu`. FFprobe reports I then P.
+        const KEY: &[u8] = &[
+            0x12, 0x00, 0x0a, 0x0a, 0x00, 0x00, 0x00, 0x02, 0x27, 0xfe, 0x6d, 0x7c, 0x80, 0x20,
+            0x32, 0x0e, 0x10, 0x00, 0x90, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x3e, 0xfd,
+            0x81, 0xa0,
+        ];
+        const DELTA: &[u8] = &[
+            0x12, 0x00, 0x32, 0x11, 0x30, 0x03, 0xc0, 0x80, 0x00, 0x00, 0x06, 0xc0, 0x00, 0x00,
+            0x02, 0x80, 0x00, 0x20, 0x00, 0x8c, 0x70,
+        ];
+        let mut decoder = NativeVideoDecoder::open(
+            VideoCodec::Av1,
+            32,
+            32,
+            30,
+            DecoderPreference::default(),
+            Bytes::new(),
+        )
+        .unwrap();
+        take_picture(decoder.push_packet(KEY, 1), 1);
+        take_picture(decoder.push_packet(DELTA, 2), 2);
+
+        decoder.reset_for_keyframe().unwrap();
+        let missing_key = decoder.push_packet(DELTA, 0x1_0000_0001);
+        assert!(missing_key.frames.is_empty());
+        assert_eq!(
+            VideoDecodeResult::from_error(&missing_key.input_error.unwrap()),
+            VideoDecodeResult::RequestKeyframe
+        );
+
+        let grouped = decoder.push_packet(&[KEY, DELTA].concat(), 0x1_0000_0002);
+        assert!(grouped.frames.is_empty());
+        assert_eq!(
+            grouped.input_error.unwrap().downcast_ref(),
+            Some(&DecodeError::Unsupported)
+        );
+        take_picture(decoder.push_packet(KEY, 0x1_0000_0003), 0x1_0000_0003);
+        take_picture(decoder.push_packet(DELTA, 0x1_0000_0004), 0x1_0000_0004);
     }
 
     #[test]

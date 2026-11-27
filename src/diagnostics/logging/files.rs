@@ -133,6 +133,17 @@ pub(super) fn open_directory(directory: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+pub(super) fn open_directory(directory: &Path) -> Result<()> {
+    let mut child = std::process::Command::new("xdg-open").arg(directory).spawn()?;
+    std::thread::spawn(move || match child.wait() {
+        Ok(status) if !status.success() => tracing::warn!(%status, "opening folder failed"),
+        Err(error) => tracing::warn!(%error, "waiting for folder opener failed"),
+        _ => {}
+    });
+    Ok(())
+}
+
 // Sync outside the producer and writer locks, at most once per watcher tick.
 // Windows directory enumeration can otherwise show stale size/time until close.
 struct PendingSync {

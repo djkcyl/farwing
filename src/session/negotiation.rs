@@ -99,3 +99,29 @@ fn connect_options(
         e2ee_only: crate::transport::nat::settings::current().e2ee_only,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::features::stream_control::{StreamControlPreferences, StreamQuality, default_settings};
+    use crate::media::{ConnectionMediaOptions, LocalDisplayInfo};
+    use farwing_protocol::session::Quality;
+
+    #[test]
+    fn new_connection_asks_for_profile_quality_or_the_saved_device_override() {
+        let profile = ConnectionMediaOptions {
+            quality: StreamQuality::Clear,
+            ..Default::default()
+        }
+        .resolve(LocalDisplayInfo::FALLBACK)
+        .unwrap();
+        let request = connect_options(&[], profile, None);
+        assert_eq!(request.stream.unwrap().quality, Quality::Standard);
+
+        let mut saved = default_settings(profile);
+        saved.quality = StreamQuality::Original;
+        let preferences = StreamControlPreferences::from_saved(saved, profile);
+        let request = connect_options(&[], profile, Some(preferences));
+        assert_eq!(request.stream.unwrap().quality, Quality::Ultra);
+    }
+}

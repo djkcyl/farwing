@@ -1,12 +1,22 @@
 //! Native Linux device center. Authentication and sessions use the Farwing client stack.
 #[path = "linux/center.rs"]
 mod center;
+#[path = "linux/cli.rs"]
+mod cli;
 #[path = "linux/chat.rs"]
 mod chat;
+#[path = "linux/device_switch.rs"]
+mod device_switch;
 #[path = "linux/joins.rs"]
 mod joins;
 #[path = "linux/login.rs"]
 mod login;
+#[path = "linux/settings.rs"]
+mod settings;
+#[path = "app/updates.rs"]
+mod updates;
+#[path = "viewer_shortcuts.rs"]
+pub(crate) mod viewer_shortcuts;
 #[path = "viewer/linux.rs"]
 pub(crate) mod viewer;
 #[path = "linux/viewers.rs"]
@@ -19,7 +29,7 @@ use crate::account::client::{AuthenticatedClient, NoSavedSession};
 use crate::account::login::{self as account_login, Credentials};
 use crate::account::server::ServerConfig;
 use crate::i18n::t;
-use crate::media::{CodecPreference, ConnectionMediaOptions, FrameRateChoice};
+use crate::media::ConnectionMediaOptions;
 use crate::session::controller::ControllerConnection;
 use crate::ui::{branding, fonts, theme};
 use anyhow::Result;
@@ -38,7 +48,7 @@ struct Arguments {
     #[arg(long)]
     log_level: Option<String>,
     #[command(subcommand)]
-    command: Option<joins::Command>,
+    command: Option<cli::Command>,
 }
 
 pub fn run() -> Result<()> {
@@ -46,10 +56,17 @@ pub fn run() -> Result<()> {
     crate::product::init_profile(args.profile.as_deref())?;
     crate::i18n::init();
     let _logging = crate::diagnostics::logging::init(args.log_level.as_deref(), None)?;
-    let launch = args.command.map(joins::Command::into_request).transpose()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+    let launch = if let Some(command) = args.command {
+        match runtime.block_on(cli::run(command))? {
+            Some(launch) => Some(launch),
+            None => return Ok(()),
+        }
+    } else {
+        None
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1000.0, 680.0])
@@ -66,8 +83,12 @@ pub fn run() -> Result<()> {
             fonts::install(&cc.egui_ctx);
             theme::configure(&cc.egui_ctx);
             let mut center = DeviceCenter::new(runtime.handle().clone(), cc.egui_ctx.clone());
-            if let Some(request) = launch {
-                center.open_join(request);
+            match launch {
+                Some(cli::Launch::Join { request, options }) => center.open_join_media(request, options),
+                Some(cli::Launch::Account { client, device, options }) => {
+                    center.connect_media(client, device, options);
+                }
+                None => {}
             }
             Ok(Box::new(center))
         }),
@@ -81,7 +102,10 @@ pub fn run() -> Result<()> {
 enum Event {
     Account(Result<Option<(Arc<AuthenticatedClient>, DeviceList)>>),
     LoginProgress(account_login::LoginProgress),
+    UpdateServerConfigured,
     Devices(Result<DeviceList>),
+    RefreshDevices,
+    SwitchDevice { source: egui::ViewportId, device_id: String },
     SignedOut(Option<String>),
     Center(Result<center::Update>),
     NoticeCount(Arc<AuthenticatedClient>, Result<u32>),
@@ -93,12 +117,16 @@ struct DeviceCenter {
     sender: mpsc::Sender<Event>,
     events: mpsc::Receiver<Event>,
     sign_in: login::LoginScreen,
+    login_open: bool,
     login_status: Option<&'static str>,
     account: Option<(Arc<AuthenticatedClient>, DeviceList)>,
     center: center::State,
     wallpapers: wallpaper::Wallpapers,
     viewers: viewers::Windows,
     joins: joins::JoinUi,
+    settings: settings::SettingsUi,
+    media: ConnectionMediaOptions,
+    updates: updates::UpdateCheck,
     busy: bool,
     error: Option<String>,
 }
@@ -115,18 +143,27 @@ impl DeviceCenter {
             Ok(None) => (String::new(), String::new(), None),
             Err(error) => (String::new(), String::new(), Some(format!("{error:#}"))),
         };
+        let mut settings = settings::SettingsUi::default();
+        let media = crate::media::preferences::load().unwrap_or_else(|error| {
+            settings.error = Some(format!("{error:#}"));
+            ConnectionMediaOptions::default()
+        });
         let mut state = Self {
+            updates: updates::UpdateCheck::start(&ctx),
             ctx,
             runtime,
             sender,
             events,
             sign_in: login::LoginScreen::new(server, fingerprint),
+            login_open: false,
             login_status: None,
             account: None,
             center: center::State::default(),
             wallpapers: wallpaper::Wallpapers::default(),
             viewers: viewers::Windows::default(),
             joins: joins::JoinUi::default(),
+            settings,
+            media,
             busy: false,
             error,
         };
@@ -151,6 +188,8 @@ impl DeviceCenter {
                 if let Some((config, credentials)) = login {
                     if !ServerConfig::overridden() {
                         config.save()?;
+                        let _ = sender.send(Event::UpdateServerConfigured);
+                        ctx.request_repaint();
                     }
                     account_login::login_with_progress(credentials, |stage| {
                         let _ = sender.send(Event::LoginProgress(stage));
@@ -189,24 +228,20 @@ impl DeviceCenter {
     }
 
     fn connect(&mut self, client: Arc<AuthenticatedClient>, device: DeviceInfo) {
-        self.connect_media(client, device, ConnectionMediaOptions::default());
+        self.connect_media(client, device, self.media);
     }
 
     fn connect_media(
         &mut self,
         client: Arc<AuthenticatedClient>,
         device: DeviceInfo,
-        mut options: ConnectionMediaOptions,
-    ) {
-        options.codec = CodecPreference::H264;
-        if options.frame_rate == FrameRateChoice::Auto {
-            options.frame_rate = FrameRateChoice::Fps30;
-        }
+        options: ConnectionMediaOptions,
+    ) -> egui::ViewportId {
         let target = device.device_id.clone();
         self.viewers.open(
             &self.ctx,
             &self.runtime,
-            Some(&target),
+            Some((&target, Arc::clone(&client))),
             device.alias.clone(),
             move |cancel, progress, recovering, visit, record| {
                 let (client, mut device) = (client.clone(), device.clone());
@@ -238,24 +273,26 @@ impl DeviceCenter {
                     Ok((connection, alias))
                 }
             },
-        );
+        )
     }
 
     fn show_join(&mut self, ui: &mut egui::Ui) {
-        match self.joins.show(
-            ui,
-            &self.runtime,
-            self.account.is_some(),
-            self.sign_in.server(),
-            self.sign_in.fingerprint(),
-        ) {
-            Some(Ok(request)) => self.open_join(request),
-            Some(Err(error)) => self.show_error(error),
+        match self.joins.show(ui, &self.runtime, self.account.as_ref().map(|(_, devices)| devices)) {
+            Some(joins::JoinAction::Account(device)) => {
+                if let Some((client, _)) = &self.account {
+                    self.connect(Arc::clone(client), device);
+                }
+            }
+            Some(joins::JoinAction::Join(request)) => self.open_join(request),
             None => {}
         }
     }
 
     fn open_join(&mut self, request: joins::JoinRequest) {
+        self.open_join_media(request, self.media);
+    }
+
+    fn open_join_media(&mut self, request: joins::JoinRequest, options: ConnectionMediaOptions) {
         let client = self.account.as_ref().map(|(client, _)| Arc::clone(client));
         self.viewers.open(
             &self.ctx,
@@ -268,11 +305,7 @@ impl DeviceCenter {
                     request
                         .connect(
                             client,
-                            ConnectionMediaOptions {
-                                codec: CodecPreference::H264,
-                                frame_rate: FrameRateChoice::Fps30,
-                                ..Default::default()
-                            },
+                            options,
                             &visit,
                             &record,
                             Some(&progress),
@@ -304,17 +337,24 @@ impl DeviceCenter {
 impl eframe::App for DeviceCenter {
     fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.wallpapers.poll(&self.ctx);
+        self.updates.poll();
         while let Ok(event) = self.events.try_recv() {
             match event {
                 Event::Account(result) => {
                     self.busy = false;
                     self.login_status = None;
+                    self.finish_account_check(&result);
                     match result {
-                        Ok(Some(account)) => self.account = Some(account),
+                        Ok(Some(account)) => {
+                            self.login_open = false;
+                            self.start_chat(&account.0);
+                            self.account = Some(account);
+                        }
                         Ok(None) => {}
                         Err(error) => self.show_error(error),
                     }
                 }
+                Event::UpdateServerConfigured => self.updates.recheck_source(&self.ctx),
                 Event::LoginProgress(stage) => {
                     use account_login::LoginProgress::*;
                     self.login_status = Some(match stage {
@@ -326,6 +366,7 @@ impl eframe::App for DeviceCenter {
                 }
                 Event::Devices(result) => {
                     self.busy = false;
+                    self.finish_server_check(result.is_ok());
                     match result {
                         Ok(devices) => {
                             if let Some((_, list)) = &mut self.account {
@@ -333,6 +374,20 @@ impl eframe::App for DeviceCenter {
                             }
                         }
                         Err(error) => self.show_error(error),
+                    }
+                }
+                Event::RefreshDevices => {
+                    if !self.busy && let Some((client, _)) = &self.account {
+                        self.refresh(Arc::clone(client));
+                    }
+                }
+                Event::SwitchDevice { source, device_id } => {
+                    if self.viewers.contains(source)
+                        && let Some((client, list)) = &self.account
+                        && let Ok(device) = list.with_capability(&device_id, farwing_protocol::caps::VIEW)
+                    {
+                        let target = self.connect_media(Arc::clone(client), device.clone(), self.media);
+                        self.viewers.switch_when_ready(source, target);
                     }
                 }
                 Event::SignedOut(error) => {
@@ -362,21 +417,18 @@ impl eframe::App for DeviceCenter {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if self.account.is_some() {
-            self.devices_page(ui);
+        if self.login_open {
+            self.login_page(ui);
         } else {
-            egui::Panel::bottom("linux-guest-actions")
-                .resizable(false)
-                .show(ui, |ui| self.show_join(ui));
-            if let Some(result) = self.sign_in.show(ui, self.login_status, &mut self.error) {
-                match result {
-                    Ok(login) => self.account(Some(login)),
-                    Err(error) => self.show_error(error),
-                }
-            }
+            self.devices_page(ui);
         }
         self.show_center_tools(ui.ctx());
-        self.viewers.show(ui.ctx());
+        self.viewers.show(
+            ui.ctx(),
+            self.account.as_ref().map(|(_, devices)| devices),
+            &self.sender,
+            self.busy,
+        );
         crate::ui::controls::show_notices(ui.ctx());
     }
 }

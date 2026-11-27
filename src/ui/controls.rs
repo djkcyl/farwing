@@ -43,7 +43,6 @@ pub(crate) use performance::{
     PerformanceTrace, metric_pair, metric_pair_colored, performance_frame, performance_header,
     performance_trace,
 };
-#[cfg(windows)]
 pub(crate) use updates::update_actions;
 pub(crate) use viewer_caption::{ViewerCaptionIcon, viewer_caption_button};
 pub(crate) use viewer_caption::{viewer_fullscreen_handle, viewer_participants_button};

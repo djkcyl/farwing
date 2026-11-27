@@ -9,7 +9,6 @@ mod present_queue;
 use crate::diagnostics::performance::{PerformanceMonitor, RenderedFrameTiming};
 use crate::features::stream_control::{RemoteScreen, StreamControlHandle};
 use crate::i18n::t;
-use crate::media::video_color::ColorMatrix;
 use crate::media::{ConnectionMediaProfile, VideoCodec};
 use crate::transport::rtc::{EncodedVideoFrame, VideoFrameSink, VideoTrackSource};
 use crate::ui::{branding, theme};
@@ -73,6 +72,7 @@ impl VideoPicture {
     ) -> Result<Self> {
         let codec = match track.metadata.codec.to_ascii_lowercase().as_str() {
             "video/h264" => VideoCodec::H264,
+            "video/av1" => VideoCodec::Av1,
             value => anyhow::bail!((t().viewer.unsupported_video_codec)(value)),
         };
         let performance = track.performance.clone();
@@ -294,32 +294,7 @@ impl Drop for VideoPicture {
 
 fn image(frame: &DecodedVideoFrame) -> Result<ColorImage> {
     let (width, height) = frame.surface.size();
-    let (y, uv) = frame.surface.planes();
-    let input = yuv::YuvBiPlanarImage {
-        y_plane: y,
-        y_stride: width,
-        uv_plane: uv,
-        uv_stride: width,
-        width,
-        height,
-    };
-    let mut pixels = vec![0; width as usize * height as usize * 4];
-    yuv::yuv_nv12_to_rgba(
-        &input,
-        &mut pixels,
-        width * 4,
-        if frame.color.full_range {
-            yuv::YuvRange::Full
-        } else {
-            yuv::YuvRange::Limited
-        },
-        match frame.color.matrix {
-            ColorMatrix::Bt601 => yuv::YuvStandardMatrix::Bt601,
-            ColorMatrix::Bt709 => yuv::YuvStandardMatrix::Bt709,
-            ColorMatrix::Bt2020 => yuv::YuvStandardMatrix::Bt2020,
-        },
-        yuv::YuvConversionMode::Balanced,
-    )?;
+    let pixels = frame.surface.rgba(frame.color)?;
     Ok(ColorImage::from_rgba_unmultiplied(
         [width as usize, height as usize],
         &pixels,

@@ -82,20 +82,7 @@ impl Progress {
 
 pub(crate) fn open_folder(path: &Path) -> Result<()> {
     let parent = path.parent().context(crate::i18n::t().session.diag_path_invalid)?;
-    #[cfg(windows)]
-    return logging::open_folder(parent);
-    #[cfg(target_os = "linux")]
-    {
-        let mut child = std::process::Command::new("xdg-open").arg(parent).spawn()?;
-        std::thread::spawn(move || match child.wait() {
-            Ok(status) if !status.success() => {
-                tracing::warn!(%status, "opening diagnostic folder failed")
-            }
-            Err(error) => tracing::warn!(%error, "waiting for diagnostic folder opener failed"),
-            _ => {}
-        });
-        Ok(())
-    }
+    logging::open_folder(parent)
 }
 
 pub(crate) fn output_directory() -> Result<PathBuf> {

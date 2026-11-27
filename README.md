@@ -77,9 +77,11 @@ cargo build --locked --release --bin Farwing
 ./target/release/Farwing
 ```
 
-运行时需要 X11 或 Wayland 桌面、OpenGL 和桌面的 Secret Service（如 GNOME Keyring 或启用 Secret Service 的 KWallet）；中文设备名也需要系统安装 CJK 字体。填写同版本的 Farwing Server 地址，使用自签证书时输入核对过的 SHA-256 指纹。登录后从设备列表选择在线的 Farwing 被控端。
+桌面界面需要 X11 或 Wayland、OpenGL；账号和设备身份使用系统的 Secret Service（如 GNOME Keyring 或启用 Secret Service 的 KWallet）。中文设备名需要系统安装 CJK 字体。账号连接使用同版本的 Farwing Server，自签证书需核对 SHA-256 指纹。也可以从未登录的设备中心使用短号协助、地址直连或局域网配对。
 
-预览版面向账号设备的桌面观看与基础键鼠控制，使用 H.264 8 位 4:2:0 软件解码，最高协商到 1080p。Linux 被控、硬解、虚拟屏、剪贴板及文件传输尚未移植。
+命令行用 `./target/release/Farwing --help` 查看。`server probe <地址>` 查看服务器证书，`server set <地址> --pin <指纹>` 保存自签服务器，`login --username <用户名>` 登录，`devices` 列出设备，`connect --device-id <设备ID>` 打开观看窗口。
+
+Linux 主控支持桌面和声音、键鼠、串流设置及多屏观看。x86-64 提供 H.264 / AV1 的 8-bit 4:2:0 或 4:4:4 软件解码，最高协商到 1080p。Linux 被控、硬解、HDR、系统剪贴板和远程文件传输待移植。
 
 服务端是独立的 Cargo 工作区，构建方法见 [server/README.md](server/README.md)。
 

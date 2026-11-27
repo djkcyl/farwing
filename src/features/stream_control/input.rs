@@ -95,7 +95,7 @@ impl StreamControlHandle {
             if mode == MouseMode::View { MouseMode::Smart } else { mode }
         };
         #[cfg(target_os = "linux")]
-        let mode = MouseMode::Remote;
+        let mode = MouseMode::Local;
         self.change_mouse_mode(mode, true, true)
     }
 
