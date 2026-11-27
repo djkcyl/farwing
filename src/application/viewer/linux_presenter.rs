@@ -398,7 +398,9 @@ impl ConnectingWindowsRunner {
         let (requests, request_rx) = std_mpsc::channel();
         Self {
             attributes: WindowAttributes::default()
-                .with_visible(false)
+                // macOS 的 CAMetalLayer 不给不可见窗口发 drawable，等首帧再显示会死锁，
+// 见 ui/windows.rs 的控制中心窗口。
+.with_visible(!cfg!(target_os = "macos"))
                 .with_title(format!("{}{}", crate::VIEWER_TITLE_PREFIX, config.alias))
                 .with_window_icon(Some(crate::ui::branding::window_icon()))
                 .with_decorations(false)
@@ -859,7 +861,7 @@ impl ConnectingWindowsRunner {
             .map_or_else(String::new, |screen| screen.label(&catalog));
 
         let attributes = WindowAttributes::default()
-            .with_visible(false)
+            .with_visible(!cfg!(target_os = "macos"))
             .with_title(format!("{}{}", crate::VIEWER_TITLE_PREFIX, self.alias))
             .with_window_icon(Some(crate::ui::branding::window_icon()))
             .with_decorations(false)
