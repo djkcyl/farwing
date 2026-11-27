@@ -2,8 +2,8 @@ fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let windows = target_os == "windows";
     assert!(
-        windows || target_os == "linux",
-        "OpenUUYC supports Windows and Linux; {target_os} has no platform backend"
+        windows || target_os == "linux" || target_os == "macos",
+        "OpenUUYC supports Windows, Linux and macOS; {target_os} has no platform backend"
     );
     if windows {
         println!("cargo:rerun-if-changed=assets/windows.rc");
@@ -98,6 +98,21 @@ fn build_fonts() {
 }
 
 fn build_neteq(windows: bool) {
+    // Crossing into macOS from another host has no Apple SDK to compile the
+    // C++ with, so a `cargo check --target *-apple-darwin` from Linux would
+    // die in this script before reaching any Rust. Checking needs no native
+    // library (nothing links); a real macOS build always has a macOS host.
+    let host = std::env::var("HOST").unwrap_or_default();
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let macos_cross = target.contains("apple-darwin") && !host.contains("apple-darwin");
+    if macos_cross {
+        println!(
+            "cargo:warning=skipping the native NetEq library: no Apple SDK on a {host} host, \
+             this build can check but not link"
+        );
+        return;
+    }
+    let macos = target == "macos";
     let root = std::path::Path::new("vendor/webrtc_neteq");
     println!("cargo:rerun-if-changed=vendor/webrtc_neteq");
     println!("cargo:rerun-if-changed=src/media/audio/neteq_bridge.cc");
@@ -119,6 +134,8 @@ fn build_neteq(windows: bool) {
                 .define("WEBRTC_WIN", None)
                 .define("NOMINMAX", None)
                 .define("WIN32_LEAN_AND_MEAN", None);
+        } else if macos {
+            build.define("WEBRTC_POSIX", None).define("WEBRTC_MAC", None);
         } else {
             build
                 .define("WEBRTC_POSIX", None)
@@ -146,6 +163,8 @@ fn build_neteq(windows: bool) {
     if windows {
         println!("cargo:rustc-link-lib=winmm");
         println!("cargo:rustc-link-lib=ws2_32");
+    } else if macos {
+        println!("cargo:rustc-link-lib=c++");
     } else {
         println!("cargo:rustc-link-lib=stdc++");
     }

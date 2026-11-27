@@ -72,8 +72,6 @@ egui = { version = "0.36.1", default-features = false, features = ["bytemuck"] }
 flate2 = "1.1.10"
 futures-util = "0.3.34"
 goog_cc = { path = "vendor/goog_cc" }
-# NVENC hardware encoding for the host role (driver library loaded at run time).
-openuuyc-nvenc-sys = { path = "vendor/nvenc-sys" }
 hmac = "0.12.1"
 hyper = { version = "1.11.1", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "tiff"] }
@@ -194,6 +192,11 @@ windows = { version = "0.62.2", default-features = false, features = [
     "Win32_UI_Accessibility",
 ] }
 
+# NVENC hardware encoding for the host role, on the two OSes NVIDIA's driver
+# library ships for (loaded at run time).
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+openuuyc-nvenc-sys = { path = "vendor/nvenc-sys" }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 glow = "0.17.0"
 # Local display geometry for the viewer, on X11 and Wayland alike.
@@ -247,11 +250,16 @@ pollster = "0.4"
 # cpal::default_host() picks it when the server is there, ALSA otherwise.
 cpal = { version = "0.18.2", features = ["pulseaudio"] }
 
-# Only the host terminal exists on macOS so far. It needs no driver, no
-# display server and no encoder — a pty is the whole requirement — so libc
-# is the entire dependency set until the rest of the platform lands.
+# The macOS viewer rides the same winit + egui-wgpu shell as the Linux one,
+# on Metal instead of Vulkan. cpal (CoreAudio) and egui-winit come from the
+# platform-independent section above. Host-side capture/encode has no macOS
+# backend yet.
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+egui-wgpu = { version = "0.36.1", default-features = false }
+wgpu = { version = "30.0", default-features = false, features = ["metal", "wgsl"] }
+arboard = { version = "3.6.1", default-features = false, features = ["image-data"] }
+pollster = "0.4"
 
 [patch.crates-io]
 dtls = { path = "vendor/dtls" }

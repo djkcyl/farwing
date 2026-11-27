@@ -211,5 +211,8 @@ pub(crate) struct FrameTiming {
     pub encode_finished: std::time::Instant,
 }
 
+// NVENC ships a driver library for Windows and Linux only; the macOS viewer
+// has no host encoder to bind it to.
+#[cfg(any(windows, target_os = "linux"))]
 pub(crate) mod nvenc;
 pub(crate) mod rate;
