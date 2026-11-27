@@ -46,7 +46,7 @@ pub(crate) struct Toast {
 pub(crate) struct Native;
 impl Native {
     pub fn new() -> Result<Self> {
-        bail_native()
+        bail_native().map(|()| Self)
     }
     pub fn synchronize(&mut self, _items: &[Toast]) -> Result<()> {
         bail_native()

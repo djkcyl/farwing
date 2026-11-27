@@ -21,7 +21,8 @@ pub(crate) struct Hardware {
 
 pub(crate) fn computer_name() -> Result<String> {
     let mut buffer = [0u8; 256];
-    let ok = unsafe { libc::gethostname(buffer.as_mut_ptr(), buffer.len()) } == 0;
+    // macOS's gethostname takes char* (signed) where Linux's takes void*.
+    let ok = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) } == 0;
     ensure!(ok, "系统未提供主机名");
     let name = buffer
         .split(|b| *b == 0)
@@ -67,7 +68,11 @@ impl Hardware {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct WallpaperSource;
+pub(crate) struct WallpaperSource {
+    pub path: std::path::PathBuf,
+    pub modified: std::time::SystemTime,
+    pub length: u64,
+}
 impl WallpaperSource {
     pub(crate) fn cached(&self) -> bool {
         false

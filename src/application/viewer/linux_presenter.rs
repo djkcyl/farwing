@@ -36,6 +36,12 @@ use super::{
     PerformancePanelMode, StreamControlUi, ViewerDisplayHandle, ViewerWindowEvent,
     configure_viewer_visuals, mutex_lock, show_stream_control_window, take_next_frame,
 };
+// The Linux-only helpers behind these names are swapped for inert macOS
+// stand-ins in viewer/mod.rs; the presenter itself is shared.
+#[cfg(target_os = "linux")]
+use super::{linux_drag as drag, linux_gamepad as gamepad, linux_shortcuts as shortcuts};
+#[cfg(target_os = "macos")]
+use super::{drag_macos as drag, gamepad_macos as gamepad, shortcuts_macos as shortcuts};
 
 pub(super) use crate::application::viewer_shortcuts::Action as ViewerShortcut;
 
@@ -277,6 +283,7 @@ impl Shell {
                         )?;
                         true
                     }
+                    #[cfg(target_os = "linux")]
                     RenderSurface::Dmabuf {
                         frame: dmabuf,
                         color,
@@ -1690,7 +1697,7 @@ struct Player {
     wake: Option<FrameWakeBridge>,
     /// Identifies this window to `RemoteInput`, which arbitrates between windows.
     owner: u64,
-    gamepad: super::linux_gamepad::GamepadCapture,
+    gamepad: gamepad::GamepadCapture,
     stream_control_ui: StreamControlUi,
     performance_mode: PerformancePanelMode,
     intercept_shortcuts: bool,
@@ -1740,11 +1747,12 @@ struct Player {
     hidden_since: Option<Instant>,
     /// Holds the compositor's own shortcuts back while this window has the
     /// keyboard, so the keys the remote desktop wants arrive here instead.
-    shortcuts: Option<super::linux_shortcuts::Shortcuts>,
+    shortcuts: Option<shortcuts::Shortcuts>,
     /// Files dropped on the window, and drags carried out of it.
-    drag: super::linux_drag::WindowDrag,
+    drag: drag::WindowDrag,
     /// 拖放借用的第二条 Wayland 通道（serial 与拖动落点都只有它给得了）。
-    /// X11 会话里没有，拖放退回 winit + X 服务器那套。
+    /// X11 会话里没有，拖放退回 winit + X 服务器那套；macOS 同样没有。
+    #[cfg(target_os = "linux")]
     linked: Option<Arc<crate::platform::linux::drag_drop::linked::Linked>>,
     /// Mouse mode of the previous frame, to notice control being dropped.
     last_mouse_mode: MouseMode,
@@ -1781,6 +1789,7 @@ impl Player {
         let wake = FrameWakeBridge::install(&session, proxy.clone(), window_id)?;
         // 挂在 winit 的 display 上的第二个客户端。进程里只建一次，之后的窗口
         // 只是在它那儿登记一下自己那块 surface。
+        #[cfg(target_os = "linux")]
         let linked = match crate::platform::linux::drag_drop::linked::Linked::attach(window) {
             Ok(linked) => {
                 if let Err(error) = linked.watch(window) {
@@ -1793,15 +1802,18 @@ impl Player {
                 None
             }
         };
-        let drag =
-            super::linux_drag::WindowDrag::new(owner, &session.stream_control, linked.clone());
-        let gamepad = super::linux_gamepad::GamepadCapture::new(
+        #[cfg(target_os = "linux")]
+        let drag = drag::WindowDrag::new(owner, &session.stream_control, linked.clone());
+        #[cfg(target_os = "macos")]
+        let drag = drag::WindowDrag::new(owner, &session.stream_control);
+        let gamepad = gamepad::GamepadCapture::new(
             session.stream_control.mouse().clone(),
             owner,
         );
         Ok(Self {
-            shortcuts: super::linux_shortcuts::Shortcuts::new(window),
+            shortcuts: shortcuts::Shortcuts::new(window),
             drag,
+            #[cfg(target_os = "linux")]
             linked,
             _shortcuts: crate::application::viewer_shortcuts::Watcher::new()?,
             session,
@@ -3870,6 +3882,7 @@ mod input_tests {
 impl Player {
     /// 把拖放通道上已经读到的事件分发给它自己的队列。
     pub(super) fn pump_drag(&self) {
+        #[cfg(target_os = "linux")]
         if let Some(linked) = &self.linked {
             linked.pump();
         }
@@ -3879,6 +3892,7 @@ impl Player {
 impl Drop for Player {
     fn drop(&mut self) {
         self.gamepad.pause();
+        #[cfg(target_os = "linux")]
         if let Some(linked) = &self.linked {
             linked.unwatch(self.owner);
         }

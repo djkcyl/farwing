@@ -47,7 +47,7 @@ pub(crate) enum DecodedSurface {
     CpuI444(Bytes),
 
     /// A dmabuf the renderer imports instead of copying through the CPU.
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     Dmabuf(crate::platform::linux::dmabuf::DmabufFrame),
 
     D3D11(windows_surface::D3D11Surface),
@@ -70,7 +70,7 @@ pub(crate) enum RenderSurface {
     },
 
     /// A dmabuf-backed NV12 picture; the renderer imports the planes directly.
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     Dmabuf {
         frame: crate::platform::linux::dmabuf::DmabufFrame,
         color: RenderColor,
@@ -108,7 +108,7 @@ impl DecodedSurface {
             }
 
             // Already in the renderer's format: the shader samples it as NV12.
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             Self::Dmabuf(frame) => Ok(RenderSurface::Dmabuf { frame, color }),
 
             Self::D3D11(surface) => Ok(RenderSurface::D3D11(surface)),
@@ -533,7 +533,7 @@ fn poll_platform_decoder(
                     _ => Err(anyhow!("GPU decoder output has no owning device")),
                 },
             ),
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             PlatformDecodedFrame::Dmabuf(frame) => {
                 let surface = Ok(DecodedSurface::Dmabuf(frame.frame));
                 (frame.pts, frame.width, frame.height, surface)

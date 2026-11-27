@@ -6,8 +6,11 @@ mod formats;
 mod fuse;
 #[cfg(windows)]
 mod native;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 #[path = "native_linux.rs"]
+mod native;
+#[cfg(target_os = "macos")]
+#[path = "native_macos.rs"]
 mod native;
 mod protocol;
 #[cfg(target_os = "linux")]

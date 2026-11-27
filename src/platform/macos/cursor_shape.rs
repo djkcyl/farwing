@@ -20,6 +20,7 @@ pub(crate) struct Shape {
 }
 
 /// The cursor image the protocol carries, PNG-encoded.
+#[derive(Clone, PartialEq)]
 pub(crate) struct Image {
     pub width: u32,
     pub height: u32,
@@ -29,6 +30,7 @@ pub(crate) struct Image {
 }
 
 /// One point-in-time cursor state.
+#[derive(Clone)]
 pub(crate) struct Snapshot {
     pub showing: bool,
     pub x: i32,

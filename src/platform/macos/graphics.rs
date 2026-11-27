@@ -86,7 +86,7 @@ pub(crate) fn create_device(event_loop: &ActiveEventLoop, window: &Window) -> Re
 fn create_graphics(event_loop: &ActiveEventLoop, window: &Window) -> Result<Graphics> {
     // Metal is the only backend this build links; the default instance
     // descriptor already carries sane validation flags.
-    let mut desc = wgpu::InstanceDescriptor::default();
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
     desc.backends = wgpu::Backends::METAL;
     let instance = wgpu::Instance::new(desc);
     let probe = instance

@@ -60,7 +60,7 @@ fn birth(pid: u32) -> Result<Option<u64>> {
         _layout: [u8; 640],
     }
     let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid as i32];
-    let mut info = std::mem::zeroed::<KInfoProc>();
+    let mut info = unsafe { std::mem::zeroed::<KInfoProc>() };
     let mut size = std::mem::size_of::<KInfoProc>();
     let result = unsafe {
         libc::sysctl(

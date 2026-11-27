@@ -33,7 +33,7 @@ pub(crate) enum VirtualProvider {
     Uu,
     OpenUuyc,
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Target {
     pub identity: String,
     pub name: String,

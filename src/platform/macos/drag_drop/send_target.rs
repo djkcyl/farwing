@@ -27,6 +27,7 @@ pub(crate) struct Action {
     pub sequence: u64,
     pub kind: ActionKind,
 }
+#[derive(Clone)]
 pub(crate) enum ActionKind {
     Add(Vec<PathBuf>),
     Remove(u64),

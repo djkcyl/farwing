@@ -34,7 +34,7 @@ mod touch;
 #[cfg(windows)]
 mod windows_cursor;
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 mod linux_drag;
 #[cfg(target_os = "linux")]
 mod linux_gamepad;
@@ -42,8 +42,16 @@ mod linux_gamepad;
 pub(crate) mod linux_keyboard;
 #[cfg(not(windows))]
 mod linux_keyboard_grab;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 mod linux_shortcuts;
+// The macOS presenter is the Linux one on winit; these stand in for the
+// Linux-only capture and inhibition helpers it drives.
+#[cfg(target_os = "macos")]
+mod drag_macos;
+#[cfg(target_os = "macos")]
+mod gamepad_macos;
+#[cfg(target_os = "macos")]
+mod shortcuts_macos;
 #[cfg(windows)]
 mod windows_keyboard;
 

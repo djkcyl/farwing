@@ -120,6 +120,7 @@ pub(crate) mod portal {
 
 /// The retained original gesture of a drag the peer placed; never exists.
 pub(crate) mod original {
+    #[derive(Clone, Copy)]
     pub(crate) enum Original {}
     impl Original {
         pub fn live(&self) -> bool {

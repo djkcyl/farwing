@@ -9,11 +9,17 @@ mod tray;
 #[cfg(target_os = "linux")]
 #[path = "tray_linux.rs"]
 mod tray;
+#[cfg(target_os = "macos")]
+#[path = "tray_macos.rs"]
+mod tray;
 
 /// 已有实例的唤起通道。Windows 用注册窗口消息（见 instance.rs），其余平台没有
 /// 对应的窗口属性，Linux 用 unix socket。
 #[cfg(target_os = "linux")]
 #[path = "control_linux.rs"]
+pub(crate) mod control;
+#[cfg(target_os = "macos")]
+#[path = "control_macos.rs"]
 pub(crate) mod control;
 
 /// SIGTERM/SIGINT 转成一次正常退出，服务被 `systemctl stop` 时才有收尾。
