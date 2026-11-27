@@ -112,7 +112,8 @@ fn build_neteq(windows: bool) {
         );
         return;
     }
-    let macos = target == "macos";
+    // TARGET is a full triple (aarch64-apple-darwin), not an OS name.
+    let macos = target.contains("apple-darwin");
     let root = std::path::Path::new("vendor/webrtc_neteq");
     println!("cargo:rerun-if-changed=vendor/webrtc_neteq");
     println!("cargo:rerun-if-changed=src/media/audio/neteq_bridge.cc");
