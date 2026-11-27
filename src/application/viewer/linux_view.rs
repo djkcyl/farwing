@@ -184,6 +184,13 @@ impl Screens {
             self.main.select(screen.id, self.streams.control());
         }
 
+        // A pane can start loading on a worker as soon as it is shown.
+        self.streams.set_visible(
+            std::iter::once(self.main.screen)
+                .chain(self.extras.keys().copied())
+                .collect(),
+        );
+
         let mut action = None;
         let close = self
             .main
@@ -247,31 +254,6 @@ impl Screens {
                     }
                 });
             });
-        if let Some((id, open_window)) = action {
-            if let Some(pane) = self.extras.get(&id) {
-                ctx.send_viewport_cmd_to(mutex_lock(pane).viewport, WindowCommand::Focus);
-            } else if open_window {
-                let viewport = ViewportId::from_hash_of((main_id, "display", id));
-                self.extras.insert(
-                    id,
-                    Arc::new(Mutex::new(Pane::new(
-                        self.streams.control(),
-                        &ctx,
-                        viewport,
-                        id,
-                    ))),
-                );
-            } else {
-                self.main.select(id, self.streams.control());
-            }
-            ctx.request_repaint();
-        }
-
-        self.streams.set_visible(
-            std::iter::once(self.main.screen)
-                .chain(self.extras.keys().copied())
-                .collect(),
-        );
         for (id, pane) in &self.extras {
             let pane = Arc::clone(pane);
             let viewport = mutex_lock(&pane).viewport;
@@ -299,6 +281,26 @@ impl Screens {
                 },
             );
         }
+        if let Some((id, open_window)) = action {
+            if let Some(pane) = self.extras.get(&id) {
+                ctx.send_viewport_cmd_to(mutex_lock(pane).viewport, WindowCommand::Focus);
+            } else if open_window {
+                let viewport = ViewportId::from_hash_of((main_id, "display", id));
+                self.extras.insert(
+                    id,
+                    Arc::new(Mutex::new(Pane::new(
+                        self.streams.control(),
+                        &ctx,
+                        viewport,
+                        id,
+                    ))),
+                );
+            } else {
+                self.main.select(id, self.streams.control());
+            }
+            ctx.request_repaint();
+        }
+
         close
     }
 }
