@@ -367,6 +367,12 @@ impl Runner {
             size.y += caption_height;
         }
         let min_inner_size = viewport_builder.min_inner_size;
+        // macOS 的 CAMetalLayer 不给不可见窗口发 drawable：等首帧 present 再
+        // 显示会互相等死（窗口等着 present，drawable 等着窗口可见）。直接可见
+        // 创建，代价只是首帧前的一瞬空底色。
+        #[cfg(target_os = "macos")]
+        let viewport_builder = viewport_builder.with_visible(true).with_decorations(false);
+        #[cfg(not(target_os = "macos"))]
         let viewport_builder = viewport_builder.with_visible(false).with_decorations(false);
         // A window rebuilt for a second start takes that start's token. The
         // first control center window takes the token its launcher left in
@@ -493,7 +499,8 @@ impl Runner {
             next_tray_attempt,
             exiting: false,
             // 重建出来的窗口总是要显示的。
-            show_after_present: restore.is_some() || self.config.viewport.visible.unwrap_or(true),
+            show_after_present: !cfg!(target_os = "macos")
+                && (restore.is_some() || self.config.viewport.visible.unwrap_or(true)),
             focus_after_present: self.config.viewport.active.unwrap_or(true),
             window_move: Default::default(),
             window_resize: Default::default(),
