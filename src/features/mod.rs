@@ -1,10 +1,15 @@
 //! Features ownership and module boundaries.
 
 pub(crate) mod chat;
+#[cfg(windows)]
 pub(crate) mod voice;
+#[cfg(windows)]
 pub(crate) mod clipboard;
+#[cfg(windows)]
 pub(crate) mod drag_drop;
+#[cfg(windows)]
 pub(crate) mod file_transfer;
+#[cfg(windows)]
 pub(crate) mod host;
 pub(crate) mod network_control;
 pub(crate) mod participants;

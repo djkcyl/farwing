@@ -703,7 +703,7 @@ impl NativePeer {
                     };
                     let kind = track.kind();
                     let id = track.id();
-                    if kind == RTPCodecType::Audio && id == crate::features::host::listen::TRACK {
+                    if kind == RTPCodecType::Audio && id == crate::media::audio::HOST_MICROPHONE_TRACK {
                         // Mixed into the playback with the host's sound.
                         match audio.add_voice() {
                             Ok(voice) => {
@@ -889,8 +889,10 @@ impl NativePeer {
 
     pub async fn close(&self) -> Result<()> {
         self.data_channels.stream_control.microphone().close().await;
+        #[cfg(windows)]
         self.data_channels.stream_control.file_transfer().close();
         self.data_channels.stream_control.diagnostics().close();
+        #[cfg(windows)]
         self.data_channels.stream_control.clipboard().suspend();
         self.data_channels.port_mapping.close();
         self.data_channels.stream_control.mouse().close().await;
@@ -904,6 +906,7 @@ impl Drop for NativePeer {
     fn drop(&mut self) {
         self.data_channels.stream_control.microphone().stop();
         self.data_channels.stream_control.diagnostics().close();
+        #[cfg(windows)]
         self.data_channels.stream_control.clipboard().suspend();
         self.data_channels.stream_control.mouse().set_ready(false);
         // Normal paths await close(). This also retires application tasks on

@@ -13,6 +13,7 @@ use anyhow::{Context, Result, bail, ensure};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+#[cfg(windows)]
 use windows::core::PCWSTR;
 
 /// Brand and directory name (`%LOCALAPPDATA%\Farwing`, `Local\Farwing.*`).
@@ -173,6 +174,7 @@ pub fn shortcut_file_name() -> String {
 }
 
 /// `%LOCALAPPDATA%`, validated as an absolute directory.
+#[cfg(windows)]
 pub fn local_app_data() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
@@ -184,8 +186,23 @@ pub fn local_app_data() -> Result<PathBuf> {
         .context(crate::i18n::t().system.local_app_data_unknown)
 }
 
-/// Per-user data root: `%LOCALAPPDATA%\Farwing` for the default profile and
-/// `%LOCALAPPDATA%\Farwing\profiles\<profile>` otherwise.
+/// The XDG data directory for the current desktop user.
+#[cfg(target_os = "linux")]
+pub fn local_app_data() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        return Ok(path);
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .map(|home| home.join(".local/share"))
+        .context(crate::i18n::t().system.local_app_data_unknown)
+}
+
+/// Per-user data root, with non-default profiles under `profiles/<name>`.
 pub fn local_data_dir() -> Result<PathBuf> {
     let base = local_app_data()?.join(PRODUCT_NAME);
     Ok(if is_default_profile() {
@@ -197,12 +214,14 @@ pub fn local_data_dir() -> Result<PathBuf> {
 
 /// Machine scope `%ProgramData%\Farwing`. Owned by the machine-wide service,
 /// so it is only meaningful for the default profile.
+#[cfg(windows)]
 pub fn program_data_dir() -> Result<PathBuf> {
     Ok(known_folder(&windows::Win32::UI::Shell::FOLDERID_ProgramData)
         .context(crate::i18n::t().system.program_data_unknown)?
         .join(PRODUCT_NAME))
 }
 
+#[cfg(windows)]
 fn known_folder(id: &windows::core::GUID) -> Result<PathBuf> {
     use windows::Win32::{
         System::Com::CoTaskMemFree,
@@ -286,10 +305,12 @@ pub fn instance_atom(suffix: &str) -> String {
 /// static CLASS: WideName = WideName::new(|| product::local_object("Example.v1"));
 /// unsafe { CreateMutexW(None, false, CLASS.pcwstr()) };
 /// ```
+#[cfg(windows)]
 pub struct WideName {
     make: fn() -> String,
     cell: OnceLock<Vec<u16>>,
 }
+#[cfg(windows)]
 impl WideName {
     pub const fn new(make: fn() -> String) -> Self {
         Self {
@@ -308,6 +329,7 @@ impl WideName {
 }
 
 /// Null-terminated UTF-16 copy of `text` for a single Win32 call.
+#[cfg(windows)]
 pub fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
 }

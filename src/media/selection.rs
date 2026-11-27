@@ -1,5 +1,7 @@
 //! Local implementation preferences. Capabilities and hard limits remain separate.
 use serde::{Deserialize, Serialize};
+
+#[cfg(windows)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn candidate_rank(
     size: (u32, u32),
@@ -99,10 +101,12 @@ impl DecoderPreference {
     }
 }
 
+#[cfg(windows)]
 pub(crate) fn resolve_gpu(id: Option<GpuId>) -> Option<u64> {
     let id = id?;
     resolve_gpu_from(id, &crate::platform::capture::encoding_adapters().ok()?)
 }
+#[cfg(windows)]
 pub(crate) fn resolve_gpu_from(
     id: GpuId,
     adapters: &[crate::platform::capture::EncodingAdapter],

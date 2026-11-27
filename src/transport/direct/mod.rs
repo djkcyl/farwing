@@ -8,8 +8,10 @@
 //! devices, the account's device list and the pairing code.
 
 pub(crate) mod client;
+#[cfg(windows)]
 pub(crate) mod host;
 pub(crate) mod lan;
+#[cfg(windows)]
 pub(crate) mod managed;
 pub(crate) mod store;
 
@@ -69,7 +71,7 @@ pub(crate) fn device_name(native: &crate::account::auth::NativeIdentity) -> Stri
     native
         .device_name()
         .map(str::to_owned)
-        .or_else(|| crate::platform::windows::device_profile::computer_name().ok())
+        .or_else(|| crate::platform::device_profile::computer_name().ok())
         .unwrap_or_else(|| native.suggested_name())
 }
 
@@ -113,6 +115,7 @@ impl Target {
                 None if tail.is_empty() => default,
                 None => bail!("{}", t().session.ipv6_address_format),
             };
+            ensure!(port != 0, "{}", t().session.port_invalid);
             return Ok(Self {
                 host: host.to_owned(),
                 port,
@@ -307,7 +310,10 @@ pub(crate) fn hello(
         device_id: local.identity.device_id.clone(),
         public_key: local.identity.public_key(),
         name: local.name.clone(),
+        #[cfg(windows)]
         platform: farwing_protocol::Platform::Windows,
+        #[cfg(target_os = "linux")]
+        platform: farwing_protocol::Platform::Linux,
         version: env!("CARGO_PKG_VERSION").to_owned(),
         proof: local
             .identity
@@ -412,6 +418,7 @@ mod tests {
         assert!(Target::parse("http://x").is_err());
         assert!(Target::parse("a b").is_err());
         assert!(Target::parse("host:0").is_err());
+        assert!(Target::parse("[::1]:0").is_err());
     }
 
     #[test]

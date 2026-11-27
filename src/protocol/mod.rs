@@ -7,6 +7,7 @@ pub(crate) mod peer;
 pub(crate) mod audio_control;
 
 pub(crate) mod annotation;
+#[cfg(windows)]
 pub(crate) mod drag_drop;
 pub(crate) mod host_event;
 pub(crate) mod participants;
@@ -56,6 +57,7 @@ mod dispatch_tests {
                 matches!(kind, FrameType::Touch | FrameType::Pen),
                 "pointer input claimed {kind:?}"
             );
+            #[cfg(windows)]
             assert_eq!(
                 super::drag_drop::is_packet(&bytes),
                 kind == FrameType::Drag,

@@ -1,16 +1,23 @@
 //! Release checks against the configured Farwing Server's update feed.
 //!
-//! The administrator publishes release metadata in the server configuration;
-//! the check needs no login. Without a configured server or feed there is no
-//! update source and nothing is contacted.
+//! The check reads administrator-published metadata without logging in.
+//! Without a configured server, nothing is contacted.
+use crate::account::server::ServerConfig;
 use crate::i18n::t;
 use anyhow::{Context, Result};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
+#[cfg(target_os = "linux")]
+#[path = "../linux/updates.rs"]
+mod linux;
+#[path = "updates/settings.rs"]
 mod settings;
 
 const RETRY_INTERVAL: Duration = Duration::from_secs(10);
+
+#[cfg(target_os = "linux")]
+type ReleaseSource = std::result::Result<Option<ServerConfig>, String>;
 
 #[derive(Debug)]
 pub(super) enum State {
@@ -39,6 +46,8 @@ pub(super) struct UpdateCheck {
     retry_at: Instant,
     settings: settings::Settings,
     pub settings_error: Option<String>,
+    #[cfg(target_os = "linux")]
+    source: ReleaseSource,
 }
 
 impl UpdateCheck {
@@ -56,6 +65,8 @@ impl UpdateCheck {
             retry_at: Instant::now(),
             settings,
             settings_error,
+            #[cfg(target_os = "linux")]
+            source: Ok(None),
         };
         check.request(ctx);
         check
@@ -74,18 +85,18 @@ impl UpdateCheck {
             self.settings_error = Some(format!("{error:#}"));
             return Err(error);
         }
-        self.change_channel(next);
+        self.settings = next;
+        self.settings_error = None;
+        self.reset();
         self.request(ctx);
         Ok(())
     }
-    fn change_channel(&mut self, next: settings::Settings) {
+    fn reset(&mut self) {
         if let Some(cancel) = self.cancel.take() {
             let _ = cancel.send(());
         }
         // Drop the old mailbox before a replacement can publish its result.
         self.pending = None;
-        self.settings = next;
-        self.settings_error = None;
         self.dialog_open = false;
         self.notified_version = None;
         self.state = State::Checking;
@@ -93,6 +104,29 @@ impl UpdateCheck {
     }
 
     pub fn request(&mut self, ctx: &egui::Context) {
+        #[cfg(target_os = "linux")]
+        self.change_source(configured_source());
+        self.request_current(ctx);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn recheck_source(&mut self, ctx: &egui::Context) {
+        if self.change_source(configured_source()) {
+            self.request_current(ctx);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn change_source(&mut self, source: ReleaseSource) -> bool {
+        if self.source == source {
+            return false;
+        }
+        self.reset();
+        self.source = source;
+        true
+    }
+
+    fn request_current(&mut self, ctx: &egui::Context) {
         if self.pending.is_some() || Instant::now() < self.retry_at {
             return;
         }
@@ -101,6 +135,8 @@ impl UpdateCheck {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let ctx = ctx.clone();
         let allow_prerelease = self.allow_prerelease();
+        #[cfg(target_os = "linux")]
+        let source = self.source.clone();
         let worker = std::thread::Builder::new()
             .name("release-check".into())
             .spawn(move || {
@@ -110,11 +146,18 @@ impl UpdateCheck {
                 {
                     Ok(runtime) => {
                         let result = runtime.block_on(async {
+                            let check = async {
+                                #[cfg(windows)]
+                                let source = ServerConfig::load()?;
+                                #[cfg(target_os = "linux")]
+                                let source = source.map_err(anyhow::Error::msg)?;
+                                latest(source, allow_prerelease).await
+                            };
                             tokio::select! {
                                 biased;
                                 _ = cancel_rx => None,
-                                result = tokio::time::timeout(Duration::from_secs(25), latest(allow_prerelease)) =>
-                                    Some(result.context(t().app.update_check_timeout).and_then(|r|r)),
+                                result = tokio::time::timeout(Duration::from_secs(25), check) =>
+                                    Some(result.context(t().app.update_check_timeout).and_then(|r| r)),
                             }
                         });
                         runtime.shutdown_background();
@@ -201,8 +244,13 @@ fn out_of_reach(error: &anyhow::Error) -> bool {
     })
 }
 
-async fn latest(allow_prerelease: bool) -> Result<State> {
-    let Some(server) = crate::account::server::ServerConfig::load()? else {
+#[cfg(target_os = "linux")]
+fn configured_source() -> ReleaseSource {
+    ServerConfig::load().map_err(|error| format!("{error:#}"))
+}
+
+async fn latest(source: Option<ServerConfig>, allow_prerelease: bool) -> Result<State> {
+    let Some(server) = source else {
         return Ok(State::NoRelease);
     };
     let api = crate::account::api::ServerApi::new(&server)?;
@@ -285,5 +333,35 @@ mod tests {
             release_state(release("0.9.0", false), "1.0.0", true).unwrap(),
             State::Ahead
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn switching_release_sources_discards_pending_results() {
+        let old = ServerConfig::new("old.example", None, None).unwrap();
+        let new = ServerConfig::new("new.example", None, None).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (cancel, mut canceled) = oneshot::channel();
+        let mut check = UpdateCheck {
+            state: State::Checking,
+            dialog_open: false,
+            notified_version: None,
+            pending: Some(rx),
+            cancel: Some(cancel),
+            retry_at: Instant::now() + RETRY_INTERVAL,
+            settings: Default::default(),
+            settings_error: None,
+            source: Ok(Some(old.clone())),
+        };
+        tx.send(release_state(release("1.0.1", false), "1.0.0", false))
+            .unwrap();
+
+        assert!(!check.change_source(Ok(Some(old))));
+        assert!(check.change_source(Ok(Some(new))));
+        assert!(matches!(canceled.try_recv(), Ok(())));
+        check.poll();
+
+        assert!(matches!(check.state, State::Checking));
+        assert_eq!(check.retry_wait(), 0);
     }
 }

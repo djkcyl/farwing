@@ -241,9 +241,9 @@ impl DeviceCenterApp {
                             tile: Tile::of(texture.as_ref(), device.platform),
                             status: (!*current).then(|| (status.label(), status.color())),
                             chips: &chips,
-                            grants: None,
+                            extra_badges: None,
                             detail: &detail,
-                            selected: false,
+                            selected: Some(false),
                         },
                         |ui| {
                             details = ui
@@ -301,9 +301,9 @@ fn own_row(
             },
             status: Some((entry.status.label(), entry.status.color())),
             chips: &chips,
-            grants: None,
+            extra_badges: None,
             detail: &detail,
-            selected,
+            selected: Some(selected),
         },
         |ui| {
             if entry.viewing {

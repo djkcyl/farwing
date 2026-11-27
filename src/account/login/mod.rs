@@ -70,6 +70,16 @@ pub async fn interactive_login(
         println!("服务器已设置为 {}", config.origin());
     }
     let server = ServerConfig::require()?;
+    #[cfg(target_os = "linux")]
+    let password_stdin = {
+        use std::io::IsTerminal as _;
+        let terminal = std::io::stdin().is_terminal();
+        anyhow::ensure!(
+            terminal || password_stdin,
+            "Use --password-stdin with redirected input"
+        );
+        !terminal
+    };
     let username = match username {
         Some(username) => username,
         None => prompt("用户名：")?,
@@ -105,6 +115,7 @@ fn prompt(label: &str) -> Result<String> {
 
 /// Read a line without echo on a Windows console; falls back to a plain read
 /// when standard input is redirected.
+#[cfg(windows)]
 fn read_hidden(label: &str) -> Result<String> {
     use std::io::Write as _;
     use windows::Win32::System::Console::{
@@ -127,6 +138,69 @@ fn read_hidden(label: &str) -> Result<String> {
     }
     result.context("读取密码失败")?;
     Ok(line.trim_end_matches(['\r', '\n']).to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn read_hidden(label: &str) -> Result<String> {
+    use std::io::{Read as _, Write as _};
+    use std::os::fd::AsRawFd as _;
+
+    let fd = std::io::stdin().as_raw_fd();
+    let mut original = std::mem::MaybeUninit::<libc::termios>::uninit();
+    // tcgetattr initializes the terminal settings only on success.
+    if unsafe { libc::tcgetattr(fd, original.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("Read terminal settings");
+    }
+    let original = unsafe { original.assume_init() };
+    let mut hidden = original;
+    // Read the terminal's interrupt/quit/suspend keys ourselves so we can
+    // restore echo before returning, including when Ctrl+C is pressed.
+    hidden.c_lflag &= !(libc::ECHO | libc::ECHONL | libc::ICANON | libc::ISIG);
+    hidden.c_cc[libc::VMIN] = 1;
+    hidden.c_cc[libc::VTIME] = 0;
+    // Both tcsetattr calls use our open stdin descriptor and initialized settings.
+    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &hidden) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("Disable terminal echo");
+    }
+    let result = (|| -> Result<String> {
+        {
+            let mut output = std::io::stdout().lock();
+            write!(output, "{label}")?;
+            output.flush()?;
+        }
+        let mut input = std::io::stdin().lock();
+        let mut password = Vec::new();
+        let key = |index, byte| original.c_cc[index] != 0 && original.c_cc[index] == byte;
+        loop {
+            let mut byte = [0];
+            input.read_exact(&mut byte).context("Read password")?;
+            let [byte] = byte;
+            if matches!(byte, b'\n' | b'\r') {
+                break;
+            }
+            if key(libc::VINTR, byte)
+                || key(libc::VQUIT, byte)
+                || key(libc::VSUSP, byte)
+                || key(libc::VEOF, byte)
+            {
+                bail!("Password entry cancelled");
+            }
+            if key(libc::VERASE, byte) {
+                let start = password.iter().rposition(|&byte| byte & 0xc0 != 0x80);
+                password.truncate(start.unwrap_or(0));
+            } else if key(libc::VKILL, byte) {
+                password.clear();
+            } else {
+                password.push(byte);
+            }
+        }
+        String::from_utf8(password).context("Password is not valid UTF-8")
+    })();
+    if unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &original) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("Restore terminal settings");
+    }
+    println!();
+    result
 }
 
 pub async fn login_with_progress<F>(credentials: Credentials, report: F) -> Result<LoginOutcome>

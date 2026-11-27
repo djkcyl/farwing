@@ -26,7 +26,8 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 use transport::{Carrier, Incoming, SignalTransport};
-pub(crate) use transport::{SignalFailure, SocketState, connect_socket, realtime_request};
+pub(crate) use transport::{SignalFailure, SocketState};
+pub(crate) use transport::{connect_socket, realtime_request};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
 const CONTROL_TIMEOUT: Duration =
@@ -37,6 +38,7 @@ const CONTROL_TIMEOUT: Duration =
 const WEBRTC_ANSWER_TIMEOUT: Duration = Duration::from_secs(40);
 /// After the answer, the connection itself.
 const WEBRTC_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
+#[cfg(windows)]
 pub(crate) mod host;
 pub(crate) mod identity;
 pub(crate) mod negotiation;
@@ -58,6 +60,8 @@ pub struct SignalSession {
     /// a host behind a router that forwards them (§12.3).
     dialed: Option<std::net::IpAddr>,
     derived: std::collections::HashSet<(std::net::IpAddr, u16)>,
+    /// A host already authenticated by the assist grant or direct TLS handshake.
+    expected_host: Option<(String, String)>,
     /// Request IDs are unique on the socket: sessions carried by one
     /// presence connection each have their own prefix.
     request_prefix: String,
@@ -235,6 +239,7 @@ impl SignalSession {
             router: None,
             dialed: None,
             derived: Default::default(),
+            expected_host: None,
             request_prefix: "c-".to_owned(),
             visit: String::new(),
         }
@@ -243,6 +248,10 @@ impl SignalSession {
     /// The visit this controller's session belongs to (direct connections).
     pub(crate) fn set_visit(&mut self, visit: &str) {
         visit.clone_into(&mut self.visit);
+    }
+
+    pub(crate) fn expect_host(&mut self, device_id: &str, public_key: &str) {
+        self.expected_host = Some((device_id.to_owned(), public_key.to_owned()));
     }
 
     /// Offer this presence connection to controller sessions of the same
@@ -431,6 +440,13 @@ impl SignalSession {
         );
         crate::account::api::validate_device_id(&started.host.device_id)
             .context("session.start ack did not identify the host")?;
+        anyhow::ensure!(
+            self.expected_host.as_ref().is_none_or(|(device_id, public_key)| {
+                device_id == &started.host.device_id && public_key == &started.host.public_key
+            }),
+            "{}",
+            crate::i18n::t().session.error_entry_identity_changed
+        );
         let binding = identity::Binding {
             local,
             role: identity::Role::Controller,
@@ -754,6 +770,7 @@ impl SignalSession {
     /// Run a host session on this connection until `until` completes or the
     /// connection fails. The host session outlives the connection: direct
     /// participants stay while the server connection is replaced.
+    #[cfg(windows)]
     pub(crate) async fn run_host<F: std::future::Future>(
         &mut self,
         host: &mut host::Session,
@@ -817,12 +834,25 @@ impl SignalSession {
         // A local network change (adapter, address or default route) also
         // restarts ICE once it settles: the old path may be gone, or a better
         // one may exist.
+        #[cfg(windows)]
         let network_changes = std::sync::Arc::new(crate::platform::windows::wol::Changes::default());
+        #[cfg(windows)]
         let _network_watcher = peer
             .is_some()
             .then(|| crate::platform::windows::wol::Watcher::new(network_changes.clone()).ok())
             .flatten();
+        #[cfg(windows)]
+        let network_notification = || network_changes.notify.notified();
+        #[cfg(target_os = "linux")]
+        let network_notification = pending::<()>;
+        #[cfg(windows)]
+        let resumed = || crate::platform::windows::host_lifecycle::RESUMED.notified();
+        #[cfg(target_os = "linux")]
+        let resumed = pending::<()>;
+        #[cfg(windows)]
         let watching_network = _network_watcher.is_some();
+        #[cfg(target_os = "linux")]
+        let watching_network = false;
         let mut network_changed = false;
         let mut network_at = watching_network.then(crate::transport::nat::route::fingerprint);
         // A restart that must happen even on the same default path (after
@@ -831,6 +861,7 @@ impl SignalSession {
         // The restart came due while the signaling socket was down: run it
         // once the socket is back.
         let mut restart_on_reopen = false;
+        #[cfg(windows)]
         if peer.is_some() {
             crate::platform::windows::host_lifecycle::watch_resume();
         }
@@ -1039,12 +1070,12 @@ impl SignalSession {
                         }
                     }
                 }
-                _ = crate::platform::windows::host_lifecycle::RESUMED.notified(), if peer.is_some() => {
+                _ = resumed(), if peer.is_some() => {
                     tracing::info!("system resumed; checking the connection");
                     forced_restart = true;
                     ice_restart_at.get_or_insert(tokio::time::Instant::now() + ICE_RESTART_AFTER);
                 }
-                _ = network_changes.notify.notified(), if watching_network => {
+                _ = network_notification(), if watching_network => {
                     // Checked once the burst of notifications settles.
                     network_changed = true;
                     ice_restart_at.get_or_insert(tokio::time::Instant::now() + ICE_RESTART_AFTER);

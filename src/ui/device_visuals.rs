@@ -1,6 +1,8 @@
-use super::*;
+use super::center_icon::{Icon, paint_icon};
+use super::theme::{BG, MUTED};
+use egui::{Color32, FontId, Stroke, vec2};
 
-pub(super) fn system_icon(p: &egui::Painter, rect: egui::Rect, platform: farwing_protocol::Platform) {
+pub(crate) fn system_icon(p: &egui::Painter, rect: egui::Rect, platform: farwing_protocol::Platform) {
     use farwing_protocol::Platform;
     let r = rect.shrink(rect.width() * 0.12);
     match platform {
@@ -126,7 +128,7 @@ fn wallpaper_uv(
     egui::Rect::from_min_size(egui::pos2(offset.x, offset.y), visible)
 }
 
-pub(super) fn wallpaper(
+pub(crate) fn wallpaper(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     texture: Option<&egui::TextureHandle>,
@@ -166,7 +168,7 @@ pub(super) fn wallpaper(
 
 /// Detail backdrop: the same cover/offset rule for every image.
 /// Fade before the information rows; the content layout never follows image height.
-pub(super) fn detail_wallpaper(
+pub(crate) fn detail_wallpaper(
     bounds: egui::Rect,
     texture: Option<&egui::TextureHandle>,
     fade_start: f32,

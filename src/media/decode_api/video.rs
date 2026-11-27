@@ -2,9 +2,12 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(windows)]
 use crate::media::VideoCodec;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 
+#[cfg(windows)]
 /// Decoder selected by the candidate owner; this layer never falls back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
@@ -16,6 +19,7 @@ pub enum DecoderMode {
     Software,
 }
 
+#[cfg(windows)]
 /// Parameters for opening a video decoder session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoDecoderConfig {
@@ -44,6 +48,7 @@ impl DecoderNotification {
         Self { cancelled }
     }
 
+    #[cfg(windows)]
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -52,6 +57,7 @@ impl DecoderNotification {
         self.cancelled.clone()
     }
 
+    #[cfg(windows)]
     pub(crate) fn cancellation(&self) -> &std::sync::atomic::AtomicBool {
         &self.cancelled
     }

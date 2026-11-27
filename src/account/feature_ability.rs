@@ -33,19 +33,26 @@ impl Feature {
     }
 }
 
-/// Capabilities this Windows build reports at device registration.
+const HOST_CAPABILITIES: &[&str] = &[
+    name::HOST,
+    name::FILES,
+    name::PORTS,
+    name::POWER,
+    name::WAKE_ON_LAN,
+    name::ASSIST,
+];
+
+/// Capabilities this build offers to other devices before a session.
 pub(crate) fn local_capabilities() -> Vec<String> {
-    [
-        name::HOST,
-        name::FILES,
-        name::PORTS,
-        name::POWER,
-        name::WAKE_ON_LAN,
-        name::ASSIST,
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect()
+    #[cfg(windows)]
+    return HOST_CAPABILITIES
+        .iter()
+        .copied()
+        .map(str::to_owned)
+        .collect();
+    // The Linux client can control another device, but cannot itself host.
+    #[cfg(target_os = "linux")]
+    Vec::new()
 }
 
 #[derive(Clone, Default)]
@@ -95,11 +102,15 @@ pub(crate) struct FeaturePolicy {
 }
 
 impl FeaturePolicy {
-    /// A host reached directly: a Farwing host of this build
+    /// Direct connections reach a Farwing host without a device list
     /// (`docs/protocol/v2-design.md` §12).
     pub(crate) fn direct() -> Self {
         Self {
-            capabilities: local_capabilities(),
+            capabilities: HOST_CAPABILITIES
+                .iter()
+                .copied()
+                .map(str::to_owned)
+                .collect(),
         }
     }
 
@@ -117,7 +128,7 @@ mod tests {
     #[test]
     fn capability_policy() {
         let catalog = FeatureCatalog::default();
-        catalog.remember_target("a1b2c3d4e5f6g7h8", &local_capabilities());
+        catalog.remember_target("a1b2c3d4e5f6g7h8", &FeaturePolicy::direct().capabilities);
         let policy = catalog.policy("a1b2c3d4e5f6g7h8");
         assert!(policy.supports(Feature::Ports));
         assert!(policy.supports(Feature::Host));

@@ -4,12 +4,16 @@
 //! controller's `FLOW` credits. The host only ever sends its own redacted
 //! bundle; no remote paths or arbitrary file requests are accepted.
 mod controller;
+#[cfg(windows)]
 mod host;
 pub(crate) mod service;
 use super::bundle;
 use crate::protocol::peer::{self, FrameType};
 use anyhow::{Context, Result};
-pub(crate) use controller::{Controller, Phase, Snapshot};
+pub(crate) use controller::{Controller, Snapshot};
+#[cfg(windows)]
+pub(crate) use controller::Phase;
+#[cfg(windows)]
 pub(crate) use host::Host;
 use prost::Message;
 use std::sync::{Mutex, MutexGuard};
@@ -36,8 +40,7 @@ struct Request {
 struct Progress {
     #[prost(uint32, tag = "1")]
     stream: u32,
-    /// The step's key ([`crate::diagnostics::bundle::Step::key`]); the
-    /// receiver words it.
+    /// The step's wire key; the receiver localizes it.
     #[prost(string, tag = "2")]
     stage: String,
     #[prost(uint64, tag = "3")]

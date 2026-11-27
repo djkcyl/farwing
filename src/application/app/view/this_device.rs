@@ -347,9 +347,11 @@ impl DeviceCenterApp {
                         tile: Tile::known(picture.as_ref(), Tile::Generic),
                         status: None,
                         chips: if paired { &paired_chip[..] } else { &[] },
-                        grants: Some(&device.grants),
+                        extra_badges: Some(&|ui| {
+                            cards::caps_icons(ui, &device.grants, text.no_permissions);
+                        }),
                         detail: &detail,
-                        selected: false,
+                        selected: Some(false),
                     },
                     |ui| {
                         edit = ui.add_enabled(!sending, primary(text.permissions)).clicked();

@@ -20,8 +20,10 @@ pub mod selection;
 
 pub(crate) mod camera;
 pub(crate) mod capture;
+#[cfg(windows)]
 pub(crate) mod encoding;
 pub(crate) mod geometry;
+#[cfg(windows)]
 pub use crate::platform::display::detect_local_display;
 
 pub(crate) mod decode_api;

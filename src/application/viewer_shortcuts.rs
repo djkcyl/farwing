@@ -1,5 +1,11 @@
 //! User-local player shortcuts. Hook reads are atomic and never perform file IO.
 use crate::i18n::t;
+#[cfg(target_os = "linux")]
+#[path = "viewer_shortcuts/linux.rs"]
+mod linux;
+#[cfg(target_os = "linux")]
+pub(crate) use linux::WindowShortcuts;
+#[cfg_attr(target_os = "linux", path = "viewer_shortcuts/watcher.rs")]
 mod watcher;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -13,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 pub(crate) use watcher::Watcher;
+#[cfg(windows)]
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0},
     System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject},
@@ -56,6 +63,12 @@ pub(crate) struct Binding {
     pub modifiers: u8,
 }
 impl Binding {
+    #[cfg(target_os = "linux")]
+    pub fn label(self) -> String {
+        linux::label(self)
+    }
+
+    #[cfg(windows)]
     pub fn label(self) -> String {
         if self.key >= 96 && self.key <= 111 || self.key >= 186 {
             use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyNameTextW, MAPVK_VK_TO_VSC};
@@ -87,10 +100,11 @@ pub(crate) struct Settings {
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self {
-            schema: 1,
-            bindings: [90, 70, 81, 83].map(|key| Some(Binding { key, modifiers: 7 })),
+        let mut bindings = [90, 70, 81, 83].map(|key| Some(Binding { key, modifiers: 7 }));
+        if cfg!(target_os = "linux") {
+            bindings[Action::Fullscreen.index()] = Some(Binding { key: 122, modifiers: 0 });
         }
+        Self { schema: 1, bindings }
     }
 }
 impl Settings {
@@ -108,6 +122,9 @@ impl Settings {
                     !(b.key == 27 && b.modifiers == 0),
                     t().viewer.shortcut_esc_needs_modifier
                 );
+                #[cfg(target_os = "linux")]
+                ensure!(linux::supports(b.key), t().viewer.shortcut_key_unsupported);
+                #[cfg(windows)]
                 ensure!(
                     !(b.key == 46 && b.modifiers & 5 == 5)
                         && !(b.key == 76 && b.modifiers & 8 != 0),
@@ -180,6 +197,7 @@ pub(crate) fn label(action: Action) -> String {
 pub(crate) fn bound(action: Action) -> Option<String> {
     Settings::unpack(revision()).bindings[action.index()].map(Binding::label)
 }
+#[cfg(windows)]
 pub(crate) fn capture_active() -> bool {
     let owner = runtime().capture.load(Ordering::Acquire);
     owner != 0 && owner == unsafe { GetForegroundWindow().0 as u64 }
@@ -193,12 +211,14 @@ pub(crate) fn set_text_owner(owner: u64, active: bool) {
             .compare_exchange(owner, 0, Ordering::AcqRel, Ordering::Acquire);
     }
 }
+#[cfg(windows)]
 pub(crate) fn suspended() -> bool {
     capture_active() || {
         let owner = runtime().typing.load(Ordering::Acquire);
         owner != 0 && owner == unsafe { GetForegroundWindow().0 as u64 }
     }
 }
+#[cfg(windows)]
 pub(crate) fn physical_key(key: winit::keyboard::PhysicalKey) -> Option<u16> {
     use winit::keyboard::{KeyCode, PhysicalKey};
     use winit::platform::scancode::PhysicalKeyExtScancode;
@@ -229,6 +249,7 @@ pub(crate) fn physical_key(key: winit::keyboard::PhysicalKey) -> Option<u16> {
         .map(|scan| unsafe { MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX) as u16 })
         .filter(|key| *key != 0)
 }
+#[cfg(windows)]
 pub(crate) fn modifiers(m: winit::keyboard::ModifiersState) -> u8 {
     u8::from(m.control_key())
         | (u8::from(m.shift_key()) << 1)
@@ -301,7 +322,9 @@ fn apply_refresh(state: &Runtime, revision: u64, result: Result<Option<Vec<u8>>>
         Err(e) => cache.error = Some(e.to_string()),
     }
 }
+#[cfg(windows)]
 struct FileGuard(HANDLE);
+#[cfg(windows)]
 impl Drop for FileGuard {
     fn drop(&mut self) {
         unsafe {
@@ -312,17 +335,22 @@ impl Drop for FileGuard {
 }
 fn save(expected: &Option<Vec<u8>>, settings: &Settings) -> Result<()> {
     settings.validate()?;
-    let name = windows::core::HSTRING::from(crate::product::local_object("Shortcuts.Settings"));
-    let handle = unsafe { CreateMutexW(None, false, &name) }?;
-    let wait = unsafe { WaitForSingleObject(handle, 3000) };
-    if wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED {
-        unsafe {
-            let _ = CloseHandle(handle);
+    #[cfg(windows)]
+    let _guard = {
+        let name = windows::core::HSTRING::from(crate::product::local_object("Shortcuts.Settings"));
+        let handle = unsafe { CreateMutexW(None, false, &name) }?;
+        let wait = unsafe { WaitForSingleObject(handle, 3000) };
+        if wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED {
+            unsafe {
+                let _ = CloseHandle(handle);
+            }
+            bail!(t().viewer.shortcut_saving_elsewhere);
         }
-        bail!(t().viewer.shortcut_saving_elsewhere);
-    }
-    let _guard = FileGuard(handle);
+        FileGuard(handle)
+    };
     let path = path()?;
+    #[cfg(target_os = "linux")]
+    let _guard = linux::lock_settings(&path)?;
     ensure!(
         &read(&path)? == expected,
         t().viewer.shortcut_changed_elsewhere
@@ -403,6 +431,8 @@ impl Editor {
         self.error = cache.error.clone();
     }
     pub fn draw(&mut self, ui: &mut egui::Ui) {
+        #[cfg(target_os = "linux")]
+        refresh();
         if self.recording.is_none()
             && self.draft.is_some()
             && self.draft == self.baseline
@@ -422,6 +452,7 @@ impl Editor {
             self.cancel_recording();
         }
         let was_recording = self.recording;
+        #[cfg(windows)]
         if was_recording.is_some() {
             for event in ui.input(|i| i.events.clone()) {
                 if let egui::Event::Key { key, pressed, .. } = &event {
@@ -522,6 +553,7 @@ impl Editor {
                 }
             }
         }
+        #[cfg(windows)]
         if self.recording.is_some() {
             use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
             let win = unsafe { GetAsyncKeyState(91) < 0 || GetAsyncKeyState(92) < 0 };
@@ -543,6 +575,10 @@ impl Editor {
             }
             self.finish_recording(released);
             ui.ctx().request_repaint_after(Duration::from_millis(30));
+        }
+        #[cfg(target_os = "linux")]
+        if was_recording.is_some() {
+            self.record_linux(ui);
         }
         egui::Frame::new()
             .stroke(egui::Stroke::new(1.0, crate::ui::theme::LINE))
@@ -569,8 +605,11 @@ impl Editor {
                         crate::ui::controls::ShortcutRowAction::Edit => {
                             self.cancel_recording();
                             self.recording = Some(action);
-                            self.owner = unsafe { GetForegroundWindow().0 as u64 };
-                            runtime().capture.store(self.owner, Ordering::Release);
+                            #[cfg(windows)]
+                            {
+                                self.owner = unsafe { GetForegroundWindow().0 as u64 };
+                                runtime().capture.store(self.owner, Ordering::Release);
+                            }
                             self.error = None;
                         }
                         crate::ui::controls::ShortcutRowAction::Cancel => self.cancel_recording(),

@@ -2,19 +2,25 @@
 //! themselves on an IPv4 multicast group and answer queries; controllers
 //! query by multicast and broadcast and collect signed announcements.
 
+#[cfg(windows)]
 use super::LocalDevice;
+#[cfg(windows)]
 use crate::session::host_client::HostClient;
-use anyhow::{Context, Result};
+#[cfg(windows)]
+use anyhow::Context;
+use anyhow::Result;
 use farwing_protocol::direct::{self as wire, lan};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
+#[cfg(windows)]
 use tokio_util::sync::CancellationToken;
 
 /// How often the responder joins adapters that came up. It never announces
 /// itself unasked: it only answers queries from local networks.
+#[cfg(windows)]
 const ADAPTER_INTERVAL: Duration = Duration::from_secs(30);
 
 fn group() -> Ipv4Addr {
@@ -23,12 +29,14 @@ fn group() -> Ipv4Addr {
 }
 
 /// What a host announces, if it currently accepts connections.
+#[cfg(windows)]
 pub(crate) trait Announcer: Send + Sync {
     fn announcement(&self) -> Option<(LocalDevice, u16, Vec<String>)>;
 }
 
 /// Queries are answered only from private, link-local and loopback
 /// addresses: discovery is for the local network.
+#[cfg(windows)]
 fn local_network(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local() || v4.is_loopback(),
@@ -40,6 +48,7 @@ fn local_network(ip: std::net::IpAddr) -> bool {
     }
 }
 
+#[cfg(windows)]
 fn announce(local: &LocalDevice, port: u16, methods: Vec<String>, nonce: &str) -> lan::Announce {
     let mut announce = lan::Announce {
         t: lan::ANNOUNCE.into(),
@@ -61,16 +70,19 @@ fn announce(local: &LocalDevice, port: u16, methods: Vec<String>, nonce: &str) -
 }
 
 /// A host's discovery socket and its announcements.
+#[cfg(windows)]
 pub(crate) struct Responder {
     cancel: CancellationToken,
 }
 
+#[cfg(windows)]
 impl Drop for Responder {
     fn drop(&mut self) {
         self.cancel.cancel();
     }
 }
 
+#[cfg(windows)]
 impl Responder {
     pub(crate) fn start(
         _client: HostClient,
@@ -128,6 +140,7 @@ async fn send(socket: &UdpSocket, message: &impl serde::Serialize, to: SocketAdd
 /// The group joined only on the default interface is not received on the
 /// LAN when a VPN or proxy adapter holds the default route. Adapters that
 /// come up later are joined on the next announcement.
+#[cfg(windows)]
 fn join_lan_adapters(socket: &UdpSocket, joined: &mut Vec<Ipv4Addr>) {
     let socket = socket2::SockRef::from(socket);
     for address in crate::platform::windows::device_profile::lan_ipv4_addresses() {
@@ -141,6 +154,7 @@ fn join_lan_adapters(socket: &UdpSocket, joined: &mut Vec<Ipv4Addr>) {
     }
 }
 
+#[cfg(windows)]
 fn responder_socket() -> Result<UdpSocket> {
     use socket2::{Domain, Protocol, SockAddr, Socket, Type};
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
@@ -189,19 +203,22 @@ fn query_socket(local: Ipv4Addr) -> Result<UdpSocket> {
     Ok(UdpSocket::from_std(socket.into())?)
 }
 
-/// Query the LAN and collect answers for `wait`. Besides the default route,
-/// the query also leaves each LAN adapter from that adapter's address: when
-/// a VPN or proxy adapter holds the default route, the query and its answer
-/// would otherwise pass through it, and a host would be listed under the
-/// adapter's address instead of its LAN address.
+/// Query the LAN on the default route and collect signed answers for `wait`.
+/// On Windows, also send via each LAN adapter so the default route going
+/// through a VPN does not hide the local route.
 pub(crate) async fn discover(wait: Duration) -> Result<Vec<Found>> {
-    let mut sockets = vec![(Arc::new(query_socket(Ipv4Addr::UNSPECIFIED)?), false)];
-    for address in crate::platform::windows::device_profile::lan_ipv4_addresses() {
-        match query_socket(address) {
-            Ok(socket) => sockets.push((Arc::new(socket), true)),
-            Err(error) => tracing::debug!(%error, %address, "LAN discovery adapter unavailable"),
+    let sockets = vec![(Arc::new(query_socket(Ipv4Addr::UNSPECIFIED)?), false)];
+    #[cfg(windows)]
+    let sockets = {
+        let mut sockets = sockets;
+        for address in crate::platform::windows::device_profile::lan_ipv4_addresses() {
+            match query_socket(address) {
+                Ok(socket) => sockets.push((Arc::new(socket), true)),
+                Err(error) => tracing::debug!(%error, %address, "LAN discovery adapter unavailable"),
+            }
         }
-    }
+        sockets
+    };
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let query = lan::Query {
         t: lan::QUERY.into(),
@@ -288,7 +305,7 @@ pub(crate) async fn discover(wait: Duration) -> Result<Vec<Found>> {
     Ok(found)
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 

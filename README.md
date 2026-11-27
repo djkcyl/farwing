@@ -7,11 +7,11 @@
 
 # Farwing
 
-Farwing 是可自建、可独立部署的远程控制与桌面串流软件，定位类似 Moonlight 与 RustDesk：Windows 客户端、自建的 **Farwing Server** 和双方共享的 **Farwing Protocol**。
+Farwing 是可自建、可独立部署的远程控制与桌面串流软件，定位类似 Moonlight 与 RustDesk：原生客户端、自建的 **Farwing Server** 和双方共享的 **Farwing Protocol**。
 
 | 组件 | 位置 | 说明 |
 | --- | --- | --- |
-| Farwing Client | 仓库根目录（`Farwing.exe`） | Windows 客户端，可作主控、被控、远程协助 |
+| Farwing Client | 仓库根目录 | Windows 主控、被控及远程协助；Linux 主控预览 |
 | Farwing Server | [`server/`](server/README.md) | Rust 服务端：HTTPS 管理面、WSS 在线与会话协调、SQLite、TURN 凭据与可选内置 STUN/TURN；自带网页端（用户中心、管理后台、浏览器里的远程桌面） |
 | Farwing Protocol | [`docs/protocol/`](docs/protocol/farwing-protocol.md)、[`crates/protocol`](crates/protocol) | 客户端与服务端共享的协议规范与线上类型 |
 
@@ -19,7 +19,7 @@ Farwing 是可自建、可独立部署的远程控制与桌面串流软件，定
 
 项目的目标与方向见 [docs/vision.md](docs/vision.md)。
 
-**当前阶段：第二轮（Farwing Protocol v2）已实现，部分项目待双机验证。** 第一轮（v1，协议与自建服务迁移）的迁移情况和验证结果见 [docs/migration-status.md](docs/migration-status.md)；第二轮的设计、实现状态与待验证项见 [docs/protocol/v2-design.md](docs/protocol/v2-design.md)。Farwing 尚未发布，不提供与旧版本（包括 v1）的兼容：客户端与服务端须使用同一版本，服务端也不迁移旧数据库。
+当前分支使用 **Farwing Protocol 3**，客户端与服务端须使用同一版本。旧版数据库没有迁移路径。早期迁移记录见 [docs/migration-status.md](docs/migration-status.md)，会话设计见 [docs/protocol/v2-design.md](docs/protocol/v2-design.md)；具体协议版本以 [`crates/protocol`](crates/protocol) 的定义为准。
 
 ## 快速开始
 
@@ -40,7 +40,7 @@ Farwing 是可自建、可独立部署的远程控制与桌面串流软件，定
 
 ## 能力
 
-功能范围：
+以下是 Windows 客户端与网页端的功能。Linux 主控预览的范围见下方构建说明。
 
 - 账号与设备管理、在线状态、设备改名/移除、壁纸、同账号设备互访、好友与按设备授权、多人同时连接
 - 远程协助：9 位设备号 + 验证码 / 本机确认 / 验证码加确认，游客协助，最近与收藏
@@ -54,6 +54,8 @@ Farwing 是可自建、可独立部署的远程控制与桌面串流软件，定
 
 ## 构建客户端
 
+### Windows
+
 需要 Windows 10/11 x64、Rust stable（MSVC，开发使用 1.95）、Visual Studio C++ 构建工具、Windows SDK、CMake 和 NASM，命令行工具需加入 PATH。
 
 ```powershell
@@ -65,6 +67,21 @@ cargo fast-test --lib          # 本地迭代的单元测试
 ```
 
 `release` 为了保持验证过的代码生成，主 crate 只用一个代码生成单元，改动一处也要重新优化整个 crate（约 9 分钟）。`cargo fast` 使用继承 `release` 的 `fast` 配置：并行代码生成、增量编译，并用 Rust 自带的 `rust-lld` 链接，改动一处后重编约 20 秒；测试与自查用它，发布包仍用 `cargo dist`。（mold 只支持 Linux；时间主要花在编译主 crate，链接只占 2 秒左右。）服务端同样提供 `cargo fast`（不做 LTO，改动一处约 5 秒）。
+
+### Linux 主控预览
+
+在 x86-64 Linux 上使用 Rust stable、C/C++ 工具链、CMake、NASM、`pkg-config` 和 ALSA 开发库构建：
+
+```sh
+cargo build --locked --release --bin Farwing
+./target/release/Farwing
+```
+
+桌面界面需要 X11 或 Wayland、OpenGL；账号和设备身份使用系统的 Secret Service（如 GNOME Keyring 或启用 Secret Service 的 KWallet）。中文设备名需要系统安装 CJK 字体。账号连接使用同版本的 Farwing Server，自签证书需核对 SHA-256 指纹。也可以从未登录的设备中心使用短号协助、地址直连或局域网配对。
+
+命令行用 `./target/release/Farwing --help` 查看。`server probe <地址>` 查看服务器证书，`server set <地址> --pin <指纹>` 保存自签服务器，`login --username <用户名>` 登录，`devices` 列出设备，`connect --device-id <设备ID>` 打开观看窗口。
+
+Linux 主控支持桌面和声音、键鼠、串流设置及多屏观看。x86-64 提供 H.264 / AV1 的 8-bit 4:2:0 或 4:4:4 软件解码，最高协商到 1080p。Linux 被控、硬解、HDR、系统剪贴板和远程文件传输待移植。
 
 服务端是独立的 Cargo 工作区，构建方法见 [server/README.md](server/README.md)。
 

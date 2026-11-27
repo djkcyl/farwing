@@ -108,11 +108,25 @@ pub(crate) fn set(language: Language) {
 }
 
 /// Windows' display language: Chinese reads 简体中文, anything else English.
+#[cfg(windows)]
 pub(crate) fn system_language() -> Language {
     // SAFETY: no arguments; returns the user's UI language ID.
     let id = unsafe { windows::Win32::Globalization::GetUserDefaultUILanguage() };
     const LANG_CHINESE: u16 = 0x04;
     if id & 0x3ff == LANG_CHINESE {
+        Language::ZhCn
+    } else {
+        Language::En
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn system_language() -> Language {
+    let locale = ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .find(|value| !value.is_empty());
+    if locale.as_deref().is_some_and(|value| value.starts_with("zh")) {
         Language::ZhCn
     } else {
         Language::En
@@ -149,6 +163,28 @@ pub(crate) fn choose(choice: Choice) -> anyhow::Result<()> {
     std::fs::write(&path, serde_json::to_vec(&Saved { choice })?)?;
     set(choice.language());
     Ok(())
+}
+
+/// Display label of a session capability.
+pub(crate) fn cap_label(cap: &str) -> &'static str {
+    use farwing_protocol::caps;
+    let text = &t().app;
+    match cap {
+        caps::VIEW => text.cap_view,
+        caps::CONTROL => text.cap_control,
+        caps::CLIPBOARD => text.cap_clipboard,
+        caps::FILES => text.cap_files,
+        caps::PORTS => text.cap_ports,
+        caps::POWER => text.cap_power,
+        caps::AUDIO => text.cap_audio,
+        caps::MICROPHONE => text.cap_microphone,
+        caps::DISPLAY => text.cap_display,
+        caps::DIAGNOSTICS => text.cap_diagnostics,
+        caps::ANNOTATION => text.cap_annotation,
+        caps::CAMERA => text.cap_camera,
+        caps::LISTEN => text.cap_listen,
+        _ => text.cap_unknown,
+    }
 }
 
 /// At process start: the saved choice, or Windows' language.

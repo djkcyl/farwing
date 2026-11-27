@@ -1,4 +1,5 @@
 //! A diagnostic view of this process's device publisher, mirrored by the resident.
+#[cfg(windows)]
 use crate::platform::windows::device_profile::Hardware;
 use serde::{Deserialize, Serialize};
 use std::sync::{LazyLock, Mutex};
@@ -6,6 +7,7 @@ use std::sync::{LazyLock, Mutex};
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Snapshot {
     pub device_id: String,
+    #[cfg(windows)]
     pub hardware: Option<Hardware>,
     pub reported_name: String,
     pub client_id: String,

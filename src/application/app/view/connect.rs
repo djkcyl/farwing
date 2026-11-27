@@ -460,6 +460,7 @@ impl DeviceCenterApp {
             Vec::new()
         };
         let detail = super::devices::detail_line(device);
+        let grants = |ui: &mut egui::Ui| cards::caps_icons(ui, &device.granted, t().center.no_permissions);
         let row = device_list::Row {
             title: display_alias(device),
             tile: Tile::Wallpaper {
@@ -468,9 +469,9 @@ impl DeviceCenterApp {
             },
             status: Some((status.label(), status.color())),
             chips: &chips,
-            grants: Some(&device.granted),
+            extra_badges: Some(&grants),
             detail: &detail,
-            selected,
+            selected: Some(selected),
         };
         let mut action = None;
         let actions = |ui: &mut egui::Ui| {
@@ -629,9 +630,9 @@ impl DeviceCenterApp {
                             ),
                             status: Some((t().common.online, GREEN)),
                             chips: &chips,
-                            grants: None,
+                            extra_badges: None,
                             detail: &detail,
-                            selected: false,
+                            selected: Some(false),
                         },
                         |ui| {
                             if own_device || admits {
@@ -910,9 +911,9 @@ impl DeviceCenterApp {
                                 tile: Tile::known(pictures.get(&item.publisher_device_id), Tile::Generic),
                                 status: None,
                                 chips: &[],
-                                grants: None,
+                                extra_badges: None,
                                 detail: &detail,
-                                selected: false,
+                                selected: Some(false),
                             },
                             |ui| {
                                 if server_button(ui, blocker, available, primary(t().common.connect))
@@ -1017,9 +1018,9 @@ impl DeviceCenterApp {
                             ),
                             status: None,
                             chips: &chips,
-                            grants: None,
+                            extra_badges: None,
                             detail: &detail,
-                            selected: false,
+                            selected: Some(false),
                         },
                         |ui| {
                             if ui.add_enabled(available, primary(t().common.connect)).clicked() {

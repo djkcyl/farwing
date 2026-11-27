@@ -1,11 +1,14 @@
 //! One device connection, independent video-track decoders and local windows.
+#[path = "screen_tracks.rs"]
+mod screen_tracks;
+
 use crate::i18n::t;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use tokio::sync::watch;
 
 use super::NativeViewerSession;
@@ -234,35 +237,14 @@ impl ScreenPlayback {
                 // Keep restart required until the new mapping arrives, including cancellation.
                 // A local stop may already be sent while its ScreenSources is still in flight.
                 stopped.insert(screen_id);
-                if crate::features::host::cameras::is_camera(screen_id) {
-                    self.control.open_camera(screen_id).await?;
-                } else {
-                    self.control.set_screen_capture(screen_id, true).await?;
-                }
+                screen_tracks::start_capture(&self.control, screen).await?;
                 Some(snapshot.screens_generation)
             } else {
                 None
             }
         };
-        let track = tokio::time::timeout(Duration::from_secs(12), async {
-            loop {
-                let snapshot = self.control.snapshot();
-                let screen = snapshot
-                    .screens
-                    .iter()
-                    .find(|screen| screen.id == screen_id)
-                    .context(t().viewer.display_disconnected)?;
-                if generation.is_none_or(|generation| snapshot.screens_generation > generation)
-                    && screen.video_track_index >= 0
-                    && let Some(track) = peer.video_tracks().get(screen.video_track_index)
-                {
-                    return Ok::<_, anyhow::Error>(track);
-                }
-                tokio::time::sleep(Duration::from_millis(30)).await;
-            }
-        })
-        .await
-        .map_err(|_| anyhow!(t().viewer.display_no_video))??;
+        let (_, track) =
+            screen_tracks::wait_for_track(&self.control, peer, screen_id, generation).await?;
         if generation.is_some() {
             self.capture_lock.lock().await.remove(&screen_id);
         }

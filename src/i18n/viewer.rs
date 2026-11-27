@@ -255,8 +255,8 @@ pub(crate) struct Viewer {
     pub remote_notice: &'static str,
     /// Ask the host's user for control in this connection.
     pub ask_control: &'static str,
-    /// Frame rate
-    pub shared_view: fn(u32) -> String,
+    /// Frame rate, when the viewer knows the host's shared-stream target.
+    pub shared_view: fn(Option<u32>) -> String,
     pub follow_global: &'static str,
     pub cinema_mode: &'static str,
     pub quality_original: &'static str,
@@ -661,7 +661,10 @@ pub(crate) const ZH_CN: Viewer = Viewer {
     route: "连接线路",
     remote_notice: "远端提示",
     ask_control: "请求本次控制",
-    shared_view: |fps| format!("多人观看：{fps} FPS · 观影模式"),
+    shared_view: |fps| match fps {
+        Some(fps) => format!("多人观看：{fps} FPS · 观影模式"),
+        None => "多人观看 · 观影模式".into(),
+    },
     follow_global: "跟随全局",
     cinema_mode: "观影模式",
     quality_original: "原画",
@@ -1045,7 +1048,10 @@ pub(crate) const EN: Viewer = Viewer {
     route: "Route",
     remote_notice: "Remote device",
     ask_control: "Ask to control",
-    shared_view: |fps| format!("Shared view: {fps} FPS · Cinema mode"),
+    shared_view: |fps| match fps {
+        Some(fps) => format!("Shared view: {fps} FPS · Cinema mode"),
+        None => "Shared view · Cinema mode".into(),
+    },
     follow_global: "Follow global",
     cinema_mode: "Cinema mode",
     quality_original: "Original",

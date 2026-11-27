@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 farwing-protocol = { path = "crates/protocol", features = ["peer", "crypto"] }
+farwing-codec = { path = "crates/codec" }
 farwing-rtc-wire = { path = "crates/rtc-wire" }
 aes-gcm = "0.10"
 anyhow = "1.0"
@@ -30,8 +31,6 @@ egui = { version = "0.36.1", default-features = false, features = ["bytemuck"] }
 flate2 = "1.1.10"
 futures-util = "0.3.34"
 goog_cc = { path = "vendor/goog_cc" }
-farwing-amf-sys = { path = "vendor/amf-sys" }
-farwing-vpl-sys = { path = "vendor/vpl-sys" }
 hmac = "0.12.1"
 # Voice frame keys sealed to devices (`docs/protocol/chat-design.md` §10).
 hkdf = "0.12.4"
@@ -48,6 +47,7 @@ qrcode = { version = "0.14.1", default-features = false }
 rand = "0.9"
 # Self-signed certificate of the direct endpoint (`docs/protocol/v2-design.md` §12).
 rcgen = "0.13"
+memmap2 = "0.9.11"
 prost = "0.14"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-no-provider", "system-proxy", "gzip"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
@@ -84,13 +84,13 @@ flate2 = "1.1.10"
 sha1 = "0.10.7"
 
 [target.'cfg(windows)'.dependencies]
+farwing-amf-sys = { path = "vendor/amf-sys" }
+farwing-vpl-sys = { path = "vendor/vpl-sys" }
 farwing-bootstrap = { path = "crates/bootstrap" }
 # Required by the generated code of #[windows::core::implement].
 windows-core = "0.62.2"
 farwing-plugin-api = { path = "plugins/sdk" }
-farwing-codec = { path = "crates/codec" }
 libloading = "0.8.9"
-memmap2 = "0.9.11"
 farwing-nvenc-sys = { path = "vendor/nvenc-sys" }
 egui-directx11 = { path = "vendor/egui-directx11" }
 egui-winit = { version = "0.36.1", default-features = false, features = ["clipboard", "links"] }
@@ -164,6 +164,11 @@ windows = { version = "0.62.2", default-features = false, features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Accessibility",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.36.1", default-features = false, features = ["glow", "wayland", "x11"] }
+libc = "0.2"
+yuv = "0.8.17"
 
 [patch.crates-io]
 dtls = { path = "vendor/dtls" }

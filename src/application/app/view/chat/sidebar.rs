@@ -124,20 +124,27 @@ fn row(ui: &mut egui::Ui, active: bool, unread: bool, faded: bool, paint: impl F
 pub(super) fn side(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi) {
     let full = ui.max_rect();
     let bar = Rect::from_min_max(egui::pos2(full.left(), full.bottom() - 52.0), full.max);
-    // In voice: a strip above the user's bar (taller while control of the
-    // share is given: the way to take it back).
-    let given = state.control_given.is_some() && state.my_voice.as_ref().is_some_and(|v| v.call.is_none());
-    let strip_h = if given { 92.0 } else { 52.0 };
-    let strip = state
-        .my_voice
-        .as_ref()
-        .map(|v| (v, Rect::from_min_max(egui::pos2(full.left(), bar.top() - strip_h), egui::pos2(full.right(), bar.top()))));
+    #[cfg(windows)]
+    let (strip, given) = {
+        // The voice strip is taller when showing the way to take back control.
+        let given = state.control_given.is_some() && state.my_voice.as_ref().is_some_and(|v| v.call.is_none());
+        let strip_h = if given { 92.0 } else { 52.0 };
+        let strip = state
+            .my_voice
+            .as_ref()
+            .map(|v| (v, Rect::from_min_max(egui::pos2(full.left(), bar.top() - strip_h), egui::pos2(full.right(), bar.top()))));
+        (strip, given)
+    };
+    #[cfg(windows)]
     let list_bottom = strip.as_ref().map_or(bar.top(), |(_, r)| r.top());
+    #[cfg(target_os = "linux")]
+    let list_bottom = bar.top();
     let list = Rect::from_min_max(full.min, egui::pos2(full.right(), list_bottom));
     ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| match chat_ui.group {
         Some(g) => group_side(ui, chat, state, chat_ui, g),
         None => dm_side(ui, chat, state, chat_ui),
     });
+    #[cfg(windows)]
     if let Some((voice, rect)) = strip {
         ui.painter().rect_filled(rect, 0.0, SIDEBAR);
         ui.painter().hline(rect.x_range(), rect.top(), Stroke::new(1.0, LINE));
@@ -241,12 +248,23 @@ fn group_side(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui:
                         );
                     }
                 });
+                #[cfg(target_os = "linux")]
+                let response = if c.kind == ChannelKind::Voice {
+                    response.on_hover_text(match crate::i18n::language() {
+                        crate::i18n::Language::ZhCn => "可查看文字消息；Linux 暂不支持加入语音。",
+                        crate::i18n::Language::En => "Text messages are available; joining voice is not yet supported on Linux.",
+                    })
+                } else {
+                    response
+                };
                 if response.clicked() {
                     chat_ui.select_channel(c.id);
+                    #[cfg(windows)]
                     if c.kind == ChannelKind::Voice && state.my_voice.as_ref().is_none_or(|v| v.channel != c.id || v.call.is_some()) {
                         chat.join_voice(c.id);
                     }
                 }
+                #[cfg(windows)]
                 if c.kind == ChannelKind::Voice {
                     voice_people(ui, chat, state, chat_ui, c.id, p);
                 }
@@ -337,22 +355,26 @@ fn user_bar(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &
         if parts::glyph_button(ui, Glyph::Gear, t().chat.settings, false).clicked() {
             chat_ui.dialog = Some(Dialog::Me);
         }
-        // Mute and deafen hold for the next channel too.
-        let v = &t().voice;
-        let (muted, deafened) = state.my_voice.as_ref().map_or((chat_ui.muted, chat_ui.deafened), |m| (m.muted, m.deafened));
-        if parts::glyph_button(ui, if deafened { Glyph::HeadsetOff } else { Glyph::Headset }, if deafened { v.undeafen } else { v.deafen }, deafened).clicked() {
-            chat_ui.deafened = !deafened;
-            chat_ui.muted = muted;
-            chat.set_voice_self(muted, !deafened);
-        }
-        if parts::glyph_button(ui, if muted { Glyph::MicOff } else { Glyph::Mic }, if muted { v.unmute } else { v.mute }, muted).clicked() {
-            chat_ui.muted = !muted;
-            chat_ui.deafened = deafened;
-            chat.set_voice_self(!muted, deafened);
+        #[cfg(windows)]
+        {
+            // Mute and deafen hold for the next channel too.
+            let v = &t().voice;
+            let (muted, deafened) = state.my_voice.as_ref().map_or((chat_ui.muted, chat_ui.deafened), |m| (m.muted, m.deafened));
+            if parts::glyph_button(ui, if deafened { Glyph::HeadsetOff } else { Glyph::Headset }, if deafened { v.undeafen } else { v.deafen }, deafened).clicked() {
+                chat_ui.deafened = !deafened;
+                chat_ui.muted = muted;
+                chat.set_voice_self(muted, !deafened);
+            }
+            if parts::glyph_button(ui, if muted { Glyph::MicOff } else { Glyph::Mic }, if muted { v.unmute } else { v.mute }, muted).clicked() {
+                chat_ui.muted = !muted;
+                chat_ui.deafened = deafened;
+                chat.set_voice_self(!muted, deafened);
+            }
         }
     });
 }
 
+#[cfg(windows)]
 /// Where this device's voice is, and the way out.
 fn voice_bar(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi, voice: &crate::features::chat::state::MyVoice) {
     let v = &t().voice;
@@ -429,6 +451,7 @@ fn voice_bar(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: 
     });
 }
 
+#[cfg(windows)]
 /// The people in voice channel `channel` (those this device hears speak
 /// light up); a click opens their card.
 fn voice_people(ui: &mut egui::Ui, chat: &ChatService, state: &ChatState, chat_ui: &mut ChatUi, channel: Id, perms: i64) {

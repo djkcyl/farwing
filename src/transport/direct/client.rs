@@ -303,8 +303,10 @@ async fn connect_inner(
         last_seen: 0,
     });
     tracing::info!(device = %host.device_id, relation = ?authorized.relation, grants = ?authorized.grants, "direct connection authorized");
+    let mut signal = SignalSession::direct(reader, writer, address.ip());
+    signal.expect_host(&host.device_id, &host.public_key);
     Ok(Connected {
-        signal: SignalSession::direct(reader, writer, address.ip()),
+        signal,
         host,
         relation: authorized.relation,
         pake_key,

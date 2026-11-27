@@ -29,8 +29,10 @@ pub(crate) struct DecoderPool {
     callback_result: Option<VideoDecodeResult>,
     blocked_reason: Option<String>,
 
+    #[cfg(windows)]
     software_slot: Option<std::rc::Rc<crate::media::decoder::software_slot::SoftwareSlot>>,
 
+    #[cfg(windows)]
     writer: Option<crate::platform::surface::D3D11SurfaceWriter>,
 }
 
@@ -51,21 +53,27 @@ impl DecoderPool {
         preference: crate::media::selection::DecoderPreference,
         extra_data: Bytes,
     ) -> Self {
-        let candidates =
-            DecoderCandidate::preferred(codec, preference, decoder.surface_writer().as_ref())
-                .into_iter()
-                .map(|kind| Candidate {
-                    kind,
-                    enabled: true,
-                })
-                .collect::<Vec<_>>();
+        let candidates = DecoderCandidate::preferred(
+            codec,
+            preference,
+            #[cfg(windows)]
+            decoder.surface_writer().as_ref(),
+        )
+        .into_iter()
+        .map(|kind| Candidate {
+            kind,
+            enabled: true,
+        })
+        .collect::<Vec<_>>();
         let active = candidates
             .iter()
             .position(|entry| entry.kind == decoder.candidate())
             .expect("opened decoder belongs to the configured candidate list");
         Self {
+            #[cfg(windows)]
             software_slot: decoder.software_slot(),
 
+            #[cfg(windows)]
             writer: decoder.surface_writer(),
             decoder: Some(decoder),
             candidates,
@@ -103,9 +111,10 @@ impl DecoderPool {
     }
 
     pub(crate) fn label(&self) -> &str {
-        self.decoder
-            .as_ref()
-            .map_or(crate::i18n::t().session.waiting_for_decoder, NativeVideoDecoder::label)
+        self.decoder.as_ref().map_or(
+            crate::i18n::t().session.waiting_for_decoder,
+            NativeVideoDecoder::label,
+        )
     }
 
     pub(crate) fn decoder(&mut self) -> Option<&mut NativeVideoDecoder> {
@@ -190,14 +199,18 @@ impl DecoderPool {
         }
         if codec_changed {
             self.codec = codec;
-            self.candidates =
-                DecoderCandidate::preferred(codec, self.preference, self.writer.as_ref())
-                    .into_iter()
-                    .map(|kind| Candidate {
-                        kind,
-                        enabled: true,
-                    })
-                    .collect();
+            self.candidates = DecoderCandidate::preferred(
+                codec,
+                self.preference,
+                #[cfg(windows)]
+                self.writer.as_ref(),
+            )
+            .into_iter()
+            .map(|kind| Candidate {
+                kind,
+                enabled: true,
+            })
+            .collect();
             self.active = 0;
             self.format = None;
         }
@@ -241,9 +254,14 @@ impl DecoderPool {
                 result: Some(result),
             };
         }
-        let enabled_count = self.candidates.iter().filter(|entry| entry.enabled).count();
         let failed_index = self.active;
-        let failed = self.candidates[self.active].kind;
+        let Some(failed) = self.candidates.get(failed_index).map(|entry| entry.kind) else {
+            return DecoderTransition {
+                replaced: false,
+                result: Some(VideoDecodeResult::Error),
+            };
+        };
+        let enabled_count = self.candidates.iter().filter(|entry| entry.enabled).count();
         if enabled_count > 1 {
             self.candidates[self.active].enabled = false;
         }
@@ -330,19 +348,24 @@ impl DecoderPool {
                 height,
                 self.frame_rate,
                 self.extra_data.clone(),
+                #[cfg(windows)]
                 self.writer.clone(),
+                #[cfg(windows)]
                 self.software_slot.clone(),
             ) {
                 Ok(mut decoder) => {
+                    #[cfg(windows)]
                     decoder.describe_selection(
                         self.preference,
                         self.candidates.iter().any(|c| !c.enabled),
                     );
+                    #[cfg(windows)]
                     {
                         self.software_slot = decoder.software_slot();
                     }
                     decoder.set_notification(self.notification.clone());
 
+                    #[cfg(windows)]
                     if let Some(writer) = decoder.surface_writer() {
                         self.writer = Some(writer);
                     }
@@ -351,6 +374,7 @@ impl DecoderPool {
                     return true;
                 }
                 Err(error) => {
+                    #[cfg(windows)]
                     if error.is::<crate::media::decoder::software_slot::SoftwarePlaybackBusy>() {
                         self.blocked_reason = Some(error.to_string());
                     }
@@ -360,6 +384,7 @@ impl DecoderPool {
             }
         }
 
+        #[cfg(windows)]
         {
             self.software_slot = None;
         }
@@ -367,6 +392,12 @@ impl DecoderPool {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn supports(kind: DecoderCandidate, codec: VideoCodec, format: VideoFormatSignature) -> bool {
+    kind.supports_format(codec, format)
+}
+
+#[cfg(windows)]
 fn supports(kind: DecoderCandidate, codec: VideoCodec, format: VideoFormatSignature) -> bool {
     match kind {
         DecoderCandidate::WindowsD3d11 { .. } => {

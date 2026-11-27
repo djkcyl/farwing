@@ -207,6 +207,7 @@ pub struct ConnectionMediaOptions {
     pub codec: CodecPreference,
     pub decoder: super::selection::DecoderPreference,
     pub transport: TransportChoice,
+    pub quality: crate::features::stream_control::StreamQuality,
     /// Colour of this controller's cursor for the other participants
     /// (0xRRGGBB); 0 lets the host pick by join order.
     pub pointer_color: u32,
@@ -222,6 +223,7 @@ impl Default for ConnectionMediaOptions {
             codec: CodecPreference::Auto,
             decoder: Default::default(),
             transport: TransportChoice::Auto,
+            quality: crate::features::stream_control::StreamQuality::Auto,
             pointer_color: 0,
         }
     }
@@ -237,6 +239,7 @@ pub(crate) struct ConnectionMediaProfile {
     pub decoder_fps_cap: u32,
     pub codec: CodecPreference,
     pub decoder: super::selection::DecoderPreference,
+    pub quality: crate::features::stream_control::StreamQuality,
 }
 
 impl ConnectionMediaOptions {
@@ -252,6 +255,7 @@ impl ConnectionMediaOptions {
             decoder_fps_cap: display.refresh_hz.max(stream_fps),
             codec: self.codec,
             decoder: self.decoder,
+            quality: self.quality,
         })
     }
     pub fn validate(self) -> Result<()> {

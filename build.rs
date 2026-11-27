@@ -1,19 +1,22 @@
 fn main() {
-    assert_eq!(
-        std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
-        Ok("windows"),
-        "Farwing currently supports Windows only; other platform backends were removed"
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").expect("Cargo target OS");
+    let windows = target_os == "windows";
+    assert!(
+        windows || target_os == "linux",
+        "Farwing has no build configuration for {target_os}"
     );
-    println!("cargo:rerun-if-changed=assets/windows.rc");
-    println!("cargo:rerun-if-changed=assets/windows.manifest");
-    println!("cargo:rerun-if-changed=assets/icon.ico");
-    println!("cargo:rerun-if-changed=assets/tray");
-    embed_resource::compile_for("assets/windows.rc", ["Farwing"], embed_resource::NONE)
-        .manifest_required()
-        .expect("compile Windows application icon");
-    build_neteq();
+    if windows {
+        println!("cargo:rerun-if-changed=assets/windows.rc");
+        println!("cargo:rerun-if-changed=assets/windows.manifest");
+        println!("cargo:rerun-if-changed=assets/icon.ico");
+        println!("cargo:rerun-if-changed=assets/tray");
+        embed_resource::compile_for("assets/windows.rc", ["Farwing"], embed_resource::NONE)
+            .manifest_required()
+            .expect("compile Windows application icon");
+        bundle_drivers();
+    }
+    build_neteq(windows);
     build_fonts();
-    bundle_drivers();
 }
 
 /// Signed driver packages are optional build inputs. Farwing does not ship
@@ -138,7 +141,7 @@ fn build_fonts() {
     }
 }
 
-fn build_neteq() {
+fn build_neteq(windows: bool) {
     let root = std::path::Path::new("vendor/webrtc_neteq");
     println!("cargo:rerun-if-changed=vendor/webrtc_neteq");
     println!("cargo:rerun-if-changed=src/media/audio/neteq_bridge.cc");
@@ -155,15 +158,22 @@ fn build_neteq() {
             .define("WEBRTC_APM_DEBUG_DUMP", "0")
             .define("WEBRTC_OPUS_SUPPORT_120MS_PTIME", "1")
             .warnings(false);
-        build
-            .define("WEBRTC_WIN", None)
-            .define("NOMINMAX", None)
-            .define("WIN32_LEAN_AND_MEAN", None);
+        if windows {
+            build
+                .define("WEBRTC_WIN", None)
+                .define("NOMINMAX", None)
+                .define("WIN32_LEAN_AND_MEAN", None);
+        } else {
+            build
+                .define("WEBRTC_POSIX", None)
+                .define("WEBRTC_LINUX", None);
+        }
     }
-    cpp.cpp(true)
-        .std("c++17")
-        .flag_if_supported("/EHsc")
-        .flag_if_supported("/Zc:__cplusplus");
+    cpp.cpp(true).std("c++17");
+    if windows {
+        cpp.flag_if_supported("/EHsc")
+            .flag_if_supported("/Zc:__cplusplus");
+    }
     cpp.file("src/media/audio/neteq_bridge.cc");
     for source in sources
         .lines()
@@ -177,6 +187,8 @@ fn build_neteq() {
     }
     cpp.compile("farwing_neteq");
     c.compile("farwing_neteq_dsp");
-    println!("cargo:rustc-link-lib=winmm");
-    println!("cargo:rustc-link-lib=ws2_32");
+    if windows {
+        println!("cargo:rustc-link-lib=winmm");
+        println!("cargo:rustc-link-lib=ws2_32");
+    }
 }

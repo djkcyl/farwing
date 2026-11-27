@@ -5,12 +5,13 @@ use super::{
 };
 use crate::account::api::{ApiFailure, ErrorCode};
 use crate::account::client::AuthenticatedClient;
+#[cfg(windows)]
 use crate::application::viewer::ConnectionProgress;
 use crate::i18n::t;
-use crate::media::{
-    ConnectionMediaOptions, ConnectionMediaProfile, LocalDisplayInfo, detect_local_display,
-};
-use anyhow::{Context as _, Result, bail};
+use crate::media::{ConnectionMediaOptions, ConnectionMediaProfile, LocalDisplayInfo};
+#[cfg(windows)]
+use anyhow::Context as _;
+use anyhow::{Result, bail};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -30,11 +31,14 @@ pub(super) struct ResolvedConnection {
     pub(super) preferences: Option<crate::features::stream_control::StreamControlPreferences>,
     pub(super) audio_preferences: Option<crate::media::audio::AudioSettings>,
     pub(super) target_platform: farwing_protocol::Platform,
+    #[cfg(windows)]
     pub(super) refresh_after_upgrade: bool,
+    #[cfg(windows)]
     pub(super) background: Option<crate::application::wallpaper::Source>,
 }
 
 impl ResolvedConnection {
+    #[cfg(windows)]
     async fn wait_for_updated_target(
         &self,
         reporter: Option<&ConnectionProgressReporter>,
@@ -43,10 +47,12 @@ impl ResolvedConnection {
         // Only a previously authenticated ReportError(-6) enables this wait.
         // It polls ownership/readiness and never reissues an installation.
         // Closing the retained viewer cancels the wait immediately.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
-        let operation = async {
-            let mut readiness = crate::features::remote_upgrade::UpdateReadiness::default();
-            loop {
+        use crate::features::remote_upgrade::{UPDATE_WAIT_LIMIT, wait_for_update_readiness};
+
+        wait_for_update_readiness(
+            tokio::time::Instant::now() + UPDATE_WAIT_LIMIT,
+            cancel,
+            || async {
                 let devices = self.client.list_devices().await?;
                 let device = devices
                     .devices
@@ -54,25 +60,15 @@ impl ResolvedConnection {
                     .find(|d| d.device_id == self.target_device_id)
                     .context(t().session.error_updated_device_missing)?;
                 device.validated_device_id()?;
-                anyhow::ensure!(device.platform == farwing_protocol::Platform::Windows, "{}", t().session.error_updated_platform_changed);
-                if readiness.observe(
-                    device.is_connected() && device.controlled_support && device.controllable,
-                    std::time::Instant::now(),
-                ) {
-                    tracing::info!(
-                        "updated target advertises readiness; attempting media connection"
-                    );
-                    return Ok(());
-                }
-                report_progress(reporter, 1, t().session.progress_waiting_update, "");
-                tokio::time::sleep(crate::features::remote_upgrade::UPDATE_PROBE_INTERVAL).await;
-            }
-        };
-        cancellable(cancel, async {
-            tokio::time::timeout_at(deadline, operation)
-                .await
-                .context(t().session.error_update_wait_timeout)?
-        })
+                anyhow::ensure!(
+                    device.platform == farwing_protocol::Platform::Windows,
+                    "{}",
+                    t().session.error_updated_platform_changed
+                );
+                Ok(device.is_connected() && device.controlled_support && device.controllable)
+            },
+            || report_progress(reporter, 1, t().session.progress_waiting_update, ""),
+        )
         .await
     }
     pub(super) async fn connect(
@@ -83,6 +79,7 @@ impl ResolvedConnection {
     ) -> Result<ControllerConnection> {
         let key = shared::key(&self.controller_device_id, &self.target_device_id);
         let _gate = shared::acquire_connection(&key, cancel).await?;
+        #[cfg(windows)]
         if self.refresh_after_upgrade && self.assist.is_none() {
             self.wait_for_updated_target(reporter, cancel).await?;
         }
@@ -122,13 +119,21 @@ impl ResolvedConnection {
                         .feature_catalog()
                         .policy(&self.target_device_id),
                 );
+                #[cfg(windows)]
                 if self.target_platform == farwing_protocol::Platform::Windows {
-                    handle.set_remote_upgrade(crate::features::remote_upgrade::RemoteUpgrade::new(cancel));
+                    handle.set_remote_upgrade(crate::features::remote_upgrade::RemoteUpgrade::new(
+                        cancel.child_token(),
+                    ));
                 }
                 store.restore_device(&handle).await;
                 connection.preference_writer = Some(store.clone().bind(handle.clone()));
+                #[cfg(target_os = "linux")]
+                handle.mouse().set_host_input_allowed(self.target_device_id != self.controller_device_id);
                 connection.local_preference_writer = Some(store.bind_local_preferences(handle));
-                connection.activate_viewing().await
+                #[cfg(windows)]
+                return connection.activate_viewing().await;
+                #[cfg(target_os = "linux")]
+                Ok(())
             };
             if let Err(error) =
                 cancellable(cancel, await_media_startup(session.ended(), setup)).await
@@ -155,18 +160,16 @@ impl ResolvedConnection {
         }
         tracing::info!("creating server session");
         report_progress(reporter, 3, t().session.progress_creating_session, "");
-        let mut pake_key = None;
-        let room = if let Some(assist) = &mut self.assist {
+        let (room, pake_key, expected_host) = if let Some(assist) = &mut self.assist {
             let reply = assist
                 .join(&self.client, &self.controller_device_id, &self.visit, reporter, cancel)
                 .await?;
-            pake_key = reply.pake_key;
             self.target_device_id = reply.host.device_id.clone();
             self.target_platform = reply.host.platform;
             if !reply.host.alias.is_empty() {
                 self.summary.alias = reply.host.alias.clone();
             }
-            reply.ticket
+            (reply.ticket, reply.pake_key, Some((reply.host.device_id, reply.host.public_key)))
         } else {
             loop {
                 match cancellable(
@@ -185,7 +188,7 @@ impl ResolvedConnection {
                 )
                 .await
                 {
-                    Ok(room) => break room,
+                    Ok(room) => break (room, None, None),
                     Err(error) => {
                         // Only retry outcomes the server marks as transient.
                         let retryable = error.downcast_ref::<ApiFailure>().is_some_and(|failure| {
@@ -211,6 +214,7 @@ impl ResolvedConnection {
                 }
             }
         };
+        #[cfg(windows)]
         if self.refresh_after_upgrade {
             // Rejoining the room establishes that the target is back online.
             // Refresh its real version before rebuilding feature policy.
@@ -319,8 +323,15 @@ impl ResolvedConnection {
             t().session.error_local_identity_changed
         );
         let session_id = room.session_id.clone();
-        let mut connection = ControllerConnection::establish(
-            room,
+        tracing::info!(profile = ?self.profile, transport = ?self.transport, via_presence = room.via_presence, "establishing controller connection");
+        report_progress(reporter, 4, t().session.progress_connecting_server, "");
+        let mut signal = ControllerConnection::open_signal(&room, &local, cancel).await?;
+        if let Some((device_id, public_key)) = expected_host {
+            signal.expect_host(&device_id, &public_key);
+        }
+        report_progress(reporter, 4, t().session.progress_server_connected, "");
+        let mut connection = ControllerConnection::establish_on(
+            signal,
             local,
             self.profile,
             self.client
@@ -345,10 +356,15 @@ impl ResolvedConnection {
         if self.assist.is_none() {
             shared::register(key, &connection.forwarder.session, self.client.ended());
         }
+        #[cfg(windows)]
         if self.assist.is_none() && self.target_platform == farwing_protocol::Platform::Windows {
-            handle.set_remote_upgrade(crate::features::remote_upgrade::RemoteUpgrade::new(cancel));
+            handle.set_remote_upgrade(crate::features::remote_upgrade::RemoteUpgrade::new(
+                cancel.child_token(),
+            ));
         }
         handle.mouse().set_keyboard_platform(self.target_platform);
+        #[cfg(target_os = "linux")]
+        handle.mouse().set_host_input_allowed(self.target_device_id != self.controller_device_id);
         handle.set_persistence_error(persistence_error);
         handle.set_audio_persistence_error(audio_persistence_error);
         connection.preference_writer = store.clone().map(|store| store.bind(handle.clone()));
@@ -367,6 +383,7 @@ impl ResolvedConnection {
     }
 }
 
+#[cfg(windows)]
 pub async fn connect_saved_alias(
     alias: &str,
     options: ConnectionMediaOptions,
@@ -374,6 +391,7 @@ pub async fn connect_saved_alias(
     connect_saved_alias_with_progress(alias, options, None).await
 }
 
+#[cfg(windows)]
 pub async fn connect_saved_alias_with_progress(
     alias: &str,
     options: ConnectionMediaOptions,
@@ -388,6 +406,7 @@ pub async fn connect_saved_alias_with_progress(
     Ok((connection?, resolved.summary))
 }
 
+#[cfg(windows)]
 pub(super) async fn resolve_saved_connection(
     alias: &str,
     options: ConnectionMediaOptions,
@@ -402,6 +421,7 @@ pub(super) async fn resolve_saved_connection(
     result
 }
 
+#[cfg(windows)]
 pub(super) async fn resolve_connection_with_client(
     client: Arc<AuthenticatedClient>,
     alias: &str,
@@ -437,23 +457,12 @@ pub(super) async fn resolve_connection_with_client(
     if let Some(reporter) = reporter {
         reporter(ConnectionProgress::background(background.clone()));
     }
-    if !device.platform.is_desktop() {
-        bail!("{}", t().session.error_management_only_device);
-    }
-    if !device.is_connected() {
-        bail!("{}", (t().session.error_device_offline)(alias));
-    }
-    if !device.controlled_support || !device.controllable {
-        bail!("{}", (t().session.error_device_not_controllable)(alias));
-    }
-    if device.is_shared() && !device.granted(farwing_protocol::caps::VIEW) {
-        bail!("{}", (t().session.error_device_not_shared_for_viewing)(alias));
-    }
+    validate_viewable(device, alias, farwing_protocol::caps::VIEW)?;
     let _gate = shared::connection_gate(&shared::key(&client.device_id(), &device.device_id))
         .lock_owned()
         .await;
 
-    let display = detect_local_display().unwrap_or_else(|error| {
+    let display = crate::media::detect_local_display().unwrap_or_else(|error| {
         tracing::warn!(error = %format!("{error:#}"), "local display not detected; using 1080p60");
         LocalDisplayInfo::FALLBACK
     });
@@ -491,4 +500,80 @@ pub(super) async fn resolve_connection_with_client(
         refresh_after_upgrade: false,
         background: Some(background),
     })
+}
+
+fn validate_viewable(device: &crate::account::api::DeviceInfo, alias: &str, capability: &str) -> Result<()> {
+    if !device.platform.is_desktop() {
+        bail!("{}", t().session.error_management_only_device);
+    }
+    if !device.is_connected() {
+        bail!("{}", (t().session.error_device_offline)(alias));
+    }
+    if !device.controlled_support || !device.controllable {
+        bail!("{}", (t().session.error_device_not_controllable)(alias));
+    }
+    if device.is_shared() && !device.granted(capability) {
+        bail!("{}", (t().session.error_device_not_shared_for_viewing)(alias));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+impl ControllerConnection {
+    /// Connect a device selected from the account list, restoring its viewing preferences.
+    pub(crate) async fn connect_account_device(
+        client: Arc<AuthenticatedClient>,
+        device: crate::account::api::DeviceInfo,
+        options: ConnectionMediaOptions,
+        visit: &str,
+        record: &super::record::VisitRecord,
+        reporter: Option<&ConnectionProgressReporter>,
+        cancel: &CancellationToken,
+    ) -> Result<Self> {
+        report_progress(reporter, 1, t().session.progress_reading_local, "");
+        cancellable(cancel, client.ready()).await?;
+        let controller_device_id = client.device_id();
+        crate::account::api::validate_device_id(&controller_device_id)?;
+        let target_device_id = device.validated_device_id()?.to_owned();
+        if target_device_id == controller_device_id {
+            bail!("{}", t().session.error_connect_to_self);
+        }
+        if !device.is_connected() {
+            return Err(crate::account::api::ApiFailure::new(
+                farwing_protocol::error::ErrorCode::DeviceOffline,
+                (t().session.error_device_offline)(&device.alias),
+            ).into());
+        }
+        let purpose = if options.camera_only {
+            crate::account::api::Purpose::Camera
+        } else {
+            crate::account::api::Purpose::Desktop
+        };
+        validate_viewable(&device, &device.alias, purpose.required_cap())?;
+        let profile = options.resolve(LocalDisplayInfo::FALLBACK)?;
+        let mut resolved = ResolvedConnection {
+            client,
+            visit: visit.to_owned(),
+            target_device_id,
+            controller_device_id,
+            profile,
+            default_codec: profile.codec,
+            transport: options.transport,
+            summary: ConnectionSummary { alias: device.alias },
+            assist: None,
+            preferences: None,
+            audio_preferences: None,
+            target_platform: device.platform,
+        };
+        let mut retries = 0;
+        let connection = resolved.connect(reporter, cancel, &mut retries).await?;
+        record.bind(
+            Some(resolved.client),
+            &resolved.visit,
+            &resolved.target_device_id,
+            &resolved.controller_device_id,
+            None,
+        );
+        Ok(connection)
+    }
 }

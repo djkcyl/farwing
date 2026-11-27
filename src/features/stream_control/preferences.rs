@@ -102,12 +102,15 @@ impl StreamControlHandle {
                 Some((t().features.stream_mouse_throttle_failed)(&format!("{error:#}")));
         }
         self.apply_playout_locked(&state);
+        #[cfg(windows)]
+        {
         self.clipboard.set_files(preferences.clipboard_files);
         if let Err(error) = self.clipboard.set_enabled(preferences.clipboard_sync) {
             self.clipboard
                 .protocol_error((t().features.stream_clipboard_restore_failed)(
                     &format!("{error:#}"),
                 ));
+        }
         }
         self.refresh_mouse_policy(&mut state);
         // Loading is not a user edit and must not overwrite the saved record.
@@ -131,6 +134,7 @@ impl StreamControlHandle {
         self.publish_device_preferences(&mut state);
         self.request_stream_locked(&mut state, None).map(drop)
     }
+    #[cfg(windows)]
     pub(crate) fn set_clipboard_enabled(&self, enabled: bool) -> Result<()> {
         self.clipboard.set_enabled(enabled)?;
         let mut state = lock(&self.shared);
@@ -141,6 +145,7 @@ impl StreamControlHandle {
         self.refresh_mouse_policy(&mut state);
         Ok(())
     }
+    #[cfg(windows)]
     pub(crate) fn set_clipboard_files(&self, enabled: bool) {
         self.clipboard.set_files(enabled);
         let mut state = lock(&self.shared);

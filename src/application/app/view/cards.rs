@@ -4,6 +4,7 @@
 use super::*;
 use crate::application::app::friends::cap_label;
 use farwing_protocol::caps;
+pub(super) use crate::ui::controls::{card, chip};
 
 /// Capabilities by what they let the other side do, in display order.
 const GROUPS: [&[&str]; 3] = [
@@ -56,11 +57,6 @@ const AVATAR_COLORS: [Color32; 6] = [
     Color32::from_rgb(92, 196, 214),
 ];
 
-/// The shared card: the controls' section frame with room inside.
-pub(super) fn card() -> egui::Frame {
-    crate::ui::controls::section_frame().inner_margin(egui::Margin::symmetric(14, 12))
-}
-
 /// Page title with one explanatory line under it, actions on the right.
 pub(super) fn page_header(
     ui: &mut egui::Ui,
@@ -97,22 +93,6 @@ pub(super) fn section_heading(
         }
         ui.with_layout(egui::Layout::right_to_left(Align::Center), actions);
     });
-}
-
-/// A small rounded label.
-pub(super) fn chip(ui: &mut egui::Ui, text: &str, color: Color32) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(
-        text.into(),
-        FontId::proportional(theme::TINY),
-        color,
-    );
-    let (rect, response) =
-        ui.allocate_exact_size(galley.size() + vec2(14.0, 6.0), Sense::hover());
-    ui.painter()
-        .rect_filled(rect, rect.height() / 2.0, color.gamma_multiply(0.16));
-    ui.painter()
-        .galley(rect.center() - galley.size() / 2.0, galley, color);
-    response
 }
 
 /// A round avatar with the first letter of `name`; `seed` picks the color.

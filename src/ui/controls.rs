@@ -1,28 +1,34 @@
 //! Shared control appearance for the center, viewer menus and node editor.
 use super::theme::{self, HOVER, LINE, MUTED, SURFACE, TEXT};
 use crate::i18n::t;
-use egui::{Color32, RichText, Stroke, vec2};
+use egui::{Color32, FontId, RichText, Sense, Stroke, vec2};
 mod audio_quality;
 mod diagnostics;
-pub(crate) use audio_quality::{
-    audio_quality, audio_quality_segments, remote_audio_quality, remote_audio_quality_inline,
-};
+#[cfg(windows)]
+pub(crate) use audio_quality::audio_quality;
+pub(crate) use audio_quality::{audio_quality_segments, remote_audio_quality, remote_audio_quality_inline};
 mod dialogs;
+#[cfg(windows)]
 pub(crate) use diagnostics::{
     diagnostics_action, diagnostics_empty, diagnostics_label, diagnostics_row, diagnostics_table,
 };
+#[cfg(windows)]
 mod host_notice;
 mod inputs;
+#[cfg(windows)]
 pub(crate) use host_notice::host_notice;
 mod input_rate;
+#[cfg(windows)]
 pub(crate) use input_rate::input_rate_warning;
 mod notices;
 pub(crate) use inputs::{number_input, singleline};
+pub(crate) use notices::{notice, observe_notice, show_notices};
 pub(crate) use notices::{
-    clear_notice, notice, notice_answer, notice_with_action, observe_form_notice, observe_notice,
-    observe_notice_action,
-    progress_notice, show_notices,
+    clear_notice, notice_answer, notice_with_action, observe_notice_action,
+    progress_notice,
 };
+#[cfg(windows)]
+pub(crate) use notices::observe_form_notice;
 pub(crate) mod file_icons;
 pub(crate) mod files;
 pub(crate) use dialogs::{DialogAction, DialogIcon, dialog_actions, dialog_header};
@@ -38,9 +44,8 @@ pub(crate) use performance::{
     performance_trace,
 };
 pub(crate) use updates::update_actions;
-pub(crate) use viewer_caption::{
-    ViewerCaptionIcon, viewer_caption_button, viewer_fullscreen_handle, viewer_participants_button,
-};
+pub(crate) use viewer_caption::{ViewerCaptionIcon, viewer_caption_button};
+pub(crate) use viewer_caption::{viewer_fullscreen_handle, viewer_participants_button};
 
 pub const HEIGHT: f32 = theme::CONTROL_HEIGHT;
 pub const COMPACT_HEIGHT: f32 = theme::COMPACT_HEIGHT;
@@ -805,6 +810,27 @@ pub(crate) fn section_frame() -> egui::Frame {
         .corner_radius(theme::PANEL_RADIUS)
 }
 
+/// The shared card: the controls' section frame with room inside.
+pub(crate) fn card() -> egui::Frame {
+    section_frame().inner_margin(egui::Margin::symmetric(14, 12))
+}
+
+/// A small rounded label.
+pub(crate) fn chip(ui: &mut egui::Ui, text: &str, color: Color32) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(
+        text.into(),
+        FontId::proportional(theme::TINY),
+        color,
+    );
+    let (rect, response) =
+        ui.allocate_exact_size(galley.size() + vec2(14.0, 6.0), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, rect.height() / 2.0, color.gamma_multiply(0.16));
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, color);
+    response
+}
+
 pub(crate) fn visibility_button(ui: &mut egui::Ui, visible: &mut bool) -> egui::Response {
     let (_, response) = icon_button_area(ui, HEIGHT);
     response.widget_info(|| {
@@ -1398,8 +1424,11 @@ mod annotation_color;
 pub(crate) use annotation::{
     AnnotationIcon, annotation_board, annotation_button, annotation_clear_dialog, annotation_color,
     annotation_frame, annotation_header, annotation_tool_button, annotation_tool_frame,
-    annotation_width, paint_annotation_icon,
+    annotation_width,
 };
+#[cfg(windows)]
+pub(crate) use annotation::paint_annotation_icon;
 
 mod task_status;
+#[cfg(windows)]
 pub(crate) use task_status::task_button_progress;

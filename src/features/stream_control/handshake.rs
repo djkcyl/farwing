@@ -5,6 +5,7 @@ use super::wire::{SessionBody, encode_pb_echo_response};
 use super::{HelloStatus, StreamControlHandle, lock, negotiated};
 use crate::i18n::t;
 use crate::protocol::peer::{self, FrameType};
+#[cfg(windows)]
 use crate::protocol::peer::feature;
 use crate::media::VideoCodec;
 use anyhow::{Result, anyhow};
@@ -40,6 +41,7 @@ impl StreamControlHandle {
                 && !state.annotation.enabled
                 && !state.annotation.toggling();
             self.microphone.disconnect();
+            #[cfg(windows)]
             self.clipboard.suspend();
             state.peer = Default::default();
             state.grants = None;
@@ -126,6 +128,7 @@ impl StreamControlHandle {
         if !enabled {
             state.restore_input_pending = false;
             self.disable_microphone_locked(&mut state);
+            #[cfg(windows)]
             self.clipboard.suspend();
         }
         if enabled {
@@ -208,9 +211,7 @@ impl StreamControlHandle {
             // The answer carries the display list or the stream state the
             // request left, or nothing.
             match received.body {
-                Some(SessionBody::Displays(list)) => {
-                    super::display_settings::apply_displays(&mut state, list)
-                }
+                Some(SessionBody::Displays(list)) => self.apply_displays(&mut state, list),
                 Some(SessionBody::Stream(stream)) => apply_stream_state(&mut state, stream),
                 Some(SessionBody::Cameras(list)) => state.cameras.list = list.cameras,
                 _ => {}
@@ -229,11 +230,12 @@ impl StreamControlHandle {
                     tracks = forward.tracks.len(), "host forwarding instruction");
                 self.forward.send_replace(Some(forward));
             }
+            #[cfg(windows)]
             SessionBody::ClipboardFiles(permission) => {
                 state.clipboard_files_allowed = permission.enabled;
             }
             SessionBody::Stream(stream) => apply_stream_state(&mut state, stream),
-            SessionBody::Displays(list) => super::display_settings::apply_displays(&mut state, list),
+            SessionBody::Displays(list) => self.apply_displays(&mut state, list),
             SessionBody::Cameras(list) => state.cameras.list = list.cameras,
             other if response => {
                 tracing::debug!(message = other.name(), "unmatched session response")
@@ -280,9 +282,12 @@ impl StreamControlHandle {
         match event.kind {
             kind::UPDATING => {
                 // The host installs a locally confirmed update and comes back.
+                #[cfg(windows)]
                 if let Some(upgrade) = &state.remote_upgrade {
                     upgrade.host_updating();
                 }
+                #[cfg(target_os = "linux")]
+                state.remote_upgrade.host_updating();
                 state.mouse.disable();
                 state.annotation.disconnect();
             }
@@ -309,6 +314,7 @@ impl StreamControlHandle {
     fn handle_permissions(&self, body: &[u8]) -> Result<()> {
         let grants = crate::protocol::host_event::decode_permissions(body)?;
         tracing::info!(?grants, "session capabilities received");
+        #[cfg(windows)]
         self.files
             .permit(grants.iter().any(|cap| cap == farwing_protocol::caps::FILES));
         let mut state = lock(&self.shared);
@@ -321,7 +327,7 @@ impl StreamControlHandle {
             if !(control_only && state.mouse.mode() != crate::features::remote_input::MouseMode::View) {
                 let labels = |list: &[&String]| {
                     list.iter()
-                        .map(|c| crate::application::app::friends::cap_label(c))
+                        .map(|c| crate::i18n::cap_label(c))
                         .collect::<Vec<_>>()
                         .join("、")
                 };
@@ -344,6 +350,7 @@ impl StreamControlHandle {
         };
         let hello = &received.hello;
         let features = received.features();
+        #[cfg(windows)]
         self.files.capabilities(features.has(feature::FILES));
         let mut state = lock(&self.shared);
         state.peer = features;
@@ -386,4 +393,38 @@ impl StreamControlHandle {
         Ok(())
     }
 
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::StreamControlHandle;
+    use crate::diagnostics::performance::PerformanceMonitor;
+    use crate::media::{ConnectionMediaOptions, LocalDisplayInfo};
+    use crate::protocol::host_event::{self, kind};
+    use std::task::{Context, Poll, Waker};
+
+    #[test]
+    fn host_update_frame_wakes_linux_viewer() {
+        let profile = ConnectionMediaOptions::default()
+            .resolve(LocalDisplayInfo::FALLBACK)
+            .unwrap();
+        let (control, _outgoing, _echo) =
+            StreamControlHandle::new(profile, PerformanceMonitor::new(""));
+        let upgrade = control.remote_upgrade();
+        let mut announced = std::pin::pin!(upgrade.wait_for_announcement());
+        let mut cx = Context::from_waker(Waker::noop());
+
+        control
+            .handle_protocol_message(&host_event::encode(kind::RESTARTING, ""))
+            .unwrap();
+        assert_eq!(announced.as_mut().poll(&mut cx), Poll::Pending);
+
+        control
+            .handle_protocol_message(&host_event::encode(kind::UPDATING, ""))
+            .unwrap();
+        let Poll::Ready(started) = announced.as_mut().poll(&mut cx) else {
+            panic!("the Linux viewer did not observe the host update");
+        };
+        assert_eq!(upgrade.started_at(), Some(started));
+    }
 }

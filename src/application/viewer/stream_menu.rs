@@ -1,4 +1,5 @@
 //! Viewer-only stream settings UI. Protocol decisions stay in stream_control.
+use crate::features::viewing_settings::PerformancePanelMode;
 use crate::i18n::t;
 use egui::{Align, FontId, RichText, Sense, Stroke, vec2};
 
@@ -7,8 +8,11 @@ use crate::features::stream_control::{
 };
 use crate::media::FrameRateChoice;
 
+#[path = "stream_menu/camera_menu.rs"]
 mod camera_menu;
+#[path = "stream_menu/display_menu.rs"]
 mod display_menu;
+#[path = "stream_menu/topology_menu.rs"]
 pub(super) mod topology_menu;
 
 pub(super) fn tab_display_menu(
@@ -36,6 +40,7 @@ enum Page {
     Advanced,
     Audio,
     Microphone,
+    #[cfg(windows)]
     Mouse,
     DisplayAspect,
     Display,
@@ -54,6 +59,7 @@ impl Page {
             Self::Advanced => t.advanced_settings,
             Self::Audio => t.audio,
             Self::Microphone => t.microphone,
+            #[cfg(windows)]
             Self::Mouse => t.mouse_mode,
             Self::DisplayAspect => t.local_aspect,
             Self::Display => t.display_settings,
@@ -71,12 +77,18 @@ pub(super) struct StreamControlUi {
     display: display_menu::DisplayMenu,
     pub(super) local_error: Option<String>,
     format_confirm: Option<(i32, StreamControlSettings)>,
+    remote_notice_shown: Option<u64>,
+    #[cfg(windows)]
     /// A running "Get remote clipboard": the number of formats or the error.
     clipboard_pull: Option<std::sync::Arc<std::sync::Mutex<Option<Result<usize, String>>>>>,
 }
 
+fn viewport_key(viewport: egui::ViewportId, name: &'static str) -> egui::Id {
+    egui::Id::new((viewport, name))
+}
+
 pub(super) struct LocalViewSettings {
-    pub performance_mode: super::PerformancePanelMode,
+    pub performance_mode: PerformancePanelMode,
     pub performance_always_visible: bool,
     pub intercept_shortcuts: bool,
     pub system_command: Option<crate::features::remote_input::SystemCommand>,
@@ -149,9 +161,10 @@ pub(in crate::application::viewer) fn lacking(
 
 /// Why something is unavailable: its permission was not granted.
 pub(in crate::application::viewer) fn missing(cap: &str) -> String {
-    (t().viewer.permission_missing)(crate::application::app::friends::cap_label(cap))
+    (t().viewer.permission_missing)(crate::i18n::cap_label(cap))
 }
 
+#[cfg(windows)]
 /// A bitrate in the quality menu: `1.5M`, `8M`, `22M`.
 fn mbps(bps: u32) -> String {
     let mbps = f64::from(bps) / 1_000_000.0;
@@ -213,6 +226,66 @@ fn switch_row(ui: &mut egui::Ui, label: &str, value: &mut bool) -> egui::Respons
     ui.painter()
         .circle_filled(center, 7.0, crate::ui::theme::TEXT);
     response
+}
+
+fn draw_mouse_throttle(
+    ui: &mut egui::Ui,
+    handle: &StreamControlHandle,
+    error: &mut Option<String>,
+) {
+    let preferences = handle.device_preferences();
+    let mut throttle = preferences.mouse_throttle;
+    let mut rate = preferences.mouse_throttle_rate;
+    let mut changed = switch_row(ui, t().viewer.mouse_throttle, &mut throttle).changed();
+    ui.add_enabled_ui(throttle, |ui| {
+        ui.horizontal(|ui| {
+            for choice in crate::features::remote_input::MouseThrottleRate::ALL {
+                if ui
+                    .add_sized(
+                        [(WIDTH - 12.0) / 3.0, ROW_HEIGHT],
+                        egui::Button::new(choice.label()).selected(rate == choice),
+                    )
+                    .clicked()
+                {
+                    changed |= rate != choice;
+                    rate = choice;
+                }
+            }
+        });
+    });
+    if changed {
+        *error = handle
+            .set_mouse_throttle(throttle, rate)
+            .err()
+            .map(|e| format!("{e:#}"));
+    }
+}
+
+fn microphone_status(
+    ui: &mut egui::Ui,
+    handle: &StreamControlHandle,
+    mic: &crate::media::microphone::Snapshot,
+) {
+    if !mic.enabled {
+        return;
+    }
+    let label = if mic.pending {
+        t().viewer.mic_waiting_remote
+    } else if mic.capturing {
+        t().viewer.mic_sending
+    } else if mic.remote_active {
+        t().viewer.mic_opening
+    } else {
+        t().viewer.mic_waiting_app
+    };
+    ui.label(RichText::new(label).color(MUTED));
+    if mic.capturing {
+        ui.add(egui::ProgressBar::new(mic.level.clamp(0.0, 1.0)).text(&mic.device));
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+    }
+    if mic.error.is_some() && menu_row(ui, t().viewer.retry_microphone, "", None, true, false).clicked() {
+        handle.microphone().retry();
+    }
 }
 
 fn speaker_button(ui: &mut egui::Ui, volume: u8, muted: &mut bool) {
@@ -617,9 +690,8 @@ pub(super) fn show_stream_control_window(
     // refused control request). A refusal for lack of the grant offers to
     // ask the host's user for control in this connection.
     if let Some((number, notice, ask)) = &snapshot.remote_notice {
-        let shown = egui::Id::new("remote-session-notice-shown");
-        if ctx.data(|d| d.get_temp::<u64>(shown)) != Some(*number) {
-            ctx.data_mut(|d| d.insert_temp(shown, *number));
+        if state.remote_notice_shown != Some(*number) {
+            state.remote_notice_shown = Some(*number);
             if *ask {
                 crate::ui::controls::notice_with_action(
                     ctx,
@@ -647,7 +719,10 @@ pub(super) fn show_stream_control_window(
     }
     let multi_screen = snapshot.screens.len() > 1;
     // A camera tab's menu is its camera's; a screen's is the stream's.
-    let camera = crate::features::host::cameras::is_camera(screen_id);
+    let camera = snapshot
+        .screens
+        .iter()
+        .any(|screen| screen.id == screen_id && screen.display.is_camera());
     match state.page {
         Page::Camera(_) if !camera => state.page = Page::Quality,
         Page::Camera(_) => {}
@@ -679,8 +754,9 @@ pub(super) fn show_stream_control_window(
     } else {
         WIDTH
     };
+    let viewport = ctx.viewport_id();
     egui::Window::new(t().viewer.stream_quality)
-        .id(egui::Id::new("runtime-stream-settings-window"))
+        .id(viewport_key(viewport, "runtime-stream-settings-window"))
         .open(&mut open)
         .collapsible(false)
         .auto_sized()
@@ -745,21 +821,22 @@ pub(super) fn show_stream_control_window(
                             .max_height((ctx.content_rect().height() - 150.0).max(140.0))
                             .show(ui, |ui| {
                                 let preferences = handle.device_preferences();
-                                let codec = preferences.codec;
                                 // Several participants: only the one holding control
                                 // chooses its picture; the others share one stream.
                                 let locked = handle.participants().shared_view();
                                 if locked {
+                                    #[cfg(windows)]
+                                    let fps = Some(crate::features::host::shared_view::FPS);
+                                    #[cfg(target_os = "linux")]
+                                    let fps = None;
                                     ui.label(
-                                        RichText::new((t().viewer.shared_view)(
-                                            crate::features::host::shared_view::FPS,
-                                        ))
+                                        RichText::new((t().viewer.shared_view)(fps))
                                         .size(crate::ui::theme::SMALL)
                                         .strong(),
                                     );
                                     section_separator(ui);
                                 }
-                                if menu_row(ui, t().viewer.page_codec, codec.map_or(t().viewer.follow_global, |value| value.label()), None, !locked, true).clicked() {
+                                if menu_row(ui, t().viewer.page_codec, preferences.codec.map_or(t().viewer.follow_global, |value| value.label()), None, !locked, true).clicked() {
                                     state.page = Page::Codec;
                                 }
                                 if menu_row(ui, t().viewer.page_weak_network, preferences.weak_network.label(), None, !locked, true)
@@ -787,14 +864,21 @@ pub(super) fn show_stream_control_window(
                                 );
                                 // Each tier's ceiling for this screen at the chosen frame
                                 // rate and colour, as the host computes it.
-                                let viewed = snapshot.screens.iter().find(|s| s.id == screen_id);
-                                let fps = settings.frame_rate.value(snapshot.local_display);
-                                let ceiling = |quality: StreamQuality| {
-                                    viewed
-                                        .and_then(|s| quality.ceiling(s, fps, settings.true_color))
-                                        .map(mbps)
-                                        .unwrap_or_default()
+                                #[cfg(windows)]
+                                let ceiling = {
+                                    let viewed = snapshot.screens.iter().find(|s| s.id == screen_id);
+                                    let fps = settings.frame_rate.value(snapshot.local_display);
+                                    let true_color = settings.true_color;
+                                    move |quality: StreamQuality| {
+                                        viewed
+                                            .and_then(|s| quality.ceiling(s, fps, true_color))
+                                            .map(mbps)
+                                            .unwrap_or_default()
+                                    }
                                 };
+                                // The host-only bitrate model is not built on Linux.
+                                #[cfg(target_os = "linux")]
+                                let ceiling = |_: StreamQuality| String::new();
                                 let clear = (StreamQuality::Clear, t().viewer.quality_high, ceiling(StreamQuality::Clear));
                                 let smooth = (StreamQuality::Fast, t().viewer.quality_smooth, ceiling(StreamQuality::Fast));
                                 // Sharing the picture: 自动, 高清 or 流畅; a stored
@@ -1019,8 +1103,13 @@ pub(super) fn show_stream_control_window(
                     }
                     Page::Codec => {
                         let codec = handle.device_preferences().codec;
+                        #[cfg(windows)]
+                        let choices = crate::media::CodecPreference::PREFERRED.into_iter();
+                        #[cfg(target_os = "linux")]
+                        let choices = crate::media::decoder::codec_preferences()
+                            .filter(|choice| !choice.restricted());
                         for value in std::iter::once(None)
-                            .chain(crate::media::CodecPreference::PREFERRED.into_iter().map(Some)) {
+                            .chain(choices.map(Some)) {
                             if menu_row(ui, value.map_or(t().viewer.follow_global, |value| value.label()), "", Some(codec == value), true, false).clicked()
                                 && codec != value
                                 && let Err(error) = handle.set_codec_preference(value)
@@ -1090,7 +1179,7 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", t().v
                                 }
                                 if menu_row(ui, t().viewer.audio_only_mode, "", None, true, false).clicked() {
                                     handle.request_audio_only(true);
-                                    state.open = false;
+                                    close = true;
                                 }
                                 section_separator(ui);
                                 let mut relay = snapshot.network.relay_enabled;
@@ -1115,8 +1204,8 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", t().v
                                 );
                                 ui.horizontal(|ui| {
                                     for (mode, label) in [
-                                        (super::PerformancePanelMode::Compact, t().viewer.performance_compact),
-                                        (super::PerformancePanelMode::Detailed, t().viewer.performance_detailed),
+                                        (PerformancePanelMode::Compact, t().viewer.performance_compact),
+                                        (PerformancePanelMode::Detailed, t().viewer.performance_detailed),
                                     ] {
                                         if ui.add_sized(
                                             [(WIDTH - 6.0) / 2.0, ROW_HEIGHT],
@@ -1126,22 +1215,25 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", t().v
                                         }
                                     }
                                 });
-                                let mode_label = match snapshot.mouse_preference {
-                                    MouseMode::Smart | MouseMode::View => t().viewer.mouse_smart,
-                                    MouseMode::Remote => t().viewer.mouse_remote,
-                                    MouseMode::Local => t().viewer.mouse_local,
-                                };
-                                if menu_row(ui, t().viewer.mouse_mode, mode_label, None, true, true).clicked()
+                                #[cfg(windows)]
                                 {
-                                    state.page = Page::Mouse;
+                                    let mode_label = match snapshot.mouse_preference {
+                                        MouseMode::Smart | MouseMode::View => t().viewer.mouse_smart,
+                                        MouseMode::Remote => t().viewer.mouse_remote,
+                                        MouseMode::Local => t().viewer.mouse_local,
+                                    };
+                                    if menu_row(ui, t().viewer.mouse_mode, mode_label, None, true, true).clicked() {
+                                        state.page = Page::Mouse;
+                                    }
+                                    switch_row(ui, t().viewer.intercept_shortcuts, &mut view.intercept_shortcuts);
                                 }
-                                switch_row(ui, t().viewer.intercept_shortcuts, &mut view.intercept_shortcuts);
+                                #[cfg(target_os = "linux")]
+                                draw_mouse_throttle(ui, handle, &mut state.local_error);
                                 // Pointing while not controlling: shown to the host and the others.
                                 let mut share_pointer = handle.share_pointer();
                                 if switch_row(ui, t().viewer.share_pointer, &mut share_pointer).changed() {
                                     handle.set_share_pointer(share_pointer);
                                 }
-                                let clipboard = handle.clipboard();
                                 let input=handle.microphone().selected_input();
                                 let devices=handle.microphone().input_devices();
                                 let name=input.as_ref().map(|id|devices.devices.iter().find(|d|&d.id==id).map(|d|d.name.as_str()).unwrap_or(if devices.error.is_some() {t().viewer.selected_microphone}else{t().viewer.selected_device_disconnected})).unwrap_or(t().viewer.follow_system_default);
@@ -1150,81 +1242,77 @@ crate::ui::controls::observe_notice(ui.ctx(), "audio-output-disconnected", t().v
                                     state.page=Page::Microphone;
                                     state.local_error=handle.microphone().refresh_input_devices().err().map(|e|e.to_string());
                                 }
-                                if mic.enabled {
-                                    let label=if mic.pending {t().viewer.mic_waiting_remote}else if mic.capturing {t().viewer.mic_sending}else if mic.remote_active {t().viewer.mic_opening}else{t().viewer.mic_waiting_app};
-                                    ui.label(RichText::new(label).color(MUTED));
-                                    if mic.capturing {
-                                        ui.add(egui::ProgressBar::new(mic.level.clamp(0.0,1.0)).text(&mic.device));
-                                        ctx.request_repaint_after(std::time::Duration::from_millis(100));
-                                    }
-                                    if mic.error.is_some() && menu_row(ui,t().viewer.retry_microphone,"",None,true,false).clicked() {handle.microphone().retry();}
-                                }
-                                let clip = clipboard.snapshot();
-                                let clipboard_granted = granted(handle, farwing_protocol::caps::CLIPBOARD);
-                                // Sync writes the host clipboard: it also needs control.
-                                let sync_lacking = lacking(
-                                    handle,
-                                    &[farwing_protocol::caps::CLIPBOARD, farwing_protocol::caps::CONTROL],
-                                );
-                                let mut enabled = clip.enabled && sync_lacking.is_none();
-                                let sync = ui
-                                    .add_enabled_ui(sync_lacking.is_none(), |ui| switch_row(ui, t().viewer.clipboard_sync, &mut enabled))
-                                    .inner;
-                                let sync = match sync_lacking {
-                                    None => sync,
-                                    Some(cap) => sync.on_disabled_hover_text(missing(cap)),
-                                };
-                                if sync.changed() {
-                                    if let Err(error) = handle.set_clipboard_enabled(enabled) {
-                                        state.local_error = Some(error.to_string());
-                                    }
-                                }
-                                if enabled {
-                                    let files_granted = granted(handle, farwing_protocol::caps::FILES);
-                                    let mut files = clip.files && files_granted;
-                                    let copy = ui
-                                        .add_enabled_ui(files_granted, |ui| switch_row(ui, t().viewer.file_copy, &mut files))
+                                microphone_status(ui, handle, &mic);
+                                #[cfg(windows)]
+                                {
+                                    let clipboard = handle.clipboard();
+                                    let clip = clipboard.snapshot();
+                                    let clipboard_granted = granted(handle, farwing_protocol::caps::CLIPBOARD);
+                                    // Sync writes the host clipboard: it also needs control.
+                                    let sync_lacking = lacking(
+                                        handle,
+                                        &[farwing_protocol::caps::CLIPBOARD, farwing_protocol::caps::CONTROL],
+                                    );
+                                    let mut enabled = clip.enabled && sync_lacking.is_none();
+                                    let sync = ui
+                                        .add_enabled_ui(sync_lacking.is_none(), |ui| switch_row(ui, t().viewer.clipboard_sync, &mut enabled))
                                         .inner;
-                                    let copy = if files_granted {
-                                        copy
-                                    } else {
-                                        copy.on_disabled_hover_text(missing(farwing_protocol::caps::FILES))
+                                    let sync = match sync_lacking {
+                                        None => sync,
+                                        Some(cap) => sync.on_disabled_hover_text(missing(cap)),
                                     };
-                                    if copy.changed() {
-                                        handle.set_clipboard_files(files);
+                                    if sync.changed() {
+                                        if let Err(error) = handle.set_clipboard_enabled(enabled) {
+                                            state.local_error = Some(error.to_string());
+                                        }
                                     }
-                                    crate::ui::controls::progress_notice(ui.ctx(),"clipboard-wait",t().viewer.clipboard_sync,(!clip.active && snapshot.mouse_mode != MouseMode::View).then_some(t().viewer.clipboard_waiting));
-crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", t().viewer.clipboard_sync_failed, crate::ui::controls::DialogIcon::Error, clip.error.as_deref());
-                                }
-                                // Manual copy of the host clipboard: also for participants
-                                // without automatic sync (view mode, not controlling).
-                                let pulling = state.clipboard_pull.is_some();
-                                let pull = menu_row(ui, t().viewer.pull_clipboard, if pulling { t().viewer.pulling } else { "" }, None, clipboard_granted && clip.active && !pulling, false);
-                                let pull = if clipboard_granted {
-                                    pull
-                                } else {
-                                    pull.on_disabled_hover_text(missing(farwing_protocol::caps::CLIPBOARD))
-                                };
-                                if pull.clicked() {
-                                    let result = std::sync::Arc::new(std::sync::Mutex::new(None));
-                                    state.clipboard_pull = Some(result.clone());
-                                    let clipboard = clipboard.clone();
-                                    let repaint = ctx.clone();
-                                    std::thread::spawn(move || {
-                                        let value = clipboard.pull().map_err(|e| e.to_string());
-                                        *result.lock().unwrap_or_else(|e| e.into_inner()) = Some(value);
-                                        repaint.request_repaint();
-                                    });
-                                }
-                                let finished = state.clipboard_pull.as_ref().and_then(|r| r.lock().unwrap_or_else(|e| e.into_inner()).take());
-                                if let Some(result) = finished {
-                                    state.clipboard_pull = None;
-                                    match result {
-                                        Ok(_) => crate::ui::controls::notice(ui.ctx(), "clipboard-pull", t().viewer.pull_clipboard, crate::ui::controls::DialogIcon::Ready, t().viewer.copied_to_local_clipboard),
-                                        Err(error) => crate::ui::controls::notice(ui.ctx(), "clipboard-pull", t().viewer.pull_clipboard, crate::ui::controls::DialogIcon::Error, error),
+                                    if enabled {
+                                        let files_granted = granted(handle, farwing_protocol::caps::FILES);
+                                        let mut files = clip.files && files_granted;
+                                        let copy = ui
+                                            .add_enabled_ui(files_granted, |ui| switch_row(ui, t().viewer.file_copy, &mut files))
+                                            .inner;
+                                        let copy = if files_granted {
+                                            copy
+                                        } else {
+                                            copy.on_disabled_hover_text(missing(farwing_protocol::caps::FILES))
+                                        };
+                                        if copy.changed() {
+                                            handle.set_clipboard_files(files);
+                                        }
+                                        crate::ui::controls::progress_notice(ui.ctx(),"clipboard-wait",t().viewer.clipboard_sync,(!clip.active && snapshot.mouse_mode != MouseMode::View).then_some(t().viewer.clipboard_waiting));
+                                        crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", t().viewer.clipboard_sync_failed, crate::ui::controls::DialogIcon::Error, clip.error.as_deref());
                                     }
-                                } else if pulling {
-                                    ctx.request_repaint_after(std::time::Duration::from_millis(200));
+                                    // Manual copy of the host clipboard: also for participants
+                                    // without automatic sync (view mode, not controlling).
+                                    let pulling = state.clipboard_pull.is_some();
+                                    let pull = menu_row(ui, t().viewer.pull_clipboard, if pulling { t().viewer.pulling } else { "" }, None, clipboard_granted && clip.active && !pulling, false);
+                                    let pull = if clipboard_granted {
+                                        pull
+                                    } else {
+                                        pull.on_disabled_hover_text(missing(farwing_protocol::caps::CLIPBOARD))
+                                    };
+                                    if pull.clicked() {
+                                        let result = std::sync::Arc::new(std::sync::Mutex::new(None));
+                                        state.clipboard_pull = Some(result.clone());
+                                        let clipboard = clipboard.clone();
+                                        let repaint = ctx.clone();
+                                        std::thread::spawn(move || {
+                                            let value = clipboard.pull().map_err(|e| e.to_string());
+                                            *result.lock().unwrap_or_else(|e| e.into_inner()) = Some(value);
+                                            repaint.request_repaint();
+                                        });
+                                    }
+                                    let finished = state.clipboard_pull.as_ref().and_then(|r| r.lock().unwrap_or_else(|e| e.into_inner()).take());
+                                    if let Some(result) = finished {
+                                        state.clipboard_pull = None;
+                                        match result {
+                                            Ok(_) => crate::ui::controls::notice(ui.ctx(), "clipboard-pull", t().viewer.pull_clipboard, crate::ui::controls::DialogIcon::Ready, t().viewer.copied_to_local_clipboard),
+                                            Err(error) => crate::ui::controls::notice(ui.ctx(), "clipboard-pull", t().viewer.pull_clipboard, crate::ui::controls::DialogIcon::Error, error),
+                                        }
+                                    } else if pulling {
+                                        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+                                    }
                                 }
                                 let can_send = snapshot.ready
                                     && !snapshot.mouse_pending
@@ -1273,6 +1361,36 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", t().viewer.clip
                         }
                     }
                     Page::Microphone => {
+                        #[cfg(target_os = "linux")]
+                        {
+                            let granted = granted(handle, farwing_protocol::caps::MICROPHONE);
+                            let mut enabled = mic.enabled;
+                            let available = enabled
+                                || (granted && snapshot.ready && handle.microphone_available());
+                            let toggle = ui
+                                .add_enabled_ui(available, |ui| {
+                                    switch_row(ui, t().viewer.microphone, &mut enabled)
+                                })
+                                .inner;
+                            let toggle = if granted {
+                                toggle.on_disabled_hover_text(t().viewer.mic_unavailable)
+                            } else {
+                                toggle.on_disabled_hover_text(missing(
+                                    farwing_protocol::caps::MICROPHONE,
+                                ))
+                            };
+                            if toggle.changed() {
+                                state.local_error = match handle.set_microphone_enabled(enabled) {
+                                    Ok(()) => {
+                                        crate::ui::controls::clear_notice(ctx, "microphone-error");
+                                        None
+                                    }
+                                    Err(error) => Some(error.to_string()),
+                                };
+                            }
+                            microphone_status(ui, handle, &mic);
+                            section_separator(ui);
+                        }
                         let microphone=handle.microphone();
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(t().controls.audio_quality).size(crate::ui::theme::SMALL).color(MUTED));
@@ -1314,6 +1432,7 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", t().viewer.clip
                             });
                         crate::ui::controls::observe_notice(ui.ctx(),"microphone-device-query",t().viewer.microphone_devices,crate::ui::controls::DialogIcon::Error,inputs.error.as_deref());
                     }
+                    #[cfg(windows)]
                     Page::Mouse => {
                         for (mode, label) in [
                             (MouseMode::Smart, t().viewer.mouse_smart),
@@ -1340,26 +1459,7 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", t().viewer.clip
                             }
                         }
                         section_separator(ui);
-                        let preferences = handle.device_preferences();
-                        let mut throttle = preferences.mouse_throttle;
-                        let mut rate = preferences.mouse_throttle_rate;
-                        let mut changed = switch_row(ui, t().viewer.mouse_throttle, &mut throttle).changed();
-                        ui.add_enabled_ui(throttle, |ui| {
-                            ui.horizontal(|ui| {
-                                for choice in crate::features::remote_input::MouseThrottleRate::ALL {
-                                    if ui.add_sized(
-                                        [(WIDTH - 12.0) / 3.0, ROW_HEIGHT],
-                                        egui::Button::new(choice.label()).selected(rate == choice),
-                                    ).clicked() {
-                                        changed |= rate != choice;
-                                        rate = choice;
-                                    }
-                                }
-                            });
-                        });
-                        if changed {
-                            state.local_error = handle.set_mouse_throttle(throttle, rate).err().map(|e|format!("{e:#}"));
-                        }
+                        draw_mouse_throttle(ui, handle, &mut state.local_error);
                         separator(ui);
                         ui.add_space(7.0);
                         ui.label(
@@ -1415,7 +1515,7 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", t().viewer.clip
             });
         });
     if let Some((target, proposed)) = state.format_confirm {
-        let response = egui::Modal::new(egui::Id::new("stream-format-confirmation"))
+        let response = egui::Modal::new(viewport_key(viewport, "stream-format-confirmation"))
             .frame(crate::ui::controls::dialog_frame())
             .show(ctx, |ui| {
                 ui.set_width(340.0);
@@ -1460,15 +1560,12 @@ crate::ui::controls::observe_notice(ui.ctx(), "clipboard-error", t().viewer.clip
         }
     }
     if back {
-        state.page = if matches!(
-            state.page,
-            Page::Mouse | Page::Microphone | Page::DisplayAspect
-        ) {
-            Page::Advanced
-        } else if matches!(state.page, Page::Camera(_)) {
-            Page::Camera(camera_menu::CameraPage::Root)
-        } else {
-            Page::Quality
+        state.page = match state.page {
+            #[cfg(windows)]
+            Page::Mouse => Page::Advanced,
+            Page::Microphone | Page::DisplayAspect => Page::Advanced,
+            Page::Camera(_) => Page::Camera(camera_menu::CameraPage::Root),
+            _ => Page::Quality,
         };
         state.display.reset();
         state.dirty = false;

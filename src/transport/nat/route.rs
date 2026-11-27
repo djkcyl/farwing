@@ -12,6 +12,7 @@ pub(crate) struct Network {
 
 /// The current default route, from the system's best route towards a public
 /// address. Nothing is sent.
+#[cfg(windows)]
 pub(crate) fn current() -> Option<Network> {
     use windows::Win32::{
         NetworkManagement::IpHelper::{GetBestRoute2, MIB_IPFORWARD_ROW2},
@@ -38,6 +39,7 @@ pub(crate) fn current() -> Option<Network> {
 }
 
 /// Source address of the best IPv6 route towards a public address.
+#[cfg(windows)]
 fn ipv6_source() -> Option<Ipv6Addr> {
     use windows::Win32::{
         NetworkManagement::IpHelper::{GetBestRoute2, MIB_IPFORWARD_ROW2},
@@ -58,6 +60,35 @@ fn ipv6_source() -> Option<Ipv6Addr> {
         let local = Ipv6Addr::from(source.Ipv6.sin6_addr.u.Byte);
         (!local.is_unspecified() && !local.is_loopback()).then_some(local)
     }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn current() -> Option<Network> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:9").ok()?;
+    let std::net::IpAddr::V4(local) = socket.local_addr().ok()?.ip() else { return None };
+    let routes = std::fs::read_to_string("/proc/net/route").ok();
+    let gateway = routes.as_deref().and_then(|routes| {
+        routes.lines().skip(1).filter_map(|line| {
+            let mut fields = line.split_ascii_whitespace();
+            let _interface = fields.next()?;
+            let destination = fields.next()?;
+            let gateway = u32::from_str_radix(fields.next()?, 16).ok()?;
+            let flags = u32::from_str_radix(fields.next()?, 16).ok()?;
+            let metric = fields.nth(2)?.parse::<u32>().ok()?;
+            (destination == "00000000" && gateway != 0 && flags & 3 == 3)
+                .then_some((metric, Ipv4Addr::from(gateway.to_le_bytes())))
+        }).min_by_key(|(metric, _)| *metric).map(|(_, gateway)| gateway)
+    });
+    (!local.is_unspecified() && !local.is_loopback()).then_some(Network { local, gateway })
+}
+
+#[cfg(target_os = "linux")]
+fn ipv6_source() -> Option<Ipv6Addr> {
+    let socket = std::net::UdpSocket::bind("[::]:0").ok()?;
+    socket.connect("[2001:4860:4860::8888]:9").ok()?;
+    let std::net::IpAddr::V6(local) = socket.local_addr().ok()?.ip() else { return None };
+    (!local.is_unspecified() && !local.is_loopback()).then_some(local)
 }
 
 /// The paths a session can use: the IPv4 default route and the IPv6 source

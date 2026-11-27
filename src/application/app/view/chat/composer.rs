@@ -39,17 +39,19 @@ pub(super) fn height(ui: &egui::Ui, chat_ui: &ChatUi, chat: &ChatService, channe
     h
 }
 
-pub(super) fn poll_files(chat: &ChatService, chat_ui: &mut ChatUi) {
-    let Some(rx) = &chat_ui.files else { return };
-    if let Ok(paths) = rx.try_recv() {
+pub(super) fn poll_files(ctx: &egui::Context, chat: &ChatService, chat_ui: &mut ChatUi) {
+    let Some((channel, picker)) = &mut chat_ui.files else { return };
+    if let Some(paths) = picker.poll(ctx) {
+        let channel = *channel;
         chat_ui.files = None;
-        if let Some(channel) = chat_ui.channel {
-            attach_paths(chat, channel, paths);
-        }
+        attach_paths(chat, channel, paths);
     }
 }
 
 pub(super) fn attach_paths(chat: &ChatService, channel: Id, paths: Vec<std::path::PathBuf>) {
+    if paths.is_empty() {
+        return;
+    }
     let chat = chat.clone();
     std::thread::spawn(move || {
         let files: Vec<(String, Vec<u8>)> = paths
@@ -201,6 +203,7 @@ pub(super) fn composer(
                 edit_last(state, chat_ui, channel.id);
             }
             // A pasted picture becomes an attachment.
+            #[cfg(windows)]
             if ui.input(|i| i.modifiers.command && i.key_pressed(Key::V))
                 && channel.permissions & perm::ATTACH != 0
                 && let Some(png) = crate::platform::windows::file_dialog::clipboard_png()
@@ -222,7 +225,7 @@ pub(super) fn composer(
                     && parts::glyph_button(ui, Glyph::Clip, c.attach, false).clicked()
                     && chat_ui.files.is_none()
                 {
-                    chat_ui.files = Some(crate::platform::windows::file_dialog::pick_files(c.attach.into()));
+                    chat_ui.files = Some((channel.id, super::file_picker::FilePicker::open(c.attach)));
                 }
                 let width = ui.available_width() - 36.0;
                 let hint = match dm {

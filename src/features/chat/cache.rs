@@ -54,7 +54,6 @@ impl Cache {
     }
 }
 
-#[cfg(windows)]
 fn protect(bytes: &[u8], encrypt: bool) -> anyhow::Result<Vec<u8>> {
     use windows::Win32::Foundation::{HLOCAL, LocalFree};
     use windows::Win32::Security::Cryptography::{
@@ -78,11 +77,6 @@ fn protect(bytes: &[u8], encrypt: bool) -> anyhow::Result<Vec<u8>> {
         LocalFree(Some(HLOCAL(output.pbData.cast())));
         Ok(result)
     }
-}
-
-#[cfg(not(windows))]
-fn protect(_: &[u8], _: bool) -> anyhow::Result<Vec<u8>> {
-    anyhow::bail!("no local protection on this platform")
 }
 
 #[cfg(test)]

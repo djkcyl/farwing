@@ -1,19 +1,24 @@
 //! Viewing a host reached directly, without the server
 //! (`docs/protocol/v2-design.md` §12): connect to its direct endpoint,
 //! negotiate as usual, and recover a lost session by connecting again.
-use super::{
-    ConnectionProgressReporter, ControllerConnection, RECOVERY_LIMIT, Recovery, cancellable,
-    recovery, recovery_backoff, report_progress, viewing, windows,
-};
+use super::{ConnectionProgressReporter, ControllerConnection, report_progress};
+#[cfg(windows)]
+use super::{RECOVERY_LIMIT, Recovery, cancellable, recovery, recovery_backoff, viewing, windows};
+#[cfg(windows)]
 use crate::application::viewer::{ConnectionProgress, ViewerDisplayHandle, ViewerWindowEvent};
 use crate::i18n::t;
-use crate::media::{ConnectionMediaOptions, ConnectionMediaProfile, LocalDisplayInfo, detect_local_display};
+use crate::media::{ConnectionMediaOptions, ConnectionMediaProfile, LocalDisplayInfo};
+#[cfg(windows)]
+use crate::media::detect_local_display;
 use crate::transport::direct::{self, Target, client::Auth};
-use anyhow::{Context as _, Result};
+#[cfg(windows)]
+use anyhow::Context as _;
+use anyhow::Result;
 use farwing_protocol::api::Relation;
 use farwing_protocol::direct::DirectHello;
-use std::sync::Arc;
+#[cfg(windows)]
 use std::time::Duration;
+#[cfg(windows)]
 use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -35,6 +40,9 @@ impl DirectRequest {
     /// trusted device).
     pub fn parse(address: &str, code: Option<String>, ask: bool) -> Result<Self> {
         let target = Target::parse(address)?;
+        if let Some(code) = &code {
+            crate::account::assist::validate_connect_code(code)?;
+        }
         let auth = match code {
             Some(code) => Auth::Code(Some(code)),
             None if ask => Auth::Code(None),
@@ -72,6 +80,7 @@ impl DirectRequest {
 const SETTINGS_OWNER: &str = "direct";
 
 /// Standalone viewer for a host reached directly (`connect --direct`).
+#[cfg(windows)]
 pub async fn run_direct_viewer_window(
     request: DirectRequest,
     options: ConnectionMediaOptions,
@@ -79,6 +88,7 @@ pub async fn run_direct_viewer_window(
     viewing::run_viewer_window_with(request.label(), options, None, None, Some(request), None).await
 }
 
+#[cfg(windows)]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_owner(
     alias: String,
@@ -119,7 +129,7 @@ pub(super) async fn run_owner(
             preferences,
             audio,
             &visit,
-            reporter,
+            Some(reporter),
             cancel,
         )
         .await;
@@ -245,6 +255,7 @@ pub(super) async fn run_owner(
 
 /// A direct session without a window or playback, for scripted input
 /// (`dev input`).
+#[cfg(windows)]
 pub(crate) async fn connect_headless(
     request: &DirectRequest,
     options: ConnectionMediaOptions,
@@ -253,7 +264,6 @@ pub(crate) async fn connect_headless(
     let local = direct::local_device()?;
     let display = detect_local_display().unwrap_or(LocalDisplayInfo::FALLBACK);
     let profile = options.resolve(display)?;
-    let reporter: ConnectionProgressReporter = Arc::new(|_| {});
     connect_once(
         request,
         &request.label(),
@@ -266,11 +276,52 @@ pub(crate) async fn connect_headless(
             muted: true,
         }),
         "",
-        &reporter,
+        None,
         cancel,
     )
     .await
     .map(|(connection, host, _)| (connection, host))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn connect_viewer(
+    request: &DirectRequest,
+    options: ConnectionMediaOptions,
+    visit: &str,
+    record: &super::record::VisitRecord,
+    reporter: Option<&ConnectionProgressReporter>,
+    cancel: &CancellationToken,
+) -> Result<(ControllerConnection, String)> {
+    report_progress(reporter, 1, t().session.progress_preparing_direct, "");
+    let local = direct::local_device()?;
+    let profile = options.resolve(LocalDisplayInfo::FALLBACK)?;
+    let started_at = chrono::Utc::now().timestamp();
+    let (connection, host, relation) = connect_once(
+        request,
+        &request.title(),
+        &local,
+        profile,
+        options.transport,
+        None,
+        None,
+        visit,
+        reporter,
+        cancel,
+    )
+    .await?;
+    connection
+        .stream_control_handle()
+        .mouse()
+        .set_host_input_allowed(host.device_id != local.identity.device_id);
+    record.bind(None, visit, &host.device_id, &local.identity.device_id, Some(farwing_protocol::api::DirectRecord {
+        started_at,
+        relation,
+        host_name: host.name.clone(),
+        controller_name: local.name,
+        controller_platform: farwing_protocol::Platform::Linux,
+        ..Default::default()
+    }));
+    Ok((connection, host.name))
 }
 
 /// Connect to the host and negotiate one session.
@@ -284,11 +335,11 @@ async fn connect_once(
     preferences: Option<crate::features::stream_control::StreamControlPreferences>,
     audio: Option<crate::media::audio::AudioSettings>,
     visit: &str,
-    reporter: &ConnectionProgressReporter,
+    reporter: Option<&ConnectionProgressReporter>,
     cancel: &CancellationToken,
 ) -> Result<(ControllerConnection, DirectHello, Relation)> {
     report_progress(
-        Some(reporter),
+        reporter,
         3,
         t().session.progress_connecting_direct,
         (t().session.progress_connecting_to_address)(alias, &request.target.to_string()),
@@ -303,7 +354,7 @@ async fn connect_once(
     .await?;
     let host = connected.host.clone();
     report_progress(
-        Some(reporter),
+        reporter,
         4,
         t().session.progress_direct_authorized,
         format!(
@@ -364,7 +415,7 @@ async fn connect_once(
         transport,
         preferences,
         audio,
-        Some(reporter),
+        reporter,
         cancel,
         crate::session::negotiation::ControlPurpose::Viewing,
     )
@@ -380,6 +431,7 @@ async fn connect_once(
 }
 
 /// Before connecting again: wait for the host (it may be restarting) or back off.
+#[cfg(windows)]
 async fn wait(
     error: &anyhow::Error,
     attempt: u32,

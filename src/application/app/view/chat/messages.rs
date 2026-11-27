@@ -486,7 +486,7 @@ fn attachment(ui: &mut egui::Ui, chat: &ChatService, a: &Attachment, actions: &m
             parts::paint_glyph(ui.painter(), r, Glyph::File, MUTED);
             ui.vertical(|ui| {
                 ui.add(egui::Label::new(RichText::new(&a.name).color(TEXT)).truncate());
-                ui.label(parts::muted(crate::application::app::view::chat::panels::bytes(a.size)));
+                ui.label(parts::muted(super::panels::bytes(a.size)));
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if parts::glyph_button(ui, Glyph::Down, t().chat.download, false).clicked() {

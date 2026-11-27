@@ -1,28 +1,35 @@
 use crate::account::api::RealtimeTicket;
 use crate::account::client::AuthenticatedClient;
+#[cfg(windows)]
 use crate::application::viewer::{
     ConnectionProgress, NativeViewerSession, ViewerDisplayHandle, ViewerLaunchConfig,
 };
+#[cfg(target_os = "linux")]
+use crate::connection_progress::ConnectionProgress;
 use crate::features::stream_control::StreamControlHandle;
 use crate::i18n::t;
-use crate::media::{
-    ConnectionMediaOptions, ConnectionMediaProfile, LocalDisplayInfo, VideoCodec,
-    detect_local_display,
-};
+use crate::media::{ConnectionMediaOptions, ConnectionMediaProfile, LocalDisplayInfo, VideoCodec};
+#[cfg(windows)]
+use crate::media::detect_local_display;
 use crate::transport::rtc::{
     ForwardedTrack, IceServer, MediaKind, NativePeer, RtpForwardConfig, RtpForwarder,
 };
 use crate::transport::signal::{NegotiationEvent, SignalFailure, SignalRole, SignalSession};
 use anyhow::{Context, Result, anyhow, bail};
+#[cfg(windows)]
 use connection::ResolvedConnection;
+#[cfg(windows)]
 pub use connection::{connect_saved_alias, connect_saved_alias_with_progress};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
+#[cfg(windows)]
 pub use direct::{DirectRequest, run_direct_viewer_window};
+#[cfg(windows)]
 pub use viewing::{run_assist_viewer_window, run_native_viewer_session, run_saved_viewer_window};
+#[cfg(windows)]
 pub(crate) use assist::target_label as assist_target_label;
 
 pub type ConnectionProgressReporter = Arc<dyn Fn(ConnectionProgress) + Send + Sync>;
@@ -42,7 +49,16 @@ pub(crate) fn gui_connection_activity(
 mod assist;
 pub(crate) mod direct;
 mod record;
+#[cfg(target_os = "linux")]
+pub(crate) use record::{VisitRecord, new_visit};
 mod shared;
+#[cfg(target_os = "linux")]
+pub(crate) async fn shutdown_all() {
+    crate::features::port_mapping::service::shutdown_all().await;
+    crate::diagnostics::remote::service::shutdown_all().await;
+    shared::shutdown_all().await;
+}
+#[cfg(windows)]
 pub(crate) mod windows;
 
 fn report_progress(
@@ -62,6 +78,8 @@ pub struct ControllerConnection {
     profile: ConnectionMediaProfile,
     preference_writer: Option<crate::features::viewing_settings::PreferenceWriter>,
     local_preference_writer: Option<crate::features::viewing_settings::PreferenceWriter>,
+    #[cfg(target_os = "linux")]
+    linux_account: Option<Arc<AuthenticatedClient>>,
 }
 
 pub struct ConnectionSummary {
@@ -91,13 +109,13 @@ fn retry_session_failure(error: &anyhow::Error) -> bool {
 /// How a lost or failed session is recovered (`docs/protocol/v2-design.md`
 /// §11): rebuilt with backoff, or after waiting for the device to come back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Recovery {
+pub(crate) enum Recovery {
     Retry,
     WaitDevice,
     Fatal,
 }
 
-fn recovery(error: &anyhow::Error) -> Recovery {
+pub(crate) fn recovery(error: &anyhow::Error) -> Recovery {
     use crate::account::api::ApiFailure;
     use farwing_protocol::error::ErrorCode;
     for cause in error.chain() {
@@ -159,15 +177,15 @@ fn assist_recovery(error: &anyhow::Error) -> Recovery {
 }
 
 /// How a lost session of this kind recovers.
-fn recovery_for(error: &anyhow::Error, assist: bool) -> Recovery {
+pub(crate) fn recovery_for(error: &anyhow::Error, assist: bool) -> Recovery {
     if assist { assist_recovery(error) } else { recovery(error) }
 }
 
 /// The viewer keeps recovering a lost session this long.
-const RECOVERY_LIMIT: Duration = Duration::from_secs(300);
+pub(crate) const RECOVERY_LIMIT: Duration = Duration::from_secs(300);
 
 /// Delay before rebuild attempt `attempt` (1-based): 1, 2, 4, 8, then 15 s.
-fn recovery_backoff(attempt: u32) -> Duration {
+pub(crate) fn recovery_backoff(attempt: u32) -> Duration {
     Duration::from_secs(1u64 << attempt.saturating_sub(1).min(4)).min(Duration::from_secs(15))
 }
 
@@ -301,6 +319,7 @@ impl ControllerConnection {
         )
         .await
     }
+
     async fn connect_business(
         client: &AuthenticatedClient,
         device: &crate::account::api::DeviceInfo,
@@ -311,7 +330,10 @@ impl ControllerConnection {
     ) -> Result<Self> {
         let key = shared::key(&client.device_id(), &device.device_id);
         let _gate = shared::acquire_connection(&key, cancel).await?;
+        #[cfg(windows)]
         let display = detect_local_display().unwrap_or(LocalDisplayInfo::FALLBACK);
+        #[cfg(target_os = "linux")]
+        let display = LocalDisplayInfo::FALLBACK;
         let mut profile = options.resolve(display)?;
         if let Ok(store) = client.viewing_settings_store(&device.device_id)
             && let Ok(Some(settings)) = store.load().await
@@ -320,7 +342,12 @@ impl ControllerConnection {
             profile.decoder_fps_cap = display.refresh_hz.max(profile.stream_fps);
         }
         if let Some(session) = shared::get(&key) {
-            return Self::from_shared(session, profile, false);
+            return Self::from_shared(session, profile, matches!(
+                purpose,
+                crate::session::negotiation::ControlPurpose::Viewing
+                    | crate::session::negotiation::ControlPurpose::Audio
+                    | crate::session::negotiation::ControlPurpose::Camera
+            ));
         }
         let room = cancellable(cancel, client.join_device(&device.device_id, purpose.wire(), ""))
             .await?;
@@ -371,17 +398,23 @@ impl ControllerConnection {
             profile,
             preference_writer: None,
             local_preference_writer: None,
+            #[cfg(target_os = "linux")]
+            linux_account: None,
         })
     }
     /// A camera session shows the host's first camera that can be opened.
     async fn open_first_camera(&self) -> Result<()> {
+        self.stream_control_handle().open_camera(self.first_camera().await?).await
+    }
+
+    async fn first_camera(&self) -> Result<i32> {
         let handle = self.stream_control_handle();
         handle.wait_media_control().await?;
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             let cameras = handle.cameras();
             if let Some(camera) = cameras.iter().find(|c| c.unavailable.is_empty()) {
-                return handle.open_camera(camera.id).await;
+                return Ok(camera.id);
             }
             if let Some(camera) = cameras.first() {
                 anyhow::bail!("{}", camera.unavailable);
@@ -512,18 +545,8 @@ impl ControllerConnection {
         purpose: crate::session::negotiation::ControlPurpose,
     ) -> Result<Self> {
         tracing::info!(?profile, ?transport, via_presence = room.via_presence, "establishing controller connection");
-        let signal = if room.via_presence {
-            // The session rides on this process's presence connection (§11).
-            let sid = room.session_id.as_deref().context(t().session.error_session_without_id)?;
-            report_progress(reporter, 4, t().session.progress_connecting_server, "");
-            SignalSession::carried(&local.identity.device_id, sid)
-                .context("signal over the presence connection")?
-        } else {
-            report_progress(reporter, 4, t().session.progress_connecting_server, "");
-            SignalSession::connect_cancellable(room, SignalRole::Controller, cancel)
-                .await
-                .context("connect controller signaling")?
-        };
+        report_progress(reporter, 4, t().session.progress_connecting_server, "");
+        let signal = Self::open_signal(&room, &local, cancel).await?;
         report_progress(reporter, 4, t().session.progress_server_connected, "");
         Self::establish_on(
             signal,
@@ -538,6 +561,21 @@ impl ControllerConnection {
             purpose,
         )
         .await
+    }
+
+    async fn open_signal(
+        room: &RealtimeTicket,
+        local: &crate::transport::signal::identity::Local,
+        cancel: &CancellationToken,
+    ) -> Result<SignalSession> {
+        if room.via_presence {
+            let sid = room.session_id.as_deref().context(t().session.error_session_without_id)?;
+            SignalSession::carried(&local.identity.device_id, sid)
+                .context("signal over the presence connection")
+        } else {
+            SignalSession::connect_cancellable(room.clone(), SignalRole::Controller, cancel)
+                .await.context("connect controller signaling")
+        }
     }
 
     /// Negotiate a session on an open signalling connection: the server's,
@@ -716,6 +754,7 @@ impl ControllerConnection {
         )
     }
 
+    #[cfg(windows)]
     pub(crate) async fn start_native_viewer_with_progress(
         &mut self,
         alias: &str,
@@ -827,8 +866,62 @@ impl ControllerConnection {
         Ok((viewer, summary))
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn start_linux_viewer(
+        &mut self,
+        ctx: egui::Context,
+        viewport: egui::ViewportId,
+    ) -> Result<crate::application::viewer::Playback> {
+        let control = self.stream_control_handle();
+        if self.profile.audio_only {
+            self.start_listening().await?;
+            return Ok(crate::application::viewer::Playback::audio(control));
+        }
+        let streams = crate::application::viewer::ScreenStreams::new(&self.peer, self.profile);
+        let screen = if self.profile.camera_only {
+            self.first_camera().await?
+        } else {
+            streams.wait_primary().await?.id
+        };
+        streams.set_visible(vec![screen]);
+        if self.profile.camera_only {
+            control.open_camera(screen).await?;
+        } else {
+            control.set_screen_capture(screen, true).await?;
+        }
+        let picture = streams.open(ctx.clone(), viewport, screen).await?;
+        self.forwarder.start_audio();
+        if let Err(error) = control.audio().start() {
+            tracing::warn!(%error, "could not start native audio playback");
+        }
+        Ok(crate::application::viewer::Playback::video(streams, &ctx, viewport, screen, picture))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn switch_linux_audio(
+        &mut self,
+        audio_only: bool,
+        ctx: egui::Context,
+        viewport: egui::ViewportId,
+    ) -> Result<crate::application::viewer::Playback> {
+        let control = self.stream_control_handle();
+        control.mouse().disable();
+        if !audio_only {
+            control.set_viewing_enabled(true);
+            control.set_video_enabled(true).await?;
+        }
+        self.profile.audio_only = audio_only;
+        self.start_linux_viewer(ctx, viewport).await
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn linux_session_ended(&self) -> impl std::future::Future<Output = Result<()>> + Send + 'static + use<> {
+        self.forwarder.session.end_waiter()
+    }
+
     /// `dev video`: capture the host's first screen and decode it without a
     /// window. Every decoded frame goes to `observer`.
+    #[cfg(windows)]
     pub(crate) async fn start_headless_video(
         &mut self,
         observer: std::sync::mpsc::Sender<crate::application::viewer::dev_video::DecodedObservation>,
@@ -866,6 +959,11 @@ impl ControllerConnection {
         self.forwarder.start();
         self.peer.request_keyframe(video.ssrc).await?;
         Ok((decoder, codec, performance))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retain_linux_account(&mut self, client: Arc<AuthenticatedClient>) {
+        self.linux_account = Some(client);
     }
 
     pub async fn keep_alive(mut self, mut shutdown: oneshot::Receiver<()>) -> Result<()> {
@@ -910,6 +1008,10 @@ impl ControllerConnection {
         if let Some(writer) = &mut self.local_preference_writer {
             writer.finish().await;
         }
+        #[cfg(target_os = "linux")]
+        if let Some(client) = self.linux_account.take() {
+            client.close().await;
+        }
         result
     }
 }
@@ -921,6 +1023,7 @@ fn flatten_signal_task(
 }
 
 mod connection;
+#[cfg(windows)]
 mod viewing;
 
 #[cfg(test)]

@@ -242,6 +242,7 @@ fn set(names: &[&str]) -> BTreeMap<String, u32> {
 /// Features implemented by the controller (viewer). `touch` and `pen`:
 /// it sends TOUCH / PEN frames to hosts that declare them.
 pub(crate) fn controller_features() -> BTreeMap<String, u32> {
+    #[cfg(windows)]
     let mut features = set(&[
         feature::TOUCH,
         feature::PEN,
@@ -252,6 +253,8 @@ pub(crate) fn controller_features() -> BTreeMap<String, u32> {
         feature::FILES,
         feature::CURSOR_PARTICIPANTS,
     ]);
+    #[cfg(target_os = "linux")]
+    let mut features = BTreeMap::new();
     if !RECOVERY_DISABLED.load(std::sync::atomic::Ordering::Relaxed) {
         features.insert(feature::VIDEO_RECOVERY.to_owned(), 1);
     }
@@ -272,6 +275,7 @@ pub(crate) fn controller_recovery() -> bool {
 
 /// Features implemented by the host. `touch` and `pen` only where Windows
 /// offers synthetic pointers (`docs/protocol/touch-pen-brief.md` §5.4).
+#[cfg(windows)]
 pub(crate) fn host_features() -> BTreeMap<String, u32> {
     let mut features = host_static_features();
     if crate::platform::windows::input::pointer::available() {
@@ -281,6 +285,7 @@ pub(crate) fn host_features() -> BTreeMap<String, u32> {
     features
 }
 
+#[cfg(windows)]
 fn host_static_features() -> BTreeMap<String, u32> {
     set(&[
         feature::DISPLAY_CONFIG,
@@ -298,6 +303,7 @@ fn hello(role: Role, profile: Option<farwing_protocol::peer::Profile>) -> Hello 
     let mut hello = Hello::new(
         env!("CARGO_PKG_VERSION"),
         match role {
+            #[cfg(windows)]
             Role::Host => host_features(),
             _ => controller_features(),
         },
@@ -389,6 +395,7 @@ mod tests {
         assert!(tight.push(&header, body).is_err());
     }
 
+    #[cfg(windows)]
     #[test]
     fn hello_round_trip() {
         let request = hello_request_with(farwing_protocol::peer::Profile { color: 0x3080ff });

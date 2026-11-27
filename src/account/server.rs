@@ -66,17 +66,14 @@ impl std::fmt::Debug for ServerConfig {
 /// While the background service hosts this profile the setting lives in the
 /// service vault: the SYSTEM resident cannot read the user's profile.
 fn directory() -> Result<std::path::PathBuf> {
-    if managed() {
-        crate::platform::windows::host_service::vault::root()
-    } else {
-        crate::product::local_data_dir()
+    #[cfg(windows)]
+    if crate::platform::windows::host_service::vault::applies().unwrap_or(false) {
+        return crate::platform::windows::host_service::vault::root();
     }
+    crate::product::local_data_dir()
 }
 
-fn managed() -> bool {
-    crate::platform::windows::host_service::vault::applies().unwrap_or(false)
-}
-
+#[cfg(windows)]
 fn copy_setting(from: &std::path::Path, to: &std::path::Path) -> Result<bool> {
     let source = from.join(FILE_NAME);
     let bytes = match std::fs::read(&source) {
@@ -179,6 +176,7 @@ impl ServerConfig {
 
     /// Copy the profile's setting into the service vault (installation).
     /// Returns whether a setting was copied.
+    #[cfg(windows)]
     pub(crate) fn enroll() -> Result<bool> {
         copy_setting(
             &crate::product::local_data_dir()?,
@@ -187,6 +185,7 @@ impl ServerConfig {
     }
 
     /// Copy the vault's setting back to the profile (uninstallation).
+    #[cfg(windows)]
     pub(crate) fn restore_portable() -> Result<bool> {
         copy_setting(
             &crate::platform::windows::host_service::vault::root()?,

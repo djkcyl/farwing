@@ -64,20 +64,33 @@ pub(crate) fn definitions() -> FontDefinitions {
 /// file (shared, read on demand), not to the process's private memory.
 fn system_cjk() -> Option<&'static (PathBuf, memmap2::Mmap)> {
     static FONT: LazyLock<Option<(PathBuf, memmap2::Mmap)>> = LazyLock::new(|| {
-        let directory = std::env::var_os("WINDIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-            .join("Fonts");
-        ["msyh.ttc", "msyhbd.ttc", "simhei.ttf", "simsun.ttc"]
-            .into_iter()
-            .find_map(|name| {
-                let path = directory.join(name);
-                let file = std::fs::File::open(&path).ok()?;
-                // SAFETY: Windows keeps an installed font file in use; the
-                // mapping is read-only and lives as long as the process.
-                let map = unsafe { memmap2::Mmap::map(&file) }.ok()?;
-                Some((path, map))
-            })
+        #[cfg(windows)]
+        let path = {
+            let directory = std::env::var_os("WINDIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+                .join("Fonts");
+            ["msyh.ttc", "msyhbd.ttc", "simhei.ttf", "simsun.ttc"]
+                .into_iter()
+                .map(|name| directory.join(name))
+                .find(|path| path.is_file())?
+        };
+        #[cfg(target_os = "linux")]
+        let path = {
+            let output = std::process::Command::new("fc-match")
+                .args(["-f", "%{file}", ":lang=zh-cn"])
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            use std::os::unix::ffi::OsStringExt as _;
+            PathBuf::from(std::ffi::OsString::from_vec(output.stdout))
+        };
+        let file = std::fs::File::open(&path).ok()?;
+        // SAFETY: read-only mapping of a font installed on the system.
+        let map = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+        Some((path, map))
     });
     FONT.as_ref()
 }
