@@ -9,6 +9,9 @@ mod engine;
 #[cfg(target_os = "linux")]
 #[path = "engine_linux.rs"]
 mod engine;
+#[cfg(target_os = "macos")]
+#[path = "engine_macos.rs"]
+mod engine;
 mod geometry;
 pub(crate) mod wire;
 

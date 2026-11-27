@@ -583,6 +583,7 @@ pub(super) fn ensure(
     }
     // 合成器接不住就别去惊动内核（见 `compositor::ensure_available`）。
     crate::platform::display::compositor::ensure_available()?;
+    #[cfg(target_os = "linux")]
     ensure!(
         openuuyc_vkms::installed(),
         "没有安装虚拟显示器辅助程序（openuuyc-vkms）"

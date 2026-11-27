@@ -18,14 +18,17 @@ pub(crate) use linux::{
     power_request, surface, system_power, terminal, transfer, virtual_audio, virtual_display, wol,
 };
 // The pty half of the terminal is identical on both, so it lives in one place
-// and each platform re-exports it. The rest of the macOS platform does not
-// exist yet, which is why only `terminal` is selected here.
+// and each platform re-exports it.
 #[cfg(target_os = "macos")]
 pub(crate) mod macos;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) mod posix;
 #[cfg(target_os = "macos")]
-pub(crate) use macos::terminal;
+pub(crate) use macos::{
+    audio_thread, capture, cursor_shape, deadline, decoder, device_profile, display, display_hdr,
+    drag_drop, encoder, file_locations, graphics, host_service, loopback, notifications,
+    power_request, surface, system_power, terminal, transfer, virtual_audio, virtual_display, wol,
+};
 /// 终端前台正在跑的命令。
 ///
 /// 取的是前台进程组，不是 shell：用户在 shell 里敲的 `cargo build` 会让它

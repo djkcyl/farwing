@@ -1,7 +1,7 @@
 //! Device-scoped clipboard RPC with a process-wide platform adapter.
 pub(crate) mod drag;
 mod formats;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 #[path = "fuse_linux.rs"]
 mod fuse;
 #[cfg(windows)]
@@ -10,10 +10,10 @@ mod native;
 #[path = "native_linux.rs"]
 mod native;
 mod protocol;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 #[path = "x11_offer_linux.rs"]
 mod x11_offer;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 #[path = "x11_read_linux.rs"]
 mod x11_read;
 use anyhow::{Result, anyhow, bail, ensure};
