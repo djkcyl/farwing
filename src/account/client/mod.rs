@@ -87,13 +87,24 @@ impl AuthenticatedClient {
     fn load(device: DeviceHandle, owned_device: Option<DeviceRuntime>) -> Result<Self> {
         let identity = device.identity().client_identity()?;
         let (session, session_store, mut api) = match device.self_hosted() {
-            Some(settings) => (settings.session()?, None, NrdApi::self_hosted(identity.clone(), settings.clone())?),
+            Some(settings) => {
+                let store = settings.session_store()?;
+                let (session, stored) = match store.load()? {
+                    Some(session) => (session, Some(store)),
+                    None => (settings.installation_session()?, None),
+                };
+                (session, stored, NrdApi::self_hosted(identity.clone(), settings.clone())?)
+            }
             None => {
                 let store = KeyringSessionStore::new()?;
                 (store.load()?.ok_or(NoSavedSession)?, Some(store), NrdApi::new(identity.clone())?)
             }
         };
-        let mut host = crate::features::host::Handle::load(session.user_id(), &identity.device_id);
+        let settings_account = device.self_hosted().map(|settings| settings.host_settings_account());
+        let mut host = crate::features::host::Handle::load(
+            settings_account.as_deref().unwrap_or_else(|| session.user_id()),
+            &identity.device_id,
+        );
         host.bind_account(session.generation());
         api.set_user_id(Some(session.user_id()))?;
         api.set_bearer_token(Some(session.token()))?;
@@ -107,7 +118,7 @@ impl AuthenticatedClient {
             RestoreTrigger::ExplicitLogin
         };
         let account_name = Mutex::new(session.nickname().to_owned());
-        let feature_catalog = if session_store.is_none() {
+        let feature_catalog = if device.self_hosted().is_some() {
             crate::account::feature_ability::FeatureCatalog::self_hosted
         } else {
             crate::account::feature_ability::FeatureCatalog::new
@@ -135,7 +146,7 @@ impl AuthenticatedClient {
     }
 
     pub(crate) fn is_self_hosted(&self) -> bool {
-        self.session_store.is_none()
+        self.device.self_hosted().is_some()
     }
 
     pub(crate) fn account_generation(&self) -> String {

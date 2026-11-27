@@ -544,7 +544,11 @@ impl DeviceCenterApp {
                         LoginProgress::QrReady(content) => match qr_texture(ctx, &content) {
                             Ok(texture) => {
                                 self.login_qr = Some(texture);
-                                self.login_status = "使用 UU 远程手机端扫码".to_owned();
+                                self.login_status = if self.server_address.is_empty() {
+                                    "使用 UU 远程手机端扫码"
+                                } else {
+                                    "用手机扫描，登录自有账号并确认"
+                                }.to_owned();
                             }
                             Err(error) => {
                                 self.cancel_qr_login();
@@ -553,10 +557,18 @@ impl DeviceCenterApp {
                             }
                         },
                         LoginProgress::WaitingForScan => {
-                            self.login_status = "使用 UU 远程手机端扫码".to_owned();
+                            self.login_status = if self.server_address.is_empty() {
+                                "使用 UU 远程手机端扫码"
+                            } else {
+                                "用手机扫描，登录自有账号并确认"
+                            }.to_owned();
                         }
                         LoginProgress::Scanned => {
-                            self.login_status = "已扫码，请在手机端确认".to_owned();
+                            self.login_status = if self.server_address.is_empty() {
+                                "已扫码，请在手机端确认"
+                            } else {
+                                "已扫码，请确认登录，首次登录还需在部署端审批"
+                            }.to_owned();
                         }
                         LoginProgress::CanceledRefreshing => {
                             self.login_qr = None;

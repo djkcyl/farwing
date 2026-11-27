@@ -3,7 +3,7 @@ use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use super::auth::{LoginSession, SecretEntry, credential_store_lock};
+use super::auth::{KeyringSessionStore, LoginSession, SecretEntry, SessionStore, credential_store_lock};
 
 const SERVICE: &str = "com.openuuyc.self-hosted";
 const ORIGIN: &str = "server-origin";
@@ -64,9 +64,28 @@ impl SelfHosted {
         Ok(Self { origin, device_id, token })
     }
 
+    fn session_entry(&self) -> Result<SecretEntry> {
+        SecretEntry::new(SERVICE, &format!("account-{}", self.device_id))
+            .context("无法打开自建账号凭据存储")
+    }
+
+    pub(crate) fn session_store(&self) -> Result<KeyringSessionStore> {
+        Ok(KeyringSessionStore::with_entry(self.session_entry()?))
+    }
+
     pub(crate) fn session(&self) -> Result<LoginSession> {
-        let user = format!("self-hosted-{:x}", Sha256::digest(self.origin.as_str().as_bytes()));
-        LoginSession::new(&self.token, user, "自建服务器")
+        if let Some(session) = self.session_store()?.load()? {
+            return Ok(session);
+        }
+        self.installation_session()
+    }
+
+    pub(crate) fn installation_session(&self) -> Result<LoginSession> {
+        LoginSession::new(&self.token, self.host_settings_account(), "自建服务器")
+    }
+
+    pub(crate) fn host_settings_account(&self) -> String {
+        format!("self-hosted-{:x}", Sha256::digest(self.origin.as_str().as_bytes()))
     }
 }
 
@@ -81,6 +100,12 @@ pub(crate) fn transfer_credentials(to_resident: bool) -> Result<()> {
         }
     }
     if let Some(scoped) = scoped {
+        let session = scoped.session_entry()?;
+        if to_resident {
+            session.enroll()?;
+        } else {
+            session.restore_portable()?;
+        }
         super::auth::KeyringIdentityStore::for_self_hosted(&scoped.device_id)?
             .transfer(to_resident)?;
     }

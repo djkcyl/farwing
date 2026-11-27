@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { DEFAULT_DB_PATH, createPairingCode, listDevices, openDatabase, revokeDevice } from './db.js';
 import { runWithSqliteFlag } from './sqlite-runtime.js';
+import { approveEnrollmentRequest, listEnrollmentRequests } from './desktop.js';
 
 function parseFlags(values) {
   const result = {};
@@ -22,6 +23,8 @@ Commands:
   node server/cli.js pair-code --role host
   node server/cli.js pair-code --role controller --host DEVICE_ID
   node server/cli.js list
+  node server/cli.js pending
+  node server/cli.js approve DEVICE_ID
   node server/cli.js revoke DEVICE_ID
 
 Options:
@@ -67,6 +70,18 @@ if (!command || command === 'help' || command === '--help' || command === '-h') 
           process.stdout.write(`${device.id}\t${device.role}\t${device.platform}\t${status}\t${device.name}${bound}\n`);
         }
       }
+    } else if (command === 'pending') {
+      if (args.length) throw new Error('pending does not accept arguments');
+      const requests = listEnrollmentRequests(db);
+      for (const request of requests) {
+        const status = request.approvedAt === null ? 'pending' : 'approved, waiting for client';
+        process.stdout.write(`${request.id}\t${request.platform}\t${status}\t${JSON.stringify(request.name)}\t${new Date(request.requestedAt).toISOString()}\n`);
+      }
+      if (!requests.length) process.stdout.write('No device enrollment requests.\n');
+    } else if (command === 'approve') {
+      if (args.length !== 1 || !/^[a-f0-9]{16}$/u.test(args[0])) throw new Error('approve requires one 16-character device id');
+      if (!approveEnrollmentRequest(db, args[0])) throw new Error('pending device request was not found or expired');
+      process.stdout.write(`Approved ${args[0]}. Reconnect the device to complete enrollment.\n`);
     } else if (command === 'revoke') {
       if (args.length !== 1 || !/^[a-f0-9]{16}$/u.test(args[0])) throw new Error('revoke requires one 16-character device id');
       if (!revokeDevice(db, args[0])) throw new Error('device id was not found');

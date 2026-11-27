@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>设备准入管理</title>
+  <link rel="stylesheet" href="/admin.css">
+  <script defer src="/admin.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>设备准入管理</h1>
+      <button id="refresh" class="secondary" type="button">刷新列表</button>
+    </header>
+    <section aria-labelledby="new-title">
+      <h2 id="new-title">手动预准入</h2>
+      <form id="add">
+        <label for="device-id">设备 ID</label>
+        <div class="actions">
+          <input id="device-id" name="device-id" required minlength="16" maxlength="16" pattern="[A-Fa-f0-9]{16}" placeholder="16 位十六进制 ID" spellcheck="false" autocomplete="off" autocapitalize="off">
+          <button type="submit">新增准入</button>
+        </div>
+      </form>
+      <p class="muted">预准入有效期 7 天。设备首次连接时会核对其凭据对应的 ID。</p>
+    </section>
+    <p id="message" class="message" role="status" aria-live="polite"></p>
+    <section aria-labelledby="requests-title">
+      <h2 id="requests-title">设备申请</h2>
+      <div id="requests"></div>
+    </section>
+    <section aria-labelledby="grants-title">
+      <h2 id="grants-title">预准入</h2>
+      <div id="grants"></div>
+    </section>
+    <section aria-labelledby="devices-title">
+      <h2 id="devices-title">已准入设备</h2>
+      <div id="devices"></div>
+    </section>
+  </main>
+  <dialog id="confirmation" aria-labelledby="confirm-title">
+    <h2 id="confirm-title">撤销设备准入</h2>
+    <p id="confirm-message"></p>
+    <div class="actions">
+      <button id="cancel" class="secondary" type="button" autofocus>取消</button>
+      <button id="confirm" class="danger" type="button">撤销准入</button>
+    </div>
+  </dialog>
+</body>
+</html>

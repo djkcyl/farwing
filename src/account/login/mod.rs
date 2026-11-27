@@ -89,6 +89,7 @@ where
 pub(crate) enum PreparedLogin {
     Restored,
     ConditionalNew {
+        store: KeyringSessionStore,
         session: LoginSession,
         expected: Option<LoginSession>,
         permit: tokio::sync::OwnedMutexGuard<bool>,
@@ -115,11 +116,12 @@ impl PreparedLogin {
         match self {
             Self::Restored => Ok(LoginOutcome::Restored),
             Self::ConditionalNew {
+                store,
                 session,
                 expected,
                 mut permit,
             } => {
-                if !KeyringSessionStore::new()?.save_if_matches(expected.as_ref(), &session)? {
+                if !store.save_if_matches(expected.as_ref(), &session)? {
                     bail!("登录状态已在其他进程中改变，请重新登录");
                 }
                 *permit = true;
@@ -147,10 +149,16 @@ pub(crate) async fn prepare_login_with_gate<F>(
 where
     F: FnMut(LoginProgress),
 {
-    let session_store = KeyringSessionStore::new()?;
+    let session_store = match device.self_hosted() {
+        Some(settings) => settings.session_store()?,
+        None => KeyringSessionStore::new()?,
+    };
     report(LoginProgress::RegisteringDevice);
-    let identity = device.ensure(true).await?;
-    let mut api = NrdApi::new(identity.client_identity()?)?;
+    let identity = device.ensure(true).await?.client_identity()?;
+    let mut api = match device.self_hosted() {
+        Some(settings) => NrdApi::self_hosted(identity, settings.clone())?,
+        None => NrdApi::new(identity)?,
+    };
     report(LoginProgress::DeviceRegistered);
 
     if let Some(session) = session_store.load()? {
@@ -233,6 +241,7 @@ where
         .into_data()?;
     let session = LoginSession::new(login.token, login.user_id, login.nickname)?;
     Ok(PreparedLogin::ConditionalNew {
+        store: session_store,
         session,
         expected,
         permit,

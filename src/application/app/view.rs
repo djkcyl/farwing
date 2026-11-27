@@ -888,7 +888,7 @@ impl DeviceCenterApp {
         );
         if self.logout_pending {
             egui::Spinner::new().paint_at(ui, exit.shrink(5.0));
-        } else if self.server_address.is_empty() {
+        } else {
             let response = ui
                 .interact(exit, ui.id().with("account-logout"), Sense::click())
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -1235,8 +1235,29 @@ impl DeviceCenterApp {
                             ui.spinner();
                             ui.label("正在连接自建服务器…");
                         });
-                    } else if let Some(error) = self.login_error.as_ref().or(self.catalog_error.as_ref()) {
+                    } else if let Some(error) = self.catalog_error.as_ref() {
                         ui.colored_label(AMBER, error);
+                    }
+                }
+                if !self.server_address.is_empty() && !self.server_pending && !self.login_restoring {
+                    ui.add_space(16.0);
+                    let start = if self.qr_running || self.login_error.is_some() {
+                        qr_form(
+                            ui,
+                            self.login_qr.as_ref(),
+                            self.qr_running,
+                            true,
+                            &self.login_status,
+                            self.login_error.as_deref(),
+                        ) == QrAction::Start
+                    } else {
+                        ui.add(primary("扫码登录")).clicked()
+                    };
+                    if start {
+                        self.begin_login();
+                    }
+                    if self.qr_running && ui.button("取消登录").clicked() {
+                        self.cancel_qr_login();
                     }
                 }
                 if self.server_address.is_empty() && !self.server_pending

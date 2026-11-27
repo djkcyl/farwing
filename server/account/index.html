@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenUUYC 账号</title>
+  <link rel="stylesheet" href="/account/style.css">
+  <script defer src="/account/webauthn.js"></script>
+  <script defer src="/account/app.js"></script>
+</head>
+<body>
+  <main>
+    <h1>OpenUUYC 账号</h1>
+    <section id="signed-out" hidden>
+      <form id="identity">
+        <label for="username">用户名</label>
+        <input id="username" autocomplete="username" minlength="3" maxlength="32" autocapitalize="off" spellcheck="false">
+        <label for="password">密码</label>
+        <input id="password" type="password" autocomplete="current-password" maxlength="256">
+        <div class="actions">
+          <button type="submit">登录</button>
+          <button type="button" class="secondary" id="register">注册</button>
+        </div>
+      </form>
+      <div class="actions">
+        <button type="button" class="secondary" data-passkey id="passkey-login">用 Passkey 登录</button>
+        <button type="button" class="secondary" data-passkey id="passkey-register">用 Passkey 注册</button>
+      </div>
+    </section>
+    <section id="signed-in" hidden>
+      <div class="actions account-heading">
+        <p id="account-name"></p>
+        <button class="secondary" id="logout" type="button">退出登录</button>
+      </div>
+      <button class="secondary" data-passkey id="passkey-add" type="button">添加 Passkey</button>
+      <h2>已关联的设备</h2>
+      <p id="no-devices">暂无已关联设备</p>
+      <ul id="devices"></ul>
+      <button id="new-code" type="button">生成设备关联码</button>
+      <div id="device-code" hidden>
+        <p id="code-instructions"></p>
+        <input id="code" readonly aria-label="设备验证码">
+        <button class="secondary" id="copy-code" type="button">复制</button>
+      </div>
+    </section>
+    <p id="passkey-info" hidden>Passkey 需要受信任的 HTTPS 域名。</p>
+    <section id="qr-login" hidden>
+      <h2>确认设备登录</h2>
+      <p id="qr-device"></p>
+      <div class="actions">
+        <button id="qr-confirm" type="button">确认登录</button>
+        <button id="qr-cancel" type="button" class="secondary">取消</button>
+      </div>
+    </section>
+    <p id="status" role="status" aria-live="polite"></p>
+  </main>
+</body>
+</html>

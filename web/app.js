@@ -440,6 +440,10 @@
           body: { platform: 'web', name },
         });
         if (!ALLOWED_DEVICE_ID.test(result.device_id || '')) throw new Error('设备注册响应无效。');
+        if (result.status === 'pending') {
+          setError(ui.pairError, `设备 ID ${result.device_id} 正在等待管理员批准。批准后再次点击连接。`);
+          return;
+        }
         token = enrollmentToken;
       }
       ui.pairCode.value = '';

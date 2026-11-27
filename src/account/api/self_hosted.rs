@@ -33,6 +33,7 @@ impl DesktopApi {
         contract: Contract,
         path: &str,
         body: Vec<u8>,
+        authorization: Option<&HeaderValue>,
     ) -> Result<ApiEnvelope<T>> {
         let method = match contract.method {
             Method::Get => HttpMethod::GET,
@@ -45,11 +46,18 @@ impl DesktopApi {
             url.origin() == self.settings.origin.origin(),
             "自建服务器 API 地址无效"
         );
-        let mut request = self
-            .client
-            .request(method, url)
-            .bearer_auth(&self.settings.token)
-            .timeout(contract.timeout);
+        let mut request = self.client.request(method, url).timeout(contract.timeout);
+        let installation_route = matches!(
+            path,
+            "/api/v1/device/windows/init"
+                | "/api/v1/qrcode/gen/login"
+                | "/api/v1/qrcode/login/status"
+                | "/api/v1/login/by_qrcode"
+        );
+        request = match authorization.filter(|_| !installation_route) {
+            Some(header) => request.header(reqwest::header::AUTHORIZATION, header.clone()),
+            None => request.bearer_auth(&self.settings.token),
+        };
         if !body.is_empty() {
             request = request.header(CONTENT_TYPE, "application/json").body(body);
         }

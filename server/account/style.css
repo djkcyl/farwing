@@ -1,0 +1,18 @@
+:root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
+body { margin: 0; background: Canvas; color: CanvasText; }
+main { max-width: 33rem; margin: 7vh auto; padding: 0 1.25rem 2rem; }
+h1 { font-size: 1.85rem; }
+h2 { font-size: 1.1rem; margin-top: 1.75rem; }
+label { display: block; margin: .85rem 0 .35rem; font-weight: 600; }
+input, button { font: inherit; border-radius: .5rem; }
+input { box-sizing: border-box; width: 100%; padding: .6rem; border: 1px solid GrayText; background: Field; color: FieldText; }
+button { padding: .5rem .8rem; border: 1px solid transparent; background: #165cd4; color: #fff; cursor: pointer; }
+button.secondary { border-color: GrayText; background: Canvas; color: CanvasText; }
+button:disabled { opacity: .55; cursor: wait; }
+.actions { display: flex; gap: .55rem; flex-wrap: wrap; margin-top: .85rem; }
+.account-heading { justify-content: space-between; align-items: center; margin-bottom: .7rem; }
+#account-name { margin: 0; font-weight: 600; }
+#passkey-info, #no-devices { color: GrayText; }
+#status { min-height: 1.7rem; }
+#device-code button { margin-top: .7rem; }
+li { overflow-wrap: anywhere; }

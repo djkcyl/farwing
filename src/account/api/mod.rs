@@ -1113,7 +1113,7 @@ impl NrdApi {
             bail!("API path must start with '/'");
         }
         if let Backend::SelfHosted(api) = &self.backend {
-            return api.send(contract, path, body).await;
+            return api.send(contract, path, body, self.authorization.as_ref()).await;
         }
         let method = match contract.method {
             Method::Get => HttpMethod::GET,

@@ -18,14 +18,14 @@ pub(crate) fn enroll_resident() -> Result<()> {
         return Ok(());
     }
     ensure_resident_owner()?;
-    let (identity, session) = active_host_records()?;
+    let (identity, settings_account) = active_host_records()?;
     let identity = identity.context("尚未建立本机身份")?;
-    let session = session.context("请先连接服务器或登录账号")?;
+    let settings_account = settings_account.context("请先连接服务器或登录账号")?;
     SecretEntry::new(SERVICE, IDENTITY_ACCOUNT)?.enroll()?;
     SecretEntry::new(SERVICE, SESSION_ACCOUNT)?.enroll()?;
     SecretEntry::new(SERVICE, generation::ACCOUNT)?.enroll()?;
     super::self_hosted::transfer_credentials(true)?;
-    crate::features::host::enroll_settings(session.user_id(), &identity.client_identity()?.device_id)?;
+    crate::features::host::enroll_settings(&settings_account, &identity.client_identity()?.device_id)?;
     if super::self_hosted::load_origin()?.is_none() {
         crate::features::host::transfer_guest_settings(&identity.client_identity()?.client_id, true)?;
     }
@@ -48,16 +48,16 @@ pub(crate) fn restore_portable() -> Result<()> {
         return Ok(());
     }
     ensure_resident_owner()?;
-    let (identity, session) = active_host_records()?;
+    let (identity, settings_account) = active_host_records()?;
     if let Some(identity) = KeyringIdentityStore::new()?.load_existing()? {
         crate::features::host::transfer_guest_settings(
             &identity.client_identity()?.client_id,
             false,
         )?;
     }
-    if let (Some(identity), Some(session)) = (identity, session) {
+    if let (Some(identity), Some(settings_account)) = (identity, settings_account) {
         crate::features::host::restore_portable_settings(
-            session.user_id(),
+            &settings_account,
             &identity.client_identity()?.device_id,
         )?;
     }
@@ -69,15 +69,18 @@ pub(crate) fn restore_portable() -> Result<()> {
     Ok(())
 }
 
-fn active_host_records() -> Result<(Option<NativeIdentity>, Option<LoginSession>)> {
+fn active_host_records() -> Result<(Option<NativeIdentity>, Option<String>)> {
     use super::self_hosted::{self, SelfHosted};
     match self_hosted::load_origin()? {
         Some(origin) => {
             let settings = SelfHosted::load(origin)?;
             let identity = KeyringIdentityStore::for_self_hosted(&settings.device_id)?.load_existing()?;
-            Ok((identity, Some(settings.session()?)))
+            Ok((identity, Some(settings.host_settings_account())))
         }
-        None => Ok((KeyringIdentityStore::new()?.load_existing()?, KeyringSessionStore::new()?.load()?)),
+        None => Ok((
+            KeyringIdentityStore::new()?.load_existing()?,
+            KeyringSessionStore::new()?.load()?.map(|session| session.user_id().to_owned()),
+        )),
     }
 }
 
@@ -404,6 +407,10 @@ impl KeyringIdentityStore {
 }
 
 impl KeyringSessionStore {
+    pub(crate) fn with_entry(entry: SecretEntry) -> Self {
+        Self { entry }
+    }
+
     pub fn new() -> Result<Self> {
         generation::ensure()?;
         let entry = SecretEntry::new(SERVICE, SESSION_ACCOUNT)

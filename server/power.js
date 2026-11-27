@@ -39,7 +39,7 @@ function localPeer(peer, target) {
   return parsed !== null && subnet(parsed, mask) === subnet(ipv4(target.inner_ip), mask);
 }
 
-export function createPower({ db, fail, roomId, pushTo, announceDevice, connectedPeers }) {
+export function createPower({ db, fail, roomId, pushTo, announceDevice, connectedPeers, hostAllowed = () => true }) {
   const requests = new Map();
 
   function writeLanInfo(device, body, peer) {
@@ -128,7 +128,7 @@ export function createPower({ db, fail, roomId, pushTo, announceDevice, connecte
       const shutdown = /^\/api\/v1\/transport\/([a-f0-9]{16})\/rpc\/request$/u.exec(path);
       if (!direct && !shutdown) return false;
       const id = (direct ?? shutdown)[1];
-      const target = addressHost(db, id);
+      const target = hostAllowed(id) && addressHost(db, id);
       if (id === device.id) fail(400, 'cannot send a remote power command to this device');
       if (!target) fail(404, 'device was not found');
       if (!target.controllable) fail(409, 'host is not accepting power requests');

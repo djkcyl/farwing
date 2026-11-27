@@ -132,8 +132,12 @@ impl PreparedServer {
                 AuthenticatedClient::from_saved_session_with_device(runtime.handle())
                     .context("无法创建自建服务器会话")?,
             );
-            let sync = device_sync::DeviceSync::load_initial(&client).await?;
-            Some((client, sync))
+            match device_sync::DeviceSync::load_initial(&client).await {
+                Ok(sync) => Some((client, sync)),
+                Err(error) if error.downcast_ref::<crate::account::api::ApiFailure>()
+                    .is_some_and(|failure| failure.invalid_saved_credentials()) => None,
+                Err(error) => return Err(error),
+            }
         } else {
             None
         };

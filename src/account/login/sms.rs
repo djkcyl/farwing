@@ -147,6 +147,7 @@ pub(crate) async fn prepare_login(
     let login = response.into_data()?;
     let session = LoginSession::new(login.token, login.user_id, login.nickname)?;
     Ok(PreparedLogin::ConditionalNew {
+        store,
         session,
         expected,
         permit,

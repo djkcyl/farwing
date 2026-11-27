@@ -39,6 +39,18 @@ export function openDatabase(dbPath = DEFAULT_DB_PATH) {
     CREATE TABLE IF NOT EXISTS address_members (
       device_id TEXT PRIMARY KEY REFERENCES devices(id)
     );
+    CREATE TABLE IF NOT EXISTS address_enrollment_requests (
+      device_id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE,
+      platform TEXT NOT NULL CHECK (platform IN ('windows', 'ios', 'web')),
+      name TEXT NOT NULL,
+      requested_at INTEGER NOT NULL,
+      approved_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS address_enrollment_grants (
+      device_id TEXT PRIMARY KEY,
+      expires_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS desktop_devices (
       device_id TEXT PRIMARY KEY REFERENCES address_members(device_id),
       version_name TEXT NOT NULL DEFAULT '',
@@ -58,6 +70,10 @@ export function openDatabase(dbPath = DEFAULT_DB_PATH) {
     CREATE TABLE IF NOT EXISTS desktop_hardware (
       device_id TEXT PRIMARY KEY REFERENCES address_members(device_id),
       details TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS ios_video_preferences (
+      device_id TEXT PRIMARY KEY REFERENCES address_members(device_id),
+      preferences TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS desktop_saved_devices (
       controller_id TEXT NOT NULL REFERENCES devices(id),
@@ -98,6 +114,55 @@ export function openDatabase(dbPath = DEFAULT_DB_PATH) {
     );
     CREATE INDEX IF NOT EXISTS sessions_host_idx ON sessions(host_id, ended_at);
     CREATE INDEX IF NOT EXISTS sessions_controller_idx ON sessions(controller_id, ended_at);
+    CREATE TABLE IF NOT EXISTS accounts (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS account_passkeys (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      public_key BLOB NOT NULL,
+      counter INTEGER NOT NULL,
+      transports TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS account_passkeys_owner ON account_passkeys(account_id);
+    CREATE TABLE IF NOT EXISTS account_sessions (
+      token_hash TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS account_sessions_expiry ON account_sessions(expires_at);
+    CREATE TABLE IF NOT EXISTS account_device_codes (
+      code_hash TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS account_device_codes_expiry ON account_device_codes(expires_at);
+    CREATE TABLE IF NOT EXISTS account_devices (
+      device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS account_devices_owner ON account_devices(account_id);
+    CREATE TABLE IF NOT EXISTS account_device_tokens (
+      device_id TEXT PRIMARY KEY REFERENCES account_devices(device_id) ON DELETE CASCADE,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      installation_hash TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS account_device_transfers (
+      code_hash TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL REFERENCES account_devices(device_id) ON DELETE CASCADE,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS account_device_transfers_expiry ON account_device_transfers(expires_at);
+    CREATE TABLE IF NOT EXISTS ios_device_ids (
+      device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+      persistent_id TEXT NOT NULL UNIQUE
+    );
   `);
   return db;
 }
@@ -129,6 +194,7 @@ export function revokeDevice(db, deviceId) {
   db.exec('BEGIN IMMEDIATE');
   try {
     const result = db.prepare('UPDATE devices SET revoked_at = COALESCE(revoked_at, ?), controllable = 0 WHERE id = ?').run(now, deviceId);
+    db.prepare('DELETE FROM account_device_tokens WHERE device_id = ?').run(deviceId);
     db.prepare('UPDATE room_tickets SET retired_at = COALESCE(retired_at, ?) WHERE device_id = ?').run(now, deviceId);
     db.prepare(`UPDATE sessions SET ended_at = COALESCE(ended_at, ?), end_reason = COALESCE(end_reason, 'device_revoked')
       WHERE ended_at IS NULL AND (host_id = ? OR controller_id = ?)`).run(now, deviceId, deviceId);

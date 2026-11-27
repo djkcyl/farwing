@@ -1,14 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
+import { get as httpGet } from 'node:http';
 import { io as connectSocketIo } from 'socket.io-client';
 import WebSocket from 'ws';
+import { isoCBOR } from '@simplewebauthn/server/helpers';
 import { createServer } from '../index.js';
-import { createPairingCode, hashSecret, revokeDevice } from '../db.js';
+import { createPairingCode, hashSecret, openDatabase, revokeDevice } from '../db.js';
+import { createConnectOptions } from '../protocol.js';
+import { approveEnrollmentRequest, listEnrollmentRequests } from '../desktop.js';
 
 async function fixture(t, options = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'openuuyc-server-'));
@@ -18,14 +22,15 @@ async function fixture(t, options = {}) {
     port: 0,
     maintenanceIntervalMs: 50,
     wsHeartbeatIntervalMs: 100,
+    requireDeviceApproval: false,
     ...options,
   });
-  await app.listen(0, '127.0.0.1');
+  const address = await app.listen(0, '127.0.0.1');
   t.after(async () => {
     await app.close();
     await rm(dir, { recursive: true, force: true });
   });
-  return { app, dir, origin: app.publicOrigin() };
+  return { app, dir, origin: app.publicOrigin(), address };
 }
 
 async function api(origin, path, { token, method = 'GET', body, headers = {} } = {}) {
@@ -40,6 +45,276 @@ async function api(origin, path, { token, method = 'GET', body, headers = {} } =
   const value = await response.json();
   return { response, value };
 }
+
+test('new address-based devices need operator approval for enrollment and remote access', async (t) => {
+  const { app, address } = await fixture(t, {
+    requireDeviceApproval: true, publicOrigin: 'https://uur.example:8443', desktopClientNetworks: '127.0.0.1/32',
+  });
+  const origin = `http://${address.address}:${address.port}`;
+  const hostToken = randomBytes(32).toString('hex');
+  const registerHost = () => api(origin, '/api/v1/device/windows/init', {
+    token: hostToken, method: 'POST', body: { name: 'Windows host' },
+  });
+  assert.equal((await registerHost()).value.code, 4031);
+  const [hostRequest] = listEnrollmentRequests(app.db);
+  assert.equal(hostRequest.platform, 'windows');
+  assert.equal(approveEnrollmentRequest(app.db, hostRequest.id), true);
+  const hostId = (await registerHost()).value.data.device_id;
+  assert.equal(hostId, hostRequest.id);
+  const inventory = () => api(origin, '/api/v1/device/groups/of/my', { token: hostToken });
+
+  const iosToken = randomBytes(32).toString('hex');
+  const enroll = (token, platform, id) => api(origin, '/v1/desktop/register', {
+    token, method: 'POST', body: { platform, name: 'Pending device', persistent_id: id },
+  });
+  const ios = (await enroll(iosToken, 'ios')).value;
+  assert.match(ios.device_id, /^[a-f0-9]{16}$/u);
+  assert.equal(ios.status, 'pending');
+  assert.deepEqual((await enroll(iosToken, 'ios')).value, ios);
+  assert.equal((await api(origin, '/api/v1/device/ios/init', {
+    token: iosToken, method: 'POST', body: { name: 'Pending device' },
+  })).value.code, 4031);
+  const list = () => api(origin, '/api/v1/device/list', { token: iosToken });
+  const joinHost = () => api(origin, `/api/v1/room/join/by_device/${hostId}`, {
+    token: iosToken, method: 'POST', body: {},
+  });
+  assert.equal((await list()).response.status, 401);
+  assert.equal((await joinHost()).response.status, 401);
+  assert.deepEqual((await inventory()).value.data.mobile_devices, []);
+  assert.equal(app.db.prepare('SELECT count(*) AS count FROM devices').get().count, 1);
+
+  const otherToken = randomBytes(32).toString('hex');
+  const web = await enroll(otherToken, 'web');
+  assert.equal(web.response.status, 202);
+  assert.equal((await api(origin, '/v1/sessions', {
+    token: otherToken, method: 'POST', body: { deviceId: hostId },
+  })).response.status, 401);
+  assert.equal(approveEnrollmentRequest(app.db, ios.device_id), true);
+  assert.equal((await enroll(iosToken, 'ios')).response.status, 200);
+  assert.equal((await list()).response.status, 200);
+  assert.equal((await enroll(otherToken, 'web')).response.status, 202);
+  assert.deepEqual((await inventory()).value.data.mobile_devices.map(({ device_id }) => device_id), [ios.device_id]);
+  assert.equal(approveEnrollmentRequest(app.db, ios.device_id), false);
+});
+
+test('loopback administration approves, preapproves and revokes device access', async (t) => {
+  const { app, origin } = await fixture(t, { adminPort: 0, requireDeviceApproval: true });
+  const local = app.adminOrigin();
+  assert.equal(new URL(local).hostname, '127.0.0.1');
+  assert.match(await (await fetch(local)).text(), /设备准入管理/u);
+  const state = () => api(local, '/api/devices');
+  const change = (action, id, source = local) => api(local, `/api/devices/${action}`, {
+    method: 'POST', body: { id }, headers: { Origin: source },
+  });
+  const register = (token) => api(origin, '/v1/desktop/register', {
+    token, method: 'POST', body: { platform: 'ios', name: 'Test iPad' },
+  });
+  const token = randomBytes(32).toString('hex');
+  const { device_id: id } = (await register(token)).value;
+  assert.equal((await api(origin, '/api/devices')).response.status, 404);
+  const wrongHost = await new Promise((resolve, reject) => {
+    httpGet(local + '/api/devices', { headers: { Host: 'wrong.example' } }, (response) => {
+      response.resume();
+      resolve(response.statusCode);
+    }).on('error', reject);
+  });
+  assert.equal(wrongHost, 403);
+  assert.equal((await api(local, '/api/devices', { headers: { 'X-Forwarded-For': '127.0.0.1' } })).response.status, 403);
+  assert.equal((await api(local, '/api/devices/approve', { method: 'POST', body: { id } })).response.status, 403);
+  assert.equal((await change('approve', id, 'https://untrusted.example')).response.status, 403);
+  assert.equal((await state()).value.requests[0].id, id);
+  assert.equal((await change('delete', id)).response.status, 200);
+  assert.deepEqual((await state()).value.requests, []);
+  assert.equal((await register(token)).value.status, 'pending');
+  assert.equal((await change('approve', id)).response.status, 200);
+  assert.equal((await register(token)).response.status, 200);
+  assert.equal((await state()).value.devices[0].id, id);
+
+  const replacement = randomBytes(32).toString('hex');
+  const replacementId = hashSecret(replacement).slice(0, 16);
+  assert.equal((await change('preapprove', replacementId)).response.status, 200);
+  assert.equal((await state()).value.grants[0].id, replacementId);
+  assert.equal((await change('delete', replacementId)).response.status, 200);
+  assert.deepEqual((await state()).value.grants, []);
+  assert.equal((await change('preapprove', replacementId)).response.status, 200);
+  assert.equal((await register(replacement)).response.status, 200);
+  assert.deepEqual((await state()).value.grants, []);
+  assert.equal((await change('revoke', id)).response.status, 200);
+  assert.equal((await api(origin, '/v1/devices', { token })).response.status, 401);
+  const retry = await register(token);
+  assert.equal(retry.response.status, 202);
+  assert.deepEqual(retry.value, { device_id: id, status: 'pending' });
+  assert.equal((await api(origin, '/v1/devices', { token })).response.status, 401);
+  assert.deepEqual((await state()).value.devices.map((device) => device.id), [replacementId]);
+  assert.equal((await change('approve', id)).response.status, 200);
+  assert.equal((await register(token)).value.device_id, id);
+  assert.equal((await api(origin, '/v1/devices', { token })).response.status, 200);
+  assert.equal((await change('preapprove', id)).response.status, 409);
+  assert.deepEqual((await state()).value.requests, []);
+});
+
+test('deployment accounts link an enrolled iOS device without changing its Windows inventory identity', async (t) => {
+  const { origin, app } = await fixture(t);
+  const password = 'test-password-with-12-characters';
+  const post = (path, body, cookie) => api(origin, `/v1/account/${path}`, {
+    method: 'POST', body, headers: { Origin: origin, ...(cookie && { Cookie: cookie }) },
+  });
+  const page = await fetch(`${origin}/account`);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /OpenUUYC 账号/);
+  const registration = await post('register', { username: 'Test.User', password });
+  assert.equal(registration.response.status, 200);
+  assert.equal(registration.value.username, 'test.user');
+  assert.equal((await post('login', { username: 'test.user', password: 'wrong' })).response.status, 401);
+  assert.equal((await post('register', { username: 'test.user', password })).response.status, 409);
+  assert.ok(!app.db.prepare('SELECT password_hash FROM accounts').get().password_hash.includes(password));
+  const login = await post('login', { username: 'test.user', password });
+  assert.equal(login.response.status, 200);
+  const cookie = login.response.headers.get('set-cookie').split(';', 1)[0];
+  const iosToken = randomBytes(32).toString('hex');
+  const persistentId = randomBytes(8).toString('hex');
+  const enroll = (token, id) => api(origin, '/v1/desktop/register', {
+    method: 'POST', token, body: { name: 'Test iPad', platform: 'ios', persistent_id: id },
+  });
+  const first = await enroll(iosToken, persistentId);
+  assert.equal(first.response.status, 200);
+  assert.equal((await enroll(iosToken, persistentId)).value.device_id, first.value.device_id);
+  assert.equal((await enroll(iosToken, randomBytes(8).toString('hex'))).response.status, 409);
+  assert.equal((await enroll(randomBytes(32).toString('hex'), persistentId)).response.status, 409);
+  const windows = await registerAddressDevice(origin, 'windows', 'Windows host');
+  const inventory = await api(origin, '/api/v1/device/groups/of/my', { token: windows.token });
+  assert.deepEqual(inventory.value.data.mobile_devices.map(({ device_id, alias, platform, controllable }) =>
+    [device_id, alias, platform, controllable]), [[persistentId, 'Test iPad', 3, false]]);
+  const detail = await api(origin, `/api/v1/device/${persistentId}/detail`, { token: windows.token });
+  assert.equal(detail.value.data.alias, 'Test iPad');
+  assert.equal((await post('device-code', {})).response.status, 401);
+  const grant = await post('device-code', {}, cookie);
+  const link = () => api(origin, '/v1/desktop/account', { token: iosToken, method: 'POST', body: { code: grant.value.code } });
+  assert.equal((await link()).value.username, 'test.user');
+  assert.equal((await link()).response.status, 400);
+  const status = () => api(origin, '/v1/account/status', { headers: { Cookie: cookie } });
+  assert.equal((await status()).value.devices[0].device_id, persistentId);
+  const replacement = randomBytes(32).toString('hex');
+  const provisionalId = randomBytes(8).toString('hex');
+  const provisional = await enroll(replacement, provisionalId);
+  assert.equal(provisional.response.status, 200);
+  const videoPath = '/v1/desktop/video-preferences';
+  const preferences = { NTES_customVideoConfig: 'e30=' };
+  await api(origin, videoPath, { token: iosToken, method: 'PUT', body: { preferences } });
+  const issueTransfer = (id, session = cookie) => post('device-transfer-code', { device_id: id }, session);
+  assert.equal((await issueTransfer(persistentId, '')).response.status, 401);
+  assert.equal((await issueTransfer(provisionalId)).response.status, 404);
+  const transfer = (code, token = replacement) => api(origin, '/v1/desktop/account/transfer', {
+    token, method: 'POST', body: { code },
+  });
+  const transferGrant = await issueTransfer(persistentId);
+  assert.equal(transferGrant.response.status, 200);
+  const supersedingGrant = await issueTransfer(persistentId);
+  assert.equal((await transfer(transferGrant.value.code)).response.status, 400);
+  assert.equal((await transfer(supersedingGrant.value.code, windows.token)).response.status, 403);
+  assert.deepEqual((await transfer(supersedingGrant.value.code)).value, { username: 'test.user', persistent_id: persistentId });
+  assert.equal((await transfer(supersedingGrant.value.code)).response.status, 400);
+  assert.equal((await enroll(replacement, provisionalId)).value.device_id, first.value.device_id);
+  assert.equal((await enroll(iosToken, persistentId)).response.status, 401);
+  assert.deepEqual((await api(origin, videoPath, { token: replacement })).value, { preferences });
+  assert.equal((await api(origin, videoPath, { token: iosToken })).response.status, 401);
+  const migratedInventory = await api(origin, '/api/v1/device/groups/of/my', { token: windows.token });
+  assert.deepEqual(migratedInventory.value.data.mobile_devices.map(({ device_id }) => device_id), [persistentId]);
+  assert.equal((await post('logout', {}, cookie)).response.status, 200);
+  assert.equal((await status()).value.username, null);
+  assert.equal((await api(origin, '/v1/desktop/account', { token: replacement })).value.username, 'test.user');
+});
+
+test('persists iOS video preferences by device and refreshes the Windows inventory name', async (t) => {
+  const { origin, app, dir } = await fixture(t);
+  const path = '/v1/desktop/video-preferences';
+  const token = randomBytes(32).toString('hex');
+  const secondToken = randomBytes(32).toString('hex');
+  const windowsToken = randomBytes(32).toString('hex');
+  const persistentId = randomBytes(8).toString('hex');
+  const enroll = (deviceToken, name, platform = 'ios', id) => api(origin, '/v1/desktop/register', {
+    method: 'POST', token: deviceToken, body: { platform, name, persistent_id: id },
+  });
+  const first = await enroll(token, 'UU 远程 iOS', 'ios', persistentId);
+  assert.equal(first.response.status, 200);
+  assert.equal((await enroll(secondToken, 'Another iPad')).response.status, 200);
+  assert.equal((await enroll(windowsToken, 'Desktop', 'windows')).response.status, 200);
+  assert.equal((await api(origin, path)).response.status, 401);
+  assert.equal((await api(origin, path, { token: windowsToken })).response.status, 403);
+  assert.deepEqual((await api(origin, path, { token })).value, { preferences: null });
+  const preferences = { NTES_customVideoConfig: Buffer.from('{"fps":60}').toString('base64') };
+  const write = (value) => api(origin, path, { token, method: 'PUT', body: { preferences: value } });
+  assert.equal((await write({ unrelated: 'YQ==' })).response.status, 400);
+  assert.equal((await write({ NTES_customVideoConfig: Buffer.alloc(8193).toString('base64') })).response.status, 400);
+  assert.deepEqual((await write(preferences)).value, { preferences });
+  assert.equal((await enroll(token, 'Test iPad', 'ios', persistentId)).value.device_id, first.value.device_id);
+  const windows = await api(origin, '/api/v1/device/groups/of/my', { token: windowsToken });
+  assert.ok(windows.value.data.mobile_devices.some((device) => device.device_id === persistentId && device.alias === 'Test iPad'));
+  assert.deepEqual((await api(origin, path, { token })).value, { preferences });
+  assert.deepEqual((await api(origin, path, { token: secondToken })).value, { preferences: null });
+  const reopened = openDatabase(join(dir, 'devices.sqlite'));
+  try {
+    const row = reopened.prepare('SELECT preferences FROM ios_video_preferences WHERE device_id = ?').get(first.value.device_id);
+    assert.deepEqual(JSON.parse(row.preferences), preferences);
+  } finally {
+    reopened.close();
+  }
+  revokeDevice(app.db, first.value.device_id);
+  assert.equal((await api(origin, path, { token })).response.status, 401);
+});
+
+test('verifies Passkey registration and discoverable login against the deployment origin', async (t) => {
+  const accountOrigin = 'https://remote.example.test:8788';
+  const rpId = 'remote.example.test';
+  const { origin } = await fixture(t, { accountOrigin });
+  const post = (path, body, source = accountOrigin) => api(origin, `/v1/account/passkey/${path}`, {
+    method: 'POST', body, headers: { Origin: source },
+  });
+  const registration = await post('register/options', { username: 'passkey.user' });
+  assert.equal(registration.response.status, 200);
+  const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const { x, y } = publicKey.export({ format: 'jwk' });
+  const coseKey = isoCBOR.encode(new Map([[1, 2], [3, -7], [-1, 1],
+    [-2, Buffer.from(x, 'base64url')], [-3, Buffer.from(y, 'base64url')]]));
+  const rawId = randomBytes(32);
+  const id = rawId.toString('base64url');
+  const clientData = (type, challenge, expectedOrigin = accountOrigin) =>
+    Buffer.from(JSON.stringify({ type, challenge, origin: expectedOrigin, crossOrigin: false }));
+  const authenticatorData = (flags, counter) => {
+    const buffer = Buffer.alloc(37);
+    createHash('sha256').update(rpId).digest().copy(buffer);
+    buffer[32] = flags;
+    buffer.writeUInt32BE(counter, 33);
+    return buffer;
+  };
+  const registrationData = Buffer.concat([authenticatorData(0x45, 0), Buffer.alloc(16), Buffer.from([0, rawId.length]), rawId, coseKey]);
+  const attestationObject = Buffer.from(isoCBOR.encode(new Map([
+    ['fmt', 'none'], ['attStmt', new Map()], ['authData', registrationData],
+  ]))).toString('base64url');
+  const verifyRegistration = await post('register/verify', {
+    requestId: registration.value.requestId,
+    credential: { id, rawId: id, type: 'public-key', clientExtensionResults: {}, response: {
+      clientDataJSON: clientData('webauthn.create', registration.value.options.challenge).toString('base64url'), attestationObject,
+    } },
+  });
+  assert.equal(verifyRegistration.response.status, 200, JSON.stringify(verifyRegistration.value));
+  assert.match(verifyRegistration.response.headers.get('set-cookie'), /Secure/);
+  const login = await post('login/options', {});
+  const assertion = (clientOrigin) => {
+    const data = clientData('webauthn.get', login.value.options.challenge, clientOrigin);
+    const auth = authenticatorData(0x05, 1);
+    const signature = sign('sha256', Buffer.concat([auth, createHash('sha256').update(data).digest()]), privateKey);
+    return { requestId: login.value.requestId, credential: { id, rawId: id, type: 'public-key', clientExtensionResults: {}, response: {
+      userHandle: registration.value.options.user.id, authenticatorData: auth.toString('base64url'),
+      clientDataJSON: data.toString('base64url'), signature: signature.toString('base64url'),
+    } } };
+  };
+  assert.equal((await post('login/verify', assertion(accountOrigin), 'https://foreign.example.test')).response.status, 403);
+  const verifyLogin = await post('login/verify', assertion(accountOrigin));
+  assert.equal(verifyLogin.response.status, 200, JSON.stringify(verifyLogin.value));
+  assert.equal(verifyLogin.value.username, 'passkey.user');
+  assert.equal((await post('login/verify', assertion(accountOrigin))).response.status, 400);
+});
 
 async function pair(app, role, platform, name, boundHostId = null) {
   const grant = createPairingCode(app.db, { role, boundHostId });
@@ -793,4 +1068,359 @@ test('Windows wallpaper upload is bounded, single-use and bound to the authorize
   assert.equal(list.my_binded_devices[0].wallpaper_url, image.url);
   const downloaded = await fetch(image.url);
   assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), png);
+});
+
+test('enrolled iOS controllers can reserve native signaling with host consent', async (t) => {
+  const { app, origin } = await fixture(t);
+  const host = await registerAddressDevice(origin, 'windows', 'Host');
+  const ios = await registerAddressDevice(origin, 'ios', 'iPhone');
+  const web = await registerAddressDevice(origin, 'web', 'Browser');
+  const reserve = (token, transport = 'socket.io') =>
+    api(origin, '/v1/sessions', { method: 'POST', token, body: { deviceId: host.id, transport } });
+  const postHost = (path, body) =>
+    api(origin, `/v1/desktop/${path}`, { method: 'POST', token: host.token, body });
+
+  const room = (await postHost('room', {})).value;
+  const hostSocket = connectHost(room.signalingUrl, room.ticket);
+  t.after(() => hostSocket.close());
+  await connected(hostSocket);
+  assert.equal((await reserve(ios.token)).response.status, 409);
+  assert.equal((await postHost('controllable', { controllable: true })).response.status, 200);
+  assert.equal((await reserve(web.token)).response.status, 403);
+  assert.equal((await reserve(host.token)).response.status, 403);
+  assert.equal((await reserve(ios.token, 'unknown')).response.status, 400);
+
+  const abandoned = (await reserve(ios.token)).value;
+  const abandonedSocket = connectHost(abandoned.signalingUrl, abandoned.ticket);
+  t.after(() => abandonedSocket.close());
+  await connected(abandonedSocket);
+  const serverSocket = app.io.sockets.sockets.get(abandonedSocket.id);
+  const disconnected = new Promise((resolve) => serverSocket.once('disconnect', resolve));
+  abandonedSocket.io.engine.close();
+  assert.equal(await disconnected, 'transport close');
+
+  const reservation = await reserve(ios.token);
+  assert.equal(reservation.response.status, 201);
+  assert.equal(new URL(reservation.value.signalingUrl).pathname, '/socket.io/');
+  const socket = connectHost(reservation.value.signalingUrl, reservation.value.ticket);
+  t.after(() => socket.close());
+  await connected(socket);
+  assert.deepEqual(await emitAck(socket, 'room_info'), [{ room_id: host.id }]);
+
+  const hostRequest = nextSocketIoEvent(hostSocket, 'be-controlled');
+  const appControlId = '296ED92C-3891-4CB9-8ABB-ACB33474A9CB';
+  const appData = createConnectOptions(ios.id, 'ios');
+  const [status, details] = await emitAck(socket, 'control', {
+    app_control_id: appControlId,
+    app_data: Buffer.concat([Buffer.from([0x04]), appData]),
+    streamer_data: '{}',
+  });
+  assert.equal(status, 'success');
+  const [request] = await hostRequest;
+  assert.equal(request.controller_device_id, ios.id);
+  assert.equal(request.app_control_id, appControlId);
+  assert.deepEqual(request.app_data, appData);
+  assert.equal(request.ice_id, details.ice_id);
+  const answer = nextSocketIoEvent(socket, 'soac');
+  const sdp = gzipSync(Buffer.from('v=0\r\n'));
+  const response = {
+    client_id: request.client_id,
+    data: { app_control_id: appControlId, ice_id: details.ice_id, type: 'answer', gzip_sdp: sdp },
+  };
+  hostSocket.emit('soac', response);
+  assert.deepEqual(await answer, [{ ...response, data: { ...response.data, gzip_sdp: Buffer.concat([Buffer.from([0x04]), sdp]) } }]);
+  assert.equal((await reserve(ios.token)).response.status, 409);
+  const left = nextSocketIoEvent(hostSocket, 'left');
+  socket.emit('leave');
+  await left;
+
+  const pending = await reserve(ios.token);
+  assert.equal(pending.response.status, 201);
+  revokeDevice(app.db, ios.id);
+  const revokedSocket = connectHost(pending.value.signalingUrl, pending.value.ticket);
+  t.after(() => revokedSocket.close());
+  await assert.rejects(connected(revokedSocket), /unauthorized/u);
+  assert.equal((await reserve(ios.token)).response.status, 401);
+});
+
+test('original iOS bootstrap registers only a local device identity', async (t) => {
+  const { app, origin } = await fixture(t);
+  const init = '/api/v1/device/ios/init';
+  const config = '/api/v1/tool/configures_with_version';
+  const token = randomBytes(32).toString('hex');
+  const start = (options) => api(origin, init, { method: 'POST', body: { name: 'UU iOS' }, ...options });
+
+  assert.deepEqual((await api(origin, config, { method: 'POST', body: {} })).value, { code: 0, msg: '', data: {} });
+  assert.equal((await start()).response.status, 401);
+  const first = await start({ token });
+  assert.equal(first.response.status, 200);
+  assert.match(first.value.data.device_id, /^[a-f0-9]{16}$/u);
+  assert.deepEqual(first.value.data, { device_id: first.value.data.device_id, alias: 'UU iOS', status: 'DISCONNECTED' });
+  assert.deepEqual((await start({ token })).value, first.value);
+  const iosConfig = (await api(origin, config, { token, method: 'POST', body: {} })).value;
+  const map = iosConfig.data.controlled_ability_map;
+  assert.equal(map.status, 0);
+  assert.match(map.version, /^\d+$/u);
+  const windows = map.data.find(({ platform }) => platform === 1);
+  assert.equal(windows.abilitys.length, 60);
+  for (const feature of ['pad_touch', 'voice_setting', 'smart_mouse', 'remote_clipboard_v5', 'file_trans_v4']) {
+    assert.ok(windows.abilitys.some((ability) => ability.feature === feature && ability.original_version));
+  }
+  assert.equal((await api(origin, '/v1/devices', { token })).response.status, 200);
+  assert.equal((await api(origin, '/v1/host/room', { method: 'POST', token, body: {} })).response.status, 403);
+  revokeDevice(app.db, first.value.data.device_id);
+  assert.equal((await start({ token })).response.status, 401);
+  assert.deepEqual((await api(origin, config, { token, method: 'POST', body: {} })).value.data, {});
+
+  const rejected = await fixture(t, { desktopClientNetworks: '192.0.2.0/24' });
+  assert.equal((await api(rejected.origin, config, { method: 'POST', body: {} })).response.status, 403);
+  assert.equal((await api(rejected.origin, init, { method: 'POST', token, body: { name: 'Outside network' } })).response.status, 403);
+});
+
+test('Windows API enrollment opens a native host room visible to iOS', async (t) => {
+  const { app, origin } = await fixture(t);
+  const token = randomBytes(32).toString('hex');
+  const initPath = '/api/v1/device/windows/init';
+  const body = { name: 'Windows test host', platform: 1, controllable: true };
+  const missingCredential = await api(origin, initPath, { method: 'POST', body });
+  assert.equal(missingCredential.response.status, 401);
+  assert.equal(missingCredential.value.code, 1120);
+
+  const registered = await api(origin, initPath, { token, method: 'POST', body });
+  assert.equal(registered.response.status, 200);
+  const { device_id: hostId } = registered.value.data;
+  assert.match(hostId, /^[a-f0-9]{16}$/u);
+  assert.deepEqual((await api(origin, initPath, { token, method: 'POST', body })).value, registered.value);
+  const profilePath = '/api/v1/user/info';
+  assert.equal((await api(origin, profilePath)).response.status, 401);
+  const profile = await api(origin, profilePath, { token });
+  assert.equal(profile.response.status, 200);
+  assert.deepEqual(profile.value, { code: 0, msg: '', data: { nickname: '自建服务器' } });
+  const hostList = await api(origin, '/api/v1/device/list', { token });
+  assert.equal(hostList.value.data.current_device.device_id, hostId);
+  assert.equal(hostList.value.data.current_device.controllable, false);
+  assert.deepEqual(hostList.value.data.my_binded_devices, []);
+
+  const ios = await registerAddressDevice(origin, 'ios', 'iPad');
+  const createRoom = (credential) => api(origin, '/api/v1/room/create', {
+    token: credential, method: 'POST', body: { last_controlled_interval: -1 },
+  });
+  assert.equal((await createRoom(ios.token)).response.status, 409);
+  const { value: { data: room } } = await createRoom(token);
+  const socket = connectHost(room.signaling_server, room.token);
+  t.after(() => socket.close());
+  await connected(socket);
+  assert.equal((await api(origin, '/api/v1/device/controllable', {
+    token, method: 'POST', body: { controllable: true },
+  })).value.code, 0);
+  const catalog = await api(origin, '/api/v1/device/list', { token: ios.token });
+  assert.deepEqual(catalog.value.data.my_binded_devices.map(({ device_id, status, controllable }) =>
+    [device_id, status, controllable]), [[hostId, 'CONNECTED', true]]);
+
+  revokeDevice(app.db, hostId);
+  assert.equal((await api(origin, initPath, { token, method: 'POST', body })).response.status, 401);
+  assert.equal((await api(origin, profilePath, { token })).response.status, 401);
+});
+
+test('original iOS device directory and join use the admitted devices and native room', async (t) => {
+  const { address, app } = await fixture(t, {
+    publicOrigin: 'https://uur.example:8443',
+    desktopClientNetworks: '127.0.0.1/32',
+  });
+  const origin = `http://${address.address}:${address.port}`;
+  const host = await registerWindows(origin, 'Online host');
+  const ios = await registerAddressDevice(origin, 'ios', 'iPhone');
+  const secondIos = await registerAddressDevice(origin, 'ios', 'iPad');
+  const web = await registerAddressDevice(origin, 'web', 'Browser');
+  const paired = createPairingCode(app.db, { role: 'host' });
+  const privateHost = await api(origin, '/v1/pair', {
+    method: 'POST', body: { role: 'host', platform: 'windows', name: 'Paired host', code: paired.code },
+  });
+  assert.equal(privateHost.response.status, 201);
+
+  const catalog = (token) => api(origin, '/api/v1/device/list', { token });
+  const joinRoom = (token, id = host.id) => api(origin, `/api/v1/room/join/by_device/${id}`, {
+    method: 'POST', token, body: {},
+  });
+  const { value: room } = await api(origin, '/v1/desktop/room', { token: host.token, method: 'POST', body: {} });
+  const listenerSocketUrl = new URL('/socket.io/', origin);
+  const hostSocket = connectHost(listenerSocketUrl, room.ticket);
+  t.after(() => hostSocket.close());
+  await connected(hostSocket);
+
+  const createPresence = (token) => api(origin, '/api/v1/room/create', { token, method: 'POST', body: {} });
+  assert.equal((await createPresence()).response.status, 401);
+  assert.equal((await createPresence(web.token)).response.status, 403);
+  const presence = await createPresence(ios.token);
+  assert.equal(presence.response.status, 200);
+  assert.deepEqual(presence.value.data.signaling_list, ['wss://uur.example:8443/socket.io/']);
+  const presenceTicket = presence.value.data.token;
+  const invalidController = connectHost(listenerSocketUrl, presenceTicket, true);
+  t.after(() => invalidController.close());
+  await assert.rejects(connected(invalidController), /unauthorized/u);
+  const presenceSocket = connectHost(listenerSocketUrl, presenceTicket);
+  t.after(() => presenceSocket.close());
+  await connected(presenceSocket);
+  assert.deepEqual(await emitAck(presenceSocket, 'room_info'), [{ room_id: ios.id }]);
+
+  assert.equal((await catalog(web.token)).response.status, 403);
+  assert.equal((await catalog()).response.status, 401);
+  assert.equal((await joinRoom(web.token)).response.status, 403);
+  assert.equal((await joinRoom(ios.token, privateHost.value.deviceId)).response.status, 403);
+  assert.equal((await joinRoom(ios.token)).response.status, 409);
+  assert.equal((await api(origin, '/v1/desktop/controllable', {
+    token: host.token, method: 'POST', body: { controllable: true },
+  })).response.status, 200);
+
+  const list = await catalog(ios.token);
+  assert.equal(list.response.status, 200);
+  assert.equal(list.value.data.current_device.device_id, ios.id);
+  assert.deepEqual(list.value.data.my_binded_devices.map(({ device_id, status, controllable }) =>
+    [device_id, status, controllable]), [[host.id, 'CONNECTED', true]]);
+  assert.deepEqual(list.value.data.others_shared_devices, []);
+
+  const groups = (token) => api(origin, '/api/v1/device/groups/of/my', { token });
+  assert.equal((await groups()).response.status, 401);
+  assert.equal((await groups(web.token)).response.status, 403);
+  const grouped = await groups(ios.token);
+  assert.equal(grouped.response.status, 200);
+  assert.equal(grouped.value.data.current_device_id, ios.id);
+  assert.deepEqual(grouped.value.data.desktop_devices.map(({ device_id }) => device_id), [host.id]);
+  assert.deepEqual(grouped.value.data.mobile_devices, []);
+  assert.deepEqual(grouped.value.data.tv_devices, []);
+
+  const detail = (token, id = host.id) => api(origin, `/api/v1/device/${id}/detail`, { token });
+  assert.equal((await detail()).response.status, 401);
+  assert.equal((await detail(web.token)).response.status, 403);
+  assert.equal((await detail(ios.token, privateHost.value.deviceId)).response.status, 404);
+  const inspected = await detail(ios.token);
+  assert.equal(inspected.response.status, 200);
+  assert.deepEqual(inspected.value, {
+    code: 0, msg: 'ok', data: {
+      alias: 'Online host', os_version: '11',
+      details: [['设备名称', 'Online host'], ['平台', 'Windows'], ['设备 ID', host.id], ['系统', 'Windows 11'], ['内存', '16.0 GiB']],
+    },
+  });
+
+  const joined = await joinRoom(ios.token);
+  assert.equal(joined.response.status, 200);
+  assert.equal(joined.value.code, 0);
+  const { signaling_server: signaling, signaling_list: destinations, token } = joined.value.data;
+  assert.equal(signaling, 'wss://uur.example:8443/socket.io/');
+  assert.deepEqual(destinations, [signaling]);
+  assert.equal(joined.value.data.publisher_device_id, host.id);
+  assert.equal(joined.value.data.device_name, 'Online host');
+  assert.equal(joined.value.data.publisher_platform, 1);
+  assert.equal(joined.value.data.publisher_version_name, '4.48.1.5606');
+  const retry = await joinRoom(ios.token);
+  assert.equal(retry.response.status, 200);
+  assert.deepEqual(retry.value.data, joined.value.data);
+  assert.equal((await joinRoom(secondIos.token)).response.status, 409);
+  const controllerSocket = connectHost(listenerSocketUrl, token);
+  t.after(() => controllerSocket.close());
+  await connected(controllerSocket);
+  assert.deepEqual(await emitAck(controllerSocket, 'room_info'), [{ room_id: host.id }]);
+  const [status] = await emitAck(controllerSocket, 'control', {
+    app_control_id: randomUUID(),
+    app_data: createConnectOptions(ios.id, 'ios'),
+    streamer_data: '{}',
+  });
+  assert.equal(status, 'success');
+  assert.equal((await joinRoom(ios.token)).response.status, 409);
+  assert.equal((await joinRoom(secondIos.token)).response.status, 409);
+});
+
+test('owner QR login waits for approval and exchanges distinct tickets into a revocable device session', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'openuuyc-qr-'));
+  const db = openDatabase(join(dir, 'accounts.sqlite'));
+  const owner = randomUUID();
+  const cookie = randomBytes(32).toString('base64url');
+  db.prepare('INSERT INTO accounts VALUES (?, ?, ?, ?)').run(owner, 'owner', null, Date.now());
+  db.prepare('INSERT INTO account_sessions VALUES (?, ?, ?)').run(hashSecret(cookie), owner, Date.now() + 60_000);
+  const app = createServer({ db, port: 0, adminPort: 0, deviceAccountOwner: 'owner', qrPollMs: 20 });
+  t.after(async () => {
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await app.listen();
+  const origin = app.publicOrigin();
+  const admin = app.adminOrigin();
+  const installation = randomBytes(32).toString('hex');
+  const otherInstallation = randomBytes(32).toString('hex');
+  const native = (path, token, method = 'POST', body) => api(origin, '/api/v1/' + path, { token, method, body });
+  const adminAction = (action, id) => api(admin, '/api/devices/' + action, {
+    method: 'POST', headers: { Origin: admin }, body: { id },
+  });
+  const register = (token) => native('device/windows/init', token, 'POST', { name: 'Test Windows' });
+  const id = (await register(installation)).value.data.device_id;
+  assert.equal((await register(installation)).value.data.device_id, id);
+  await register(otherInstallation);
+  assert.equal((await native('device/list', installation, 'GET')).value.code, 1001);
+
+  const barcode = (await native('qrcode/gen/login', installation)).value.data;
+  const { qrcode_jump_url, token: exchangeTicket, status_query_ticket } = barcode;
+  const qr = new URL(qrcode_jump_url).searchParams.get('qr');
+  assert.notEqual(qr, exchangeTicket);
+  assert.notEqual(qr, status_query_ticket);
+  assert.notEqual(exchangeTicket, status_query_ticket);
+  const status = (login_status, token = status_query_ticket) => native('qrcode/login/status', installation, 'POST',
+    { qrcode_jump_url, login_status, token });
+  const exchange = (token = installation, ticket = exchangeTicket) => native('login/by_qrcode', token, 'POST',
+    { qrcode_jump_url, token: ticket });
+  const action = (action, headers) => api(origin, '/v1/account/qr', {
+    method: 'POST', headers: { Origin: origin, ...headers }, body: { id: qr, action },
+  });
+  assert.equal((await status(1)).value.data.login_status, 1);
+  assert.equal((await status(1, exchangeTicket)).response.status, 403);
+  assert.equal((await action('confirm')).response.status, 401);
+  assert.equal((await action('confirm', { Origin: 'https://other.example', Cookie: 'openuuyc_account=' + cookie })).response.status, 403);
+  const headers = { Cookie: 'openuuyc_account=' + cookie };
+  assert.equal((await action('scan', headers)).value.login_status, 2);
+  assert.equal((await action('confirm', headers)).value.login_status, 2);
+  assert.equal((await status(1)).value.data.login_status, 2);
+  assert.equal((await exchange()).response.status, 403);
+  const waiting = status(2);
+  assert.equal((await adminAction('approve', id)).response.status, 200);
+  assert.equal((await waiting).value.data.login_status, 4);
+  assert.equal((await register(installation)).value.data.device_id, id);
+  assert.equal((await exchange(otherInstallation)).response.status, 403);
+  assert.equal((await exchange(installation, status_query_ticket)).response.status, 403);
+  const login = (await exchange()).value.data;
+  assert.equal(login.user_id, owner);
+  assert.deepEqual((await exchange()).value.data, login);
+  assert.equal((await native('user/info', login.token, 'GET')).value.data.nickname, 'owner');
+  const list = (await native('device/groups/of/my', login.token, 'GET')).value.data;
+  assert.deepEqual(list.desktop_devices.map((device) => device.device_id), [id]);
+  assert.equal((await native('device/list', installation, 'GET')).value.code, 1001);
+
+  const scan = (barcode) => native('qrcode/scanned', login.token, 'POST', { qrcode_jump_url: barcode.qrcode_jump_url });
+  const nativeAction = (barcode, action) => native('qrcode/login/action', login.token, 'POST',
+    { qrcode_jump_url: barcode.qrcode_jump_url, action });
+  const canceled = (await native('qrcode/gen/login', otherInstallation)).value.data;
+  assert.equal((await scan(canceled)).value.data.login_status, 2);
+  assert.equal((await nativeAction(canceled, 'cancel')).value.data.login_status, 3);
+  const next = (await native('qrcode/gen/login', otherInstallation)).value.data;
+  assert.equal((await nativeAction(next, 'confirm')).value.data.login_status, 2);
+  const otherId = (await register(otherInstallation)).value.data.device_id;
+  assert.equal((await adminAction('approve', otherId)).response.status, 200);
+  await register(otherInstallation);
+  const other = (await native('login/by_qrcode', otherInstallation, 'POST',
+    { qrcode_jump_url: next.qrcode_jump_url, token: next.token })).value.data;
+  const room = (await native('room/create', login.token, 'POST', {})).value.data;
+  const socket = connectHost(room.signaling_server, room.token);
+  t.after(() => socket.close());
+  await connected(socket);
+  const disconnected = new Promise((resolve) => socket.once('disconnect', resolve));
+  assert.equal((await native('user/logout', login.token)).value.code, 0);
+  await disconnected;
+  assert.equal((await native('user/info', login.token, 'GET')).value.code, 1001);
+  assert.equal((await exchange()).response.status, 403);
+  const inventory = () => native('device/groups/of/my', other.token, 'GET');
+  const offline = (await inventory()).value.data.desktop_devices.find((device) => device.device_id === id);
+  assert.equal(offline.status, 'DISCONNECTED');
+  assert.equal((await adminAction('revoke', id)).response.status, 200);
+  assert.deepEqual((await inventory()).value.data.desktop_devices.map((device) => device.device_id), [otherId]);
+  const staleSocket = connectHost(room.signaling_server, room.token);
+  t.after(() => staleSocket.close());
+  await assert.rejects(connected(staleSocket), /unauthorized/);
 });

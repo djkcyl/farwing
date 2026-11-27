@@ -6,6 +6,9 @@ import { resolve, extname, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Server as SocketIoServer } from 'socket.io';
 import { WebSocketServer, WebSocket } from 'ws';
+import { createAccounts } from './accounts.js';
+import { DEVICE_LOGIN_APPROVAL_LIFETIME, createDeviceLogin } from './device-login.js';
+import { createAdmin } from './admin.js';
 import { createAssistance } from './assistance.js';
 import { createPower } from './power.js';
 import { createWallpapers } from './wallpaper.js';
@@ -37,6 +40,10 @@ const HTTP_BODY_LIMIT = 32 * 1024;
 const WS_MESSAGE_LIMIT = 512 * 1024;
 const ACTIVE_CHECK_MS = 500;
 const MAX_QUEUED_SIGNALS = 64;
+// Windows row of the official 4.48.1 controlled_ability_map response.
+const IOS_WINDOWS_ABILITIES = JSON.parse(readFileSync(new URL('./ios-windows-abilities.json', import.meta.url), 'utf8'));
+const IOS_VIDEO_KEYS = new Set(['NTES_customVideoConfig', 'NTES_deviceCustomVideoConfig']);
+const IOS_VIDEO_VALUE_LIMIT = 8 * 1024;
 
 class HttpError extends Error {
   constructor(status, message, code = status === 401 ? 1120 : status) {
@@ -226,6 +233,7 @@ function emitHostRelease(room, session, event = 'released') {
 export function createServer(options = {}) {
   const host = options.host || process.env.HOST || '127.0.0.1';
   const port = Number(options.port ?? process.env.PORT ?? 8787);
+  const adminPort = options.adminPort ?? (process.env.ADMIN_PORT === undefined ? null : Number(process.env.ADMIN_PORT));
   const dbPath = options.dbPath || process.env.OPENUUYC_DB_PATH || DEFAULT_DB_PATH;
   const db = options.db || openDatabase(dbPath);
   const tlsCertPath = options.tlsCert || process.env.TLS_CERT_FILE;
@@ -237,6 +245,9 @@ export function createServer(options = {}) {
   } : null;
   const suppliedOrigin = options.publicOrigin ?? process.env.PUBLIC_ORIGIN;
   const publicOriginOption = suppliedOrigin ? validatePublicOrigin(suppliedOrigin) : null;
+  const accountOrigin = options.accountOrigin ?? process.env.ACCOUNT_PUBLIC_ORIGIN;
+  const accountOriginOption = accountOrigin ? validatePublicOrigin(accountOrigin) : null;
+  if (accountOriginOption && !accountOriginOption.startsWith('https:')) throw new Error('ACCOUNT_PUBLIC_ORIGIN requires HTTPS');
   const normalizedBindHost = host.replace(/^\[|\]$/gu, '').toLowerCase();
   const loopbackHost = ['127.0.0.1', '::1', 'localhost'].includes(normalizedBindHost);
   if (!tlsOptions && !loopbackHost) {
@@ -246,6 +257,12 @@ export function createServer(options = {}) {
     throw new Error('PUBLIC_ORIGIN must use HTTPS when TLS is enabled');
   }
   const memberNetwork = clientNetworkPolicy(options.desktopClientNetworks ?? process.env.DESKTOP_CLIENT_NETWORKS);
+  const ownerName = options.deviceAccountOwner ?? process.env.DEVICE_ACCOUNT_OWNER;
+  const owner = ownerName ? db.prepare('SELECT id, username FROM accounts WHERE username = ?').get(ownerName) : null;
+  if (ownerName && !owner) throw new Error('DEVICE_ACCOUNT_OWNER must name an existing account');
+  const sessionMs = Number(options.deviceAccountSessionMs ?? process.env.DEVICE_ACCOUNT_SESSION_MS ?? 30 * 24 * 60 * 60_000);
+  if (owner && (!Number.isSafeInteger(sessionMs) || sessionMs <= 0)) throw new Error('Invalid DEVICE_ACCOUNT_SESSION_MS');
+  const requireDeviceApproval = Boolean(owner) || (options.requireDeviceApproval ?? true);
   const iceServers = hostedIceServers(options.iceServers ?? process.env.SELF_HOST_ICE_SERVERS);
   const canSwitchNetwork = iceServers.some(({ urls }) => /^turns?:/u.test(urls));
   function addressClientsAllowed(request) {
@@ -265,6 +282,10 @@ export function createServer(options = {}) {
   let closed = false;
   let boundPort = port;
   const getPublicOrigin = () => publicOriginOption || `${tlsOptions ? 'https' : 'http'}://127.0.0.1:${boundPort}`;
+  const deviceLogin = owner ? createDeviceLogin({ db, owner, now, fail, sessionMs,
+    portalOrigin: () => accountOriginOption ?? getPublicOrigin(), pollMs: options.qrPollMs }) : null;
+  const accounts = createAccounts({ db, now, fail, readJson, jsonResponse, getPublicOrigin,
+    configuredOrigin: accountOriginOption, announceDevice, deviceLogin });
   const onlineRoomId = (id) => roomIsOnline(id) ? hostRooms.get(id).ticketId : null;
   const assistance = createAssistance({
     db, now, fail, pushTo, reserveSession, roomId: onlineRoomId,
@@ -272,9 +293,10 @@ export function createServer(options = {}) {
   });
   const power = createPower({
     db, fail, pushTo, announceDevice, roomId: onlineRoomId,
+    hostAllowed: accountDeviceVisible,
     connectedPeers: function* () {
       for (const [id, room] of hostRooms) {
-        if (room.addressMember && room.socket?.connected) yield [id, room.socket.request.socket.remoteAddress];
+        if (room.addressMember && !room.presenceOnly && room.socket?.connected) yield [id, room.socket.request.socket.remoteAddress];
       }
     },
   });
@@ -312,12 +334,26 @@ export function createServer(options = {}) {
       FROM devices WHERE token_hash = ?`).get(hashSecret(token));
   }
 
+  function accountDeviceVisible(id) {
+    return !deviceLogin || Boolean(deviceLogin.ownsDevice(id));
+  }
+
+  function accountDeviceAllowed(id) {
+    return !deviceLogin || Boolean(deviceLogin.accountDevice(id));
+  }
+
   function authenticateHttp(req, role = null) {
-    const device = lookupDeviceByToken(bearerToken(req));
-    if (!device || device.revokedAt !== null) fail(401, 'device authentication failed');
+    const token = bearerToken(req);
+    const device = deviceLogin ? deviceLogin.authenticate(token) : lookupDeviceByToken(token);
+    if (!device) fail(401, 'device authentication failed', deviceLogin ? 1001 : 401);
+    if (device.revokedAt !== null) fail(401, 'device authentication failed', 1120);
     if (device.addressMember && !addressClientsAllowed(req)) fail(403, 'device network is not authorized');
     if (role && device.role !== role) fail(403, 'device role is not allowed for this endpoint');
     return device;
+  }
+
+  function isEnrolledIos(device) {
+    return device.addressMember && device.role === 'controller' && device.platform === 'ios';
   }
 
   function roomTicketFor(deviceId) {
@@ -338,7 +374,15 @@ export function createServer(options = {}) {
   }
 
   function controllerCanAccess(controller, hostId) {
-    return controller.addressMember ? Boolean(addressHost(db, hostId)) : controller.boundHostId === hostId;
+    return accountDeviceAllowed(controller.id) && accountDeviceAllowed(hostId)
+      && (controller.addressMember ? Boolean(addressHost(db, hostId)) : controller.boundHostId === hostId);
+  }
+
+  function nativeControllerIsEnrolled(session) {
+    if (!accountDeviceAllowed(session.controllerId) || !accountDeviceAllowed(session.hostId)) return false;
+    if (session.controllerPlatform !== 'ios') return Boolean(addressHost(db, session.controllerId));
+    return Boolean(db.prepare(`SELECT 1 FROM address_members a JOIN devices d ON d.id = a.device_id
+      WHERE d.id = ? AND d.role = 'controller' AND d.platform = 'ios' AND d.revoked_at IS NULL`).get(session.controllerId));
   }
 
   function desktopHosts() {
@@ -346,7 +390,7 @@ export function createServer(options = {}) {
         s.support_wol AS supportWol, s.wallpaper_id AS wallpaperId
       FROM address_members a JOIN devices d ON a.device_id = d.id
       LEFT JOIN desktop_devices s ON s.device_id = d.id
-      WHERE d.role = 'host' AND d.revoked_at IS NULL ORDER BY d.name, d.id`).all();
+      WHERE d.role = 'host' AND d.revoked_at IS NULL ORDER BY d.name, d.id`).all().filter((row) => accountDeviceVisible(row.id));
   }
 
   function desktopDevice(row) {
@@ -364,6 +408,27 @@ export function createServer(options = {}) {
     };
   }
 
+  function mobileDevice(row) {
+    return {
+      device_id: row.persistentId ?? row.id,
+      alias: row.name,
+      status: [...activeSessionsByHost.values()].some((session) => session.controllerId === row.id
+        && session.usedAt !== null && session.nativeSocket?.connected) ? 'CONNECTED' : 'DISCONNECTED',
+      platform: 3,
+      controllable: false,
+      controlled_support: false,
+      version_name: '',
+      participants_info: [],
+    };
+  }
+
+  function mobileDevices(id = null) {
+    return db.prepare(`SELECT d.id, d.name, i.persistent_id AS persistentId
+      FROM address_members a JOIN devices d ON a.device_id = d.id LEFT JOIN ios_device_ids i ON i.device_id = d.id
+      WHERE d.platform = 'ios' AND d.revoked_at IS NULL AND (? IS NULL OR d.id = ? OR i.persistent_id = ?)
+      ORDER BY d.name, d.id`).all(id, id, id).filter((row) => accountDeviceVisible(row.id));
+  }
+
   function pushTo(deviceId, type, data) {
     const socket = hostRooms.get(deviceId)?.socket;
     if (!socket?.connected) return false;
@@ -371,26 +436,40 @@ export function createServer(options = {}) {
     return true;
   }
 
-  function announceDevice(id, type = 'device_info_changed') {
+  function announceDevice(id, type = 'device_info_changed', visibleId = id) {
     const device = type === 'device_unbind' ? null : addressHost(db, id);
-    if (!device && type !== 'device_unbind') return;
-    const data = device ? desktopDevice(device) : { device_id: id };
+    const mobile = type === 'device_unbind' || device ? null : mobileDevices(id)[0];
+    if (!accountDeviceVisible(id) && type !== 'device_unbind') {
+      announcedDevices.delete(id);
+      return;
+    }
+    if (!device && !mobile && type !== 'device_unbind') return;
+    const data = device ? desktopDevice(device) : mobile ? mobileDevice(mobile) : { device_id: visibleId };
     for (const [receiver, room] of hostRooms) {
-      if (room.addressMember) pushTo(receiver, type, data);
+      if (room.addressMember && accountDeviceAllowed(receiver)) pushTo(receiver, type, data);
     }
   }
 
-  function removeDesktopDevice(id) {
+  function removeDesktopDevice(id, visibleId = id) {
     assistance.cancelForDevice(id);
     power.cancelForDevice(id);
     wallpapers.removeDevice(id);
     announcedDevices.delete(id);
-    announceDevice(id, 'device_unbind');
+    announceDevice(id, 'device_unbind', visibleId);
     closeHostRoom(id, 'device_revoked');
     for (const session of sessions.values()) {
       if (session.controllerId === id) finishSession(session, 'device_revoked');
     }
   }
+
+  const approvalLifetime = deviceLogin ? DEVICE_LOGIN_APPROVAL_LIFETIME : undefined;
+  const admin = adminPort === null ? null : createAdmin({ db, now, readJson, HttpError, approvalLifetime, revoke(id) {
+    const mobile = db.prepare('SELECT persistent_id AS persistentId FROM ios_device_ids WHERE device_id = ?').get(id);
+    if (!revokeDevice(db, id)) return false;
+    deviceLogin?.invalidate(id);
+    removeDesktopDevice(id, mobile?.persistentId ?? id);
+    return true;
+  } });
 
   function roomResponse(ticket, signalingUrl) {
     return {
@@ -402,7 +481,7 @@ export function createServer(options = {}) {
     };
   }
 
-  function createHostRoom(device) {
+  function createDeviceRoom(device) {
     const timestamp = now();
     const ticket = randomSecret(32);
     const roomId = randomUUID();
@@ -410,7 +489,7 @@ export function createServer(options = {}) {
     db.exec('BEGIN IMMEDIATE');
     try {
       db.prepare('UPDATE room_tickets SET retired_at = ? WHERE device_id = ? AND retired_at IS NULL').run(timestamp, device.id);
-      db.prepare('UPDATE devices SET controllable = 0 WHERE id = ?').run(device.id);
+      if (device.role === 'host') db.prepare('UPDATE devices SET controllable = 0 WHERE id = ?').run(device.id);
       db.prepare(`INSERT INTO room_tickets (id, device_id, token_hash, expires_at, created_at)
         VALUES (?, ?, ?, ?, ?)`).run(roomId, device.id, hashSecret(ticket), expiresAt, timestamp);
       db.exec('COMMIT');
@@ -434,7 +513,10 @@ export function createServer(options = {}) {
     announceDevice(id);
   }
 
-  function reserveSession(controller, hostId, { native = false, force = false, assistance = false, replacementId = null } = {}) {
+  function reserveSession(controller, hostId, {
+    native = false, force = false, assistance = false, replacementId = null, retryPending = false,
+  } = {}) {
+    if (!accountDeviceAllowed(controller.id) || !accountDeviceAllowed(hostId)) fail(403, 'controller is not authorized for this host');
     if (controller.id === hostId) fail(400, 'cannot control this device from itself');
     const hostDevice = db.prepare(`SELECT controllable, revoked_at AS revokedAt FROM devices
       WHERE id = ? AND role = 'host'`).get(hostId);
@@ -442,15 +524,25 @@ export function createServer(options = {}) {
     const room = hostRooms.get(hostId);
     if (!room?.socket?.connected) fail(409, 'host is offline', 2006);
     if (!hostDevice.controllable) fail(409, 'host is not accepting sessions', 2007);
-    const previous = activeSessionsByHost.get(hostId);
-    if (previous && !force && previous.id !== replacementId) fail(409, 'host already has an active controller', 2002);
     const timestamp = now();
+    let previous = activeSessionsByHost.get(hostId);
+    if (previous?.usedAt === null && previous.expiresAt <= timestamp) {
+      endUnclaimedSession(previous, 'session_ticket_expired');
+      previous = undefined;
+    }
+    if (previous && !force && previous.id !== replacementId) {
+      if (retryPending && previous.pendingTicket && previous.controllerId === controller.id) {
+        return { session: previous, ticket: previous.pendingTicket };
+      }
+      fail(409, 'host already has an active controller', 2002);
+    }
     const ticket = randomSecret(32);
     const session = {
       id: randomUUID(),
       hostId,
       controllerId: controller.id,
       ticketHash: hashSecret(ticket),
+      pendingTicket: retryPending ? ticket : null,
       expiresAt: timestamp + SESSION_TICKET_TTL_MS,
       clientId: randomUUID(),
       iceId: randomUUID(),
@@ -472,22 +564,166 @@ export function createServer(options = {}) {
     return { session, ticket };
   }
 
+  function enrollAddressClient(req, platform, rawName, persistentId) {
+    const token = bearerToken(req);
+    if (!ADDRESS_TOKEN.test(token)) fail(400, 'address credential is invalid');
+    if (!['windows', 'ios', 'web'].includes(platform)) fail(400, 'invalid device platform');
+    if (persistentId !== undefined && (platform !== 'ios' || typeof persistentId !== 'string' || !/^[a-f0-9]{16}$/u.test(persistentId))) {
+      fail(400, 'invalid persistent iOS device ID');
+    }
+    const name = normalizeName(rawName);
+    const existing = lookupDeviceByToken(token);
+    if (!existing) rateLimitPair(req);
+    const id = enrollAddressDevice(db, token, name, platform, now(), persistentId, requireDeviceApproval, approvalLifetime);
+    if (id?.conflict) fail(409, 'persistent iOS device ID is already assigned');
+    if (id?.queueFull) fail(429, '设备准入队列已满');
+    if (!id) fail(401, 'device credential is revoked or invalid');
+    return { id, existing, name };
+  }
+
+  function desktopDeviceDetails(target) {
+    const hardware = db.prepare('SELECT details FROM desktop_hardware WHERE device_id = ?').get(target.id);
+    const reported = JSON.parse(hardware?.details ?? '[]');
+    const system = reported.find(([label]) => label === '系统')?.[1] ?? '';
+    return {
+      alias: target.name,
+      os_version: /^Windows\s+(\d+(?:\.\d+)*)\b/iu.exec(system)?.[1] ?? '',
+      details: [['设备名称', target.name], ['平台', 'Windows'], ['设备 ID', target.id], ...reported],
+    };
+  }
+
+  function iosDeviceRequest(device, method, path, send) {
+    switch (`${method} ${path}`) {
+      case 'POST /room': {
+        if (!getPublicOrigin().startsWith('https:')) fail(409, 'iOS signaling requires an HTTPS public origin');
+        const room = createDeviceRoom(device);
+        send({ ...roomResponse(room.ticket, room.signalingUrl), signaling_list: [room.signalingUrl] });
+        return;
+      }
+      case 'GET /profile':
+        send({ nickname: '自建服务器' });
+        return;
+      case 'GET /devices':
+        send({
+          current_device: {
+            device_id: device.id, alias: device.name, status: 'DISCONNECTED', platform: 3,
+            controllable: false, controlled_support: false, participants_info: [], update_started_at: 0,
+          },
+          my_binded_devices: desktopHosts().map((host) => {
+            const entry = desktopDevice(host);
+            return {
+              ...entry, status: entry.participants_info.length ? 'CONTROLLED' : entry.status,
+              participants_info: [], update_started_at: 0,
+            };
+          }),
+          others_shared_devices: [],
+        });
+        return;
+      case 'GET /groups':
+        send({ current_device_id: device.id, desktop_devices: desktopHosts().map(desktopDevice), mobile_devices: [], tv_devices: [] });
+        return;
+      default:
+        break;
+    }
+    const detail = /^\/devices\/([a-f0-9]{16})\/detail$/u.exec(path);
+    if (method === 'GET' && detail) {
+      const target = addressHost(db, detail[1]);
+      if (!target || !accountDeviceVisible(target.id)) fail(404, 'device was not found');
+      send(desktopDeviceDetails(target), 0, 'ok');
+      return;
+    }
+    if (method === 'POST' && path.startsWith('/join/')) {
+      const hostId = path.slice('/join/'.length);
+      const host = addressHost(db, hostId);
+      if (!host) fail(403, 'controller is not authorized for this host');
+      const signalingUrl = makeRoomUrl(getPublicOrigin());
+      if (!signalingUrl.startsWith('wss:')) fail(409, 'iOS signaling requires an HTTPS public origin');
+      const { ticket } = reserveSession(device, hostId, { native: true, retryPending: true });
+      send({
+        ...roomResponse(ticket, signalingUrl), signaling_list: [signalingUrl],
+        publisher_device_id: host.id, device_name: host.name,
+        publisher_platform: 1, publisher_version_name: host.versionName ?? '',
+      });
+      return;
+    }
+    fail(403, 'device role is not allowed for this endpoint');
+  }
+
   async function desktopRequest(req, res, path, native = false) {
     if (!addressClientsAllowed(req)) fail(403, 'server does not admit devices from this network');
     const body = req.method === 'GET' ? {} : await readJson(req);
     const send = (data, code = 0, msg = '') => {
       if (!res.destroyed) jsonResponse(res, 200, native ? { code, msg, data } : data);
     };
+    if (deviceLogin && native && req.method === 'POST') {
+      if (path === '/api/v1/qrcode/gen/login' || path === '/api/v1/qrcode/login/status' || path === '/api/v1/login/by_qrcode') {
+        const installationHash = hashSecret(bearerToken(req));
+        res.setHeader('Cache-Control', 'no-store');
+        if (path === '/api/v1/qrcode/gen/login') {
+          rateLimitPair(req);
+          send(deviceLogin.generate(installationHash));
+        } else if (path === '/api/v1/qrcode/login/status') {
+          send(await deviceLogin.poll(res, body, installationHash));
+        } else {
+          const { login, deviceId, replay } = deviceLogin.exchange(body, installationHash);
+          if (!replay) {
+            closeDeviceLoginRooms(deviceId, 'account_replaced');
+            announceDevice(deviceId, 'device_binded');
+            announcedDevices.add(deviceId);
+          }
+          send(login);
+        }
+        return;
+      }
+      if (path === '/api/v1/qrcode/scanned' || path === '/api/v1/qrcode/login/action') {
+        authenticateHttp(req);
+        send(deviceLogin.action(owner.id, body.qrcode_jump_url, path.endsWith('/scanned') ? 'scan' : body.action, true));
+        return;
+      }
+    }
+    if (native && req.method === 'POST' && path === '/api/v1/device/ios/init') {
+      const { id, existing, name } = enrollAddressClient(req, 'ios', body.name, body.persistent_id);
+      if (id.pending) {
+        if (deviceLogin) {
+          send({ device_id: id.id, alias: name });
+          return;
+        }
+        jsonResponse(res, 403, { code: 4031, msg: `设备 ${id.id} 等待管理员批准`, data: null });
+        return;
+      }
+      if (!announcedDevices.has(id) || existing?.revokedAt != null) {
+        announcedDevices.add(id);
+        announceDevice(id, 'device_binded');
+      } else if (existing && existing.name !== name) {
+        announceDevice(id);
+      }
+      send({ device_id: id, alias: name, status: 'DISCONNECTED' });
+      return;
+    }
+    if (native && req.method === 'POST' && path === '/configures' && Object.keys(body).length === 0) {
+      // Existing internal iOS builds send an empty query on this route.
+      const token = req.headers.authorization ? bearerToken(req) : null;
+      const device = token && (deviceLogin ? deviceLogin.authenticate(token) : lookupDeviceByToken(token));
+      const ios = device && device.revokedAt === null && isEnrolledIos(device);
+      send(ios ? { controlled_ability_map: IOS_WINDOWS_ABILITIES } : {});
+      return;
+    }
     if (req.method === 'POST' && path === '/register') {
-      const token = bearerToken(req);
-      if (!ADDRESS_TOKEN.test(token)) fail(400, 'address credential is invalid');
+      if (deviceLogin && !native) fail(404, 'not found');
       const platform = native ? 'windows' : body.platform ?? 'windows';
-      if (!['windows', 'ios', 'web'].includes(platform)) fail(400, 'invalid device platform');
-      const name = normalizeName(body.name);
-      const existing = lookupDeviceByToken(token);
-      if (!existing) rateLimitPair(req);
-      const id = enrollAddressDevice(db, token, name, platform, now());
-      if (!id) fail(401, 'device credential is revoked or invalid');
+      const { id, existing, name } = enrollAddressClient(req, platform, body.name, body.persistent_id);
+      if (id.pending) {
+        if (deviceLogin) {
+          send({ device_id: id.id, alias: name });
+          return;
+        }
+        if (native) {
+          jsonResponse(res, 403, { code: 4031, msg: `设备 ${id.id} 等待管理员批准`, data: null });
+        } else {
+          jsonResponse(res, 202, { device_id: id.id, status: 'pending' });
+        }
+        return;
+      }
       if (native && typeof body.version_name === 'string' && /^\d+(?:\.\d+){2,3}$/u.test(body.version_name) && body.version_name.length <= 32) {
         db.prepare(`INSERT INTO desktop_devices (device_id, version_name) VALUES (?, ?)
           ON CONFLICT(device_id) DO UPDATE SET version_name = excluded.version_name`).run(id, body.version_name);
@@ -497,18 +733,80 @@ export function createServer(options = {}) {
         if (details.length) db.prepare(`INSERT INTO desktop_hardware (device_id, details) VALUES (?, ?)
           ON CONFLICT(device_id) DO UPDATE SET details = excluded.details`).run(id, JSON.stringify(details));
       }
-      if (!announcedDevices.has(id) && platform === 'windows') {
+      if ((!announcedDevices.has(id) || existing?.revokedAt != null) && ['windows', 'ios'].includes(platform)) {
         announcedDevices.add(id);
         announceDevice(id, 'device_binded');
-      } else if (existing && native) {
+      } else if (existing && (native || (platform === 'ios' && existing.name !== name))) {
         announceDevice(id);
       }
       send({ device_id: id });
       return;
     }
-    const device = authenticateHttp(req, 'host');
+    const device = authenticateHttp(req);
+    if (deviceLogin && native) {
+      if (path === '/profile' && req.method === 'GET') {
+        send({ user_id: owner.id, nickname: owner.username, member_type: 0 });
+        return;
+      }
+      if (path === '/disconnect' && req.method === 'POST') {
+        deviceLogin.invalidate(device.id);
+        closeDeviceLoginRooms(device.id, 'account_logged_out');
+        send({});
+        return;
+      }
+    }
+    if (deviceLogin && (path === '/account' || path === '/account/transfer')) fail(404, 'not found');
+    if (!native && req.method === 'POST' && path === '/account/transfer') {
+      if (!isEnrolledIos(device)) fail(403, 'iOS enrollment required');
+      rateLimitPair(req);
+      const [previousEntry] = mobileDevices(device.id);
+      const { id, ...account } = accounts.transferDevice(device, body.code);
+      for (const session of sessions.values()) {
+        if (session.controllerId === device.id || session.controllerId === id) {
+          finishSession(session, 'device_transferred');
+        }
+      }
+      removeDesktopDevice(device.id, previousEntry?.persistentId ?? device.id);
+      closeHostRoom(id, 'device_transferred');
+      announceDevice(id);
+      send(account);
+      return;
+    }
+    if (!native && path === '/video-preferences') {
+      if (!isEnrolledIos(device)) fail(403, 'iOS enrollment required');
+      if (req.method === 'GET') {
+        const row = db.prepare('SELECT preferences FROM ios_video_preferences WHERE device_id = ?').get(device.id);
+        send({ preferences: row ? JSON.parse(row.preferences) : null });
+      } else if (req.method === 'PUT') {
+        const preferences = body.preferences;
+        if (!isRecord(preferences) || Object.entries(preferences).some(([key, value]) => {
+          if (!IOS_VIDEO_KEYS.has(key) || typeof value !== 'string' || !value.length) return true;
+          const decoded = Buffer.from(value, 'base64');
+          return decoded.length > IOS_VIDEO_VALUE_LIMIT || decoded.toString('base64') !== value;
+        })) fail(400, 'invalid iOS video preferences');
+        db.prepare(`INSERT INTO ios_video_preferences (device_id, preferences) VALUES (?, ?)
+          ON CONFLICT(device_id) DO UPDATE SET preferences = excluded.preferences`).run(device.id, JSON.stringify(preferences));
+        send({ preferences });
+      } else {
+        fail(404, 'not found');
+      }
+      return;
+    }
+    if (path === '/account') {
+      if (!isEnrolledIos(device)) fail(403, 'iOS enrollment required');
+      if (req.method === 'GET') send({ ...accounts.deviceAccount(device.id), portal: `${accounts.portalOrigin()}/account` });
+      else if (req.method === 'POST') send(accounts.linkDevice(device, body.code));
+      else if (req.method === 'DELETE') send(accounts.unlinkDevice(device) ?? {});
+      else fail(404, 'not found');
+      return;
+    }
+    if (native && isEnrolledIos(device)) {
+      iosDeviceRequest(device, req.method, path, send);
+      return;
+    }
+    if (device.role !== 'host') fail(403, 'device role is not allowed for this endpoint');
     if (!device.addressMember) fail(403, 'address enrollment required');
-    if (native && await assistance.request(device, req.method, path, body, res, send)) return;
+    if (!deviceLogin && native && await assistance.request(device, req.method, path, body, res, send)) return;
     if (native && await power.request(device, path, body, req, res, send)) return;
     switch (`${req.method} ${path}`) {
       case 'GET /profile':
@@ -518,10 +816,11 @@ export function createServer(options = {}) {
         send({ current_device: desktopDevice(addressHost(db, device.id)), my_binded_devices: desktopHosts().filter((row) => row.id !== device.id).map(desktopDevice) });
         return;
       case 'GET /groups':
-        send({ current_device_id: device.id, desktop_devices: desktopHosts().map(desktopDevice) });
+        send({ current_device_id: device.id, desktop_devices: desktopHosts().map(desktopDevice),
+          mobile_devices: mobileDevices().map(mobileDevice), tv_devices: [] });
         return;
       case 'POST /room': {
-        const room = createHostRoom(device);
+        const room = createDeviceRoom(device);
         send(native ? roomResponse(room.ticket, room.signalingUrl) : room);
         return;
       }
@@ -577,24 +876,31 @@ export function createServer(options = {}) {
       const id = native ? path.slice('/join/'.length) : body.device_id;
       if (typeof id !== 'string' || !addressHost(db, id)) fail(404, 'device was not found', 4042);
       if (typeof body.force_join !== 'boolean') fail(400, 'force_join must be a boolean');
-      const { ticket } = reserveSession(device, id, { native: true, force: body.force_join });
+      const { ticket } = reserveSession(device, id, { native: true, force: body.force_join, retryPending: Boolean(deviceLogin) && !body.force_join });
       const signalingUrl = makeRoomUrl(getPublicOrigin());
       send(native ? roomResponse(ticket, signalingUrl) : { ticket, signalingUrl });
       return;
     }
     const match = /^\/devices\/([a-f0-9]{16})(\/(?:unbind|detail))?$/u.exec(path);
-    const target = match && addressHost(db, match[1]);
+    const target = match && accountDeviceVisible(match[1]) && addressHost(db, match[1]);
+    if (!target && match && req.method === 'GET' && (native ? match[2] === '/detail' : !match[2])) {
+      const mobile = mobileDevices(match[1])[0];
+      if (mobile) {
+        send({ alias: mobile.name, os_version: '', details: [['设备名称', mobile.name], ['平台', 'iOS'], ['设备 ID', mobile.persistentId ?? mobile.id]] });
+        return;
+      }
+    }
     if (!target) fail(404, 'device was not found');
     if (req.method === 'POST' && match[2] === '/unbind') {
       if (target.id === device.id) fail(400, 'cannot remove the current device');
       revokeDevice(db, target.id);
+      deviceLogin?.invalidate(target.id);
       removeDesktopDevice(target.id);
       send({});
       return;
     }
     if (req.method === 'GET' && (native ? match[2] === '/detail' : !match[2])) {
-      const hardware = db.prepare('SELECT details FROM desktop_hardware WHERE device_id = ?').get(target.id);
-      send({ details: [['设备名称', target.name], ['平台', 'Windows'], ['设备 ID', target.id], ...JSON.parse(hardware?.details ?? '[]')] });
+      send(desktopDeviceDetails(target));
       return;
     }
     if (req.method === 'PUT' && !match[2]) {
@@ -617,6 +923,7 @@ export function createServer(options = {}) {
   function finishSession(session, reason, { hostEvent = 'released', sendHost = true, sendEnded = true } = {}) {
     if (!session || session.ended) return;
     session.ended = true;
+    session.pendingTicket = null;
     db.prepare(`UPDATE sessions SET ended_at = COALESCE(ended_at, ?), end_reason = COALESCE(end_reason, ?)
       WHERE id = ?`).run(now(), reason, session.id);
     if (session.disconnectTimer) clearTimeout(session.disconnectTimer);
@@ -644,6 +951,13 @@ export function createServer(options = {}) {
   function finishHostSessions(deviceId, reason, options) {
     for (const session of sessions.values()) {
       if (session.hostId === deviceId) finishSession(session, reason, options);
+    }
+  }
+
+  function closeDeviceLoginRooms(deviceId, reason) {
+    closeHostRoom(deviceId, reason);
+    for (const session of sessions.values()) {
+      if (session.controllerId === deviceId) finishSession(session, reason);
     }
   }
 
@@ -770,6 +1084,11 @@ export function createServer(options = {}) {
     try {
       const pathname = requestPath(req);
       native = /^\/api\/v[12](?:\/|$)/u.test(pathname);
+      if (pathname === '/account' || pathname.startsWith('/account/') || pathname.startsWith('/v1/account/')) {
+        if (req.headers.origin && req.headers.origin !== accounts.portalOrigin()) fail(403, 'origin is not allowed');
+        await accounts.request(req, res, pathname);
+        return;
+      }
       if (!originIsAllowed(req.headers.origin, getPublicOrigin)) fail(403, 'origin is not allowed');
       if (req.method === 'GET' && pathname === '/healthz') {
         jsonResponse(res, 200, { status: 'ok' });
@@ -785,6 +1104,7 @@ export function createServer(options = {}) {
         return;
       }
       if (req.method === 'POST' && pathname === '/v1/pair') {
+        if (deviceLogin) fail(404, 'not found');
         rateLimitPair(req);
         const body = await readJson(req);
         jsonResponse(res, 201, claimPairing(body));
@@ -800,7 +1120,7 @@ export function createServer(options = {}) {
       }
       if (req.method === 'POST' && pathname === '/v1/host/room') {
         await readJson(req);
-        jsonResponse(res, 200, createHostRoom(authenticateHttp(req, 'host')));
+        jsonResponse(res, 200, createDeviceRoom(authenticateHttp(req, 'host')));
         return;
       }
       if (req.method === 'PUT' && pathname === '/v1/host/controllable') {
@@ -835,11 +1155,14 @@ export function createServer(options = {}) {
         const controller = authenticateHttp(req, 'controller');
         if (typeof body.deviceId !== 'string' || !/^[a-f0-9]{16}$/u.test(body.deviceId)) fail(400, 'deviceId is invalid');
         if (!controllerCanAccess(controller, body.deviceId)) fail(403, 'controller is not authorized for this host');
-        const { session, ticket } = reserveSession(controller, body.deviceId);
+        if (body.transport !== undefined && body.transport !== 'socket.io') fail(400, 'unknown signaling transport');
+        const useNativeSignaling = body.transport === 'socket.io';
+        if (useNativeSignaling && !isEnrolledIos(controller)) fail(403, 'native signaling requires an enrolled iOS controller');
+        const { session, ticket } = reserveSession(controller, body.deviceId, { native: useNativeSignaling });
         jsonResponse(res, 201, {
           sessionId: session.id,
           ticket,
-          signalingUrl: makeSessionUrl(getPublicOrigin()),
+          signalingUrl: useNativeSignaling ? makeRoomUrl(getPublicOrigin()) : makeSessionUrl(getPublicOrigin()),
           iceServers: iceServers.map((server) => ({ ...server, urls: [server.urls] })),
           expiresAt: isoTime(session.expiresAt),
         });
@@ -878,10 +1201,9 @@ export function createServer(options = {}) {
         const session = sessions.get(pending.id);
         if (!addressClientsAllowed(socket.request) || !session?.native || session.ended
           || (session.usedAt === null && session.expiresAt <= now())) throw new Error('rejected');
-        const controller = addressHost(db, session.controllerId);
         const host = addressHost(db, session.hostId);
         const room = hostRooms.get(session.hostId);
-        if (!controller || !host?.controllable || room?.ticketId !== session.hostRoomId
+        if (!nativeControllerIsEnrolled(session) || !host?.controllable || room?.ticketId !== session.hostRoomId
           || (session.usedAt === null && !room.socket?.connected)) throw new Error('rejected');
         socket.data.nativeSession = session;
         next();
@@ -889,14 +1211,15 @@ export function createServer(options = {}) {
       }
       if (controlling !== '0') throw new Error('rejected');
       const row = db.prepare(`SELECT rt.id AS ticketId, rt.device_id AS deviceId, rt.expires_at AS expiresAt,
-          rt.retired_at AS retiredAt, d.role, d.revoked_at AS revokedAt,
+          rt.retired_at AS retiredAt, d.role, d.platform, d.revoked_at AS revokedAt,
           d.id IN (SELECT device_id FROM address_members) AS addressMember
         FROM room_tickets rt JOIN devices d ON d.id = rt.device_id WHERE rt.token_hash = ?`).get(ticketHash);
-      if (!row || row.role !== 'host' || row.revokedAt !== null || row.retiredAt !== null || row.expiresAt <= now()) {
+      const presenceOnly = row?.role === 'controller' && row.platform === 'ios' && Boolean(row.addressMember);
+      if (!row || (row.role !== 'host' && !presenceOnly) || row.revokedAt !== null || row.retiredAt !== null || row.expiresAt <= now()) {
         throw new Error('rejected');
       }
-      if (row.addressMember && !addressClientsAllowed(socket.request)) throw new Error('rejected');
-      socket.data.roomAuth = { ticketId: row.ticketId, deviceId: row.deviceId, addressMember: Boolean(row.addressMember) };
+      if (!accountDeviceAllowed(row.deviceId) || (row.addressMember && !addressClientsAllowed(socket.request))) throw new Error('rejected');
+      socket.data.roomAuth = { ticketId: row.ticketId, deviceId: row.deviceId, addressMember: Boolean(row.addressMember), presenceOnly };
       next();
     } catch {
       next(new Error('unauthorized'));
@@ -924,10 +1247,14 @@ export function createServer(options = {}) {
       const room = hostRooms.get(session.hostId);
       const current = activeSessionsByHost.get(session.hostId);
       const host = addressHost(db, session.hostId);
-      const valid = typeof payload?.app_control_id === 'string' && /^[a-f0-9-]{36}$/u.test(payload.app_control_id)
-        && Buffer.isBuffer(payload.app_data) && payload.app_data.length > 0 && payload.app_data.length <= 64 * 1024
+      const attachment = payload?.app_data;
+      const usesBinaryPrefix = Buffer.isBuffer(attachment) && session.controllerPlatform === 'ios' && attachment[0] === 0x04;
+      const appData = usesBinaryPrefix ? attachment.subarray(1) : attachment;
+      const valid = typeof payload?.app_control_id === 'string'
+        && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/iu.test(payload.app_control_id)
+        && Buffer.isBuffer(appData) && appData.length > 0 && attachment.length <= 64 * 1024
         && typeof payload.streamer_data === 'string' && payload.streamer_data.length <= 64 * 1024;
-      if (!valid || !addressHost(db, session.controllerId) || !host?.controllable || !room?.socket?.connected
+      if (!valid || !nativeControllerIsEnrolled(session) || !host?.controllable || !room?.socket?.connected
         || room.ticketId !== session.hostRoomId
         || (current && current !== session && !session.force && current.id !== session.replacementId)) {
         return ack('error', {});
@@ -938,14 +1265,16 @@ export function createServer(options = {}) {
       if (!claimed.changes) return ack('error', {});
       if (current && current !== session) finishSession(current, 'controller_replaced');
       session.appControlId = payload.app_control_id;
+      session.usesBinaryPrefix = usesBinaryPrefix;
       session.usedAt = timestamp;
+      session.pendingTicket = null;
       activeSessionsByHost.set(session.hostId, session);
       if (session.assistance) assistance.started(session);
       const ids = { client_id: session.clientId, ice_id: session.iceId };
       room.socket.emit('be-controlled', {
         ...ids,
         app_control_id: session.appControlId,
-        app_data: payload.app_data,
+        app_data: appData,
         controller_device_id: session.controllerId,
         connection_type: session.assistance ? 2 : 1,
         streamer_data: payload.streamer_data,
@@ -976,7 +1305,10 @@ export function createServer(options = {}) {
         finishSession(session, 'controller_left', { hostEvent: 'left', sendEnded: false });
         return;
       }
-      if (session.usedAt === null) return;
+      if (session.usedAt === null) {
+        endUnclaimedSession(session, 'controller_disconnected');
+        return;
+      }
       session.disconnectTimer = setTimeout(() => {
         finishSession(session, 'controller_disconnected', { hostEvent: 'left', sendEnded: false });
       }, HOST_RECONNECT_GRACE_MS);
@@ -997,7 +1329,8 @@ export function createServer(options = {}) {
       room = null;
     }
     if (!room) {
-      room = { ticketId: auth.ticketId, addressMember: auth.addressMember, socket: null, disconnectTimer: null, pendingRelease: null };
+      room = { ticketId: auth.ticketId, addressMember: auth.addressMember, presenceOnly: auth.presenceOnly,
+        socket: null, disconnectTimer: null, pendingRelease: null };
       hostRooms.set(auth.deviceId, room);
     }
     const previousSocket = room.socket;
@@ -1028,6 +1361,12 @@ export function createServer(options = {}) {
         else ack('error', {});
       }
     });
+    if (auth.presenceOnly) {
+      socket.on('disconnect', () => {
+        if (room.socket === socket && hostRooms.get(auth.deviceId) === room) hostRooms.delete(auth.deviceId);
+      });
+      return;
+    }
     socket.on('forward_setting', (payload) => {
       const active = activeSessionsByHost.get(auth.deviceId);
       const data = payload?.data;
@@ -1046,7 +1385,11 @@ export function createServer(options = {}) {
       if (!active || active.ended || payload?.client_id !== active.clientId || !isRecord(data)
         || data.ice_id !== active.iceId || data.app_control_id !== active.appControlId) return;
       if (active.native) {
-        relayNativeSignal(active, active.nativeSocket, active.toController, 'soac', payload);
+        const sdp = data.gzip_sdp;
+        const outgoing = active.usesBinaryPrefix && Buffer.isBuffer(sdp) && sdp[0] === 0x1f && sdp[1] === 0x8b
+          ? { ...payload, data: { ...data, gzip_sdp: Buffer.concat([Buffer.from([0x04]), sdp]) } }
+          : payload;
+        relayNativeSignal(active, active.nativeSocket, active.toController, 'soac', outgoing);
         return;
       }
       try {
@@ -1281,6 +1624,10 @@ export function createServer(options = {}) {
     wallpapers.prune();
     const timestamp = now();
     for (const [deviceId, room] of hostRooms) {
+      if (!accountDeviceAllowed(deviceId)) {
+        closeHostRoom(deviceId, 'account_expired');
+        continue;
+      }
       const row = db.prepare(`SELECT rt.expires_at AS expiresAt, rt.retired_at AS retiredAt,
           d.revoked_at AS revokedAt
         FROM room_tickets rt JOIN devices d ON d.id = rt.device_id WHERE rt.id = ?`).get(room.ticketId);
@@ -1292,7 +1639,12 @@ export function createServer(options = {}) {
           .run(timestamp + HOST_ROOM_TTL_MS, room.ticketId);
       }
     }
+    deviceLogin?.prune();
     for (const session of [...sessions.values()]) {
+      if (!accountDeviceAllowed(session.controllerId) || !accountDeviceAllowed(session.hostId)) {
+        finishSession(session, 'account_expired');
+        continue;
+      }
       const row = sessionRow(session.id);
       if (!row || row.endedAt !== null) {
         finishSession(session, row?.endReason || 'session_ended', { sendHost: true });
@@ -1327,6 +1679,14 @@ export function createServer(options = {}) {
       server.once('listening', onListening);
       server.listen(listenPort, listenHost);
     });
+    if (admin) {
+      try {
+        adminOrigin = await admin.listen(adminPort);
+      } catch (error) {
+        await close();
+        throw error;
+      }
+    }
     return server.address();
   }
 
@@ -1335,6 +1695,7 @@ export function createServer(options = {}) {
     closed = true;
     clearInterval(heartbeat);
     clearInterval(maintenance);
+    if (admin) await admin.close();
     assistance.close();
     power.close();
     for (const room of hostRooms.values()) {
@@ -1357,6 +1718,7 @@ export function createServer(options = {}) {
     db.close();
   }
 
+  let adminOrigin = null;
   return {
     server,
     io,
@@ -1365,6 +1727,7 @@ export function createServer(options = {}) {
     close,
     address: () => server.address(),
     publicOrigin: getPublicOrigin,
+    adminOrigin: () => adminOrigin,
   };
 }
 
@@ -1375,6 +1738,7 @@ export async function start() {
   const address = await app.listen();
   const origin = app.publicOrigin();
   process.stdout.write(`OpenUUYC self-host server listening at ${origin} (${typeof address === 'object' ? address.port : ''})\n`);
+  if (app.adminOrigin()) process.stdout.write(`Local device administration at ${app.adminOrigin()}\n`);
   const shutdown = () => app.close().finally(() => { process.exitCode = 0; });
   onShutdown(shutdown);
   return app;

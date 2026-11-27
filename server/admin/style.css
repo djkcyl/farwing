@@ -1,0 +1,36 @@
+:root {
+  color-scheme: light dark;
+  font: 16px/1.5 system-ui, sans-serif;
+  --border: light-dark(#dce2ea, #354150);
+  --muted: light-dark(#506174, #a4b5c8);
+  --surface: light-dark(#fff, #18222d);
+  --blue: light-dark(#1746a1, #91b8ff);
+}
+* { box-sizing: border-box; }
+body { margin: 0; color: CanvasText; background: light-dark(#f3f6fa, #111821); }
+main { width: min(100% - 2rem, 67rem); margin: 3rem auto; }
+header, .actions { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
+header { justify-content: space-between; margin-bottom: 1.5rem; }
+h1 { font-size: clamp(1.5rem, 4vw, 2.15rem); margin: 0; }
+h2 { font-size: 1.15rem; margin: 0 0 .85rem; }
+section, dialog { background: var(--surface); border: 1px solid var(--border); border-radius: .8rem; padding: 1.2rem; }
+section + section { margin-top: 1rem; }
+button, input { font: inherit; border-radius: .45rem; padding: .5rem .75rem; }
+button { min-height: 2.6rem; cursor: pointer; border: 1px solid transparent; color: white; background: #184aa8; }
+button.secondary { color: var(--blue); background: transparent; border-color: var(--border); }
+button.danger { color: white; background: #a12435; }
+button:disabled { opacity: .5; cursor: wait; }
+input { background: Field; color: FieldText; border: 1px solid var(--border); width: min(20rem, 100%); }
+label { display: block; margin-bottom: .35rem; font-weight: 600; }
+.muted, .message { color: var(--muted); }
+.muted { margin-bottom: 0; }
+.message { min-height: 1.5em; }
+.message[data-error] { color: light-dark(#922336, #ff9ba6); }
+.device-list { list-style: none; padding: 0; margin: 0; }
+.device-list li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .8rem; padding: .8rem 0; }
+.device-list li + li { border-top: 1px solid var(--border); }
+.device-list p { color: var(--muted); margin: .15rem 0 0; font-size: .9rem; }
+.device-list strong { overflow-wrap: anywhere; }
+code { font-size: .95em; }
+dialog { max-width: min(25rem, calc(100% - 2rem)); }
+dialog::backdrop { background: rgb(0 0 0 / 45%); }
