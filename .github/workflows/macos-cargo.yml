@@ -1,0 +1,49 @@
+name: macOS build
+
+# Cross-checking from Linux covers types but not linking; this is where the
+# macOS viewer gets actually linked, on a real Apple toolchain. Self-use only:
+# the binary carries the linker's ad-hoc signature, so Gatekeeper asks for a
+# right-click open on another machine. Triggers on every push that changes
+# the port's home branch and on demand.
+
+on:
+  push:
+    branches: [macos-viewer]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The runner is Apple Silicon, so this links natively for aarch64.
+      # CMake (opusic) and the C++ tools are preinstalled on the image.
+      - name: Check
+        run: cargo check --target aarch64-apple-darwin --locked
+
+      - name: Build
+        run: cargo build --release --target aarch64-apple-darwin --locked
+
+      - name: Checksum
+        run: |
+          cd target/aarch64-apple-darwin/release
+          shasum -a 256 openuuyc > openuuyc.sha256
+          cat openuuyc.sha256
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: openuuyc-macos-aarch64
+          path: |
+            target/aarch64-apple-darwin/release/openuuyc
+            target/aarch64-apple-darwin/release/openuuyc.sha256
+          if-no-files-found: error
